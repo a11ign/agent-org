@@ -219,6 +219,38 @@ test("an approved run starts a review run that resumes the worker's own session,
   assert.ok(existsSync(join(dir, "review-run")), "the hook's mark that this run may mark its pull requests ready");
 });
 
+test("A11-86: with tickets.prReview named, a worker's and a review run's folder carry the skill for the gate, and a run without it carries none", async () => {
+  const skill = "a11ign:clean-code-review";
+  const { pool, settings } = setup(1, ["NBF-1"], { prReview: skill });
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  assert.equal(readFileSync(join(dir, "pr-review.json"), "utf8"), `"${skill}"\n`, "the gate's copy of the setting");
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /call the Skill tool with `a11ign:clean-code-review`/);
+  const plain = await approvedRun({});
+  assert.equal(existsSync(join(plain.dir, "pr-review.json")), false, "POSITIVE CONTROL: with no setting, no copy");
+  const named = await approvedRun({ prReview: skill });
+  assert.equal(readFileSync(join(named.dir, "pr-review.json"), "utf8"), `"${skill}"\n`, "a review run is gated too, since it pushes its fixes");
+});
+
+test("A11-86: a planning run pushes nothing, so it is given no copy of the setting even when one is named", async () => {
+  const { pool, settings } = setup(1, ["NBF-1"], { ...PLANNER, prReview: "a11ign:clean-code-review" }, { source: planTracker().tracker, planFirst: ["NBF-1"] });
+  await pool.tick();
+  assert.equal(existsSync(join(ticketDir(settings, "NBF-1"), "pr-review.json")), false);
+});
+
+test("A11-86: a run starts with its earlier pre-PR review log cleared, since a new session has not reviewed what it commits", async () => {
+  const { pool, status, store, settings } = setup(1, ["NBF-1"], { prReview: "a11ign:clean-code-review" });
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  writeFileSync(join(dir, "pr-review-log"), "review\n");
+  status.set(herdrName("NBF-1"), "idle");
+  store.set(retry(finish(store.get(), "NBF-1", { kind: "crashed", reason: "x" }, 300), "NBF-1", 301));
+  status.delete(herdrName("NBF-1"));
+  await pool.tick();
+  assert.equal(existsSync(join(dir, "pr-review-log")), false, "the next run's log starts empty");
+  assert.ok(existsSync(join(dir, "pr-review.json")), "and the setting is still given to it");
+});
+
 test("a review run whose worker's session is gone starts a fresh worker, told to read the pull requests first", async () => {
   const { tail, dir } = await approvedRun({}, { transcript: false });
   assert.equal(tail.includes("--resume"), false);

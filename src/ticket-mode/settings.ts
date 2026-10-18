@@ -71,6 +71,11 @@ export type TicketSettings = Readonly<{
    * review, with no Approve step. True by default.
    */
   drafts: boolean;
+  /**
+   * The skill a worker runs on its whole diff before it pushes or opens a pull request, such as `"a11ign:clean-code-review"`, or null for none. When
+   * it is set, the ticket hook refuses a push or a pull request until that skill has run since the worker's last commit (A11-86).
+   */
+  prReview: string | null;
   /** The reviewer this machine starts for each ready pull request: `"atomic"` for the gate's codex reviewer, or null for none. */
   reviewer: Reviewer | null;
   /** Which tickets the Pick view lists. `"assigned"` by default. */
@@ -269,6 +274,15 @@ function draftsOf(value: unknown): boolean {
   return value;
 }
 
+const PR_REVIEW_SHAPE = "must be a skill's name, `name` or `plugin:name`, such as \"a11ign:clean-code-review\"";
+
+/** `tickets.prReview`: the pre-PR review skill's name, or absent for none. Any other value is refused by name. */
+function prReviewOf(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string" || !/^[\w.-]+(:[\w.-]+)?$/.test(value)) throw new TicketSettingsRefusal("tickets.prReview", `${PR_REVIEW_SHAPE}, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.reviewer`: `"atomic"`, or absent for no reviewer. Any other value is refused by name. */
 function reviewerOf(value: unknown): Reviewer | null {
   if (value === undefined) return null;
@@ -362,6 +376,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     connectors: connectorPatterns(tickets.connectors),
     publish: publisherOf(tickets.publish),
     drafts: draftsOf(tickets.drafts),
+    prReview: prReviewOf(tickets.prReview),
     reviewer: reviewerOf(tickets.reviewer),
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),

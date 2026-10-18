@@ -343,6 +343,51 @@ test("A11-82: the approved round tells the worker to merge a conflicting base in
   assert.ok(brief.indexOf("merge the base into your branch first") < brief.indexOf("1. Mark each pull request ready"), "before step 1");
 });
 
+const PR_REVIEW = "a11ign:clean-code-review";
+const briefWith = (over: Partial<Parameters<typeof briefText>[0]> = {}) => briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270",
+  attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", drafts: true, ...over });
+
+test("A11-86: with tickets.prReview named, the brief runs that skill on the whole diff after the last commit and before any push or pull request, and the body records it", () => {
+  const brief = briefWith({ prReview: PR_REVIEW });
+  const commit = brief.indexOf("5. Commit with a conventional commit message. Then, BEFORE you push or open a pull request, review your whole diff");
+  assert.ok(commit > 0, "step 5 carries the review");
+  assert.ok(brief.includes(`call the Skill tool with \`${PR_REVIEW}\` on \`git diff <the repository's default branch>...HEAD\` and anything uncommitted.`), "the skill, on the whole diff");
+  assert.ok(brief.includes("Fix every finding, re-run the repository's checks, and commit the fixes."), "the tests are re-run after a fix");
+  assert.ok(brief.includes("The hook refuses a push or a pull request until the skill has run since your last commit, so after you commit fixes run it again."), "the gate is named");
+  assert.ok(brief.indexOf("6. Push the branch and open ONE DRAFT") > commit, "the pull request comes after the review");
+  assert.ok(brief.includes(`carries the line \`Pre-PR review: ${PR_REVIEW} ran on the whole diff; it changed: <what, or nothing>\`, and, when the change is visible`), "the body records that the review ran");
+  assert.equal(brief.includes("Then run the clean-code-review skill on your diff"), false, "step 2 no longer carries the old sentence: step 5 does");
+});
+
+test("A11-86: with no pre-PR review named, the brief is today's, byte for byte, whether the argument is null or not passed", () => {
+  const today = briefWith();
+  assert.equal(briefWith({ prReview: null }), today);
+  assert.equal(briefWith({ prReview: undefined }), today);
+  assert.ok(today.includes("Then run the clean-code-review skill on your diff and fix what it finds."), "POSITIVE CONTROL: today's step 2 sentence stays");
+  assert.ok(today.includes("\n5. Commit with a conventional commit message.\n6. Push the branch"), "today's step 5 stays");
+  assert.equal(today.includes("Pre-PR review:"), false);
+});
+
+test("A11-86: every review round runs the skill on the whole diff before its push when named, and none when absent", () => {
+  const rounds: [string, Partial<Parameters<typeof reviewBriefText>[0]>][] = [
+    ["approved", {}],
+    ["feedback", { feedback: "New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice." }],
+    ["asked", { asked: true }],
+  ];
+  for (const [name, over] of rounds) {
+    const roundWith = (prReview?: string | null) => reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed,
+      resumed: true, ...over, ...(prReview === undefined ? {} : { prReview }) });
+    const named = roundWith(PR_REVIEW);
+    assert.ok(named.includes(`BEFORE you push, review the whole diff of each pull request, base to head: call the Skill tool with \`${PR_REVIEW}\``), `${name} round: the review`);
+    assert.ok(named.includes("The hook refuses a push until the skill has run since your last commit, so after you commit fixes run it again."), `${name} round: the gate`);
+    assert.equal(named.includes("Commit with a conventional commit message, and push. Never force-push."), false, `${name} round: the push step is the review's`);
+    const absent = roundWith();
+    assert.equal(absent.includes("Skill tool"), false, `${name} round: no review when none is named`);
+    assert.ok(absent.includes("Commit with a conventional commit message, and push. Never force-push."), `${name} round: today's push step`);
+    assert.equal(roundWith(null), absent, `${name} round: null is absent`);
+  }
+});
+
 test("A11-82: both planner briefs tell the planner the ## Paths section, and a batch's brief also tells it to order tickets that touch one area in order.json", () => {
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
   const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });

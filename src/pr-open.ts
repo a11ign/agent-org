@@ -1058,7 +1058,7 @@ export function main(argv: string[] = process.argv.slice(2),
   if (beforeBody !== null) return beforeBody;
   const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git), readFile,
     rowLabels: rowLabels && ((row) => rowLabels(row.number, row.repo ?? REPO)), // #4123: a bare `#N` is the tracker's, as in `rowsNamed`
-    reports: ticket === undefined ? undefined : ticketBodyReports(ticket.key) });
+    reports: ticket === undefined ? undefined : ticketBodyReports(ticket.key, ticket.prReview) });
   for (const line of result.lines) out(`${line}\n`);
   if (!result.ok) {
     err(`pr-open: REFUSED -- this body would fail CI's own acceptance job; fix it before `

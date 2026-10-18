@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { MAX_STOP_REFUSALS, main, protectedFiles, publishConnectors, resolveWritePath, stopVerdict, toolVerdict } from "./hook.ts";
+import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, resolveWritePath, stopVerdict, toolVerdict } from "./hook.ts";
 import { PROTECTED_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 
 const bash = (command: string) => toolVerdict("Bash", { command }).code;
@@ -134,6 +134,121 @@ test("a stop with no outcome is refused twice in a row, then allowed; an outcome
 test("`stop_hook_active` does not let a stop through: the nbl-ui gates set it, and the outcome would be skipped", () => {
   const dir = tmpDir("ticket-hook-active-");
   assert.equal(main(JSON.stringify({ hook_event_name: "Stop", stop_hook_active: true }), ["stop", dir]).code, 2);
+});
+
+/** A ticket dir whose copy of `tickets.prReview` names `skill`, as the pool writes it beside the outcome file. */
+function reviewDir(skill = "a11ign:clean-code-review"): string {
+  const dir = tmpDir("ticket-hook-pr-review-");
+  writeFileSync(join(dir, "pr-review.json"), `${JSON.stringify(skill)}\n`);
+  return dir;
+}
+
+/** The pre-tool-use verdict for one tool call in `dir`. */
+const gateCall = (dir: string, toolName: string, input: Record<string, unknown>) => main(JSON.stringify({ tool_name: toolName, tool_input: input }), ["pre-tool-use", dir]);
+const gateBash = (dir: string, command: string) => gateCall(dir, "Bash", { command });
+const review = (dir: string, skill = "a11ign:clean-code-review") => gateCall(dir, "Skill", { skill });
+
+test("A11-86: what a tool call is to the gate: the configured skill exactly is a review, and a git command that makes a commit is a commit", () => {
+  const skill = "a11ign:clean-code-review";
+  assert.equal(prReviewEvent("Skill", { skill }, skill), "review");
+  assert.equal(prReviewEvent("Skill", { skill: "/a11ign:clean-code-review" }, skill), "review", "a leading slash names the same skill");
+  assert.equal(prReviewEvent("Skill", { skill: "clean-code-review" }, skill), null, "the unprefixed skill is another one");
+  for (const command of ["git commit -m x", "git -C /w commit -m x", "git -c user.name=a commit -m x", "git rebase main", "git pull"]) {
+    assert.equal(prReviewEvent("Bash", { command }, skill), "commit", command);
+  }
+  for (const command of ["git --work-tree /w commit -m x", "git -c user.name=\"A B\" commit -m x", "bash -c 'git commit -m x'", "/usr/bin/git -C /w rebase main"]) {
+    assert.equal(prReviewEvent("Bash", { command }, skill), "commit", command);
+  }
+  for (const command of ["git grep commit", "git log --grep=commit", "git push origin b", "git status", "git merge-base main HEAD", "git commit-tree abc"]) {
+    assert.equal(prReviewEvent("Bash", { command }, skill), null, command);
+  }
+});
+
+test("A11-86: with tickets.prReview named, a push or a pull request is refused until the skill has run, and allowed after it", () => {
+  const dir = reviewDir();
+  for (const command of ["gh pr create --draft --title t --body b", "node bin.ts pr:open create --draft --body-file f", "git push -u origin b", "git -C /w push origin b"]) {
+    const refused = gateBash(dir, command);
+    assert.equal(refused.code, 2, command);
+    assert.match(refused.say.join("\n"), /run the `a11ign:clean-code-review` skill on your whole diff before you push or open a pull request/);
+  }
+  assert.equal(review(dir).code, 0, "the review itself is allowed");
+  assert.equal(gateBash(dir, "git push -u origin b").code, 0, "POSITIVE CONTROL: after the review, the push is allowed");
+  assert.equal(gateBash(dir, "gh pr create --draft --title t --body b").code, 0, "and so is the pull request");
+  assert.equal(gateBash(dir, "gh pr view 12").code, 0, "a command the gate does not hold is allowed");
+});
+
+test("A11-86: a commit after the review makes the push refused again until a second review, and a commit with its push in one command is refused even after one", () => {
+  const dir = reviewDir();
+  review(dir);
+  assert.equal(gateBash(dir, "git commit -m 'fix: x'").code, 0, "the commit is allowed");
+  assert.equal(gateBash(dir, "git push -u origin b").code, 2, "the fix was committed after the review, so it is not reviewed");
+  review(dir);
+  assert.equal(gateBash(dir, "git push -u origin b").code, 0, "POSITIVE CONTROL: the second review covers the last commit");
+  assert.equal(gateBash(dir, "git commit -m 'fix: y' && git push origin b").code, 2, "the push would send what no review saw");
+});
+
+test("A11-86: only the configured skill counts as the review, and a call another refusal stops is not logged", () => {
+  const dir = reviewDir();
+  for (const skill of ["clean-code-review", "nbl-ui:tool-screenshot", "a11ign:clean-code-review-v2"]) {
+    review(dir, skill);
+    assert.equal(gateBash(dir, "git push -u origin b").code, 2, `${skill} is not the review`);
+  }
+  review(dir);
+  assert.equal(gateBash(dir, "git commit -m x && gh pr merge 12").code, 2, "refused by the built-in refusals, so nothing is committed or logged");
+  assert.equal(gateBash(dir, "git push -u origin b").code, 0, "POSITIVE CONTROL: the review still covers the last commit, which that refused call did not make");
+});
+
+test("A11-86: with no copy of tickets.prReview, nothing is gated and no log is made, as before", () => {
+  const dir = tmpDir("ticket-hook-no-pr-review-");
+  assert.equal(gateBash(dir, "git push -u origin b").code, 0);
+  assert.equal(gateBash(dir, "gh pr create --draft --title t --body b").code, 0);
+  assert.equal(gateBash(dir, "node bin.ts pr:open create --draft --body-file f").code, 0);
+  assert.equal(gateBash(dir, "git commit -m x").code, 0);
+  assert.equal(existsSync(join(dir, "pr-review-log")), false, "no log is made when the setting is absent");
+});
+
+test("A11-86: a copy of tickets.prReview that cannot be read or names no skill refuses the pushes and pull requests the gate holds, and keeps its files protected", () => {
+  for (const content of ["{not json", "\"\"", "3"]) {
+    const dir = tmpDir("ticket-hook-pr-review-broken-");
+    writeFileSync(join(dir, "pr-review.json"), `${content}\n`);
+    const pushed = gateBash(dir, "git push -u origin b");
+    assert.equal(pushed.code, 2, `${content}: fails closed, since the gate cannot tell what the machine asked for`);
+    assert.match(pushed.say.join("\n"), /pr-review\.json (cannot be read|names no skill), so the pre-PR review cannot be checked/);
+    assert.equal(gateBash(dir, "gh pr view 12").code, 0, "POSITIVE CONTROL: a command the gate does not hold still runs");
+    assert.equal(gateBash(dir, "rm pr-review.json").code, 2, "a worker may not delete the copy it cannot read, which would turn the gate off");
+    assert.equal(gateCall(dir, "Write", { file_path: join(dir, "pr-review.json"), content: "x" }).code, 2);
+  }
+});
+
+test("A11-86: a pre-PR review log the gate cannot read refuses the call that needs it, and a call that needs no log still runs", () => {
+  const dir = reviewDir();
+  mkdirSync(join(dir, "pr-review-log"));
+  const pushed = gateBash(dir, "git push -u origin b");
+  assert.equal(pushed.code, 2);
+  assert.match(pushed.say.join("\n"), /pr-review-log cannot be read/);
+  assert.equal(gateBash(dir, "gh pr view 12").code, 0, "a call the gate does not hold needs no log");
+});
+
+test("A11-86: with tickets.prReview named, no worker may write or name the pre-PR review's files by a command or a file tool; with it absent nothing is refused for them", () => {
+  const dir = reviewDir();
+  assert.equal(gateBash(dir, "echo x > /state/tickets/NBF-1/pr-review-log").code, 2);
+  assert.equal(gateBash(dir, "cat pr-review.json").code, 2, "a read by command is refused too");
+  assert.equal(gateCall(dir, "Write", { file_path: "/state/tickets/NBF-1/pr-review.json", content: "\"x\"" }).code, 2);
+  assert.equal(gateCall(dir, "Edit", { file_path: "/state/tickets/NBF-1/pr-review-log" }).code, 2);
+  assert.equal(gateCall(dir, "Write", { file_path: "/state/tickets/NBF-1/outcome.json", content: "{}" }).code, 0, "POSITIVE CONTROL: the outcome file is the worker's");
+  const plain = tmpDir("ticket-hook-no-pr-review-marks-");
+  assert.equal(gateBash(plain, "echo x > /state/tickets/NBF-1/pr-review-log").code, 0, "with no setting, the files are not the gate's, so nothing is refused for them");
+});
+
+test("A11-86: the options git takes before its subcommand do not hide a commit or a push from the gate", () => {
+  const dir = reviewDir();
+  review(dir);
+  assert.equal(gateBash(dir, "git --work-tree /w commit -m x").code, 0, "the commit is allowed");
+  assert.equal(gateBash(dir, "git --work-tree /w push origin b").code, 2, "and it was logged, so the push is refused");
+  review(dir);
+  assert.equal(gateBash(dir, "git -c user.name=\"A B\" commit -m x").code, 0, "the quoted value does not hide the commit");
+  assert.equal(gateBash(dir, "git -c user.name=\"A B\" push origin b").code, 2);
+  assert.equal(gateBash(reviewDir(), "git --work-tree /w push origin b").code, 2, "a push with an option before it is refused before any review");
 });
 
 test("an unreadable payload or a bad call fails open, out loud", () => {

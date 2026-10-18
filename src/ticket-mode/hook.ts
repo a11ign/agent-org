@@ -34,14 +34,21 @@
 // On a machine with `tickets.drafts: false` the pool leaves `ready-run` beside the outcome file, and a worker may open its pull request ready
 // (`gh pr create` without `--draft`) only then. Without that mark, the draft refusal applies to every run, as before. No worker may write the mark.
 //
+// A PRE-PR REVIEW GATE (A11-86). On a machine whose `tickets.prReview` names a skill, a push or a pull request is refused until that skill has run
+// since the worker's last commit. The hook keeps that order in an append-only log beside the outcome file, `pr-review-log`: a `review` line for each
+// call of the skill and a `commit` line for each git commit that makes one. The gate allows a push or a pull request only when the log's last line
+// is `review`. Absent the setting, nothing is logged and nothing is refused on a review. Once the setting's copy is there, the gate fails CLOSED: a copy
+// it cannot read, or a log it cannot read or write, refuses the pushes and pull requests it holds, since it could not check them.
+//
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
-import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { liveBackgroundWork } from "./background-work.ts";
 import type { DenyRule } from "./settings.ts";
-import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
+  WORKING_STOP_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -84,6 +91,12 @@ function readyRefusal(approved: readonly string[]): Refusal {
 /** The review and publish marks are the board's: a worker that wrote one would lift a refusal. */
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBLISH_FILE}|${READY_FILE})\\b`),
   why: `${REVIEW_FILE}, ${PUBLISH_FILE} and ${READY_FILE} are the board's to write` };
+/**
+ * The pre-PR review's files, the hook's log and the pool's copy of the setting. Only the gate refuses them, and only when the setting is named, so a machine
+ * without it is unchanged (A11-86).
+ */
+const PR_REVIEW_FILE_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${[PR_REVIEW_FILE, PR_REVIEW_LOG_FILE].map(escape).join("|")})\\b`),
+  why: `${PR_REVIEW_FILE} and ${PR_REVIEW_LOG_FILE} are the pool's and the hook's: a worker may not write them, nor name them in a command` };
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 /** The commands that install the host's programs, which write its `gh` wrapper and launcher: the host's to run (A11-84). */
@@ -245,6 +258,122 @@ export function publishConnectors(ticketDir: string): RegExp[] | null {
   }
 }
 
+/** git's options that take their value as the next word, such as `git -C <dir>` and `git --work-tree <dir>`. */
+const GIT_VALUE_OPTIONS: ReadonlySet<string> = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"]);
+/** The git subcommands that make a commit, or bring one in: a push after one of them would send what no review has seen. */
+const COMMIT_SUBCOMMANDS: ReadonlySet<string> = new Set(["commit", "merge", "rebase", "cherry-pick", "am", "revert", "pull"]);
+
+/**
+ * The git subcommand each `git` in a command runs, after git's own options. A command is read twice, once as written and once with its quotes taken
+ * off, so `bash -c 'git push'` is found as well. A word only searched for, as in `git grep commit`, is not one. PURE.
+ */
+export function gitSubcommands(command: string): string[] {
+  return [...subcommandsIn(command), ...subcommandsIn(command.replace(/["']/g, ""))];
+}
+
+function subcommandsIn(text: string): string[] {
+  const found: string[] = [];
+  for (const segment of text.split(/&&|\|\||[;|&\n()`]/)) {
+    const words = segment.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    words.forEach((word, i) => {
+      if (!/^(?:\S*\/)?git$/.test(word)) return;
+      let next = i + 1;
+      while (next < words.length && words[next].startsWith("-")) next += GIT_VALUE_OPTIONS.has(words[next]) ? 2 : 1;
+      found.push(words[next] ?? "");
+    });
+  }
+  return found;
+}
+const PULL_REQUEST = /\bgh\s+pr\s+create\b|\bpr:open\s+create\b/;
+
+/** Whether a Bash command opens a pull request or pushes: the commands the gate holds until the review has run. PURE. */
+export function heldCommand(command: string): boolean {
+  return PULL_REQUEST.test(command) || gitSubcommands(command).includes("push");
+}
+
+/**
+ * What a tool call means to the pre-PR review gate: `review` when it runs the configured skill, `commit` when it is a git command that makes a commit,
+ * and null for any other call. A skill named with a leading `/` is the same skill. PURE.
+ */
+export function prReviewEvent(toolName: string, input: Record<string, unknown>, skill: string): "review" | "commit" | null {
+  if (toolName === "Skill") return String(input.skill ?? input.name ?? "").replace(/^\//, "") === skill ? "review" : null;
+  return toolName === "Bash" && gitSubcommands(String(input.command ?? "")).some((subcommand) => COMMIT_SUBCOMMANDS.has(subcommand)) ? "commit" : null;
+}
+
+/**
+ * The gate's refusal for a Bash command that would open a pull request or push, or null when it may run. It may run only when the log's last event is
+ * `review` and the command makes no commit itself: `git commit ... && git push` would push what the review never saw. PURE.
+ */
+export function prReviewRefusal(command: string, log: readonly string[], skill: string): string | null {
+  if (!heldCommand(command)) return null;
+  const commits = gitSubcommands(command).some((subcommand) => COMMIT_SUBCOMMANDS.has(subcommand));
+  if (log[log.length - 1] === "review" && !commits) return null;
+  const why = commits ? "this command commits, so the skill cannot have reviewed what it pushes: commit first, run the skill, then push"
+    : `it has not run since your last commit`;
+  return `run the \`${skill}\` skill on your whole diff before you push or open a pull request: ${why}. Fix what it finds, re-run the tests, commit, and run it again until it finds nothing.`;
+}
+
+/**
+ * The pre-PR review setting from the copy of `tickets.prReview` beside the outcome file. No copy is no review: `skill` null and no `problem`. A copy
+ * that names a skill is `skill`. A copy that is there but cannot be read, or names no skill, is a `problem`: the gate cannot tell what the machine asked
+ * for, so the pushes and pull requests it holds are refused, and its files stay protected (A11-86).
+ */
+export function prReviewSetting(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8")): { skill: string | null; problem?: string } {
+  const file = join(ticketDir, PR_REVIEW_FILE);
+  try {
+    const skill = JSON.parse(read(file)) as unknown;
+    return typeof skill === "string" && skill !== "" ? { skill } : { skill: null, problem: `${file} names no skill` };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { skill: null };
+    return { skill: null, problem: `${file} cannot be read` };
+  }
+}
+
+/**
+ * The gate for a tool call the other refusals allowed, when the setting names a skill. A push or a pull request is refused unless the review has run since
+ * the last commit. A call that is a review or a commit is logged, one line, so parallel calls cannot lose one. A log the gate cannot read or write refuses
+ * the call that needs it, since the gate would otherwise pass on state it could not check (A11-86).
+ */
+function prReviewGate(toolName: string, input: Record<string, unknown>, ticketDir: string, skill: string): HookResult {
+  const log = join(ticketDir, PR_REVIEW_LOG_FILE);
+  const command = toolName === "Bash" ? String(input.command ?? "") : "";
+  const event = prReviewEvent(toolName, input, skill);
+  if (event === null && !heldCommand(command)) return ALLOW;
+  let events: string[];
+  try {
+    events = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line !== "") : [];
+  } catch (err) {
+    return refuse(`${log} cannot be read (${firstLine(err)}), so the pre-PR review cannot be checked for this call`);
+  }
+  const refusal = prReviewRefusal(command, events, skill);
+  if (refusal !== null) return refuse(refusal);
+  if (event === null) return ALLOW;
+  try {
+    appendFileSync(log, `${event}\n`);
+  } catch (err) {
+    return refuse(`${log} cannot be written (${firstLine(err)}), so this ${event} cannot be recorded for the pre-PR review`);
+  }
+  return ALLOW;
+}
+
+const firstLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
+
+/**
+ * The pre-PR review verdict for a call the other refusals allowed. Its files are protected whenever the setting's copy is there, named or not, so no
+ * worker can delete a copy it cannot read and turn the gate off. A named skill runs the gate; a copy with a problem refuses the pushes and pull requests
+ * it holds, since the gate cannot tell what it asked for; no copy is no gate at all.
+ */
+function prReviewVerdict(toolName: string, input: Record<string, unknown>, ticketDir: string, review: { skill: string | null; problem?: string }): HookResult {
+  const target = toolName === "Bash" ? String(input.command ?? "") : FILE_TOOLS.has(toolName) ? String(input.file_path ?? input.notebook_path ?? "") : "";
+  const present = review.skill !== null || review.problem !== undefined;
+  if (present && PR_REVIEW_FILE_REFUSAL.pattern.test(target)) return refuse(PR_REVIEW_FILE_REFUSAL.why);
+  if (review.skill !== null) return prReviewGate(toolName, input, ticketDir, review.skill);
+  if (review.problem !== undefined && toolName === "Bash" && heldCommand(target)) {
+    return refuse(`${review.problem}, so the pre-PR review cannot be checked: a push or a pull request is refused until it can be read`);
+  }
+  return ALLOW;
+}
+
 /** Whether an outcome file's text is a `working` outcome. Text that is not JSON is not one: the pool reads it as it reads any outcome. PURE. */
 function isWorking(text: string): boolean {
   try {
@@ -327,16 +456,21 @@ export function main(stdin: string, argv: string[]): HookResult {
   try {
     if (event === "stop") return stopVerdict(ticketDir, { transcriptPath: transcriptOf(stdin) });
     const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown> };
+    const tool = String(payload.tool_name ?? "");
+    const input = payload.tool_input ?? {};
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
-    const input = payload.tool_input ?? {};
     const guarded = protectedFiles(ticketDir);
-    const verdict = toolVerdict(String(payload.tool_name ?? ""), typeof input.file_path === "string" ? { ...input, file_path: resolveWritePath(input.file_path) } : input, {
+    const resolved = typeof input.file_path === "string" ? { ...input, file_path: resolveWritePath(input.file_path) } : input;
+    const verdict = toolVerdict(tool, resolved, {
       machine: refusals, connectors: allowed.connectors, approved: approvedPulls(ticketDir), publish: publishConnectors(ticketDir),
       ready: existsSync(join(ticketDir, READY_FILE)), hostPrograms: guarded.paths,
     });
+    const review = prReviewSetting(ticketDir);
+    // A call the other refusals stopped is neither logged nor gated: it did not run.
+    const gated = verdict.code === 0 ? prReviewVerdict(tool, resolved, ticketDir, review) : verdict;
     const notes = [note, allowed.note, guarded.note].filter((n): n is string => n !== undefined);
-    return notes.length === 0 ? verdict : { ...verdict, say: [...notes, ...verdict.say] };
+    return notes.length === 0 ? gated : { ...gated, say: [...notes, ...gated.say] };
   } catch (err) {
     return { code: 0, say: [`ticket:hook: could not read the ${event} payload (${String((err as Error)?.message ?? err).split("\n")[0]}), so it is ALLOWED.`] };
   }

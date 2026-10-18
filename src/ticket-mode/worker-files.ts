@@ -56,6 +56,16 @@ export const PUBLISH_FILE = "publish-run";
  * PreToolUse hook allow `gh pr create` without `--draft`: a worker on such a machine opens its pull request ready for review, and no other run may.
  */
 export const READY_FILE = "ready-run";
+/**
+ * The skill the host file's `tickets.prReview` names, beside the outcome file as a JSON string, where the PreToolUse hook reads it. Absent when the
+ * machine names none, and then the hook gates no push or pull request on a review (A11-86).
+ */
+export const PR_REVIEW_FILE = "pr-review.json";
+/**
+ * The hook's log of the pre-PR review gate, beside the outcome file: one line per event, `review` when the skill ran and `commit` when a commit
+ * was made. A push or a pull request is refused unless its last line is `review`. Only the hook writes it, so no worker may (A11-86).
+ */
+export const PR_REVIEW_LOG_FILE = "pr-review-log";
 /** What a publish run writes beside its outcome file: the messages it posted, as `{ "links": ["<message url>", ...] }`. */
 export const PUBLISHED_FILE = "published.json";
 
@@ -358,11 +368,21 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. The board holds back another ticket whose work touches the same paths, so list every path the work changes, and no more.";
 
 /**
+ * Step 5 of the brief, the commit. With the machine's pre-PR review skill named, the review runs after the commit, on the whole diff, before a push or a
+ * pull request, and again after each commit of a fix: the hook gates a push on a review since the last commit, so this is the order it allows (A11-86).
+ */
+function commitStep(prReview: string | null): string {
+  if (prReview === null) return "5. Commit with a conventional commit message.";
+  return `5. Commit with a conventional commit message. Then, BEFORE you push or open a pull request, review your whole diff: call the Skill tool with \`${prReview}\` on \`git diff <the repository's default branch>...HEAD\` and anything uncommitted. Fix every finding, re-run the repository's checks, and commit the fixes. The hook refuses a push or a pull request until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change.`;
+}
+
+/**
  * Step 6 of the brief: how the worker opens its pull requests, as a draft (the default) or ready for review (`tickets.drafts: false`). The command is
  * `pr:open`, which checks the body and the diff against the ticket before it sends anything (A11-74); `gh pr create` is not used.
  */
-function openPullRequestStep(drafts: boolean, ticket: Ticket, prOpenCommand: string): string {
-  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create${drafts ? " --draft" : ""} --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, says \`Refs ${ticket.key}\` (or \`Closes ${ticket.key}\` only when the ticket's done-when is fully met), says what changed and how you verified it, and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
+function openPullRequestStep(drafts: boolean, ticket: Ticket, prOpenCommand: string, prReview: string | null): string {
+  const reviewLine = prReview === null ? "" : `carries the line \`Pre-PR review: ${prReview} ran on the whole diff; it changed: <what, or nothing>\`, `;
+  return `6. Push the branch and open ONE ${drafts ? "DRAFT" : "READY"} pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create${drafts ? " --draft" : ""} --title "<type>(<scope>): <what changed>" --body-file <file>\`. The body links ${ticket.url}, says \`Refs ${ticket.key}\` (or \`Closes ${ticket.key}\` only when the ticket's done-when is fully met), says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
 }
 
 /**
@@ -378,12 +398,13 @@ function regionInstruction(clones: Readonly<Record<string, string>>): string {
  * that opens a pull request (`pr:open`). `notes` is the host
  * file's `tickets.brief`, how workers behave on this machine, and `connectors` its `tickets.connectors`. `blockers` are the tickets this one
  * waited on, and `stackedOn` the ones it starts on top of. `drafts` false (`tickets.drafts`) has the worker open its pull requests ready for review.
+ * `prReview` is the skill `tickets.prReview` names, which the worker runs on its whole diff before any push or pull request, or null for none.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true }: {
+  connectors = [], planned = false, drafts = true, prReview = null }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
-  connectors?: readonly string[]; planned?: boolean; drafts?: boolean;
+  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; prReview?: string | null;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -414,11 +435,11 @@ ${repos}
 ## What to do
 
 ${plannedText(planned)}1. Find the cause in the code. Fix it, with a test that fails without the fix.
-2. Run the repository's checks on what you changed. Then start a subagent that has not seen your reasoning, give it your diff and its base, and ask it to find, read only, every behaviour your diff changes that you meant to keep. Fix each real finding with a test that fails without the fix. Then run the clean-code-review skill on your diff and fix what it finds.
+2. Run the repository's checks on what you changed. Then start a subagent that has not seen your reasoning, give it your diff and its base, and ask it to find, read only, every behaviour your diff changes that you meant to keep. Fix each real finding with a test that fails without the fix.${prReview === null ? " Then run the clean-code-review skill on your diff and fix what it finds." : ""}
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
-5. Commit with a conventional commit message.
-${openPullRequestStep(drafts, ticket, prOpenCommand)}
+${commitStep(prReview)}
+${openPullRequestStep(drafts, ticket, prOpenCommand, prReview)}
 7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
@@ -450,20 +471,21 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
  * find. `reviewNotes` is the host file's `tickets.review`, how this machine's pull requests are checked and reviewed, and `notes` its
  * `tickets.brief`. `resumed` is true when the worker is the one that wrote the code, resumed with its own conversation. `feedback` is set on a
  * round the board started on its own: the new feedback on the pull requests, which are ready already, that the round answers. `asked` is set
- * on a round a person asked for with Respond to review: it answers the ready pull requests' current feedback.
+ * on a round a person asked for with Respond to review: it answers the ready pull requests' current feedback. `prReview` is the skill `tickets.prReview`
+ * names, which each round runs on its whole diff before it pushes, or null for none.
  */
-export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false }: {
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, prReview = null }: {
   ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
-  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean;
+  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; prReview?: string | null;
 }): string {
   const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
   const who = resumed
     ? "You wrote these pull requests earlier in this conversation."
     : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
-  const round = asked ? answerRound(who, "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.", null)
-    : feedback === undefined ? approvedRound(who)
+  const round = asked ? answerRound(who, "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.", null, prReview)
+    : feedback === undefined ? approvedRound(who, prReview)
     : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`,
-      CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null);
+      CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null, prReview);
   return `# ${ticket.key}: ${round.title} for ${ticket.title}
 
 ${round.opening}
@@ -502,7 +524,7 @@ ${round.reviewed} A person may answer you here after a \`needs-human\` outcome. 
 type Round = Readonly<{ title: string; opening: string; steps: string; reviewed: string }>;
 
 /** The round a person started by approving the draft pull requests: mark them ready, then see them through their checks and review. */
-function approvedRound(who: string): Round {
+function approvedRound(who: string, prReview: string | null): Round {
   const wait = REVIEW_WAIT_MINUTES;
   return {
     title: "review round",
@@ -512,7 +534,7 @@ function approvedRound(who: string): Round {
 1. Mark each pull request ready with \`gh pr ready <url>\`.
 2. Wait for each one's checks and its review, as "How this machine reviews" says. Wait at most ${wait} minutes for each. If a check or the review has not finished by then, write a \`needs-human\` outcome that names what you waited for.
 3. Read every review comment and every failed check. Fix each real finding in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: say why in your reply instead. Run the repository's checks on what you changed.
-4. Commit with a conventional commit message, and push. Never force-push.
+4. ${roundPushStep(prReview)}
 5. Reply on each pull request with one comment: each finding, and what you did about it.
 6. Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again. Do not wait for a second review: the board starts another round when new feedback comes.`,
     reviewed: "Write `reviewed` only when every pull request is ready, every finding is answered, and every check passed on its last commit.",
@@ -526,16 +548,26 @@ function approvedRound(who: string): Round {
 const MERGE_FIRST = "The feedback above says a pull request conflicts with its base branch. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin/<base>` in the worktree of each such pull request. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push. Say in your reply on that pull request which files conflicted and how each was resolved.";
 
 /**
+ * The commit-and-push step of a round. With the machine's pre-PR review skill named, the round reviews the whole diff after its last commit and before
+ * it pushes, as step 5 of the brief does, so the hook's gate on a push is met (A11-86).
+ */
+function roundPushStep(prReview: string | null): string {
+  if (prReview === null) return "Commit with a conventional commit message, and push. Never force-push.";
+  return `Commit with a conventional commit message. Then, BEFORE you push, review the whole diff of each pull request, base to head: call the Skill tool with \`${prReview}\`, fix every finding, re-run the repository's checks, and commit the fixes. The hook refuses a push until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change, then push. Never force-push. Say in your reply on each pull request what the review changed.`;
+}
+
+/**
  * A round that answers the feedback on pull requests that are ready already: one the board started on new feedback, or one a person asked for.
  * `why` says which, and what started it. `merge` is the step that merges a conflicting base in first, or null for a round with no conflict.
+ * `prReview` is the skill the machine's review runs before the round's push, or null.
  */
-function answerRound(who: string, why: string, merge: string | null): Round {
+function answerRound(who: string, why: string, merge: string | null, prReview: string | null): Round {
   const wait = REVIEW_WAIT_MINUTES;
   const [first, ...rest] = why.split("\n\n");
   const items = [
     "Read that feedback and everything else on each pull request since your last reply: its reviews, its conversation comments, its inline review comments and its failed checks. The pull requests are ready already: do not run `gh pr ready`.",
     "Fix each finding that is right in the worktree, with a test that fails without the fix where the finding is about behaviour. A finding you judge wrong is not fixed: answer it with the evidence instead. Run the repository's checks on what you changed.",
-    "Commit with a conventional commit message, and push. Never force-push.",
+    roundPushStep(prReview),
     "Reply on each pull request with one comment: each finding, and what you did about it.",
     `Wait at most ${wait} minutes for the checks on the commit you pushed. If one fails, fix it, push, and wait again.`,
   ];
