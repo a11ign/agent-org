@@ -105,7 +105,12 @@ function pnpmCheck(deps: DoctorDeps): Check {
       `run \`corepack pnpm@${TOOL_PNPM_VERSION} --version\` to see why: Node ${MIN_NODE_MAJOR} ships corepack beside node, and reinstalling Node brings it back`);
 }
 
-function hostCheck(deps: DoctorDeps): { check: Check; settings: TicketSettings | null } {
+/**
+ * `noProject` is true only for a host file that read, parsed and was accepted, and that declares no `primary` project: a machine that runs only the ticket
+ * board keeps `clones` and `tickets` and installs no `gh` wrapper, which is rendered from the project's `host.json`. A file that failed any step is not that:
+ * the check says why.
+ */
+function hostCheck(deps: DoctorDeps): { check: Check; settings: TicketSettings | null; noProject: boolean } {
   const path = hostFilePath(deps.env, deps.home, (file) => {
     try {
       return deps.readFile(file);
@@ -117,13 +122,14 @@ function hostCheck(deps: DoctorDeps): { check: Check; settings: TicketSettings |
   try {
     text = deps.readFile(path);
   } catch {
-    return { check: failed("host file", `${path} cannot be read`, "run `agent-org onboard`"), settings: null };
+    return { check: failed("host file", `${path} cannot be read`, "run `agent-org onboard`"), settings: null, noProject: false };
   }
   try {
-    const settings = parseTicketSettings(JSON.parse(text), deps.home);
-    return { check: ok("host file", `${path}: ${Object.keys(settings.clones).length} repositories`), settings };
+    const parsed: unknown = JSON.parse(text);
+    const settings = parseTicketSettings(parsed, deps.home);
+    return { check: ok("host file", `${path}: ${Object.keys(settings.clones).length} repositories`), settings, noProject: !Object.hasOwn(parsed as object, "primary") };
   } catch (err) {
-    return { check: failed("host file", `${path}: ${(err as Error).message}`, `fix the field it names, or run \`agent-org onboard\``), settings: null };
+    return { check: failed("host file", `${path}: ${(err as Error).message}`, `fix the field it names, or run \`agent-org onboard\``), settings: null, noProject: false };
   }
 }
 
@@ -252,7 +258,7 @@ function stacksChecks(settings: TicketSettings | null, account: Account, deps: D
 
 /** Every check, in the order a person fixes them. */
 export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
-  const { check: host, settings } = hostCheck(deps);
+  const { check: host, settings, noProject } = hostCheck(deps);
   const launcher = deps.which("agent-org");
   const herdr = deps.which("herdr");
   const instanceState = deps.serviceState("instance");
@@ -265,7 +271,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
       ? failed("launcher", "`agent-org` is not on PATH", `add its directory to PATH: export PATH="$HOME/.local/bin:$PATH" in your shell's rc file`)
       : ok("launcher", launcher),
     host,
-    ...ghWrapperChecks(await deps.ghWrapper()),
+    ...(noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper())),
     ...stackChecks(settings, deps),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     keyCheck(settings, deps),

@@ -664,3 +664,53 @@ test("A11-106: the stacked pull requests' sweep is the one scheduled with retarg
   scheduled[2]();
   assert.deepEqual(retargeted, ["retargetStacked"], "the third sweep is retargetStacked");
 });
+
+// A board whose list is the key's own reads the rest one scope at a time (the key's workspace holds thousands of open tickets, past what one answer carries).
+const HOLDS = { people: [{ id: "dan", name: "Dan Beck", count: 1 }, { id: "ana", name: "Ana Ruiz", count: 2 }], unassigned: 3, total: 6 };
+const onDemand = (over: Partial<TicketSource> = {}): TicketSource => ({
+  assigned: async () => [ticket("NBF-1")], read: async () => null, download: async () => [], people: async () => HOLDS,
+  scoped: async (scope, after) => ({ tickets: [ticket(`${scope}-${after ?? "first"}`)], next: after === null ? "c1" : null }), ...over,
+});
+
+test("on demand: the config says the scopes are read one at a time, only where the list is the key's own and the source can read them", async () => {
+  const [, own] = await board(4747, {}, {}, onDemand()).api("GET", "/api/config", {}) as [number, any];
+  assert.equal(own.scopes, true);
+  const [, team] = await board(4747, { pick: { team: "A11" } }, {}, onDemand()).api("GET", "/api/config", {}) as [number, any];
+  assert.equal(team.scopes, false, "a team's list holds every ticket of it already");
+  const [, bare] = await board(4747, {}, {}, onDemand({ people: undefined })).api("GET", "/api/config", {}) as [number, any];
+  assert.equal(bare.scopes, false, "a source that cannot count who holds the tickets lists what it has");
+});
+
+test("on demand: /api/people answers who holds the tickets, read once and kept for the next asks, and never twice at once", async () => {
+  let asked = 0;
+  const b = board(4747, {}, {}, onDemand({ people: async () => { asked += 1; await new Promise((resolve) => setImmediate(resolve)); return HOLDS; } }));
+  const [first, second] = await Promise.all([b.api("GET", "/api/people", {}), b.api("GET", "/api/people", {})]);
+  assert.deepEqual([first, second], [[200, HOLDS], [200, HOLDS]]);
+  await b.api("GET", "/api/people", {});
+  assert.equal(asked, 1, "one read serves the asks that come while it runs and after it");
+});
+
+test("on demand: /api/tickets?assignee= answers a page of that scope with the next cursor, and the tickets join those the parents are read for", async () => {
+  const b = board(4747, {}, {}, onDemand());
+  const [status, page] = await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana")) as [number, any];
+  assert.equal(status, 200);
+  assert.deepEqual([page.tickets.map((t: any) => t.key), page.next], [["ana-first"], "c1"]);
+  const [, after] = await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana&after=c1")) as [number, any];
+  assert.deepEqual([after.tickets.map((t: any) => t.key), after.next], [["ana-c1"], null]);
+});
+
+test("on demand: an instance that lists everything at once answers neither /api/people nor a scope, and /api/tickets without a scope is the list as before", async () => {
+  const b = board(4747, { pick: { team: "A11" } }, {}, onDemand());
+  assert.equal((await b.api("GET", "/api/people", {}))[0], 404);
+  assert.equal((await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana")))[0], 404);
+  const [, list] = await b.api("GET", "/api/tickets", {}) as [number, any[]];
+  assert.deepEqual(list.map((t) => t.key), ["NBF-1"]);
+});
+
+test("on demand: the parents of a scope's tickets are read, as those of the first list are, so the Pick view can nest them", async () => {
+  const read: string[] = [];
+  const b = board(4747, {}, {}, onDemand({ scoped: async () => ({ tickets: [{ ...ticket("NBF-9"), parent: "NBF-8" }], next: null }), read: async (key) => { read.push(key); return ticket(key); } }));
+  await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana"));
+  const [, parents] = await b.api("GET", "/api/parents", {}) as [number, any[]];
+  assert.deepEqual([read, parents.map((t) => t.key)], [["NBF-8"], ["NBF-8"]]);
+});

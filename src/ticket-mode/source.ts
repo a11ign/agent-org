@@ -103,11 +103,17 @@ export type NewTicket = Readonly<{
   blockedBy: readonly string[];
 }>;
 
+/** Who holds the open tickets: each person with how many, how many nobody holds, and the total. Read with the assignee alone, so it is small. */
+export type People = Readonly<{ people: readonly Readonly<{ id: string; name: string; count: number }>[]; unassigned: number; total: number }>;
+
+/** One page of a scope's tickets, and the cursor of the page after it, or `null` at the end. */
+export type ScopePage = Readonly<{ tickets: readonly Ticket[]; next: string | null }>;
+
 export interface TicketSource {
   /**
-   * Every unfinished ticket the Pick view lists, each with its assignee: every open ticket the key can see, or, where the host file's `tickets.pick`
-   * names a team or a project, every one of that team or project. Whom to show is the Pick view's choice, made on the list it is given, so one
-   * read serves every assignee. Throws when the tracker cannot be asked.
+   * Every unfinished ticket the Pick view lists, each with its assignee: the key's own, or, where the host file's `tickets.pick` names a team or a
+   * project, every one of that team or project. Whom to show is the Pick view's choice: a source that also reads `people()` and `scoped()` is asked for
+   * the other people's tickets one scope at a time, and one that does not lists everything it has here. Throws when the tracker cannot be asked.
    */
   assigned(): Promise<readonly Ticket[]>;
   /**
@@ -120,6 +126,16 @@ export interface TicketSource {
    * cache it. Throws when the tracker cannot be asked, and the Pick view then lists every ticket, as a source without it does.
    */
   me?(): Promise<Assignee>;
+  /**
+   * Who holds the open tickets, for the Assignee row's counts when `assigned()` lists only the key's own. Throws when the tracker cannot be asked.
+   * A source without it lists everything it has in `assigned()`.
+   */
+  people?(): Promise<People>;
+  /**
+   * One page of the open tickets of a scope the Assignee row can choose: a person's id, `"unassigned"`, or `"anyone"`, each page starting after the cursor
+   * the page before it gave (`null` for the first). Paged because Anyone and Unassigned can hold thousands. Throws when the tracker cannot be asked.
+   */
+  scoped?(scope: string, after: string | null): Promise<ScopePage>;
   /** One ticket by key, or `null` when the tracker has none by that key. Throws when the tracker cannot be asked. */
   read(key: string): Promise<Ticket | null>;
   /**
