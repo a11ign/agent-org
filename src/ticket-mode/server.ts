@@ -71,11 +71,20 @@ export function holdsKey(request: Pick<IncomingMessage, "headers">, key: string)
   return header !== undefined && sameSecret(String(header), key);
 }
 
-/** The settings' choices: the model and effort a ticket queued from now on runs with, and those a ticket planned first is planned with. */
-type SavedChoice = RunChoice & Readonly<{ planModel: string; planEffort: string }>;
+/**
+ * The settings' choices: the model and effort a ticket queued from now on runs with, those a ticket planned first is planned with, and those a
+ * new-ticket request is written with. The writer's are absent until one is chosen, and the host file's are in force then.
+ */
+type SavedChoice = RunChoice & Readonly<{ planModel: string; planEffort: string; writerModel?: string; writerEffort?: string }>;
 
-/** Each part of the saved choice, with the rule its value is held to. */
-const CHOICE_PARTS: Readonly<Record<keyof SavedChoice, (value: string) => void>> = { model: checkModel, effort: checkEffort, planModel: checkModel, planEffort: checkEffort };
+/** A rule that also accepts "", which clears the part: the host file's value is in force again. */
+const clearable = (check: (value: string) => void) => (value: string) => { if (value !== "") check(value); };
+
+/** Each part of the saved choice, with the rule its value is held to. The writer's parts may be cleared. */
+const CHOICE_PARTS: Readonly<Record<keyof SavedChoice, (value: string) => void>> = {
+  model: checkModel, effort: checkEffort, planModel: checkModel, planEffort: checkEffort,
+  writerModel: clearable(checkModel), writerEffort: clearable(checkEffort),
+};
 
 /** The saved choice. A saved value the board no longer offers falls back, so queueing with the settings is never refused. */
 function readChoice(path: string): SavedChoice {
@@ -84,11 +93,21 @@ function readChoice(path: string): SavedChoice {
   if (!existsSync(path)) return fallback;
   try {
     const saved = JSON.parse(readFileSync(path, "utf8")) as Partial<SavedChoice>;
-    const valid = (part: keyof SavedChoice, allowed: readonly string[]) => (allowed.includes(String(saved[part])) ? String(saved[part]) : fallback[part]);
-    return { model: valid("model", MODELS), effort: valid("effort", EFFORTS), planModel: valid("planModel", MODELS), planEffort: valid("planEffort", EFFORTS) };
+    const valid = (part: Exclude<keyof SavedChoice, "writerModel" | "writerEffort">, allowed: readonly string[]) => (allowed.includes(String(saved[part])) ? String(saved[part]) : fallback[part]);
+    // A writer part is kept only while the board offers it, and is left out when nothing is chosen, so the choice names no value of its own.
+    const writerModel = String(saved.writerModel);
+    const writerEffort = String(saved.writerEffort);
+    return { model: valid("model", MODELS), effort: valid("effort", EFFORTS), planModel: valid("planModel", MODELS), planEffort: valid("planEffort", EFFORTS),
+      ...(MODELS.includes(writerModel) ? { writerModel } : {}), ...(EFFORTS.includes(writerEffort) ? { writerEffort } : {}) };
   } catch {
     return fallback;
   }
+}
+
+/** The choice with `change` made to it. A writer part changed to "" is cleared, so the file names no value for it again. */
+function applyChange(choice: SavedChoice, change: Partial<SavedChoice>): SavedChoice {
+  const { writerModel, writerEffort, ...kept } = { ...choice, ...change };
+  return { ...kept, ...(writerModel ? { writerModel } : {}), ...(writerEffort ? { writerEffort } : {}) };
 }
 
 function writeChoice(path: string, choice: SavedChoice): void {
@@ -183,7 +202,8 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
       publish: settings.publish !== null, pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
       pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
-      writer: settings.writer !== null, writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
+      writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
+      writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
   }
   if (method === "GET" && path === "/api/pick") {
     // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
@@ -267,9 +287,9 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
   }
   if (method === "POST" && path === "/api/choice") {
     // Only the part named is changed, so two pages open at once cannot undo each other's other half.
-    const change = validChange(body, ["model", "effort", "planModel", "planEffort"]);
+    const change = validChange(body, ["model", "effort", "planModel", "planEffort", "writerModel", "writerEffort"]);
     if (Object.keys(change).length === 0) throw new Error("name a model or an effort to change");
-    const choice = { ...readChoice(deps.choicePath), ...change };
+    const choice = applyChange(readChoice(deps.choicePath), change);
     writeChoice(deps.choicePath, choice);
     return [200, { choice }];
   }
@@ -295,7 +315,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
 
 /** The new-ticket request routes: a request is queued, a run is stopped or dismissed, and a draft is approved or discarded. */
 async function writerRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
-  const { settings, source, store, pool, now, wake, queueTickets, savedRun } = board;
+  const { deps, settings, source, store, pool, now, wake, queueTickets, savedRun } = board;
   if (method === "POST" && path === "/api/writer") {
     // A new-ticket request: a run of the ticket writer, which leaves drafts for the person to approve. It creates no ticket itself.
     if (settings.writer === null) throw new Error("this machine names no tickets.writer, so it writes no tickets: name one in the host file");
@@ -306,7 +326,11 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
     if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or ask quick");
     const form = writerForm(body, settings);
     if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
-    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, form }, now()));
+    // The model and effort are read now and stamped on the request, so a change in Settings reaches the next request, and this one keeps its own.
+    const saved = readChoice(deps.choicePath);
+    const model = saved.writerModel ?? settings.writer.model;
+    const effort = saved.writerEffort ?? settings.writer.effort;
+    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, form, model, effort }, now()));
     wake();
     return [200, writersViewOf(store.get())];
   }

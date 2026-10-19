@@ -697,6 +697,12 @@ test("a writer run is queued, starts on a free slot, and holds one while it runs
   assert.equal(writerStatus(writerOf(queue, "w1")!), "to-review");
 });
 
+test("a writer run records the model and effort it is queued with, and a run queued without them records none", () => {
+  const queue = queueWriter(emptyQueue(1), { ...request, model: "sonnet", effort: "max" }, 1);
+  assert.deepEqual([writerOf(queue, "w1")?.model, writerOf(queue, "w1")?.effort], ["sonnet", "max"]);
+  assert.equal(writerOf(queueWriter(emptyQueue(1), request, 1), "w1")?.model, undefined, "a run queued before the choice was stamped has none, so it starts on the host file's");
+});
+
 test("a writer run waits for a worker slot as a ticket does, and is not held by Pause", () => {
   let queue = pauseQueue(emptyQueue(1));
   queue = queueWriter(queue, request, 1);

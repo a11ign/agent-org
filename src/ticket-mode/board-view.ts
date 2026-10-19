@@ -100,6 +100,11 @@ export function writerRunActions(run: Pick<WriterRunView, "phase" | "workspace" 
   };
 }
 
+/** The model and effort a new-ticket run ran on, as its card names them, or "" for a run queued before the choice was stamped on it. PURE. */
+export function writerChoiceLabel(run: Pick<WriterRunView, "model" | "effort">): string {
+  return run.model === undefined || run.effort === undefined ? "" : `${run.model}/${run.effort}`;
+}
+
 /** A draft's own controls: Approve and Approve and queue once it may be created, and Discard while it is pending. PURE. */
 export function draftControls(draft: Pick<DraftView, "status" | "duplicates">, { acknowledged }: { acknowledged: boolean; }): Readonly<{ approve: boolean; queue: boolean; discard: boolean; reason: string | null }> {
   if (draft.status !== "pending") return { approve: false, queue: false, discard: false, reason: null };
@@ -162,6 +167,6 @@ export type DraftView = Readonly<{
 
 /** A new-ticket run's view on the board: its request, its phase, its drafts and what was refused. */
 export type WriterRunView = Readonly<{
-  id: string; request: string; mode: "quick" | "grill"; phase: string; status: string; form: Readonly<Record<string, string>>;
+  id: string; request: string; mode: "quick" | "grill"; phase: string; status: string; form: Readonly<Record<string, string>>; model?: string; effort?: string;
   workspace?: string; question?: string; failure?: string; drafts: readonly DraftView[]; rejected: readonly Readonly<{ file: string; reason: string }>[];
 }>;

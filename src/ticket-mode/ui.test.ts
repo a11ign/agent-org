@@ -1169,6 +1169,40 @@ function draftOf(p: Awaited<ReturnType<typeof page>>, file = "01-show.json") {
   return { card, button, field: (name: string) => card.all().find((n) => n.attrs["aria-label"] === name)! };
 }
 
+const WRITER_SETTINGS = { ...SETTINGS, ...WRITER_CONFIG, writerDefault: { model: "sonnet", effort: "high" } };
+/** A select's options as the page drew them: each one's value and its text. */
+const optionsOf = (p: Page, id: string) => p.$(id).children.map((option) => [option.value, option.textContent]);
+
+test("the Ticket writer's model and effort are set in Settings beside the others, on a machine that names tickets.writer, the first option being the host's", async () => {
+  const off = await page(new Map(), { config: SETTINGS });
+  await openFrom(off, "open-settings");
+  assert.equal(off.$("writer-settings").hidden, true, "no writer, no writer settings");
+  const p = await page(new Map(), { config: WRITER_SETTINGS });
+  await openFrom(p, "open-settings");
+  assert.equal(p.$("writer-settings").hidden, false);
+  assert.deepEqual(optionsOf(p, "writerModel").slice(1), optionsOf(p, "planModel"), "the same model choices, with the same wording");
+  assert.deepEqual(optionsOf(p, "writerEffort").slice(1), optionsOf(p, "planEffort"), "the same effort choices, with the same wording");
+  assert.deepEqual([optionsOf(p, "writerModel")[0], optionsOf(p, "writerEffort")[0]], [["", "Host default: sonnet"], ["", "Host default: high"]]);
+  assert.deepEqual([p.$("writerModel").value, p.$("writerEffort").value], ["", ""], "nothing chosen: the host default shows");
+});
+
+test("a Ticket writer choice is saved as it changes, the run's choice is left alone, and the host default clears it", async () => {
+  const p = await page(new Map(), { config: WRITER_SETTINGS });
+  await openFrom(p, "open-settings");
+  await change(p, "writerEffort", "max");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { writerEffort: "max" } });
+  assert.equal(p.$("writerEffort").value, "max");
+  assert.deepEqual(footerChoice(p), ["opus", "high"], "the run's choice is unchanged");
+  await change(p, "writerModel", "");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { writerModel: "" } }, "the host default posts an empty value, which clears the choice");
+});
+
+test("a Ticket writer choice the board refuses goes back to what is saved", async () => {
+  const p = await page(new Map(), { config: { ...WRITER_SETTINGS, choice: { writerEffort: "max" } }, refused: ["/api/choice"] });
+  await changeFrom(p, "open-settings", "writerEffort", "high");
+  assert.equal(p.$("writerEffort").value, "max", "the control reads what is saved again");
+});
+
 test("New ticket is shown only on a machine that names tickets.writer, and Grill is disabled with its reason on one with no terminal", async () => {
   const off = await page(new Map(), { config: {} });
   assert.equal(off.$("new-ticket").hidden, true, "no writer, no New ticket");
@@ -1267,6 +1301,11 @@ test("a run's Stop and Dismiss post to their routes, and Open terminal links to 
   button("Dismiss").fire("click");
   await settle();
   assert.ok(p.posts.some(({ path }) => path.endsWith("/api/writer/w7/dismiss")));
+});
+
+test("a new-ticket run's card names the model and effort it runs on", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [{ ...RUN, model: "sonnet", effort: "max", phase: "running", status: "writing", drafts: [], workspace: "w1", pane: "w1:p1" }] } });
+  assert.ok(p.$("writers-list").text().includes("sonnet/max"));
 });
 
 test("a request that asks a question shows it, and a refused request shows what the writer's files got wrong", async () => {

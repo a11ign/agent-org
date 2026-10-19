@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
@@ -589,6 +589,48 @@ test("grill is refused without a terminal, and a machine with no writer writes n
   const [, configured] = await board(4747, WRITER, {}, tracker).api("GET", "/api/config", {}) as [number, any];
   assert.deepEqual([configured.writer, configured.writerGrill, configured.repos], [true, true, ["nbl-ui-netbox", "platform-monorepo"]]);
   assert.ok(configured.priorities.includes("urgent"));
+});
+
+test("the settings save the ticket writer's model and effort apart from the others, and an empty value clears each", async () => {
+  const b = board(4747, WRITER);
+  const [, saved] = await b.api("POST", "/api/choice", { writerModel: "sonnet", writerEffort: "max" }) as [number, any];
+  assert.deepEqual(saved.choice, { model: "opus", effort: "high", planModel: "opus", planEffort: "high", writerModel: "sonnet", writerEffort: "max" });
+  const [, cleared] = await b.api("POST", "/api/choice", { writerEffort: "" }) as [number, any];
+  assert.deepEqual(cleared.choice, { model: "opus", effort: "high", planModel: "opus", planEffort: "high", writerModel: "sonnet" }, "an empty effort clears the writer's effort alone");
+  assert.equal("writerEffort" in JSON.parse(readFileSync(join(b.dir, "choice.json"), "utf8")), false, "and the file names no value for it");
+  await assert.rejects(b.api("POST", "/api/choice", { writerModel: "gpt" }), /model must be one of/);
+  await assert.rejects(b.api("POST", "/api/choice", { writerEffort: "huge" }), /effort must be one of/);
+  assert.deepEqual(b.ticks, [], "a setting for new runs wakes nothing");
+  writeFileSync(join(b.dir, "choice.json"), JSON.stringify({ writerModel: "gpt-9", writerEffort: "max" }));
+  const [, config] = await b.api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual(config.choice, { model: "opus", effort: "high", planModel: "opus", planEffort: "high", writerEffort: "max" }, "a saved writer model the board no longer offers reads as not chosen");
+});
+
+test("a new-ticket request is stamped with the writer's model and effort in force: the host file's, then the one chosen, then the host file's once cleared", async () => {
+  const { tracker } = creating();
+  let tick = 0;
+  // The board is built once, and the choice changes between the requests: the next request takes the change, with no restart.
+  const b = board(4747, { ...WRITER, writer: { run: WRITER.writer.run, model: "sonnet", effort: "medium" } }, { now: () => (tick += 1) }, tracker);
+  const requestRun = async (request: string) => {
+    const [, writers] = await b.api("POST", "/api/writer", { request }) as [number, any];
+    return writers.runs.at(-1);
+  };
+  const host = await requestRun("Show requests");
+  assert.deepEqual([host.model, host.effort], ["sonnet", "medium"], "with no choice, the host file's");
+  await b.api("POST", "/api/choice", { writerModel: "opus", writerEffort: "max" });
+  const chosen = await requestRun("Show more requests");
+  assert.deepEqual([chosen.model, chosen.effort], ["opus", "max"], "the choice in force for the next request");
+  await b.api("POST", "/api/choice", { writerModel: "", writerEffort: "" });
+  await requestRun("Show the last requests");
+  assert.deepEqual(b.store.get().writers?.map((run) => [run.model, run.effort]), [["sonnet", "medium"], ["opus", "max"], ["sonnet", "medium"]], "each request keeps the choice it was queued with");
+});
+
+test("/api/config gives the ticket writer's host default, which is null on a machine that names no writer", async () => {
+  const [, configured] = await board(4747, { ...WRITER, writer: { run: WRITER.writer.run, model: "sonnet", effort: "medium" } }).api("GET", "/api/config", {}) as [number, any];
+  assert.deepEqual(configured.writerDefault, { model: "sonnet", effort: "medium" });
+  const [, none] = await board(4747).api("GET", "/api/config", {}) as [number, any];
+  assert.equal(none.writerDefault, null);
+  assert.equal(none.choice.writerModel, undefined, "nothing chosen: the choice names no writer model");
 });
 
 test("only the approve route creates a ticket: it creates the one the person approved, and a discard, a stop or a dismiss creates none", async () => {

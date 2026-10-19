@@ -386,8 +386,8 @@ async function planReached(ctx: PoolContext, queued: Ticket): Promise<boolean> {
 
 /**
  * Start the first queued new-ticket run: its brief, its mark, which lets the run read the tracker and nothing else, and its settings, then its agent,
- * on the writer's model and effort. A run stopped while it starts is closed, as a ticket run stopped while it starts is. A start that fails ends
- * the run failed, saying why.
+ * on the model and effort it was queued with (the writer's, when it has none of its own: a run queued before the choice was stamped). A run stopped
+ * while it starts is closed, as a ticket run stopped while it starts is. A start that fails ends the run failed, saying why.
  */
 async function startWriter(ctx: PoolContext): Promise<void> {
   const { herdr, now, session, settings, store } = ctx;
@@ -397,13 +397,15 @@ async function startWriter(ctx: PoolContext): Promise<void> {
   update(ctx, (queue) => markWriterStarting(queue, queued.id, now()));
   try {
     if (writer === null) throw new Error("this machine names no tickets.writer");
+    const model = queued.model ?? writer.model;
+    const effort = queued.effort ?? writer.effort;
     const place = writerPlace(ctx, queued);
     clearRunDir(ctx, place.folder, place.dir);
     rmSync(join(place.dir, DRAFT_DIR), { recursive: true, force: true });
     writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, form: queued.form, clones: settings.clones, dir: place.dir }));
     writeFileSync(join(place.dir, WRITER_FILE), "{}\n");
-    writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model: writer.model });
-    const tail = [writerPrompt(place.dir), ...workerFlags({ name: `writer-${queued.id}`, model: writer.model, effort: writer.effort, addDirs: [place.dir] })];
+    writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model });
+    const tail = [writerPrompt(place.dir), ...workerFlags({ name: `writer-${queued.id}`, model, effort, addDirs: [place.dir] })];
     const { workspace, pane } = await startAgent(ctx, place, {}, tail, "the new-ticket run");
     if (writerOf(store.get(), queued.id)?.phase !== "starting") {
       closedNote((args) => herdr(args), workspace, session);

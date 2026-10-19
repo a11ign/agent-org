@@ -258,6 +258,9 @@ export type WriterRun = Readonly<{
   request: string;
   mode: WriterMode;
   form: WriterForm;
+  /** The model and effort the run is stamped with when it is queued (the Settings choice, else the host file's). Absent on a run queued before that. */
+  model?: string;
+  effort?: string;
   phase: WriterPhase;
   queuedAt: number;
   startedAt?: number;

@@ -3393,7 +3393,7 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
  */
 
 const WRITER = { writer: { run: "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts." } };
-const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; form: { repo?: string } } = { id: "w1", request: "Show the requests a person made", mode: "quick", form: { repo: "nbl-ui-netbox" } };
+const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; form: { repo?: string }; model?: string; effort?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
 function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source) {
@@ -3428,6 +3428,20 @@ test("a new-ticket run starts on a free slot, with the writer's model, its brief
   assert.equal(settings.writer?.model, "opus");
   assert.ok(existsSync(join(settings.stateDir, "tickets", "writer", "w1")));
   assert.ok(existsSync(join(writerFolder(settings, "w1"), ".claude", "settings.local.json")), "its settings sit in a folder of its own, so runs never overwrite each other's");
+});
+
+test("a new-ticket run starts on the model and effort it was queued with, whatever the host file says, and one queued before they were stamped starts on the host file's", async () => {
+  const host = { writer: { ...WRITER.writer, model: "haiku", effort: "low" } };
+  const stamped = writing({ model: "sonnet", effort: "max" }, host);
+  await stamped.pool.tick();
+  const start = stamped.h.calls.find((args) => args.includes("start") && args.includes(stamped.name))!;
+  assert.ok(start.includes("sonnet") && start.includes("max") && !start.includes("haiku"), "the stamp is in the agent's flags, and the host file's is not");
+  const settingsFile = JSON.parse(readFileSync(join(writerFolder(stamped.settings, "w1"), ".claude", "settings.local.json"), "utf8")) as { model: string };
+  assert.equal(settingsFile.model, "sonnet", "and in the run's settings file");
+  const unstamped = writing({}, host);
+  await unstamped.pool.tick();
+  const hostStart = unstamped.h.calls.find((args) => args.includes("start") && args.includes(unstamped.name))!;
+  assert.ok(hostStart.includes("haiku") && hostStart.includes("low"), "a run with no stamp starts on the host file's");
 });
 
 test("a new-ticket run starts though the queue is paused, as a person asked for it, and holds a slot while it runs", async () => {
