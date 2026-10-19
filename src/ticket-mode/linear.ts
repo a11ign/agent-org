@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { KeySource, PickScope } from "./settings.ts";
-import type { Assignee, Blocker, Keywords, NewTicket, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
+import type { Assignee, Blocker, People, ScopePage, Keywords, NewTicket, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. */
@@ -147,21 +147,45 @@ const OPEN = 'state: { type: { nin: ["completed", "canceled", "duplicate"] } }';
 /**
  * The query the Pick view's list is read with, for the host file's `tickets.pick`. PURE.
  *
- * Every open ticket the key can see, or, for a team or a project, every open ticket of it: one `issues` list, paged a page at a time, whose
- * tickets carry their assignee. The Pick view picks the assignee in the page, so one read serves every choice and no request is made per person.
- * The team or the project is passed as a variable, never written into the query's text.
+ * With no `tickets.pick`, or `"assigned"`: the key's own open tickets, as the board always asked. Reading every open ticket the key can see
+ * (A11-108's first version) is 19 MB and 53 s on a workspace of this size, past the page's 30 s and 8 MB limits, so the Pick view showed nothing. The
+ * other people's tickets are read one scope at a time instead (`people()` and `scoped()`).
+ * For a team or a project: every open ticket of it, which is bounded, in one `issues` list paged a page at a time, each ticket carrying its assignee
+ * so the Pick view can choose the assignee in the page. The team or the project is passed as a variable, never written into the query's text.
  */
 export function pickQuery(scope: PickScope): PickQuery {
-  const narrowed = scope === "assigned" ? null
-    : "team" in scope ? { name: "team", filter: "team: { key: { eq: $team } }", value: scope.team }
+  if (scope === "assigned") {
+    return {
+      text: `query($after: String) { viewer { assignedIssues(first: ${PAGE}, after: $after, filter: { ${OPEN} }) {
+            nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`,
+      variables: {},
+      page: (data) => (data as { viewer: { assignedIssues: Connection } }).viewer.assignedIssues,
+    };
+  }
+  const narrowed = "team" in scope ? { name: "team", filter: "team: { key: { eq: $team } }", value: scope.team }
     : { name: "project", filter: "project: { name: { eq: $project } }", value: scope.project };
-  const declared = narrowed === null ? "" : `, $${narrowed.name}: String!`;
-  const filters = [...(narrowed === null ? [] : [narrowed.filter]), OPEN].join(", ");
   return {
-    text: `query($after: String${declared}) { issues(first: ${PAGE}, after: $after, filter: { ${filters} }) {
+    text: `query($after: String, $${narrowed.name}: String!) { issues(first: ${PAGE}, after: $after, filter: { ${narrowed.filter}, ${OPEN} }) {
             nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } }`,
-    variables: narrowed === null ? {} : { [narrowed.name]: narrowed.value },
+    variables: { [narrowed.name]: narrowed.value },
     page: (data) => (data as { issues: Connection }).issues,
+  };
+}
+
+/** Pages of the people read, which carry only the assignee, so a page can be large. */
+const PEOPLE_PAGE = 250;
+
+/**
+ * The query one scope's page is read with: a person's open tickets, the unassigned ones, or every open one. The person is passed as a variable, never
+ * written into the query's text. PURE.
+ */
+export function scopedQuery(scope: string): { text: string; variables: Record<string, string> } {
+  const person = scope !== "unassigned" && scope !== "anyone";
+  const filter = scope === "unassigned" ? `assignee: { null: true }, ${OPEN}` : person ? `assignee: { id: { eq: $who } }, ${OPEN}` : OPEN;
+  return {
+    text: `query($after: String${person ? ", $who: ID!" : ""}) { issues(first: ${PAGE}, after: $after, filter: { ${filter} }) {
+            nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } }`,
+    variables: person ? { who: scope } : {},
   };
 }
 
@@ -319,6 +343,31 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
         after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
       } while (after !== null);
       return tickets;
+    },
+
+    async people(): Promise<People> {
+      const text = `query($after: String) { issues(first: ${PEOPLE_PAGE}, after: $after, filter: { ${OPEN} }) { nodes { assignee { id name } } pageInfo { hasNextPage endCursor } } }`;
+      const held = new Map<string, { id: string; name: string; count: number }>();
+      let unassigned = 0;
+      let total = 0;
+      let after: string | null = null;
+      do {
+        const answer: { issues: { nodes: { assignee: Assignee | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } = await query(text, { after });
+        const { issues } = answer;
+        for (const { assignee } of issues.nodes) {
+          total += 1;
+          if (assignee === null) unassigned += 1;
+          else held.set(assignee.id, { id: assignee.id, name: assignee.name, count: (held.get(assignee.id)?.count ?? 0) + 1 });
+        }
+        after = issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null;
+      } while (after !== null);
+      return { people: [...held.values()], unassigned, total };
+    },
+
+    async scoped(scope, after): Promise<ScopePage> {
+      const list = scopedQuery(scope);
+      const { issues } = await query<{ issues: Connection }>(list.text, { ...list.variables, after });
+      return { tickets: issues.nodes.map(toTicket), next: issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null };
     },
 
     async viewer() {
