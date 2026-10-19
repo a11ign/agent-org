@@ -18,9 +18,10 @@
 // lab's `releasablePaths` (that would make every lab script "product" in #3820's share). `NO_KEY` below carries that path, the lab keeps `src/` only.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFiledBy, createIssue, primaryMilestoneRefusal, primaryMilestoneTitles } from "../row-file.ts";
+import { appendFiledBy } from "../row-file/body-from-argv.ts";
+import { createIssue, primaryMilestoneRefusal, primaryMilestoneTitles } from "../row-file/roadmap-without-parent-refusal.ts";
 import { adopterRowKind, adopterFacingDeclared, milestoneClockFact } from "../work-gate/org-health.ts";
-import { milestoneClockReading } from "../org-health.ts";
+import { milestoneClockReading } from "../org-health/fleet-build-incident.ts";
 import { parseProjectDeclaration } from "../project-config.ts";
 import { declaredRegionFiles } from "../region-paths.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";

@@ -95,7 +95,7 @@ process.stdout.write(toolForm(name + ".service.in", renderTemplate(template, val
 
 /** @returns the shipped template `name` as a unit of THIS host, in tool form for `tool` (the real `toolForm`, not a copy of its lines) */
 function renderedToolForm(name: string, host: Scratch, tool: string): string {
-  const modules = ["host-units.ts", "host-config.ts"].map((file) => pathToFileURL(join(SRC, file)).href);
+  const modules = ["host-units/shipped-dir.ts", "host-config.ts"].map((file) => pathToFileURL(join(SRC, file)).href);
   // A script FILE and not `-e`: the tool's modules guard their CLI half on `process.argv[1]` being a path, which under `-e` is the first argument.
   const script = join(dirname(host.project), "render.mjs");
   writeFileSync(script, RENDER);

@@ -11,7 +11,9 @@ import { FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures } from "./failu
 import {
   CLOSED_ON_MERGE_NOT_OUTCOME, INERT_OPTION_MINUTES, inertOptionEvents, inertOptionIncidents, inertOptionSummary, type ConsumerFileReader, type MergedOptionPr,
 } from "./inert-option-incident.ts";
-import { buildReport, readInertOptions, renderReport } from "./org-retro.ts";
+import { buildReport } from "./org-retro/readings.ts";
+import { readInertOptions } from "./org-retro/retro-cause.ts";
+import { renderReport } from "./org-retro.ts";
 import { readsRowsSince, sinceAnswer } from "./packaging/rows-by-label-fixtures.ts";
 
 const MIN = 60_000;

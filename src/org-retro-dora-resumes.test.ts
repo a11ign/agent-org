@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import * as retro from "./org-retro.ts";
+import * as retro_0 from "./org-retro.ts";
 import { readRepository } from "./dora.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
@@ -72,13 +72,13 @@ const inputsOfAnEmptyOrg = (where: any) => ({ merged: [], mergedRepositories: []
 function tickWith(stateDir: string, now: number, seams: ReturnType<typeof counting>) {
   const said: string[] = [];
   const restReads: number[] = [];
-  const orders = retro.retrospectiveTick({
+  const orders = retro_0.retrospectiveTick({
     now, stateDir, log: (line) => said.push(line), readLedger: () => "", readUntiered: () => null,
-    read: (where) => retro.readWhenDoraIsRead(where, { dora: seams.dora, readRest: ((w: any) => { restReads.push(now); return inputsOfAnEmptyOrg(w); }) as any }),
+    read: (where) => retro_0.readWhenDoraIsRead(where, { dora: seams.dora, readRest: ((w: any) => { restReads.push(now); return inputsOfAnEmptyOrg(w); }) as any }),
   });
   return { orders, said, restReads };
 }
-const cacheOf = (dir: string) => JSON.parse(readFileSync(join(dir, retro.DORA_CACHE_FILE), "utf8"));
+const cacheOf = (dir: string) => JSON.parse(readFileSync(join(dir, retro_0.DORA_CACHE_FILE), "utf8"));
 const tmp = () => tmpDir("dora-resumes-");
 
 test("THE CONTROL: a repository whose read never returns ends at the bound, the others are kept, nothing is offered; the next call resumes and offers with it unknown", () => {
@@ -117,16 +117,16 @@ test("at least one repository is read per call whatever the budget, so a budget 
   const dir = tmp();
   const seams = counting();
   seams.dora.budgetMs = 0;
-  const reads = REPOSITORIES.map(() => retro.resumableDora({ stateDir: dir, now: NOW, ...seams.dora }));
+  const reads = REPOSITORIES.map(() => retro_0.resumableDora({ stateDir: dir, now: NOW, ...seams.dora }));
   assert.deepEqual(reads.map((r) => (r.complete ? "complete" : r.readThisTick)), [1, 1, 1, "complete"]);
 });
 
 test("a cache from the old shape, `{ date, report }`, or one that is not JSON, is a miss and never an error", () => {
   for (const content of [JSON.stringify({ date: "2026-10-06", report: { date: "2026-10-06", now: NOW, repositories: [] } }), "{ not json", JSON.stringify({ date: "2026-10-06", now: NOW, readings: null })]) {
     const dir = tmp();
-    writeFileSync(join(dir, retro.DORA_CACHE_FILE), content);
+    writeFileSync(join(dir, retro_0.DORA_CACHE_FILE), content);
     const seams = counting();
-    const progress = retro.resumableDora({ stateDir: dir, now: NOW, ...seams.dora });
+    const progress = retro_0.resumableDora({ stateDir: dir, now: NOW, ...seams.dora });
     assert.equal(progress.complete, false);
     assert.deepEqual(seams.asked.map((a) => a.repo), [FIRST, HUNG, THIRD], `${content.slice(0, 30)} was read as a miss: the read started at the first repository`);
   }
@@ -135,9 +135,9 @@ test("a cache from the old shape, `{ date, report }`, or one that is not JSON, i
 test("yesterday's readings are not today's: a new UTC date reads from the start", () => {
   const dir = tmp();
   const seams = counting();
-  retro.resumableDora({ stateDir: dir, now: NOW, ...seams.dora });
+  retro_0.resumableDora({ stateDir: dir, now: NOW, ...seams.dora });
   const before = seams.asked.length;
-  retro.resumableDora({ stateDir: dir, now: NEXT_DATE, ...seams.dora });
+  retro_0.resumableDora({ stateDir: dir, now: NEXT_DATE, ...seams.dora });
   assert.deepEqual(seams.asked.slice(before).map((a) => a.repo), [FIRST, HUNG, THIRD]);
 });
 
@@ -157,8 +157,8 @@ test("a tick KILLED mid-read keeps the repositories it finished: the throw stand
   const seams = counting();
   const readOne = seams.dora.readOne;
   const dying = ((input: any) => { if (input.repository.repo === THIRD) throw new Error("killed"); return readOne(input); }) as typeof readRepository;
-  assert.throws(() => retro.resumableDora({ stateDir: dir, now: NOW, ...seams.dora, readOne: dying }), /killed/);
+  assert.throws(() => retro_0.resumableDora({ stateDir: dir, now: NOW, ...seams.dora, readOne: dying }), /killed/);
   assert.deepEqual(Object.keys(cacheOf(dir).readings), [FIRST, HUNG], "the two finished before the kill are on disk");
-  retro.resumableDora({ stateDir: dir, now: LATER, ...seams.dora });
+  retro_0.resumableDora({ stateDir: dir, now: LATER, ...seams.dora });
   assert.deepEqual(seams.asked.map((a) => a.repo), [FIRST, HUNG, THIRD, LAST], "the next call did not re-read the first two: it resumed at the repository that was being read");
 });

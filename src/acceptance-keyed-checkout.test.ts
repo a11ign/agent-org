@@ -17,8 +17,8 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { primaryCheckoutCdReason } from "./acceptance-commands.ts";
-import { productRegionsOf } from "./work-gate.ts";
+import { primaryCheckoutCdReason } from "./acceptance-commands/suite-scripts-for.ts";
+import { productRegionsOf } from "./work-gate/causes/rows-offer.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 
 const PRIMARY = "/home/agent/repos/a11y-witness";
@@ -119,7 +119,7 @@ function verdictsUnderHost(bodiesFor: (paths: { checkout: string; clone: string;
     ...(declared ? { clones: { "agent-org": clone } } : {}),
   }));
   const bodies = bodiesFor({ checkout, clone });
-  const script = `import { primaryCheckoutCdReason as r } from "./acceptance-commands.ts";
+  const script = `import { primaryCheckoutCdReason as r } from "./acceptance-commands/suite-scripts-for.ts";
     import { builtInCheckoutOf } from "./built-in-checkout.ts";
     const bodies = ${JSON.stringify(bodies)};
     console.log(JSON.stringify(Object.fromEntries(Object.entries(bodies).map(([name, body]) => [name, r(body, "row-file", { builtInCheckout: builtInCheckoutOf(body) })]))));`;

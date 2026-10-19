@@ -161,6 +161,20 @@ const GIT_IS_DATA_NOT_A_SPAWN: Record<string, string> = {
     + "the modules under test, and has no node:child_process import, so nothing here can spawn (#2771)",
 };
 
+/**
+ * Files whose `git` calls go ONLY through an injected `run` seam, and which also spawn something else (`systemctl`) through `execFileSync`, so they
+ * cannot be exempted above (that exemption needs no child_process import at all). Each says where the scrubbed default is. The test below proves
+ * none of them spawns `git` directly.
+ */
+const GIT_IS_INJECTED_SEAM: Record<string, string> = {
+  "src/wake/with-ci-failure-class.ts":
+    '`git` is passed to an injected `run` (`parseWorktreeList(run("git", ...))`, `git("git", ...)`); the scrubbed default is `defaultSpawn` in `../work-gate/reads/exit.ts`, '
+    + "which spawns with `sandboxGitEnv()`. The file's own child_process use is `systemctl` (the herdr restart time), which is not git (a11ign#5152 split of wake.ts)",
+  "src/work-gate/reads.ts":
+    '`git` is passed to an injected `run` (`run("git", [...PROJECT_GIT, ...LS_REMOTE_ARGS])`); the scrubbed default is `defaultSpawn` in `./reads/exit.ts`, which spawns '
+    + "with `sandboxGitEnv()`. The file's own child_process use is `systemctl` (`systemctlRun`), which is not git (a11ign#5152 split of work-gate/reads.ts)",
+};
+
 /** The spawning capability a file must import before it can spawn anything, whatever the callee is named. */
 const CAN_SPAWN = /from\s+["']node:child_process["']|require\(\s*["']node:child_process["']/;
 
@@ -233,6 +247,17 @@ test("every GIT_IS_DATA_NOT_A_SPAWN entry names a real file that genuinely CANNO
   }
 });
 
+test("every GIT_IS_INJECTED_SEAM entry spawns no git itself -- its git goes through the injected seam, and the seam's default scrubs", () => {
+  const tracked = new Map(trackedSourceFiles().map((f) => [f.path, f.text]));
+  for (const [file, reason] of Object.entries(GIT_IS_INJECTED_SEAM)) {
+    assert.ok(tracked.has(file), `${file} is exempted but is not a tracked source file -- a stale exemption hides the next real one`);
+    const executable = stripComments(tracked.get(file) ?? "");
+    assert.ok(!/\b(?:execFileSync|execFile|spawnSync|spawn|execSync)\(\s*["']git["']/.test(executable),
+      `${file} spawns git directly, so the injected seam is not what runs it -- the exemption is hiding a real unscrubbed spawn`);
+    assert.ok(reason.trim().length > 40, `${file}'s exemption needs a reason a reader can check, not a placeholder`);
+  }
+});
+
 test("every git-spawning file imports and USES a canonical GIT_* scrubbing helper", () => {
   const files = trackedSourceFiles();
   const unclassified: string[] = [];
@@ -242,6 +267,7 @@ test("every git-spawning file imports and USES a canonical GIT_* scrubbing helpe
     // #446/trunk-red: a declared "the literal is data" file is classified, not skipped -- see
     // GIT_IS_DATA_NOT_A_SPAWN, and the test below that proves each entry genuinely cannot spawn.
     if (file in GIT_IS_DATA_NOT_A_SPAWN) continue;
+    if (file in GIT_IS_INJECTED_SEAM) continue;
     if (!usesCanonicalHelper(executable)) unclassified.push(file);
   }
   assert.deepEqual(unclassified, [],

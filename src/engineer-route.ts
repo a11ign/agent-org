@@ -32,7 +32,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { extractAcceptanceSection } from "./acceptance-commands.ts";
+import { extractAcceptanceSection } from "./acceptance-commands/suite-scripts-for.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent } from "./failure-ledger.ts";
 import { pathToFileURL } from "node:url";
 import { decide, decisionLogPathFrom, decisionsIn, readSwitches, recordOutcome, type Answer, type Decision, type DecisionDeps, type Question, type ScoreLevels } from "./decision-provider.ts";
@@ -45,7 +45,7 @@ import { AUTOCOMPACT_WINDOW_TOKENS, clampWindow, haikuTierProfile, HAIKU_TIER_LA
 
 export type Route = RouteName;
 /** `override` is a `tier:haiku` label deciding; `refused` is a row nothing may lower; `jev` is a provider's answers composed; `fallback` is the file-count rule. */
-export type Via = "override" | "refused" | "jev" | "fallback";
+type Via = "override" | "refused" | "jev" | "fallback";
 export type RouteRow = {
   number: number;
   /** The tracker key of another tracker's row (`agent-org`); absent for the first tracker's. It spells the ledger id, so `agent-org#7` and a11ign's `#7` are two rows (a11ign/agent-org#756). */
@@ -58,9 +58,9 @@ export type Routed = { route: Route; via: Via;
   /** Why the provider did not decide this route (a fallback), or which questions' probabilities it did not give (a `jev` route held to what the rest compose); absent when it decided it. */ reason?: string;
   /** Only in `choice` mode (#4904): what the one route question said and why the route is the one that ran. Absent in `traits` mode, whose lines are unchanged. */ picked?: Picked };
 /** The reason a route was taken, in `choice` mode: the {@link Via}s, plus the two ways a provider's pick is not taken. */
-export type Because = Via | "low-confidence" | "invalid-option" | "haiku-default";
+type Because = Via | "low-confidence" | "invalid-option" | "haiku-default";
 /** WHAT THE `route` QUESTION SAID (#4904): the pick (`null` for an answer that was not a configured route, or none asked), EVERY route's probability as given (`null` when none was), the reason, and the call's milliseconds. */
-export type Picked = { pick: string | null; because: Because; probabilities: Readonly<Record<string, number>> | null; ms: number };
+type Picked = { pick: string | null; because: Because; probabilities: Readonly<Record<string, number>> | null; ms: number };
 /** One answer per question; `null` is an answer that was not given: malformed, or under the confidence floor. The WINDOW reads these ({@link adjustWindow}); the route reads {@link Readings}. */
 export type Answers = { mechanical: boolean | null; subsystems: boolean | null; debugging: boolean | null; score: number | null };
 /**
@@ -72,10 +72,10 @@ export type Readings = { mechanical: number | null; subsystems: number | null; d
 /** The Region's largest size that is still "a small row" (the row's own number). */
 export const SMALL_ROW_FILES = 3;
 /** The complexity `score` a Haiku row may be at most (3 since a11ign#4877, the chairman's direction on the trial report, a11ign#4627), and the one a Sonnet/medium row is. */
-export const HAIKU_MAX_SCORE = 3;
+const HAIKU_MAX_SCORE = 3;
 /** The score a row is at most when it is Haiku's on size alone (#4902). */
-export const HAIKU_SMALL_SCORE = 2;
-export const MEDIUM_SCORE = 3;
+const HAIKU_SMALL_SCORE = 2;
+const MEDIUM_SCORE = 3;
 // THE ROUTING THRESHOLDS (#4875, the chairman's starting values, to be calibrated from the probabilities the decision log now keeps). Each is a probability, and each is LOW on purpose:
 // a row sent down a tier wrongly is caught by the escalation (a Haiku start costs about $0.10 and a restart; a Sonnet/high row's median cost is $1.01), so the price of being wrong
 // is small and the price of never trying is the cost of every row.
@@ -94,7 +94,7 @@ export const MEDIUM_MIN_P_SCORE = 0.6;
 /** ...AND P(subsystems = yes) BELOW this. */
 export const MEDIUM_MAX_P_SUBSYSTEMS = 0.5;
 /** A row is held at Sonnet/high, whatever else is said, when P(debugging = yes) reaches this: the cause is not in the row, and a cheap tier is where that is expensive. */
-export const HOLD_AT_P_DEBUGGING = 0.5;
+const HOLD_AT_P_DEBUGGING = 0.5;
 /** A sum of probabilities is rounded to this many places, so a row that is exactly 0.6 by the arithmetic is not 0.5999999999999999 by the machine's. */
 const PROBABILITY_PLACES = 6;
 const MEDIUM_EFFORT = "medium";
@@ -236,7 +236,7 @@ export const ROUTE_DATA: Readonly<Record<Route, RouteGuidance>> = Object.freeze(
     examples: [...SCORE_LEVEL_DATA[3].examples, SCORE_LEVEL_DATA[4].examples[0]].map(exampleText) },
 });
 
-export const ROUTE_INSTRUCTIONS = "Pick the cheapest route that finishes this row in one pass, with no move up to a stronger route afterwards. When unsure between two, pick the dearer: a row that moves up costs more than one that started there.";
+const ROUTE_INSTRUCTIONS = "Pick the cheapest route that finishes this row in one pass, with no move up to a stronger route afterwards. When unsure between two, pick the dearer: a row that moves up costs more than one that started there.";
 
 /**
  * THE ONE QUESTION (#4904): a `choice` whose options are the configured routes, each carrying its guidance. `fallback` is the row's own {@link fallbackRoute}, which is what `decide` hands
@@ -306,13 +306,13 @@ export function doneWhenItems(body: string): string[] {
 }
 
 /** The Acceptance's command text, or `null` for a row whose Acceptance is not a command. */
-export function acceptanceCommands(body: string): string | null {
+function acceptanceCommands(body: string): string | null {
   const section = extractAcceptanceSection(body);
   return section.kind === "commands" ? section.commands.join("\n") : null;
 }
 
 /** The files a Region names, with a directory counted as {@link DIRECTORY_FILES}. */
-export function regionFileCount(body: string): number {
+function regionFileCount(body: string): number {
   return regionEntries(body).reduce((total, entry) => total + (entry.endsWith("/") ? DIRECTORY_FILES : 1), 0);
 }
 
@@ -341,7 +341,7 @@ const SONNET_MEDIUM: TierProfile = Object.freeze({ kind: "claude", model: "sonne
  * What a route costs, as a RUNG and not as dollars: the cheapest first. The guard compares the provider's routes with the fallback's over the same rows, so only the order of the
  * rungs is claimed. The one number to tune, if a price reading ever says Haiku and Sonnet/medium are not one rung apart each.
  */
-export const ROUTE_COST: Readonly<Record<Route, number>> = Object.freeze({ "haiku/high": 1, "sonnet/medium": 2, "sonnet/high": 3 });
+const ROUTE_COST: Readonly<Record<Route, number>> = Object.freeze({ "haiku/high": 1, "sonnet/medium": 2, "sonnet/high": 3 });
 /** The provider routes the guard reads before it says anything: the chairman's figure (#4764), the last 20 that carry the fallback's would-be route. */
 export const GUARD_DECISIONS = 20;
 /** The failure-ledger class key (an event kind, like `main-red`). */
@@ -349,7 +349,7 @@ export const ROUTE_COSTLIER_THAN_FALLBACK = "route-costlier-than-fallback";
 const WOULD_BE = /^route (\S+)(?: window \d+k(?: \([^)]*\))?)? via jev .*\[fallback would be (\S+)\]$/;
 const isRoute = (value: string): value is Route => Object.hasOwn(ROUTE_COST, value);
 
-export type RouteCostReading =
+type RouteCostReading =
   | { kind: "too-few"; compared: number }
   | { kind: "read"; compared: number; providerMean: number; fallbackMean: number; costlier: boolean };
 
@@ -396,7 +396,7 @@ function haikuProfileOf(row: RouteRow, switchPath: string | undefined): HaikuAsk
   return profile === null ? { refused } : { profile };
 }
 
-export type RouteDeps = DecisionDeps & { /** For a test: the Haiku switch file. */ haikuSwitchPath?: string;
+type RouteDeps = DecisionDeps & { /** For a test: the Haiku switch file. */ haikuSwitchPath?: string;
   /** For a test, or a caller that has read it: the project's `routing` block. Absent is the home project's declaration, and that unreadable is {@link ABSENT_ROUTING}. */ routing?: RoutingDeclaration };
 
 /** THE `--autocompact` WINDOW A ROUTE'S START GETS (#4738), read off its profile: no profile is the ordinary one, at {@link AUTOCOMPACT_WINDOW_TOKENS}. */
@@ -426,13 +426,13 @@ export const LARGE_ROW_FILES = Math.floor(MIN_WORKING_ROOM_TOKENS / FILE_READ_TO
 /** Twice that: each file read once to understand it and again around the edits. */
 export const LARGEST_ROW_FILES = LARGE_ROW_FILES * 2;
 /** Two repositories mean two checkouts' layouts and conventions held at once, whatever the file count; three is the widest row there is. */
-export const MULTI_REPOSITORIES = 2;
-export const LARGEST_REPOSITORIES = 3;
+const MULTI_REPOSITORIES = 2;
+const LARGEST_REPOSITORIES = 3;
 /** The provider's complexity `score` from which a row is larger than its Region says ("a change that touches how two modules agree") and up to which it is smaller ("a few stated edits"). */
-export const LARGER_SCORE = 4;
-export const SMALLER_SCORE = 2;
+const LARGER_SCORE = 4;
+const SMALLER_SCORE = 2;
 /** The key in `.agent-org/decisions.json` that lets the provider's answers move the window. The router's own `model-routing` key is what lets it be ASKED. */
-export const WINDOW_SWITCH = "model-routing-window";
+const WINDOW_SWITCH = "model-routing-window";
 const TOKENS_PER_K = 1_000;
 
 // --- HAIKU BY DEFAULT, SONNET ON EVIDENCE (a11ign#5110, the chairman's direction of 2026-10-11) ---
@@ -442,13 +442,13 @@ const TOKENS_PER_K = 1_000;
 // Haiku needed 0.5 against a fallback and only 16 of 70 picks reached it. The move UP is not here: it is a fresh Sonnet start on evidence (`wake.ts`, {@link HAIKU_DEFAULT_CI_FAILURES}).
 // Behind `routing.haikuDefault` in `.agent-org/decisions.json`, so the revert is that key off.
 /** The key in `.agent-org/decisions.json` that makes a Tests-first row Haiku's unless the provider vetoes. */
-export const HAIKU_DEFAULT_SWITCH = "routing.haikuDefault";
+const HAIKU_DEFAULT_SWITCH = "routing.haikuDefault";
 /** A Haiku worker is moved to a fresh Sonnet session after this many distinct red heads of its pull request ("tests still failing after 3 fix attempts"); `engineer-escalation.ts`'s own cap is 2. */
 export const HAIKU_DEFAULT_CI_FAILURES = 3;
 
-export const windowLabel = (tokens: number): string => `${Math.round(tokens / TOKENS_PER_K)}k`;
+const windowLabel = (tokens: number): string => `${Math.round(tokens / TOKENS_PER_K)}k`;
 
-export type RegionSize = { files: number; repositories: number };
+type RegionSize = { files: number; repositories: number };
 /** The Region's files (a directory counts as {@link DIRECTORY_FILES}) and the repositories its entries are keyed to; a bare path is the project's first repository. */
 export function regionSize(body: string): RegionSize {
   const keys = new Set(regionEntries(body).map((entry) => splitRegionEntry(entry).key));
@@ -470,7 +470,7 @@ export function fallbackWindow(body: string): { tokens: number; basis: string } 
  * THE PROVIDER'S READING OF A SIZE, PURE. One rung UP when either answer says the row is larger (`subsystems` yes, or a score of at least {@link LARGER_SCORE}); one rung DOWN only
  * when BOTH are given and say smaller, because a compaction mid-edit costs more than the rung does. An answer that was not given (`null`) counts for nothing in either direction.
  */
-export function adjustWindow(tokens: number, { score, subsystems }: Pick<Answers, "score" | "subsystems">): number {
+function adjustWindow(tokens: number, { score, subsystems }: Pick<Answers, "score" | "subsystems">): number {
   const larger = subsystems === true || (score !== null && score >= LARGER_SCORE);
   const smaller = subsystems === false && score !== null && score <= SMALLER_SCORE;
   const at = Math.max(0, SONNET_WINDOW_RUNGS.indexOf(tokens));
@@ -549,7 +549,7 @@ export async function routeEngineer(row: RouteRow, deps: RouteDeps): Promise<Rou
 }
 
 /** The line a start writes when it reused a remembered provider answer (#4990): the route is the earlier start's line, and this start asked nobody. */
-export const REUSED_LINE = "route reused";
+const REUSED_LINE = "route reused";
 
 /** One line per provider answer, beside the decision log: the key of what the provider was shown, and the answer it gave. */
 const ROUTE_MEMORY_FILE = "route-memory.jsonl";
@@ -723,7 +723,7 @@ function takeVerdict(verdict: Verdict, fallback: Route, row: RouteRow, deps: Rou
  * THE VETO, PURE (a11ign#5110): on a Tests-first row Haiku is the route unless the provider picked a CONFIGURED Sonnet route at P >= `routing.sonnetVetoMinP`. A pick that is Haiku, a
  * Sonnet pick under the bar, and no pick at all are each Haiku, and each says which. `null` is a project that did not configure Haiku: it has nothing to default to.
  */
-export function haikuDefaultVerdict(answer: Answer | null, routing: Pick<RoutingDeclaration, "routes" | "sonnetVetoMinP">): Verdict | null {
+function haikuDefaultVerdict(answer: Answer | null, routing: Pick<RoutingDeclaration, "routes" | "sonnetVetoMinP">): Verdict | null {
   if (!routing.routes.includes("haiku/high")) return null;
   const pick = answer?.confidence === undefined ? null : String(answer.value) as Route;
   const p = pick === null || answer?.probabilities === undefined ? null : Number((answer.probabilities[pick] ?? 0).toFixed(PROBABILITY_PLACES));
@@ -833,13 +833,13 @@ export function recordRouteOutcome(row: number, outcome: string, deps: Pick<Deci
 
 /** A row that compacts more than this many times in one session had a window too small for it. */
 export const WINDOW_TOO_SMALL_COMPACTIONS = 2;
-export const WINDOW_TOO_SMALL = "window too small";
+const WINDOW_TOO_SMALL = "window too small";
 const ROUTE_LINE = /^route (\S+) window (\d+)k(?: \([^)]*\))? via \S+/;
 const ROW_ID = /^row-(\d+)$/;
 
-export type WindowReading = { row: number; route: string; windowK: number; outcome: string | null; tooSmall: boolean };
+type WindowReading = { row: number; route: string; windowK: number; outcome: string | null; tooSmall: boolean };
 /** What the trace store measured of a row: its most compactions in one session and its priced cost. */
-export type WindowFacts = { compactions: number; costUsd: number };
+type WindowFacts = { compactions: number; costUsd: number };
 
 /** ONE READING PER ROW from the decision log's lines: the LAST route line (a row routed twice took the later), the last outcome that is neither a route nor a verdict, and whether the verdict is there. */
 export function windowReadings(lines: readonly unknown[]): WindowReading[] {

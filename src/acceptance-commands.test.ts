@@ -16,11 +16,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, checkoutPullRequestMerge, ciInputOf, installPullRequestCheckout, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, OUTSIDE_ACCEPTANCE_FLAG, outsideAcceptanceOn, prAuthorFromEnv, runCiBodyReports, shadowAcceptanceVerdict,
-  thisPullRequestInput } from "./acceptance-commands.ts";
+import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, ciInputOf, prAuthorFromEnv, runCiBodyReports, thisPullRequestInput } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { checkoutPullRequestMerge, installPullRequestCheckout, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, OUTSIDE_ACCEPTANCE_FLAG, outsideAcceptanceOn, shadowAcceptanceVerdict } from "./acceptance-commands.ts";
 import { INSIDE, reviewTrustOf } from "./review-trust.ts";
-import { acceptanceGateOf, greenUnarmedOrders } from "./work-gate/pr-orders.ts";
-import { ACCEPTANCE_GATE_SWITCH_ENV, gateUnarmedOnAcceptance } from "./work-gate/tick.ts";
+import { acceptanceGateOf, greenUnarmedOrders } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { ACCEPTANCE_GATE_SWITCH_ENV, gateUnarmedOnAcceptance } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { resolveAcceptanceSource } from "./acceptance-file.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 

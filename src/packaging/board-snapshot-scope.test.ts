@@ -26,7 +26,7 @@ import {
   writeScopedSnapshot,
 } from "../board-snapshot-scope.ts";
 import { refusalCause, PROJECT_UNREADABLE, settleClosedStatus } from "../settle-closed-status.ts";
-import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands.ts";
+import { closureRequirementMessage, deriveClosureRequirements } from "../acceptance-commands/classification.ts";
 
 // Resolved from this file, never a path typed from the project's root: the tool sits at `packages/agent-org/` in the project and at the
 // root of its own checkout, and a typed path that names no file makes `deriveClosureRequirements` answer `[]` -- a clean reading of nothing.

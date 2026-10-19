@@ -13,12 +13,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate.ts";
-import { PR_OWNER_ROUTING_FLAG, withholdOutsideFollowUps } from "./work-gate/pr-orders.ts";
-import { prOwnerRoutingFlagOn } from "./work-gate/tick.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { PR_OWNER_ROUTING_FLAG } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { withholdOutsideFollowUps } from "./work-gate/pr-orders.ts";
+import { prOwnerRoutingFlagOn } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { OUTSIDE, INSIDE, reviewTrustOf, type DeclaredIdentities } from "./review-trust.ts";
 import { CHAIRMAN_LOGINS } from "./work-gate/vocabulary.ts";
-import { emptyCanaryState, STANDARD_MACHINERY_SIGNALS, withMachineryFlag } from "./org-health.ts";
+import { emptyCanaryState, STANDARD_MACHINERY_SIGNALS } from "./org-health/fleet-build-incident.ts";
+import { withMachineryFlag } from "./org-health.ts";
 
 type Order = { session: string; cause: string; subject?: string; causeKey: string; };
 type Pr = Record<string, unknown>;

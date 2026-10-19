@@ -386,19 +386,21 @@ async function realPorts(host: HostFile, home: string): Promise<Ports> {
 /** Launch flags need `wake.ts`, which reads the declarations: imported only here, after the files are restored. The host path comes from `host-config.ts`, the resolver `spawnEnvironment` calls, for the same reason. */
 export function withLaunchFlags(ports: Ports, tool: string): Ports {
   let wake: any;
+  let release: any;
   let profile: any;
   let hostConfig: any;
   return {
     ...ports,
     prepare: async () => {
       wake = await import(pathToFileURL(join(tool, "src/wake.ts")).href);
+      release = await import(pathToFileURL(join(tool, "src/wake/is-release-line.ts")).href);
       profile = await import(pathToFileURL(join(tool, "src/worker-profile.ts")).href);
       hostConfig = await import(pathToFileURL(join(tool, "src/host-config.ts")).href);
     },
     hostPath: () => hostConfig.hostConfigPath(),
     flagsFor: (action) => {
       const p = action.profile;
-      if (action.role === "seat") return wake.seatStartFlags({ model: p.model, effort: p.effort, autocompact: p.autocompact });
+      if (action.role === "seat") return release.seatStartFlags({ model: p.model, effort: p.effort, autocompact: p.autocompact });
       const model = p.model ?? "sonnet";
       const window = /haiku/.test(model) ? profile.HAIKU_AUTOCOMPACT_WINDOW_TOKENS : profile.AUTOCOMPACT_WINDOW_TOKENS;
       return profile.agentArgs({ kind: "claude", model, effort: p.effort ?? "high", autocompactWindow: window }, {});

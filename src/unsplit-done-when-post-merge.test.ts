@@ -11,7 +11,7 @@
 // every `not flagged` case is paired with the SAME words made an act (cases 3 and 5), so a classifier that never fires fails case 1 and one that always fires fails 2-5.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createIssue } from "./row-file.ts";
+import { createIssue } from "./row-file/roadmap-without-parent-refusal.ts";
 import { liveCheckItems, unfinishableItems, unsplitDoneWhenRefusal } from "./unsplit-done-when.ts";
 
 const NOW = new Date("2026-10-10T20:40:00Z");

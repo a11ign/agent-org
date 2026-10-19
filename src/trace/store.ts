@@ -111,7 +111,7 @@ export type TraceEvent = {
 export const NO_USAGE_RECORD = "no-usage-record";
 
 /** What a wake did (agent-org#487). On a `wake` event `outcome` is one of these or `null`; on a queue exit it is `merged` | `unmerged`: the kinds do not overlap. */
-export type WakeOutcome = "wrote" | "no-op" | "escalated";
+type WakeOutcome = "wrote" | "no-op" | "escalated";
 
 export type ToolRead = { tool: "Read" | "Grep" | "Glob" | "mixed"; tokens: number | null };
 
@@ -455,13 +455,13 @@ function turnsOf({ records, groups, session, transcript, owner, priorAt, rowRepo
  * The effort a turn ran at, as the transcript record names it: `perTurnEffort` (the turn's own) before `effort` (the session's). MEASURED on Claude Code 2.1.296, where the two agree on
  * every one of 43,000+ assistant records and neither is on a record an older client wrote. Present only when the record carried one: an absent effort is unknown, never `low`.
  */
-export function effortOf(record: any): { effort?: string } {
+function effortOf(record: any): { effort?: string } {
   const named = [record?.perTurnEffort, record?.effort].find((value) => typeof value === "string" && value !== "");
   return named === undefined ? {} : { effort: named };
 }
 
 /** The tools whose results the report calls READ tokens. */
-export const READ_TOOLS = ["Read", "Grep", "Glob"];
+const READ_TOOLS = ["Read", "Grep", "Glob"];
 
 /** @param tokens the window a turn was sent: everything on the input side */
 const windowOf = (tokens: Tokens) => tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h;
@@ -766,7 +766,7 @@ export function costBy(events: TraceEvent[], by: CostBy, since: number | null = 
 }
 
 /** What a store file holds: its lines, the ids among them, the lines a rewrite removes (all but the last copy of an id) and how many of those are of each `kind`. */
-export type StoreCount = { lines: number; distinct: number; removed: number; byKind: Record<string, number>; };
+type StoreCount = { lines: number; distinct: number; removed: number; byKind: Record<string, number>; };
 
 const TAIL_POLLS = 100;
 const TAIL_POLL_MS = 10;
@@ -984,7 +984,7 @@ const LEDGER_WRITES = new Set(["issue", "pr"].flatMap((noun) => [...GH_WRITE_VER
 const LEDGER_READS = new Set(["issue view", "issue list", "issue status", "pr view", "pr list", "pr status", "pr checks", "pr diff", "run view", "run list", "run watch", "repo view",
   "search issues", "search prs", "label list", "release list", "release view", "auth status", "auth git-credential"]);
 
-export type Send = { from: string | null; at: number };
+type Send = { from: string | null; at: number };
 
 const SENT_BY = /^Sent to you by `([^`]+)`/;
 const SENT_BY_UNKNOWN = /^Sent to you by a caller/;

@@ -17,7 +17,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostConfig } from "./host-config.ts";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
-import { deliver, spawnInvocation, postOutsideVerdictsOf, reviewerEnvironment } from "./wake.ts";
+import { deliver } from "./wake/clear-settle-ms.ts";
+import { spawnInvocation, reviewerEnvironment } from "./wake/is-pull-request-spawn-order.ts";
+import { postOutsideVerdictsOf } from "./wake/holds-as-fyi.ts";
 import { DEPENDENCY_BOT_LOGIN } from "./dependency-bot-login.ts";
 import { reviewerDoorPath } from "./reviewer-door-path.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
@@ -26,6 +28,7 @@ import {
   outsideReviewerEnvironment,
   outsideVerdictBlock, postOutsideVerdict, postOutsideVerdicts, reviewTrustOf, type DeclaredIdentities, type DoorRun, type ReviewTrust,
 } from "./review-trust.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 type Order = Parameters<typeof deliver>[0][number];
 type Events = string[];
@@ -177,8 +180,8 @@ test("#1311: an outside reviewer's pane carries no account: no GH_CONFIG_DIR, no
 test("#1311: the door the gate posts through is the door the host installs -- one reviewerDoorPath, re-exported by host-units", () => {
   // host-units reads git history, so this test does not import it (the history ratchet in src/packaging/work-gate.test.ts). It reads
   // the one definition the gate and the host both call, and checks host-units re-exports that definition rather than writing its own.
-  const hostUnits = readFileSync(new URL("./host-units.ts", import.meta.url), "utf8");
-  assert.match(hostUnits, /import \{ reviewerDoorPath \} from "\.\/reviewer-door-path\.ts";/);
+  const hostUnits = moduleSource("host-units.ts");
+  assert.match(hostUnits, /import \{ reviewerDoorPath \} from "\.\.\/reviewer-door-path\.ts";/);
   assert.match(hostUnits, /export \{ reviewerDoorPath \};/);
   assert.doesNotMatch(hostUnits, /export function reviewerDoorPath/);
   assert.equal(reviewerDoorPath({ reviewerBin: "/x/bin" }), "/x/bin/pr-review-verdict");

@@ -18,12 +18,11 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  spawnableReviewer, endFinishedReviewers, reviewerPathsFrom, listingIsComplete, observeOpenReviewer,
-  REVIEWER_DEAD_AFTER_TICKS,
-  SETTLE_TEST_CLOCK_ENV,
-} from "./wake.ts";
-import { readReviewerRegistry } from "./work-gate.ts";
+import { spawnableReviewer, reviewerPathsFrom, REVIEWER_DEAD_AFTER_TICKS } from "./wake/ensure-reviewer-token.ts";
+import { endFinishedReviewers, observeOpenReviewer } from "./wake/reset.ts";
+import { listingIsComplete } from "./herdr-agents.ts";
+import { SETTLE_TEST_CLOCK_ENV } from "./wake/holds-as-fyi.ts";
+import { readReviewerRegistry } from "./work-gate/causes/org-health-reviewer-auth.ts";
 
 const STUB_MODE = 0o755;
 const TICK_ENTRY = fileURLToPath(new URL("./work-tick.ts", import.meta.url));

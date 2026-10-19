@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addressed, deliver, claimOrdersIn } from "./wake.ts";
+import { addressed, deliver } from "./wake/clear-settle-ms.ts";
+import { claimOrdersIn } from "./wake/merge-queue-wait-limit-ms.ts";
 import { armOf, tripsArmOf, ARM, TRIPS_ARM, CALM_FINISH_PARAGRAPH, ROUND_TRIPS_PARAGRAPH } from "./worker-profile.ts";
 
 const AT = 1_791_000_000_000;

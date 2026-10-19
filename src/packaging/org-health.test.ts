@@ -41,11 +41,16 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading, redPrReading, refusedRowReading,
-  primaryReading, primaryStandingSince, readLastMergedAt, readLatestMerge, orgHealthReadings,
-  orgHealthOrders, orgHealthTick } = await import("../org-health.ts");
-const { CAUSES, JUDGMENT_CAUSES, START_CAUSES, GH_READS, UNCLAIMABLE_AFTER_TICKS, decide, withPrOwners, redPrFacts } =
-  await import("../work-gate.ts");
+const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading } = await import("../org-health/no-merge-hours.ts");
+const { redPrReading, refusedRowReading, primaryReading } = await import("../org-health/review-gated-minutes.ts");
+const { primaryStandingSince, readLastMergedAt, readLatestMerge } = await import("../org-health/sweep-fact.ts");
+const { orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("../org-health/fleet-build-incident.ts");
+const { CAUSES, JUDGMENT_CAUSES, START_CAUSES } = await import("../cause-declaration.ts");
+const { GH_READS } = await import("../work-gate/reads/exit.ts");
+const { UNCLAIMABLE_AFTER_TICKS } = await import("../work-gate/causes/rows-claims.ts");
+const { decide } = await import("../work-gate/tick/blocker-cleared-reading.ts");
+const { withPrOwners } = await import("../work-gate/pr-owners.ts");
+const { redPrFacts } = await import("../work-gate/tick.ts");
 const { profileFor } = await import("../worker-profile.ts");
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
@@ -433,13 +438,18 @@ const EXEMPT: Record<string, string> = {
   "merge-queue.ts": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
   "queue-stalled.ts": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
   "work-gate/pr-state.ts": "the gate's own settled-green / still-running reading of a rollup (`checksSettledGreen`, `blockingChecks`): it asks whether checks have SETTLED, and counts and ages no red PR (a11ign#5152: it was one file with `redPrFacts`, which imports the decider)",
-  "work-gate/reads.ts": "names `statusCheckRollup` in the `gh pr list --json` field list and marks `checksPending` from it; reads no verdict (a11ign#5152)",
+  "work-gate/reads/exit.ts": "names `statusCheckRollup` in the `gh pr list --json` field list and marks `checksPending` from it; reads no verdict (a11ign#5152)",
   "work-gate/causes/pr-reviews.ts": "narrows a rollup to the newest run per name to tell a PR that is still RUNNING from one that is settled, for the review-blocked order; counts no red (a11ign#5152)",
   "work-gate/causes/org-health-github-incident.ts": "reads a FAILED job's own conclusion to tell a runner that never started from a red check; it names one job's failure, not how many PRs are red (a11ign#5152)",
-  "work-gate/pr-orders.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
+  "work-gate/pr-orders.ts": "the order assembly that calls the red-only logic: who is asked, not how many are red (`HOLD_RED_JOBS` is pinned equal to red-pr.ts's in org-retro.test.ts)",
+  "work-gate/pr-orders/red-only-by-superseded-run.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
+  "org-health/state-label-reading.ts": "its `CirclePr` type names the rollup field so the circle reader can carry it; it reads no verdict and counts no red PR",
+  "org-retro/retro-cause.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
+  "work-gate/tick/blocker-cleared-reading.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",
 };
 // 3 before a11ign#5152 split `work-gate.ts`: its readers of the rollup were ONE file, which imported the decider for `redPrFacts`; they are four modules now.
-const EXEMPT_CEILING = 7;
+// Eleven: the readers of the rollup now sit in `work-gate/`, `org-health/` and `org-retro/` files, and four of them read pending or shadow state, not red.
+const EXEMPT_CEILING = 11;
 
 /** Code with every `//`, `/* *\/` comment removed, so a header that NAMES `statusCheckRollup` does not enlist its file. */
 const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");
@@ -463,7 +473,11 @@ function agentOrgModules(): { file: string; source: string }[] {
 test("#2956 ONE DECIDER: every agent-org module that reads red PR state imports `isBrokenRed` or is exempt WITH A REASON; the exemptions only shrink", () => {
   const modules = agentOrgModules();
   const readers = modules.filter((m) => READS_RED.test(codeOf(m.source))).map((m) => m.file);
-  for (const control of ["org-retro.ts", "org-health.ts"]) assert.ok(readers.includes(control), `POSITIVE CONTROL: ${control} must be in the scanned population (${readers.join(", ")})`);
+  // A module split into a directory of its own (`org-retro.ts` and `org-retro/`) is in the population through any of its files.
+  for (const control of ["org-retro.ts", "org-health.ts"]) {
+    const stem = control.replace(/\.ts$/, "");
+    assert.ok(readers.some((file) => file === control || file.startsWith(`${stem}/`)), `POSITIVE CONTROL: ${control} must be in the scanned population (${readers.join(", ")})`);
+  }
   assert.deepEqual(modules.flatMap((m) => redOffence(m.file, m.source) ?? []), []);
   assert.deepEqual(Object.keys(EXEMPT).filter((f) => !readers.includes(f)), [], "a stale exemption: that module no longer reads red state, so remove the entry");
   assert.ok(Object.values(EXEMPT).every((why) => why.length > 20), "every exemption names its reason");

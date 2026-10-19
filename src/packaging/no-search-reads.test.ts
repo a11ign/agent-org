@@ -28,6 +28,7 @@
  *      `rows-since.ts` (a marker that is tested in BOTH directions), and the new `rows-since.ts` reader answers a `run` that refuses every search argv, pages to the
  *      first row before its window, REFUSES a window longer than its pages, and sits under the one refusal memory.
  */
+import { moduleSource } from "../lib/module-source.ts";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -35,15 +36,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { lookupClaimedRegions } from "../row-claim/file-overlap-rule.ts";
-import { readChairmanBlocked, readClaimedRowComments, readClosedAnswerRows, readClosedClaimLabelRows, readPromotableRows, readReadyRows, readRecentlyClosed,
-  readTrackerLanes } from "../work-gate.ts";
+import { readChairmanBlocked } from "../work-gate/causes/rows-chairman.ts";
+import { readClaimedRowComments, readPromotableRows, readReadyRows } from "../work-gate/reads.ts";
+import { readClosedAnswerRows } from "../work-gate/causes/rows-answers.ts";
+import { readClosedClaimLabelRows } from "../work-gate/causes/rows-claims-closed.ts";
+import { readRecentlyClosed } from "../work-gate/causes/rows-blocker-cleared.ts";
+import { readTrackerLanes } from "../work-gate/tick.ts";
 import { forgetRefusedReads, readClaimedRows, readRowsByLabel } from "../ticket-port/rows-by-label.ts";
 import { foldPage, readMergedPullRequests, readRowsSince, SINCE_PAGE_SIZE, WindowCutShort, type SinceRead } from "../ticket-port/rows-since.ts";
 import { mergedPrsInWindow } from "../close-rows-sweep.ts";
 import { fetchReadyIssueNumbers } from "../board-snapshot.ts";
 import { ghReadyReader } from "../untiered-ready-rows.ts";
 import { readClosedRows } from "../trace/haiku-tier-report.ts";
-import { readMergedSince } from "../org-retro.ts";
+import { readMergedSince } from "../org-retro/retro-cause.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 import { closedAnswerConnection, connectionOf, readsClosedAnswerRows, readsRecentlyClosed, readsRowsByLabel, readsRowsSince, recentlyClosedConnection,
   sinceAnswer } from "./rows-by-label-fixtures.ts";
@@ -170,22 +175,22 @@ const COVERED = [
   // #5076: the twelve other readers of the table in #5074 (`fleet-gated-nightly.ts`, which lists through `work-gate.ts`'s selector, is its own row).
   "ready-label-audit.ts", "untiered-ready-rows.ts", "board-snapshot.ts", "board-data.ts", "close-rows-sweep.ts", "close-rows-for-merged-pr.ts", "hand-fix-ledger.ts", "dora.ts",
   "org-retro.ts", "provider-low-confidence.ts", "messaging/watch.ts", "trace/haiku-tier-report.ts",
-  ...readdirSync(join(SRC, "work-gate")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `work-gate/${f}`),
-  ...readdirSync(join(SRC, "row-claim")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `row-claim/${f}`),
-  ...readdirSync(join(SRC, "ticket-port")).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `ticket-port/${f}`),
+  ...readdirSync(join(SRC, "work-gate"), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `work-gate/${f}`),
+  ...readdirSync(join(SRC, "row-claim"), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `row-claim/${f}`),
+  ...readdirSync(join(SRC, "ticket-port"), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).map((f) => `ticket-port/${f}`),
 ];
 
 test("NEGATIVE CONTROL (source): no file the claim or the gate reads through builds a list argv carrying `--label` or `--search`", () => {
   assert.ok(COVERED.includes("row-claim/file-overlap-rule.ts") && COVERED.includes("ticket-port/rows-by-label.ts"),
     "the walk sees the files this row converted: an empty walk would pass for the wrong reason");
   assert.ok(["work-gate.ts", "queue-table.ts", "work-tick.ts", "work-gate/org-health.ts"].every((file) => COVERED.includes(file)), "and the gate's own files (#5050)");
-  for (const file of COVERED) assert.deepEqual(searchBackedLists(readFileSync(join(SRC, file), "utf8")), [], `${file} lists rows through a SEARCH`);
+  for (const file of COVERED) assert.deepEqual(searchBackedLists(moduleSource(file)), [], `${file} lists rows through a SEARCH`);
 });
 
 test("POSITIVE CONTROL (source, #5074): `wake.ts` and `row-file.ts` are walked, and each still lists rows -- with a plain list, which is no search", () => {
   assert.ok(COVERED.includes("wake.ts") && COVERED.includes("row-file.ts"), "the walk sees the two files this row converted");
   for (const file of ["wake.ts", "row-file.ts"]) {
-    assert.match(readFileSync(join(SRC, file), "utf8"), /\["issue", "list", /, `${file} still names an \`issue list\`, so the guard is looking at a file that lists`);
+    assert.match(moduleSource(file), /\["issue", "list", /, `${file} still names an \`issue list\`, so the guard is looking at a file that lists`);
   }
 });
 
@@ -359,7 +364,7 @@ test("POSITIVE CONTROL (source, #5076): the twelve are walked, and each reads th
   assert.ok(TWELVE.every((file) => COVERED.includes(file)), "the guard walks all twelve");
   assert.equal(new Set(TWELVE).size, 12, "twelve distinct files: an empty or short list would pass for the wrong reason");
   for (const file of TWELVE) {
-    const source = readFileSync(join(SRC, file), "utf8");
+    const source = moduleSource(file);
     assert.ok(readsThroughConnections(source), `${file} reads through ticket-port/rows-by-label.ts or rows-since.ts`);
     const without = source.replace(/^import .*ticket-port\/rows-(?:by-label|since)\.ts.*$/gm, "");
     assert.equal(readsThroughConnections(without), false, `the marker notices the import gone from ${file}: it is not a marker that passes whatever is there`);
@@ -368,7 +373,7 @@ test("POSITIVE CONTROL (source, #5076): the twelve are walked, and each reads th
 
 test("NEGATIVE CONTROL (source, #5076): a `--label` or `--search` list added to any of the twelve is SEEN by the walk", () => {
   for (const file of TWELVE) {
-    const source = readFileSync(join(SRC, file), "utf8");
+    const source = moduleSource(file);
     assert.deepEqual(searchBackedLists(source), [], `${file} lists nothing through a search today`);
     const mutated = `${source}\nexport const regress = (run) => run(["issue", "list", "--repo", r, "--state", "open", "--label", "ready", "--json", "number"]);\n`;
     assert.equal(searchBackedLists(mutated).length, 1, `${file} with a \`--label\` list appended turns the guard red`);

@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { subjectMention, subjectRef } from "../review-attribution.ts";
-import { labelsOf, sessionOf } from "../work-gate.ts";
+import { labelsOf, sessionOf } from "./vocabulary.ts";
 
 /** Where `run-job.yml` writes, beside the gate's other host state (`REVIEWER_STATE_DIR`). */
 export const RECORD_DIR = `${process.env.HOME}/.cache/a11ign/lab-jobs`;

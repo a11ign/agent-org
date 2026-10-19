@@ -98,14 +98,11 @@ import { readOwnLogin, readPullFeedback, type PullFeedback } from "../ticket-por
 import { sweepRetargets } from "../ticket-port/stack-retarget.ts";
 import { parsePaths } from "./overlap.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { CONCLUDED, HANDED_BACK, hasPlan, isBeingPublished, isParked, isWatched, openPulls, pullsOf, resumesOnConflict, RESULT_KINDS, stackedOn } from "./board-view.ts";
-import {
-  batchPlanDone, clearEdit, clearMove, conflictRound, proposedEdit, dismiss as dismissFinished, feedbackRound, finish, isLive, leaveBatch, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, nextStarts,
-  observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordMove, recordPaths, recordPullFiles, roundsLeft,
-  completableRuns, declaredRemains, recordClosedByBoard, recordPullStates, recordRepos, recordRetargets, recordTrackerStates, recordVerdictNotPosted, remove as removeQueued, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking,
-  BACKGROUND_GONE, BACKGROUND_GONE_MS, markWriterRunning, markWriterStarting, observeWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting,
-  type Background, type DraftRecord, type Entry, type Outcome, type ProposedEdit, type PublishRun, type Queue, type RunChoice, type WriterRun, type WrittenOutcome,
-} from "./queue.ts";
+import { CONCLUDED, HANDED_BACK, hasPlan, openPulls, pullsOf, RESULT_KINDS } from "./board-view/view-ticket.ts";
+import { isBeingPublished, isParked, isWatched, resumesOnConflict, stackedOn } from "./board-view/settled-by-pulls.ts";
+import { batchPlanDone, conflictRound, feedbackRound, finish, markPublishRunning, markPublishStarting, markResumed, markRunning, markStarting, observe, noteWorking, observePublish, park, pathsUnread, planDone, publishDone, publishFailed, publishStarts, recordBlockers, recordPaths, recordPullFiles, roundsLeft, completableRuns, recordPullStates, recordRepos, recordRetargets, recordTrackerStates, recordVerdictNotPosted, unpark, unreadBlockerKeys, unreadPaths, unsettledKeys, watchWorking } from "./queue/approve.ts";
+import { clearEdit, clearMove, proposedEdit, dismiss as dismissFinished, isLive, leaveBatch, recordMove, declaredRemains, remove as removeQueued, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Background, type DraftRecord, type Entry, type Outcome, type ProposedEdit, type PublishRun, type Queue, type RunChoice, type WriterRun, type WrittenOutcome } from "./queue/declared-remains.ts";
+import { nextStarts, recordClosedByBoard, markWriterRunning, markWriterStarting, observeWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { DRAFT_DIR, newDraftId, parseWriterOutcome, readDrafts, resolveDuplicates } from "./writer.ts";
 import { unreachablePlugins } from "./plugins.ts";

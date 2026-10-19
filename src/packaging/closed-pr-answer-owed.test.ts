@@ -19,8 +19,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readClosedAnswerRows, withoutEndedAnswerSessions, rowsOwingAnswers, answerOrders, GH_READS,
-  ANSWER_PREFIX } from "../work-gate.ts";
+import { readClosedAnswerRows, withoutEndedAnswerSessions, rowsOwingAnswers, answerOrders } from "../work-gate/causes/rows-answers.ts";
+import { GH_READS } from "../work-gate/reads/exit.ts";
+import { ANSWER_PREFIX } from "../waiting-condition.ts";
 import { readsClosedAnswerRows } from "./rows-by-label-fixtures.ts";
 
 /** A row as `readClosedAnswerRows` returns it. */

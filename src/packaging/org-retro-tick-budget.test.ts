@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import * as retro from "../org-retro.ts";
+import * as retro_0 from "../org-retro.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const NOW = Date.parse("2026-10-12T01:00:00Z");
@@ -39,11 +39,11 @@ const MERGED_COST_MS = 70 * 1000;
 function tickWith(stateDir: string, now: number, { budgetMs, clock }: { budgetMs?: number; clock: { ms: number } }) {
   const said: string[] = [];
   const merged = { reads: 0 };
-  const orders = retro.retrospectiveTick({
+  const orders = retro_0.retrospectiveTick({
     now, stateDir, log: (line) => said.push(line), readLedger: () => "", readUntiered: () => null,
-    read: (where) => retro.readWhenDoraIsRead(where, {
+    read: (where) => retro_0.readWhenDoraIsRead(where, {
       dora: { repositories: [] },
-      readRest: (rest) => retro.readRetroClasses({
+      readRest: (rest) => retro_0.readRetroClasses({
         ...rest,
         readMergedRepositories: () => {
           merged.reads += 1;
@@ -67,17 +67,17 @@ test("THE CONTROL: with a budget no tick reaches, the first tick offers the day'
 test("THE CUT: a class that starts past the budget waits for the next tick, nothing is offered, and the log names it", () => {
   const stateDir = tmpDir("retro-budget-cut-");
   const clock = { ms: NOW };
-  const first = tickWith(stateDir, NOW, { budgetMs: retro.RETRO_TICK_BUDGET_MS, clock });
+  const first = tickWith(stateDir, NOW, { budgetMs: retro_0.RETRO_TICK_BUDGET_MS, clock });
   assert.equal(first.orders.length, 0);
   const stop = first.said.find((line) => line.startsWith("org-retro: read stopped at "));
   assert.equal(stop, "org-retro: read stopped at open pull requests after 70 s (1 of 15 classes read); no org-retrospective order until every class is read.\n");
-  assert.equal(existsSync(join(stateDir, retro.RETRO_CLASSES_FILE)), true);
+  assert.equal(existsSync(join(stateDir, retro_0.RETRO_CLASSES_FILE)), true);
 });
 
 test("THE RESUME: the next tick reads the classes the first left, not the merged lists again, and offers exactly one order", () => {
   const stateDir = tmpDir("retro-budget-resume-");
   const clock = { ms: NOW };
-  tickWith(stateDir, NOW, { budgetMs: retro.RETRO_TICK_BUDGET_MS, clock });
+  tickWith(stateDir, NOW, { budgetMs: retro_0.RETRO_TICK_BUDGET_MS, clock });
   const second = tickWith(stateDir, NEXT_TICK, { clock: { ms: NEXT_TICK } });
   assert.equal(second.merged.reads, 0);
   assert.equal(second.orders.length, 1);
@@ -85,6 +85,6 @@ test("THE RESUME: the next tick reads the classes the first left, not the merged
 });
 
 test("THE BUDGET IS WELL UNDER THE GATE'S (300 s): one tick's share of the retro read is 60 s", () => {
-  assert.equal(retro.RETRO_TICK_BUDGET_MS, 60_000);
-  assert.ok(retro.RETRO_TICK_BUDGET_MS < 300_000);
+  assert.equal(retro_0.RETRO_TICK_BUDGET_MS, 60_000);
+  assert.ok(retro_0.RETRO_TICK_BUDGET_MS < 300_000);
 });

@@ -12,9 +12,12 @@ import { after, describe, test } from "node:test";
 
 import { DRAIN_BOUND_MS, DRAIN_POLL_MS, REBOOT_ARGV, REBOOT_SERVICE, TICK_TIMER, drainedReboot, kernelFindings, kernelNotes, kernelReading, parseRelease, readBack,
   readBackOwed, rebootReport, recordStore, runPrivileged, stillOlderFinding } from "./host-kernel.ts";
-import { driftReport, shippedUnitText, shippedUnits, unitDrift, unitState } from "./host-units.ts";
+import { driftReport } from "./host-units.ts";
+import { shippedUnitText, shippedUnits } from "./host-units/shipped-dir.ts";
+import { unitDrift, unitState } from "./host-units/gh-spawn-reached-from.ts";
 import { homeHostConfig } from "./host-config.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const HOUR = 3_600_000;
@@ -119,7 +122,7 @@ describe("the note: version order, and what a refused read is", () => {
   });
 
   test("the wiring: host-units.ts adds the note to hostNotes and the findings to hostFindings", () => {
-    const source = readFileSync(new URL("./host-units.ts", import.meta.url), "utf8");
+    const source = moduleSource("host-units.ts");
     assert.match(source, /function hostNotes\(\)[^}]*\.\.\.kernelNotes\(\)/);
     assert.match(source, /function hostFindings\(\)[^}]*\.\.\.kernelFindings\(\)/);
   });

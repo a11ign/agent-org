@@ -17,11 +17,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { decide, scopesOf, readLanes, scopeTick, unreadLanes, greenUnarmedOrders, performActions }
-  from "../work-gate.ts";
-import { ledgerLine, readLedger, readLedgerDeliveries, reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewCheckoutFor,
-  stuckRowOf, rowOfOrder, isReviewerOrder, liveReviewers, isPerRowInstance, codeRepositoryOf }
-  from "../wake.ts";
+import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { scopesOf } from "../work-gate/vocabulary.ts";
+import { greenUnarmedOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { performActions } from "../work-gate/orders.ts";
+import { ledgerLine, readLedger } from "../wake/ended-sessions.ts";
+import { readLedgerDeliveries, stuckRowOf } from "../wake/merge-queue-wait-limit-ms.ts";
+import { reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewCheckoutFor, isReviewerOrder, liveReviewers } from "../wake/ensure-reviewer-token.ts";
+import { rowOfOrder } from "../wake/is-release-line.ts";
+import { isPerRowInstance } from "../wake/holds-as-fyi.ts";
+import { codeRepositoryOf } from "../wake/exit.ts";
 import { connectionOf, readsRowsByLabel, type FakeRow } from "./rows-by-label-fixtures.ts";
 import { parityOwner, reviewerSeat, reviewerInstance, reviewerInstanceNumber, seatName, subjectRef, subjectMention }
   from "../review-attribution.ts";

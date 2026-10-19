@@ -5,10 +5,11 @@
 // `defectBody` is the control for every "refused" below: the same body with a well-formed line is accepted, so a refusal is the line's doing and not the fixture's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CI_BODY_REPORTS, rowLabelsFromEnv, runCiBodyReports } from "./acceptance-commands.ts";
+import { CI_BODY_REPORTS, rowLabelsFromEnv, runCiBodyReports } from "./acceptance-commands/unmet-command-closure-requirements.ts";
 import { DEFECT_LABEL, classLinesIn, defectClassReport } from "./defect-class-line.ts";
 import { main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";
-import { createIssue, kindRefusal, withKindLabel } from "./row-file.ts";
+import { createIssue } from "./row-file/roadmap-without-parent-refusal.ts";
+import { kindRefusal, withKindLabel } from "./row-file/duplicate-title-refusal.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 const EM = "—";

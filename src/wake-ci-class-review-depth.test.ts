@@ -29,7 +29,8 @@ const HOST_FILE = join(SCRATCH, "host.json");
 writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { ENRICH_AHEAD, withCiFailureClass, withReviewDepth } = await import("./wake.ts");
+const { ENRICH_AHEAD } = await import("./wake/is-release-line.ts");
+const { withCiFailureClass, withReviewDepth } = await import("./wake/with-ci-failure-class.ts");
 const { classifyCiFailure, readCiFailure } = await import("./ci-failure-class.ts");
 const { parseHostConfig } = await import("./host-config.ts");
 const { depthEffort, readDepthState } = await import("./review-depth.ts");

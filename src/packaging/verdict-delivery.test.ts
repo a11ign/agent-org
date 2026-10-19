@@ -16,9 +16,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
-import { CANARY_STATE_FILE, DEFAULT_CANARY_OPTIONS, MACHINERY_SIGNALS, STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryCanaryTick, machineryFlagOn, parseCanaryState, withMachineryFlag, type CanaryIo } from "../org-health.ts";
+import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
+import { DEFAULT_CANARY_OPTIONS, machineryCanaryTick, withMachineryFlag, type CanaryIo } from "../org-health.ts";
+import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
+import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryFlagOn, parseCanaryState } from "../org-health/fleet-build-incident.ts";
 import { OUTSIDE, outsideVerdictBlock, postOutsideVerdicts, VERDICT_DELIVERY_FLAG, type DoorRun } from "../review-trust.ts";
-import { postOutsideVerdictsOf } from "../wake.ts";
+import { postOutsideVerdictsOf } from "../wake/holds-as-fyi.ts";
 import { conflictingIdleNow, conflictingIdlePrs, parseVerdictLedger, pullReadOf, reconcileLedgerNow, recordWrittenVerdicts, verdictUndeliveredNow, VERDICT_LEDGER_FILE, type PullRead } from "../verdict-delivery.ts";
 
 const MINUTE = 60_000;

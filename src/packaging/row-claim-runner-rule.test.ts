@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runnerReason, laneReason } from "../row-claim/runner-rule.ts";
 import { decideClaim } from "../row-claim.ts";
-import { ROUTED_TO } from "../work-gate.ts";
+import { ROUTED_TO } from "../work-gate/vocabulary.ts";
 
 test("no runner: label at all raises nothing -- the common case", () => {
   assert.equal(runnerReason(["backlog", "ready"], "worker-judge"), null);

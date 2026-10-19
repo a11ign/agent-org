@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
-import { hasPlan } from "./board-view.ts";
+import { hasPlan } from "./board-view/view-ticket.ts";
 import { readOrNull } from "../install/paths.ts";
 import { effectiveTerminal, localTerminalPort } from "../install/terminal.ts";
 import { mintTerminalCode, type TerminalMint } from "./terminal-pair.ts";
@@ -27,7 +27,9 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
-import { amend, approve, childOrder, dismissWriter, enqueue, loadQueue, queuePublish, queueWriter, respond, retry, saveQueue, setMax, pauseQueue, resumeQueue, type PlanFirst, type Queue, type RunChoice, writerOf, writerStatus } from "./queue.ts";
+import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, writerStatus } from "./queue/declared-remains.ts";
+import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue } from "./queue/approve.ts";
+import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, Ticket, TicketSource } from "./source.ts";
@@ -375,7 +377,7 @@ export function createBoard(deps: BoardDeps) {
  * The child's program (A11-84): load the host module and run the start-up check of the routing wrapper. A process boundary keeps the gate's closure out of this instance, as
  * `work-gate.ts` does for `host:check`, and a host the module cannot load on (no declaration of its project) is one line on stderr, never a stack: the instance starts anyway.
  */
-const STARTUP_PROGRAM = `import(${JSON.stringify(new URL("../host-units.ts", import.meta.url).href)})`
+const STARTUP_PROGRAM = `import(${JSON.stringify(new URL("../host-units/tool-version-notes.ts", import.meta.url).href)})`
   + ".then((host) => host.startupGhWrapper())"
   + ".catch((cause) => { process.stderr.write(`ERROR gh wrapper: cannot be checked (${String(cause?.message ?? cause).split(\"\\n\")[0]})\\n`); });";
 

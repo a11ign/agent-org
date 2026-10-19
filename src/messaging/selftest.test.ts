@@ -388,6 +388,7 @@ describe("the command", () => {
 // `wake.ts` reads the project's declaration at import, so it loads where `AGENT_ORG_HOST` finds one; elsewhere these cases are SKIPPED WITH THE REFUSAL AS THE REASON,
 // and the "wake.ts loaded" test says which of the two this run was (a skip that fires always is a check that never runs).
 const wake = await import("../wake.ts").then((module) => ({ module }), (error) => ({ reason: String(error.message).split("\n")[0] }));
+const checkChairmanPathModule = await import("../wake/is-release-line.ts");
 const skipUnlessLoaded = "reason" in wake ? `wake.ts cannot load here: ${wake.reason}` : false;
 
 describe("the tick step queues a report for ceo and for nobody else", () => {
@@ -400,7 +401,7 @@ describe("the tick step queues a report for ceo and for nobody else", () => {
 
   test("a report is appended to the queue as an order for ceo, and the child's lines are returned", { skip: skipUnlessLoaded }, () => {
     const queueFile = join(scratch, "tick-step-queue");
-    const lines = /** @type {any} */ (wake).module.checkChairmanPath({ spawn: spawned({ lines: ["messaging selftest RED at queue for v1.0.0"], report: "RED at the queue stage" }), ask: () => ({ spawn: true, line: null }), queueFile, now: START });
+    const lines = /** @type {any} */ (checkChairmanPathModule).checkChairmanPath({ spawn: spawned({ lines: ["messaging selftest RED at queue for v1.0.0"], report: "RED at the queue stage" }), ask: () => ({ spawn: true, line: null }), queueFile, now: START });
     assert.deepEqual(lines, ["messaging selftest RED at queue for v1.0.0"]);
     const [entry, ...rest] = entries(queueFile);
     assert.deepEqual(rest, []);
@@ -411,7 +412,7 @@ describe("the tick step queues a report for ceo and for nobody else", () => {
 
   test("no report, no entry; a child that failed or printed nothing readable is a line and no entry", { skip: skipUnlessLoaded }, () => {
     const queueFile = join(scratch, "tick-step-quiet");
-    const step = (spawn: any) => /** @type {any} */ (wake).module.checkChairmanPath({ spawn, ask: () => ({ spawn: true, line: null }), queueFile, now: START });
+    const step = (spawn: any) => /** @type {any} */ (checkChairmanPathModule).checkChairmanPath({ spawn, ask: () => ({ spawn: true, line: null }), queueFile, now: START });
     assert.deepEqual(step(spawned({ lines: ["not run"], report: null })), ["not run"]);
     assert.match(step(spawned({}, 2))[0], /^MESSAGING SELFTEST NOT RUN: exit 2/);
     assert.match(step(() => ({ status: 0, stdout: "not json", stderr: "" }))[0], /^MESSAGING SELFTEST NOT RUN/);
@@ -453,7 +454,7 @@ describe("a quiet tick starts no process and asks no model", () => {
   });
 
   test("the step in wake.ts starts no process when the question says there is nothing to do, and says so when it cannot ask", { skip: skipUnlessLoaded }, () => {
-    const step = (ask: any) => /** @type {any} */ (wake).module.checkChairmanPath({ spawn: noSpawn, ask });
+    const step = (ask: any) => /** @type {any} */ (checkChairmanPathModule).checkChairmanPath({ spawn: noSpawn, ask });
     assert.deepEqual(step(() => ({ spawn: false, line: null })), []);
     assert.deepEqual(step(() => ({ spawn: false, line: "messaging selftest still RED at seat for v1.0.0; retrying after 60 s" })), ["messaging selftest still RED at seat for v1.0.0; retrying after 60 s"]);
     assert.match(step(() => { throw new Error("git is gone"); })[0], /^MESSAGING SELFTEST NOT RUN: it could not be asked/);

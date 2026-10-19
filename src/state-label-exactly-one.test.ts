@@ -32,10 +32,12 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 const { STATE_LABELS, FILING_GRACE_MS, stateLabelFindings, rowsBeingFiled } = await import("./claim-labels.ts");
 const { declineRow, claimRecordComment } = await import("./row-claim.ts");
 const { BACKLOG_LABEL, BLOCKED_LABEL } = await import("./project-vocabulary.ts");
-const { PARKED_LABEL } = await import("./work-gate.ts");
+const { PARKED_LABEL } = await import("./work-gate/vocabulary.ts");
 const { reportStateLabels, CHECKS, invisibleRows } = await import("./ready-label-audit.ts");
-const { SIGNALS, stateLabelReading, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
-const { labelRefusal, boardingFor } = await import("./row-file.ts");
+const { SIGNALS } = await import("./org-health/no-merge-hours.ts");
+const { stateLabelReading } = await import("./org-health/state-label-reading.ts");
+const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-incident.ts");
+const { labelRefusal, boardingFor } = await import("./row-file/duplicate-title-refusal.ts");
 
 const row = (number: number, labels: string[], state?: string) => ({ number, labels, ...(state ? { state } : {}) });
 

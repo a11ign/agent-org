@@ -15,7 +15,8 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import * as retro from "./org-retro.ts";
+import * as retro_0 from "./org-retro/readings.ts";
+import * as retro_1 from "./org-retro.ts";
 import { EMERGENCY_PRIORITY_NOT_HONOURED_KIND, EMERGENCY_PRIORITY_USED_KIND, FAILURE_LEDGER_FILE, SPEC_LINT_REFUSED_KIND, recordFailure } from "./failure-ledger.ts";
 import { underspecifiedReading } from "./spec-lint.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
@@ -27,9 +28,9 @@ const MISUSES = "- Emergency-priority misuses (24h)";
 
 /** Everything `buildReport` needs besides the ledger, so a test varies only the ledger. */
 const rest = { merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: null, underspecified: underspecifiedReading([]) };
-const reportOf = (failureLedger: string | null | undefined) => retro.buildReport({ ...rest, failureLedger } as any, NOW);
+const reportOf = (failureLedger: string | null | undefined) => retro_0.buildReport({ ...rest, failureLedger } as any, NOW);
 const linesOf = (failureLedger: string | null | undefined) => {
-  const lines = retro.renderReport(reportOf(failureLedger)).split("\n");
+  const lines = retro_1.renderReport(reportOf(failureLedger)).split("\n");
   return [lines.find((line) => line.startsWith(USES)), lines.find((line) => line.startsWith(MISUSES))];
 };
 

@@ -13,10 +13,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  deliver, deliveryCounts, endFinishedReviewers, endSeatRuns, registerReviewer, reviewerPathsFrom,
-} from "./wake.ts";
-import { readReviewerRegistry } from "./work-gate.ts";
+import { deliver } from "./wake/clear-settle-ms.ts";
+import { deliveryCounts, endFinishedReviewers, endSeatRuns } from "./wake/reset.ts";
+import { registerReviewer, reviewerPathsFrom } from "./wake/ensure-reviewer-token.ts";
+import { readReviewerRegistry } from "./work-gate/causes/org-health-reviewer-auth.ts";
 import { INSIDE } from "./review-trust.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";

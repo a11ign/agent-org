@@ -25,7 +25,7 @@
     },
     "src/board-data.ts": {
       "spawns": 2,
-      "calls": 4
+      "calls": 3
     },
     "src/board-discussion.ts": {
       "spawns": 0,
@@ -49,7 +49,7 @@
     },
     "src/board-snapshot.ts": {
       "spawns": 5,
-      "calls": 2
+      "calls": 1
     },
     "src/board-summary-check.ts": {
       "spawns": 0,
@@ -69,7 +69,7 @@
     },
     "src/ci-failure-class.ts": {
       "spawns": 0,
-      "calls": 16
+      "calls": 13
     },
     "src/ci-health-liveness.ts": {
       "spawns": 1,
@@ -83,7 +83,7 @@
       "spawns": 3,
       "calls": 3
     },
-    "src/claim-stall.ts": {
+    "src/claim-stall/claim-stalled.ts": {
       "spawns": 1,
       "calls": 1
     },
@@ -93,11 +93,11 @@
     },
     "src/close-rows-for-merged-pr.ts": {
       "spawns": 2,
-      "calls": 12
+      "calls": 11
     },
     "src/close-rows-sweep.ts": {
       "spawns": 1,
-      "calls": 3
+      "calls": 2
     },
     "src/closes-mismatch-check.ts": {
       "spawns": 0,
@@ -109,11 +109,11 @@
     },
     "src/dora.ts": {
       "spawns": 2,
-      "calls": 8
+      "calls": 6
     },
     "src/duplicate-row.ts": {
       "spawns": 2,
-      "calls": 2
+      "calls": 1
     },
     "src/fleet-gated-nightly.ts": {
       "spawns": 0,
@@ -125,15 +125,19 @@
     },
     "src/hand-fix-ledger.ts": {
       "spawns": 1,
-      "calls": 3
+      "calls": 2
     },
     "src/host-kernel.ts": {
       "spawns": 1,
       "calls": 1
     },
     "src/host-units.ts": {
-      "spawns": 2,
+      "spawns": 1,
       "calls": 1
+    },
+    "src/host-units/gh-spawn-reached-from.ts": {
+      "spawns": 1,
+      "calls": 0
     },
     "src/lane-ownership.ts": {
       "spawns": 0,
@@ -177,15 +181,19 @@
     },
     "src/messaging/watch.ts": {
       "spawns": 1,
-      "calls": 5
+      "calls": 3
     },
-    "src/org-health.ts": {
+    "src/org-health/sweep-fact.ts": {
       "spawns": 0,
       "calls": 5
     },
-    "src/org-retro.ts": {
+    "src/org-retro/readings.ts": {
+      "spawns": 0,
+      "calls": 1
+    },
+    "src/org-retro/retro-cause.ts": {
       "spawns": 1,
-      "calls": 6
+      "calls": 2
     },
     "src/org-watch.ts": {
       "spawns": 1,
@@ -205,7 +213,7 @@
     },
     "src/provider-low-confidence.ts": {
       "spawns": 1,
-      "calls": 2
+      "calls": 1
     },
     "src/prune-tmp.ts": {
       "spawns": 1,
@@ -217,11 +225,11 @@
     },
     "src/queue-table.ts": {
       "spawns": 2,
-      "calls": 8
+      "calls": 7
     },
     "src/ready-label-audit.ts": {
       "spawns": 9,
-      "calls": 16
+      "calls": 15
     },
     "src/release-behind-main.ts": {
       "spawns": 0,
@@ -236,8 +244,8 @@
       "calls": 2
     },
     "src/row-claim.ts": {
-      "spawns": 18,
-      "calls": 12
+      "spawns": 17,
+      "calls": 11
     },
     "src/row-claim/blocked-by-edge-rule.ts": {
       "spawns": 0,
@@ -249,11 +257,11 @@
     },
     "src/row-claim/file-overlap-rule.ts": {
       "spawns": 0,
-      "calls": 4
+      "calls": 3
     },
     "src/row-claim/own-pr-health-rule.ts": {
       "spawns": 0,
-      "calls": 11
+      "calls": 10
     },
     "src/row-claim/stale-rule-guard.ts": {
       "spawns": 1,
@@ -263,9 +271,17 @@
       "spawns": 0,
       "calls": 1
     },
-    "src/row-file.ts": {
-      "spawns": 18,
-      "calls": 17
+    "src/row-file/body-from-argv.ts": {
+      "spawns": 2,
+      "calls": 2
+    },
+    "src/row-file/duplicate-title-refusal.ts": {
+      "spawns": 4,
+      "calls": 3
+    },
+    "src/row-file/roadmap-without-parent-refusal.ts": {
+      "spawns": 12,
+      "calls": 11
     },
     "src/row-reachability.ts": {
       "spawns": 1,
@@ -289,7 +305,7 @@
     },
     "src/sweep-window.ts": {
       "spawns": 0,
-      "calls": 4
+      "calls": 2
     },
     "src/tick-snapshot.ts": {
       "spawns": 1,
@@ -301,7 +317,7 @@
     },
     "src/trace/haiku-tier-report.ts": {
       "spawns": 1,
-      "calls": 1
+      "calls": 0
     },
     "src/trace/headless-pilot.ts": {
       "spawns": 1,
@@ -333,15 +349,39 @@
     },
     "src/untiered-ready-rows.ts": {
       "spawns": 1,
-      "calls": 1
+      "calls": 0
     },
     "src/unwaited-stock-rows.ts": {
       "spawns": 1,
       "calls": 2
     },
     "src/wake.ts": {
+      "spawns": 0,
+      "calls": 2
+    },
+    "src/wake/ended-sessions.ts": {
+      "spawns": 0,
+      "calls": 2
+    },
+    "src/wake/exit.ts": {
       "spawns": 2,
-      "calls": 22
+      "calls": 0
+    },
+    "src/wake/is-release-line.ts": {
+      "spawns": 0,
+      "calls": 4
+    },
+    "src/wake/merge-queue-wait-limit-ms.ts": {
+      "spawns": 0,
+      "calls": 9
+    },
+    "src/wake/reset.ts": {
+      "spawns": 0,
+      "calls": 1
+    },
+    "src/wake/with-ci-failure-class.ts": {
+      "spawns": 0,
+      "calls": 4
     },
     "src/wakes-per-row.ts": {
       "spawns": 1,
@@ -404,8 +444,12 @@
       "calls": 6
     },
     "src/work-gate/reads.ts": {
+      "spawns": 0,
+      "calls": 3
+    },
+    "src/work-gate/reads/exit.ts": {
       "spawns": 1,
-      "calls": 6
+      "calls": 3
     },
     "src/work-gate/ready-when-unblocked.ts": {
       "spawns": 0,
@@ -420,7 +464,7 @@
       "calls": 2
     },
     "src/work-tick.ts": {
-      "spawns": 2,
+      "spawns": 1,
       "calls": 2
     },
     "src/worker-state.ts": {

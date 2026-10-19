@@ -1,9 +1,10 @@
 import { subjectRef } from "../../review-attribution.ts";
-import { machineryFlagOn, type CanaryState } from "../../org-health.ts";
-import { type BlockingOrder } from "../../blocking-impact.ts";
+import { machineryFlagOn, type CanaryState } from "../../org-health/fleet-build-incident.ts";
+import type { BlockingOrder } from "../../blocking-impact.ts";
 import { closedRowsOf } from "../../merge-guard.ts";
-import { readJsonObject, writeJsonObject } from "../../claim-stall.ts";
-import { OPEN_ROWS_LIMIT } from "../reads.ts";
+import { readJsonObject } from "../../claim-stall/claim-stalled.ts";
+import { writeJsonObject } from "../../claim-stall.ts";
+import { OPEN_ROWS_LIMIT } from "../reads/exit.ts";
 
 // =====================================================================================================================
 // a11ign#5125 (REOPENED 2026-10-11): A ROW CLOSED UNDER AN OPEN HALF OF ITSELF IS SAID TO `product-manager`, ONCE, NAMING THE HALF.

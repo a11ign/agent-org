@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { discardDraft, approveDraft, inPickScope, WriterRefusal, type CreateDeps } from "./writer-create.ts";
-import { changeDraft, draftOf, emptyQueue, markWriterRunning, markWriterStarting, queueWriter, writerDrafted, writerOf, type DraftRecord, type Queue } from "./queue.ts";
+import { changeDraft, draftOf, emptyQueue, markWriterRunning, markWriterStarting, queueWriter, writerDrafted, writerOf } from "./queue.ts";
+import { type DraftRecord, type Queue } from "./queue/declared-remains.ts";
 import { parseTicketSettings, type TicketSettings } from "./settings.ts";
 import type { NewTicket, Ticket, TicketSource } from "./source.ts";
 import { descriptionOf, draftFrom } from "./writer.ts";

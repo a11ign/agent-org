@@ -9,9 +9,9 @@
 // decides where the work lands, and makes a worktree there with `ticket:worktree`. Each repository's `CLAUDE.md`/`AGENTS.md` names how to install,
 // test and typecheck it, which is where any engineer looks, so nothing about a repository is declared here or in the host file.
 import { join } from "node:path";
-import type { StackBase } from "./board-view.ts";
+import type { StackBase } from "./board-view/settled-by-pulls.ts";
 import type { DenyRule } from "./settings.ts";
-import type { PullRequest, WriterForm } from "./queue.ts";
+import type { PullRequest, WriterForm } from "./queue/declared-remains.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { MAX_DRAFT_BYTES, MAX_DRAFTS } from "./writer.ts";
 

@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { waitItemOf } from "../wait-condition.ts";
 import { parseCheck, evaluateCheck, evaluateChecks, settleRulings, DEFAULT_GRACE_MINUTES } from "../ruling-check.ts";
 import { recordRuling, readRulings, rulingTick, main as recordMain, RULINGS_FILE } from "../ruling-record.ts";
-import { rulingOrdersNow } from "../work-gate.ts";
+import { rulingOrdersNow } from "../work-gate/org-health.ts";
 
 const RECORD_CLI = fileURLToPath(new URL("../ruling-record.ts", import.meta.url));
 const ROW_CHECK = 'no-open-row-body-matches "Not-before: 2026-10-03T18:2"';

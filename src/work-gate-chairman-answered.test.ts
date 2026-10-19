@@ -16,7 +16,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, readChairmanBlocked, chairmanReadsRefused, CHAIRMAN_LOGINS } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { readChairmanBlocked, chairmanReadsRefused } from "./work-gate/causes/rows-chairman.ts";
+import { CHAIRMAN_LOGINS } from "./work-gate/vocabulary.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 const T0 = "2026-10-03T14:05:56Z"; // #3228 labelled

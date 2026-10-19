@@ -13,10 +13,9 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyCanaryState, withMachineryFlag } from "../org-health.ts";
-import {
-  CHAIN_WAIT_ESCALATION_SESSION, CHAIN_WAIT_FILE, CHAIN_WAIT_FLAG, CHAIN_WAIT_MINUTES, advanceChainWaits, blockedReasonOf, chainWaitOrders, chainWaitsOf,
-} from "../work-gate.ts";
+import { emptyCanaryState } from "../org-health/fleet-build-incident.ts";
+import { withMachineryFlag } from "../org-health.ts";
+import { CHAIN_WAIT_ESCALATION_SESSION, CHAIN_WAIT_FILE, CHAIN_WAIT_FLAG, CHAIN_WAIT_MINUTES, advanceChainWaits, blockedReasonOf, chainWaitOrders, chainWaitsOf } from "../work-gate/causes/org-health-chain-wait.ts";
 
 const MINUTE = 60 * 1000;
 const T0 = Date.parse("2026-10-11T18:00:00Z");

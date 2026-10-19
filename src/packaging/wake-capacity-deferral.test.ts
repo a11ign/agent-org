@@ -14,8 +14,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { splitRefusals, refusalReport, spentSeen, CAPACITY_WAIT_LIMIT_MS } from "../wake.ts";
-import { idleStats } from "../org-retro.ts";
+import { splitRefusals, refusalReport } from "../wake/merge-queue-wait-limit-ms.ts";
+import { spentSeen } from "../wake/exit.ts";
+import { CAPACITY_WAIT_LIMIT_MS } from "../wake/ended-sessions.ts";
+import { idleStats } from "../org-retro/readings.ts";
 
 const MINUTE = 60_000;
 const WAKE = fileURLToPath(new URL("../wake.ts", import.meta.url));

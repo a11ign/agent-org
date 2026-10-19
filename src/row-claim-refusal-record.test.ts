@@ -32,7 +32,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 const { recordClaimRefusal } = await import("./row-claim.ts");
-const { readClaimRefusals, claimRefusalStormReading } = await import("./org-health.ts");
+const { readClaimRefusals, claimRefusalStormReading } = await import("./org-health/claim-refusal.ts");
 const { CLAIM_REFUSED_KIND, parseFailureLedger } = await import("./failure-ledger.ts");
 
 const NOW = Date.UTC(2026, 9, 11, 9, 0);

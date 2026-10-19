@@ -11,8 +11,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, performActions } from "../work-gate.ts";
-import { requiredWhenNeeded } from "../work-gate/pr-orders.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { performActions } from "../work-gate/orders.ts";
+import { requiredWhenNeeded } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
 
 const HEAD = "a".repeat(40);
 const OLDER = "b".repeat(40);

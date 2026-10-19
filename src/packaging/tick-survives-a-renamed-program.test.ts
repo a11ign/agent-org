@@ -21,6 +21,7 @@ import { PROJECT_ROOT } from "./host-units-project.ts"; // FIRST: makes a fixtur
 // NOT `host-units.ts`: it reaches `git log --all`, and a test file importing it joins the `history` population (`work-gate.test.ts`'s ratchet). The question is asked in `update-tool.ts` for that reason too.
 import { installPendingFindings, programsLostByMove, programsNamedBy, updateTool } from "../update-tool.ts";
 import { sandboxGitEnv, withGitSandbox, type GitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
+import { moduleSource } from "../lib/module-source.ts";
 
 /**
  * The gate's own `hostDriftOrders`, loaded AFTER the fixture project is given the one declaration key the gate reads at import and the fixture (made for `host-units.ts`) lacks:
@@ -186,7 +187,7 @@ test("#4392: `programsNamedBy` reads the Exec lines and the launcher's exec, res
 });
 
 test("#4392: `hostUnitDrift` includes the finding -- the wiring that lets the gate's `hostDriftOrders` see it (text pin: importing `host-units.ts` here would charge this file with history)", () => {
-  const source = readFileSync(new URL("../host-units.ts", import.meta.url), "utf8");
+  const source = moduleSource("host-units.ts");
   const drift = source.slice(source.indexOf("export function hostUnitDrift"));
   assert.match(drift.slice(0, drift.indexOf("\n}\n")), /\.\.\.hostInstallPending\(deps\)/, "hostUnitDrift spreads hostInstallPending");
   assert.match(source, /export function hostInstallPending[\s\S]*?installPendingFindings\(\{ tool: host\.tool/, "and it asks update-tool's question");

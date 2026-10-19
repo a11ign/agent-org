@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { startAbsentSeats } from "../wake.ts";
+import { startAbsentSeats } from "../wake/is-release-line.ts";
 import { tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const scratch = tmpDirForFile("seat-start-budget-1052-");

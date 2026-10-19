@@ -28,7 +28,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { poolLowReading } = await import("../org-health.ts");
+const { poolLowReading } = await import("../org-health/hold-count.ts");
 
 const WORKERS = "a11ign-ai-workers";
 const LEADS = "a11ign-ai-leads";

@@ -42,7 +42,8 @@ execFileSync("git", ["add", "-A"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
 const { sessionEligibility, claimRow } = await import("./row-claim.ts");
-const { CHAIRMAN_LOGINS, CHAIRMAN_PRIORITY_LABEL, EMERGENCY_PRIORITY_LABEL, EMERGENCY_SETTER_LOGINS } = await import("./work-gate.ts");
+const { CHAIRMAN_LOGINS, CHAIRMAN_PRIORITY_LABEL } = await import("./work-gate/vocabulary.ts");
+const { EMERGENCY_PRIORITY_LABEL, EMERGENCY_SETTER_LOGINS } = await import("./work-gate/causes/rows-offer.ts");
 
 const TRACKER = "a11ign/a11ign";
 const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };

@@ -90,8 +90,8 @@ function printFeature(binary: string): string {
 const execCommandsOf = (unitText: string): string[] =>
   [...unitText.matchAll(/^Exec[A-Za-z]*=(.*)$/gm)].map((m) => m[1].trim().replace(/^[-@+!:]+/, "").trim()).filter((command) => command !== "");
 
-/** `host-units.ts` beside this file: RESOLVED, never imported (see `execCommandsOf`). */
-const HOST_UNITS_URL = new URL("./host-units.ts", import.meta.url).href;
+/** `host-units/shipped-dir.ts` beside this file: RESOLVED, never imported (see `execCommandsOf`). */
+const HOST_UNITS_URL = new URL("./host-units/shipped-dir.ts", import.meta.url).href;
 
 /** The child's whole job (the module comes by environment: `changed-files.ts` reads `process.argv[1]` as a path): print the rendered units as JSON. A unit that will not render is left out (`host:check` names that defect, not this read). */
 const LIST_UNITS_SCRIPT = `

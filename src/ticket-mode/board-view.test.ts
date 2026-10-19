@@ -1,16 +1,11 @@
 // no-token: gh -- pure functions, and a fake storage
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as boardView from "./board-view.ts";
-import {
-  CONCLUDED, HANDED_BACK, NO_PROJECT, hasEdit, RUN_STATUSES, flatten, groupByStatus, isParked, parentKeys, parentTick, ticketCount, projectCounts, queueLabel, recall,
-  remember, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, selectable, shownStatus,
-  statusCounts, terminalLink, terminalOpenHref, toggled, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, PRIORITY_NAMES, hasPlan, isBeingPublished, isWatched, publishable,
-  publishLabel, publishNote, publishTerminalLink, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, runChoiceLabel,
-  unplannedCount, visibleTickets, workItems, workingNote, childrenNote, isParentTicket, openChildCount, apiBase, chosenConnection, connectionLabel, safeHref,
-  footprintOf, overlapWait, pathsOverlap, resumesOnConflict,
-  type ViewEntry, type ViewPublish, type ViewTicket,
-} from "./board-view.ts";
+import * as boardView_0 from "./board-view.ts";
+import * as boardView_1 from "./board-view/settled-by-pulls.ts";
+import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
+import { hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
+import { terminalOpenHref, runChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
   ({ key, title, status, statusOrder, priority, project });
@@ -808,10 +803,10 @@ test("a run's terminal opens the page's worker link for its connection, with the
  */
 
 test("a new-ticket request needs its text, and grill needs a terminal; the body carries only the choices made", () => {
-  assert.deepEqual(boardView.writerStart({ request: "  ", mode: "quick" }, { grill: true }), { enabled: false, reason: "Write what the ticket is for, in plain words" });
-  assert.deepEqual(boardView.writerStart({ request: "x", mode: "grill" }, { grill: false }), { enabled: false, reason: "Grill needs a terminal: name tickets.terminal in the host file" });
-  assert.deepEqual(boardView.writerStart({ request: "x", mode: "grill" }, { grill: true }), { enabled: true, reason: null });
-  assert.deepEqual(boardView.writerBody({ request: "  Show requests  ", mode: "quick", project: "", repo: "nbl-ui-netbox", goal: "Keep honest", priority: "high", parent: " " }),
+  assert.deepEqual(boardView_0.writerStart({ request: "  ", mode: "quick" }, { grill: true }), { enabled: false, reason: "Write what the ticket is for, in plain words" });
+  assert.deepEqual(boardView_0.writerStart({ request: "x", mode: "grill" }, { grill: false }), { enabled: false, reason: "Grill needs a terminal: name tickets.terminal in the host file" });
+  assert.deepEqual(boardView_0.writerStart({ request: "x", mode: "grill" }, { grill: true }), { enabled: true, reason: null });
+  assert.deepEqual(boardView_0.writerBody({ request: "  Show requests  ", mode: "quick", project: "", repo: "nbl-ui-netbox", goal: "Keep honest", priority: "high", parent: " " }),
     { request: "Show requests", mode: "quick", repo: "nbl-ui-netbox", goal: "Keep honest", priority: "high" });
 });
 
@@ -821,38 +816,38 @@ test("the goals and projects the form offers are those the listed tickets carry,
     { ...ticketOf("A-2"), project: "Board", labels: [{ name: "Keep honest", group: "Goal" }, { name: "Speed", group: "Goal" }] },
     { ...ticketOf("A-3"), project: null },
   ];
-  assert.deepEqual(boardView.goalNames(tickets), ["Keep honest", "Speed"]);
-  assert.deepEqual(boardView.projectNames(tickets), ["Board", "Visual"]);
+  assert.deepEqual(boardView_0.goalNames(tickets), ["Keep honest", "Speed"]);
+  assert.deepEqual(boardView_0.projectNames(tickets), ["Board", "Visual"]);
 });
 
 test("a run offers Stop while it is not finished, Dismiss once it is and no draft is being created, and Open terminal while its agent works", () => {
-  assert.deepEqual(boardView.writerRunActions({ phase: "running", workspace: "w1", drafts: [] }), { stop: true, dismiss: false, terminal: true });
-  assert.deepEqual(boardView.writerRunActions({ phase: "waiting", workspace: "w1", drafts: [] }), { stop: true, dismiss: false, terminal: true });
-  assert.deepEqual(boardView.writerRunActions({ phase: "finished", drafts: [{ status: "creating" } as never] }), { stop: false, dismiss: false, terminal: false });
-  assert.deepEqual(boardView.writerRunActions({ phase: "finished", drafts: [] }), { stop: false, dismiss: true, terminal: false });
+  assert.deepEqual(boardView_0.writerRunActions({ phase: "running", workspace: "w1", drafts: [] }), { stop: true, dismiss: false, terminal: true });
+  assert.deepEqual(boardView_0.writerRunActions({ phase: "waiting", workspace: "w1", drafts: [] }), { stop: true, dismiss: false, terminal: true });
+  assert.deepEqual(boardView_0.writerRunActions({ phase: "finished", drafts: [{ status: "creating" } as never] }), { stop: false, dismiss: false, terminal: false });
+  assert.deepEqual(boardView_0.writerRunActions({ phase: "finished", drafts: [] }), { stop: false, dismiss: true, terminal: false });
 });
 
 test("a pending draft that names a duplicate is approved only once the duplicate check is ticked; a created, creating or discarded one has no controls", () => {
   const dup = [{ key: "A11-9", why: "same", title: "Show", url: "u" }];
-  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: dup }, { acknowledged: false }), { approve: false, queue: false, discard: true,
+  assert.deepEqual(boardView_0.draftControls({ status: "pending", duplicates: dup }, { acknowledged: false }), { approve: false, queue: false, discard: true,
     reason: "Check the duplicates above, then tick that they are duplicates, to approve" });
-  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: dup }, { acknowledged: true }), { approve: true, queue: true, discard: true, reason: null });
-  assert.deepEqual(boardView.draftControls({ status: "pending", duplicates: [] }, { acknowledged: false }), { approve: true, queue: true, discard: true, reason: null });
+  assert.deepEqual(boardView_0.draftControls({ status: "pending", duplicates: dup }, { acknowledged: true }), { approve: true, queue: true, discard: true, reason: null });
+  assert.deepEqual(boardView_0.draftControls({ status: "pending", duplicates: [] }, { acknowledged: false }), { approve: true, queue: true, discard: true, reason: null });
   for (const status of ["created", "creating", "discarded"] as const) {
-    assert.deepEqual(boardView.draftControls({ status, duplicates: [] }, { acknowledged: true }), { approve: false, queue: false, discard: false, reason: null }, status);
+    assert.deepEqual(boardView_0.draftControls({ status, duplicates: [] }, { acknowledged: true }), { approve: false, queue: false, discard: false, reason: null }, status);
   }
 });
 
 test("a draft's status says what became of it: created with its key, being created, discarded, refused by the tracker with why, or waiting", () => {
-  assert.equal(boardView.draftStatusText({ status: "created", created: { key: "NBF-101", url: "u" } }), "Created as NBF-101");
-  assert.equal(boardView.draftStatusText({ status: "creating" }), "Being created");
-  assert.equal(boardView.draftStatusText({ status: "discarded" }), "Discarded");
-  assert.equal(boardView.draftStatusText({ status: "pending", failure: "NBF has no label named Speed" }), "Not created: NBF has no label named Speed");
-  assert.equal(boardView.draftStatusText({ status: "pending" }), "Waiting for your review");
+  assert.equal(boardView_0.draftStatusText({ status: "created", created: { key: "NBF-101", url: "u" } }), "Created as NBF-101");
+  assert.equal(boardView_0.draftStatusText({ status: "creating" }), "Being created");
+  assert.equal(boardView_0.draftStatusText({ status: "discarded" }), "Discarded");
+  assert.equal(boardView_0.draftStatusText({ status: "pending", failure: "NBF has no label named Speed" }), "Not created: NBF has no label named Speed");
+  assert.equal(boardView_0.draftStatusText({ status: "pending" }), "Waiting for your review");
 });
 
 test("a duplicate is linked with its title and address, and one the tracker does not have is named as not found", () => {
-  const lines = boardView.duplicateLines({ duplicates: [
+  const lines = boardView_0.duplicateLines({ duplicates: [
     { key: "A11-9", why: "same request", title: "Show requests", url: "https://linear.app/x/A11-9" },
     { key: "A11-404", why: "gone", title: null, url: null },
   ] });
@@ -865,12 +860,12 @@ test("a duplicate is linked with its title and address, and one the tracker does
 test("a draft's fields round-trip through the review's form: the done-when items a line each, the lists comma-separated, and the empty ones left out", () => {
   const draft = { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them", "It links the duplicates"], notes: null, team: "A11", project: "Visual",
     repo: null, goal: "Keep honest", labels: ["Bucket: Board", "Ticket mode"], priority: "high", parent: "A11-12", blocks: ["A11-3"], blockedBy: ["A11-4", "A11-5"] };
-  const form = boardView.draftForm(draft);
+  const form = boardView_0.draftForm(draft);
   assert.equal(form.doneWhen, "It lists them\nIt links the duplicates");
   assert.equal(form.labels, "Bucket: Board, Ticket mode");
-  assert.deepEqual(boardView.draftFields(form), { title: draft.title, why: draft.why, doneWhen: draft.doneWhen, labels: draft.labels, priority: "high", blocks: ["A11-3"],
+  assert.deepEqual(boardView_0.draftFields(form), { title: draft.title, why: draft.why, doneWhen: draft.doneWhen, labels: draft.labels, priority: "high", blocks: ["A11-3"],
     blockedBy: ["A11-4", "A11-5"], team: "A11", project: "Visual", goal: "Keep honest", parent: "A11-12" });
-  assert.deepEqual(boardView.draftFields({ ...form, notes: " ", repo: "", doneWhen: "  \nOne  \n" }), { title: draft.title, why: draft.why, doneWhen: ["One"], labels: draft.labels, priority: "high",
+  assert.deepEqual(boardView_0.draftFields({ ...form, notes: " ", repo: "", doneWhen: "  \nOne  \n" }), { title: draft.title, why: draft.why, doneWhen: ["One"], labels: draft.labels, priority: "high",
     blocks: ["A11-3"], blockedBy: ["A11-4", "A11-5"], team: "A11", project: "Visual", goal: "Keep honest", parent: "A11-12" }, "a blank line and a blank field are left out");
 });
 
@@ -882,8 +877,8 @@ function ticketOf(key: string) {
 test("A11-106: a finished run shows what its stacked pull requests need said of their bases, and no other run does", () => {
   const note = "Needs retarget: https://github.com/a11ign/agent-org/pull/1749 still targets nbf-1-fit, whose branch is gone: retarget it by hand";
   const finished = { ticket: { key: "NBF-2" }, phase: "finished", retargets: { "https://github.com/a11ign/agent-org/pull/1749": note } } as ViewEntry;
-  assert.equal(boardView.retargetNote(finished), note);
-  assert.equal(boardView.retargetNote({ ...finished, phase: "running" } as ViewEntry), null, "a running run says nothing of its bases");
-  assert.equal(boardView.retargetNote({ ticket: { key: "NBF-3" }, phase: "finished" } as ViewEntry), null, "a run with no note says nothing");
+  assert.equal(boardView_1.retargetNote(finished), note);
+  assert.equal(boardView_1.retargetNote({ ...finished, phase: "running" } as ViewEntry), null, "a running run says nothing of its bases");
+  assert.equal(boardView_1.retargetNote({ ticket: { key: "NBF-3" }, phase: "finished" } as ViewEntry), null, "a run with no note says nothing");
   assert.equal(runStatus(finished), runStatus({ ticket: { key: "NBF-2" }, phase: "finished" } as ViewEntry), "the run's status does not change for the note");
 });

@@ -12,8 +12,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { withPrOwners } from "./work-gate.ts";
-import { ownerOfPr } from "./work-gate/pr-orders.ts";
+import { withPrOwners } from "./work-gate/pr-owners.ts";
+import { ownerOfPr } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
 import { unresolvedOwnerEvents } from "./pr-ownership.ts";
 
 const row = (number: number, ...labels: string[]) => ({ number, labels: labels.map((name) => ({ name })) });

@@ -19,8 +19,8 @@ import { decide, MAX_STATE_BYTES, type DecisionDeps, type Question } from "./dec
 
 export const CI_FAILURE_CLASSES = Object.freeze(["own-defect", "flaky", "another-repository-changed", "infrastructure", "stale-merge-ref"] as const);
 export type CiFailureClass = (typeof CI_FAILURE_CLASSES)[number];
-export const CI_FAILURE_ROUTES = Object.freeze(["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "push-or-update-branch"] as const);
-export type CiFailureRoute = (typeof CI_FAILURE_ROUTES)[number];
+const CI_FAILURE_ROUTES = Object.freeze(["owner", "rerun-once", "cross-repo-incident", "rerun-after-reset", "push-or-update-branch"] as const);
+type CiFailureRoute = (typeof CI_FAILURE_ROUTES)[number];
 
 /** At most this many error lines are sent, so the state stays a few fields and never a log. */
 export const MAX_ERROR_LINES = 40;
@@ -33,7 +33,7 @@ const INSTRUCTIONS = "A pull request's CI check is red. From the failing test's 
 const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 /** What is known about one red check. The four booleans are computed in code; `rerunAlready` is whether this run was already rerun once. */
-export type CiFailureFacts = {
+type CiFailureFacts = {
   /** The same test is red on `main` at the same time. */
   redOnMain: boolean;
   /** The same test is red on other open pull requests at the same time. */
@@ -50,7 +50,7 @@ export type CiFailureFacts = {
   staleMergeRef?: boolean;
 };
 export type CiFailure = CiFailureFacts & { errorLines: readonly string[] };
-export type CiFailureDecision = {
+type CiFailureDecision = {
   klass: CiFailureClass;
   route: CiFailureRoute;
   /** `jev` when the provider chose the class, else `none`. */
@@ -158,10 +158,10 @@ export const classLine = (d: CiFailureDecision): string => `CI failure class: ${
 /** `gh`, as an injected seam: the arguments after `gh`, the stdout back. */
 export type Gh = (args: string[]) => string;
 /** The pull request a red order is about: `repo` is `owner/name`, and `head8` is the head the order's cause key carries. */
-export type RedPullRequest = { repo: string; number: number; head8: string };
+type RedPullRequest = { repo: string; number: number; head8: string };
 
 /** A run this recent counts as "at the same time". A red `main` from last week is a different failure. */
-export const SAME_TIME_MS = 6 * 60 * 60 * 1000;
+const SAME_TIME_MS = 6 * 60 * 60 * 1000;
 const RUNS_LISTED = 50;
 const MAIN_RUNS_LISTED = 10;
 const LOG_LINES_KEPT = 200;
@@ -298,7 +298,7 @@ export function classNote(decision: CiFailureDecision): string {
 
 export const SHARED_FAILURE_LABEL = "ci-shared-failure";
 /** A fix this young is still the notified PRs' to refresh; the detector waits this long before it takes a PR nobody noted. */
-export const REFRESH_GRACE_MS = 10 * 60 * 1000;
+const REFRESH_GRACE_MS = 10 * 60 * 1000;
 const MAX_SIGNATURE_READS = 12;
 const MAX_INCIDENT_ROWS = 20;
 /** The runner's own steps: a failure here is never the PR's diff, so ONE PR in one is enough. */
@@ -317,9 +317,9 @@ export const LOG_TIMESTAMP = /^\d{4}-\d\d-\d\dT[\d:.]+Z\s*/;
 const FILE_WINDOW_LINES = 30;
 const SOURCE_FILE = /((?:[\w@.-]+\/)*[\w@.-]+\.(?:tsx?|mts|cts|jsx?|mjs|cjs|py|rb|go|rs|sh|ya?ml|json))\b/;
 /** An OPEN incident row older than this with no claim is named in the gate's log (#1557). It does NOT release its holds: a hold waits for the row to close. */
-export const HOLD_MAX_MS = 15 * 60 * 1000;
+const HOLD_MAX_MS = 15 * 60 * 1000;
 /** A closed incident's signature is not filed again for this long, unless a PR the row never named joins it. */
-export const QUIET_AFTER_CLOSE_MS = 24 * 60 * 60 * 1000;
+const QUIET_AFTER_CLOSE_MS = 24 * 60 * 60 * 1000;
 const CHANGED_FILES_PAGE = 100;
 const SIGNATURE_NOISE: readonly [RegExp, string][] = [
   [/\d{4}-\d\d-\d\dT[\d:.]+Z\s*/g, ""], [/##\[error\]/g, ""], [/\b[0-9a-f]{7,40}\b/g, "<sha>"], [/\/home\/runner\/work\/\S*/g, "<path>"], [/\d+/g, "#"],
@@ -336,7 +336,7 @@ export type FailureSignature = { check: string; step: string; line: string; file
 const normalise = (line: string): string => SIGNATURE_NOISE.reduce((text, [pattern, to]) => text.replace(pattern, to), line.replace(ANSI, "")).trim().slice(0, MAX_LINE_CHARS);
 const isSetup = (signature: FailureSignature): boolean => SETUP_STEP.test(signature.step);
 /** The key two failures share when they are the same failure. A setup step's file is incidental (a path in an npm error), so only another step's file is part of it. */
-export const signatureKey = (signature: FailureSignature): string =>
+const signatureKey = (signature: FailureSignature): string =>
   `${signature.check} | ${signature.step} | ${signature.line}${isSetup(signature) || signature.file === null ? "" : ` | ${signature.file}`}`;
 const isAggregator = (check: Pick<RedCheck, "name">): boolean => AGGREGATOR_CHECK.test(check.name);
 /** The checks that can name a cause: the roll-up is left out. */
@@ -432,7 +432,7 @@ export function sharedFailureGroups(
 }
 
 /** Filter-cheap: only a PR with a red check name that is red on two PRs is worth a log read (whether ALL its red checks are shared is decided after). A lone red PR costs no read, so a lone setup failure is today's order. The roll-up is no check. */
-export const candidates = (prs: readonly RedPr[]): RedPr[] => {
+const candidates = (prs: readonly RedPr[]): RedPr[] => {
   const seen = new Map<string, number>();
   for (const pr of prs) for (const name of new Set(causes(pr).map((c) => c.name))) seen.set(name, (seen.get(name) ?? 0) + 1);
   return prs.filter((pr) => causes(pr).some((c) => (seen.get(c.name) ?? 0) >= 2));
@@ -448,13 +448,13 @@ function changedFiles(pr: RedPr, run: Run): string[] | null {
   }
 }
 
-export type HeldOrder = { subject: string; session: string; key: string };
-export type ReleasedOrder = { subject: string; session: string; key: string; why: "closed" | "unrecorded"; line: string };
+type HeldOrder = { subject: string; session: string; key: string };
+type ReleasedOrder = { subject: string; session: string; key: string; why: "closed" | "unrecorded"; line: string };
 /**
  * What the rows say about a group: hold it (no row yet, or an open row), or release it because its row was closed or could not be filed (a hold with no row behind it is
  * exactly the hold #5098 forbids).
  */
-export type Standing = { hold: true } | { hold: false; why: ReleasedOrder["why"]; row?: number };
+type Standing = { hold: true } | { hold: false; why: ReleasedOrder["why"]; row?: number };
 type OrderLike = { cause?: string; subject?: string; session?: string; discriminator?: string; prompt?: string };
 
 const RELEASE_REASON: Readonly<Record<ReleasedOrder["why"], string>> = {
@@ -681,10 +681,6 @@ function stamp(row: IncidentRow, { late, failed, run, log, nowMs }: { late: stri
 }
 
 const refusedOf = (rows: readonly IncidentRow[]): string[] => rows.flatMap((row) => listOf(String(row.body), FAILED_LINE));
-/** PRs whose refresh a refusal stopped: they are never held again, so the worker's order goes out as today. */
-export function refusedRefreshes(run: Run): string[] {
-  return refusedOf([...readRows(run, "open"), ...readRows(run, "closed")]);
-}
 
 /**
  * THE TICK'S ONE CALL. Refresh what a merged fix owes, hold what a shared failure owes nobody, file or join the incident, and return what remains. Never throws: a tick that cannot

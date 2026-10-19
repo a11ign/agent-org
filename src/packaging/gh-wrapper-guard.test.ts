@@ -15,8 +15,8 @@ import { join } from "node:path";
 import { PROJECT_ROOT } from "./host-units-project.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseHostConfig } from "../host-config.ts";
-import { type MintRun, ghWrapperDivergence, hostIdentityInstall, mintFailure, rerenderGhWrapper, shippedScriptText, startupGhWrapper,
-  tickRerenderGhWrapper, wrapperRoles, writeGhWrapper } from "../host-units.ts";
+import { type MintRun, ghWrapperDivergence, hostIdentityInstall, mintFailure, rerenderGhWrapper, startupGhWrapper, tickRerenderGhWrapper, wrapperRoles, writeGhWrapper } from "../host-units/tool-version-notes.ts";
+import { shippedScriptText } from "../host-units/shipped-dir.ts";
 
 const baseHost = () => JSON.parse(readFileSync(join(PROJECT_ROOT, ".agent-org/host.json"), "utf8")) as Record<string, unknown>;
 const APPS = (roles: string[]) => ({ identity: Object.fromEntries(roles.map((role) => [role, {

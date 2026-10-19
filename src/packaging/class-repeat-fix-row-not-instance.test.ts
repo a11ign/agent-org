@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CLASS_ROW_MILESTONE, groupByClass, classRowArgv, readClassRepeat, type ClassGroup, type ClassRepeatFact } from "../class-repeat.ts";
-import { classRepeatReadings } from "../org-health.ts";
+import { classRepeatReadings } from "../org-health/fleet-build-incident.ts";
 
 const NOW = Date.parse("2026-10-09T23:00:00Z");
 const MINUTE = 60_000;

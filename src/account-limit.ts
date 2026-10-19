@@ -22,7 +22,7 @@
 import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { machineryFlagOn, type CanaryState } from "./org-health.ts";
+import { machineryFlagOn, type CanaryState } from "./org-health/fleet-build-incident.ts";
 import { readReenqueueState } from "./work-gate/causes/pr-ejected.ts";
 import { REVIEWER_STATE_DIR } from "./work-gate/vocabulary.ts";
 import { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG, UNREADABLE_PAUSE, UNREADABLE_RECORD, pauseRecorded, readAccountLimits, type AccountLimit, type AccountLimits } from "./account-limit-record.ts";

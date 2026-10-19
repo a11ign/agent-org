@@ -13,6 +13,7 @@
  * and the engineer path -- `spawnableRole`, `SPAWN_CAUSES`, `registerSpawn`, the `spare-cycles` ledger -- reads
  * exactly as it did.
  */
+import { moduleSource } from "./lib/module-source.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, symlinkSync, readdirSync,
@@ -23,16 +24,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
-import {
-  deliver, route, spawnableRole, SPAWN_CAUSES,
-  REVIEWER_CAUSES, REVIEWER_GH_CONFIG_DIR, reviewerEnvironment, spawnableReviewer, isReviewerOrder,
-  liveReviewers, endFinishedReviewers, registerReviewer, reviewerPathsFrom, sparePathsFrom, spawnEnvironment,
-  MAX_SPAWNS_PER_TICK, orderPullRequest, reviewerMismatch, prepareReviewCheckout, removeReviewCheckout,
-  reviewCheckoutPath, withReviewCheckout, linkReviewDependencies, ensureReviewerToken, REVIEWER_TOKEN_REFRESH_SECONDS,
-  refreshLiveReviewerTokens, reviewerAppOf, reviewerTokenMinter,
-} from "./wake.ts";
+import { deliver } from "./wake/clear-settle-ms.ts";
+import { route, SPAWN_CAUSES } from "./wake/exit.ts";
+import { spawnableRole, REVIEWER_CAUSES, reviewerEnvironment, spawnEnvironment, MAX_SPAWNS_PER_TICK, reviewCheckoutPath, REVIEWER_TOKEN_REFRESH_SECONDS, reviewerAppOf } from "./wake/is-pull-request-spawn-order.ts";
+import { REVIEWER_GH_CONFIG_DIR } from "./review-trust.ts";
+import { spawnableReviewer, isReviewerOrder, liveReviewers, registerReviewer, reviewerPathsFrom, orderPullRequest, reviewerMismatch, prepareReviewCheckout, removeReviewCheckout, withReviewCheckout, linkReviewDependencies, ensureReviewerToken, refreshLiveReviewerTokens, reviewerTokenMinter } from "./wake/ensure-reviewer-token.ts";
+import { endFinishedReviewers } from "./wake/reset.ts";
+import { sparePathsFrom } from "./wake/ended-sessions.ts";
 import type { homeHostConfig } from "./host-config.ts";
-import { readReviewerRegistry, REVIEWER_REGISTRY_FILE } from "./work-gate.ts";
+import { readReviewerRegistry } from "./work-gate/causes/org-health-reviewer-auth.ts";
+import { REVIEWER_REGISTRY_FILE } from "./work-gate/vocabulary.ts";
 import { parityOwner } from "./review-attribution.ts";
 import { INSIDE, OUTSIDE } from "./review-trust.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
@@ -672,7 +673,7 @@ test("#2498 (2a): `A11Y_REVIEWER_SESSION` reaches the pane by EVERY path the tic
 });
 
 test("#2498 (2b): the tick has exactly ONE way to open a reviewer's pane and ONE to start its agent -- and neither is a resume", () => {
-  const wake = readFileSync(fileURLToPath(new URL("./wake.ts", import.meta.url)), "utf8");
+  const wake = moduleSource("wake.ts");
   // The two spellings moved to `herdr-agents.ts` (with a `session` that defaults to the org's), so the tick reaches them only through it: the count
   // is taken there, and `wake.ts` must hold neither, or a second spelling has appeared beside the shared one.
   const source = readFileSync(fileURLToPath(new URL("./herdr-agents.ts", import.meta.url)), "utf8");
@@ -1141,7 +1142,7 @@ test("#1348 (3a): a failed refresh is RETURNED, labelled, so `main` can say whic
 });
 
 test("#1348 (3b): `main` hands `deliver` the refresh, once, and the same minter the spawn uses (a SOURCE pin on this one wire: `main` is not driven whole by any test)", () => {
-  const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
+  const source = moduleSource("wake.ts");
   assert.equal(source.split("reviewerRefresh: (live) => refreshLiveReviewerTokens(live, reviewerRegistry, reviewerMint),").length - 1, 1, "one wire, in `main`");
   assert.equal(source.split("reviewerToken: reviewerMint,").length - 1, 1, "the spawn's minter is the same one");
 });

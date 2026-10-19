@@ -18,7 +18,7 @@ import type { DoorRun, ReviewTrust } from "../review-trust.ts";
 
 /** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
 type GateModules = {
-  wake: typeof import("../wake.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
+  wake: typeof import("../wake/ensure-reviewer-token.ts") & typeof import("../wake/with-ci-failure-class.ts") & typeof import("../wake/is-pull-request-spawn-order.ts") & typeof import("../wake/reset.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
   identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts"); doorPath: typeof import("../reviewer-door-path.ts");
 };
 
@@ -32,8 +32,8 @@ let gate: { ok: true; modules: GateModules } | { ok: false; refusal: unknown } |
  */
 export async function loadReviewerGate(): Promise<void> {
   if (gate !== null) return;
-  gate = await Promise.all([import("../wake.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
-    ([wake, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake, trust, config, identity, orders, doorPath } }),
+  gate = await Promise.all([import("../wake/ensure-reviewer-token.ts"), import("../wake/with-ci-failure-class.ts"), import("../wake/is-pull-request-spawn-order.ts"), import("../wake/reset.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
+    ([tokens, withCiFailure, spawnOrder, reset, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake: { ...tokens, ...withCiFailure, ...spawnOrder, ...reset }, trust, config, identity, orders, doorPath } }),
     (refusal: unknown) => ({ ok: false as const, refusal }),
   );
 }
@@ -363,8 +363,8 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
   removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync,
   checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
-  spawn?: typeof import("../wake.ts").spawnReviewer; checkout?: typeof import("../wake.ts").prepareReviewCheckout; heads?: Map<string, string>;
-  removeCheckout?: typeof import("../wake.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
+  spawn?: typeof import("../wake/ensure-reviewer-token.ts").spawnReviewer; checkout?: typeof import("../wake/ensure-reviewer-token.ts").prepareReviewCheckout; heads?: Map<string, string>;
+  removeCheckout?: typeof import("../wake/ensure-reviewer-token.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
   /** Where a seat's reviewer keeps its checkout, which holds the verdict file it wrote. */
   checkoutOf?: (label: string) => string;
   /** Mints the reviewer's token in a checkout: the reason it could not, or null when it has one. */

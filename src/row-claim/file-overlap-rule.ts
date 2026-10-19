@@ -78,7 +78,7 @@
 // overlap": a second repository that fails must not become a quiet pass on the strength of the first one answering. It says WHICH one.
 import { REPO } from "../project-identity.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
-import { extractClosesDeclaration, closesReferences } from "../acceptance-commands.ts";
+import { extractClosesDeclaration, closesReferences } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 import { gh, lookup } from "../merge-guard/lookups.ts";
 import { holdersOf } from "../pr-hold-state.ts";
 import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.ts";

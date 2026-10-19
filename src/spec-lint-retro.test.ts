@@ -14,8 +14,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import * as retro from "./org-retro.ts";
-import { recordSpecLintRefusals } from "./row-file.ts";
+import * as retro_0 from "./org-retro/readings.ts";
+import * as retro_1 from "./org-retro.ts";
+import { recordSpecLintRefusals } from "./row-file/roadmap-without-parent-refusal.ts";
 import { FAILURE_LEDGER_FILE, SPEC_LINT_REFUSED_KIND } from "./failure-ledger.ts";
 import { underspecifiedReading } from "./spec-lint.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
@@ -26,8 +27,8 @@ const LINE = "- Rows refused by the spec lint (24h)";
 
 /** Everything `buildReport` needs besides the ledger, so a test varies only the ledger and the stops read. */
 const rest = { merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: null, underspecified: underspecifiedReading([]) };
-const reportOf = (failureLedger: string | null | undefined) => retro.buildReport({ ...rest, failureLedger } as any, NOW);
-const lineOf = (failureLedger: string | null | undefined) => retro.renderReport(reportOf(failureLedger)).split("\n").find((line) => line.startsWith(LINE));
+const reportOf = (failureLedger: string | null | undefined) => retro_0.buildReport({ ...rest, failureLedger } as any, NOW);
+const lineOf = (failureLedger: string | null | undefined) => retro_1.renderReport(reportOf(failureLedger)).split("\n").find((line) => line.startsWith(LINE));
 
 /** The ledger the spec lint's own writer produces: the fixture goes through `recordSpecLintRefusals`, so the reader is tested against the real bytes. */
 function fixtureLedger(): string {
@@ -39,7 +40,7 @@ function fixtureLedger(): string {
 }
 
 test("the retro prints the distinct rows and the field counts of the 24 hours, on the line after the stops line", () => {
-  const report = retro.renderReport(reportOf(fixtureLedger()));
+  const report = retro_1.renderReport(reportOf(fixtureLedger()));
   assert.match(report, /^- Underspecified stops by field: none in the 24 hours\n- Rows refused by the spec lint \(24h\): 2 rows \(3 findings refused: files 2, run 1\)$/m,
     "two rows, three lines in the window, the line outside it counted nowhere; the field counts are of the lines");
 });

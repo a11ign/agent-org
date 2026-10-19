@@ -39,9 +39,14 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { deliver, spawnClaimer, spawnedPrompt, slugOf, registerSpawn, sparePathsFrom, readSpareCycles,
-  spawnableRole, spareLabelForRow, withSpareInstances, spawnClaimability, rowRefOfOrder, isSpareRole, spareInstances, endFinishedSpares,
-  WORKERS_GH_CONFIG_DIR, HOST_REPOS, PRIMARY_CHECKOUT } = await import("./wake.ts");
+const { deliver, spawnedPrompt, HOST_REPOS, PRIMARY_CHECKOUT } = await import("./wake/clear-settle-ms.ts");
+const { spawnClaimer, slugOf, spawnClaimability } = await import("./wake/is-release-line.ts");
+const { registerSpawn } = await import("./wake/holds-as-fyi.ts");
+const { sparePathsFrom, readSpareCycles } = await import("./wake/ended-sessions.ts");
+const { spawnableRole, spareLabelForRow, rowRefOfOrder, WORKERS_GH_CONFIG_DIR } = await import("./wake/is-pull-request-spawn-order.ts");
+const { withSpareInstances } = await import("./wake/exit.ts");
+const { isSpareRole, spareInstances } = await import("./wake/merge-queue-wait-limit-ms.ts");
+const { endFinishedSpares } = await import("./wake/with-ci-failure-class.ts");
 const { familyMember, isLiveSession } = await import("./arm-pr.ts");
 const { claimNames } = await import("./row-claim.ts");
 const { homeProjectDeclaration } = await import("./project-config.ts");

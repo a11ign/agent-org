@@ -35,7 +35,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { SIGNALS } = await import("../org-health.ts");
+const { SIGNALS } = await import("../org-health/no-merge-hours.ts");
 const { claimRecordComment } = await import("../row-claim.ts");
 
 const GATE_ENTRY = fileURLToPath(new URL("../work-gate.ts", import.meta.url));
@@ -131,5 +131,6 @@ test("THE CLEANUP: nothing in `src` reads a head commit for the clock any more (
   const orgHealthModule = await import("../work-gate/org-health.ts");
   assert.equal("readHeadCommittedAt" in gateModule, false);
   assert.equal("readHeadCommittedAt" in orgHealthModule, false);
-  assert.equal("conditionalOnQuietStalledPr" in gateModule.GH_READS, false);
+  const { GH_READS } = await import("../work-gate/reads/exit.ts");
+  assert.equal("conditionalOnQuietStalledPr" in GH_READS, false);
 });

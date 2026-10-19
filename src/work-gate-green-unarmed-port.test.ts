@@ -8,7 +8,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GREEN_UNARMED_SWITCH_ENV, greenUnarmedOrders, readArming, readArmingOf, readUnarmed, settleUnarmedPrs, type ArmingPort } from "./work-gate.ts";
+import { GREEN_UNARMED_SWITCH_ENV, readArmingOf, settleUnarmedPrs } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { greenUnarmedOrders } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { readArming, readUnarmed } from "./work-gate/reads.ts";
+import { type ArmingPort } from "./work-gate/vocabulary.ts";
 import type { ChangeRef, Decision, ItemRef } from "./ticket-port/port.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

@@ -45,7 +45,7 @@ const {
   readSweepWindows, reportSweepWindows, sweepFilingReason, sweepFreezeReason, sweepMinutesLeft, sweepWindowState,
 } = await import("./sweep-window.ts");
 const { reportB4, sessionEligibilityReason } = await import("./row-claim.ts");
-const { createIssue } = await import("./row-file.ts");
+const { createIssue } = await import("./row-file/roadmap-without-parent-refusal.ts");
 const { FAILURE_LEDGER_FILE, SWEEP_WINDOW_RELEASED_KIND } = await import("./failure-ledger.ts");
 
 const MIN = 60_000;

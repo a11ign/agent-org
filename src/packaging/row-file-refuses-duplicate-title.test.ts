@@ -15,7 +15,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendFiledBy, createIssue, duplicateTitleRefusal, promoteRow, titleFromArgv } from "../row-file.ts";
+import { appendFiledBy, titleFromArgv } from "../row-file/body-from-argv.ts";
+import { createIssue, promoteRow } from "../row-file/roadmap-without-parent-refusal.ts";
+import { duplicateTitleRefusal } from "../row-file/duplicate-title-refusal.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 

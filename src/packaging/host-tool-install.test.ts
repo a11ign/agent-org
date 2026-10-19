@@ -26,10 +26,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, identityDrift, shippedUnitText, unitsSpendingGh, workTickToolForm } from "../host-units.ts";
+import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, shippedUnitText, workTickToolForm } from "../host-units/shipped-dir.ts";
+import { identityDrift, unitsSpendingGh } from "../host-units/gh-spawn-reached-from.ts";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, renderTemplate, stateFilePath, templateValues }
   from "../host-config.ts";
-import { handoffQueuePath, keptClaimsPath, ledgerPathFrom, reviewerPathsFrom, sparePathsFrom } from "../wake.ts";
+import { handoffQueuePath, ledgerPathFrom } from "../wake/reset.ts";
+import { keptClaimsPath } from "../wake/with-ci-failure-class.ts";
+import { reviewerPathsFrom } from "../wake/ensure-reviewer-token.ts";
+import { sparePathsFrom } from "../wake/ended-sessions.ts";
 import { updateTool } from "../update-tool.ts";
 import { sandboxGitEnv, withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { trackedTopLevelDirs } from "../region-paths.ts";

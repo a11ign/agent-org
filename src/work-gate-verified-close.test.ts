@@ -5,7 +5,7 @@
 // EVERY "NOTHING IS ORDERED" ASSERTION HAS A TWIN: the same fixture with ONE thing changed that IS ordered.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claimStallTick } from "./work-gate.ts";
+import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
 
 const MIN = 60_000;

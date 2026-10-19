@@ -18,8 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claudeTurns } from "../token-audit.ts";
-import { claimedRowSession, rowCallCountSignals, rowCallCountOrders, ROW_CALL_COUNT_SPLIT_THRESHOLD,
-  ROW_CALL_COUNT_ASSESSED_MARKER, formatRowCallCountAssessment, rowCallCountAssessedCalls } from "../work-gate.ts";
+import { claimedRowSession, rowCallCountSignals, rowCallCountOrders, ROW_CALL_COUNT_SPLIT_THRESHOLD, ROW_CALL_COUNT_ASSESSED_MARKER, formatRowCallCountAssessment, rowCallCountAssessedCalls } from "../work-gate/row-call-count-orders.ts";
 import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
 
 /** One usage line, with a unique `id` so `claudeTurns`'s dedup (`message.id`) counts it once. */

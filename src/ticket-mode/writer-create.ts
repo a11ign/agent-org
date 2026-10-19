@@ -10,7 +10,8 @@
 // The state is kept before the tracker is asked: `creating` while it is, `created` with the key after, and `pending` again, with the tracker's reason,
 // when it refuses. An approve that is retried, or sent twice, makes one ticket, because the draft's own id is the ticket's id.
 import type { QueueStore } from "./pool.ts";
-import { changeDraft, draftOf, writerOf, type DraftRecord, type Queue } from "./queue.ts";
+import { changeDraft, draftOf, writerOf } from "./queue.ts";
+import type { DraftRecord, Queue } from "./queue/declared-remains.ts";
 import type { PickScope, TicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { descriptionOf, draftFrom, DraftRefusal, type Draft, PRIORITY_NUMBER, stemOf } from "./writer.ts";

@@ -16,9 +16,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { perPullRequestOrders, reviewBlockedOrders } from "./work-gate/pr-orders.ts";
-import { reviewBlocked, reviewStateOf, REVIEW_STATE } from "./work-gate.ts";
-import { deliver } from "./wake.ts";
+import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
+import { reviewBlockedOrders } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { reviewBlocked } from "./work-gate/causes/pr-reviews.ts";
+import { reviewStateOf, REVIEW_STATE } from "./work-gate/pr-state.ts";
+import { deliver } from "./wake/clear-settle-ms.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 type Order = { session: string, cause: string, causeKey: string };

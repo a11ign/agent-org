@@ -20,7 +20,11 @@ import { join } from "node:path";
 import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV, stateEntryPath } from "./host-config.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
-import { BATCH_MAX_CALLS, readElsewherePrs, readOtherScopes, readScopeTrunkRed, readWithFirstWaveTogether, runBatch, scopesOf } from "./work-gate.ts";
+import { BATCH_MAX_CALLS, readWithFirstWaveTogether, runBatch } from "./work-gate/reads/exit.ts";
+import { readElsewherePrs } from "./work-gate/reads.ts";
+import { readOtherScopes } from "./work-gate.ts";
+import { readScopeTrunkRed } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { scopesOf } from "./work-gate/vocabulary.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 // agent-org#1147: THE STATE DIRECTORY IS THIS FILE'S OWN. `readTrunkRed` keeps a repository's "has no such workflow" marker in the host's state directory and does not ask

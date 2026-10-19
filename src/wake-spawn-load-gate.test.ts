@@ -11,7 +11,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CLEAR_SETTLE_MS, deliver as settlingDeliver, MAX_SPAWNS_PER_TICK, hostLoadRefusal } from "./wake.ts";
+import { CLEAR_SETTLE_MS, deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
+import { MAX_SPAWNS_PER_TICK } from "./wake/is-pull-request-spawn-order.ts";
+import { hostLoadRefusal } from "./wake/holds-as-fyi.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { INSIDE } from "./review-trust.ts";
 

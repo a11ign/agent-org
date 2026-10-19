@@ -4,12 +4,14 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { runStatus, waitNote } from "./board-view.ts";
+import { runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
 import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, BACKGROUND_GONE_MS, completableRuns, emptyQueue, enqueue, finish, liveRunCount, queuePublish, queueWriter, recordPullStates, respond, retry, pauseQueue, resumeQueue, writerOf, writerStatus, type Outcome, type Queue } from "./queue.ts";
+import { approve, completableRuns, finish, queuePublish, recordPullStates, respond, pauseQueue, resumeQueue } from "./queue/approve.ts";
+import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Outcome, type Queue } from "./queue/declared-remains.ts";
+import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled } from "./reviewer-port.ts";

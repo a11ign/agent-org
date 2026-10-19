@@ -20,7 +20,9 @@ import {
   specLintRefusalReason, specReviewQuestion, specReviewVerdict, subsystemOf, underspecifiedLines, underspecifiedReading, underspecifiedStops,
   type LintDeps, type SpecValue,
 } from "./spec-lint.ts";
-import { buildReport, readAll, readUnderspecified, renderReport } from "./org-retro.ts";
+import { buildReport, readAll } from "./org-retro/readings.ts";
+import { readUnderspecified } from "./org-retro/retro-cause.ts";
+import { renderReport } from "./org-retro.ts";
 import { commentsSince } from "./ticket-port/comments-since.ts";
 
 // --- fixtures -----------------------------------------------------------------------------------------------------------------

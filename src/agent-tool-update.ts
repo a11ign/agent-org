@@ -446,7 +446,8 @@ export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) =
 async function liveDeps(argv: string[]): Promise<Deps> {
   const seams = hostSeams();
   const worker = await import("./worker-profile.ts");
-  const wake = await import("./wake.ts");
+  const wake_0 = await import("./wake/reset.ts");
+const wake_1 = await import("./wake.ts");
   // THE LAUNCH ARGUMENTS ARE A REAL SEAT'S: the first cause whose profile is this product's, `ready-row-unclaimed` first for the worker (the headless pilot's), so a dialog the
   // posture flags raise is the dialog a spawned seat meets.
   const argsFor = (product: "codex" | "claude"): string[] => {
@@ -458,7 +459,7 @@ async function liveDeps(argv: string[]): Promise<Deps> {
     if ("refusal" in profile) throw new Error(profile.refusal);
     return worker.agentArgs(profile);
   };
-  const ledger = join(dirname(wake.ledgerPathFrom(argv)), FAILURE_LEDGER_FILE);
+  const ledger = join(dirname(wake_0.ledgerPathFrom(argv)), FAILURE_LEDGER_FILE);
   return {
     installed: seams.installed,
     targets: () => seams.targets(flagValue(argv, "claude") ?? undefined),
@@ -470,7 +471,7 @@ async function liveDeps(argv: string[]): Promise<Deps> {
     smoke: (kind) => {
       try { return seams.smoke(kind, argsFor(SMOKES.find((s) => s.kind === kind)!.product)); } catch (cause) { return { opened: false, why: describe(cause) }; }
     },
-    dialogOf: wake.promptOnScreen,
+    dialogOf: wake_1.promptOnScreen,
     record: (events) => recordFailures({ logPath: ledger, events, now: Date.now() }),
     now: Date.now,
     sleep: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); },

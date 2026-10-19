@@ -28,9 +28,10 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import { hostConfigPath, stateEntryPath } from "./host-config.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";
-import { CANARY_STATE_FILE, emptyCanaryState, parseCanaryState, type CanaryState } from "./org-health.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { emptyCanaryState, parseCanaryState, type CanaryState } from "./org-health/fleet-build-incident.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // the owed rows are read through the port, so this leaf spawns nothing (`gh-call-ratchet.test.ts`)
-import { defaultRun } from "./work-gate/reads.ts"; // the gate's one runner: metered, and an identical read answered once
+import { defaultRun } from "./work-gate/reads/exit.ts"; // the gate's one runner: metered, and an identical read answered once
 
 /** The tool's root by this file's own location (`org-health.ts`'s `TOOL_ROOT`): the registry is read from the code that is running, not from the project's tree. */
 const TOOL_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

@@ -9,9 +9,10 @@ import { join } from "node:path";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { untieredReadyRows, untieredLines, ghReadyReader, hasTierDecision, ROW_LIST_LIMIT, LISTED_ROWS, untieredOffer, untieredSweepKey, parseUntieredMemory,
   UNTIERED_MEMORY_FILE } from "./untiered-ready-rows.ts";
-import { buildReport, renderReport, retrospectiveTick, untieredSweepOrder } from "./org-retro.ts";
+import { buildReport } from "./org-retro/readings.ts";
+import { renderReport, retrospectiveTick, untieredSweepOrder } from "./org-retro.ts";
 import { PROFILES } from "./worker-profile.ts";
-import { JUDGMENT_CAUSES, START_CAUSES } from "./work-gate.ts";
+import { JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 import { forgetRefusedReads } from "./ticket-port/rows-by-label.ts";
 

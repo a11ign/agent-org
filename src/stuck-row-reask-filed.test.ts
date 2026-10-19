@@ -12,7 +12,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escalateStuck, ESCALATION_LABEL, MAX_DELIVERIES, REASK_AFTER_MS } from "./wake.ts";
+import { escalateStuck, ESCALATION_LABEL, REASK_AFTER_MS } from "./wake/merge-queue-wait-limit-ms.ts";
+import { MAX_DELIVERIES } from "./wake/holds-as-fyi.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 const SHA = "0123abcd";

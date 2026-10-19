@@ -6,10 +6,12 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
-import { runActions, runStatus } from "./board-view.ts";
+import { runActions, runStatus } from "./board-view/settled-by-pulls.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
 import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, readPullState, readReviewerMemory, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
-import { emptyQueue, enqueue, pauseQueue, resumeQueue, type Queue } from "./queue.ts";
+import { emptyQueue } from "./queue.ts";
+import { enqueue, type Queue } from "./queue/declared-remains.ts";
+import { pauseQueue, resumeQueue } from "./queue/approve.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 

@@ -17,9 +17,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, spawnableRole, spareLabelForRow, withSpareInstances, engineerRoles, spareInstances,
-  endFinishedSpares, readSpareCycles, consecutiveClean, registerSpawn, sparePathsFrom, rowOfOrder, isSpareRole }
-  from "../wake.ts";
+import { deliver } from "../wake/clear-settle-ms.ts";
+import { spawnableRole, spareLabelForRow, engineerRoles } from "../wake/is-pull-request-spawn-order.ts";
+import { withSpareInstances } from "../wake/exit.ts";
+import { spareInstances, isSpareRole } from "../wake/merge-queue-wait-limit-ms.ts";
+import { endFinishedSpares } from "../wake/with-ci-failure-class.ts";
+import { readSpareCycles, sparePathsFrom } from "../wake/ended-sessions.ts";
+import { consecutiveClean, rowOfOrder } from "../wake/is-release-line.ts";
+import { registerSpawn } from "../wake/holds-as-fyi.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels } from "../arm-pr.ts";
 import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
 import { labelAfterCreate } from "../pr-open.ts";

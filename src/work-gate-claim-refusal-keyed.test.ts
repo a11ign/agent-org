@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimRefusalOf } from "./work-gate.ts";
+import { claimRefusalOf } from "./work-gate/causes/rows-claims.ts";
 import { claimNames, worktreeTargetReason } from "./row-claim.ts";
 
 const KEYED = { number: 724, repoKey: "agent-org" };

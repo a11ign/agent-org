@@ -3,12 +3,13 @@ import { newestPerName } from "../../newest-check-run.ts";
 import { subjectIdentity, subjectMention, subjectRef } from "../../review-attribution.ts";
 import { loadLanes, inLane, MANAGERS_APP_LOGINS } from "../../lane-ownership.ts";
 import { holdersOf } from "../../pr-hold-state.ts";
-import { decidedBy } from "../../claim-stall.ts";
+import { decidedBy } from "../../decided-by.ts";
 import { worktreeOwner } from "../../worktree-owner.ts";
-import { HOLD_RED_JOBS, reviewGateOf } from "../pr-orders.ts";
+import { HOLD_RED_JOBS, reviewGateOf } from "../pr-orders/red-only-by-superseded-run.ts";
 import { checkMarkersOf } from "../review-gate.ts";
 import { BLOCKING_REVIEW_STATES, REVIEW_STATE, blockingChecks, checksSettledGreen, draftCandidates, mergeCandidates, reviewStateOf } from "../pr-state.ts";
-import { PROJECT_GIT, capturingStderr, defaultRun, defaultSpawn, repoNow } from "../reads.ts";
+import { PROJECT_GIT } from "../reads.ts";
+import { capturingStderr, defaultRun, defaultSpawn, repoNow } from "../reads/exit.ts";
 import { HOUR_MS, labelsOf, sessionOf } from "../vocabulary.ts";
 
 /**

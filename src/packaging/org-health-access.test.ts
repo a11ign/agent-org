@@ -23,7 +23,10 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS, teamAccessReading, readTeamAccess, parseTeamListing, orgHealthReadings } = await import("../org-health.ts");
+const { SIGNALS } = await import("../org-health/no-merge-hours.ts");
+const { teamAccessReading } = await import("../org-health/state-label-reading.ts");
+const { readTeamAccess, parseTeamListing } = await import("../org-health/sweep-fact.ts");
+const { orgHealthReadings } = await import("../org-health/fleet-build-incident.ts");
 const { orgHealthNow } = await import("../work-gate/org-health.ts");
 
 const DECLARED = ["a11ign/a11ign", "a11ign/agent-org", "a11ign/screenreader-worker"];

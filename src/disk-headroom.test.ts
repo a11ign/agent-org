@@ -21,13 +21,14 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diskHeadroom, lowResources, readFilesystems, MIN_FREE_FRACTION, WATCHED_MOUNTS } from "./disk-headroom.ts";
-import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, diskHeadroomOrders, diskHeadroomTick } from "./work-gate.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
+import { diskHeadroomOrders, diskHeadroomTick } from "./work-gate/causes/org-health-host.ts";
 import { profileFor } from "./worker-profile.ts";
 
 const BLOCK = 4096;
 const TOTAL = 1000;
 const GATE_ENTRY = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
-import { SETTLE_TEST_CLOCK_ENV } from "./wake.ts";
+import { SETTLE_TEST_CLOCK_ENV } from "./wake/holds-as-fyi.ts";
 const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const READ_ONLY = 0o444;

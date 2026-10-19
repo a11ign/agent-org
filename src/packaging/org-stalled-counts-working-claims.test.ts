@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deadMansSwitch } from "../work-gate.ts";
+import { deadMansSwitch } from "../work-gate/causes/org-health-host.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 
 type Agent = { label: string; status: string };

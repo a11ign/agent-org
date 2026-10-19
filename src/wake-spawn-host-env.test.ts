@@ -17,10 +17,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { addressed, spawnEnvironment, whyNoHost } from "./wake.ts";
+import { addressed } from "./wake/clear-settle-ms.ts";
+import { spawnEnvironment, whyNoHost } from "./wake/is-pull-request-spawn-order.ts";
 import { hostConfigPath, HOST_CONFIG_ENV, HOST_DECLARATION_PATH } from "./host-config.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { engineerBriefSentence, briefRoleSentence } from "./spawn-role-brief.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 /** Run `body` with `AGENT_ORG_HOST` set to `value`, or ABSENT when `value` is `undefined`; the caller's own value is put back. */
 function withHostVariable<T>(value: string | undefined, body: () => T): T {
@@ -127,7 +129,7 @@ function spawnProblems(source: string): string[] {
 }
 
 test("MUTATION: a wake.ts that drops the key, lets the host win over an override, or refuses after the claim is named by its own problem", () => {
-  const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
+  const source = moduleSource("wake.ts");
   assert.deepEqual(spawnProblems(source), [], "the real text holds");
   const dropped = source.replace("[HOST_CONFIG_ENV]: hostConfigPath(), ", "");
   assert.notEqual(dropped, source, "the key-dropping fixture really differs");

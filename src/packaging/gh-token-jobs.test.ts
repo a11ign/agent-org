@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { localImports } from "../lib/local-import-closure.ts";
-import { SPAWNS_GH } from "../acceptance-commands.ts";
+import { SPAWNS_GH } from "../acceptance-commands/classification.ts";
 
 /** Can a `gh` spawn be reached from this file, through any depth of local imports? */
 function reachesGh(entry: string, seen = new Set<string>()): boolean {
@@ -168,8 +168,8 @@ test("#1449: this guard reads the token charge's ONE spawn regex -- it imports S
   const source = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const code = source.split("\n").filter((line) => !/^\s*(\*|\/\/|\/\*)/.test(line)).join("\n");
   // Two spellings of the same module: `agent-org/src/...` where the tool sat in the monorepo, `../...` since this file lives beside it.
-  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"(?:[^"]*agent-org\/src\/|\.\.\/)acceptance-commands\.ts"/,
-    "SPAWNS_GH must come from acceptance-commands.ts, the regex the token charge itself uses");
+  assert.match(code, /import\s*\{\s*SPAWNS_GH\s*\}\s*from\s*"(?:[^"]*agent-org\/src\/|\.\.\/)acceptance-commands(?:\/classification)?\.ts"/,
+    "SPAWNS_GH must come from acceptance-commands (its classification module), the regex the token charge itself uses");
   assert.doesNotMatch(code, /\b(?:const|let|var)\s+SPAWNS_GH\b/,
     "a local SPAWNS_GH is a second copy of the charge's list -- the drift #1449 was filed about");
 });

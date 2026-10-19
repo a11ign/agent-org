@@ -48,7 +48,7 @@ const { forgetRefusedReads } = await import("./ticket-port/rows-by-label.ts");
 beforeEach(() => forgetRefusedReads());
 const { declaredRegionFiles } = await import("./region-paths.ts");
 const { reportB4, sessionEligibilityReason } = await import("./row-claim.ts");
-const { partitionUnclaimed } = await import("./work-gate.ts");
+const { partitionUnclaimed } = await import("./work-gate/causes/rows-claims.ts");
 
 const TRACKER = "a11ign/a11ign";
 const AGENT_ORG = { key: "agent-org", repo: "a11ign/agent-org" };

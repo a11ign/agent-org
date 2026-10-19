@@ -13,8 +13,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver as settlingDeliver, relaneTarget, relaneFacts, refusalReport } from "../wake.ts";
-import { decide } from "../work-gate.ts";
+import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
+import { relaneTarget } from "../wake/exit.ts";
+import { relaneFacts } from "../wake.ts";
+import { refusalReport } from "../wake/merge-queue-wait-limit-ms.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 
 const MINUTE = 60_000;
 const T0 = 1_000_000_000_000;

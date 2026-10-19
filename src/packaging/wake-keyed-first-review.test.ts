@@ -37,8 +37,10 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { homeProjectDeclaration } = await import("../project-config.ts");
-const { scopesOf, readLanes, scopeTick } = await import("../work-gate.ts");
-const { deliver, linkKeyedDependencies } = await import("../wake.ts");
+const { scopesOf } = await import("../work-gate/vocabulary.ts");
+const { readLanes, scopeTick } = await import("../work-gate/tick/blocker-cleared-reading.ts");
+const { deliver } = await import("../wake/clear-settle-ms.ts");
+const { linkKeyedDependencies } = await import("../wake/ensure-reviewer-token.ts");
 
 // --- (1) THE DEPENDENCY REMEDY ----------------------------------------------------------------------------------------------------
 

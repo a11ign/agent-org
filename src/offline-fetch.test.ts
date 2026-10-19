@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { GITHUB_STATUS_URL, githubIncidentOf } from "./work-gate.ts";
+import { GITHUB_STATUS_URL, githubIncidentOf } from "./work-gate/causes/org-health-github-incident.ts";
 import { CALM_GITHUB_STATUS, offlineFetch } from "./offline-fetch.ts";
 
 const REPO = fileURLToPath(new URL("../", import.meta.url));

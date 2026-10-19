@@ -14,7 +14,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver as settlingDeliver, engineerEligibility, poolEngineerReason, splitRefusals, spareLabelForRow } from "./wake.ts";
+import { deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
+import { engineerEligibility } from "./wake/exit.ts";
+import { poolEngineerReason } from "./wake/with-ci-failure-class.ts";
+import { splitRefusals } from "./wake/merge-queue-wait-limit-ms.ts";
+import { spareLabelForRow } from "./wake/is-pull-request-spawn-order.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: () => {} });

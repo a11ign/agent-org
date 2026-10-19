@@ -13,10 +13,13 @@ import { test } from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import * as retro from "./org-retro.ts";
+import * as retro_0 from "./org-retro/readings.ts";
+import * as retro_1 from "./org-retro.ts";
+import * as retro_2 from "./org-retro/retro-cause.ts";
 import { FAILURE_LEDGER_FILE, recordFailures } from "./failure-ledger.ts";
 import { underspecifiedReading } from "./spec-lint.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 const NOW = Date.parse("2026-10-12T00:22:00Z");
 const MINUTE = 60_000;
@@ -39,9 +42,9 @@ const closedRow = (number: number, closedAgo: number, body: string) => ({ number
 
 /** Everything `buildReport` needs besides the journal and the closed rows, so a test varies only those. */
 const rest = { merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: null, underspecified: underspecifiedReading([]), closedSharedRows: [] };
-const reportOf = (over: object) => retro.buildReport({ ...rest, ...over } as any, NOW);
+const reportOf = (over: object) => retro_0.buildReport({ ...rest, ...over } as any, NOW);
 const linesOf = (over: object) => {
-  const lines = retro.renderReport(reportOf(over)).split("\n");
+  const lines = retro_1.renderReport(reportOf(over)).split("\n");
   return [lines.find((line) => line.startsWith(WAKES)), lines.find((line) => line.startsWith(CLOSED))];
 };
 
@@ -88,23 +91,23 @@ test("a count nobody could read is unknown, never 0", () => {
 test("one closure files an incident through the failure ledger, and the same window without it files none", () => {
   const filed = reportOf({ closedSharedRows: [closedRow(900, HOUR, NOT_SAME)] }).sharedFailures;
   const logPath = join(tmpDir("shared-failure-retro-"), FAILURE_LEDGER_FILE);
-  const result = recordFailures({ logPath, events: retro.sharedFailureEvents(filed), now: NOW, report: () => {} });
+  const result = recordFailures({ logPath, events: retro_0.sharedFailureEvents(filed), now: NOW, report: () => {} });
   assert.equal(result.appended, 1, "one incident for the one closure");
   const [classKey, , ref] = readFileSync(logPath, "utf8").trimEnd().split("\t");
-  assert.deepEqual([classKey, ref], [retro.SHARED_FAILURE_NOT_SAME_KIND, "#900"], "the ledger line names the kind and the row");
+  assert.deepEqual([classKey, ref], [retro_0.SHARED_FAILURE_NOT_SAME_KIND, "#900"], "the ledger line names the kind and the row");
 
   const quiet = join(tmpDir("shared-failure-retro-quiet-"), FAILURE_LEDGER_FILE);
   const none = reportOf({ closedSharedRows: [] }).sharedFailures;
-  assert.deepEqual(retro.sharedFailureEvents(none), [], "no closure and no wake is no event");
-  assert.equal(recordFailures({ logPath: quiet, events: retro.sharedFailureEvents(none), now: NOW, report: () => {} }).appended, 0);
+  assert.deepEqual(retro_0.sharedFailureEvents(none), [], "no closure and no wake is no event");
+  assert.equal(recordFailures({ logPath: quiet, events: retro_0.sharedFailureEvents(none), now: NOW, report: () => {} }).appended, 0);
   assert.equal(existsSync(quiet), false, "the same window without the closure writes nothing to the ledger");
 });
 
 test("a held-then-released PR files an incident too, and a window with neither files none", () => {
   const journal = journalOf([[2 * HOUR, holding("42")], [HOUR, released(["42", "closed"])]]);
-  const events = retro.sharedFailureEvents(reportOf({ journal }).sharedFailures);
-  assert.deepEqual(events, [{ classKey: retro.SHARED_FAILURE_HELD_KIND, ref: `42 ${new Date(NOW - HOUR).toISOString().slice(0, 10)}` }]);
-  assert.deepEqual(retro.sharedFailureEvents(reportOf({ journal: "" }).sharedFailures), []);
+  const events = retro_0.sharedFailureEvents(reportOf({ journal }).sharedFailures);
+  assert.deepEqual(events, [{ classKey: retro_0.SHARED_FAILURE_HELD_KIND, ref: `42 ${new Date(NOW - HOUR).toISOString().slice(0, 10)}` }]);
+  assert.deepEqual(retro_0.sharedFailureEvents(reportOf({ journal: "" }).sharedFailures), []);
 });
 
 test("the gate writes the lines this count reads, in the words it reads them with", () => {
@@ -117,7 +120,7 @@ test("the gate writes the lines this count reads, in the words it reads them wit
 });
 
 test("the retro files both counts through recordFailures in dailyRetrospective, and reads the closed rows in its own class", () => {
-  const src = readFileSync(new URL("./org-retro.ts", import.meta.url), "utf8");
+  const src = moduleSource("org-retro.ts");
   assert.match(src, /recordFailures\(\{[^}]*events: sharedFailureEvents\(report\.sharedFailures\)/);
   assert.match(src, /name: "closed shared-failure rows"/);
 });
@@ -125,10 +128,10 @@ test("the retro files both counts through recordFailures in dailyRetrospective, 
 test("a closed row whose comments run past the first page is refused, so its closing comment is never missed as 0", () => {
   const raw = (comments: object) => [{ number: 900, closedAt: new Date(NOW - HOUR).toISOString(), comments }];
   const whole = raw({ totalCount: 1, nodes: [{ body: NOT_SAME }] });
-  assert.deepEqual(retro.readableClosedSharedRows(whole as any)?.map((row) => row.comments), [[{ body: NOT_SAME }]], "one page holds every comment: counted");
+  assert.deepEqual(retro_2.readableClosedSharedRows(whole as any)?.map((row) => row.comments), [[{ body: NOT_SAME }]], "one page holds every comment: counted");
   const past = Array.from({ length: 100 }, () => ({ body: "Closed: fixed on main." }));
-  assert.equal(retro.readableClosedSharedRows(raw({ totalCount: 101, nodes: past }) as any), null, "101 comments, 100 read: the closing comment may be the 101st");
-  assert.equal(retro.readableClosedSharedRows(raw({ nodes: [{ body: NOT_SAME }] }) as any), null, "no count of comments means the read cannot be checked");
+  assert.equal(retro_2.readableClosedSharedRows(raw({ totalCount: 101, nodes: past }) as any), null, "101 comments, 100 read: the closing comment may be the 101st");
+  assert.equal(retro_2.readableClosedSharedRows(raw({ nodes: [{ body: NOT_SAME }] }) as any), null, "no count of comments means the read cannot be checked");
   const ceiling = Array.from({ length: 500 }, (_, i) => ({ number: i, closedAt: null, comments: { totalCount: 0, nodes: [] } }));
-  assert.equal(retro.readableClosedSharedRows(ceiling as any), null, "500 rows is the list's ceiling, refused");
+  assert.equal(retro_2.readableClosedSharedRows(ceiling as any), null, "500 rows is the list's ceiling, refused");
 });

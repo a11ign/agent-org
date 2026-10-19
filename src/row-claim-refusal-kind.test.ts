@@ -25,7 +25,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAIM_REFUSAL_TEXTS, recordClaimRefusal } from "./row-claim.ts";
-import { readClaimRefusals } from "./org-health.ts";
+import { readClaimRefusals } from "./org-health/claim-refusal.ts";
 import { groupByClass } from "./class-repeat.ts";
 import { CLAIM_GUARD_HELD_KIND, CLAIM_REFUSED_KIND } from "./failure-ledger.ts";
 

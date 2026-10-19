@@ -44,9 +44,12 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { homeProjectDeclaration } = await import("../project-config.ts");
 const { copyToolAndProject, importClosure, toolFile } = await import("./copied-tool-fixture.ts");
-const { deliver: settlingDeliver, route, withSpareInstances, engineerRoles, engineerEligibility, spawnableRole, EXIT,
-  activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, DRAINED_SEEN,
-  CLEAN_CYCLES_TARGET, readSpareCycles, sparePathsFrom, spareRoles } = await import("../wake.ts");
+const { deliver: settlingDeliver } = await import("../wake/clear-settle-ms.ts");
+const { route, withSpareInstances, engineerEligibility, EXIT, DRAINED_SEEN } = await import("../wake/exit.ts");
+const { engineerRoles, spawnableRole } = await import("../wake/is-pull-request-spawn-order.ts");
+const { activeDrain, drainedRoles, drainInForce, cyclesReport, spawnClaimability, rowOfOrder, CLEAN_CYCLES_TARGET } = await import("../wake/is-release-line.ts");
+const { readSpareCycles, sparePathsFrom } = await import("../wake/ended-sessions.ts");
+const { spareRoles } = await import("../wake/merge-queue-wait-limit-ms.ts");
 const { drainReason } = await import("../row-claim/runner-rule.ts");
 const { claimRow } = await import("../row-claim.ts");
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */

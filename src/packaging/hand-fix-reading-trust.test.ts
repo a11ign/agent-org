@@ -16,7 +16,8 @@ import assert from "node:assert/strict";
 import {
   UNREAD_SHARE_BOUND, assertBaseIsLive, gatherChanges, ledgerLine, readLedger,
 } from "../hand-fix-ledger.ts";
-import { buildReport, compareReadings, readingNumbers } from "../org-retro.ts";
+import { buildReport, readingNumbers } from "../org-retro/readings.ts";
+import { compareReadings } from "../org-retro.ts";
 import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
 
 const NOW = new Date("2026-10-03T00:02:46Z");

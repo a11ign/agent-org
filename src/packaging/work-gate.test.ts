@@ -28,36 +28,34 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { shippedUnits } from "../host-units.ts";
+import { shippedUnits } from "../host-units/shipped-dir.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
-import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands.ts";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/classification.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
-import { MAX_ROW_ORDERS_PER_TICK, readCommitShas, readPatchId, withPatchIds, decide as decideOnHost, checksSettledGreen, readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, readReadyRows, EXIT, CAUSES,
-  comparablePrFiles, START_CAUSES, draining, DRAIN_MARKER, stalledOrder, performActions,
-  blockingChecks, anyChecksRed, requiredCheckNames, readBaseTip, baseTipWhenRed, ownerOf, NOT_PICKABLE, NOT_STARTABLE,
-  ROUTED_TO, readPromotableRows, GH_READS, partitionUnclaimed, openRowState, waitingBreakdown,
-  deadMansSwitch, hostDriftOrders, JUDGMENT_CAUSES,
-  shouldBeMerging as shouldBeMergingPrs, conflictedPrs, conflictStateOf, mergeConflictOrders,
-  unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, fleetBatchRows, fleetBatchOrders,
-  partitionFleetBatch, FLEET_GATED_SELECTOR, blockersFromRows, blockerClearedOrders, unclaimedBlockerClearedOrders, unclaimedClearings,
-  anyBlockerClearingCandidate,
-  promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS,
-  PROMOTION_ASK_PERIOD_MS, PROMOTION_ASK_WINDOW_MS, HOUR_MS,
-  claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, readClaimedRowComments,
-  CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX,
-  epicRowsOf, doneWhenLines, answersOwed, answerOrders,
-  readOpenRows, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels,
-  withEndedLabels, withPrOwners, ownerOfPr,
-  blockedWithoutReferent, blockedReferentOrders, CHAIRMAN_LABEL, PARKED_LABEL,
-  ANSWER_PREFIX, redOnlyBySupersededRun, cannotAskReport,
-  readRowBranches, readWorktreeStamps, rowBranchOrders, GIT_READS,
-  reviewStateOf, reviewBlocked, reviewBlockedOrders, REVIEW_STATE, HOLD_RED_JOBS, reviewableHead,
-  readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, rowsOffBoardOrSay, ROW_OFF_BOARD_GRACE_MS,
-  refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads,
-  pipelineCodeownerReviewMissing, bareAnswerLabelOrders, readRowTimeline }
-  from "../work-gate.ts";
+import { MAX_ROW_ORDERS_PER_TICK, comparablePrFiles, ownerOf, NOT_PICKABLE, NOT_STARTABLE, ROUTED_TO, PROMOTION_ASK_WINDOW_MS, HOUR_MS, PARKED_LABEL } from "../work-gate/vocabulary.ts";
+import { readCommitShas, readPatchId, withPatchIds, readWorktreeStamps, reviewBlocked, reviewableHead, pipelineCodeownerReviewMissing } from "../work-gate/causes/pr-reviews.ts";
+import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { checksSettledGreen, blockingChecks, anyChecksRed, conflictedPrs, conflictStateOf, reviewStateOf, REVIEW_STATE } from "../work-gate/pr-state.ts";
+import { readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, EXIT, draining, DRAIN_MARKER, GH_READS, GIT_READS } from "../work-gate/reads/exit.ts";
+import { readReadyRows, readPromotableRows, readClaimedRowComments, readOpenRows, readRowBranches } from "../work-gate/reads.ts";
+import { CAUSES, START_CAUSES, JUDGMENT_CAUSES } from "../cause-declaration.ts";
+import { stalledOrder, performActions, openRowState, waitingBreakdown } from "../work-gate/orders.ts";
+import { requiredCheckNames, readBaseTip, baseTipWhenRed, shouldBeMerging as shouldBeMergingPrs } from "../work-gate/causes/pr-checks.ts";
+import { partitionUnclaimed, blockersFromRows, rowBranchOrders } from "../work-gate/causes/rows-claims.ts";
+import { deadMansSwitch, cannotAskReport } from "../work-gate/causes/org-health-host.ts";
+import { hostDriftOrders, blockerClearedOrders } from "../work-gate.ts";
+import { mergeConflictOrders, ownerOfPr, redOnlyBySupersededRun, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, epicRowsOf, doneWhenLines } from "../work-gate/causes/rows-epics.ts";
+import { fleetBatchRows, fleetBatchOrders, partitionFleetBatch, FLEET_GATED_SELECTOR } from "../work-gate/causes/rows-fleet-batch.ts";
+import { unclaimedBlockerClearedOrders, unclaimedClearings, promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS, PROMOTION_ASK_PERIOD_MS } from "../work-gate/causes/rows-blocker-cleared.ts";
+import { claimedRowAmendedOrders, constraintsAfterClaim, amendmentsOn, CONSTRAINT_COMMENT_MARKER, CONSTRAINT_BODY_PREFIX } from "../work-gate/causes/rows-amended.ts";
+import { answersOwed, answerOrders, withAnswerLabel, rowsOwingAnswers, readClosedAnswerRows, withoutEndedAnswerSessions, endedSessionLabels, blockedWithoutReferent, blockedReferentOrders, bareAnswerLabelOrders, readRowTimeline } from "../work-gate/causes/rows-answers.ts";
+import { withEndedLabels, withPrOwners } from "../work-gate/pr-owners.ts";
+import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../project-vocabulary.ts";
+import { ANSWER_PREFIX } from "../waiting-condition.ts";
+import { readRowsOffBoard, rowsOffBoard, rowOffBoardOrders, ROW_OFF_BOARD_GRACE_MS } from "../work-gate/causes/rows-off-board.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { forgetRefusedReads } from "../ticket-port/rows-by-label.ts";
 // #5050: the gate remembers a rate-limit refusal for the PROCESS, and a test here fakes one (`rate limited`), so without this every later list read answers `null`
@@ -67,8 +65,11 @@ beforeEach(() => forgetRefusedReads());
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.ts` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { readLedger, undelivered, addressed, WAKE_TTL_MS, JUDGMENT_TTL_MS, deliver, escalateStuck,
-  MAX_DELIVERIES, deliveryCounts } from "../wake.ts";
+import { readLedger, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
+import { undelivered, JUDGMENT_TTL_MS, deliveryCounts } from "../wake/reset.ts";
+import { addressed, deliver } from "../wake/clear-settle-ms.ts";
+import { escalateStuck } from "../wake/merge-queue-wait-limit-ms.ts";
+import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
 import { primaryLaunchRefusal, launchCheckoutOf }
@@ -76,7 +77,8 @@ import { primaryLaunchRefusal, launchCheckoutOf }
 
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
 // without one is dropped, and the gate would read every PR as having no checks at all.
-import { closesUnresolvedOrders, closesUnresolvedPrs, primaryStaleOrders, withStalePrimaryNotice } from "../work-gate.ts";
+import { closesUnresolvedOrders, closesUnresolvedPrs } from "../work-gate/causes/rows-claims.ts";
+import { primaryStaleOrders, withStalePrimaryNotice } from "../work-gate/causes/org-health-host-drift.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 // #5050: the gate's label lists are GraphQL connections, not `issue list`, so a fake answers them in the connection's shape (`rows-by-label-fixtures.ts`).
@@ -4440,8 +4442,8 @@ test("#2174: the gate does NOT import host-units.ts -- the spawn is the fence, n
     + "files with `History: full`; the gate runs `host-units.ts --json` as a child process instead");
   // THE CONTROL: the walker really can see this edge when it exists, so the assertion above is a fact
   // about the gate rather than about a walker that finds nothing.
-  assert.ok(importClosure(join(SRC, "host-units.ts")).has(join(SRC, "acceptance-commands.ts")),
-    "the same walker DOES find host-units.ts's own edges");
+  assert.ok([...importClosure(join(SRC, "host-units.ts"))].some((file) => file.startsWith(join(SRC, "acceptance-commands"))),
+    "the same walker DOES find host-units.ts's own edges (into acceptance-commands, which it was split into)");
 });
 
 /**
@@ -4502,7 +4504,8 @@ test("#2174: no test file joins the history-requirement population without a dec
   const memo = createClosureMemo();
   const current = historyChargedTests(liveDir, { memo });
   // Positive control: the scan keeps the tests that really are charged, so an emptied population cannot pass for "none joined".
-  assert.ok(current.includes("work-gate.test.ts"), "this very file is in the population, and the scan dropped it");
+  // host-units.test.ts imports the host-units module whose closure reaches the history code (`host-units/gh-spawn-reached-from.ts`); work-gate.test.ts no longer does.
+  assert.ok(current.includes("host-units.test.ts"), "a test that imports host-units is in the population, and the scan dropped it");
   const { undeclared, judged } = judgePin({
     repo: TOOL_ROOT, paths: ["src"], current, declared: DECLARED_HISTORY_POPULATION,
     scan: (root, { changed }) => historyChargedTests(join(root, "src/packaging"), {
@@ -4577,7 +4580,7 @@ test("#2174: work-gate.ts loads in a tree with NO node_modules, host-units edge 
   assert.ok(!existsSync(join(root, "node_modules")), "the tree really has none -- the premise");
   const run = spawnSync(process.execPath, ["--input-type=module", "-e",
     `import(${JSON.stringify(pathToFileURL(copy.entry).href)})`
-    + ".then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })"],
+    + `.then(() => import(${JSON.stringify(pathToFileURL(join(dirname(copy.entry), "cause-declaration.ts")).href)})).then(m => { if (!m.CAUSES.includes('host-units-stale')) throw new Error('cause missing'); })`],
   { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });
   assert.equal(run.status, 0,
     `the gate must load with no node_modules anywhere above it: ${run.stderr}`);

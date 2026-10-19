@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 
 import { fleetGatedRows, examinedComment, wakeText, performFiring as settlingPerformFiring, STANDING_ROW, SESSION }
   from "../fleet-gated-nightly.ts";
-import { FLEET_GATED_SELECTOR } from "../work-gate.ts";
+import { FLEET_GATED_SELECTOR } from "../work-gate/causes/rows-fleet-batch.ts";
 import { PROMPT_REFUSED_PREFIX } from "../prompt-session.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};

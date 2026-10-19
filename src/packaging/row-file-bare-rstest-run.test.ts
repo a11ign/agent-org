@@ -18,7 +18,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fileRefusalReason, promoteRefusalReason } from "../row-file.ts";
+import { fileRefusalReason } from "../row-file/body-from-argv.ts";
+import { promoteRefusalReason } from "../row-file/roadmap-without-parent-refusal.ts";
 import { bareRstestRunReason } from "../row-claim/template-fields-rule.ts";
 
 const CONFIG = "--config scripts/rstest/rstest.config.ts";
@@ -110,5 +111,5 @@ test("6. THE RULE IS ASKED AT FILING ONLY: `row-file.ts` is the one place outsid
   const callers = readdirSync(src, { recursive: true, encoding: "utf8" })
     .filter((name) => /\.(?:ts|mjs)$/.test(name) && !/\.test\.(?:ts|mjs)$/.test(name) && !name.endsWith(SELF))
     .filter((name) => readFileSync(join(src, name), "utf8").includes("bareRstestRunReason"));
-  assert.deepEqual(callers, ["row-file.ts"], "claim never reads it, so a row already open is not shelved");
+  assert.deepEqual(callers, ["row-file/body-from-argv.ts"], "claim never reads it, so a row already open is not shelved");
 });

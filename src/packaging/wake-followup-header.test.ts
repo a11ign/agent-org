@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver as settlingDeliver } from "../wake.ts";
+import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
 import { clearThenPrompt as settlingClearThenPrompt, deliveredText } from "../prompt-session.ts";
 import { sessionOf } from "../token-audit.ts";
 import { startedPanes } from "./started-pane.ts";

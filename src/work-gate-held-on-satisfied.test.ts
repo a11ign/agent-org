@@ -13,7 +13,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, withPrOwners, waitTickFacts, orgHealthNow } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { withPrOwners } from "./work-gate/pr-owners.ts";
+import { waitTickFacts, orgHealthNow } from "./work-gate/org-health.ts";
 
 const NOW = Date.parse("2026-10-07T17:20:00Z");
 const ISO = (ms: number) => new Date(ms).toISOString();

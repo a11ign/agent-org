@@ -25,8 +25,10 @@ import { HOME_CHECKOUT } from "../project-config.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 import { parse as parseYaml } from "yaml";
 import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.ts";
-import { shouldBeMerging, readUnarmed, greenUnarmedOrders, CAUSES }
-  from "../work-gate.ts";
+import { shouldBeMerging } from "../work-gate/causes/pr-checks.ts";
+import { readUnarmed } from "../work-gate/reads.ts";
+import { greenUnarmedOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { CAUSES } from "../cause-declaration.ts";
 
 const WORKFLOWS = join(HOME_CHECKOUT, ".github/workflows");
 const WORKFLOW = join(WORKFLOWS, "auto-arm.yml");

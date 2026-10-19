@@ -8,7 +8,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { missingUnitPrograms, programCandidates } from "./host-units.ts";
+import { missingUnitPrograms } from "./host-units.ts";
+import { programCandidates } from "./host-units/shipped-dir.ts";
 
 const HOME = "/home/tester";
 const WORK = "/work/tree";

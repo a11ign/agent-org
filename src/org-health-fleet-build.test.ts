@@ -26,7 +26,8 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS, FLEET_BUILD_MIXED_HOURS, FLEET_BUILD_INCIDENT_LINE, fleetBuildMixedReading, readFleetBuildIncidents, orgHealthReadings, orgHealthOrders } = await import("./org-health.ts");
+const { SIGNALS, FLEET_BUILD_MIXED_HOURS, FLEET_BUILD_INCIDENT_LINE } = await import("./org-health/no-merge-hours.ts");
+const { fleetBuildMixedReading, readFleetBuildIncidents, orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-incident.ts");
 
 const SIGNAL = "fleet-build-mixed-over-4h";
 const REPO = "a11ign/a11ign";

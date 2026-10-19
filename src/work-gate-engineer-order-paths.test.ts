@@ -15,11 +15,15 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide, LAUNCH_PLACEHOLDER, CAUSES, JUDGMENT_CAUSES, START_CAUSES, UNCLAIMABLE_AFTER_TICKS, claimRefusalOf,
-  claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate.ts";
+import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { LAUNCH_PLACEHOLDER } from "./work-gate/vocabulary.ts";
+import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
+import { UNCLAIMABLE_AFTER_TICKS, claimRefusalOf, claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate/causes/rows-claims.ts";
 import { profileFor } from "./worker-profile.ts";
 import { worktreeTargetReason } from "./row-claim.ts";
-import { addressed, engineerRoles, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT, ENGINEER_BRIEF } from "./wake.ts";
+import { addressed, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake/clear-settle-ms.ts";
+import { engineerRoles } from "./wake/is-pull-request-spawn-order.ts";
+import { ENGINEER_BRIEF } from "./wake/ended-sessions.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { SPARE_FAMILIES } from "./arm-pr.ts";
 

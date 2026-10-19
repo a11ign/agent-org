@@ -2,7 +2,7 @@ import { waitingOn, todayIso, describeWaiting } from "../waiting-condition.ts";
 import { subjectMention } from "../review-attribution.ts";
 import { START_CAUSES } from "../cause-declaration.ts";
 import { BLOCKED_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
-import { DRAIN_MARKER, defaultRun } from "./reads.ts";
+import { DRAIN_MARKER, defaultRun } from "./reads/exit.ts";
 import { labelsOf } from "./vocabulary.ts";
 
 /**

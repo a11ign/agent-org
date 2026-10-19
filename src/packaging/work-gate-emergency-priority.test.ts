@@ -11,10 +11,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import {
-  decide, offerHierarchyNow, parseEmergencyPriorityOption, readEmergencyPriorityOption, CHAIRMAN_PRIORITY_LABEL as CHAIRMAN_LABEL, EMERGENCY_PRIORITY_LABEL as EMERGENCY_LABEL,
-  EMERGENCY_PRIORITY_OFF, type EmergencyPriorityOption,
-} from "../work-gate.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { offerHierarchyNow } from "../work-gate/tick.ts";
+import { parseEmergencyPriorityOption, readEmergencyPriorityOption, EMERGENCY_PRIORITY_LABEL as EMERGENCY_LABEL, EMERGENCY_PRIORITY_OFF, type EmergencyPriorityOption } from "../work-gate/causes/rows-offer.ts";
+import { CHAIRMAN_PRIORITY_LABEL as CHAIRMAN_LABEL } from "../work-gate/vocabulary.ts";
 import {
   EMERGENCY_PRIORITY_NOT_HONOURED_KIND, EMERGENCY_PRIORITY_USED_KIND, recordEmergencyPriority,
 } from "../failure-recorders.ts";

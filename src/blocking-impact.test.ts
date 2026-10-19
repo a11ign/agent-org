@@ -8,7 +8,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { buildReport, renderReport } from "./org-retro.ts";
+import { buildReport } from "./org-retro/readings.ts";
+import { renderReport } from "./org-retro.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import {
   advance, BLOCKING_FILE, BLOCKING_MIN_MINUTES, BLOCKING_MIN_ROWS, blockingImpactTick, deadlocksAmong, escalationText, heldRefOf, holdingsOf, LOCK_GRIDLOCK_KIND, MAX_TICK_GAP_MS, parseRecord, resolverOf,

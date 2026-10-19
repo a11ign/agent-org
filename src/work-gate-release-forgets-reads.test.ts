@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultRun, holdReadMemo, releaseReadMemo } from "./work-gate/reads.ts";
+import { defaultRun, holdReadMemo, releaseReadMemo } from "./work-gate/reads/exit.ts";
 import { releaseHoldViaModule } from "./work-gate/org-health.ts";
 
 let dir: string;

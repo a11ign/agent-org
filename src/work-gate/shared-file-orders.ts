@@ -32,8 +32,8 @@ import { holdersOf } from "../pr-hold-state.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { isAcceptancePath } from "../acceptance-file.ts";
 import { waitItemOf, declaredWaitsOf } from "../wait-condition.ts";
-import { labelsOf, sessionOf } from "../work-gate.ts";
-import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders.ts";
+import { labelsOf, sessionOf } from "./vocabulary.ts";
+import { ownerOfPr, DEAD_OWNER_FALLBACK } from "./pr-orders/red-only-by-superseded-run.ts";
 import { mergeCandidates, reviewStateOf, REVIEW_STATE } from "./pr-state.ts";
 
 /** Where an order goes when nobody can be named as the later pull request's owner (the row's ruling; `ownerOfPr`'s own last rung is `ceo`). */

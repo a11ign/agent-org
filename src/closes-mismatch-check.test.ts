@@ -17,7 +17,7 @@ import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { REPO } from "./project-identity.ts";
-import type { ClosesDeclaration } from "./acceptance-commands.ts";
+import type { ClosesDeclaration } from "./acceptance-commands/classification.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 
 const NONE: ClosesDeclaration = { kind: "none", reason: "the follow-up is another row" };

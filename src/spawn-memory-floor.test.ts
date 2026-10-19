@@ -21,7 +21,7 @@ import {
   holdForMemory, parseMemAvailableKb, readMemAvailable, spawnMemoryGate, SPAWN_MEMORY_FLOOR_KB, MEMINFO_PATH, MEMINFO_ENV,
 } from "./spawn-memory-floor.ts";
 import { DEFAULT_MEMORY_MAX } from "@a11ign/toolchain/lib/test-memory-cap";
-import { deliver } from "./wake.ts";
+import { deliver } from "./wake/clear-settle-ms.ts";
 import { INSIDE } from "./review-trust.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 

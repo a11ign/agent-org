@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { copyToolAndProject, importClosure, toolFile } from "./packaging/copied-tool-fixture.ts";
 
@@ -36,7 +36,7 @@ function loadGate({ roster }: { roster?: object }) {
       writeFileSync(join(root, ".agent-org/roles/sessions.json"), JSON.stringify(roster));
     }
     const run = spawnSync(process.execPath, ["--input-type=module", "-e",
-      `import(${JSON.stringify(pathToFileURL(copy.entry).href)}).then(m => { if (typeof m.decide !== 'function') throw new Error('decide missing'); })`],
+      `Promise.all([import(${JSON.stringify(pathToFileURL(copy.entry).href)}), import(${JSON.stringify(pathToFileURL(join(dirname(copy.entry), "work-gate", "tick", "blocker-cleared-reading.ts")).href)})]).then(([, m]) => { if (typeof m.decide !== 'function') throw new Error('decide missing'); })`],
     { encoding: "utf8", cwd: root, env: { ...process.env, ...copy.env } });
     return { status: run.status, stderr: run.stderr };
   } finally {

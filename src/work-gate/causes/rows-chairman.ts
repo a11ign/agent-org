@@ -3,7 +3,7 @@ import { PROVENANCE as CHAIRMAN_ANSWER_PROVENANCE } from "../../messaging/answer
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../../project-vocabulary.ts";
 import { readWaitFacts } from "../org-health.ts";
 import { chairmanAskOrders } from "../chairman-ask-orders.ts";
-import { defaultRun, repoNow } from "../reads.ts";
+import { defaultRun, repoNow } from "../reads/exit.ts";
 import { CHAIRMAN_LOGINS, MAX_ROW_ORDERS_PER_TICK, labelledRows } from "../vocabulary.ts";
 
 /**

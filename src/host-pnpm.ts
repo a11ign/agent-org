@@ -27,7 +27,7 @@ export function pnpmDrift({ path = process.env.PATH ?? "", repoRoot, read = read
   version = installedPnpmVersion }: {
         path?: string; repoRoot: string; read?: typeof readFileSync; exists?: typeof existsSync;
         version?: (pnpm: string) => string;
-    }): import("./host-units.ts").Finding[] {
+    }): import("./host-units/gh-spawn-reached-from.ts").Finding[] {
   const wanted = declaredPnpmVersion(repoRoot, read);
   if (wanted === null) return [];
   const found = path.split(":").filter(Boolean).map((dir) => join(dir, "pnpm")).find((candidate) => exists(candidate));

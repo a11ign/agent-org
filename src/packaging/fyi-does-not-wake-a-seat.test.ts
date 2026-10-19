@@ -18,7 +18,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { FYI_STALE_MS, foldFyis, handoffQueuePath, holdsAsFyi, isLeadSeat, readHandoffs, retireRiddenFyis, ridingGateOrders, SETTLE_TEST_CLOCK_ENV } from "../wake.ts";
+import { FYI_STALE_MS, handoffQueuePath, isLeadSeat, readHandoffs } from "../wake/reset.ts";
+import { foldFyis, retireRiddenFyis, ridingGateOrders } from "../wake/clear-settle-ms.ts";
+import { holdsAsFyi, SETTLE_TEST_CLOCK_ENV } from "../wake/holds-as-fyi.ts";
 import { EXIT, STANCE, directRecordPath, promptOrQueue } from "../prompt-session.ts";
 import { startedPanes } from "./started-pane.ts";
 

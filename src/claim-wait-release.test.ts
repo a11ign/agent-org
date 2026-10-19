@@ -11,7 +11,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimReading, claimStalledOrders, WAIT_RELEASE_KINDS, type ClaimFacts, type Reading } from "./claim-stall.ts";
+import { claimReading, WAIT_RELEASE_KINDS, type ClaimFacts, type Reading } from "./claim-stall/claim-stalled.ts";
+import { claimStalledOrders } from "./claim-stall.ts";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-09T21:00:00Z");

@@ -8,7 +8,7 @@
 // file CALLS it rather than restating it, and adds the one thing missing: the answer as a tracker of the declared `tracker` list.
 //
 // PURE: nothing here reads a file or runs a command. The declaration is an argument, so a test states its own trackers.
-import { productRegionsOf, rowKind } from "./work-gate.ts";
+import { productRegionsOf, rowKind } from "./work-gate/causes/rows-offer.ts";
 import { splitRegionEntry } from "./region-paths.ts";
 
 /**

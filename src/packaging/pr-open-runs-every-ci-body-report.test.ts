@@ -14,8 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CI_BODY_REPORTS, runCiBodyReports, mutationRecordReport, measuredSectionReport }
-  from "../acceptance-commands.ts";
+import { CI_BODY_REPORTS, runCiBodyReports, mutationRecordReport, measuredSectionReport } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 import { checkBody, main, EXIT_NOTHING_SENT } from "../pr-open.ts";
 import { COMMANDS, FIXED_ARGS } from "../commands.ts";
 

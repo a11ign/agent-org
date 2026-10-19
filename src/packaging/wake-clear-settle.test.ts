@@ -24,7 +24,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, deliverHandoffs, CLEAR_SETTLE_MS, COMPACT_THRESHOLD_TOKENS } from "../wake.ts";
+import { deliver, CLEAR_SETTLE_MS } from "../wake/clear-settle-ms.ts";
+import { deliverHandoffs } from "../wake/ended-sessions.ts";
+import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
 import { clearThenPrompt } from "../prompt-session.ts";
 
 const ROSTER = ["ceo", "product-manager", "orchestrator", "worker-capture", "worker-judge", "worker-tooling"];

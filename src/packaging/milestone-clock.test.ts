@@ -14,8 +14,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orgHealthNow } from "../work-gate.ts";
-import * as health from "../org-health.ts";
+import { orgHealthNow } from "../work-gate/org-health.ts";
+import * as health_0 from "../org-health/fleet-build-incident.ts";
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T22:00:00Z");
@@ -159,13 +159,13 @@ test("the order is keyed on the milestone and the named row, so a changed named 
 
 test("no milestone marked `Primary: yes`: no order, and the reading says why", () => {
   assert.deepEqual(tick({ rows: threeRows(300, ORDINARY) }).clock, []);
-  const reading = health.milestoneClockReading({ now: NOW, fact: { primaries: [], rows: [], prsClose: [], endedAt: ago(600) } });
+  const reading = health_0.milestoneClockReading({ now: NOW, fact: { primaries: [], rows: [], prsClose: [], endedAt: ago(600) } });
   assert.equal(reading.status, "clear");
   assert.match(reading.detail, /no .*milestone .*Primary: yes/i, "the clear reading says why it is clear");
 });
 
 test("a primary milestone with NO open row is clear, saying so", () => {
-  const reading = health.milestoneClockReading({ now: NOW, fact: { primaries: [{ number: 10, title: "v3" }], rows: [], prsClose: [], endedAt: ago(600) } });
+  const reading = health_0.milestoneClockReading({ now: NOW, fact: { primaries: [{ number: 10, title: "v3" }], rows: [], prsClose: [], endedAt: ago(600) } });
   assert.equal(reading.status, "clear");
   assert.match(reading.detail, /no open row/i);
 });
@@ -181,7 +181,7 @@ test("an unreadable open-row list is an UNKNOWN reading on stderr, never a clear
   const { clock, said } = tick({ rows: null });
   assert.deepEqual(clock, []);
   assert.ok(said.some((line) => new RegExp(`${SUBJECT} UNKNOWN`).test(line)), said.join(""));
-  const reading = health.milestoneClockReading({ now: NOW, fact: null });
+  const reading = health_0.milestoneClockReading({ now: NOW, fact: null });
   assert.equal(reading.status, "unknown");
   assert.notEqual(reading.status, "clear");
 });
@@ -220,6 +220,6 @@ test("a row with no creation time makes the start unknown rather than guessed", 
 });
 
 test("the milestone clock is OFFERED only when the caller asks: an `orgHealthReadings` call without the fact has no such reading", () => {
-  const readings = health.orgHealthReadings({ now: NOW, lastMergedAt: ago(10), work: null, redPrs: [], refusals: {}, drift: null, primarySince: null });
+  const readings = health_0.orgHealthReadings({ now: NOW, lastMergedAt: ago(10), work: null, redPrs: [], refusals: {}, drift: null, primarySince: null });
   assert.ok(!readings.some((reading: { signal: string }) => reading.signal === SUBJECT));
 });

@@ -6,7 +6,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rowOffBoardOrders, settleOffBoardRows, type BoardFacts } from "../work-gate.ts";
+import { rowOffBoardOrders, type BoardFacts } from "./causes/rows-off-board.ts";
+import { settleOffBoardRows } from "./tick.ts";
 import type { ItemRef, StateChange, TicketPort } from "../ticket-port/port.ts";
 import { TICK_RECORD_ROW_LABELS, createTickRecordRow } from "../work-tick.ts";
 

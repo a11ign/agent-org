@@ -16,7 +16,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PARKED_LABEL, WAIT_FIELDS, bareWaits, staleWaits, waitFieldsOf, waitItemOf } from "../wait-condition.ts";
 import { readSatisfaction } from "../unpark-satisfied.ts";
-import { SIGNALS, orgHealthOrders, waitWithoutReasonReading } from "../org-health.ts";
+import { SIGNALS } from "../org-health/no-merge-hours.ts";
+import { orgHealthOrders } from "../org-health/fleet-build-incident.ts";
+import { waitWithoutReasonReading } from "../org-health/review-gated-minutes.ts";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;

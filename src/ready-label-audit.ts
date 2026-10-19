@@ -130,14 +130,14 @@ const READY_STATUS = "Ready";
 export const MUTEX_LABELS =
   ["fleet-gated", "disputed", "decision", "awaiting-merge", BLOCKED_LABEL, "review-only"];
 
-export type LabelledIssue = { number: number, title: string, labels: string[] };
+type LabelledIssue = { number: number, title: string, labels: string[] };
 
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 
 /**
  * #4080 (row 2 of #4056): WHICH TRACKER THE CHECKS ARE ABOUT. The 23 reads below named `REPO` -- the first code repository -- so a row filed in a second declared tracker was never listed, never counted and never audited. Each read now asks `trackerRepo()` (its issues) or `codeRepo()` (its pull requests), which answer for the scope `auditTrackers` has set and, with none set, for `REPO`: every exported reader called on its own (the tests, `row-claim`) behaves exactly as it did. A module-level scope and not a parameter on every reader, for the reason `work-gate.ts`'s `inRepo` gives: the checks are zero-argument closures in `CHECKS`, and 17 exported readers keep their signatures. `repo` is the tracker's repository; `codeRepo` the code repository of the SAME key, else the tracker's own
  */
-export type AuditScope = { key: string, repo: string, codeRepo: string };
+type AuditScope = { key: string, repo: string, codeRepo: string };
 let activeScope: AuditScope | null = null;
 
 /** The repository the active tracker's ISSUES are read from. @returns {string} */
@@ -158,7 +158,7 @@ const rowName = (number: number): string => (activeScope === null || activeScope
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {LabelledIssue[]}
  */
-export function fetchOpenIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): LabelledIssue[] {
+function fetchOpenIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): LabelledIssue[] {
   return fetchIssues({ run, state: "open", limit: 200 });
 }
 
@@ -212,7 +212,7 @@ export function fetchReportedOpenIssueNumbers({ run = defaultRun }: { run?: type
  * @param {number[]} reported
  * @returns {{ agree: boolean, onlyExamined: number[], onlyReported: number[] }}
  */
-export function openIssueSetSummary(examined: number[], reported: number[]): { agree: boolean; onlyExamined: number[]; onlyReported: number[]; } {
+function openIssueSetSummary(examined: number[], reported: number[]): { agree: boolean; onlyExamined: number[]; onlyReported: number[]; } {
   const examinedSet = new Set(examined);
   const reportedSet = new Set(reported);
   const onlyExamined = examined.filter((n) => !reportedSet.has(n));
@@ -363,7 +363,7 @@ function listUntilShort({ run, argv, what, first = FIRST_ASK, repo = trackerRepo
  * @param {{ run?: typeof defaultRun, state: "open" | "all", limit?: number }} args
  * @returns {(LabelledIssue & { state?: "OPEN" | "CLOSED" })[]}
  */
-export function fetchIssues({ run = defaultRun, state, limit = FIRST_ASK }: { run?: typeof defaultRun; state: "open" | "all"; limit?: number; }): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
+function fetchIssues({ run = defaultRun, state, limit = FIRST_ASK }: { run?: typeof defaultRun; state: "open" | "all"; limit?: number; }): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
   // #1090: THE REFUSAL WAS RIGHT AND "RAISE THE LIMIT" WAS NOT A FIX.
   //
   // A hand-set cap goes stale silently the day the population passes it -- measured 2026-09-12: 472
@@ -417,7 +417,7 @@ export function fetchIssues({ run = defaultRun, state, limit = FIRST_ASK }: { ru
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {(LabelledIssue & { state?: "OPEN" | "CLOSED" })[]}
  */
-export function fetchAllIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
+function fetchAllIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[] {
   return fetchIssues({ run, state: "all" });
 }
 
@@ -427,7 +427,7 @@ export function fetchAllIssues({ run = defaultRun }: { run?: typeof defaultRun; 
  * @param {LabelledIssue[]} issues
  * @returns {Array<{ number: number, title: string, conflicting: string[] }>}
  */
-export function mutexViolations(issues: LabelledIssue[]): Array<{ number: number; title: string; conflicting: string[]; }> {
+function mutexViolations(issues: LabelledIssue[]): Array<{ number: number; title: string; conflicting: string[]; }> {
   const violations = [];
   for (const { number, title, labels } of issues) {
     if (!labels.includes(READY_LABEL)) continue;
@@ -448,7 +448,7 @@ export function mutexViolations(issues: LabelledIssue[]): Array<{ number: number
  * @param {LabelledIssue[]} issues
  * @returns {Array<{ number: number, title: string, sessions: string[] }>}
  */
-export function handClaims(issues: LabelledIssue[]): Array<{ number: number; title: string; sessions: string[]; }> {
+function handClaims(issues: LabelledIssue[]): Array<{ number: number; title: string; sessions: string[]; }> {
   const claims = [];
   for (const { number, title, labels } of issues) {
     if (!labels.includes(READY_LABEL) || !labels.includes(CLAIM_LABEL)) continue;
@@ -479,7 +479,7 @@ export function handClaims(issues: LabelledIssue[]): Array<{ number: number; tit
  * @param {string} label
  * @returns {boolean}
  */
-export function isClosedDebrisLabel(label: string): boolean {
+function isClosedDebrisLabel(label: string): boolean {
   return labelsToStrip([label]).length > 0 || label.startsWith("runner:");
 }
 
@@ -491,7 +491,7 @@ export function isClosedDebrisLabel(label: string): boolean {
  * @param {(LabelledIssue & { state?: "OPEN" | "CLOSED" })[]} issues
  * @returns {Array<{ number: number, title: string, debris: string[] }>}
  */
-export function closedDebris(issues: (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[]): Array<{ number: number; title: string; debris: string[]; }> {
+function closedDebris(issues: (LabelledIssue & { state?: "OPEN" | "CLOSED"; })[]): Array<{ number: number; title: string; debris: string[]; }> {
   const found = [];
   for (const { number, title, labels, state } of issues) {
     if (state !== "CLOSED") continue;
@@ -535,9 +535,9 @@ export function openRowsAbsentFromBoard(openIssues: LabelledIssue[], boardNumber
   return openIssues.filter((i) => !boardNumbers.has(i.number));
 }
 
-export type ClosingPrRef = { number: number, state: string, mergedAt: string | null };
+type ClosingPrRef = { number: number, state: string, mergedAt: string | null };
 
-export type AlreadyMergedRow = { number: number, title: string, state: "ALREADY-MERGED", closedBy: number, mergedAt: string } | { number: number, title: string, state: "REOPENED-AFTER-MERGE", closedBy: number, mergedAt: string, reopenedAt: string };
+type AlreadyMergedRow = { number: number, title: string, state: "ALREADY-MERGED", closedBy: number, mergedAt: string } | { number: number, title: string, state: "REOPENED-AFTER-MERGE", closedBy: number, mergedAt: string, reopenedAt: string };
 
 /**
  * Pure: which OPEN `ready`/`in-progress` issues does a MERGED PR already claim to close, and -- #550 --
@@ -570,7 +570,7 @@ export type AlreadyMergedRow = { number: number, title: string, state: "ALREADY-
  *   in time). Absent or null means the issue has never been reopened.
  * @returns {AlreadyMergedRow[]}
  */
-export function readyRowsAlreadyMerged(readyIssues: LabelledIssue[], closingRefsByIssue: Map<number, ClosingPrRef[]>, latestReopenByIssue: Map<number, string | null> = new Map()): AlreadyMergedRow[] {
+function readyRowsAlreadyMerged(readyIssues: LabelledIssue[], closingRefsByIssue: Map<number, ClosingPrRef[]>, latestReopenByIssue: Map<number, string | null> = new Map()): AlreadyMergedRow[] {
   const flagged: AlreadyMergedRow[] = [];
   for (const issue of readyIssues) {
     const refs = closingRefsByIssue.get(issue.number) ?? [];
@@ -596,7 +596,7 @@ export function readyRowsAlreadyMerged(readyIssues: LabelledIssue[], closingRefs
 /** A row that ADVERTISES A LIVE STATE -- pickable or claimed. Both are claims about the present, and both
  * are falsified the same way: by the work already being on main.
  * @param {string[]} labels */
-export function livesStateLabels(labels: string[]) {
+function livesStateLabels(labels: string[]) {
   return labels.includes(READY_LABEL) || labels.includes(CLAIM_LABEL);
 }
 
@@ -641,7 +641,7 @@ export function livesStateLabels(labels: string[]) {
  *   shape still type-checks and still decides -- absent reads as "no comment seen", never as "fresh".
  * @param {number} staleAfterMinutes
  */
-export function claimsNobodyIsWorking(issues: { number: number; title: string; labels: string[]; }[], activity: {
+function claimsNobodyIsWorking(issues: { number: number; title: string; labels: string[]; }[], activity: {
         hasOpenPr: Map<number, boolean>; lastPushMinutes: Map<number, number>;
         claimedMinutes: Map<number, number>; lastCommentMinutes?: Map<number, number>;
     }, staleAfterMinutes: number = 240) {
@@ -690,7 +690,7 @@ export function claimsNobodyIsWorking(issues: { number: number; title: string; l
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {Map<number, ClosingPrRef[]>}
  */
-export function fetchClosingPrRefs(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, ClosingPrRef[]> {
+function fetchClosingPrRefs(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, ClosingPrRef[]> {
   const map: Map<number, ClosingPrRef[]> = new Map();
   if (issueNumbers.length === 0) return map;
   const [owner, name] = trackerRepo().split("/");
@@ -740,7 +740,7 @@ export function fetchClosingPrRefs(issueNumbers: number[], { run = defaultRun }:
  * @returns {Map<number, string | null>} issue number -> its latest reopen's ISO timestamp, or null if
  *   the issue has never been reopened
  */
-export function fetchLatestReopenedAt(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, string | null> {
+function fetchLatestReopenedAt(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, string | null> {
   const map: Map<number, string | null> = new Map();
   if (issueNumbers.length === 0) return map;
   const [owner, name] = trackerRepo().split("/");
@@ -850,7 +850,7 @@ function reportMutexViolations() {
  * remedy for it is not left to be rediscovered, and it is exactly the case where prescribing "route the
  * claim through row-claim" would be wrong -- nobody is working the row.
  */
-export const HAND_CLAIM_CAUSES = [
+const HAND_CLAIM_CAUSES = [
   { cause: "a claim made by hand (a label applied outside row-claim.ts)",
     remedy: "route the claim through row-claim.ts: `row-claim.ts decline <n> --session=<holder>`, then "
       + "claim or dispatch it properly" },
@@ -865,7 +865,7 @@ export const HAND_CLAIM_CAUSES = [
  * @param {{ number: number, title: string, sessions: string[] }} claim
  * @returns {string}
  */
-export function handClaimFinding({ number, title, sessions }: { number: number; title: string; sessions: string[]; }): string {
+function handClaimFinding({ number, title, sessions }: { number: number; title: string; sessions: string[]; }): string {
   const who = sessions.length > 0 ? sessions.join(", ") : "an unknown session";
   const causes = HAND_CLAIM_CAUSES.map(({ cause, remedy }, i) => `(${i + 1}) ${cause} -- ${remedy}`).join("; ");
   return `HAND CLAIM  ${rowName(number)} "${title}" -- \`ready\` and \`in-progress\` together, held by ${who}. A claim `
@@ -926,7 +926,7 @@ function reportHandClaims() {
  * @param {LabelledIssue[]} issues
  * @returns {Array<{ number: number, title: string, labels: string[] }>}
  */
-export function bothBoardLabels(issues: LabelledIssue[]): Array<{ number: number; title: string; labels: string[]; }> {
+function bothBoardLabels(issues: LabelledIssue[]): Array<{ number: number; title: string; labels: string[]; }> {
   return (issues ?? [])
     .map((i) => ({ number: Number(i.number), title: String(i.title ?? ""),
       labels: (i.labels ?? []).map((l) => String(l)) }))
@@ -967,7 +967,7 @@ function reportBothBoardLabels() {
  * give each its own remedy. Two directions, and the first is split in two because its cause is known when
  * `backlog` is on the row and unknown when it is not.
  */
-export const STATUS_LABEL_KINDS = Object.freeze({
+const STATUS_LABEL_KINDS = Object.freeze({
   /** Status `Ready`, labels say `backlog` and not `ready`: the promotion act stopped between its writes. */
   INTERRUPTED_PROMOTION: "interrupted-promotion",
   /** Status `Ready`, labels say neither `ready` nor `backlog`: somebody moved one field by hand. */
@@ -1019,7 +1019,7 @@ function statusLabelKind(status: string, labels: string[]): string | null {
  * @param {Array<{ number: number | null, status: string | null }>} boardItems
  * @returns {Array<{ number: number, title: string, status: string, labels: string[], kind: string }>}
  */
-export function statusLabelDisagreements(issues: LabelledIssue[], boardItems: Array<{ number: number | null; status: string | null; }>): Array<{ number: number; title: string; status: string; labels: string[]; kind: string; }> {
+function statusLabelDisagreements(issues: LabelledIssue[], boardItems: Array<{ number: number | null; status: string | null; }>): Array<{ number: number; title: string; status: string; labels: string[]; kind: string; }> {
   const openByNumber = new Map((issues ?? []).map((i) => [Number(i.number), i]));
   const found: ReturnType<typeof statusLabelDisagreements> = [];
   for (const { number, status } of boardItems ?? []) {
@@ -1040,7 +1040,7 @@ export function statusLabelDisagreements(issues: LabelledIssue[], boardItems: Ar
  * the Status and every label together and is idempotent (`row-file.ts`), though it refuses a claimed row.
  * @param {number} number @param {string} kind
  */
-export function statusLabelRemedy(number: number, kind: string) {
+function statusLabelRemedy(number: number, kind: string) {
   const promote = `\`pnpm run row-file --promote=${number} --session=<you>\``;
   if (kind === STATUS_LABEL_KINDS.INTERRUPTED_PROMOTION) {
     return `an INTERRUPTED PROMOTION -- the act moves the Status first and writes the labels second, and the `
@@ -1100,7 +1100,7 @@ function reportStatusLabelDisagreements() {
  * @param {ReadyRowWithBody[]} rows
  * @returns {Array<{ number: number, title: string, missing: string[], reason: string }>}
  */
-export function unclaimableReadyRows(rows: ReadyRowWithBody[]): Array<{ number: number; title: string; missing: string[]; reason: string; }> {
+function unclaimableReadyRows(rows: ReadyRowWithBody[]): Array<{ number: number; title: string; missing: string[]; reason: string; }> {
   return (rows ?? [])
     .filter((row) => (row.labels ?? []).includes(READY_LABEL))
     .flatMap((row) => {
@@ -1111,7 +1111,7 @@ export function unclaimableReadyRows(rows: ReadyRowWithBody[]): Array<{ number: 
     });
 }
 
-export type ReadyRowWithBody = { number: number, title: string, labels: string[], body: string };
+type ReadyRowWithBody = { number: number, title: string, labels: string[], body: string };
 
 /**
  * The open rows of the tracker carrying `label`, as `readRowsByLabel` gives them, THROWN as this file's refusal when they could not be read.
@@ -1355,7 +1355,7 @@ export function reportStateLabels(deps: Parameters<typeof fetchOpenIssuesChecked
  * @param {LabelledIssue[]} issues open issues
  * @returns {LabelledIssue[]}
  */
-export function strandedByIncompleteDecline(issues: LabelledIssue[]): LabelledIssue[] {
+function strandedByIncompleteDecline(issues: LabelledIssue[]): LabelledIssue[] {
   return issues.filter((issue) =>
     issue.labels.includes(WAS_READY_LABEL)
     && !issue.labels.includes(READY_LABEL)
@@ -1458,7 +1458,7 @@ function reportAbsentFromBoard() {
  * @param {number[]} numbers
  * @param {{ run?: typeof defaultRun }} [deps]
  */
-export function fetchClaimActivity(numbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}) {
+function fetchClaimActivity(numbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}) {
   const hasOpenPr: Map<number, boolean> = new Map();
   const lastPushMinutes: Map<number, number> = new Map();
   const claimedMinutes: Map<number, number> = new Map();
@@ -1538,7 +1538,7 @@ function branchAges(numbers: number[], run: typeof defaultRun): Map<number, numb
  *
  * @param {{ number: number, title: string, sessions: string[], minutes: number | null }} claim
  */
-export function formatDeadClaimLine({ number, title, sessions, minutes }: { number: number; title: string; sessions: string[]; minutes: number | null; }) {
+function formatDeadClaimLine({ number, title, sessions, minutes }: { number: number; title: string; sessions: string[]; minutes: number | null; }) {
   const held = sessions.length > 0 ? sessions.join(", ") : "nobody (no session label)";
   const age = minutes === null ? "no branch at all" : `last push ${minutes} min ago`;
   return `DEAD-CLAIM  ${rowName(number)} "${title}" -- held by ${held}, no open PR, ${age}, `
@@ -1657,7 +1657,7 @@ const PROVENANCE_MARK = { worker: "ATTRIBUTED", work: "WORK, NOT WORKER", undecl
  * @param {ReturnType<typeof reportableUnattributable>} gated
  * @param {(number: number) => ReturnType<typeof fetchClosingPullRequest>} closingPrFor
  */
-export function provenanceVerdicts(gated: ReturnType<typeof reportableUnattributable>, closingPrFor: (number: number) => ReturnType<typeof fetchClosingPullRequest>) {
+function provenanceVerdicts(gated: ReturnType<typeof reportableUnattributable>, closingPrFor: (number: number) => ReturnType<typeof fetchClosingPullRequest>) {
   return gated.map(({ number, title, closedAt }) => {
     // #1960: the closing PR is kept, not only the verdict read off it, because the REMEDY differs between
     // the two `undeclared` sub-cases and one of them has to name the pull request's own number.
@@ -1672,7 +1672,7 @@ export function provenanceVerdicts(gated: ReturnType<typeof reportableUnattribut
  *
  * @param {ReturnType<typeof provenanceVerdicts>} verdicts @returns {number[]}
  */
-export function provenanceFindings(verdicts: ReturnType<typeof provenanceVerdicts>): number[] {
+function provenanceFindings(verdicts: ReturnType<typeof provenanceVerdicts>): number[] {
   return verdicts.filter((v) => v.verdict === "undeclared").map((v) => v.number);
 }
 
@@ -1706,7 +1706,7 @@ function labellablePr(pr?: import("./claim-provenance.ts").ClosingPr | null) {
  *
  * @param {ReturnType<typeof provenanceVerdicts>} verdicts @returns {string}
  */
-export function provenanceRemedySummary(verdicts: ReturnType<typeof provenanceVerdicts>): string {
+function provenanceRemedySummary(verdicts: ReturnType<typeof provenanceVerdicts>): string {
   const undeclared = verdicts.filter((v) => v.verdict === "undeclared");
   const remedies = undeclared.flatMap((v) => {
     const pr = labellablePr(v.closingPr);
@@ -1747,7 +1747,7 @@ export function provenanceRemedySummary(verdicts: ReturnType<typeof provenanceVe
  *          out?: (text: string) => void, err?: (text: string) => void }} [deps]
  * @returns {number}
  */
-export function reportProvenanceOf(gated: ReturnType<typeof reportableUnattributable>, { closingPrFor = fetchClosingPullRequest,
+function reportProvenanceOf(gated: ReturnType<typeof reportableUnattributable>, { closingPrFor = fetchClosingPullRequest,
   out = (text) => process.stdout.write(text), err = (text) => process.stderr.write(text) }: {
         closingPrFor?: (number: number) => ReturnType<typeof fetchClosingPullRequest>;
         out?: (text: string) => void; err?: (text: string) => void;
@@ -1783,8 +1783,8 @@ export function reportProvenanceOf(gated: ReturnType<typeof reportableUnattribut
 // is none. `merged`/`mergedAt` are the fields read here and by `fetchClosingPrRefs` above; neither call
 // site in this file has ever reached for `merge_commit_sha`.
 
-export type ClosedPr = { number: number, mergedAt: string | null };
-export type ClosedIssue = { number: number, title: string, closedAt: string, stateReason: string | null };
+type ClosedPr = { number: number, mergedAt: string | null };
+type ClosedIssue = { number: number, title: string, closedAt: string, stateReason: string | null };
 
 /**
  * Every CLOSED PR that never merged -- `mergedAt`, never `merge_commit_sha`, which is populated on both
@@ -1792,7 +1792,7 @@ export type ClosedIssue = { number: number, title: string, closedAt: string, sta
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {ClosedPr[]}
  */
-export function fetchClosedUnmergedPrs({ run = defaultRun }: { run?: typeof defaultRun; } = {}): ClosedPr[] {
+function fetchClosedUnmergedPrs({ run = defaultRun }: { run?: typeof defaultRun; } = {}): ClosedPr[] {
   const parsed = listUntilShort({ run, what: "closed PRs", repo: codeRepo(),
     argv: (ask) => ["pr", "list", "--repo", codeRepo(), "--state", "closed", "--limit", String(ask),
       "--json", "number,mergedAt"] });
@@ -1810,7 +1810,7 @@ export function fetchClosedUnmergedPrs({ run = defaultRun }: { run?: typeof defa
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {Map<number, number[]>} PR number -> the issue numbers it would have closed
  */
-export function fetchClosingIssueRefs(prNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, number[]> {
+function fetchClosingIssueRefs(prNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, number[]> {
   const map: Map<number, number[]> = new Map();
   if (prNumbers.length === 0) return map;
   const [owner, name] = codeRepo().split("/");
@@ -1864,7 +1864,7 @@ function closingIssueRefsFromRepoNode(repo: Record<string, any>, prNumbers: numb
   return map;
 }
 
-export type SoleUnmergedCloserRow = { number: number, title: string, closedAt: string, closedBy: number };
+type SoleUnmergedCloserRow = { number: number, title: string, closedAt: string, closedBy: number };
 
 /**
  * Pure: which CLOSED issues were declared closed by a PR that never merged, with no OTHER PR currently
@@ -1887,7 +1887,7 @@ export type SoleUnmergedCloserRow = { number: number, title: string, closedAt: s
  *   as closing it (from `fetchClosingPrRefs`)
  * @returns {SoleUnmergedCloserRow[]}
  */
-export function soleUnmergedCloserRows(closedIssues: ClosedIssue[], unmergedClosingRefsByPr: Map<number, number[]>, mergedRefsByIssue: Map<number, ClosingPrRef[]>): SoleUnmergedCloserRow[] {
+function soleUnmergedCloserRows(closedIssues: ClosedIssue[], unmergedClosingRefsByPr: Map<number, number[]>, mergedRefsByIssue: Map<number, ClosingPrRef[]>): SoleUnmergedCloserRow[] {
   const closersByIssue: Map<number, number[]> = new Map();
   for (const [pr, issues] of unmergedClosingRefsByPr) {
     for (const issue of issues) {
@@ -1965,7 +1965,7 @@ const CRITERION_COVERAGE_PATH =
  * @param {string} source
  * @returns {Map<string, string>}
  */
-export function criterionStatusesFromSource(source: string): Map<string, string> {
+function criterionStatusesFromSource(source: string): Map<string, string> {
   const map: Map<string, string> = new Map();
   const pattern = /"(\d+\.\d+\.\d+)":\s*\{\s*(?:\/\/[^\n]*\n\s*)*status:\s*"(\w[\w-]*)"/g;
   for (const match of source.matchAll(pattern)) {
@@ -1984,12 +1984,12 @@ export function criterionStatusesFromSource(source: string): Map<string, string>
  * @param {ClosedIssue[]} closedIssues
  * @returns {ClosedIssue | undefined}
  */
-export function criterionOwningRow(criterion: string, closedIssues: ClosedIssue[]): ClosedIssue | undefined {
+function criterionOwningRow(criterion: string, closedIssues: ClosedIssue[]): ClosedIssue | undefined {
   const prefix = new RegExp(`^${criterion.replace(/\./g, "\\.")}(?:\\s|$)`);
   return closedIssues.find((i) => prefix.test(i.title));
 }
 
-export type CoverageDisagreement = { criterion: string, status: string, row: ClosedIssue };
+type CoverageDisagreement = { criterion: string, status: string, row: ClosedIssue };
 
 /**
  * Pure: every `reachable` criterion whose owning row is closed `COMPLETED`.
@@ -2001,7 +2001,7 @@ export type CoverageDisagreement = { criterion: string, status: string, row: Clo
  * @param {ClosedIssue[]} closedIssues
  * @returns {CoverageDisagreement[]}
  */
-export function coverageTrackerDisagreements(statuses: Map<string, string>, closedIssues: ClosedIssue[]): CoverageDisagreement[] {
+function coverageTrackerDisagreements(statuses: Map<string, string>, closedIssues: ClosedIssue[]): CoverageDisagreement[] {
   const disagreements: CoverageDisagreement[] = [];
   for (const [criterion, status] of statuses) {
     if (status !== "reachable") continue;
@@ -2024,7 +2024,7 @@ export function coverageTrackerDisagreements(statuses: Map<string, string>, clos
  * @param {ClosedIssue[]} closedIssues
  * @returns {string[]}
  */
-export function reachableCriteriaWithoutRow(statuses: Map<string, string>, closedIssues: ClosedIssue[]): string[] {
+function reachableCriteriaWithoutRow(statuses: Map<string, string>, closedIssues: ClosedIssue[]): string[] {
   const without = [];
   for (const [criterion, status] of statuses) {
     if (status !== "reachable") continue;
@@ -2039,7 +2039,7 @@ export function reachableCriteriaWithoutRow(statuses: Map<string, string>, close
  * @param {{ run?: typeof defaultRun }} [deps]
  * @returns {ClosedIssue[]}
  */
-export function fetchClosedCompletedIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): ClosedIssue[] {
+function fetchClosedCompletedIssues({ run = defaultRun }: { run?: typeof defaultRun; } = {}): ClosedIssue[] {
   const parsed = listUntilShort({ run, what: "closed issues",
     argv: (ask) => ["issue", "list", "--repo", trackerRepo(), "--state", "closed", "--limit", String(ask),
       "--json", "number,title,closedAt,stateReason"] });
@@ -2112,7 +2112,7 @@ function reportCoverageTrackerDisagreement() {
  * @param {{number: number}[]} milestoned  open rows in the milestone
  * @returns {{ labelOnly: number[], milestoneOnly: number[] }}
  */
-export function releaseDeclarationDrift(labelled: { number: number; }[], milestoned: { number: number; }[]): { labelOnly: number[]; milestoneOnly: number[]; } {
+function releaseDeclarationDrift(labelled: { number: number; }[], milestoned: { number: number; }[]): { labelOnly: number[]; milestoneOnly: number[]; } {
   const inMilestone = new Set(milestoned.map((row) => row.number));
   const hasLabel = new Set(labelled.map((row) => row.number));
   return {
@@ -2226,7 +2226,7 @@ const GUIDANCE_CLAIMS: [string, RegExp][] = [
  * @param {string | null} description the `Out of release` milestone's description
  * @returns {{ readable: boolean, missingFromDoc: string[], missingFromMilestone: string[] }}
  */
-export function guidanceDrift(doc: string, description: string | null): { readable: boolean; missingFromDoc: string[]; missingFromMilestone: string[]; } {
+function guidanceDrift(doc: string, description: string | null): { readable: boolean; missingFromDoc: string[]; missingFromMilestone: string[]; } {
   // WHITESPACE COLLAPSED BEFORE MATCHING, and this check found that out by failing on its own doc. Markdown
   // wraps at 110 characters, so `does not mean\nunimportant` is one claim split across two lines and every
   // pattern spanning a wrap silently misses. The milestone description is a single unwrapped line, so the
@@ -2333,7 +2333,7 @@ function fetchIssuesWithWaits({ run = defaultRun } = {}) {
  */
 export const UMBRELLA_EDGE_REFUSED_FROM = "2026-10-08T00:00:00Z";
 
-export type RowWithEdges = { number: number, body?: string, labels?: ({ name?: string } | string)[], blockedBy?: { nodes?: { number?: number, state?: string }[] } };
+type RowWithEdges = { number: number, body?: string, labels?: ({ name?: string } | string)[], blockedBy?: { nodes?: { number?: number, state?: string }[] } };
 /**
  * @param {{ rows: RowWithEdges[], addedAt: (holder: number, blocker: number) => string }} input `addedAt` is when the edge was added (it THROWS when it cannot be read: an unknown date is a check that did not answer, never a pass)
  * @returns {{ holder: number, blocker: number, doneWhens: number, addedAt: string }[]}
@@ -2432,7 +2432,7 @@ export const CHECKS: [string, () => number][] = [
  * @param {string} message
  * @returns {boolean}
  */
-export function isProjectsCredentialGap(message: string): boolean {
+function isProjectsCredentialGap(message: string): boolean {
   return /projectv2/i.test(message);
 }
 
@@ -2448,7 +2448,7 @@ export function isProjectsCredentialGap(message: string): boolean {
  * the job again, unchanged.
  * @param {string} what @param {() => number} check @param {string[]} refused @param {string[]} [notRun]
  */
-export function runCheck(what: string, check: () => number, refused: string[], notRun: string[] = []) {
+function runCheck(what: string, check: () => number, refused: string[], notRun: string[] = []) {
   try {
     return check();
   } catch (error) {
@@ -2471,7 +2471,7 @@ export function runCheck(what: string, check: () => number, refused: string[], n
  * the product's criterion table and its release milestone. A keyed tracker gets them when those readers take a repository; until then they are not run for it.
  * @type {ReadonlyMap<string, string>}
  */
-export const PRIMARY_ONLY: ReadonlyMap<string, string> = new Map([
+const PRIMARY_ONLY: ReadonlyMap<string, string> = new Map([
   ["board membership", "board-snapshot.ts reads the primary project's board only"],
   ["status vs ready label", "board-snapshot.ts reads the primary project's board only"],
   ["closed-row provenance", "claim-provenance.ts reads the primary repository's event log only"],

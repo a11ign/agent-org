@@ -22,8 +22,13 @@ import {
   manualWaits, setterOf,
 } from "../wait-condition.ts";
 import { holdReasonOf, holdExcused } from "../pr-hold-state.ts";
-import { SIGNALS, redPrReading, staleWaitReading, waitWithoutReasonReading, orgHealthReadings, orgHealthOrders } from "../org-health.ts";
-import { decide, withPrOwners, redPrFacts, staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate.ts";
+import { SIGNALS } from "../org-health/no-merge-hours.ts";
+import { redPrReading, staleWaitReading, waitWithoutReasonReading } from "../org-health/review-gated-minutes.ts";
+import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-incident.ts";
+import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { withPrOwners } from "../work-gate/pr-owners.ts";
+import { redPrFacts } from "../work-gate/tick.ts";
+import { staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate/org-health.ts";
 
 const HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const MINUTE_MS = 60_000;

@@ -16,7 +16,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GH_READ_TIMEOUT_MS, ghWithin, readPrs } from "./work-gate.ts";
+import { GH_READ_TIMEOUT_MS, ghWithin, readPrs } from "./work-gate/reads/exit.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 const BOUND_MS = 400;
 const HUNG_FOR_S = 60;
@@ -82,7 +83,7 @@ test("(3) the cut does not silence a `gh` that answers, and a refusal that is no
 });
 
 test("(4) the bound is the named constant, the one `wake.ts`'s `defaultGh` cuts a `gh` at", () => {
-  const wake = readFileSync(fileURLToPath(new URL("./wake.ts", import.meta.url)), "utf8");
+  const wake = moduleSource("wake.ts");
   const wakeBound = /const defaultGh = [^;]*?timeout: (\d[\d_]*)/s.exec(wake)?.[1];
   assert.ok(wakeBound !== undefined, "positive control: `defaultGh`'s bound was found in wake.ts");
   assert.equal(GH_READ_TIMEOUT_MS, Number(wakeBound.replaceAll("_", "")));

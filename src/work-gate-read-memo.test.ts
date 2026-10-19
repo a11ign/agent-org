@@ -18,7 +18,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capturingStderr, defaultRun, holdReadMemo, releaseReadMemo, inRepo, readMemoReading, readOnlyGh, runBatch } from "./work-gate/reads.ts";
+import { capturingStderr, defaultRun, holdReadMemo, releaseReadMemo, inRepo, readMemoReading, readOnlyGh, runBatch } from "./work-gate/reads/exit.ts";
 
 let dir: string;
 let log: string;
@@ -155,13 +155,16 @@ test("a batch that holds a write forgets, and keeps none of its reads", () => {
 
 /** Imports the reads in a fresh process whose `argv[1]` is `entry`, asks the same read twice, and reports what the stub `gh` was asked and what the process said. */
 function importedAs(entry: string): { asked: number; said: string } {
-  const code = `const [entry, readsPath] = process.argv.slice(1);
+  const code = `const [entry, readsPath, exitPath] = process.argv.slice(1);
     process.argv[1] = entry;
-    const reads = await import("file://" + readsPath);
+    await import("file://" + readsPath);
+    const reads = await import("file://" + exitPath);
     reads.defaultRun(["pr", "list", "--state", "merged", "--limit", "100"]);
     reads.defaultRun(["pr", "list", "--state", "merged", "--limit", "100"]);`;
+  // The reads module holds the memo when it is imported (`reads.ts`, the gate's entry-side import), and `defaultRun` is in `reads/exit.ts`.
   const reads = fileURLToPath(new URL("./work-gate/reads.ts", import.meta.url));
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", code, entry, reads], { encoding: "utf8", env: process.env });
+  const exit = fileURLToPath(new URL("./work-gate/reads/exit.ts", import.meta.url));
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", code, entry, reads, exit], { encoding: "utf8", env: process.env });
   assert.equal(result.status, 0, result.stderr);
   return { asked: calls().length, said: result.stderr };
 }

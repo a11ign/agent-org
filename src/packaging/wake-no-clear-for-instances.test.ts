@@ -18,8 +18,11 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver as settlingDeliver, deliverHandoffs as settlingDeliverHandoffs, isPerRowInstance, clearBeforeOrder, ledgerLine, ledgerKeyOf, readLedger,
-  NO_CLEAR_NOTE, compactContext, instanceCacheRead, COMPACT_THRESHOLD_TOKENS } from "../wake.ts";
+import { deliver as settlingDeliver, NO_CLEAR_NOTE, compactContext } from "../wake/clear-settle-ms.ts";
+import { deliverHandoffs as settlingDeliverHandoffs, ledgerLine, readLedger } from "../wake/ended-sessions.ts";
+import { isPerRowInstance, instanceCacheRead, COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
+import { clearBeforeOrder } from "../wake/merge-queue-wait-limit-ms.ts";
+import { ledgerKeyOf } from "../wake/reset.ts";
 import { clearThenPrompt as settlingClearThenPrompt } from "../prompt-session.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */

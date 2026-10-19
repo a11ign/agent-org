@@ -13,9 +13,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addressed, ENGINEER_BRIEF } from "./wake.ts";
+import { addressed } from "./wake/clear-settle-ms.ts";
+import { ENGINEER_BRIEF } from "./wake/ended-sessions.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { SPAWN_BRIEF_ROLES, engineerBriefSentence, briefRoleSentence } from "./spawn-role-brief.ts";
+import { moduleSource } from "./lib/module-source.ts";
 
 const ORDER = { session: "engineers", prompt: "claim row 1 as `<you>`", cause: "ready-row-unclaimed" };
 const SPAWNED = { row: 828, branch: "agent/a-spawned-seat-828", worktree: "/tmp/wt-828", launchDir: "/tmp/wt-828" };
@@ -97,7 +99,7 @@ function routingProblems(source: string): string[] {
 }
 
 test("no routing moved: SPAWN_CAUSES and spawnableRole's engineers test are untouched", () => {
-  const source = readFileSync(new URL("./wake.ts", import.meta.url), "utf8");
+  const source = moduleSource("wake.ts");
   assert.deepEqual(routingProblems(source), []);
   const widened = source.replace('Object.freeze(["ready-row-unclaimed"])', 'Object.freeze(["ready-row-unclaimed", "orchestrator-row"])');
   assert.notEqual(widened, source, "the negative control's fixture really differs");

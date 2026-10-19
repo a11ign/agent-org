@@ -307,7 +307,7 @@ async function main(): Promise<void> {
   refuseUnknownFlags(["--refresh", "--dry-run", "--repo="], { entry: import.meta.url, command: "node src/approved-unqueued.ts" });
   const { homeProjectDeclaration } = await import("./project-config.ts");
   const { stateEntryPath } = await import("./host-config.ts");
-  const { defaultRun } = await import("./work-gate.ts");
+  const { defaultRun } = await import("./work-gate/reads/exit.ts");
   const declaration = homeProjectDeclaration();
   const repo = flagValue(process.argv, "repo") ?? declaration.repo;
   const repos = [...new Set(declaration.tracker.map((tracker) => tracker.repo))];

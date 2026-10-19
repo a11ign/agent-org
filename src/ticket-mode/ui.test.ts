@@ -3,7 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import * as view from "./board-view.ts";
+import * as view_0 from "./board-view.ts";
+import * as view_1 from "./board-view/settled-by-pulls.ts";
+import * as view_2 from "./board-view/view-ticket.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 
@@ -109,7 +111,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
-  runInNewContext(SCRIPT, { ...view, ...labelFilters, ...assigneeFilter, document, fetch, window: { localStorage }, setInterval: () => 0, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, document, fetch, window: { localStorage }, setInterval: () => 0, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
   for (let i = 0; i < 10; i++) await settle();
   const $ = (id: string) => document.getElementById(id);
   const groups = () => $("groups").children;
@@ -1032,9 +1034,9 @@ test("A11-76: a ticket with open sub-issues is shown as a parent, counting them,
   assert.ok(epic.className.includes("parent"), "marked as a parent");
   assert.ok(epic.text().includes("Parent · 2 open sub-issues"), epic.text());
   assert.equal(tickOf(p, "E-1").disabled, true, "no plain Queue for it");
-  const button = epic.all().find((n) => n.tag === "button" && n.textContent === view.QUEUE_CHILDREN);
+  const button = epic.all().find((n) => n.tag === "button" && n.textContent === view_2.QUEUE_CHILDREN);
   assert.ok(button, "Queue its children is offered");
-  assert.equal(rowFor(p, "D-1").all().some((n) => n.textContent === view.QUEUE_CHILDREN), false, "an epic whose sub-issues are all done is an ordinary ticket");
+  assert.equal(rowFor(p, "D-1").all().some((n) => n.textContent === view_2.QUEUE_CHILDREN), false, "an epic whose sub-issues are all done is an ordinary ticket");
   assert.equal(tickOf(p, "D-1").disabled, false);
   assert.equal(rowFor(p, "D-1").text().includes("Parent"), false);
   p.$("all").checked = true;
@@ -1047,7 +1049,7 @@ test("A11-76: a ticket with open sub-issues is shown as a parent, counting them,
 test("A11-76: Queue its children asks the instance to queue the parent's sub-issues on the footer's choice, and shows the order it used", async () => {
   const children = { queue: { entries: [], max: 3, paused: true }, keys: ["S-1", "S-2"], note: "the tracker gives no blocking order, so they are queued in identifier order" };
   const p = await page(new Map(), { tickets: PARENTS, children });
-  rowFor(p, "E-1").all().find((n) => n.tag === "button" && n.textContent === view.QUEUE_CHILDREN)!.fire("click");
+  rowFor(p, "E-1").all().find((n) => n.tag === "button" && n.textContent === view_2.QUEUE_CHILDREN)!.fire("click");
   for (let i = 0; i < 5; i++) await settle();
   assert.deepEqual(p.posts.filter((x) => x.path === "/api/queue-children").map((x) => x.body), [{ key: "E-1", model: "opus", effort: "high", plan: false }]);
   assert.equal(p.$("children-note").hidden, false);
@@ -1059,7 +1061,7 @@ test("A11-76: a parent shown with its sub-issues under it offers Queue its child
   const p = await page(new Map(), { tickets: [ticketIn("E-1", { children: ["S-1", "S-2"] }), ticketIn("S-1", { parent: "E-1" })] });
   const epic = rowFor(p, "E-1");
   assert.ok(epic.text().includes("1 ticket under it · Parent · 2 open sub-issues"), epic.text());
-  assert.ok(epic.all().some((n) => n.tag === "button" && n.textContent === view.QUEUE_CHILDREN));
+  assert.ok(epic.all().some((n) => n.tag === "button" && n.textContent === view_2.QUEUE_CHILDREN));
 });
 
 const LABELLED = [

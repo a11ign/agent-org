@@ -16,9 +16,14 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { route, deliver, withSpareInstances, engineerRoles, engineerEligibility, spawnClaimer, spentSeen, isSpareRole,
-  cycleVerdict, consecutiveClean, cyclesReport, endFinishedSpares, readSpareCycles, sparePathsFrom, registerSpawn,
-  settleAbsentInstance, drainInForce, spareInstances, PRIMARY_CHECKOUT } from "../wake.ts";
+import { route, withSpareInstances, engineerEligibility, spentSeen } from "../wake/exit.ts";
+import { deliver, PRIMARY_CHECKOUT } from "../wake/clear-settle-ms.ts";
+import { engineerRoles } from "../wake/is-pull-request-spawn-order.ts";
+import { spawnClaimer, consecutiveClean, cyclesReport, drainInForce } from "../wake/is-release-line.ts";
+import { isSpareRole, cycleVerdict, spareInstances } from "../wake/merge-queue-wait-limit-ms.ts";
+import { endFinishedSpares } from "../wake/with-ci-failure-class.ts";
+import { readSpareCycles, sparePathsFrom } from "../wake/ended-sessions.ts";
+import { registerSpawn, settleAbsentInstance } from "../wake/holds-as-fyi.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 
 const T0 = Date.UTC(2026, 8, 25, 0, 0, 0);

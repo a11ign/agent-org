@@ -11,9 +11,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addressed, deliver, claimOrdersIn, claimOrdersPath, ledgerLine, CONTINUATION_ESCALATE_TO } from "./wake.ts";
+import { addressed, deliver } from "./wake/clear-settle-ms.ts";
+import { claimOrdersIn, claimOrdersPath } from "./wake/merge-queue-wait-limit-ms.ts";
+import { ledgerLine } from "./wake/ended-sessions.ts";
+import { CONTINUATION_ESCALATE_TO } from "./wake/holds-as-fyi.ts";
 import { armOf, ARM, CALM_FINISH_PARAGRAPH } from "./worker-profile.ts";
-import { MAX_CONTINUATIONS } from "./claim-stall.ts";
+import { MAX_CONTINUATIONS } from "./claim-stall/claim-stalled.ts";
 
 const AT = 1_791_000_000_000;
 /** An EMPTY transcript root, so a real label this file reuses is never compacted by a coincidence of a live session's own transcript. */
