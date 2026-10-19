@@ -18,7 +18,7 @@
 // A LEAF, like `project-config.ts`: `node:fs`, `node:path` and that module only.
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA } from "./project-config.ts";
+import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA, TICKET_ONLY_CHECKOUT } from "./project-config.ts";
 import { LATEST, isToolVersion } from "./lib/release-tag.ts";
 import { GITHUB_ROLES, type AppIdentity, type GithubRole } from "./app-token.ts";
 
@@ -652,8 +652,8 @@ function shadowStateDir(env: Record<string, string | undefined>) {
 export function stateEntryPath(name: string, { host, home = process.env.HOME, env = process.env }: { host?: HostConfig; home?: string | undefined; env?: Record<string, string | undefined>; } = {}) {
   const copy = shadowStateDir(env);
   if (copy !== undefined) return name === "" ? copy : join(copy, name);
-  const declared = host ?? homeHostConfig();
-  if (declared.stateDir !== undefined) return name === "" ? declared.stateDir : stateFilePath(declared, name);
+  const declared = host ?? (HOME_CHECKOUT === TICKET_ONLY_CHECKOUT ? undefined : homeHostConfig());
+  if (declared?.stateDir !== undefined) return name === "" ? declared.stateDir : stateFilePath(declared, name);
   return name === "" ? `${home}/${UNDECLARED_STATE_DIR}` : `${home}/${UNDECLARED_STATE_DIR}/${name}`;
 }
 

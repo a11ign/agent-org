@@ -31,7 +31,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "./project-config.ts";
+import { HOME_CHECKOUT, ProjectDeclarationRefusal, TICKET_ONLY_CHECKOUT } from "./project-config.ts";
 import { GROUPS, CauseDeclarationRefusal, declareCause, declaredCauses, causesOf, judgmentCausesOf,
   startCausesOf, profilesOf } from "./cause-shape.ts";
 
@@ -78,6 +78,7 @@ export function parseProjectCauseModule(parsed: unknown): string | undefined {
  * @param {string} root @returns {ReturnType<typeof declareCause>[]}
  */
 export function projectCauseDeclarations(root: string = HOME_CHECKOUT): ReturnType<typeof declareCause>[] {
+  if (root === TICKET_ONLY_CHECKOUT) return [];
   const path = `${root}/${SOURCE}`;
   let text: string;
   try {

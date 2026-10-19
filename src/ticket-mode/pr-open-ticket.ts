@@ -341,10 +341,11 @@ export function preReviewReport(body: string, skill: string): { ok: boolean; lin
 /**
  * The body reports `checkBody` runs for a ticket: CI's own list, with its `closes` report replaced by the ticket's. Every other report, the acceptance
  * one first, is CI's unchanged; `class` prints NOT CHECKED, since a ticket has no labels a row would. When the machine names a pre-PR review skill, the body
- * must record that it ran, last; with none, the list is exactly the one without it.
- * @param {string} key @param {string | null} prReview @param {Keywords} keywords the tracker's two words @returns {BodyReport[]}
+ * must record that it ran, last; with none, the list is exactly the one without it. `acceptance: false` leaves the acceptance report out: a host that
+ * declares no project has no CI that reads an acceptance file, so a body is not refused for lacking one.
+ * @param {string} key @param {string | null} prReview @param {Keywords} keywords the tracker's two words @param {{ acceptance?: boolean }} [only] @returns {BodyReport[]}
  */
-export function ticketBodyReports(key: string, prReview: string | null, keywords: Keywords): BodyReport[] {
-  const reports: BodyReport[] = CI_BODY_REPORTS.map((report) => (report.name === "closes" ? { name: report.name, report: ({ body }) => ticketClosesReport(body, key, keywords) } : report));
+export function ticketBodyReports(key: string, prReview: string | null, keywords: Keywords, { acceptance = true }: { acceptance?: boolean } = {}): BodyReport[] {
+  const reports: BodyReport[] = CI_BODY_REPORTS.filter((report) => acceptance || report.name !== "acceptance").map((report) => (report.name === "closes" ? { name: report.name, report: ({ body }) => ticketClosesReport(body, key, keywords) } : report));
   return prReview === null ? reports : [...reports, { name: "pr-review", report: ({ body }) => preReviewReport(body, prReview) }];
 }
