@@ -41,7 +41,7 @@ const OPEN_CHILDREN = 'children(first: 50, filter: { state: { type: { nin: ["com
  * first page of 50, which no ticket comes near. Read with the list, in the same request. Only a group's name is read, as only its name is shown.
  */
 const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
-const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name summary } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
+const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name summary: description } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -563,7 +563,7 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
     },
 
     async projectSummaries(keys) {
-      const found = await eachIssue<{ project: { summary: string | null } | null }>(client, keys, "project { summary }");
+      const found = await eachIssue<{ project: { summary: string | null } | null }>(client, keys, "project { summary: description }");
       return new Map([...found].flatMap(([key, node]) => (node.project === null ? [] : [[key, node.project.summary] as const])));
     },
 
