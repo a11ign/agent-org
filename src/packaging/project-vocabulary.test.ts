@@ -63,28 +63,34 @@ const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
   : "the fixture's vocabulary.resources is [], so the 15 a11ign patterns are absent there: these subtests read a11ign's declared vocabulary, which only the a11ign checkout carries";
 
 test("a11ign's vocabulary holds each of the nine labels the row names", () => {
-  assert.equal(READY_LABEL, "ready");
-  assert.equal(BACKLOG_LABEL, "backlog");
-  assert.equal(CLAIM_LABEL, "in-progress");
-  assert.equal(STARTED_LABEL, "started");
-  assert.equal(NEEDS_CHAIRMAN_LABEL, "needs:chairman");
-  assert.equal(LANE_PREFIX, "lane:");
-  assert.equal(SESSION_PREFIX, "session:");
-  assert.equal(ANSWER_PREFIX, "answer:");
-  assert.equal(OUT_OF_RELEASE_LABEL, "out-of-release");
+  const pairs: [unknown, string][] = [
+    [READY_LABEL, "ready"],
+    [BACKLOG_LABEL, "backlog"],
+    [CLAIM_LABEL, "in-progress"],
+    [STARTED_LABEL, "started"],
+    [NEEDS_CHAIRMAN_LABEL, "needs:chairman"],
+    [LANE_PREFIX, "lane:"],
+    [SESSION_PREFIX, "session:"],
+    [ANSWER_PREFIX, "answer:"],
+    [OUT_OF_RELEASE_LABEL, "out-of-release"],
+  ];
+  for (const [actual, expected] of pairs) assert.equal(actual, expected);
 });
 
 test("a11ign's vocabulary holds today's remaining label, milestone, lane-file and template-field values", () => {
-  assert.equal(WAS_READY_LABEL, "was-ready");
-  assert.equal(BLOCKED_LABEL, "blocked");
-  assert.equal(LANE_ANY_LABEL, "lane:any");
-  assert.equal(ROAD_TO_VERSION_ONE_MILESTONE, "Road to version one");
-  assert.equal(OUT_OF_RELEASE_MILESTONE, "Out of release");
-  assert.equal(LANES_FILE_PATH, "docs/lane-ownership.json");
-  assert.equal(ACCEPTANCE_FIELD, "Acceptance");
-  assert.equal(CLOSES_FIELD, "Closes");
-  assert.equal(FLEET_FIELD, "Fleet");
-  assert.equal(FLEET_QUESTION, "Does the acceptance need the fleet or the lab");
+  const pairs: [unknown, string][] = [
+    [WAS_READY_LABEL, "was-ready"],
+    [BLOCKED_LABEL, "blocked"],
+    [LANE_ANY_LABEL, "lane:any"],
+    [ROAD_TO_VERSION_ONE_MILESTONE, "Road to version one"],
+    [OUT_OF_RELEASE_MILESTONE, "Out of release"],
+    [LANES_FILE_PATH, "docs/lane-ownership.json"],
+    [ACCEPTANCE_FIELD, "Acceptance"],
+    [CLOSES_FIELD, "Closes"],
+    [FLEET_FIELD, "Fleet"],
+    [FLEET_QUESTION, "Does the acceptance need the fleet or the lab"],
+  ];
+  for (const [actual, expected] of pairs) assert.equal(actual, expected);
 });
 
 test("a11ign's vocabulary holds all 15 shared-resource patterns, each with its reason and its `named` flag", { skip: SKIP_FIXTURE }, () => {
@@ -345,6 +351,13 @@ function mutated(mutate: (document: Loose) => void): Loose {
   return copy;
 }
 
+/** Deletes the field at a dotted `path` of the document, e.g. `vocabulary.labels.backlog`. */
+function deleteAt(document: Loose, path: string): void {
+  const keys = path.split(".");
+  const last = keys.pop() as string;
+  delete keys.reduce((node, key) => node[key], document)[last];
+}
+
 /** Run `parsed` through `parseVocabulary` and return the refusal it must produce. */
 function refusalOf(parsed: unknown): ProjectDeclarationRefusal {
   try {
@@ -369,25 +382,29 @@ test("POSITIVE CONTROL: the unmutated base of every refusal below is ACCEPTED", 
 });
 
 test("a MISSING field is refused naming that field", () => {
-  assertRefusedFor(mutated((d) => delete d.vocabulary), "vocabulary");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.labels), "vocabulary.labels");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.labels.backlog), "vocabulary.labels.backlog");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.labels.needsChairman), "vocabulary.labels.needsChairman");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.labels.outOfRelease), "vocabulary.labels.outOfRelease");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.labels.blocked), "vocabulary.labels.blocked");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.prefixes), "vocabulary.prefixes");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.prefixes.lane), "vocabulary.prefixes.lane");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.prefixes.session), "vocabulary.prefixes.session");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.prefixes.answer), "vocabulary.prefixes.answer");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.milestones), "vocabulary.milestones");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.milestones.roadToVersionOne), "vocabulary.milestones.roadToVersionOne");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.milestones.outOfRelease), "vocabulary.milestones.outOfRelease");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.lanesFile), "vocabulary.lanesFile");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.templateFields), "vocabulary.templateFields");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.templateFields.acceptance), "vocabulary.templateFields.acceptance");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.templateFields.closes), "vocabulary.templateFields.closes");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.templateFields.fleet), "vocabulary.templateFields.fleet");
-  assertRefusedFor(mutated((d) => delete d.vocabulary.fleetQuestion), "vocabulary.fleetQuestion");
+  for (const path of [
+    "vocabulary",
+    "vocabulary.labels",
+    "vocabulary.labels.backlog",
+    "vocabulary.labels.needsChairman",
+    "vocabulary.labels.outOfRelease",
+    "vocabulary.labels.blocked",
+    "vocabulary.prefixes",
+    "vocabulary.prefixes.lane",
+    "vocabulary.prefixes.session",
+    "vocabulary.prefixes.answer",
+    "vocabulary.milestones",
+    "vocabulary.milestones.roadToVersionOne",
+    "vocabulary.milestones.outOfRelease",
+    "vocabulary.lanesFile",
+    "vocabulary.templateFields",
+    "vocabulary.templateFields.acceptance",
+    "vocabulary.templateFields.closes",
+    "vocabulary.templateFields.fleet",
+    "vocabulary.fleetQuestion",
+  ]) {
+    assertRefusedFor(mutated((d) => deleteAt(d, path)), path);
+  }
 });
 
 test("`resources` is OPTIONAL and an ABSENT list reads as empty -- a project with no fleet or lab has none of its own", () => {

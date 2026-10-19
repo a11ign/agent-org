@@ -125,9 +125,7 @@ describe("done-when 3: a queued run says it is queued, now and every minute", ()
     assert.equal(await third, 0);
     assert.equal(WAIT_REPORT_MS, 60_000);
     assert.equal(messages.length, 3, `at 0 s, 60 s and 120 s: ${JSON.stringify(messages.map((text) => text.split("\n")[0]))}`);
-    assert.match(messages[0], /waited 0m00s/);
-    assert.match(messages[1], /waited 1m00s/);
-    assert.match(messages[2], /waited 2m00s/);
+    for (const [index, wait] of [[0, "0m00s"], [1, "1m00s"], [2, "2m00s"]] as const) assert.match(messages[index], new RegExp(`waited ${wait}`));
     b.release();
     await Promise.all([a.done, b.done]);
   });

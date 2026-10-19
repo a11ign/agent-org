@@ -27,6 +27,8 @@ import { clearThenPrompt as settlingClearThenPrompt } from "../prompt-session.ts
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
+/** A socket that refuses every call: the herdr that cannot be reached. */
+const refusing = () => { throw new Error("no socket"); };
 /**
  * #2688: a fixed, EMPTY transcript root, so a test naming a real org label (`worker-4`, `worker-11`,
  * `reviewer-2456` -- all of which are real, reused role names on a shared host) never picks up an
@@ -157,7 +159,6 @@ test("#2483 clearBeforeOrder says whether a clear was sent, and passes a refusal
   const r = recorder();
   assert.deepEqual(clearBeforeOrder(r.run, "reviewer-2456", noSettle, NO_TRANSCRIPTS), { sent: false, refusal: null });
   assert.deepEqual(r.calls, [], "an instance is not even asked, below #2688's threshold");
-  const refusing = () => { throw new Error("no socket"); };
   const got = clearBeforeOrder(refusing, "orchestrator", noSettle, NO_TRANSCRIPTS);
   assert.equal(got.sent, true);
   assert.match(String(got.refusal), /orchestrator: \/clear refused/);
@@ -286,7 +287,6 @@ test("#2688 clearBeforeOrder CONTROL: AT the threshold (not over it), and no tra
 test("#2688 clearBeforeOrder passes a refused /compact through, and the caller still sends the order (mirrors #2483's clear refusal)", () => {
   const dir = transcriptRootFor("worker-11", COMPACT_THRESHOLD_TOKENS + 1);
   try {
-    const refusing = () => { throw new Error("no socket"); };
     const got = clearBeforeOrder(refusing, "worker-11", noSettle, dir);
     assert.equal(got.sent, false);
     assert.match(String(got.refusal), /worker-11: \/compact refused/);

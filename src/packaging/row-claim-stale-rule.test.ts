@@ -13,6 +13,7 @@ import ts from "typescript";
 import { staleRuleReason, ruleFiles, rulePathspec, ruleDirOf, workTreeOf, installedLayoutOf }
   from "../row-claim/stale-rule-guard.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { testEach } from "../lib/test-each.ts";
 
 /**
  * THE TOOL'S ROOT AND ITS REPOSITORY, found from this file's own location and git, never by counting directories (#3041). `src/packaging/..` is
@@ -54,27 +55,78 @@ const release = (root: string, sha: string, name = "v1.0.0") =>
   execFileSync("git", ["tag", name, sha], { cwd: root, env: sandboxGitEnv(), stdio: "pipe" });
 const detach = (root: string, sha: string) =>
   execFileSync("git", ["checkout", "--quiet", "--detach", sha], { cwd: root, env: sandboxGitEnv(), stdio: "pipe" });
+/** Commits `base`, then `moved`, each a [path, text] pair, with origin/main at each in turn: the checkout's own history is left as it was. */
+function movedOnOrigin(repo: { root: string, commit: (path: string, text: string) => string }, [basePath, baseText]: [string, string], [movedPath, movedText]: [string, string]) {
+  const base = repo.commit(basePath, baseText);
+  setRef(repo.root, "refs/remotes/origin/main", base);
+  const moved = repo.commit(movedPath, movedText);
+  setRef(repo.root, "refs/remotes/origin/main", moved);
+  return { base, moved };
+}
+
+/** Commits `text` to `rule`, points origin/main at it and cuts a release there: a move the checkout is behind on. Returns the SHA. */
+function releaseMove(repo: { root: string, commit: (path: string, text: string) => string }, rule: string, text: string): string {
+  const moved = repo.commit(rule, text);
+  setRef(repo.root, "refs/remotes/origin/main", moved);
+  release(repo.root, moved);
+  return moved;
+}
 
 /** The pathspec the real guard uses, spelled for the fixture rather than derived from it. */
 const SPEC = ["packages/agent-org/src/row-claim.ts", "packages/agent-org/src/row-claim/"];
 
-test("#1014: a checkout BEHIND on a rule file refuses, naming the count and the file that moved", () => {
+type Repo = ReturnType<typeof syntheticRepo>;
+
+/** Both refusals of a checkout behind origin/main: the BEHIND count and file, and the release's own move, never the author's edit. */
+testEach("#1014: a checkout BEHIND origin/main is REFUSED", [
+  {
+    name: "a checkout BEHIND on a rule file refuses, naming the count and the file that moved",
+    okMessage: "a checkout holding a superseded rule must not produce a verdict at all",
+    arrange: ({ root, commit }: Repo) => {
+      const base = commit("packages/agent-org/src/row-claim/own-pr-health-rule.ts", "export const inBuildReason = () => null;\n");
+      setRef(root, "refs/remotes/origin/main", base);
+      detach(root, base);
+      const moved = commit("packages/agent-org/src/row-claim/own-pr-health-rule.ts", "export const inBuildReason = () => 'B2';\n");
+      setRef(root, "refs/remotes/origin/main", moved);
+      release(root, moved); // the host can run the change: it is IN a release, and this checkout sits where it was
+      detach(root, base);
+    },
+    check: (reason: string) => {
+      assert.match(reason, /1 COMMIT\(S\) BEHIND THE RELEASE THE HOST RUNS \(v1\.0\.0\)/, "the COUNT, so the reader knows how far behind they are, and the release it is behind");
+      assert.match(reason, /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.ts/,
+        "and the FILE, because a refusal naming only a number is not followable -- the reader cannot tell "
+        + "whether the rule they are being refused by is the one that moved");
+    },
+  },
+  {
+    // worker-judge, reviewing #1044: a two-dot diff includes the author's commits, so a branch that
+    // legitimately edits a rule file would be told its own work had `Moved:`. A message that accuses the
+    // reader of their own change gets argued with rather than followed.
+    name: "the refusal names what ORIGIN/MAIN moved, never the author's own edit to a rule file",
+    okMessage: "still behind on the release's change, so it still refuses",
+    arrange: ({ root, commit }: Repo) => {
+      const { base, moved } = movedOnOrigin({ root, commit },
+        ["packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n"],
+        ["packages/agent-org/src/row-claim/blocked-by-rule.ts", "export const resolveBlockedByOverride = () => null;\n"]);
+      release(root, moved);
+      detach(root, base);
+      // the author's own work, on top of a checkout that is behind: a rule file they are editing on purpose
+      commit("packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => 'mine';\n");
+    },
+    check: (reason: string) => {
+      assert.match(reason, /blocked-by-rule\.ts/, "and names what the release moved");
+      assert.doesNotMatch(reason, /template-fields-rule\.ts/,
+        "and NOT the author's own commit -- three-dot diffs from the merge base, so the message is about "
+        + "the tree they are behind, not about them");
+    },
+  },
+], (c) => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("packages/agent-org/src/row-claim/own-pr-health-rule.ts", "export const inBuildReason = () => null;\n");
-    setRef(root, "refs/remotes/origin/main", base);
-    detach(root, base);
-    const moved = commit("packages/agent-org/src/row-claim/own-pr-health-rule.ts", "export const inBuildReason = () => 'B2';\n");
-    setRef(root, "refs/remotes/origin/main", moved);
-    release(root, moved); // the host can run the change: it is IN a release, and this checkout sits where it was
-    detach(root, base);
-
+    c.arrange({ root, commit });
     const reason = staleRuleReason({ repoRoot: root, files: SPEC });
-    assert.ok(reason, "a checkout holding a superseded rule must not produce a verdict at all");
-    assert.match(reason, /1 COMMIT\(S\) BEHIND THE RELEASE THE HOST RUNS \(v1\.0\.0\)/, "the COUNT, so the reader knows how far behind they are, and the release it is behind");
-    assert.match(reason, /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.ts/,
-      "and the FILE, because a refusal naming only a number is not followable -- the reader cannot tell "
-      + "whether the rule they are being refused by is the one that moved");
+    assert.ok(reason, c.okMessage);
+    c.check(reason);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -122,10 +174,8 @@ test("#1014: MUTATION TARGET -- comparing the checkout against ITSELF must stop 
   () => {
     const { root, commit } = syntheticRepo();
     try {
-      const base = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n");
-      setRef(root, "refs/remotes/origin/main", base);
-      const moved = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => 'no';\n");
-      setRef(root, "refs/remotes/origin/main", moved);
+      const { base, moved } = movedOnOrigin({ root, commit }, ["packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n"],
+        ["packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => 'no';\n"]);
       release(root, moved);
       detach(root, base);
 
@@ -203,10 +253,8 @@ test("#889: the release is the NEWEST tag by number, and a checkout behind it is
 test("#889: NO release tag cannot tell the release from main: let through and LOGGED, never refused and never silent", () => {
   const { root, commit } = syntheticRepo();
   try {
-    const base = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n");
-    setRef(root, "refs/remotes/origin/main", base);
-    const moved = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => 'no';\n");
-    setRef(root, "refs/remotes/origin/main", moved);
+    const { base, moved } = movedOnOrigin({ root, commit }, ["packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n"],
+      ["packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => 'no';\n"]);
     detach(root, base);
     // A tag that is not a release is not one: a pre-release and a moving name are never selected (`release-tag.ts`).
     release(root, moved, "v1.0.0-rc1");
@@ -248,10 +296,8 @@ test("#1014: a BLINDED closure walker still refuses -- the one tree this guard i
   const { root, commit } = syntheticRepo();
   try {
     commit("packages/agent-org/src/row-claim.ts", "export const claim = () => null;\n"); // tracked, so the entry-only pathspec below is one that matches (#3041)
-    const base = commit("packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => null;\n");
-    setRef(root, "refs/remotes/origin/main", base);
-    const moved = commit("packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => 'x';\n");
-    setRef(root, "refs/remotes/origin/main", moved);
+    const { base, moved } = movedOnOrigin({ root, commit }, ["packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => null;\n"],
+      ["packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => 'x';\n"]);
     release(root, moved);
     detach(root, base);
 
@@ -294,9 +340,7 @@ test("#3041: a guard in the STANDALONE layout (`<root>/src/row-claim/`) derives 
   const { root, commit, base, guard, rule } = await guardInTool("");
   try {
     assert.equal(guard.staleRuleReason(), null, "POSITIVE CONTROL: origin/main equal to HEAD is the PASS, and it is reachable");
-    const moved = commit(rule, "export const inBuildReason = () => 'B2';\n");
-    setRef(root, "refs/remotes/origin/main", moved);
-    release(root, moved);
+    const moved = releaseMove({ root, commit }, rule, "export const inBuildReason = () => 'B2';\n");
     detach(root, base);
 
     const reason = guard.staleRuleReason();
@@ -311,9 +355,7 @@ test("#3041: a guard in the MONOREPO layout (`<root>/packages/agent-org/src/row-
   const { root, commit, base, guard, rule } = await guardInTool("packages/agent-org/");
   try {
     assert.equal(guard.staleRuleReason(), null, "the PASS is reachable here too");
-    const moved = commit(rule, "export const inBuildReason = () => 'B2';\n");
-    setRef(root, "refs/remotes/origin/main", moved);
-    release(root, moved);
+    const moved = releaseMove({ root, commit }, rule, "export const inBuildReason = () => 'B2';\n");
     detach(root, base);
     assert.match(guard.staleRuleReason(), /packages\/agent-org\/src\/row-claim\/own-pr-health-rule\.ts/);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -345,30 +387,6 @@ test("#3041: a directory that is not a git work tree is CANNOT ASK by name, not 
   try {
     assert.equal(workTreeOf(dir), null);
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("#1014: the refusal names what ORIGIN/MAIN moved, never the author's own edit to a rule file", () => {
-  // worker-judge, reviewing #1044: a two-dot diff includes the author's commits, so a branch that
-  // legitimately edits a rule file would be told its own work had `Moved:`. A message that accuses the
-  // reader of their own change gets argued with rather than followed.
-  const { root, commit } = syntheticRepo();
-  try {
-    const base = commit("packages/agent-org/src/row-claim/runner-rule.ts", "export const runnerReason = () => null;\n");
-    setRef(root, "refs/remotes/origin/main", base);
-    const moved = commit("packages/agent-org/src/row-claim/blocked-by-rule.ts", "export const resolveBlockedByOverride = () => null;\n");
-    setRef(root, "refs/remotes/origin/main", moved);
-    release(root, moved);
-    detach(root, base);
-    // the author's own work, on top of a checkout that is behind: a rule file they are editing on purpose
-    commit("packages/agent-org/src/row-claim/template-fields-rule.ts", "export const templateFieldsReason = () => 'mine';\n");
-
-    const reason = staleRuleReason({ repoRoot: root, files: SPEC });
-    assert.ok(reason, "still behind on the release's change, so it still refuses");
-    assert.match(reason, /blocked-by-rule\.ts/, "and names what the release moved");
-    assert.doesNotMatch(reason, /template-fields-rule\.ts/,
-      "and NOT the author's own commit -- three-dot diffs from the merge base, so the message is about "
-      + "the tree they are behind, not about them");
-  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 /**

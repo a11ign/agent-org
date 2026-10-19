@@ -10,6 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { testEach } from "../lib/test-each.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,32 +72,21 @@ const BEFORE_RESOLUTION = "2026-09-07T02:00:00.000Z";
 const RESOLVED_AT = "2026-09-07T02:10:00.000Z";
 const AFTER_RESOLUTION = "2026-09-07T02:20:00.000Z";
 
-test("THE DISAGREEMENT CASE: guard said READY, the platform actually refused it", () => {
+testEach("reconciliation of a READY verdict with its real outcome", [
+  { name: "THE DISAGREEMENT CASE: guard said READY, the platform actually refused it", prNumber: 165, realOutcome: "REFUSED", agreement: "DISAGREED", codeMessage: "reconciling successfully is not the same as the two answers agreeing" },
+  { name: "THE AGREEMENT CASE, stated explicitly — not merely the absence of a disagreement", prNumber: 100, realOutcome: "ACCEPTED", agreement: "AGREED" },
+] as const, (c) => {
   const result = reconcile({
-    prNumber: 165,
+    prNumber: c.prNumber,
     recordedVerdict: { code: 0, reasonKinds: [], at: BEFORE_RESOLUTION },
-    realOutcome: "REFUSED",
+    realOutcome: c.realOutcome,
     resolvedAt: RESOLVED_AT,
   });
-  assert.equal(result.code, 0, "reconciling successfully is not the same as the two answers agreeing");
+  assert.equal(result.code, 0, c.codeMessage);
   const record = recordOf(result);
   assert.equal(record.guardVerdict, "READY");
-  assert.equal(record.realOutcome, "REFUSED");
-  assert.equal(record.agreement, "DISAGREED");
-});
-
-test("THE AGREEMENT CASE, stated explicitly — not merely the absence of a disagreement", () => {
-  const result = reconcile({
-    prNumber: 100,
-    recordedVerdict: { code: 0, reasonKinds: [], at: BEFORE_RESOLUTION },
-    realOutcome: "ACCEPTED",
-    resolvedAt: RESOLVED_AT,
-  });
-  assert.equal(result.code, 0);
-  const record = recordOf(result);
-  assert.equal(record.agreement, "AGREED");
-  assert.equal(record.guardVerdict, "READY");
-  assert.equal(record.realOutcome, "ACCEPTED");
+  assert.equal(record.realOutcome, c.realOutcome);
+  assert.equal(record.agreement, c.agreement);
 });
 
 test("a REFUSED verdict followed by a real refusal is ALSO an agreement", () => {

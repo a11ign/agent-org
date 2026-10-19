@@ -32,6 +32,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { testEach } from "../lib/test-each.ts";
 
 // --- (#3233) THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE, AND A11IGN'S VALUES ARE A RECORDED HOST ---
 //
@@ -199,45 +200,37 @@ test("#2620: NO UNIT IS RENAMED -- the tool's units carry the names they had, an
 
 // --- 3. the tool's own entries are classified ---------------------------------------------------------------------------------------
 
-test("#2620: the tool's 35 entries are classified -- the original 8, the trace store's clock pair (a11ign/agent-org#498), the shadow window's two (#2867), the chairman watcher's two (#2901), the listener's one (#2907), the agent-org launcher (#3532) the weekly report's three (a11ign/a11ign#3627) the trace pages' two (a11ign/a11ign#3515) the trace pages' server (a11ign/agent-org#1159) the /tmp janitor's three (a11ign/a11ign#3849) the OTel receiver's one (a11ign/a11ign#4071) the kernel reboot's two (a11ign/a11ign#4053) the daily confidence reading's two (a11ign/a11ign#4885) the GitHub event receiver's one (agent-org#980) and the `claude` seat wrapper (a11ign#4823) -- and the host-data entry is host.json's, not a file", () => {
+/** The entries the tool's directory holds beyond the original eight: what files each one, and how many there are. */
+const CLASSIFIED_BEYOND_THE_EIGHT: { name: string; matches: (name: string) => boolean; count: number; message: string }[] = [
+  { name: "shadow-window pair", matches: (name) => name.startsWith("shadow-window."), count: 2, message: "POSITIVE CONTROL: #2867's pair is two of them, so the 8 below is the original eight and the pair" },
+  { name: "chairman-watch pair", matches: (name) => name.startsWith("chairman-watch."), count: 2, message: "POSITIVE CONTROL: #2901's optional pair is two more, so the 8 below is still the original eight" },
+  { name: "chairman listener", matches: (name) => name === "chairman-listen.service.in", count: 1, message: "POSITIVE CONTROL: #2907's listener service is one more, with no timer, so the 8 below is still the original eight" },
+  { name: "agent-org launcher", matches: (name) => name === "agent-org", count: 1, message: "POSITIVE CONTROL: #3532's launcher is one more, copied to binDir, so the 8 below is still the original eight" },
+  { name: "trace-weekly trio", matches: (name) => name.startsWith("trace-weekly"), count: 3, message: "POSITIVE CONTROL: a11ign/a11ign#3627's pair and its script are three more, so the 8 below is still the original eight" },
+  { name: "manager-spend trio", matches: (name) => name.startsWith("manager-spend-post"), count: 3, message: "POSITIVE CONTROL: agent-org#912's pair and its script are three more, so the 8 below is still the original eight" },
+  { name: "trace-ingest pair", matches: (name) => name.startsWith("trace-ingest"), count: 2, message: "POSITIVE CONTROL: a11ign/agent-org#498's pair is two more, so the 8 below is still the original eight" },
+  { name: "trace-publish pair", matches: (name) => name.startsWith("trace-publish."), count: 2, message: "POSITIVE CONTROL: a11ign/a11ign#3515's pair is two more, so the 8 below is still the original eight" },
+  { name: "trace-publish server", matches: (name) => name === "trace-publish-serve.service.in", count: 1, message: "POSITIVE CONTROL: a11ign/agent-org#1159's server is one more, with no timer, so the 8 below is still the original eight" },
+  { name: "tmp janitor trio", matches: (name) => name.startsWith("tmp-prune.") || name === "a11ign-tmp.tmpfiles.conf.in", count: 3, message: "POSITIVE CONTROL: a11ign/a11ign#3849's pair and its tmpfiles rule are three more, so the 8 below is still the original eight" },
+  { name: "OTel receiver", matches: (name) => name === "otel-receiver.service.in", count: 1, message: "POSITIVE CONTROL: a11ign/a11ign#4071's service is one more, with no timer, so the 8 below is still the original eight" },
+  { name: "kernel reboot pair", matches: (name) => name.startsWith("kernel-reboot."), count: 2, message: "POSITIVE CONTROL: a11ign/a11ign#4053's pair is two more, so the 8 below is still the original eight" },
+  { name: "confidence-post pair", matches: (name) => name.startsWith("confidence-post."), count: 2, message: "POSITIVE CONTROL: a11ign/a11ign#4885's pair is two more, so the 8 below is still the original eight" },
+  { name: "crash-recover service", matches: (name) => name === "crash-recover.service.in", count: 1, message: "POSITIVE CONTROL: a11ign#5127's service is one more, with no timer, so the 8 below is still the original eight" },
+  { name: "event receiver", matches: (name) => name === "event-receiver.service.in", count: 1, message: "POSITIVE CONTROL: agent-org#980's service is one more, with no timer, so the 8 below is still the original eight" },
+  { name: "event tunnel", matches: (name) => name === "event-tunnel.service.in", count: 1, message: "POSITIVE CONTROL: a11ign/a11ign#5197's service is one more, with no timer, so the 8 below is still the original eight" },
+  { name: "claude seat wrapper", matches: (name) => name === "claude", count: 1, message: "POSITIVE CONTROL: a11ign#4823's wrapper is one more, copied to the first PATH directory and not binDir, so the 8 below is still the original eight" },
+];
+
+testEach("#2620: the tool's 35 entries are classified -- the original 8, the trace store's clock pair (a11ign/agent-org#498), the shadow window's two (#2867), the chairman watcher's two (#2901), the listener's one (#2907), the agent-org launcher (#3532) the weekly report's three (a11ign/a11ign#3627) the trace pages' two (a11ign/a11ign#3515) the trace pages' server (a11ign/agent-org#1159) the /tmp janitor's three (a11ign/a11ign#3849) the OTel receiver's one (a11ign/a11ign#4071) the kernel reboot's two (a11ign/a11ign#4053) the daily confidence reading's two (a11ign/a11ign#4885) the GitHub event receiver's one (agent-org#980) and the `claude` seat wrapper (a11ign#4823) -- and the host-data entry is host.json's, not a file", CLASSIFIED_BEYOND_THE_EIGHT, (c) => {
+  const inTool = readdirSync(SHIPPED_DIR).sort();
+  assert.equal(inTool.filter(c.matches).length, c.count, c.message);
+});
+
+test("#2620: the tool's directory holds the original eight beside those classified above, and the host-data entry is host.json's, not a file", () => {
   // (#3233) The row also counted eight entries in the PROJECT's `.agent-org/units/` and asserted them equal to a11ign's `units.own`: that is a11ign's tree, and moved there.
   const inTool = readdirSync(SHIPPED_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
-  const shadowPair = inTool.filter((name) => name.startsWith("shadow-window."));
-  assert.equal(shadowPair.length, 2, "POSITIVE CONTROL: #2867's pair is two of them, so the 8 below is the original eight and the pair");
-  const chairmanPair = inTool.filter((name) => name.startsWith("chairman-watch."));
-  assert.equal(chairmanPair.length, 2, "POSITIVE CONTROL: #2901's optional pair is two more, so the 8 below is still the original eight");
-  const chairmanListener = inTool.filter((name) => name === "chairman-listen.service.in");
-  assert.equal(chairmanListener.length, 1, "POSITIVE CONTROL: #2907's listener service is one more, with no timer, so the 8 below is still the original eight");
-  const agentOrgLauncher = inTool.filter((name) => name === "agent-org");
-  assert.equal(agentOrgLauncher.length, 1, "POSITIVE CONTROL: #3532's launcher is one more, copied to binDir, so the 8 below is still the original eight");
-  const traceWeekly = inTool.filter((name) => name.startsWith("trace-weekly"));
-  assert.equal(traceWeekly.length, 3, "POSITIVE CONTROL: a11ign/a11ign#3627's pair and its script are three more, so the 8 below is still the original eight");
-  const managerSpend = inTool.filter((name) => name.startsWith("manager-spend-post"));
-  assert.equal(managerSpend.length, 3, "POSITIVE CONTROL: agent-org#912's pair and its script are three more, so the 8 below is still the original eight");
-  const traceIngest = inTool.filter((name) => name.startsWith("trace-ingest"));
-  assert.equal(traceIngest.length, 2, "POSITIVE CONTROL: a11ign/agent-org#498's pair is two more, so the 8 below is still the original eight");
-  const tracePublish = inTool.filter((name) => name.startsWith("trace-publish."));
-  assert.equal(tracePublish.length, 2, "POSITIVE CONTROL: a11ign/a11ign#3515's pair is two more, so the 8 below is still the original eight");
-  const tracePublishServe = inTool.filter((name) => name === "trace-publish-serve.service.in");
-  assert.equal(tracePublishServe.length, 1, "POSITIVE CONTROL: a11ign/agent-org#1159's server is one more, with no timer, so the 8 below is still the original eight");
-  const tmpJanitor = inTool.filter((name) => name.startsWith("tmp-prune.") || name === "a11ign-tmp.tmpfiles.conf.in");
-  assert.equal(tmpJanitor.length, 3, "POSITIVE CONTROL: a11ign/a11ign#3849's pair and its tmpfiles rule are three more, so the 8 below is still the original eight");
-  const otelReceiver = inTool.filter((name) => name === "otel-receiver.service.in");
-  assert.equal(otelReceiver.length, 1, "POSITIVE CONTROL: a11ign/a11ign#4071's service is one more, with no timer, so the 8 below is still the original eight");
-  const kernelReboot = inTool.filter((name) => name.startsWith("kernel-reboot."));
-  assert.equal(kernelReboot.length, 2, "POSITIVE CONTROL: a11ign/a11ign#4053's pair is two more, so the 8 below is still the original eight");
-  const confidencePost = inTool.filter((name) => name.startsWith("confidence-post."));
-  assert.equal(confidencePost.length, 2, "POSITIVE CONTROL: a11ign/a11ign#4885's pair is two more, so the 8 below is still the original eight");
-  const crashRecover = inTool.filter((name) => name === "crash-recover.service.in");
-  assert.equal(crashRecover.length, 1, "POSITIVE CONTROL: a11ign#5127's service is one more, with no timer, so the 8 below is still the original eight");
-  const eventReceiver = inTool.filter((name) => name === "event-receiver.service.in");
-  assert.equal(eventReceiver.length, 1, "POSITIVE CONTROL: agent-org#980's service is one more, with no timer, so the 8 below is still the original eight");
-  const eventTunnel = inTool.filter((name) => name === "event-tunnel.service.in");
-  assert.equal(eventTunnel.length, 1, "POSITIVE CONTROL: a11ign/a11ign#5197's service is one more, with no timer, so the 8 below is still the original eight");
-  const seatWrapper = inTool.filter((name) => name === "claude");
-  assert.equal(seatWrapper.length, 1, "POSITIVE CONTROL: a11ign#4823's wrapper is one more, copied to the first PATH directory and not binDir, so the 8 below is still the original eight");
-  assert.equal(inTool.length - shadowPair.length - chairmanPair.length - chairmanListener.length - agentOrgLauncher.length - traceWeekly.length - managerSpend.length - traceIngest.length - tracePublish.length - tracePublishServe.length - tmpJanitor.length - otelReceiver.length - kernelReboot.length - confidencePost.length - crashRecover.length - eventReceiver.length - eventTunnel.length - seatWrapper.length, 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
+  assert.equal(inTool.length - CLASSIFIED_BEYOND_THE_EIGHT.reduce((total, c) => total + inTool.filter(c.matches).length, 0), 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
   for (const name of hostData) assert.ok(!existsSync(join(SHIPPED_DIR, name)), `${name} is host.json's now, not a file`);

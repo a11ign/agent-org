@@ -88,6 +88,14 @@ function age(path: string, hours: number): void {
   walk(path, 2);
 }
 
+/** A root holding one dead session's scratchpad, aged past the prune threshold. */
+function rootWithDeadScratchpad(): { root: string, dead: string } {
+  const root = makeRoot();
+  const dead = scratchpad(root, DEAD_SESSION);
+  age(dead, 100);
+  return { root, dead };
+}
+
 function childrenOf(dir: string): string[] {
   try { return readdirSync(dir, { withFileTypes: true }).map((entry) => entry.name); } catch { return []; }
 }
@@ -377,9 +385,7 @@ test("pruneTmp's dry run removes NOTHING and its --apply removes only what it cl
 });
 
 test("a removal that fails is reported as still-there, never counted as removed", () => {
-  const root = makeRoot();
-  const dead = scratchpad(root, DEAD_SESSION);
-  age(dead, 100);
+  const { root, dead } = rootWithDeadScratchpad();
   const report = pruneTmp(root, {
     dryRun: false, procRoot: "/proc", env: {}, run: () => "[]",
     remove: () => { throw new Error("EBUSY: resource busy or locked"); },
@@ -543,9 +549,7 @@ test("#2782 DONE-WHEN 1: a removal is logged BEFORE the delete, names the worktr
 });
 
 test("#2782: a log that cannot be written refuses the removal", () => {
-  const root = makeRoot();
-  const dead = scratchpad(root, DEAD_SESSION);
-  age(dead, 100);
+  const { root, dead } = rootWithDeadScratchpad();
   const refused = pruneTmp(root, { dryRun: false, procRoot: "/proc", env: {}, run: () => "[]",
     record: () => { throw new Error("ENOSPC"); } });
   assert.ok(existsSync(dead), "nothing was deleted");

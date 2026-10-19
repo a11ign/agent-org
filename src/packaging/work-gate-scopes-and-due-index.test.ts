@@ -71,6 +71,13 @@ const scopesFile = (root: string, scopes: Parameters<typeof writeTickScopes>[0][
   return path;
 };
 
+const scopedRead = (scope: Parameters<typeof writeTickScopes>[0]["scopes"][number]) => {
+  const root = dir();
+  const memoryPath = seeded(root, [pr(7)]);
+  const tickScopesPath = scopesFile(root, [scope]);
+  return { ...recorder({ list: [pr(7)], views: {} }), memoryPath, tickScopesPath };
+};
+
 test("POSITIVE CONTROL: a webhook tick naming one remembered pull request views that one and lists nothing", () => {
   const root = dir();
   const memoryPath = seeded(root, [pr(7), pr(5)]);
@@ -156,10 +163,7 @@ test("a repository with no open pull requests says nothing about reading whole: 
 });
 
 test("a commit scope names no remembered pull request, so the list is read whole", () => {
-  const root = dir();
-  const memoryPath = seeded(root, [pr(7)]);
-  const tickScopesPath = scopesFile(root, [{ repo: REPO, kind: "sha", sha: "deadbeef" }]);
-  const { run, calls } = recorder({ list: [pr(7)], views: {} });
+  const { run, calls, memoryPath, tickScopesPath } = scopedRead({ repo: REPO, kind: "sha", sha: "deadbeef" });
   readPrs(run, null, { home: true, tickScopesPath, memoryPath, nowMs: NOW });
   // Mutation: a sha scope is treated as nothing to read -> no `pr list`, and the test is red.
   assert.deepEqual(calls.map((args) => args.slice(0, 2)), [["pr", "list"]]);
@@ -191,10 +195,7 @@ test("NEGATIVE CONTROL: poll mode (no scopes file) reads whole exactly as before
 });
 
 test("NEGATIVE CONTROL: another repository's read stays whole even when a scopes file names pull requests", () => {
-  const root = dir();
-  const memoryPath = seeded(root, [pr(7)]);
-  const tickScopesPath = scopesFile(root, [{ repo: REPO, kind: "pr", number: 7 }]);
-  const { run, calls } = recorder({ list: [pr(7)], views: {} });
+  const { run, calls, memoryPath, tickScopesPath } = scopedRead({ repo: REPO, kind: "pr", number: 7 });
   readPrs(run, null, { home: false, tickScopesPath, memoryPath, nowMs: NOW });
   // Mutation: the home check is dropped -> the memory answers with no call and the test is red.
   assert.deepEqual(calls.map((args) => args.slice(0, 2)), [["pr", "list"]]);

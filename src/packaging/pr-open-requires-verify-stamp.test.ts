@@ -140,14 +140,12 @@ test("#3215 (2): a stamp for an EARLIER head is refused as stale with both SHAs;
 test("#3215 (3): a stamp with a FAILED or a MISSING step is refused naming the step", () => {
   const project = fixture();
   const head = project.commit("one");
-  project.stamp(head, { steps: { ts: "fail" } });
-  const failed = open(project, { draft: false });
+  const failed = openAfterStamp(project, head, { steps: { ts: "fail" } });
   assert.equal(failed.code, EXIT_NOTHING_SENT);
   assert.match(failed.err, /step ts: fail/);
   assert.doesNotMatch(failed.err, /step agentOrg/, "only the red step is named");
 
-  project.stamp(head, { steps: { agentOrg: "" } });
-  const missing = open(project, { draft: false });
+  const missing = openAfterStamp(project, head, { steps: { agentOrg: "" } });
   assert.equal(missing.code, EXIT_NOTHING_SENT);
   assert.match(missing.err, /step agentOrg: did not run/);
 });
@@ -177,6 +175,12 @@ test("#3215 (6): a project that declares no verify command is NOT refused, and s
   declared.commit("one");
   assert.equal(open(declared, { draft: false }).code, EXIT_NOTHING_SENT, "THE CONTROL: the same open in a project that declares one is refused");
 });
+
+/** Stamps `head` (with `over`), then runs the READY `pr-open create` that the stamp is meant to let through or refuse. */
+function openAfterStamp(project: ReturnType<typeof fixture>, head: string, over?: { body?: string, steps?: Record<string, string> }) {
+  project.stamp(head, over);
+  return open(project, { draft: false });
+}
 
 /** A convinced-verdict draft at `head` from a reviewer who is not its author, owned by `worker-3215`. */
 const convincedDraft = (head: string, body = BODY) => ({

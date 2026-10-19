@@ -28,6 +28,7 @@ import { CAUSES, JUDGMENT_CAUSES, START_CAUSES, PROFILES, TOOL_CAUSE_DECLARATION
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
 import { parseRolesDir, homeRolesDir, roleBriefPath } from "../project-roles.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
+import { testEach } from "../lib/test-each.ts";
 
 // A mutation reaches into a shape the fixture's own type would otherwise pretend is optional, the same
 // tradeoff `project-config.test.ts` accepts for the identical reason.
@@ -45,13 +46,45 @@ test("declareCause builds a frozen {cause, group, profile}", () => {
   assert.ok(Object.isFrozen(decl) && Object.isFrozen(decl.profile));
 });
 
-test("a cause declared with a missing or unknown GROUP is REFUSED naming it", () => {
-  const validProfile = { kind: "claude" as const, model: "sonnet", effort: "high", why: "because" };
-  for (const badGroup of [undefined, null, "", "action-ish"] as Loose[]) {
-    assert.throws(() => declareCause("x", badGroup, validProfile), (error: unknown) => {
-      assert.ok(error instanceof CauseDeclarationRefusal, `expected a CauseDeclarationRefusal, got ${String(error)}`);
-      assert.equal((error as any).subject, "x");
-      assert.match(error.message, /group/);
+const validProfile = { kind: "claude" as const, model: "sonnet", effort: "high", why: "because" };
+
+/** A project that declares a roles directory it does not have, and the one brief lookup that must refuse it. */
+function roleBriefInMissingDir(): unknown {
+  const root = mkdtempSync(join(tmpdir(), "project-roles-missing-dir-"));
+  try {
+    mkdirSync(join(root, ".agent-org"), { recursive: true });
+    writeFileSync(join(root, ".agent-org/project.json"), JSON.stringify({ roles: { dir: ".agent-org/roles" } }));
+    // No `.agent-org/roles/` directory is created: the declaration names a directory that is not there.
+    return roleBriefPath("engineer.md", root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+/** Each attempt must be REFUSED: by the named class, naming the named field and value, with a message that matches. */
+testEach("a refusal is REFUSED naming what it refuses", [
+  {
+    name: "a cause declared with a missing or unknown GROUP is REFUSED naming it",
+    attempts: ([undefined, null, "", "action-ish"] as Loose[]).map((badGroup) => () => declareCause("x", badGroup, validProfile)),
+    refusal: CauseDeclarationRefusal,
+    key: "subject",
+    value: "x",
+    pattern: /group/,
+  },
+  {
+    name: "a MISSING declared directory is REFUSED, naming it -- never silently answered with a11ign's",
+    attempts: [roleBriefInMissingDir],
+    refusal: ProjectDeclarationRefusal,
+    key: "field",
+    value: "roles.dir",
+    pattern: /\.agent-org\/roles/,
+  },
+], (c) => {
+  for (const attempt of c.attempts) {
+    assert.throws(attempt, (error: unknown) => {
+      assert.ok(error instanceof c.refusal, `expected a ${c.refusal.name}, got ${String(error)}`);
+      assert.equal((error as any)[c.key], c.value);
+      assert.match(error.message, c.pattern);
       return true;
     });
   }
@@ -196,22 +229,6 @@ test("roleBriefPath resolves a real brief under the declared directory, and the 
   assert.ok(existsSync(absolute), `${absolute} must exist`);
 });
 
-test("a MISSING declared directory is REFUSED, naming it -- never silently answered with a11ign's", () => {
-  const root = mkdtempSync(join(tmpdir(), "project-roles-missing-dir-"));
-  try {
-    mkdirSync(join(root, ".agent-org"), { recursive: true });
-    writeFileSync(join(root, ".agent-org/project.json"), JSON.stringify({ roles: { dir: ".agent-org/roles" } }));
-    // No `.agent-org/roles/` directory is created: the declaration names a directory that is not there.
-    assert.throws(() => roleBriefPath("engineer.md", root), (error: unknown) => {
-      assert.ok(error instanceof ProjectDeclarationRefusal, `expected a ProjectDeclarationRefusal, got ${String(error)}`);
-      assert.equal((error as any).field, "roles.dir");
-      assert.match(error.message, /\.agent-org\/roles/);
-      return true;
-    });
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 // --- 2b. the tool's own tree ships no role brief -----------------------------------------------------------
 

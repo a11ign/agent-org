@@ -79,6 +79,22 @@ function branchAdding(box: GitSandbox, branch: string, name: string, reason: str
   box.commit(`add ${name}`);
 }
 
+/** Seeds `main`, then merges a branch adding the entry `q` under `reason` (null declares nothing). */
+function mergeAddingQ(box: GitSandbox, reason: string | null): void {
+  seed(box);
+  branchAdding(box, "adds-q", "q", reason);
+  box.run(["checkout", "-q", "main"]);
+  merge(box, "adds-q");
+}
+
+/** Branches `next` off the current commit and commits a note with `message`; the note adds nothing to the population. */
+function commitNoteOnNext(box: GitSandbox, message: string): void {
+  box.run(["checkout", "-q", "-b", "next"]);
+  write(box, "note", "x");
+  box.run(["add", "-A"]);
+  box.commit(message);
+}
+
 function merge(box: GitSandbox, branch: string): void {
   box.run(["-c", "user.name=Git Sandbox Test", "-c", "user.email=git-sandbox-test@example.invalid", "merge", "-q", "--no-ff", "-m", `merge ${branch}`, branch]);
 }
@@ -101,10 +117,7 @@ function twoBranches(box: GitSandbox): void {
 test("POSITIVE CONTROL: the seed is green under both forms, and the ratchet read a BASE", () => {
   withGitSandbox((box) => {
     seed(box);
-    box.run(["checkout", "-q", "-b", "next"]);
-    write(box, "note", "x");
-    box.run(["add", "-A"]);
-    box.commit("a change that adds nothing to the population");
+    commitNoteOnNext(box, "a change that adds nothing to the population");
     const verdict = ratchetAt(box.dir);
     assert.deepEqual(verdict.undeclared, []);
     assert.match(verdict.judged, /^as a ratchet against /, "the base was not read, so the green below would be the strict form");
@@ -139,20 +152,14 @@ for (const order of [["adds-c", "adds-p"], ["adds-p", "adds-c"]]) {
 
 test("POSITIVE CONTROL: ONE change adding an UNDECLARED entry is red under the ratchet, naming it", () => {
   withGitSandbox((box) => {
-    seed(box);
-    branchAdding(box, "adds-q", "q", null);
-    box.run(["checkout", "-q", "main"]);
-    merge(box, "adds-q");
+    mergeAddingQ(box, null);
     assert.deepEqual(ratchetAt(box.dir).undeclared, ["q"]);
   });
 });
 
 test("POSITIVE CONTROL: a declaration with no reason does not declare", () => {
   withGitSandbox((box) => {
-    seed(box);
-    branchAdding(box, "adds-q", "q", "  ");
-    box.run(["checkout", "-q", "main"]);
-    merge(box, "adds-q");
+    mergeAddingQ(box, "  ");
     assert.deepEqual(ratchetAt(box.dir).undeclared, ["q"]);
   });
 });
@@ -177,10 +184,7 @@ function legacyEntryHeldAtBase(box: GitSandbox): void {
   write(box, "pop/legacy-entry", "");
   box.run(["add", "-A"]);
   box.commit("an entry that predates the ratchet, undeclared");
-  box.run(["checkout", "-q", "-b", "next"]);
-  write(box, "note", "x");
-  box.run(["add", "-A"]);
-  box.commit("a later change");
+  commitNoteOnNext(box, "a later change");
   box.run(["update-ref", "refs/remotes/origin/main", "main"]);
 }
 

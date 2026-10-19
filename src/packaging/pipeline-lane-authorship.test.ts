@@ -36,6 +36,7 @@ import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshi
 import { GITHUB_ROLES } from "../app-token.ts";
 import { runArmPr, EXIT, deliberateMarker } from "../arm-pr.ts";
 import { main, EXIT_NOTHING_SENT, loginThrough } from "../pr-open.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const LEADS = "a11ign-ai-leads";
 const WORKERS = "a11ign-ai-workers";
@@ -281,23 +282,34 @@ test("#811 (1): an installation token's identity opening a diff into .github/wor
   assert.doesNotMatch(out.said, /Ruling item 7|could not say who|review-only lane/);
 });
 
-test("#811 (2) POSITIVE CONTROL: the leads login, read through the SAME fallback, is still refused", () => {
-  const { gh } = fakeGh({ user: refuses403, viewer: LEADS });
+testEach("#811 (3): an identity NEITHER read answers is refused -- the 403 is named, and the refusal is #3254's", [
+  {
+    name: "POSITIVE CONTROL: the leads login, read through the SAME fallback, is still refused",
+    viewer: LEADS,
+    says: [{ pattern: /#1756 Ruling item 7/ }],
+  },
+  {
+    name: "the viewer throws",
+    viewer: () => { throw new Error("HTTP 502"); },
+    says: [
+      { pattern: /could not say who is opening it/ },
+      { pattern: /Resource not accessible by integration \(HTTP 403\)/, message: "the first failure's own words, not just `Command failed`" },
+    ],
+  },
+  {
+    name: "the viewer answers nothing",
+    viewer: () => "\n",
+    says: [
+      { pattern: /could not say who is opening it/ },
+      { pattern: /Resource not accessible by integration \(HTTP 403\)/, message: "the first failure's own words, not just `Command failed`" },
+    ],
+  },
+], (c: { viewer: string | (() => string); says: { pattern: RegExp; message?: string }[] }) => {
+  const { gh } = fakeGh({ user: refuses403, viewer: c.viewer });
   const out = drivePrOpen([WORKFLOW], () => loginThrough(gh));
   assert.equal(out.code, EXIT_NOTHING_SENT);
   assert.deepEqual(out.sent, []);
-  assert.match(out.said, /#1756 Ruling item 7/);
-});
-
-test("#811 (3): an identity NEITHER read answers is refused -- the 403 is named, and the refusal is #3254's", () => {
-  for (const viewer of [() => { throw new Error("HTTP 502"); }, () => "\n"]) {
-    const { gh } = fakeGh({ user: refuses403, viewer });
-    const out = drivePrOpen([WORKFLOW], () => loginThrough(gh));
-    assert.equal(out.code, EXIT_NOTHING_SENT);
-    assert.deepEqual(out.sent, []);
-    assert.match(out.said, /could not say who is opening it/);
-    assert.match(out.said, /Resource not accessible by integration \(HTTP 403\)/, "the first failure's own words, not just `Command failed`");
-  }
+  for (const s of c.says) assert.match(out.said, s.pattern, s.message);
 });
 
 test("#811 (4): a user token pays ONE call -- `api user` answering means the viewer is never asked, and an empty answer is no login", () => {

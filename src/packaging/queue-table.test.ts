@@ -173,9 +173,7 @@ test("#600 red-but-current is not absorbed either -- it is just a red PR", () =>
 test("#600 section 3 names an absorbed PR as absorbed, with the reds that hold it there", () => {
   const rows = [prRow(pr({ number: 564, redChecks: ["docs", "gate"] }), 41, NOW)];
   const [line] = renderStalled(rows);
-  assert.match(line, /#564/);
-  assert.match(line, /ABSORBED/);
-  assert.match(line, /behind=41/);
+  for (const pattern of [/#564/, /ABSORBED/, /behind=41/]) assert.match(line, pattern);
   assert.match(line, /docs gate/, "naming WHICH reds, since those are what the owner has to clear");
 });
 

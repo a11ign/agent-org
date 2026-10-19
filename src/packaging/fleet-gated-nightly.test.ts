@@ -15,6 +15,7 @@
  * name, injected, never spawned for real.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 
 import { fleetGatedRows, examinedComment, wakeText, performFiring as settlingPerformFiring, STANDING_ROW, SESSION }
@@ -35,13 +36,15 @@ test("MUTATION target: an empty fleet-gated set reads `examined 0`, never `all r
   assert.match(comment, /Nobody woken/);
 });
 
-test("a non-empty set names every row number, not just the count", () => {
+testEach("a non-empty set names every row number, not just the count", [
+  { name: "the count", pattern: /examined 3 row/ },
+  { name: "row #1768", pattern: /#1768/ },
+  { name: "row #71", pattern: /#71/ },
+  { name: "row #44", pattern: /#44/ },
+  { name: "the fleet-gated command", pattern: /`fleet-gated`/ },
+], (c) => {
   const comment = examinedComment([{ number: 1768 }, { number: 71 }, { number: 44 }], FIRED_AT);
-  assert.match(comment, /examined 3 row/);
-  assert.match(comment, /#1768/);
-  assert.match(comment, /#71/);
-  assert.match(comment, /#44/);
-  assert.match(comment, /`fleet-gated`/);
+  assert.match(comment, c.pattern);
 });
 
 test("the comment states the fired-at timestamp it was measured at", () => {
@@ -49,12 +52,14 @@ test("the comment states the fired-at timestamp it was measured at", () => {
   assert.match(comment, new RegExp(FIRED_AT.replace(/[.:]/g, "\\$&")));
 });
 
-test("wakeText hands the woken session the row list, so it does not wake to go and look", () => {
+testEach("wakeText hands the woken session the row list, so it does not wake to go and look", [
+  { name: "row #1768", pattern: /#1768/ },
+  { name: "row #44", pattern: /#44/ },
+  { name: "the by-row batch wording", pattern: /by-row batch/ },
+  { name: "row #914", pattern: /#914/ },
+], (c) => {
   const text = wakeText([{ number: 1768 }, { number: 44 }]);
-  assert.match(text, /#1768/);
-  assert.match(text, /#44/);
-  assert.match(text, /by-row batch/);
-  assert.match(text, /#914/);
+  assert.match(text, c.pattern);
 });
 
 test("wakeText on an empty list still reads as a sentence, not a template artefact", () => {
@@ -120,7 +125,8 @@ function herdrStub(status: string, calls: string[][]) {
   };
 }
 
-test("performFiring posts the #914 comment AND wakes the session when rows are open", () => {
+/** One firing with the open row #1768 on a fake `gh`, and the session in `status`; returns what each fake recorded. */
+function firingWithOpenRow(status: string) {
   const ghCalls: string[][] = [];
   const herdrCalls: string[][] = [];
   const ghRun = (args: string[]) => {
@@ -128,7 +134,12 @@ test("performFiring posts the #914 comment AND wakes the session when rows are o
     if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 1768, comments: [] }]);
     return "";
   };
-  const result = performFiring({ ghRun, herdrRun: herdrStub("idle", herdrCalls), now: () => FIRED_AT });
+  const result = performFiring({ ghRun, herdrRun: herdrStub(status, herdrCalls), now: () => FIRED_AT });
+  return { ghCalls, herdrCalls, result };
+}
+
+test("performFiring posts the #914 comment AND wakes the session when rows are open", () => {
+  const { ghCalls, herdrCalls, result } = firingWithOpenRow("idle");
   if (result.kind !== "woke") throw new Error(`expected "woke", got "${result.kind}"`);
 
   assert.match(result.comment, /examined 1 row/);
@@ -193,15 +204,8 @@ test("performFiring on a refused #914 comment post also wakes nobody", () => {
 
 test("performFiring reports not-woken, without retracting the comment already posted, "
   + "when the session cannot be prompted", () => {
-  const ghCalls: string[][] = [];
-  const herdrCalls: string[][] = [];
-  const ghRun = (args: string[]) => {
-    ghCalls.push(args);
-    if (args[0] === "issue" && args[1] === "list") return JSON.stringify([{ number: 1768, comments: [] }]);
-    return "";
-  };
   // "working": promptable refuses before clearThenPrompt would ever run.
-  const result = performFiring({ ghRun, herdrRun: herdrStub("working", herdrCalls), now: () => FIRED_AT });
+  const { ghCalls, herdrCalls, result } = firingWithOpenRow("working");
   if (result.kind !== "not-woken") throw new Error(`expected "not-woken", got "${result.kind}"`);
 
   assert.match(result.why, /is working/);

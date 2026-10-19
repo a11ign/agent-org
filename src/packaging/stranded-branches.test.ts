@@ -31,6 +31,15 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
  * PR for -- the caller supplies that via the mocked `run`, not from this fixture, since PR state lives on
  * GitHub, not in git).
  */
+/** Cuts `branch` at `baseSha`, commits `file` on it and pushes it to origin. */
+function pushedWork(root: string, baseSha: string, spec: { branch: string, file: string, text: string, message: string }): void {
+  git(root, "checkout", "-q", "-b", spec.branch, baseSha);
+  writeFileSync(join(root, spec.file), spec.text);
+  git(root, "add", spec.file);
+  git(root, "commit", "-q", "-m", spec.message);
+  git(root, "push", "-q", "origin", spec.branch);
+}
+
 function buildFixtureRepo() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-stranded-fixture-")));
   git(root, "init", "--quiet", "-b", "main");
@@ -49,22 +58,14 @@ function buildFixtureRepo() {
   git(root, "push", "-q", "origin", "main");
 
   const strandedBranch = "agent/no-pr-stranded";
-  git(root, "checkout", "-q", "-b", strandedBranch, baseSha);
-  writeFileSync(join(root, "stranded.txt"), "genuinely stranded work\n");
-  git(root, "add", "stranded.txt");
-  git(root, "commit", "-q", "-m", "work nobody proposed");
-  git(root, "push", "-q", "origin", strandedBranch);
+  pushedWork(root, baseSha, { branch: strandedBranch, file: "stranded.txt", text: "genuinely stranded work\n", message: "work nobody proposed" });
 
   const emptyBranch = "agent/no-pr-empty";
   git(root, "checkout", "-q", "-b", emptyBranch, baseSha);
   git(root, "push", "-q", "origin", emptyBranch); // pushed, no PR, but tip === main's tip
 
   const squashBranch = "agent/squash-merged";
-  git(root, "checkout", "-q", "-b", squashBranch, baseSha);
-  writeFileSync(join(root, "squashed.txt"), "landed via a real PR, squash-merged\n");
-  git(root, "add", "squashed.txt");
-  git(root, "commit", "-q", "-m", "will get a PR in the mocked run()");
-  git(root, "push", "-q", "origin", squashBranch);
+  pushedWork(root, baseSha, { branch: squashBranch, file: "squashed.txt", text: "landed via a real PR, squash-merged\n", message: "will get a PR in the mocked run()" });
 
   git(root, "checkout", "-q", "main");
   git(root, "fetch", "-q", "origin");

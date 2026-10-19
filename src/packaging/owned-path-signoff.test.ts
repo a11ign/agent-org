@@ -111,25 +111,23 @@ test("CONTRADICTING states for the same fact across two lines is a real finding,
 const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
   : "the fixture project has no packages/ tree, so the recorded pull request bodies #584 and #613 and the owner's owned-path list do not exist there: these assert a11ign's own records";
 
-test("real body: #584 (guest-paths-are-measured) states all four owned-path-facts on packages/nvda-worker/", { skip: SKIP_FIXTURE }, () => {
-  const body = readFileSync(join(HOME_CHECKOUT, "packages/lab/src/packaging/fixtures/pr-584-body.md"), "utf8");
-  const real = loadFacts();
-  assert.ok(real);
-  const v = signoffVerdict({
-    changed: ["packages/nvda-worker/src/browsers.mjs"], body, facts: real,
-  });
-  assert.equal(v.code, 0, `expected SIGNED against #584's real body, got: ${v.reasons.join(" | ")}`);
-});
+const REAL_BODY_CASES = [
+  { label: "#584", slug: "guest-paths-are-measured", body: "packages/lab/src/packaging/fixtures/pr-584-body.md", changed: "packages/nvda-worker/src/browsers.mjs" },
+  { label: "#613", slug: "profile-identity-is-a-key", body: "packages/lab/src/packaging/fixtures/pr-613-body.md", changed: "packages/nvda-worker/src/browser-profile.mjs" },
+];
 
-test("real body: #613 (profile-identity-is-a-key) states all four owned-path-facts on packages/nvda-worker/", { skip: SKIP_FIXTURE }, () => {
-  const body = readFileSync(join(HOME_CHECKOUT, "packages/lab/src/packaging/fixtures/pr-613-body.md"), "utf8");
-  const real = loadFacts();
-  assert.ok(real);
-  const v = signoffVerdict({
-    changed: ["packages/nvda-worker/src/browser-profile.mjs"], body, facts: real,
+// A loop, not testEach: testEach takes no options, and these tests must keep their `skip` on a fixture project.
+for (const c of REAL_BODY_CASES) {
+  test(`real body: ${c.label} (${c.slug}) states all four owned-path-facts on packages/nvda-worker/`, { skip: SKIP_FIXTURE }, () => {
+    const body = readFileSync(join(HOME_CHECKOUT, c.body), "utf8");
+    const real = loadFacts();
+    assert.ok(real);
+    const v = signoffVerdict({
+      changed: [c.changed], body, facts: real,
+    });
+    assert.equal(v.code, 0, `expected SIGNED against ${c.label}'s real body, got: ${v.reasons.join(" | ")}`);
   });
-  assert.equal(v.code, 0, `expected SIGNED against #613's real body, got: ${v.reasons.join(" | ")}`);
-});
+}
 
 test("a failed lookup is CANNOT_ASK, never a pass — `[]` and `null` differ", () => {
   for (const broken of [{ changed: null }, { body: null }, { facts: null }]) {

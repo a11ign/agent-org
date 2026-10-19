@@ -14,6 +14,7 @@
  *     `convinced` (at `16f21156`) and it counts here only because that earlier round refused.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -186,18 +187,6 @@ const ROW_2167_WHEN_REFUSED = regionBody([".claude/rules/agent-practices.md", "p
 const PR_2253_AT_A308B8B6 = [".claude/rules/agent-practices.md", "docs/operational-lessons.md",
   "packages/agent-org/src/prompt-session.ts", "packages/lab/src/packaging/prompt-session.test.ts"];
 
-test("#2417 REPLAY, #2253 at a308b8b6 (refused by both reviewers): `docs/operational-lessons.md` is the one path refused", () => {
-  const r = drive(create(prBody("Closes #2167")), { rows: { 2167: ROW_2167_WHEN_REFUSED }, changed: PR_2253_AT_A308B8B6 });
-  assert.equal(r.code, EXIT_NOTHING_SENT);
-  assert.deepEqual(r.sent, []);
-  assert.match(r.err, /1 path\(s\) changed outside #2167's Region/);
-  assert.match(r.err, /^ {2}docs\/operational-lessons\.md$/m);
-  const declared = drive(create(prBody("Closes #2167",
-    `Outside-Region: docs/operational-lessons.md ${EM} the evicted particulars have their mirror there\n`)),
-  { rows: { 2167: ROW_2167_WHEN_REFUSED }, changed: PR_2253_AT_A308B8B6 });
-  assert.equal(declared.code, 0, "the line the author later wrote as a Region amendment clears it");
-});
-
 const ROW_2406 = regionBody(["packages/agent-org/docs/roles/engineer.md", "packages/agent-org/docs/roles/sessions.json",
   "packages/agent-org/src/wake.ts", "packages/lab/src/packaging/wake-engineer-brief.test.ts",
   "packages/lab/src/packaging/wake.test.ts", "packages/nvda-worker/CLAUDE.md", "packages/lab/CLAUDE.md",
@@ -207,15 +196,42 @@ const PR_2408_AT_A0FFB58A = ["packages/agent-org/docs/roles/README.md", "package
   "packages/lab/CLAUDE.md", "packages/lab/src/packaging/wake-engineer-brief.test.ts",
   "packages/lab/src/packaging/wake.test.ts", "packages/nvda-worker/CLAUDE.md"];
 
-test("#2417 REPLAY, #2408 at a0ffb58a (the round that refused): `roles/README.md` is the one path refused; without it, it passes", () => {
-  const r = drive(create(prBody("Closes #2406")), { rows: { 2406: ROW_2406 }, changed: PR_2408_AT_A0FFB58A });
+type ReplayCase = { name: string; closes: string; rows: Record<number, string>; changed: string[]; refused: RegExp; refusedPath: RegExp; clearing: { body: string; changed: string[] }; clearedMessage?: string };
+const replayCases: ReplayCase[] = [
+  {
+    name: "#2253 at a308b8b6: the amendment line clears it",
+    closes: "Closes #2167",
+    rows: { 2167: ROW_2167_WHEN_REFUSED },
+    changed: PR_2253_AT_A308B8B6,
+    refused: /1 path\(s\) changed outside #2167's Region/,
+    refusedPath: /^ {2}docs\/operational-lessons\.md$/m,
+    clearing: {
+      body: prBody("Closes #2167", `Outside-Region: docs/operational-lessons.md ${EM} the evicted particulars have their mirror there\n`),
+      changed: PR_2253_AT_A308B8B6,
+    },
+    clearedMessage: "the line the author later wrote as a Region amendment clears it",
+  },
+  {
+    name: "#2408 at a0ffb58a (the round that refused): `roles/README.md` is the one path refused; without it, it passes",
+    closes: "Closes #2406",
+    rows: { 2406: ROW_2406 },
+    changed: PR_2408_AT_A0FFB58A,
+    refused: /1 path\(s\) changed outside #2406's Region/,
+    refusedPath: /^ {2}packages\/agent-org\/docs\/roles\/README\.md$/m,
+    clearing: {
+      body: prBody("Closes #2406"),
+      changed: PR_2408_AT_A0FFB58A.filter((f) => !f.endsWith("roles/README.md")),
+    },
+  },
+];
+testEach("#2417 REPLAY, #2253 at a308b8b6 (refused by both reviewers): `docs/operational-lessons.md` is the one path refused", replayCases, (c) => {
+  const r = drive(create(prBody(c.closes)), { rows: c.rows, changed: c.changed });
   assert.equal(r.code, EXIT_NOTHING_SENT);
   assert.deepEqual(r.sent, []);
-  assert.match(r.err, /1 path\(s\) changed outside #2406's Region/);
-  assert.match(r.err, /^ {2}packages\/agent-org\/docs\/roles\/README\.md$/m);
-  const fixed = drive(create(prBody("Closes #2406")),
-    { rows: { 2406: ROW_2406 }, changed: PR_2408_AT_A0FFB58A.filter((f) => !f.endsWith("roles/README.md")) });
-  assert.equal(fixed.code, 0, fixed.err);
+  assert.match(r.err, c.refused);
+  assert.match(r.err, c.refusedPath);
+  const cleared = drive(create(c.clearing.body), { rows: c.rows, changed: c.clearing.changed });
+  assert.equal(cleared.code, 0, c.clearedMessage ?? cleared.err);
 });
 
 // --- done-when 5, and the three decisions the row took --------------------------------------------------------

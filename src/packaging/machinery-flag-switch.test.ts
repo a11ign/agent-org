@@ -9,6 +9,7 @@
  *   (3) `off` clears a `reverted` verdict, and `list` says who set each flag and when.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -64,26 +65,33 @@ test("(1) `on` makes the reader read the flag ON, `off` makes it read OFF, and t
   assert.equal(reenqueueOn(dir), false, "the reader sees the flag OFF after `off`");
 });
 
-test("(1) the other registered flags are switched on and read through their own readers' flag name", () => {
+const READ_THROUGH_OWN_FLAG = [
+  { name: "queue.chainWaitWake", flag: CHAIN_WAIT_FLAG },
+  { name: "rows.closedUnderOpenHalf", flag: CLOSED_UNDER_HALF_FLAG },
+  { name: "rows.autoUnpark", flag: AUTO_UNPARK_FLAG, message: "rows.autoUnpark is switched by the command, which the gate's reader then sees" },
+  { name: "queue.queueEntryNoRun", flag: QUEUE_ENTRY_NO_RUN_FLAG, message: "queue.queueEntryNoRun is switched by the command, which the gate's reader then sees (agent-org#1195)" },
+  { name: "holds.recheck", flag: RECHECK_FLAG, message: "holds.recheck is switched by the command, which `recheckFlagOn` then reads (agent-org#1187)" },
+  { name: "prune.holdOpenPr", flag: OPEN_PR_HOLD_FLAG, message: "prune.holdOpenPr is switched by the command, which `openPrHoldOn` then reads (agent-org#1221)" },
+  { name: "messaging.refuseAskingAnnouncements", flag: REFUSE_ASKING_ANNOUNCEMENTS_FLAG, message: "messaging.refuseAskingAnnouncements is switched by the command, which `canaryFlagOn` in watch.ts then reads (agent-org#1222)" },
+  { name: "review.rowReviewSkill", flag: ROW_REVIEW_SKILL_FLAG, message: "review.rowReviewSkill is switched by the command, which `rowReviewSkillFlagOn` then reads (agent-org#1268)" },
+  { name: "checks.sameHeadRefail", flag: SAME_HEAD_REFAIL_FLAG, message: "checks.sameHeadRefail is switched by the command, which `sameHeadRefailFlagOn` then reads (agent-org#1185)" },
+  { name: "chairman.refusedOnce", flag: CHAIRMAN_REFUSAL_FLAG, message: "chairman.refusedOnce is switched by the command, which `offerHierarchyNow` then reads (agent-org#1456)" },
+  { name: "prs.ownerlessAsk", flag: OWNERLESS_ASK_FLAG, message: "prs.ownerlessAsk is switched by the command, which `ownerlessAskFlagOn` then reads (agent-org#1648)" },
+  { name: "queue.reenqueueInfra", flag: REENQUEUE_INFRA_FLAG, message: "queue.reenqueueInfra is switched by the command, which `requeueEjected` then reads (agent-org#1647)" },
+  { name: "gh.refuseFallbackAuthor", flag: REFUSE_AUTHOR_FALLBACK_FLAG, message: "gh.refuseFallbackAuthor is switched by the command, which the wrapper's `author_refusal_on` then reads (agent-org#1666)" },
+  { name: "reviews.verdictDelivery", flag: VERDICT_DELIVERY_FLAG, message: "reviews.verdictDelivery is switched by the command, which `wake` then reads (agent-org#1649)" },
+  { name: "reviews.outsideSessionPr", flag: SESSION_PR_OUTSIDE_FLAG, message: "reviews.outsideSessionPr is switched by the command, which `outsideSessionPrFlagOn` then reads (agent-org#1667)" },
+  { name: "orgHealth.boardTruthPairKey", flag: BOARD_TRUTH_PAIR_FLAG, message: "orgHealth.boardTruthPairKey is switched by the command, which `boardTruthPairOffers` then reads (agent-org#1670)" },
+];
+
+testEach("(1) the other registered flags are switched on and read through their own readers' flag name", READ_THROUGH_OWN_FLAG, (c) => {
   const dir = tmpDir("machinery-flag-switch-");
   for (const name of [REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG, BOARD_TRUTH_PAIR_FLAG]) assert.equal(run(dir, ["on", name, `--session=${SESSION}`]).code, 0);
   const state = JSON.parse(readFileSync(join(dir, CANARY_STATE_FILE), "utf8")) as CanaryState;
-  assert.equal(machineryFlagOn(state, CHAIN_WAIT_FLAG), true);
-  assert.equal(machineryFlagOn(state, CLOSED_UNDER_HALF_FLAG), true);
-  assert.equal(machineryFlagOn(state, AUTO_UNPARK_FLAG), true, "rows.autoUnpark is switched by the command, which the gate's reader then sees");
-  assert.equal(machineryFlagOn(state, QUEUE_ENTRY_NO_RUN_FLAG), true, "queue.queueEntryNoRun is switched by the command, which the gate's reader then sees (agent-org#1195)");
-  assert.equal(machineryFlagOn(state, RECHECK_FLAG), true, "holds.recheck is switched by the command, which `recheckFlagOn` then reads (agent-org#1187)");
-  assert.equal(machineryFlagOn(state, OPEN_PR_HOLD_FLAG), true, "prune.holdOpenPr is switched by the command, which `openPrHoldOn` then reads (agent-org#1221)");
-  assert.equal(machineryFlagOn(state, REFUSE_ASKING_ANNOUNCEMENTS_FLAG), true, "messaging.refuseAskingAnnouncements is switched by the command, which `canaryFlagOn` in watch.ts then reads (agent-org#1222)");
-  assert.equal(machineryFlagOn(state, ROW_REVIEW_SKILL_FLAG), true, "review.rowReviewSkill is switched by the command, which `rowReviewSkillFlagOn` then reads (agent-org#1268)");
-  assert.equal(machineryFlagOn(state, SAME_HEAD_REFAIL_FLAG), true, "checks.sameHeadRefail is switched by the command, which `sameHeadRefailFlagOn` then reads (agent-org#1185)");
-  assert.equal(machineryFlagOn(state, CHAIRMAN_REFUSAL_FLAG), true, "chairman.refusedOnce is switched by the command, which `offerHierarchyNow` then reads (agent-org#1456)");
-  assert.equal(machineryFlagOn(state, OWNERLESS_ASK_FLAG), true, "prs.ownerlessAsk is switched by the command, which `ownerlessAskFlagOn` then reads (agent-org#1648)");
-  assert.equal(machineryFlagOn(state, REENQUEUE_INFRA_FLAG), true, "queue.reenqueueInfra is switched by the command, which `requeueEjected` then reads (agent-org#1647)");
-  assert.equal(machineryFlagOn(state, REFUSE_AUTHOR_FALLBACK_FLAG), true, "gh.refuseFallbackAuthor is switched by the command, which the wrapper's `author_refusal_on` then reads (agent-org#1666)");
-  assert.equal(machineryFlagOn(state, VERDICT_DELIVERY_FLAG), true, "reviews.verdictDelivery is switched by the command, which `wake` then reads (agent-org#1649)");
-  assert.equal(machineryFlagOn(state, SESSION_PR_OUTSIDE_FLAG), true, "reviews.outsideSessionPr is switched by the command, which `outsideSessionPrFlagOn` then reads (agent-org#1667)");
-  assert.equal(machineryFlagOn(state, BOARD_TRUTH_PAIR_FLAG), true, "orgHealth.boardTruthPairKey is switched by the command, which `boardTruthPairOffers` then reads (agent-org#1670)");
+  assert.equal(machineryFlagOn(state, c.flag), true, c.message);
+});
+
+test("(1) the registry is the nineteen flags a module reads", () => {
   assert.deepEqual(FLAG_REGISTRY, [REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, CHAIN_WAIT_FLAG, CLOSED_UNDER_HALF_FLAG, AUTO_UNPARK_FLAG, QUEUE_ENTRY_NO_RUN_FLAG, RECHECK_FLAG, OPEN_PR_HOLD_FLAG, REFUSE_ASKING_ANNOUNCEMENTS_FLAG, PACING_FLAG, ROW_REVIEW_SKILL_FLAG, ACCOUNT_LIMIT_FLAG, SAME_HEAD_REFAIL_FLAG, PR_OWNER_ROUTING_FLAG, CHAIRMAN_REFUSAL_FLAG, OWNERLESS_ASK_FLAG, REFUSE_AUTHOR_FALLBACK_FLAG, VERDICT_DELIVERY_FLAG, SESSION_PR_OUTSIDE_FLAG, BOARD_TRUTH_PAIR_FLAG], "the registry is the nineteen flags a module reads");
 });
 

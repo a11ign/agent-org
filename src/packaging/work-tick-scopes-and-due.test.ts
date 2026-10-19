@@ -87,6 +87,15 @@ function tickAt(fixture: { host: HostConfig; alive: string }, nowMs: number, env
   return { said, calls: gh.calls };
 }
 
+/** A webhook host whose previous tick ran at T0 + 10 s, the arrangement the due tests start from; it records that tick's time. */
+function hostAfterTickAt10s() {
+  const fixture = webhookHost();
+  const cfg = polled();
+  const env: NodeJS.ProcessEnv = {};
+  tickAt(fixture, T0 + 10 * SEC, env, cfg);
+  return { fixture, cfg, env };
+}
+
 const dueIndexPath = (fixture: { stateDir: string }) => join(fixture.stateDir, DUE_INDEX_ENTRY);
 const writeDue = (fixture: { stateDir: string }, repo: string, entries: DueEntry[]) => writeDueIndex({ path: dueIndexPath(fixture), repo, entries });
 const due = (at: number): DueEntry => ({ number: 1, dueAtMs: at, kind: "not-before" });
@@ -144,10 +153,7 @@ test("a scopes file that cannot be written leaves the variable unset and says th
 });
 
 test("POSITIVE CONTROL (due): an instant between the previous tick and now adds its repository to `changed`, which bumps its generation, and makes no gh call", () => {
-  const fixture = webhookHost();
-  const cfg = polled();
-  const env: NodeJS.ProcessEnv = {};
-  tickAt(fixture, T0 + 10 * SEC, env, cfg); // the previous tick, which records its time
+  const { fixture, cfg, env } = hostAfterTickAt10s();
   writeDue(fixture, OTHER, [due(T0 + 30 * SEC)]);
   const { said, calls } = tickAt(fixture, T0 + 60 * SEC, env, cfg);
   assert.equal(counter(cfg, OTHER), 2, "the due repository's generation moved");
@@ -157,10 +163,7 @@ test("POSITIVE CONTROL (due): an instant between the previous tick and now adds 
 });
 
 test("an instant at or before the previous tick, or after now, does not make its repository due; one that has come due by a later tick does", () => {
-  const fixture = webhookHost();
-  const cfg = polled();
-  const env: NodeJS.ProcessEnv = {};
-  tickAt(fixture, T0 + 10 * SEC, env, cfg); // records T0 + 10 s
+  const { fixture, cfg, env } = hostAfterTickAt10s();
   writeDue(fixture, OTHER, [due(T0 + 10 * SEC), due(T0 + 5 * SEC)]); // exactly at the previous tick, and before it
   writeDue(fixture, HOME_REPO, [due(T0 + 120 * SEC)]); // after now
   const quiet = tickAt(fixture, T0 + 60 * SEC, env, cfg);
@@ -174,10 +177,7 @@ test("an instant at or before the previous tick, or after now, does not make its
 });
 
 test("a corrupt due-index makes every declared repository due, since a half-written file says nothing about what passed", () => {
-  const fixture = webhookHost();
-  const cfg = polled();
-  const env: NodeJS.ProcessEnv = {};
-  tickAt(fixture, T0 + 10 * SEC, env, cfg);
+  const { fixture, cfg, env } = hostAfterTickAt10s();
   writeFileSync(dueIndexPath(fixture), "{\"version\":1,\"repos\":{");
   const { said, calls } = tickAt(fixture, T0 + 30 * SEC, env, cfg);
   assert.deepEqual([counter(cfg, HOME_REPO), counter(cfg, OTHER)], [2, 2], "every declared repository is due, so every generation moved");
@@ -186,10 +186,7 @@ test("a corrupt due-index makes every declared repository due, since a half-writ
 });
 
 test("NEGATIVE CONTROL (quiet): a healthy webhook tick with no event and nothing due makes ZERO gh calls, even with a due-index on disk", () => {
-  const fixture = webhookHost();
-  const cfg = polled();
-  const env: NodeJS.ProcessEnv = {};
-  tickAt(fixture, T0 + 10 * SEC, env, cfg);
+  const { fixture, cfg, env } = hostAfterTickAt10s();
   writeDue(fixture, OTHER, [due(T0 + 500 * SEC)]);
   const { said, calls } = tickAt(fixture, T0 + 30 * SEC, env, cfg);
   assert.deepEqual(calls, [], "nothing named and nothing due: the snapshot asks GitHub nothing");

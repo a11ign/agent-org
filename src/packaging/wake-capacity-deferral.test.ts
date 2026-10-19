@@ -167,6 +167,12 @@ function tick(dir: string, gateRefused: string[]) {
   return { status: ran.status, stderr: ran.stderr };
 }
 
+/** `tick` with the refusal already remembered as first deferred `minutes` ago, the way the ledger keeps it. */
+function tickAfterDeferral(dir: string, minutes: number) {
+  writeFileSync(join(dir, "wake-deferred"), `${KEY}\t${Date.now() - minutes * MINUTE}\n`);
+  return tick(dir, [ALLOWED]);
+}
+
 test("#3266: a tick whose only refusal is a capacity wait writes DEFERRED, no `nowhere to go`, and exits 0", () => {
   inTmp((dir) => {
     const got = tick(dir, [ALLOWED]);
@@ -178,8 +184,7 @@ test("#3266: a tick whose only refusal is a capacity wait writes DEFERRED, no `n
 
 test("#3266: the same wait, remembered as first deferred 31 minutes ago, exits 1 as `nowhere to go`", () => {
   inTmp((dir) => {
-    writeFileSync(join(dir, "wake-deferred"), `${KEY}\t${Date.now() - 31 * MINUTE}\n`);
-    const got = tick(dir, [ALLOWED]);
+    const got = tickAfterDeferral(dir, 31);
     assert.equal(got.status, 1, got.stderr);
     assert.match(got.stderr, /^UNDELIVERED engineers\/ready-row-unclaimed\/3254: .*\(deferred 31 min, over the 30-minute limit/m);
     assert.match(got.stderr, /1 order\(s\) had nowhere to go/);

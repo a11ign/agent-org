@@ -10,6 +10,7 @@
  *     carries no `token-reach` probe of the token it no longer reads.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -79,17 +80,23 @@ test("a11ign/a11ign#4199 POSITIVE CONTROL for the matcher: a policy widened to a
   assert.ok(!mints(POLICY, claims), "and the real policy says no");
 });
 
-test("a11ign/a11ign#4199: arm mints for this identity, before the step that uses it, with pull_request_target", () => {
-  const text = read(".github/workflows/auto-arm.yml");
-  const code = withoutComments(text);
+test("a11ign/a11ign#4199: arm mints for this identity, before the step that uses it", () => {
+  const code = withoutComments(read(".github/workflows/auto-arm.yml"));
   const mint = code.indexOf("uses: octo-sts/action@");
   const use = code.indexOf("steps.octo-sts.outputs.token");
   assert.ok(mint >= 0, "arm must mint with octo-sts/action");
   assert.ok(use > mint, "the step that reads the token must come AFTER the one that mints it");
-  assert.match(code, /identity: auto-arm\n/, "arm must ask for the auto-arm identity");
-  assert.match(code, /uses: octo-sts\/action@[0-9a-f]{40} # v/, "pin the commit, not the movable tag");
-  assert.match(text, /^on:\n {2}pull_request_target:/m, "arm needs the trigger that runs main's copy");
-  assert.doesNotMatch(text, /^ {2}pull_request:/m, "no pull_request trigger: it would run the branch's copy of this file");
+});
+
+testEach("a11ign/a11ign#4199: arm mints for this identity, before the step that uses it, with pull_request_target", [
+  { name: "the ask for the auto-arm identity", source: "code", expect: "match", pattern: /identity: auto-arm\n/, message: "arm must ask for the auto-arm identity" },
+  { name: "the commit pin", source: "code", expect: "match", pattern: /uses: octo-sts\/action@[0-9a-f]{40} # v/, message: "pin the commit, not the movable tag" },
+  { name: "the trigger that runs main's copy", source: "text", expect: "match", pattern: /^on:\n {2}pull_request_target:/m, message: "arm needs the trigger that runs main's copy" },
+  { name: "no pull_request trigger", source: "text", expect: "doesNotMatch", pattern: /^ {2}pull_request:/m, message: "no pull_request trigger: it would run the branch's copy of this file" },
+] as const, (c) => {
+  const text = read(".github/workflows/auto-arm.yml");
+  const sources = { text, code: withoutComments(text) };
+  assert[c.expect](sources[c.source], c.pattern, c.message);
 });
 
 test("a11ign/a11ign#4199: the minting jobs hold the OIDC request and no write, and nothing reads a stored token or falls back to github.token", () => {
@@ -112,15 +119,22 @@ test("a11ign/a11ign#4969: a review reaches arming only through `relay` (no mint)
   const approved = job("arm-approved");
   assert.ok(relay.length > 0 && approved.length > 0, "both jobs exist");
   assert.match(text, /^ {2}pull_request_review:\n {4}types: \[submitted\]/m);
-  assert.doesNotMatch(relay, /octo-sts|id-token/, "relay runs the branch's copy and must not mint");
-  assert.match(relay, / {4}permissions:\n {6}actions: write\n {4}runs-on/, "relay holds the dispatch grant and nothing else");
-  assert.match(relay, /github\.event\.review\.state == 'approved'/, "a CHANGES_REQUESTED or COMMENTED review does nothing");
-  assert.match(relay, /head\.repo\.full_name == github\.repository/, "a fork head does nothing");
-  assert.match(relay, /github\.event\.pull_request\.base\.ref == 'main'/, "pull_request_review has no branches filter, so the base is read here");
-  assert.match(relay, /gh workflow run auto-arm\.yml .*--ref main/);
-  assert.match(approved, /github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main'/);
   const ready = approved.indexOf("gh pr ready");
   assert.ok(ready > approved.indexOf('.reviewDecision != "APPROVED"') && approved.indexOf('.reviewDecision != "APPROVED"') > 0, "reviewDecision is read before the PR is touched");
   assert.ok(ready > approved.indexOf("startswith($prefix)") && approved.indexOf("startswith($prefix)") > 0, "a hold is read before the PR is touched");
   assert.ok(ready > approved.indexOf(".isCrossRepository") && approved.indexOf(".isCrossRepository") > 0, "a fork head is refused before the PR is touched");
+});
+
+testEach("a11ign/a11ign#4969: the review jobs hold the grants and the guards the workflow names", [
+  { name: "relay holds no minting grant", source: "relay", expect: "doesNotMatch", pattern: /octo-sts|id-token/, message: "relay runs the branch's copy and must not mint" },
+  { name: "relay holds the dispatch grant", source: "relay", expect: "match", pattern: / {4}permissions:\n {6}actions: write\n {4}runs-on/, message: "relay holds the dispatch grant and nothing else" },
+  { name: "only an approval dispatches", source: "relay", expect: "match", pattern: /github\.event\.review\.state == 'approved'/, message: "a CHANGES_REQUESTED or COMMENTED review does nothing" },
+  { name: "a fork head does nothing", source: "relay", expect: "match", pattern: /head\.repo\.full_name == github\.repository/, message: "a fork head does nothing" },
+  { name: "the base is read in relay", source: "relay", expect: "match", pattern: /github\.event\.pull_request\.base\.ref == 'main'/, message: "pull_request_review has no branches filter, so the base is read here" },
+  { name: "relay dispatches main's copy", source: "relay", expect: "match", pattern: /gh workflow run auto-arm\.yml .*--ref main/ },
+  { name: "arm-approved runs only on main's dispatch", source: "approved", expect: "match", pattern: /github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main'/ },
+] as const, (c) => {
+  const code = withoutComments(read(".github/workflows/auto-arm.yml"));
+  const sources = { relay: jobBlock(code, "relay"), approved: jobBlock(code, "arm-approved") };
+  assert[c.expect](sources[c.source], c.pattern, c.message);
 });

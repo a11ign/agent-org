@@ -97,6 +97,11 @@ test("lookupIssueOpenState returns null, never a guessed state, on a failed look
 
 const OWN_PR = { number: 900, state: "OPEN" as const, reasons: ["FAILING: ts (failure)."] };
 
+/** A `run` whose blocker carries the qualifying measurement comment and is in `state`. */
+function blockerRun(state: string) {
+  return routedRun({ comments: JSON.stringify({ comments: [{ body: QUALIFYING_COMMENT }] }), state: JSON.stringify({ state }) });
+}
+
 function routedRun(routes: { comments?: string, state?: string }) {
   return (args: string[]): string => {
     if (args[0] === "pr" && args[1] === "view") return routes.comments ?? JSON.stringify({ comments: [] });
@@ -123,10 +128,7 @@ test("#741's own acceptance shape: without the comment, refused, naming what the
 });
 
 test("#741's own acceptance shape: with #N closed, refused", () => {
-  const run = routedRun({
-    comments: JSON.stringify({ comments: [{ body: QUALIFYING_COMMENT }] }),
-    state: JSON.stringify({ state: "CLOSED" }),
-  });
+  const run = blockerRun("CLOSED");
   const result = resolveBlockedByOverride(OWN_PR, "#731", { run });
   assert.equal(result.ok, false);
   assert.match((result as { reason: string }).reason, /#731/);
@@ -135,11 +137,7 @@ test("#741's own acceptance shape: with #N closed, refused", () => {
 });
 
 test("a MERGED blocker also refuses -- landed either way is not open", () => {
-  const run = routedRun({
-    comments: JSON.stringify({ comments: [{ body: QUALIFYING_COMMENT }] }),
-    state: JSON.stringify({ state: "MERGED" }),
-  });
-  const result = resolveBlockedByOverride(OWN_PR, "#731", { run });
+  const result = resolveBlockedByOverride(OWN_PR, "#731", { run: blockerRun("MERGED") });
   assert.equal(result.ok, false);
   assert.match((result as { reason: string }).reason, /merged/);
 });

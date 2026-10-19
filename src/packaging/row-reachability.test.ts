@@ -23,6 +23,7 @@
 // must not call `gh(`): run with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake `gh` first on `PATH` that
 // exits 97 and shouts, and the suite passes with the fake never invoked.
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -41,21 +42,6 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 const examined = { paths: 3, symbols: 2, region: 3 };
 const clear = { row: 189, subjectsMissing: [], heldRegions: [], examined };
 
-
-test("THE #186 CASE: the subject does not exist on main, and no region check would see it", () => {
-  const v = startability({
-    ...clear, row: 186,
-    subjectsMissing: [{ name: "dirOnOriginMain", refs: ["origin/pm/reported-directory-159"] }],
-    heldRegions: [],
-  });
-  assert.equal(v.code, 1, "a row about code that has not landed is not startable");
-  const text = v.lines.join("\n");
-  assert.match(text, /SUBJECT NOT ON main: `dirOnOriginMain`/);
-  assert.match(text, /origin\/pm\/reported-directory-159/,
-    "it must NAME the ref -- 'blocked' and 'blocked on X' are different instructions");
-  assert.match(text, /editing somebody's open work/,
-    "and say why building on that branch is not simply the workaround");
-});
 
 test("a held region is reported but does NOT block — it is a merge cost, not a blocker", () => {
   // The half that stops this being deleted: a check that reports every row blocked is one nobody reads.
@@ -259,15 +245,48 @@ test("a held region names each branch's PR state, and `no PR` stays its own answ
  * STARTABLE for a closed row, #227 said a branch held a region without saying whether it would ever land,
  * and this. All three are the census's own fourth shape, in the tool its author wrote.
  */
-test("a row whose Region is PROSE is told so, and NOT told to add a Region it already has", () => {
-  const v = startability({ ...clear, examined: { paths: 0, symbols: 0, prose: 1 } });
-  assert.equal(v.code, 2, "still inconclusive -- this checks code and cannot judge a document");
+testEach("THE #186 CASE: the subject does not exist on main, and no region check would see it", [
+  {
+    name: "#186: the subject is not on main",
+    input: {
+      ...clear, row: 186,
+      subjectsMissing: [{ name: "dirOnOriginMain", refs: ["origin/pm/reported-directory-159"] }],
+      heldRegions: [],
+    },
+    code: 1,
+    codeMessage: "a row about code that has not landed is not startable",
+    says: [
+      { pattern: /SUBJECT NOT ON main: `dirOnOriginMain`/ },
+      {
+        pattern: /origin\/pm\/reported-directory-159/,
+        message: "it must NAME the ref -- 'blocked' and 'blocked on X' are different instructions",
+      },
+      { pattern: /editing somebody's open work/, message: "and say why building on that branch is not simply the workaround" },
+    ],
+    notSays: [],
+  },
+  {
+    name: "a row whose Region is PROSE is told so, and NOT told to add a Region it already has",
+    input: { ...clear, examined: { paths: 0, symbols: 0, prose: 1 } },
+    code: 2,
+    codeMessage: "still inconclusive -- this checks code and cannot judge a document",
+    says: [
+      { pattern: /names 1 document\(s\)/ },
+      {
+        pattern: /NOT a missing Region: do not add one/,
+        message: "the whole point: its author filled the field in correctly and must not be sent back to it",
+      },
+    ],
+    notSays: [
+      { pattern: /names no source path/, message: "that is the OTHER sentence, for a row that named nothing at all" },
+    ],
+  },
+], (c) => {
+  const v = startability(c.input);
+  assert.equal(v.code, c.code, c.codeMessage);
   const text = v.lines.join("\n");
-  assert.match(text, /names 1 document\(s\)/);
-  assert.match(text, /NOT a missing Region: do not add one/,
-    "the whole point: its author filled the field in correctly and must not be sent back to it");
-  assert.doesNotMatch(text, /names no source path/,
-    "that is the OTHER sentence, for a row that named nothing at all");
+  for (const s of c.says) assert.match(text, s.pattern, s.message);
+  for (const s of c.notSays) assert.doesNotMatch(text, s.pattern, s.message);
 });
 
 test("a row that named nothing at all still gets the original sentence", () => {
@@ -474,9 +493,7 @@ test("#1566: BOTH halves ask the injected PR state, and `gh` is spawned only whe
   try {
     branchTouching(run, repo, "held", "docs/guide.md");
     run(["checkout", "--quiet", "-b", "carrier", "origin/main"]);
-    writeFileSync(resolve(repo, "carrier.mjs"), `export const ${SUBJECT} = true;\n`);
-    run(["add", "-A"]);
-    run(["commit", "--quiet", "-m", "carry the subject"]);
+    commitFileIn({ repo, run }, { file: "carrier.mjs", text: `export const ${SUBJECT} = true;\n`, message: "carry the subject" });
     run(["checkout", "--quiet", "main"]);
     const body = `## Region\n\n\`\`\`\ndocs/guide.md\n\`\`\`\n\nAbout \`${SUBJECT}\`.\n`;
     const deps = { run, refs: () => ["held", "carrier"],
@@ -511,9 +528,7 @@ test("#1566: BOTH halves ask the injected PR state, and `gh` is spawned only whe
     // `origin/main` it is no longer missing. A walk that asked the checkout's `origin/main` instead (where the
     // registry symbol is absent too) would still name the carrier here -- the case the census above cannot see.
     run(["checkout", "--quiet", "main"]);
-    writeFileSync(resolve(repo, "landed.mjs"), `export const ${SUBJECT} = true;\n`);
-    run(["add", "-A"]);
-    run(["commit", "--quiet", "-m", "the subject lands"]);
+    commitFileIn({ repo, run }, { file: "landed.mjs", text: `export const ${SUBJECT} = true;\n`, message: "the subject lands" });
     run(["update-ref", "refs/remotes/origin/main", "HEAD"]);
     const landed = subjectAndRegionFacts(body, { ...deps, state: () => "no PR" });
     assert.deepEqual(landed.subjectsMissing, [], "a subject on this repository's own main is not missing");
@@ -707,6 +722,13 @@ function syntheticRepo(): { repo: string; run: (args: string[]) => string; clean
   run(["commit", "--quiet", "-m", "base"]);
   run(["update-ref", "refs/remotes/origin/main", "HEAD"]);
   return { repo, run, cleanup: () => rmSync(repo, { recursive: true, force: true }) };
+}
+
+/** Writes `file` with `text` into the fixture's repository and commits it with `message`, on whatever branch is checked out. */
+function commitFileIn(fixture: { repo: string, run: (args: string[]) => string }, spec: { file: string, text: string, message: string }) {
+  writeFileSync(resolve(fixture.repo, spec.file), spec.text);
+  fixture.run(["add", "-A"]);
+  fixture.run(["commit", "--quiet", "-m", spec.message]);
 }
 
 /** A branch off `origin/main` that changes `path`, left unmerged. */

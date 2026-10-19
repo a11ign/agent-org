@@ -39,6 +39,7 @@ import {
   unexplainedDeletions, mergeParents, deletedPaths, branchTouchedPaths, EXIT,
 } from "../trunk-revert-guard.ts";
 import { trunkRedOrders } from "../trunk-red.ts";
+import { thrownBy } from "../lib/thrown-by.ts";
 
 // The tool's own script, found from this file.
 const SCRIPT = fileURLToPath(new URL("../trunk-revert-guard.ts", import.meta.url));
@@ -53,6 +54,21 @@ function writeFile(root: string, path: string, text = `${path}\n`): void {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), text);
 }
+
+/** Writes `path`, commits it alone with `message`, on the checked-out branch. */
+function commitWrittenFile(root: string, path: string, message: string): void {
+  writeFile(root, path);
+  git(root, "add", "-A");
+  git(root, "commit", "-q", "-m", message);
+}
+
+/** Checks out `main`, merges `branch` into it with a merge commit, and returns that commit. */
+function mergeIntoMain(root: string, branch: string, message: string): string {
+  git(root, "checkout", "-q", "main");
+  git(root, "merge", "--no-ff", "-q", "-m", message, branch);
+  return git(root, "rev-parse", "HEAD");
+}
+
 
 /** The paths the incident merge deletes and no commit on its branch ever touches -- the shape of `f2cdfaf3`. */
 const INCIDENT_PATHS = ["docs/lost-notes.md", "src/lost-guard.test.ts", "scripts/lost-prune.mjs"];
@@ -79,27 +95,19 @@ function fixtureHistory(root: string): void {
   git(root, "commit", "-q", "-m", "base");
 
   git(root, "checkout", "-q", "-b", "incident");
-  writeFile(root, "src/feature.ts");
-  git(root, "add", "-A");
-  git(root, "commit", "-q", "-m", "the branch's one real change");
+  commitWrittenFile(root, "src/feature.ts", "the branch's one real change");
   git(root, "checkout", "-q", "main");
-  writeFile(root, "src/other-work.ts");
-  git(root, "add", "-A");
-  git(root, "commit", "-q", "-m", "work that landed on main meanwhile");
+  commitWrittenFile(root, "src/other-work.ts", "work that landed on main meanwhile");
   git(root, "checkout", "-q", "incident");
   git(root, "merge", "--no-commit", "--no-ff", "main");
   git(root, "rm", "-q", ...INCIDENT_PATHS);
   git(root, "commit", "-q", "-m", "sync main into the branch, resolving by dropping three files");
-  git(root, "checkout", "-q", "main");
-  git(root, "merge", "--no-ff", "-q", "-m", "merge the incident branch", "incident");
-  MERGES.incident = git(root, "rev-parse", "HEAD");
+  MERGES.incident = mergeIntoMain(root, "incident", "merge the incident branch");
 
   git(root, "checkout", "-q", "-b", "legit");
   git(root, "rm", "-q", RETIRED_PATH);
   git(root, "commit", "-q", "-m", "retire the guard, deliberately");
-  git(root, "checkout", "-q", "main");
-  git(root, "merge", "--no-ff", "-q", "-m", "merge the deliberate deletion", "legit");
-  MERGES.legit = git(root, "rev-parse", "HEAD");
+  MERGES.legit = mergeIntoMain(root, "legit", "merge the deliberate deletion");
 
   // The script runs `git fetch origin` unconditionally, so the repository needs an `origin` to read: itself.
   git(root, "remote", "add", "origin", root);
@@ -240,30 +248,18 @@ test("ACCEPTANCE (#411, criterion 3): a legitimate deletion (the #354 shape) is 
 // --- the CLI, guarded like every other argv-reading script here ---
 
 test("trunk-revert-guard.ts refuses an unknown flag rather than silently ignoring it", () => {
-  let threw = false;
-  try {
-    execFileSync("node", [SCRIPT, "--merge=abc", "--bogus"],
-      { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
-  } catch (cause) {
-    threw = true;
-    const err = cause as { status?: number, stderr?: string };
-    assert.equal(err.status, 2);
-    assert.match(String(err.stderr), /unknown flag --bogus/);
-  }
-  assert.ok(threw);
+  const err = thrownBy(() => execFileSync("node", [SCRIPT, "--merge=abc", "--bogus"],
+    { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" }));
+  assert.ok(err);
+  assert.equal(err.status, 2);
+  assert.match(String(err.stderr), /unknown flag --bogus/);
 });
 
 test("trunk-revert-guard.ts refuses to run without --merge", () => {
-  let threw = false;
-  try {
-    execFileSync("node", [SCRIPT], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" });
-  } catch (cause) {
-    threw = true;
-    const err = cause as { status?: number, stderr?: string };
-    assert.equal(err.status, 2);
-    assert.match(String(err.stderr), /need --merge/);
-  }
-  assert.ok(threw);
+  const err = thrownBy(() => execFileSync("node", [SCRIPT], { cwd: FIXTURE, encoding: "utf8", stdio: "pipe" }));
+  assert.ok(err);
+  assert.equal(err.status, 2);
+  assert.match(String(err.stderr), /need --merge/);
 });
 
 /**

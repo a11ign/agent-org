@@ -56,23 +56,26 @@ test("claimedCloseCoveredBy: covers only the rows the name actually holds, among
   assert.deepEqual([...covered], [237]);
 });
 
-test("applyAllowClaimedClose: a confirmed name overrides only the row it covers", () => {
+/** The dispatcher's closing-claim reasons for CLOSES_CLAIMED, run through the override with the name a test confirms (or none). */
+function overrideFor(allowClaimedClose: string | null) {
   const verdict = { reasons: closingClaimReasons(CLOSES_CLAIMED, "dispatcher") };
-  const { overridden, remaining } = applyAllowClaimedClose(verdict, CLOSES_CLAIMED, "worker-judge");
+  return applyAllowClaimedClose(verdict, CLOSES_CLAIMED, allowClaimedClose);
+}
+
+test("applyAllowClaimedClose: a confirmed name overrides only the row it covers", () => {
+  const { overridden, remaining } = overrideFor("worker-judge");
   assert.equal(overridden.length, 1);
   assert.equal(remaining.length, 0);
 });
 
 test("applyAllowClaimedClose: an unconfirmed name overrides nothing", () => {
-  const verdict = { reasons: closingClaimReasons(CLOSES_CLAIMED, "dispatcher") };
-  const { overridden, remaining } = applyAllowClaimedClose(verdict, CLOSES_CLAIMED, "somebody-else");
+  const { overridden, remaining } = overrideFor("somebody-else");
   assert.equal(overridden.length, 0);
   assert.equal(remaining.length, 1);
 });
 
 test("applyAllowClaimedClose: no allowClaimedClose value overrides nothing", () => {
-  const verdict = { reasons: closingClaimReasons(CLOSES_CLAIMED, "dispatcher") };
-  const { overridden, remaining } = applyAllowClaimedClose(verdict, CLOSES_CLAIMED, null);
+  const { overridden, remaining } = overrideFor(null);
   assert.equal(overridden.length, 0);
   assert.equal(remaining.length, 1);
 });

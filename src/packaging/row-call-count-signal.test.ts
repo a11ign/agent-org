@@ -155,24 +155,23 @@ test("rowCallCountOrders: empty signals emit nothing, and the order addresses pr
 });
 
 test("#2721: the causeKey is keyed on the SET of rows over threshold, never the count", () => {
+  // Every order is read first, then each is compared: the comparisons are the assertions, the reads are only arrangement.
   const first = rowCallCountOrders([{ row: 501, session: "worker-501", calls: 112 }])[0];
   const climbed = rowCallCountOrders([{ row: 501, session: "worker-501", calls: 130 }])[0];
-  assert.equal(first.causeKey, climbed.causeKey,
-    "the same row, unchanged, with only its own count climbing, is NOT a new question");
-
   const twoRows = rowCallCountOrders([
     { row: 501, session: "worker-501", calls: 112 },
     { row: 502, session: "worker-502", calls: 200 },
   ])[0];
-  assert.notEqual(first.causeKey, twoRows.causeKey, "a new row joining the signalled set is a new question");
-
   const rowLeft = rowCallCountOrders([{ row: 502, session: "worker-502", calls: 200 }])[0];
-  assert.notEqual(twoRows.causeKey, rowLeft.causeKey, "row 501 leaving the signalled set is a new question too");
-
   const reordered = rowCallCountOrders([
     { row: 502, session: "worker-502", calls: 999 },
     { row: 501, session: "worker-501", calls: 1 },
   ])[0];
+
+  assert.equal(first.causeKey, climbed.causeKey,
+    "the same row, unchanged, with only its own count climbing, is NOT a new question");
+  assert.notEqual(first.causeKey, twoRows.causeKey, "a new row joining the signalled set is a new question");
+  assert.notEqual(twoRows.causeKey, rowLeft.causeKey, "row 501 leaving the signalled set is a new question too");
   assert.equal(twoRows.causeKey, reordered.causeKey,
     "the key is the sorted row set -- signal order and count do not move it");
 });

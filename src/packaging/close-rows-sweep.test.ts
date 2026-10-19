@@ -7,6 +7,7 @@
  * them, only proves the sweep wires to the real thing rather than a copy.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -94,32 +95,22 @@ test("ACCEPTANCE (#394, criterion 2): the sweep is idempotent -- a second closur
 
 // --- the CLI, guarded like every other argv-reading script here ---
 
-test("close-rows-sweep.ts refuses an unknown flag rather than silently ignoring it", () => {
-  let threw = false;
-  try {
-    execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
-  } catch (cause) {
-    threw = true;
-    const err = cause as { status?: number, stderr?: string };
-    assert.equal(err.status, 2);
-    assert.match(String(err.stderr), /unknown flag --bogus/);
-  }
-  assert.ok(threw, "an unknown flag must exit non-zero, not silently run the default window");
-});
-
-test("close-rows-sweep.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, never a guessed repo", () => {
+testEach("close-rows-sweep.ts refuses what it cannot run", [
+  { name: "an unknown flag rather than silently ignoring it", argv: ["--bogus"], unset: [], stderr: /unknown flag --bogus/, message: "an unknown flag must exit non-zero, not silently run the default window" },
+  { name: "without GITHUB_REPOSITORY -- CANNOT ASK, never a guessed repo", argv: [], unset: ["GITHUB_REPOSITORY"], stderr: /GITHUB_REPOSITORY is unset/, message: "with no repo to sweep, the script must refuse rather than guess one" },
+] as const, (c) => {
   let threw = false;
   try {
     const env = { ...process.env };
-    delete env.GITHUB_REPOSITORY;
-    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env });
+    for (const name of c.unset) delete env[name];
+    execFileSync("node", [SCRIPT, ...c.argv], { encoding: "utf8", stdio: "pipe", env });
   } catch (cause) {
     threw = true;
     const err = cause as { status?: number, stderr?: string };
     assert.equal(err.status, 2);
-    assert.match(String(err.stderr), /GITHUB_REPOSITORY is unset/);
+    assert.match(String(err.stderr), c.stderr);
   }
-  assert.ok(threw, "with no repo to sweep, the script must refuse rather than guess one");
+  assert.ok(threw, c.message);
 });
 
 // --- #1299: a closed row whose Status did not move is a failed repair -- named, and never EXIT.DONE ---

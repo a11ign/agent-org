@@ -8,6 +8,7 @@
  * from the constant moves with it, so changing the limit would leave it green.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -125,31 +126,34 @@ test("#3029: a tick whose only refusals are busy seats writes DEFERRED, no `nowh
   });
 });
 
-test("#3029: the mixed tick exits 1 and its summary counts the one refused-to-start order", () => {
+testEach("#3029: the mixed tick exits 1 and its summary counts the one refused-to-start order", [
+  {
+    name: "the mixed tick exits 1 and counts the one refused-to-start order",
+    args: { handedRefused: [BUSY()], gateRefused: [REFUSED_TO_START] },
+    says: [/^1 order\(s\) had nowhere to go\./m, /^UNDELIVERED reviewer-agent-org-16\//m, /^DEFERRED handoff\/ceo\/07ed9f53: /m],
+    notSays: [],
+  },
+  {
+    name: "a refused-to-start order alone exits 1 (the positive control for the exit code being able to fire)",
+    args: { gateRefused: [REFUSED_TO_START] },
+    says: [/1 order\(s\) had nowhere to go/],
+    notSays: [],
+  },
+  {
+    name: "the same busy-seat order, remembered as first deferred 16 minutes ago, exits 1 as `nowhere to go`",
+    deferredMinutesAgo: 16,
+    args: { handedRefused: [BUSY()] },
+    says: [/^UNDELIVERED handoff\/ceo\/07ed9f53: "ceo" is working \(deferred 16 min/m, /1 order\(s\) had nowhere to go/],
+    notSays: [/^DEFERRED /m],
+  },
+], (c) => {
   inTmp((dir) => {
-    const got = tick(dir, { handedRefused: [BUSY()], gateRefused: [REFUSED_TO_START] });
+    if (c.deferredMinutesAgo !== undefined) {
+      writeFileSync(join(dir, "wake-deferred"), `handoff/ceo/07ed9f53\t${Date.now() - c.deferredMinutesAgo * MINUTE}\n`);
+    }
+    const got = tick(dir, c.args);
     assert.equal(got.status, 1, got.stderr);
-    assert.match(got.stderr, /^1 order\(s\) had nowhere to go\./m);
-    assert.match(got.stderr, /^UNDELIVERED reviewer-agent-org-16\//m);
-    assert.match(got.stderr, /^DEFERRED handoff\/ceo\/07ed9f53: /m);
-  });
-});
-
-test("#3029: a refused-to-start order alone exits 1 (the positive control for the exit code being able to fire)", () => {
-  inTmp((dir) => {
-    const got = tick(dir, { gateRefused: [REFUSED_TO_START] });
-    assert.equal(got.status, 1, got.stderr);
-    assert.match(got.stderr, /1 order\(s\) had nowhere to go/);
-  });
-});
-
-test("#3029: the same busy-seat order, remembered as first deferred 16 minutes ago, exits 1 as `nowhere to go`", () => {
-  inTmp((dir) => {
-    writeFileSync(join(dir, "wake-deferred"), `handoff/ceo/07ed9f53\t${Date.now() - 16 * MINUTE}\n`);
-    const got = tick(dir, { handedRefused: [BUSY()] });
-    assert.equal(got.status, 1, got.stderr);
-    assert.match(got.stderr, /^UNDELIVERED handoff\/ceo\/07ed9f53: "ceo" is working \(deferred 16 min/m);
-    assert.match(got.stderr, /1 order\(s\) had nowhere to go/);
-    assert.doesNotMatch(got.stderr, /^DEFERRED /m);
+    for (const re of c.says) assert.match(got.stderr, re);
+    for (const re of c.notSays) assert.doesNotMatch(got.stderr, re);
   });
 });

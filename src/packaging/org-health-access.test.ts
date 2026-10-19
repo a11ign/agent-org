@@ -7,6 +7,7 @@
  * THE REPOSITORIES ARE WRITTEN OUT AS LITERALS, never derived from the declaration under test.
  */
 import { test, after } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,15 +36,20 @@ const clean = listing({ "a11ign/a11ign": "push", "a11ign/agent-org": "push", "a1
 const access = (reached: unknown, why = "", exceptions?: Record<string, string>) => ({ teams: [{ team: "bots", layer: "push", exceptions, declared: DECLARED, reached, why }] }) as never;
 const read = (reached: unknown, why?: string, exceptions?: Record<string, string>) => teamAccessReading({ access: access(reached, why, exceptions) });
 
-test("#3634: an admin team level on a repository the team reaches trips and names it (the positive control)", () => {
-  const stranger = read([...clean, ...listing({ "a11ign/auth-capture-check": "admin" })]);
-  assert.equal(stranger.status, "tripped");
-  assert.match(stranger.detail, /a11ign\/auth-capture-check: the bots team holds admin and is not declared/);
-  assert.equal(stranger.discriminator, "team-access-drifted@bots:a11ign/auth-capture-check");
-
+test("#3634: an admin team level on a declared repository trips and names it", () => {
   const declaredAdmin = read(listing({ ...Object.fromEntries(clean.map((r) => [r.repo, r.level])), "a11ign/screenreader-worker": "admin" }));
   assert.equal(declaredAdmin.status, "tripped");
   assert.match(declaredAdmin.detail, /a11ign\/screenreader-worker: the bots team holds admin, declared push/);
+});
+
+testEach("#3634 and #4467: a team level the declaration does not allow trips and names the repository", [
+  { name: "an admin level on an undeclared repository (the positive control)", reading: () => read([...clean, ...listing({ "a11ign/auth-capture-check": "admin" })]), detail: /a11ign\/auth-capture-check: the bots team holds admin and is not declared/, discriminator: "team-access-drifted@bots:a11ign/auth-capture-check" },
+  { name: "an exception of none on a repository the team holds push on", reading: () => readKeptOff([...clean, ...listing({ "a11ign/.github": "push" })]), detail: /a11ign\/\.github: the bots team holds push, declared none/, discriminator: "team-access-drifted@bots:a11ign/.github" },
+], (c) => {
+  const reading = c.reading();
+  assert.equal(reading.status, "tripped");
+  assert.match(reading.detail, c.detail);
+  assert.equal(reading.discriminator, c.discriminator);
 });
 
 test("#3634: a declared repository at another level, or not reached at all, trips; an undeclared one below admin does not", () => {
@@ -90,12 +96,8 @@ const KEPT_OFF = { "a11ign/.github": "none" };
 const readKeptOff = (reached: unknown, exceptions: Record<string, string> | null = KEPT_OFF) => teamAccessReading({
   access: { teams: [{ team: "bots", layer: "push", exceptions: exceptions ?? undefined, declared: WITH_DOTGITHUB, reached, why: "" }] } as never });
 
-test("#4467: an exception of none is clear when the team holds none there, and tripped when it holds push", () => {
+test("#4467: an exception of none is clear when the team holds none there", () => {
   assert.deepEqual(readKeptOff(clean), { signal: SIGNALS.TEAM_ACCESS, status: "clear", detail: "" });
-  const reaches = readKeptOff([...clean, ...listing({ "a11ign/.github": "push" })]);
-  assert.equal(reaches.status, "tripped");
-  assert.match(reaches.detail, /a11ign\/\.github: the bots team holds push, declared none/);
-  assert.equal(reaches.discriminator, "team-access-drifted@bots:a11ign/.github");
 });
 
 test("#4467: without the exception the same listing still trips (the control: the exception is what makes the first case clear)", () => {

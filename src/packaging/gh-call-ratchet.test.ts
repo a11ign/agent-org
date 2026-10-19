@@ -125,18 +125,14 @@ test("negative control: a new file that spawns the command outside the port is r
   const { found, baseline } = judge(BASE, { ...BASE, "src/extra.ts": spawn("spawnSync", ["pr", "view"]) });
   assert.deepEqual(Object.keys(baseline.files), ["src/a.ts"], "the baseline holds the base tree's one spawner and not the extra file");
   assert.equal(found.length, 1);
-  assert.match(found[0]!, /^src\/extra\.ts: /);
-  assert.match(found[0]!, /spawns 1/);
-  assert.match(found[0]!, /calls 1/);
+  for (const pattern of [/^src\/extra\.ts: /, /spawns 1/, /calls 1/]) assert.match(found[0]!, pattern);
   assert.deepEqual(judge(BASE, BASE).found, [], "CONTROL: the same tree with no extra file is not reported");
 });
 
 test("negative control: a baselined file that gains a call site is reported with both numbers", () => {
   const { found } = judge(BASE, { ...BASE, "src/a.ts": spawn("execFileSync", ["issue", "list"]) + spawn("execFileSync", ["issue", "view"]) });
   assert.equal(found.length, 1);
-  assert.match(found[0]!, /^src\/a\.ts: /);
-  assert.match(found[0]!, /spawns 2 \(baseline 1\)/);
-  assert.match(found[0]!, /calls 2 \(baseline 1\)/);
+  for (const pattern of [/^src\/a\.ts: /, /spawns 2 \(baseline 1\)/, /calls 2 \(baseline 1\)/]) assert.match(found[0]!, pattern);
 });
 
 test("negative control: either number rising alone is enough: a shape written beside an existing spawn, and a spawn whose arguments are built elsewhere", () => {

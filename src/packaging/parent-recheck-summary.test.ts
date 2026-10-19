@@ -14,6 +14,7 @@
  * never told it "I don't know", it told it "fail" with the wrong evidence attached.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
@@ -105,23 +106,25 @@ function withTempLog(content: string, fn: (path: string) => void) {
   }
 }
 
-test("CLI: a real failing log prints the not-ok lines, the fail count, and RECHECK_RESULT=fail", () => {
-  withTempLog(tapLogWithEarlyFailure(), (logPath) => {
+testEach("CLI: a real failing log prints the not-ok lines, the fail count, and RECHECK_RESULT=fail", [
+  {
+    name: "a real failing log",
+    content: tapLogWithEarlyFailure(),
+    says: [/^# fail 1$/m, /not ok 7 - the summary states WHEN it was written/, /^RECHECK_RESULT=fail$/m],
+    notSays: [],
+  },
+  {
+    name: "an undeterminable log prints UNKNOWN and RECHECK_RESULT=unknown, never RECHECK_RESULT=fail",
+    content: "a crash with no TAP shape at all\n",
+    says: [/^UNKNOWN:/m, /^RECHECK_RESULT=unknown$/m],
+    notSays: [/RECHECK_RESULT=fail/],
+  },
+], (c) => {
+  withTempLog(c.content, (logPath) => {
     const out = execFileSync("node", [realpathSync(CLI), logPath],
       { encoding: "utf8" });
-    assert.match(out, /^# fail 1$/m);
-    assert.match(out, /not ok 7 - the summary states WHEN it was written/);
-    assert.match(out, /^RECHECK_RESULT=fail$/m);
-  });
-});
-
-test("CLI: an undeterminable log prints UNKNOWN and RECHECK_RESULT=unknown, never RECHECK_RESULT=fail", () => {
-  withTempLog("a crash with no TAP shape at all\n", (logPath) => {
-    const out = execFileSync("node", [realpathSync(CLI), logPath],
-      { encoding: "utf8" });
-    assert.match(out, /^UNKNOWN:/m);
-    assert.match(out, /^RECHECK_RESULT=unknown$/m);
-    assert.doesNotMatch(out, /RECHECK_RESULT=fail/);
+    for (const re of c.says) assert.match(out, re);
+    for (const re of c.notSays) assert.doesNotMatch(out, re);
   });
 });
 

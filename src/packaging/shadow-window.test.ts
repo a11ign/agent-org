@@ -70,6 +70,11 @@ function writeTick(live: string, tickMs: number, rows: string[]) {
   writeFileSync(join(live, READS_DIR, `${tickMs}.json`), JSON.stringify({ tick: tickMs, args: { rows }, orders: rows.map(orderFor) }));
 }
 
+/** `writeTick` for each `[tick, rows]` pair, in the order given. */
+function writeTicks(live: string, ticks: [number, string[]][]) {
+  for (const [tickMs, rows] of ticks) writeTick(live, tickMs, rows);
+}
+
 /** Every file under `dir`, by relative path, with its bytes -- recursive, because the live directory has subdirectories. */
 function tree(dir: string, prefix = ""): Record<string, string> {
   const out: Record<string, string> = {};
@@ -147,9 +152,7 @@ test("two invocations append two records and rewrite neither; a third with nothi
 
 test("the OLDEST unrecorded tick is taken, not the newest, and a gap in the tick times is recorded rather than hidden", () => {
   withRig((r) => {
-    writeTick(r.live, T1 + 8 * MINUTE, ["e"]);
-    writeTick(r.live, T1, ["a"]);
-    writeTick(r.live, T1 + 2 * MINUTE, ["b"]);
+    writeTicks(r.live, [[T1 + 8 * MINUTE, ["e"]], [T1, ["a"]], [T1 + 2 * MINUTE, ["b"]]]);
     const run = () => shadowTick({ liveDir: r.live, copyDir: r.copy, recordPath: r.record, candidate: r.candidate("identical") });
     run(); run(); run();
     const recorded = lines(r.record);
@@ -173,8 +176,7 @@ test("the live directory's bytes are identical before and after a run", () => {
 
 test("the copy is refreshed at the start of each invocation: a line the live ledger gained between two runs is seen by the second", () => {
   withRig((r) => {
-    writeTick(r.live, T1, ["a"]);
-    writeTick(r.live, T1 + 2 * MINUTE, ["a"]);
+    writeTicks(r.live, [[T1, ["a"]], [T1 + 2 * MINUTE, ["a"]]]);
     const run = () => shadowTick({ liveDir: r.live, copyDir: r.copy, recordPath: r.record, candidate: r.candidate("readsCopyLedger") });
     run();
     appendFileSync(join(r.live, "wake-ledger"), "line-2\n");

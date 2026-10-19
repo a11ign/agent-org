@@ -87,6 +87,18 @@ const host = () => {
   return { ledger, call, extra };
 };
 
+/** Writes `fixture` past the bound, makes one more call so the trim drops the older half, and returns what the trim kept and dropped. */
+function trimmed(h: ReturnType<typeof host>, fixture: string[]) {
+  const fixtureText = `${fixture.join("\n")}\n`;
+  writeFileSync(h.ledger, fixtureText);
+  const { status } = h.call("2026-10-13T21:00:00Z", "pr", "list");
+  const kept = readFileSync(h.ledger, "utf8");
+  const appended = kept.slice(kept.lastIndexOf("\n", kept.length - 2) + 1);
+  const keptFixture = kept.slice(0, kept.length - appended.length);
+  const dropped = fixtureText.slice(0, fixtureText.length - keptFixture.length);
+  return { status, fixtureText, keptFixture, dropped };
+}
+
 test("#4148: a rollup written as the trim drops lines keeps every hour: the ledger plus the rollup count every call made", () => {
   const h = host();
   const hours = ["2026-10-08T13", "2026-10-08T14", "2026-10-08T15"];
@@ -136,15 +148,10 @@ test("#1482: the rollup a trim writes holds what `settle` makes of the dropped l
     pool[reset] += 2;
     fixture.push(counted(time, pool[reset], reset, i % 7 === 0 ? String(COST) : ""));
   }
-  const fixtureText = `${fixture.join("\n")}\n`;
-  writeFileSync(h.ledger, fixtureText);
   // the fixture is past the bound, so this call's line is appended and the trim drops the older half of the file
-  assert.equal(h.call("2026-10-13T21:00:00Z", "pr", "list").status, 0);
-  const kept = readFileSync(h.ledger, "utf8");
-  const appended = kept.slice(kept.lastIndexOf("\n", kept.length - 2) + 1);
-  const keptFixture = kept.slice(0, kept.length - appended.length);
+  const { status, fixtureText, keptFixture, dropped } = trimmed(h, fixture);
+  assert.equal(status, 0);
   assert.ok(fixtureText.endsWith(keptFixture), "POSITIVE CONTROL: what the trim kept is the newest lines of the fixture, whole");
-  const dropped = fixtureText.slice(0, fixtureText.length - keptFixture.length);
   assert.ok(dropped.split("\n").filter(Boolean).length >= 20, "POSITIVE CONTROL: the trim dropped the older lines");
   const shared = settle(parseLedger(dropped)).filter((e) => e.settled === "shared").length;
   assert.ok(shared > 0, "POSITIVE CONTROL: some counter-less lines sit between two readings of one window in the dropped half");
@@ -326,15 +333,10 @@ test("#1482: the trim's rollup settles the reviewer's ordering too: a `pr list` 
     pool[reset] += 2;
     fixture.push(counted(time, pool[reset], reset));
   }
-  const fixtureText = `${fixture.join("\n")}\n`;
-  writeFileSync(h.ledger, fixtureText);
   // the fixture is past the bound, so this call's line is appended and the trim drops the older half of the file
-  assert.equal(h.call("2026-10-13T21:00:00Z", "pr", "list").status, 0);
-  const kept = readFileSync(h.ledger, "utf8");
-  const appended = kept.slice(kept.lastIndexOf("\n", kept.length - 2) + 1);
-  const keptFixture = kept.slice(0, kept.length - appended.length);
+  const { status, fixtureText, keptFixture, dropped } = trimmed(h, fixture);
+  assert.equal(status, 0);
   assert.ok(fixtureText.endsWith(keptFixture), "POSITIVE CONTROL: what the trim kept is the newest lines of the fixture, whole");
-  const dropped = fixtureText.slice(0, fixtureText.length - keptFixture.length);
   assert.ok(dropped.startsWith(fixture[0]), "POSITIVE CONTROL: the reviewer's ordering is at the head of the dropped half");
   assert.ok(dropped.includes(fixture[3]), "POSITIVE CONTROL: A's second reading is in the dropped half");
   const actual = perHour([], parseRollup(readFileSync(rollupPathOf(h.ledger), "utf8")), { account: WORKERS, resource: "graphql" });

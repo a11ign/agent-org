@@ -99,6 +99,16 @@ function prListRoute(routes: Routes, args: string[]): string {
   return /reviewDecision/.test(fields) ? routes.prReviews ?? "[]" : routes.prList ?? "[]";
 }
 
+/** Wraps `base` so that `probe.asked` turns true once any `pr list` is run: the B4 lookup a refusal must never reach. */
+function prListProbe(base: (cmd: string, args: string[]) => string) {
+  const probe = { asked: false };
+  const run = (cmd: string, args: string[]) => {
+    if (args[0] === "pr" && args[1] === "list") probe.asked = true;
+    return base(cmd, args);
+  };
+  return { run, probe };
+}
+
 function routedRun(routes: Routes) {
   return (_cmd: string, args: string[]): string => {
     const held = heldRowRoute(routes, args);
@@ -171,17 +181,10 @@ test("#462's own POSITIVE CONTROL: remove the overlap, end to end, and it goes q
 });
 
 test("B2 is checked BEFORE B4 -- a row IN BUILD is reported without even asking about files", () => {
-  let prListAsked = false;
-  const base = routedRun({ issueList: JSON.stringify([{ number: 472 }]) });
-  const run = (cmd: string, args: string[]) => {
-    if (args[0] === "pr" && args[1] === "list") prListAsked = true;
-    return base(cmd, args);
-  };
-  const reason = sessionEligibilityReason(455, "worker-judge",
-    { run
-});
+  const { run, probe } = prListProbe(routedRun({ issueList: JSON.stringify([{ number: 472 }]) }));
+  const reason = sessionEligibilityReason(455, "worker-judge", { run });
   assert.ok(reason);
-  assert.equal(prListAsked, false, "B4's lookup is a separate round trip and should not run once B2 has "
+  assert.equal(probe.asked, false, "B4's lookup is a separate round trip and should not run once B2 has "
     + "already decided to refuse");
 });
 
@@ -201,8 +204,7 @@ test("#1886's own acceptance shape: an open blockedBy edge on the row being clai
   });
   const reason = sessionEligibilityReason(455, "worker-judge", { run });
   assert.ok(reason, "#1852's own reproduction: an open blockedBy edge must refuse, not read as startable");
-  assert.match(reason as string, /#1878/);
-  assert.match(reason as string, /#1883/);
+  for (const pattern of [/#1878/, /#1883/]) assert.match(reason as string, pattern);
 });
 
 test("#1886's own POSITIVE CONTROL: a CLOSED blockedBy edge is a wait that has cleared -- goes quiet", () => {
@@ -213,17 +215,12 @@ test("#1886's own POSITIVE CONTROL: a CLOSED blockedBy edge is a wait that has c
 });
 
 test("the blockedBy-edge check runs BEFORE B4 -- refused without even asking about files", () => {
-  let prListAsked = false;
-  const base = routedRun({
+  const { run, probe } = prListProbe(routedRun({
     blockedBy: JSON.stringify({ blockedBy: { nodes: [{ number: 1878, state: "OPEN" }] } }),
-  });
-  const run = (cmd: string, args: string[]) => {
-    if (args[0] === "pr" && args[1] === "list") prListAsked = true;
-    return base(cmd, args);
-  };
+  }));
   const reason = sessionEligibilityReason(455, "worker-judge", { run });
   assert.ok(reason);
-  assert.equal(prListAsked, false, "B4's lookup is a separate round trip and should not run once the "
+  assert.equal(probe.asked, false, "B4's lookup is a separate round trip and should not run once the "
     + "row's own blockedBy edge has already decided to refuse");
 });
 

@@ -248,7 +248,7 @@ const PNPM_404 = Object.assign(new Error("Command failed: pnpm install --no-lock
   + "@a11ign/control is not in the npm registry, or you have no permission to fetch it.\n\nNo authorization header was set for the request.\n" });
 
 /** A keyed review of #6 whose head declares `@a11ign/control` and `yaml`, the clone holding `yaml`, with `install` as the tree's install. */
-function reviewWithInstall(install: () => void) {
+function reviewWithInstall(install: ({ cwd }: { cwd: string }) => void) {
   const dir = mkdtempSync(join(tmpdir(), "keyed-404-"));
   try {
     const clone = join(dir, "clone");
@@ -265,7 +265,7 @@ function reviewWithInstall(install: () => void) {
     const root = join(dir, "reviews");
     const checkout = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root, repoRoot: clone, link });
     const linkedYaml = existsSync(join(root, SESSION, "node_modules", "yaml"));
-    return { checkout, linkedYaml };
+    return { checkout, linkedYaml, root };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -305,29 +305,13 @@ test("#4321 (negative) an install that fails any OTHER way still REFUSES, howeve
 });
 
 test("#4321 (control) an install that SUCCEEDS is unchanged: a tree with no note and the sentence that the Acceptance runs there", () => {
-  const dir = mkdtempSync(join(tmpdir(), "keyed-ok-"));
-  try {
-    const clone = join(dir, "clone");
-    mkdirSync(join(clone, "node_modules", "yaml"), { recursive: true });
-    const base = fakeGit();
-    const git = (cmd: string, args: string[]) => {
-      if (args.join(" ").includes("worktree add")) {
-        mkdirSync(args[args.length - 2], { recursive: true });
-        writeFileSync(join(args[args.length - 2], "package.json"), JSON.stringify({ dependencies: { "@a11ign/control": "0.1.0", yaml: "^2.9.0" } }));
-      }
-      return base.seams.git(cmd, args);
-    };
-    // The install "succeeds" by writing EVERY declared package into the tree, as pnpm would.
-    const install = ({ cwd }: { cwd: string }) => { for (const name of ["@a11ign/control", "yaml"]) mkdirSync(join(cwd, "node_modules", name), { recursive: true }); };
-    const link = (args: { path: string; repoRoot: string }) => linkKeyedDependencies({ ...args, install });
-    const made = prepareReviewCheckout({ pr: 6, session: SESSION, ...base.seams, git, root: join(dir, "reviews"), repoRoot: clone, link });
-    assert.deepEqual(made, { path: join(dir, "reviews", SESSION), head: HEAD }, "no `note` key at all");
-    const order = withReviewCheckout({ session: SESSION, prompt: "p" }, made as never, 6).prompt;
-    assert.match(order, /Acceptance runs there as written/);
-    assert.doesNotMatch(order, /NOT installed/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  // The install "succeeds" by writing EVERY declared package into the tree, as pnpm would.
+  const install = ({ cwd }: { cwd: string }) => { for (const name of ["@a11ign/control", "yaml"]) mkdirSync(join(cwd, "node_modules", name), { recursive: true }); };
+  const { checkout: made, root } = reviewWithInstall(install);
+  assert.deepEqual(made, { path: join(root, SESSION), head: HEAD }, "no `note` key at all");
+  const order = withReviewCheckout({ session: SESSION, prompt: "p" }, made as never, 6).prompt;
+  assert.match(order, /Acceptance runs there as written/);
+  assert.doesNotMatch(order, /NOT installed/);
 });
 
 test("#2991: a live KEYED reviewer is re-pointed to the pull request's current head, from the clone into the keyed ref", () => {
