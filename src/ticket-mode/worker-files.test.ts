@@ -1,6 +1,7 @@
 // no-token: gh -- pure builders
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { outcomeExamples } from "./outcome.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
@@ -291,7 +292,8 @@ test("a drafts-on brief opens a draft: step 6 runs pr:open with --draft, names t
   assert.ok(brief.includes("`Outside-Region: <path> — <reason>`"), "a path outside the plan's Region is declared in the body");
   assert.equal(brief.includes("gh pr create"), false, "the brief no longer tells a worker to open its pull request with gh");
   assert.equal(brief, briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", drafts: true }), "an absent flag is the same as true");
-  assert.ok(brief.includes(`{ "kind": "draft-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
+  assert.ok(brief.includes(outcomeExamples(["draft-pr"])), "the outcome example is a concrete draft-pr");
+  assert.equal(brief.includes("<pull request url>"), false, "no placeholder is left in the outcome example");
   assert.equal(brief.includes("ready-pr"), false);
 });
 
@@ -301,7 +303,7 @@ test("A11-92: a brief asks for the tracker's closing keyword on a completing pul
   assert.ok(brief.includes("When the pull request is partial and leaves part of the ticket to do, it names the ticket `Refs NBF-1270` instead, with a `Partial: <what remains>` line, and the ticket stays open"),
     "a partial pull request is written with the non-closing keyword and a Partial line");
   assert.ok(brief.includes("a pull request that completes the ticket is never written with `Refs`"), "the non-closing keyword is not for a completing pull request");
-  assert.ok(brief.includes(`{ "kind": "draft-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`), "the outcome example is unchanged");
+  assert.ok(brief.includes(outcomeExamples(["draft-pr"])), "the outcome example is the draft-pr one, concrete");
   assert.ok(brief.includes(`A partial pull request adds \`"partial": "<what remains>"\` to its \`draft-pr\` line`), "a partial pull request declares it in the outcome file");
 });
 
@@ -318,13 +320,13 @@ test("a drafts-off brief opens a ready pull request: its command has no --draft,
   const brief = briefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", attachments: [], clones, worktreeCommand: "/node /tool/src/bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", drafts: false });
   assert.ok(brief.includes("6. Push the branch and open ONE READY pull request per repository you changed: write its body to a file, then run `/node /tool/src/bin.ts pr:open create --title \"<type>(<scope>): <what changed>\" --body-file <file>`."));
   assert.equal(brief.includes("--draft"), false, "no draft anywhere in the brief");
-  assert.ok(brief.includes(`{ "kind": "ready-pr", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }`));
+  assert.ok(brief.includes(outcomeExamples(["ready-pr"])), "the outcome example is a concrete ready-pr");
   assert.equal(brief.includes("draft-pr"), false);
 });
 
 test("a worker may end on checked when nothing needs to change, and is told needs-human is only for what the person alone can decide", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
-  assert.ok(brief.includes('{ "kind": "checked", "reason": "<what you checked, what you found, and why the ticket is not finished>" }'), "checked is one of the outcomes");
+  assert.ok(brief.includes(outcomeExamples(["checked"])), "checked is one of the outcomes, with an example");
   assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is \*\*not finished\*\*/);
   assert.match(brief, /the ticket is only a parent whose work is all in its child tickets \(name them, so the person queues them\)/);
   assert.match(brief, /Write `needs-human` only for a real question or decision that only the person can make/);
@@ -332,7 +334,7 @@ test("a worker may end on checked when nothing needs to change, and is told need
 
 test("A11-91: the worker's brief says when to write done and when checked, lists done with its evidence, and lets it propose an edit to the ticket's text", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
-  assert.ok(brief.includes('{ "kind": "done", "reason": "<what the ticket asks, and that every Done-when item holds>", "evidence": ["<one line per Done-when item: what you ran or read, and what it showed>"] }'), "done is one of the outcomes, with its evidence");
+  assert.ok(brief.includes(outcomeExamples(["done"])), "done is one of the outcomes, with its evidence in the example");
   assert.match(brief, /Write `done` only when no code and no pull request is needed and \*\*every Done-when item of the ticket is verified\*\*/, "done: every Done-when verified");
   assert.match(brief, /The `evidence` list has one line per Done-when item: what you ran or read, and what it showed/, "done: the evidence says what was seen");
   assert.match(brief, /A prediction is not evidence/, "done: a prediction never fills evidence");
@@ -374,7 +376,7 @@ test("A11-70: a batch's brief names the host file's clones keys as the only repo
 
 test("A11-80: a worker may end a turn on working only while its own background work runs and will wake it, and never to park a question", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
-  assert.ok(brief.includes('{ "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }'), "working is one of the outcomes");
+  assert.ok(brief.includes(outcomeExamples(["working"])), "working is one of the outcomes, with an example");
   for (const pattern of [
     /Write `working` only while your own background work \(a background shell or a Monitor\) is genuinely still running and will wake you when it finishes/,
     /Never write `working` to park a question or to wait on a person: that is `needs-human`/,

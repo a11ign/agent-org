@@ -15,6 +15,7 @@ import type { PullRequest, WriterForm } from "./queue/declared-remains.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { MAX_DRAFT_BYTES, MAX_DRAFTS } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
+import { outcomeExamples } from "./outcome.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -323,8 +324,7 @@ ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.
 Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
-{ "kind": "planned" }
-{ "kind": "needs-human", "reason": "<the question only a person can answer, and why the evidence does not settle it>" }
+${outcomeExamples(["planned", "needs-human"])}
 \`\`\`
 
 Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plan with what they said, and write the outcome file again as the last thing you do.
@@ -408,8 +408,7 @@ ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.
 Write \`${runDir}/${OUTCOME_FILE}\` as the last thing you do, after every plan, question and \`${ORDER_FILE}\`, with exactly one of:
 
 \`\`\`json
-{ "kind": "planned" }
-{ "kind": "needs-human", "reason": "<the question only a person can answer, and why the evidence does not settle it>" }
+${outcomeExamples(["planned", "needs-human"])}
 \`\`\`
 
 Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plans with what they said, and write the outcome file again as the last thing you do.
@@ -519,13 +518,10 @@ ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.
 Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
-{ "kind": "${drafts ? "draft-pr" : "ready-pr"}", "prs": [{ "repo": "<repo>", "url": "<pull request url>" }] }
-{ "kind": "wrong-repo", "where": "<the repository or service the fix belongs in, and why>" }
-{ "kind": "done", "reason": "<what the ticket asks, and that every Done-when item holds>", "evidence": ["<one line per Done-when item: what you ran or read, and what it showed>"] }
-{ "kind": "checked", "reason": "<what you checked, what you found, and why the ticket is not finished>" }
-{ "kind": "needs-human", "reason": "<what a person must decide or provide>" }
-{ "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }
+${outcomeExamples([drafts ? "draft-pr" : "ready-pr", "wrong-repo", "done", "checked", "needs-human", "working"])}
 \`\`\`
+
+\`prs\` is an array of \`{repo, url}\` even for one pull request: a \`pr\` field is refused. The Stop hook checks this file and refuses a wrong one, naming the field, so write it again in the same turn.
 
 \`done\`, \`checked\` and \`needs-human\` may each add \`"edit": { "title": "<the title it should have>", "description": "<the whole description it should have>", "why": "<what is wrong, and what shows it>" }\`.
 
@@ -592,8 +588,7 @@ ${connectorsText(connectors)}${reviewNotes?.trim() ? `\n## How this machine revi
 Write \`${ticketDir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
-{ "kind": "reviewed" }
-{ "kind": "needs-human", "reason": "<what a person must decide or provide>" }
+${outcomeExamples(["reviewed", "needs-human"])}
 \`\`\`
 
 ${round.reviewed} A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
@@ -689,8 +684,7 @@ Write \`${dir}/${PUBLISHED_FILE}\` once the messages are posted, with the web ad
 Then write \`${dir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
-{ "kind": "published" }
-{ "kind": "needs-human", "reason": "<what stopped you posting, and what was posted already>" }
+${outcomeExamples(["published", "needs-human"])}
 \`\`\`
 `;
 }

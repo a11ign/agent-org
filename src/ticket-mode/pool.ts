@@ -102,7 +102,8 @@ export { herdrName, herdrServerCommand, type Herdr, type HerdrAsync } from "./po
 export { batchDir, batchFolder, publishDir, publishFolder, worktreesIn } from "./pool-paths.ts";
 export { isStartDialog } from "./pool-start.ts";
 export { countTokens, findFolderSession, findTranscript } from "./pool-transcripts.ts";
-export { conflictLines, doneComment, feedbackSince, parseOutcome, publishResult, readEdit } from "./pool-outcome.ts";
+export { conflictLines, doneComment, feedbackSince, parseOutcome, publishResult } from "./pool-outcome.ts";
+export { readEdit } from "./outcome.ts";
 export { startsReviewers, type PoolDeps, type QueueStore } from "./pool-context.ts";
 export { ticketDir, ticketFolder } from "./ticket-paths.ts";
 

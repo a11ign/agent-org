@@ -46,6 +46,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { liveBackgroundWork } from "./background-work.ts";
+import { checkOutcome } from "./outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
   WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
@@ -386,15 +387,6 @@ function prReviewVerdict(toolName: string, input: Record<string, unknown>, ticke
   return ALLOW;
 }
 
-/** Whether an outcome file's text is a `working` outcome. Text that is not JSON is not one: the pool reads it as it reads any outcome. PURE. */
-function isWorking(text: string): boolean {
-  try {
-    return (JSON.parse(text) as { kind?: unknown } | null)?.kind === "working";
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The background work the session's transcript shows as live: its count, or the reason it could not be read (the Stop payload named no transcript,
  * or the file is not there or not readable). A transcript that cannot be read is not a refusal: the caller allows the stop out loud.
@@ -409,10 +401,52 @@ function liveWork(transcriptPath: string | undefined, read: (path: string) => st
   }
 }
 
+/** The filesystem a stop reads and writes, passed as one value so the helpers below take at most two arguments. */
+type StopIo = Readonly<{
+  exists: (path: string) => boolean; read: (path: string) => string; write: (path: string, text: string) => void; mtime: (path: string) => number;
+}>;
+
+/** The outcome file a stop is judged on, the stamp a `working` one leaves beside it, and the transcript that may wake it. */
+type StopSubject = Readonly<{ outcome: string; stamp: string; transcriptPath: string | undefined }>;
+
+/** A stop's judgment: allowed (`verdict`), or refused with what to ask (`ask`) and the words the count limit uses for it (`stuck`). */
+type Judgment = Readonly<{ verdict: HookResult } | { ask: string; stuck: string }>;
+
 /**
- * The Stop verdict: allowed once the outcome file is there, refused with its path otherwise, up to {@link MAX_STOP_REFUSALS} in a row. A `working`
- * outcome allows one stop, and only while the session has live background work to wake it (`transcriptPath`); a later stop on the same file, by its
- * time, is refused the same way, so a worker its background work woke says how the run stands now.
+ * A `working` outcome: allowed once its stamp is written, while live background work will wake the worker; refused otherwise (A11-80, A11-85).
+ */
+function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, io: StopIo): Judgment {
+  const working = String(io.mtime(outcome));
+  const stuck = `on the same working outcome in ${outcome}, so this one is allowed and the board keeps the run in progress`;
+  if (io.exists(stamp) && io.read(stamp).trim() === working) {
+    return { ask: `${outcome} still says working from before your background work woke you: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of your own work is still running.`, stuck };
+  }
+  const work = liveWork(transcriptPath, io.read);
+  if (work.unreadable === undefined && work.live === 0) {
+    return { ask: `${NOTHING_WAKES}. ${outcome} says working, but none of your background work is running: wait for the work in the foreground, or write the outcome the run ended on.`, stuck };
+  }
+  // Let through, with its time stamped, so a stop on this same file is refused once its work has woken the worker.
+  io.write(stamp, working);
+  return { verdict: work.unreadable === undefined ? ALLOW : { code: 0, say: [`ticket:hook: could not read the transcript (${work.unreadable}), so working is ALLOWED.`] } };
+}
+
+/** The judgment of the outcome file as it stands: refused when the contract refuses it, allowed unless it says `working`, and `working` judged on its own. */
+function judgeOutcome(subject: StopSubject, io: StopIo): Judgment {
+  const checked = checkOutcome(io.read(subject.outcome));
+  if ("problem" in checked) {
+    // The field the contract wants is named, so the worker fixes the file in the same turn; a near miss is refused here too (A11-118).
+    const stuck = checked.ok
+      ? `on the same outcome in ${subject.outcome}, which names one pull request in pr, so this one is allowed and the board records that pull request`
+      : `on the same invalid outcome in ${subject.outcome}, so this one is allowed and the board hands the run back for a person`;
+    return { ask: `${checked.problem}. Write ${subject.outcome} again as the last thing you do, in the shape your brief shows.`, stuck };
+  }
+  return checked.outcome.kind === "working" ? judgeWorking(subject, io) : { verdict: ALLOW };
+}
+
+/**
+ * The Stop verdict: allowed once the outcome file is there and passes the contract, refused with what to fix otherwise, up to
+ * {@link MAX_STOP_REFUSALS} in a row. A `working` outcome allows one stop, and only while the session has live background work to wake it
+ * (`transcriptPath`); a later stop on the same file, by its time, is refused the same way, so a worker its background work woke says how the run stands now.
  */
 export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t),
   mtime = (p: string) => statSync(p).mtimeMs, transcriptPath }: {
@@ -421,35 +455,18 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
 } = {}): HookResult {
   const outcome = join(ticketDir, OUTCOME_FILE);
   const counter = join(ticketDir, STOP_COUNT_FILE);
-  const stamp = join(ticketDir, WORKING_STOP_FILE);
-  let ask = `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`;
-  if (exists(outcome)) {
-    const working = isWorking(read(outcome)) ? String(mtime(outcome)) : null;
-    if (working === null) {
-      write(counter, "0");
-      return ALLOW;
-    }
-    if (!exists(stamp) || read(stamp).trim() !== working) {
-      const work = liveWork(transcriptPath, read);
-      if (work.unreadable === undefined && work.live === 0) {
-        ask = `${NOTHING_WAKES}. ${outcome} says working, but none of your background work is running: wait for the work in the foreground, or write the outcome the run ended on.`;
-      } else {
-        // Let through, with its time stamped, so a stop on this same file is refused once its work has woken the worker.
-        write(stamp, working);
-        write(counter, "0");
-        return work.unreadable === undefined ? ALLOW : { code: 0, say: [`ticket:hook: could not read the transcript (${work.unreadable}), so working is ALLOWED.`] };
-      }
-    } else {
-      ask = `${outcome} still says working from before your background work woke you: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of your own work is still running.`;
-    }
+  const io: StopIo = { exists, read, write, mtime };
+  const judged: Judgment = exists(outcome)
+    ? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath }, io)
+    : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
+  if ("verdict" in judged) {
+    write(counter, "0");
+    return judged.verdict;
   }
   const refused = exists(counter) ? Number.parseInt(read(counter), 10) || 0 : 0;
-  if (refused >= MAX_STOP_REFUSALS) {
-    const what = exists(outcome) ? `on the same working outcome in ${outcome}, so this one is allowed and the board keeps the run in progress` : `without ${outcome}, so this one is allowed and the board records no outcome`;
-    return { code: 0, say: [`ticket-mode: ${refused} stops in a row ${what}.`] };
-  }
+  if (refused >= MAX_STOP_REFUSALS) return { code: 0, say: [`ticket-mode: ${refused} stops in a row ${judged.stuck}.`] };
   write(counter, String(refused + 1));
-  return refuse(ask);
+  return refuse(judged.ask);
 }
 
 /** The transcript a Stop payload names, where Claude Code writes the session, or undefined when the payload names none it can read. */
