@@ -430,9 +430,9 @@ export function createIssue(argv: string[], deps: {
   }
   const laneLabels = laneResult.laneLabels;
   // #1011: BEFORE `gh issue create`, so a refusal leaves nothing behind. See `milestoneRefusal`.
-  const releaseRefusal = !declaresRelease(argv)
-    ? undeclaredReleaseRefusal(tracker, declaration, { run, milestones })
-    : primaryMilestoneRefusal(argv, (body as string), tracker, declaration, { primaryMilestones, run }); // #4378
+  const releaseRefusal = declaresRelease(argv)
+    ? primaryMilestoneRefusal(argv, (body as string), tracker, declaration, { primaryMilestones, run }) // #4378
+    : undeclaredReleaseRefusal(tracker, declaration, { run, milestones });
   if (releaseRefusal) {
     process.stderr.write(`${releaseRefusal}\n`);
     return 1;

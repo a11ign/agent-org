@@ -89,17 +89,17 @@ export function buildQuestion(order: DecisionOrder, port: Parameters<DecisionCla
   const promotable = item !== null && gap && head !== null && OPEN_CHECK_PATTERN.test(item.body) && edgesClosed(item, nowMs)
     && !item.flags.some((f) => f === "hold" || f.startsWith("answer-owed:"));
   read.set(order.causeKey, { ref, gap, head, promotable });
-  const why = !gap ? "the row is no longer unclaimed in the backlog, so there is nothing to decide."
-    : promotable ? null
-      : head === null ? "the order names no head to re-read the Open-check at."
-        : "the row's Open-check, an edge, a hold or a wait still stands in the way of a promotion.";
+  const why = promotable ? null
+    : gap && head === null ? "the order names no head to re-read the Open-check at."
+    : gap ? "the row's Open-check, an edge, a hold or a wait still stands in the way of a promotion."
+    : "the row is no longer unclaimed in the backlog, so there is nothing to decide.";
   const text = [
     `An unclaimed row's blocker closed. The order said: ${order.prompt ?? "(no text)"}`,
     `Promote it (\`promote\`, with the head you re-read its Open-check at in \`openCheckHead\`), hold it with the reason (\`hold\`), or return it to the standing seat (\`escalate\`).`,
     "The default is `hold`: promote only when you re-read the premise at the head you were given and it still holds.",
     ...(why === null ? [] : [`This row cannot be promoted now: ${why}`]),
   ].join("\n");
-  const allowed: readonly string[] = !gap ? [ESCALATE] : promotable ? ALLOWED : [HOLD, ESCALATE];
+  const allowed: readonly string[] = promotable ? ALLOWED : gap ? [HOLD, ESCALATE] : [ESCALATE];
   return { text, default: HOLD, allowed };
 }
 

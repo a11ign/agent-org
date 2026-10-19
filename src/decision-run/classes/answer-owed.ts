@@ -84,7 +84,7 @@ export function buildQuestion(order: DecisionOrder, port: Parameters<DecisionCla
     "Answer it from the row if you can (`answered`, with the answer in `text`), pass it to another session (`relabel`, naming `session` from " +
       `${RELABEL_SESSIONS.join(", ")}), or return it to the standing seat (\`escalate\`).`,
     "A question that asks for a ruling, a rule change, an admin write or a chairman decision is `escalate`, always.",
-    ...(forced ? ["This item must be `escalate`: " + (!flagHeld ? "the order's flag is no longer on it, so there is nothing to decide." : "its text asks for a ruling or an admin step.")] : []),
+    ...(forced ? ["This item must be `escalate`: " + (flagHeld ? "its text asks for a ruling or an admin step." : "the order's flag is no longer on it, so there is nothing to decide.")] : []),
   ].join("\n");
   return { text, default: ESCALATE, allowed: forced ? [ESCALATE] : [...ALLOWED] };
 }

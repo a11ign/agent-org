@@ -110,7 +110,7 @@ export function untieredReadyRows({ trackers }: { trackers: TrackerReader[]; }):
     }
     for (const row of listed) {
       if (!Array.isArray(row.labels) || !Array.isArray(row.comments)) {
-        refused.push(`the ${!Array.isArray(row.labels) ? "labels" : "comments"} of ${nameOf(tracker, row.number)} in ${where}`);
+        refused.push(`the ${Array.isArray(row.labels) ? "comments" : "labels"} of ${nameOf(tracker, row.number)} in ${where}`);
         continue;
       }
       if (!labelNames(row).includes(READY_LABEL) || hasTierDecision(row)) continue;

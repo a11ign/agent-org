@@ -252,8 +252,9 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     async orderLiaison(order: { text: string; messageRef: string; }): Promise<{ queued: boolean; say: string; handoff: string | null; taker: string | null; told: string | null; }> {
       const verdict = submit(await port(), (note) => buttonOrderText(order, now(), note));
       const queued = verdict.taker !== null;
-      const say = !queued ? `not delivered: ${verdict.refusals.join(" | ")}`
-        : verdict.delivery === "delivered" ? `delivered to ${verdict.taker}` : `queued for ${verdict.taker}, handoff ${verdict.handoff}`;
+      const say = queued && verdict.delivery === "delivered" ? `delivered to ${verdict.taker}`
+        : queued ? `queued for ${verdict.taker}, handoff ${verdict.handoff}`
+        : `not delivered: ${verdict.refusals.join(" | ")}`;
       return { queued, say, handoff: verdict.handoff, taker: verdict.taker, told: verdict.taker === FALLBACK_RECIPIENT ? toldOf(verdict) : null };
     },
     /** `accepted` is what `createInbound(...).handle()` returned with `action: "forward"`. */

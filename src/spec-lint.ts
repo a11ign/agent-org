@@ -235,8 +235,7 @@ function listedFile(entry: SpecValue, field: string): Listed | null {
 function listedFiles(spec: SpecMap, report: Report): Listed[] {
   const listed: Listed[] = [];
   if (isBlank(spec.files)) report.findings.push(finding("files", "missing", "`files:` is required: list the exact paths the worker may change"));
-  else if (!Array.isArray(spec.files)) report.findings.push(finding("files", "missing", "`files:` must be a list of paths"));
-  else {
+  else if (Array.isArray(spec.files)) {
     spec.files.forEach((entry, index) => {
       const field = `files[${index}]`;
       const one = listedFile(entry, field);
@@ -244,6 +243,7 @@ function listedFiles(spec: SpecMap, report: Report): Listed[] {
       else listed.push(one);
     });
   }
+  else report.findings.push(finding("files", "missing", "`files:` must be a list of paths"));
   const tests = spec.tests;
   if (isMap(tests)) {
     const path = listedFile({ path: tests.path ?? null, new: tests.new ?? null }, "tests.path");

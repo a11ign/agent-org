@@ -73,7 +73,7 @@ test("parseRequire: N/M, and nothing else is read as a requirement", () => {
 
 const resultOf = (pr: EvalPr, got: Label | null): Result => ({ pr, got, agreed: got === pr.label, note: "", reply: null });
 /** The set with the reviewer agreeing on all but `miss`, which it answers the opposite of (or `null`, no verdict). */
-const resultsMissing = (miss: number[], as: "opposite" | null = "opposite"): Result[] => SET.map((pr, at) => resultOf(pr, !miss.includes(at) ? pr.label : as === null ? null : pr.label === "convinced" ? "not convinced" : "convinced"));
+const resultsMissing = (miss: number[], as: "opposite" | null = "opposite"): Result[] => SET.map((pr, at) => resultOf(pr, miss.includes(at) ? (as === null ? null : pr.label === "convinced" ? "not convinced" : "convinced") : pr.label));
 
 test("score: nine of eleven with every `not convinced` agreeing passes", () => {
   const s = score(resultsMissing([5, 6]), { need: 9, of: 11 });

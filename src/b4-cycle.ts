@@ -100,11 +100,11 @@ export function advanceDeadlocks(previous: Record<string, DeadlockEpisode>, seen
     if (prior === undefined) {
       episodes[key] = { ...identity, since: now, woke: holder, escalated: holder === null };
       moves.push(holder === null ? { kind: "escalate", deadlock, woke: null, since: now } : { kind: "wake-holder", deadlock, holder, since: now });
-    } else if (!prior.escalated) {
+    } else if (prior.escalated) {
+      episodes[key] = prior;
+    } else {
       episodes[key] = { ...prior, escalated: true };
       moves.push({ kind: "escalate", deadlock, woke: prior.woke, since: prior.since });
-    } else {
-      episodes[key] = prior;
     }
   }
   const broken = Object.entries(previous).filter(([key]) => !Object.hasOwn(episodes, key))

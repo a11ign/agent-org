@@ -19,11 +19,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   const args = process.argv.slice(2);
   const at = args.indexOf("--repo");
   const repo = at === -1 ? DEFAULT_REPO : args[at + 1] ?? "";
-  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) {
-    console.error(`agent-org ticket:stack-live-check: --repo ${repo} is not owner/repo`);
-    process.exitCode = REFUSED;
-  } else {
+  if (/^[^/\s]+\/[^/\s]+$/.test(repo)) {
     const passed = runLiveCheck({ repo, runId: Date.now().toString(36), gh: defaultGh, log: (line) => console.log(line) });
     process.exitCode = passed ? 0 : 1;
+  } else {
+    console.error(`agent-org ticket:stack-live-check: --repo ${repo} is not owner/repo`);
+    process.exitCode = REFUSED;
   }
 }
