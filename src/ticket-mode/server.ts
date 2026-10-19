@@ -32,7 +32,7 @@ import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue } from 
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
-import type { Assignee, Ticket, TicketSource } from "./source.ts";
+import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import { approveDraft, discardDraft } from "./writer-create.ts";
 import { PRIORITIES } from "./writer.ts";
 
@@ -45,6 +45,8 @@ const TRACKER_MS = 120_000;
 export const FEEDBACK_MS = 180_000;
 /** How long herdr web ui may take to mint a terminal pairing code before the link goes out plain (A11-93). */
 const TERMINAL_PAIR_MS = 5_000;
+/** How long a reading of who holds the open tickets stands. */
+const PEOPLE_FRESH_MS = 300_000;
 const MODELS = ["opus", "sonnet", "haiku"];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -158,6 +160,8 @@ type Board = Readonly<{
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
   whoAmI: () => Promise<Assignee | null>;
   terminalAddress: () => Promise<string | null>;
+  scopesOnDemand: () => boolean;
+  whoHolds: () => Promise<People>;
 }>;
 
 /** The new-ticket requests, each with its status, as the page shows them. */
@@ -166,13 +170,13 @@ function writersViewOf(queue: Queue) {
 }
 
 /** The GET routes: the board's config, the Pick lists, the queue and the new-ticket requests. `undefined` when no route here names the request. */
-async function readRoute(board: Board, method: string, path: string): Promise<[number, unknown] | undefined> {
+async function readRoute(board: Board, method: string, path: string, query: URLSearchParams): Promise<[number, unknown] | undefined> {
   const { deps, settings, source, store, known, plans } = board;
   if (method === "GET" && path === "/api/config") {
     // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
     // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
     return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
-      publish: settings.publish !== null, pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone",
+      publish: settings.publish !== null, pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
       pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
       writer: settings.writer !== null, writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
   }
@@ -181,6 +185,17 @@ async function readRoute(board: Board, method: string, path: string): Promise<[n
     // say whose key it is, or cannot be asked, leaves the text saying "you": the empty list still names its setting.
     const user = settings.pick === "assigned" && source.viewer ? await source.viewer().catch(() => null) : null;
     return [200, { empty: pickEmptyText(settings.pick, user) }];
+  }
+  if (method === "GET" && path === "/api/people") {
+    if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so it counts nobody separately" }];
+    return [200, await board.whoHolds()];
+  }
+  if (method === "GET" && path === "/api/tickets" && query.has("assignee")) {
+    // One page of the scope the Assignee row chose, with the cursor of the next: Anyone and Unassigned can hold thousands of tickets, past what one answer carries.
+    if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so a scope is not read on its own" }];
+    const page = await source.scoped!(query.get("assignee") ?? "", query.get("after"));
+    for (const ticket of page.tickets) known.tickets.set(ticket.key, ticket);
+    return [200, page];
   }
   if (method === "GET" && path === "/api/tickets") {
     const tickets = await source.assigned();
@@ -335,8 +350,8 @@ async function queueActionRoute(board: Board, method: string, path: string, body
 }
 
 /** The route table: each request is answered by the first group that names its method and path, and a path none names is a 404. */
-async function routeApi(board: Board, method: string, path: string, body: Json): Promise<[number, unknown]> {
-  return (await readRoute(board, method, path))
+async function routeApi(board: Board, method: string, path: string, body: Json, query: URLSearchParams): Promise<[number, unknown]> {
+  return (await readRoute(board, method, path, query))
     ?? (await postRoute(board, method, path, body))
     ?? (await writerRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
@@ -361,6 +376,18 @@ export function createBoard(deps: BoardDeps) {
   async function whoAmI(): Promise<Assignee | null> {
     if (viewer === null && source.me !== undefined) viewer = await source.me().catch(() => null);
     return viewer;
+  }
+
+  /** Whether the Assignee row can reach tickets beyond the key's own, one scope at a time: the default list is the key's own, and the source can read the rest. */
+  const scopesOnDemand = (): boolean => settings.pick === "assigned" && source.people !== undefined && source.scoped !== undefined;
+
+  /** Who holds the open tickets, read once in a while: it takes about 12 s on a workspace of 7,000 tickets. Asked again after PEOPLE_FRESH_MS, and never twice at once. */
+  let people: { at: number; value: People } | null = null;
+  let peopleReading: Promise<People> | null = null;
+  async function whoHolds(): Promise<People> {
+    if (people !== null && Date.now() - people.at < PEOPLE_FRESH_MS) return people.value;
+    peopleReading ??= source.people!().then((value) => { people = { at: Date.now(), value }; return value; }).finally(() => { peopleReading = null; });
+    return peopleReading;
   }
 
   /**
@@ -403,10 +430,10 @@ export function createBoard(deps: BoardDeps) {
       batch: plansInBatches(settings.planner) };
   }
 
-  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, savedRun, queueTickets, whoAmI, terminalAddress };
+  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, savedRun, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds };
 
-  async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
-    return routeApi(board, method, path, body);
+  async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
+    return routeApi(board, method, path, body, query);
   }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -418,7 +445,7 @@ export function createBoard(deps: BoardDeps) {
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${settings.port}`);
     try {
       const body = request.method === "POST" ? await readJson(request, API_BODY_BYTES) : {};
-      const [status, value] = await api(request.method ?? "GET", url.pathname, body);
+      const [status, value] = await api(request.method ?? "GET", url.pathname, body, url.searchParams);
       sendJson(response, status, value);
     } catch (err) {
       sendJson(response, 400, { error: String((err as Error)?.message ?? err) });

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { isParked, runStatus } from "./board-view/settled-by-pulls.ts";
+import { isParked, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/declared-remains.ts";
 import { approve, conflictRound, respond, batchPlanDone, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths } from "./queue/approve.ts";
 import { emptyQueue, loadQueue, nextStarts, saveQueue, changeDraft, dismissWriter, draftOf, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
@@ -601,6 +601,20 @@ test("A11-82: runs that share a path in one repository start in turn: the earlie
   assert.deepEqual(nextStarts(open, 0, 14).map((e) => e.ticket.key), ["C", "D"], "a finished run with a pull request open still holds its path");
   const merged = { ...open, entries: open.entries.map((e) => (e.ticket.key === "A" ? { ...e, pullStates: { [pr.url]: "merged" as const } } : e)) };
   assert.deepEqual(nextStarts(merged, 0, 14).map((e) => e.ticket.key), ["B", "C", "D"], "once its pull request merges, B starts");
+});
+
+test("A11-117: two queued runs in one repository start together up to the queue's limit when their source files differ, and a run that shares eslint.config.ts waits", () => {
+  const scaffold = ["app:.acceptance/", "app:.changeset/"];
+  const paths = (...files: string[]) => new Map([["A", [...scaffold, ...files]], ["B", [...scaffold, ...files]]]);
+  const two = recordPaths(resumeQueue(enqueue(emptyQueue(2), [ticket("A"), ticket("B")], choice, 1)), new Map([["A", [...scaffold, "app:src/a.ts"]], ["B", [...scaffold, "app:src/b.ts"]]]));
+  assert.deepEqual(nextStarts(two, 0, 14).map((e) => e.ticket.key), ["A", "B"], "both start at once");
+  assert.deepEqual(two.entries.map((e) => waitNote(e, two.entries)), [null, null], "neither waits on the scaffolding");
+  const one = recordPaths(resumeQueue(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1)), new Map([["A", [...scaffold, "app:src/a.ts"]], ["B", [...scaffold, "app:src/b.ts"]]]));
+  assert.deepEqual(nextStarts(one, 0, 14).map((e) => e.ticket.key), ["A"], "the queue's limit still holds the second");
+  const shared = recordPaths(resumeQueue(enqueue(emptyQueue(2), [ticket("A"), ticket("B")], choice, 1)), paths("app:eslint.config.ts"));
+  assert.deepEqual(nextStarts(shared, 0, 14).map((e) => e.ticket.key), ["A"], "B shares eslint.config.ts with A, so it waits for A in this pass");
+  const running = markRunning(markStarting(shared, "A", 2), "A", "w1", "w1:p1");
+  assert.equal(waitNote(running.entries[1], running.entries), "Waits on A: both touch eslint.config.ts", "and the board names the shared file, not the directories");
 });
 
 test("A11-82: tickets of one batch whose plans share a path are held against each other: the earlier starts and the later waits", () => {

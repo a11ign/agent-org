@@ -21,9 +21,12 @@
 // (`git-spawn-classification.test.ts`), including a read-only one: an inherited `GIT_DIR` would have this
 // module list another repository's root files and report on them as though they were ours.
 import { execFileSync } from "node:child_process";
-import { HOME_CHECKOUT } from "./project-config.ts";
+import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT } from "./project-config.ts";
 
 import { sandboxGitEnv } from "./lib/git-env.ts";
+
+/** The tree a region is read against by default: the project's checkout, or the worker's own tree when the host declares no project (`isTicketOnlyRun`). */
+const defaultTree = (): string => (HOME_CHECKOUT === TICKET_ONLY_CHECKOUT ? process.cwd() : HOME_CHECKOUT);
 
 /** @type {Map<string, string[]>} one answer per checkout: the question is about a repository, so the answer is keyed by it. */
 const topLevelCache: Map<string, string[]> = new Map();
@@ -47,7 +50,7 @@ const topLevelCache: Map<string, string[]> = new Map();
  * @param {{ checkout?: string }} [where] the repository whose top-level directories are wanted; the project's by default
  * @returns {string[]}
  */
-export function trackedTopLevelDirs({ checkout = HOME_CHECKOUT }: { checkout?: string; } = {}): string[] {
+export function trackedTopLevelDirs({ checkout = defaultTree() }: { checkout?: string; } = {}): string[] {
   const known = topLevelCache.get(checkout);
   if (known) return known;
   const out = execFileSync("git", ["ls-files"], { encoding: "utf8", cwd: checkout, env: sandboxGitEnv() });
@@ -264,7 +267,7 @@ let rootFilesReading: RootFileReading | null = null;
  */
 export function rootFilesOnMain({ repoRoot }: { repoRoot?: string; } = {}): RootFileReading {
   if (rootFilesReading && repoRoot === undefined) return rootFilesReading;
-  const repo = repoRoot ?? HOME_CHECKOUT;
+  const repo = repoRoot ?? defaultTree();
   for (const ref of (["origin/main", "HEAD"] as const)) {
     try {
       const listing = execFileSync("git", ["ls-tree", ref, "--"],

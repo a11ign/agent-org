@@ -24,7 +24,7 @@ export type Forward = (target: Target, request: ForwardRequest) => Promise<Forwa
 const FORWARD_MS = 30_000;
 /** The most an instance's answer may hold. The largest is a list of tickets. */
 const ANSWER_BYTES = 8 * 1024 * 1024;
-const READS = new Set(["/api/config", "/api/tickets", "/api/parents", "/api/pick", "/api/queue", "/api/writer"]);
+const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer"]);
 const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/writer"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/;
 /** A new-ticket request's own actions, and a draft's approve or discard: `/api/writer/<run>/stop`, `/api/writer/<run>/drafts/<draft>/approve`. */

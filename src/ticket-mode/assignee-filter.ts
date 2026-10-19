@@ -1,8 +1,9 @@
 // @ts-check
 // module: the Pick view's Assignee filter -- whose tickets the list shows: the chips and their counts, the scope the list starts on, and the words that say which scope the count reads
 //
-// ONE LIST, FILTERED HERE. The server reads every open ticket the key can see, each with its assignee, and this module picks the ones in the chosen
-// scope. The counts of every chip come from that same list, so choosing a person is never a request of its own.
+// ONE LIST, FILTERED HERE. The page holds the tickets it has read so far, each with its assignee, and this module picks the ones in the chosen scope. An instance that lists a
+// team's or a project's tickets sends them all at once, so choosing a person is never a request of its own. An instance that lists the key's own sends who holds the rest
+// (`Held`), for the chips' counts, and the page reads another scope's tickets only when it is chosen (`scopeToRead`).
 //
 // A SCOPE IS A WORD OR A PERSON. "you", "anyone" and "unassigned" are the three words; any other scope is the id of the person it shows. Linear's
 // ids are not those words, so a scope cannot be mistaken for one.
@@ -32,6 +33,17 @@ export const ANYONE = "anyone";
 /** The scope of the tickets nobody has been given. */
 export const UNASSIGNED = "unassigned";
 
+/** Who holds the open tickets, as an instance counts them for an Assignee row whose list holds only the key's own. */
+export type Held = Readonly<{ people: readonly Readonly<{ id: string; name: string; count: number }>[]; unassigned: number; total: number }>;
+
+/**
+ * The scope to ask an instance that reads scopes on demand for, or `null` when the page already holds it: the signed-in person's tickets are the first
+ * list, Anyone covers every scope, and a scope read once is not read again. An instance that lists everything at once is never asked.
+ */
+export function scopeToRead(scope: string, read: ReadonlySet<string>): string | null {
+  return scope === YOU || read.has(scope) || read.has(ANYONE) ? null : scope;
+}
+
 /** One chip of the Assignee row: the scope it chooses, what it reads, how many listed tickets it matches, and whether it is chosen. */
 export type ScopeChip = Readonly<{ scope: string; text: string; count: number; pressed: boolean }>;
 
@@ -55,21 +67,26 @@ export function inScope(ticket: Owned, scope: string, viewer: Viewer): boolean {
  * The chips of the Assignee row, in order: the signed-in person (with "(you)", when known), Anyone, Unassigned, then each other person with an open
  * ticket, by most tickets and then by name. Counts are over every listed ticket, as the Projects counts are.
  */
-export function scopeChips(tickets: readonly Owned[], scope: string, viewer: Viewer): ScopeChip[] {
+export function scopeChips(tickets: readonly Owned[], scope: string, viewer: Viewer, held: Held | null = null): ScopeChip[] {
   const count = (value: string) => tickets.filter((t) => inScope(t, value, viewer)).length;
   const people = new Map<string, { name: string; count: number }>();
-  for (const { assignee } of tickets) {
-    if (!assignee || assignee.id === viewer?.id) continue;
-    people.set(assignee.id, { name: assignee.name, count: (people.get(assignee.id)?.count ?? 0) + 1 });
+  if (held === null) {
+    for (const { assignee } of tickets) {
+      if (!assignee || assignee.id === viewer?.id) continue;
+      people.set(assignee.id, { name: assignee.name, count: (people.get(assignee.id)?.count ?? 0) + 1 });
+    }
+  } else {
+    for (const person of held.people) if (person.id !== viewer?.id) people.set(person.id, { name: person.name, count: person.count });
   }
   const chip = (value: string, text: string, n: number): ScopeChip => ({ scope: value, text, count: n, pressed: scope === value });
   const others = [...people]
     .sort(([, a], [, b]) => b.count - a.count || a.name.localeCompare(b.name))
     .map(([id, person]) => chip(id, person.name, person.count));
+  const yours = held?.people.find((person) => person.id === viewer?.id)?.count ?? count(YOU);
   return [
-    ...(viewer === null ? [] : [chip(YOU, `${viewer.name} (you)`, count(YOU))]),
-    chip(ANYONE, "Anyone", tickets.length),
-    chip(UNASSIGNED, "Unassigned", count(UNASSIGNED)),
+    ...(viewer === null ? [] : [chip(YOU, `${viewer.name} (you)`, yours)]),
+    chip(ANYONE, "Anyone", held === null ? tickets.length : held.total),
+    chip(UNASSIGNED, "Unassigned", held === null ? count(UNASSIGNED) : held.unassigned),
     ...others,
   ];
 }
