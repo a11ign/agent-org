@@ -105,9 +105,9 @@ export type NewTicket = Readonly<{
 
 export interface TicketSource {
   /**
-   * Every unfinished ticket the Pick view lists, each with its assignee: every open ticket the key can see, or, where the host file's `tickets.pick`
-   * names a team or a project, every one of that team or project. Whom to show is the Pick view's choice, made on the list it is given, so one
-   * read serves every assignee. Throws when the tracker cannot be asked.
+   * Every unfinished ticket the Pick view lists, each with its assignee: the key's own, or, where the host file's `tickets.pick` names a team or a
+   * project, every one of that team or project. Whom to show is the Pick view's choice, made on the list it is given, so one read serves every
+   * assignee. Throws when the tracker cannot be asked.
    */
   assigned(): Promise<readonly Ticket[]>;
   /**

@@ -1,7 +1,7 @@
 // @ts-check
 // module: the Pick view's Assignee filter -- whose tickets the list shows: the chips and their counts, the scope the list starts on, and the words that say which scope the count reads
 //
-// ONE LIST, FILTERED HERE. The server reads every open ticket the key can see, each with its assignee, and this module picks the ones in the chosen
+// ONE LIST, FILTERED HERE. The server reads the key's own open tickets, or every open ticket of a team or a project, each with its assignee, and this module picks the ones in the chosen
 // scope. The counts of every chip come from that same list, so choosing a person is never a request of its own.
 //
 // A SCOPE IS A WORD OR A PERSON. "you", "anyone" and "unassigned" are the three words; any other scope is the id of the person it shows. Linear's
