@@ -105,7 +105,8 @@ export function actionsFor(answer: unknown, order: DecisionOrder): readonly Deci
   const seen = read.get(order.causeKey);
   const flag = flagOf(order);
   // Never asked, an unreadable item, a flag already gone or a ruling: each is no action, and the standing seat has the order.
-  if (seen === undefined || seen.ref === null || !seen.flagHeld || seen.ruling || flag === null) return [];
+  const nothingOwed = seen === undefined || seen.ref === null || !seen.flagHeld || seen.ruling || flag === null;
+  if (nothingOwed) return [];
   if (typeof text !== "string" || text.trim() === "") return [];
   const item = seen.ref;
   if (chosen === ANSWERED) {

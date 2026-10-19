@@ -132,7 +132,8 @@ const REGION_REASON = /^overlaps the Region of #/;
  */
 function refOfShelving({ reason, repo }: Shelved): Ref | null {
   const ref = heldRefOf(reason);
-  return ref === null || repo === undefined || ref.repo !== undefined || !REGION_REASON.test(reason) ? ref : { ...ref, tracker: repo };
+  const keepsRef = ref === null || repo === undefined || ref.repo !== undefined || !REGION_REASON.test(reason);
+  return keepsRef ? ref : { ...ref, tracker: repo };
 }
 
 /** A row's identity across trackers, which `holdingsOf`'s `named` is a set of: the bare number for the home tracker's, `<repo>#<number>` for a keyed tracker's. */
@@ -375,7 +376,8 @@ export function deadlockSummary(record: BlockingRecord, now: number): DeadlockSu
 /** @returns the record; throws for text that is not one (the caller tells an absent file, ENOENT, from a corrupt one) */
 export function parseRecord(text: string): BlockingRecord {
   const parsed = JSON.parse(text);
-  if (typeof parsed?.at !== "number" || typeof parsed.episodes !== "object" || parsed.episodes === null || !Array.isArray(parsed.samples)) {
+  const isMalformed = typeof parsed?.at !== "number" || typeof parsed.episodes !== "object" || parsed.episodes === null || !Array.isArray(parsed.samples);
+  if (isMalformed) {
     throw new Error(`${BLOCKING_FILE} is not a blocking record: ${text.slice(0, 120)}`);
   }
   return parsed as BlockingRecord;

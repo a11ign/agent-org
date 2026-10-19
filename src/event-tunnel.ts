@@ -180,7 +180,8 @@ const realReadStatus = (): unknown => {
 export async function main(argv: string[], deps: { out?: (line: string) => unknown, fetch?: Fetch, now?: () => number, run?: (args: string[]) => void, readStatus?: () => unknown } = {}): Promise<number> {
   const { out = (line: string) => process.stdout.write(`${line}\n`), fetch = realFetch, now = () => Math.floor(Date.now() / 1000), run = realRun, readStatus = realReadStatus } = deps;
   const [command] = argv;
-  if (command !== "register" && command !== "deliveries" && command !== "up" && command !== "down") {
+  const isUnknownCommand = command !== "register" && command !== "deliveries" && command !== "up" && command !== "down";
+  if (isUnknownCommand) {
     out("usage: node src/event-tunnel.ts <up|down|register|deliveries>");
     return 2;
   }

@@ -107,7 +107,8 @@ function usesInSource(file: string, text: string): Use[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const uses: Use[] = [];
   const visit = (node: ts.Node): void => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier)) {
+    const isModuleReference = (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier);
+    if (isModuleReference) {
       if (SPECIFIER.test(node.moduleSpecifier.text)) uses.push({ file, specifier: node.moduleSpecifier.text, names: boundNames(node) });
     } else if (ts.isCallExpression(node) && isModuleCall(node)) {
       const arg = node.arguments[0];
@@ -286,7 +287,8 @@ function consumerStepProblems(steps: readonly Step[], consumer: number): string[
   else if (consumer >= 0 && checkout > consumer) problems.push("a11ign/a11ign is checked out after the step that reads it");
   const path = checkout < 0 ? undefined : String(steps[checkout]?.with?.["path"] ?? "");
   const named = consumer < 0 ? undefined : steps[consumer]?.env?.["A11IGN_CHECKOUT"];
-  if (named === undefined || path === undefined || path === "" || !named.endsWith(`/${path}`)) problems.push(`A11IGN_CHECKOUT (${String(named)}) does not name the a11ign checkout's path (${String(path)})`);
+  const isMisnamed = named === undefined || path === undefined || path === "" || !named.endsWith(`/${path}`);
+  if (isMisnamed) problems.push(`A11IGN_CHECKOUT (${String(named)}) does not name the a11ign checkout's path (${String(path)})`);
   return problems;
 }
 

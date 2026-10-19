@@ -171,7 +171,8 @@ function newestLineAt(path: string, by: number, wanted: (record: any) => boolean
           const record = JSON.parse(line);
           if (!wanted(record) || typeof record.timestamp !== "string") continue;
           const at = Date.parse(record.timestamp);
-          if (!Number.isNaN(at) && at <= by && (newest === null || at > newest.at)) newest = { at, record };
+          const isNewerThanNewest = !Number.isNaN(at) && at <= by && (newest === null || at > newest.at);
+          if (isNewerThanNewest) newest = { at, record };
         } catch {
           // the line being written
         }

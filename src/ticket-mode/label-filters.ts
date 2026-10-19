@@ -42,7 +42,8 @@ export const labelChoice = (group: string | null, label: string | null): string 
 function choiceGroup(choice: string): string | null | undefined {
   try {
     const parsed: unknown = JSON.parse(choice);
-    return Array.isArray(parsed) && parsed.length === 2 && (parsed[0] === null || typeof parsed[0] === "string") ? parsed[0] : undefined;
+    const isLabelPair = Array.isArray(parsed) && parsed.length === 2 && (parsed[0] === null || typeof parsed[0] === "string");
+    return isLabelPair ? parsed[0] : undefined;
   } catch {
     return undefined;
   }

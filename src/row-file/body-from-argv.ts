@@ -717,7 +717,8 @@ export function parseSpecYaml(source: string): SpecValue {
     if (deeper) return node(deeper.indent);
     skipBlank();
     const same = lines[at];
-    if (sameIndentSequence && same && same.indent === parentIndent && /^-(\s|$)/.test(same.text)) return node(parentIndent);
+    const isSameSequenceItem = sameIndentSequence && same && same.indent === parentIndent && /^-(\s|$)/.test(same.text);
+    if (isSameSequenceItem) return node(parentIndent);
     return "";
   };
 
@@ -1026,8 +1027,9 @@ export function withFiledBy(argv: string[], session: string, body: string): stri
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--body" || arg === "--body-file" || arg === "--session") { i += 1; continue; }
-    if (arg.startsWith("--body=") || arg.startsWith("--body-file=") || arg.startsWith("--session=")
-      || arg.startsWith(TRACKER_FLAG) || arg.startsWith(ROADMAP_FLAG) || arg.startsWith(DISTINCT_FROM_FLAG) || arg === READY_FLAG || arg === ALLOW_SAME_TITLE_FLAG) continue;
+    const isOwnFlag = arg.startsWith("--body=") || arg.startsWith("--body-file=") || arg.startsWith("--session=")
+      || arg.startsWith(TRACKER_FLAG) || arg.startsWith(ROADMAP_FLAG) || arg.startsWith(DISTINCT_FROM_FLAG) || arg === READY_FLAG || arg === ALLOW_SAME_TITLE_FLAG;
+    if (isOwnFlag) continue;
     kept.push(arg);
   }
   kept.push("--body", appendFiledBy(body, session));

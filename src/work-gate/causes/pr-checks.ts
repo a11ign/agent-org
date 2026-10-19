@@ -58,7 +58,8 @@ function attempt(run: (args: string[]) => string, args: string[]): Attempt {
 
 /** A non-empty list of names, or `null`: an empty required set is "could not read", never "nothing blocks". */
 function usableNames(value: unknown): string[] | null {
-  if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string" && v)) return null;
+  const isMalformedList = !Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string" && v);
+  if (isMalformedList) return null;
   return [...new Set<string>(value)];
 }
 

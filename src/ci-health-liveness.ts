@@ -101,7 +101,8 @@ export function slotFromWorkflow(workflowText: string): Slot | null {
   const fields = crons[0].trim().split(/\s+/);
   const [minute, hour, dayOfMonth, month, weekday] = fields;
   const numeric = (field: string) => /^\d{1,2}$/.test(field);
-  if (fields.length !== 5 || dayOfMonth !== "*" || month !== "*" || ![minute, hour, weekday].every(numeric)) return null;
+  const isUnsupportedCron = fields.length !== 5 || dayOfMonth !== "*" || month !== "*" || ![minute, hour, weekday].every(numeric);
+  if (isUnsupportedCron) return null;
   const slot = { minute: Number(minute), hour: Number(hour), weekday: Number(weekday) % DAYS_PER_WEEK };
   return slot.minute < 60 && slot.hour < 24 && Number(weekday) <= DAYS_PER_WEEK ? slot : null;
 }
@@ -308,7 +309,8 @@ function declaredByProject(): { declared: Declared[]; } | { refusal: string; } {
 function declaredByFlags(): { declared: Declared[]; } | { refusal: string; } {
   const [repo, workflow, issue] = ["repo", "workflow", "issue"].map((name) => flagValue(process.argv.slice(2), name));
   if (repo === undefined && workflow === undefined && issue === undefined) return declaredByProject();
-  if (!repo || !workflow || !/^[1-9]\d*$/.test(issue ?? "")) return { refusal: "the flags (--repo, --workflow and --issue must be given together, the issue a positive integer)" };
+  const isMissingFlag = !repo || !workflow || !/^[1-9]\d*$/.test(issue ?? "");
+  if (isMissingFlag) return { refusal: "the flags (--repo, --workflow and --issue must be given together, the issue a positive integer)" };
   return { declared: [{ repo, workflow, issue: Number(issue) }] };
 }
 

@@ -465,7 +465,8 @@ function main() {
   const primaryRead = primaryDue(defaultRun, homeScopeOf());
   const { promotableRows, chairmanBlocked, openRowsRead, otherScopes } = readLanesAfterOutageCheck(); endGateSpan("readLanes");
   const eventUnread = eventUnreadForTick(pacing, defaultRun, declaredOthers); // read BEFORE the memory is stamped: a repository just read would otherwise look dropped
-  rememberOtherScopesRead(otherScopes, primaryRead && promotableRows !== null && chairmanBlocked !== null && openRowsRead !== null ? (homeScopeOf()?.key ?? null) : null);
+  const isHomeRead = primaryRead && promotableRows !== null && chairmanBlocked !== null && openRowsRead !== null;
+  rememberOtherScopesRead(otherScopes, isHomeRead ? (homeScopeOf()?.key ?? null) : null);
   const pacedSkips = [{ refused: pacedUnread(pacing, { others: declaredOthers.length > 0 }) }, { refused: primaryUnread(pacing, { primaryRead }) }, { refused: eventUnread }]; const reenqueueState = readReenqueueState(); const waitReads = endGateSpan("waitReads", waitReadsBeforeDecide(prs, otherScopes, openRowsRead, reenqueueState)); // #3095: `otherScopes` is read here, once -- B4 below compares with their pull requests, and `otherScopeTicks` ticks them
   // agent-org#5177: the other trackers' parked rows, which `otherScopeTicks` ticks but the home seam never reads; flag `rows.autoUnpark` in `machinery-canary.json` (not project.json), default OFF.
   unparkOtherTrackers({ state: reenqueueState, scopes: otherScopes.flatMap(({ scope, read }) => (scope.tracker === null ? [] : [{ repo: scope.tracker.repo, rows: read.openRows }])), facts: waitReads?.facts ?? null, now: Date.now(), run: defaultRun, log: (line) => process.stderr.write(line) });

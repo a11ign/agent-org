@@ -259,7 +259,8 @@ export function ownershipOfFailure({ failures, changed }: { failures: readonly J
 /** The files a pull request changes as the tick's list carries them, or `null` when the list is not the whole of it (a truncated list proves nothing about a file it does not show). */
 function changedFilesOf(pr: any): string[] | null {
   const files = Array.isArray(pr?.files) ? pr.files.map((f: any) => String(f?.path ?? f)) : null;
-  return files !== null && files.length > 0 && files.length >= Number(pr?.changedFiles ?? Infinity) ? files : null;
+  const isComplete = files !== null && files.length > 0 && files.length >= Number(pr?.changedFiles ?? Infinity);
+  return isComplete ? files : null;
 }
 
 /** The flag's state, read from the state directory; absent, unreadable or malformed is OFF, and a malformed file is said so it is not a silent default. */

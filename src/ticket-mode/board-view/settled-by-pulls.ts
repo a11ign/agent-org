@@ -317,7 +317,8 @@ export function runActions(entry: ViewEntry, publish?: ViewPublish): RunAction[]
   if (isParked(entry)) return ["close", ...edit, ...dismiss];
   const status = runStatus(entry);
   if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve", ...edit, ...dismiss];
-  if (status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined)) return ["respond", ...edit, ...dismiss];
+  const isHandedOffOrDone = status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined);
+  if (isHandedOffOrDone) return ["respond", ...edit, ...dismiss];
   const kind = entry.outcome?.kind;
   const done = kind === undefined || RESULT_KINDS.has(kind) || CONCLUDED.has(kind) || status === "completed";
   return [...(done ? [] : ["retry" as const]), ...edit, ...dismiss];

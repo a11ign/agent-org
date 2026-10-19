@@ -865,7 +865,8 @@ function referencedNames(ts: typeof import("typescript"), source: import("typesc
   const names: Set<string> = new Set();
   for (const { identifiers, isGuard, functionName, isFunction } of topLevelStatements(ts, source)) {
     if (kept !== null && isGuard) continue;
-    if (kept !== null && isFunction && !(functionName !== null && kept.has(functionName))) continue;
+    const isUnreachedFunction = kept !== null && isFunction && !(functionName !== null && kept.has(functionName));
+    if (isUnreachedFunction) continue;
     for (const identifier of identifiers) names.add(identifier);
   }
   return names;
@@ -922,9 +923,10 @@ function blankUnkept(ts: typeof import("typescript"), source: import("typescript
     // and matches a call-shaped pattern exactly as a real call does -- measured: blanking bodies alone left
     // the constant-only import charged at `dataset-paths.mjs:93`, the definition line. Nothing in a function
     // declaration executes at import beyond binding the name, so none of it belongs in this scan.
-    if (body && (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)
+    const isDeclarationWithBody = body && (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node)
       || ts.isConstructorDeclaration(node) || ts.isGetAccessorDeclaration(node)
-      || ts.isSetAccessorDeclaration(node))) {
+      || ts.isSetAccessorDeclaration(node));
+    if (isDeclarationWithBody) {
       // KEPT when something that runs reaches it by name (#1636): the importer's names, and what those reach.
       const reached = ts.isFunctionDeclaration(node) && node.name && kept.has(node.name.text);
       if (!reached) bodies.push([node.getStart(source), node.getEnd()]);
@@ -1238,8 +1240,9 @@ export function deriveClosureRequirements(entry: string, memo: ClosureMemo = cre
     const reach = scopeFor(memo, { file, codeOnly, names: union, isEntry: file === entry });
     const hereChain = [...chain, file];
     CLOSURE_REQUIREMENT_PATTERNS.forEach(([pattern, requirement, subject], index) => {
-      if (found.has(requirement) || (requirement === "corpus" && exemptCorpus)
-        || (requirement === "token" && exemptToken)) return;
+      const isSatisfied = found.has(requirement) || (requirement === "corpus" && exemptCorpus)
+        || (requirement === "token" && exemptToken);
+      if (isSatisfied) return;
       const matchedText = requirement !== "corpus" ? codeOnly : subject === "code" ? reach.codeScope : reach.scope;
       const match = matchOf(reach, { index, pattern, text: matchedText });
       if (match) recordHit({ requirement, file, text, codeOnly, match, chain: hereChain });

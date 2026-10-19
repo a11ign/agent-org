@@ -648,7 +648,8 @@ export function refusalsJobVerdict(pr: { statusCheckRollup?: unknown; }): "pass"
   if (!run || run.status !== "COMPLETED") return null;
   const conclusion = String(run.conclusion ?? "").toUpperCase();
   if (conclusion === "SUCCESS" || conclusion === "SKIPPED" || conclusion === "NEUTRAL") return "pass";
-  if (conclusion === "FAILURE" || conclusion === "TIMED_OUT" || conclusion === "ACTION_REQUIRED" || conclusion === "STARTUP_FAILURE") return "refuse";
+  const isFailedConclusion = conclusion === "FAILURE" || conclusion === "TIMED_OUT" || conclusion === "ACTION_REQUIRED" || conclusion === "STARTUP_FAILURE";
+  if (isFailedConclusion) return "refuse";
   return null;
 }
 
@@ -682,7 +683,8 @@ export function settleOutsideRefusals(openPrs: any[], { scope, run, log, switche
   for (const pr of openPrs) {
     const head = String(pr?.headRefOid ?? "");
     const author = pr?.author?.login;
-    if (head === "" || pr?.isCrossRepository !== false || typeof author !== "string" || !ORG_LOGINS.includes(author)) continue;
+    const isExternalPull = head === "" || pr?.isCrossRepository !== false || typeof author !== "string" || !ORG_LOGINS.includes(author);
+    if (isExternalPull) continue;
     if (seen.has(`${scope}#${pr.number}@${head}`)) continue;
     const job = refusalsJobVerdict(pr);
     if (job === null) continue;

@@ -639,7 +639,8 @@ function claimLikeLinesOutsideBlocks(file: string): { line: number; text: string
   src.split("\n").forEach((text, index) => {
     const at = offset;
     offset += text.length + 1;
-    if (begin >= 0 && end > begin && at > begin && at < end) return;
+    const isInsideBlock = begin >= 0 && end > begin && at > begin && at < end;
+    if (isInsideBlock) return;
     const isMeasuredClaim = (OUTCOME.test(text) && FIGURE.test(text)) || NUMERIC_TRANSITION.test(text);
     if (isMeasuredClaim) found.push({ line: index + 1, text: text.trim() });
   });

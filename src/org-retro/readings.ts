@@ -190,7 +190,8 @@ export function ledgerEntries(text: string, { since, until }: { since: number; u
   for (const line of text.split("\n")) {
     const [stamp, first, second] = line.trim().split("\t");
     const at = Number(stamp);
-    if (!Number.isFinite(at) || first === undefined || at < since || at > until) continue;
+    const isOutsideWindow = !Number.isFinite(at) || first === undefined || at < since || at > until;
+    if (isOutsideWindow) continue;
     entries.push(markers.has(first) ? { at, key: second ?? "", marker: first } : { at, key: first, marker: null });
   }
   return entries;

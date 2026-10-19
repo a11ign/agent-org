@@ -50,7 +50,8 @@ function ghAnswer(args: string[], { chairmanRows = [] as unknown[], refuse = [] 
   if (readsRecentlyClosed(args)) return recentlyClosedConnection([{ number: 9, closedAt: "2026-10-06T04:00:00Z", updatedAt: "2026-10-06T04:00:00Z" }]);
   if (args[0] === "api") return refused();
   if (args[0] === "label") return JSON.stringify([{ name: "answer:product-manager" }]);
-  if (args[0] === "issue" && args.includes("--state") && args.includes("open") && !args.includes("--label") && !args.includes("--search")) return JSON.stringify(open);
+  const isOpenIssueList = args[0] === "issue" && args.includes("--state") && args.includes("open") && !args.includes("--label") && !args.includes("--search");
+  if (isOpenIssueList) return JSON.stringify(open);
   throw new Error(`unexpected call: gh ${args.join(" ")}`);
 }
 

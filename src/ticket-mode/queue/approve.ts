@@ -63,7 +63,8 @@ function queueRound(queue: Queue, entry: Entry, feedback: string, now: number): 
  */
 export function conflictRound(queue: Queue, key: string, feedback: string, now: number): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || entry.phase !== "finished" || isWatched(entry) || !resumesOnConflict(entry) || !roundsLeft(entry)) return queue;
+  const cannotResume = entry === undefined || entry.phase !== "finished" || isWatched(entry) || !resumesOnConflict(entry) || !roundsLeft(entry);
+  if (cannotResume) return queue;
   return queueRound(queue, entry, feedback, now);
 }
 
@@ -77,7 +78,8 @@ export function queuePublish(queue: Queue, keys: readonly string[], now: number)
   if (ticked.length === 0) throw new Error("tick at least one run Ready to merge");
   const entries = ticked.map((key) => {
     const entry = find(queue, key);
-    if (entry === undefined || entry.phase !== "finished" || runStatus(entry) !== "ready-to-merge" || isParked(entry)) {
+    const cannotApprove = entry === undefined || entry.phase !== "finished" || runStatus(entry) !== "ready-to-merge" || isParked(entry);
+    if (cannotApprove) {
       throw new Error(`${key} is not Ready to merge, so it cannot be published`);
     }
     return entry;

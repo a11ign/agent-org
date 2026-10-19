@@ -276,7 +276,8 @@ function identityDrop({ sender, chat, message, payload, kind, chairman }: { send
   if (FORWARD_FIELDS.some((field) => field in message)) return DROP_REASON.forwarded;
   if (kind === "message" && (typeof message.text !== "string" || message.text === "")) return DROP_REASON.notText;
   // A button's data and query id are what row 9 acts on and answers, so a press whose either is not a string (`{evil: 1}`) is not one.
-  if (kind === "button" && (typeof payload.data !== "string" || payload.data === "" || typeof payload.id !== "string")) return DROP_REASON.malformed;
+  const isMalformedButton = kind === "button" && (typeof payload.data !== "string" || payload.data === "" || typeof payload.id !== "string");
+  if (isMalformedButton) return DROP_REASON.malformed;
   return null;
 }
 

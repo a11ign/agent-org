@@ -78,7 +78,8 @@ const rowKey = ({ row, tracker }: Pick<RouteStart, "row" | "tracker">): string =
  */
 export function routeStartsIn(lines: readonly unknown[]): RouteStart[] {
   return (lines as { use?: unknown; id?: unknown; outcome?: unknown; at?: unknown }[]).flatMap((line) => {
-    if (line?.use !== "model-routing" || typeof line.id !== "string" || typeof line.outcome !== "string" || typeof line.at !== "number") return [];
+    if (line?.use !== "model-routing" || typeof line.id !== "string") return [];
+    if (typeof line.outcome !== "string" || typeof line.at !== "number") return [];
     const id = ROW_ID.exec(line.id);
     const route = id === null ? null : ROUTE_LINE.exec(line.outcome);
     if (id === null || route === null) return [];

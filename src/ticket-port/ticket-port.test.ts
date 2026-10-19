@@ -221,9 +221,12 @@ const CHILD_PROCESS = /^(node:)?child_process$/;
 function importsOf(source: string): string[] {
   const out: string[] = [];
   const visit = (node: ts.Node) => {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) out.push(node.moduleSpecifier.text);
-    if (ts.isCallExpression(node) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])
-      && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) out.push(node.arguments[0].text);
+    const isModuleSpecifier = (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier);
+    if (isModuleSpecifier) out.push(node.moduleSpecifier.text);
+    if (ts.isCallExpression(node) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
+      const isRequireCall = node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require");
+      if (isRequireCall) out.push(node.arguments[0].text);
+    }
     ts.forEachChild(node, visit);
   };
   visit(ts.createSourceFile("x.ts", source, ts.ScriptTarget.Latest, true));

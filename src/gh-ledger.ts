@@ -264,7 +264,8 @@ export function parseRollup(text: string): HourRow[] {
   for (const line of text.split("\n")) {
     const f = line.split("\t");
     const [calls, read, floor, moved] = [Number(f[3]), Number(f[4]), Number(f[5]), f.length === 8 ? Number(f[7]) : 0];
-    if (f.length >= 6 && f.length <= 8 && /^\d{4}-\d\d-\d\dT\d\d$/.test(f[0]) && [calls, read, floor, moved].every(Number.isFinite)) {
+    const isHourRow = f.length >= 6 && f.length <= 8 && /^\d{4}-\d\d-\d\dT\d\d$/.test(f[0]) && [calls, read, floor, moved].every(Number.isFinite);
+    if (isHourRow) {
       rows.push({ hour: f[0], account: f[1], resource: f[2], calls, read, floor, ...(f[6] ? { caller: f[6] } : {}), ...(moved > 0 ? { moved } : {}) });
     }
   }
@@ -742,7 +743,8 @@ export function sessionAlarms(entries: LedgerEntry[], { nowMs = Date.now(), limi
   const sessions = new Map<string, { account: string; session: string; events: { at: number; caller: string; command: string; points: number }[] }>();
   for (const e of settle(entries)) {
     const at = Date.parse(e.time);
-    if (!e.sessionId || poolOf(e) === null || !(at > nowMs - HOUR_MS && at <= nowMs)) continue;
+    const isWithinHour = at > nowMs - HOUR_MS && at <= nowMs;
+    if (!e.sessionId || poolOf(e) === null || !isWithinHour) continue;
     const key = `${e.account}\t${e.sessionId}`;
     const session = sessions.get(key) ?? { account: e.account, session: e.sessionId, events: [] };
     session.events.push({ at, caller: callerScript(e.caller), command: e.command, points: spend(e) });

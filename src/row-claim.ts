@@ -2339,7 +2339,8 @@ function branchTaking(branch: string, issueNumber: number, run: typeof defaultRu
   if (tip === null) return { how: "new" };
   const reading = localBranchReading(branch, run);
   if (reading.exists && reading.free) return { how: "replaced", tip };
-  if (reading.exists && !reading.free && !reading.held && isOwnRowBranch(branch, issueNumber, run)) return { how: "adopted" };
+  const isAdoptable = reading.exists && !reading.free && !reading.held && isOwnRowBranch(branch, issueNumber, run);
+  if (isAdoptable) return { how: "adopted" };
   throw new Error(`row-claim: --branch=${branch} exists locally and is not free to recreate after the fetch: `
     + `${reading.exists ? reading.why : "it vanished"}. Nothing was written.`);
 }

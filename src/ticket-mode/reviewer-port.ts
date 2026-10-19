@@ -275,9 +275,10 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
     const reposts: Record<string, unknown> = data?.reposts ?? {};
     const repost = (value: any) => value !== null && typeof value === "object" && Number.isInteger(value.attempts) && value.attempts >= 0
       && (value.reason === undefined || typeof value.reason === "string");
-    if (data === null || typeof data !== "object" || data.heads === null || typeof data.heads !== "object"
+    const isMalformedMemory = data === null || typeof data !== "object" || data.heads === null || typeof data.heads !== "object"
       || !Object.values(data.heads).every((head) => typeof head === "string") || !strings(data.started) || !strings(data.resumed)
-      || reposts === null || typeof reposts !== "object" || !Object.values(reposts).every(repost)) {
+      || reposts === null || typeof reposts !== "object" || !Object.values(reposts).every(repost);
+    if (isMalformedMemory) {
       throw new Error("not a reviewer memory");
     }
     return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed),

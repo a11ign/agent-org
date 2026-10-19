@@ -105,7 +105,8 @@ export const POINTS_PER_GRAPHQL_READ = 1;
  */
 export function graphqlReadOf(args: string[]): boolean {
   const [head, verb] = args;
-  if ((head === "pr" || head === "issue") && (verb === "list" || verb === "view")) return true;
+  const isReadOnly = (head === "pr" || head === "issue") && (verb === "list" || verb === "view");
+  if (isReadOnly) return true;
   return head === "api" && verb === "graphql" && !args.some((arg) => /^query=\s*mutation\b/.test(arg));
 }
 

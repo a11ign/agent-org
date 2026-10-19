@@ -121,7 +121,8 @@ const isTagged = (value: unknown): value is Record<string, unknown> => typeof va
  */
 export function reviveShadowValue(_key: string, value: unknown) {
   if (!isTagged(value)) return value;
-  if (value[TYPE_TAG] === "Map" && Array.isArray(value.entries) && value.entries.every((entry) => Array.isArray(entry) && entry.length === 2)) return new Map(value.entries);
+  const isPair = (entry: unknown): boolean => Array.isArray(entry) && entry.length === 2;
+  if (value[TYPE_TAG] === "Map" && Array.isArray(value.entries) && value.entries.every(isPair)) return new Map(value.entries);
   if (value[TYPE_TAG] === "Set" && Array.isArray(value.values)) return new Set(value.values);
   if (value[TYPE_TAG] === "Date" && (typeof value.iso === "string" || value.iso === null)) return new Date(value.iso ?? Number.NaN);
   return value;

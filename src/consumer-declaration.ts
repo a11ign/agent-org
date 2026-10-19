@@ -83,7 +83,8 @@ export function parseConsumerDeclarations(text: string): ConsumerDeclarations {
     const repo = target.slice(0, colon);
     const path = target.slice(colon + 1);
     if (!REPO.test(repo)) return fail(`\`${repo}\` is not an \`owner/repo\``);
-    if (path === "" || !PATH.test(path) || path.startsWith("/") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
+    const isUnsafePath = path === "" || !PATH.test(path) || path.startsWith("/") || path.split("/").some((part) => part === "" || part === "." || part === "..");
+    if (isUnsafePath) {
       return fail(`\`${path}\` is not a file path relative to the repository's root (letters, digits, \`_ . - /\`; no \`..\`)`);
     }
     if (key.split(".").some((segment) => !KEY_SEGMENT.test(segment))) return fail(`\`${key}\` is not a dotted key path (segments of letters, digits, \`_\` and \`-\`)`);
@@ -102,7 +103,8 @@ export function parseConsumerDeclarations(text: string): ConsumerDeclarations {
 export function valueAtKey(json: unknown, key: string): { found: true, value: unknown } | { found: false } {
   let current: unknown = json;
   for (const segment of key.split(".")) {
-    if (typeof current !== "object" || current === null || Array.isArray(current) || !Object.hasOwn(current, segment)) return { found: false };
+    const isMissingSegment = typeof current !== "object" || current === null || Array.isArray(current) || !Object.hasOwn(current, segment);
+    if (isMissingSegment) return { found: false };
     current = (current as Record<string, unknown>)[segment];
   }
   return { found: true, value: current };

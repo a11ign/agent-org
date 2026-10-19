@@ -99,7 +99,8 @@ function readRefusals(path: string, row: string): number | null {
   }
   try {
     const parsed = JSON.parse(raw) as Partial<Count>;
-    if (typeof parsed.refusals !== "number" || !Number.isInteger(parsed.refusals) || parsed.refusals < 0 || typeof parsed.row !== "string") return null;
+    const isMalformedRecord = !Number.isInteger(parsed.refusals) || typeof parsed.row !== "string";
+    if (typeof parsed.refusals !== "number" || parsed.refusals < 0 || isMalformedRecord) return null;
     return parsed.row === row ? parsed.refusals : 0;
   } catch {
     return null;

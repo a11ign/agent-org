@@ -695,7 +695,8 @@ function main() {
   const post = argv.includes("--post");
   // THE SECOND ACTOR DOES NOTHING (agent-org#1574, behind `outside.board`): before anything is collected, because collecting is the minute this skip exists to save.
   const issueToPost = flag("--issue");
-  if (post && issueToPost && scheduledRunFindsWorkDone({ on: outsideBoardOn() }) && editionPosted({ day: editionDay(), issue: issueToPost })) {
+  const isEditionAlreadyPosted = post && issueToPost && scheduledRunFindsWorkDone({ on: outsideBoardOn() }) && editionPosted({ day: editionDay(), issue: issueToPost });
+  if (isEditionAlreadyPosted) {
     process.stdout.write(`outside.board: the ${editionDay()} edition is already on issue ${issueToPost}; nothing posted\n`);
     return;
   }

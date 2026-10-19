@@ -117,7 +117,8 @@ export function parseLedger(text: string): LedgerEntry[] {
   for (const line of text.split("\n")) {
     const [stamp, key, third] = line.split("\t");
     const at = Number(stamp);
-    if (!key || key === "RESET" || key === "ESCALATED" || !Number.isFinite(at)) continue;
+    const isUnusableKey = !key || key === "RESET" || key === "ESCALATED" || !Number.isFinite(at);
+    if (isUnusableKey) continue;
     const [group, cause = ""] = key.split("/");
     const session = group === "engineers" ? third : group;
     if (session) entries.push({ at, key, session, cause });

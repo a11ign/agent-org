@@ -139,7 +139,8 @@ function examinedNothing(row: number, examined: { paths: number; symbols: number
   // (`docs/`) names no `paths` and may name no backticked symbol either. Before the region half was
   // taught to read declared entries, such a row reached here and was reported CANNOT_ASK -- having, in
   // fact, examined three declared entries against 291 refs.
-  if (examined.paths > 0 || examined.symbols > 0 || (examined.region ?? 0) > 0) return null;
+  const isExamined = examined.paths > 0 || examined.symbols > 0 || (examined.region ?? 0) > 0;
+  if (isExamined) return null;
   // #2177: a row that DECLARED it has no files has not "given this nothing to examine" -- it said so.
   if (examined.declaredNoCommit) return null;
   if ((examined.prose ?? 0) > 0) {

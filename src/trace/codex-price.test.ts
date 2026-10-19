@@ -16,10 +16,13 @@ const SESSION_DOLLARS = rounded((3043 * 0.2 + 213 * 1.2 + 9984 * 0.02) / 1e6);
 /** The rows that are not Claude's: the ones whose rate must be quoted from somewhere. */
 const nonClaude = (rows: any[]) => rows.filter((row: { prefix: string; }) => !(typeof row.prefix === "string" && row.prefix.startsWith("claude-")));
 /** What a row owes: the URL it was quoted from and the day it was fetched. Returns the problems, empty when it is sourced. */
-const unsourced = (row: Record<string, string | undefined>) => [
-  ...(/^https:\/\/\S+$/.test(row.source ?? "") ? [] : ["source URL"]),
-  ...(/^\d{4}-\d{2}-\d{2}$/.test(row.fetched ?? "") && !Number.isNaN(Date.parse(row.fetched ?? "")) ? [] : ["fetched date"]),
-];
+const unsourced = (row: Record<string, string | undefined>) => {
+  const isDated = /^\d{4}-\d{2}-\d{2}$/.test(row.fetched ?? "") && !Number.isNaN(Date.parse(row.fetched ?? ""));
+  return [
+    ...(/^https:\/\/\S+$/.test(row.source ?? "") ? [] : ["source URL"]),
+    ...(isDated ? [] : ["fetched date"]),
+  ];
+};
 
 test("SOURCED: every non-Claude PRICES row carries a source URL and a fetched date; the same row with its source removed turns the check red", () => {
   const rows = nonClaude(PRICES);

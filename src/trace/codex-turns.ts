@@ -55,7 +55,8 @@ export function eventsOfCodexSession({ text, file, rowRepo, carry = null }: { te
     if (record.type === "session_meta" && session === null) session = sessionNamed(record.payload?.cwd, file, rowRepo);
     if (record.type === "turn_context" && typeof record.payload?.model === "string") model = record.payload.model;
     if (isModelInput(record) && !Number.isNaN(at)) inputAt = at;
-    if (record.type === "token_usage_record" && record.payload?.usage && record.payload.response_id && !Number.isNaN(at)) {
+    const isTokenUsage = record.type === "token_usage_record" && record.payload?.usage && record.payload.response_id && !Number.isNaN(at);
+    if (isTokenUsage) {
       requests.push({ at, response: record.payload.response_id, usage: record.payload.usage, model, since: inputAt });
     }
   }

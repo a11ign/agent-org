@@ -149,7 +149,8 @@ function closedRowsOf(other: { closes?: number[] | number | null; }): number[] {
  * is not unique across repositories.
  */
 function isOwnPrOf(other: { number: number; closes?: number[] | number | null; branch?: string; repo?: string; }, rowNumber: number | null | undefined, adoptedBranch?: string | null | undefined): boolean {
-  if (typeof adoptedBranch === "string" && adoptedBranch !== "" && other.repo === undefined && other.branch === adoptedBranch) return true;
+  const isAdoptedBranch = typeof adoptedBranch === "string" && adoptedBranch !== "" && other.repo === undefined && other.branch === adoptedBranch;
+  if (isAdoptedBranch) return true;
   if (!Number.isInteger(rowNumber)) return false;
   return closedRowsOf(other).includes(Number(rowNumber));
 }

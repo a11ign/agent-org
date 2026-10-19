@@ -326,10 +326,11 @@ export function announceBlocked({ number, repo, verdict, run, error, lead }: {
     const existing = JSON.parse(run(["pr", "view", String(number), "--repo", repo, "--json", "comments"])).comments;
     if (!Array.isArray(existing)) throw new Error("the API returned no comment list");
     // agent-org#1278: a marker comment that does not carry this run's lead is a refusal made before the disarm said so, and does not stand for this one.
-    if (existing.some((comment) => {
+    const hasMarkerComment = existing.some((comment) => {
       const body = String(comment?.body ?? "");
       return body.includes(marker) && (!lead || body.includes(lead));
-    })) return { posted: false };
+    });
+    if (hasMarkerComment) return { posted: false };
     run(["pr", "comment", String(number), "--repo", repo, "--body", `${marker}\n${lead ? `${lead}\n` : ""}**Not armed: ${verdict.why}.** ${tail}`]);
     return { posted: true };
   } catch (cause) {
@@ -454,7 +455,8 @@ export function familyMember(name: string, families: readonly SpareFamily[] = SP
     if (found === null) continue;
     const key = found[1] ?? "";
     const n = Number(found[2]);
-    if (!Number.isSafeInteger(n) || (key === "" && n < from) || /-\d+$/.test(key)) continue;
+    const isMalformed = !Number.isSafeInteger(n) || (key === "" && n < from) || /-\d+$/.test(key);
+    if (isMalformed) continue;
     if (key !== "" && !keys().includes(key)) continue;
     return { key, number: n };
   }

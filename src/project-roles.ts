@@ -118,7 +118,8 @@ function launchFieldRefusal(entry: { name: string; model?: unknown; effort?: unk
   if (effort !== undefined && !(typeof effort === "string" && CLAUDE_EFFORTS.includes(effort))) {
     return `${where}: \`effort\` must be one of ${CLAUDE_EFFORTS.join(", ")}, not ${JSON.stringify(effort)}.`;
   }
-  if (autocompact !== undefined && !(typeof autocompact === "number" && Number.isInteger(autocompact) && autocompact > 0)) {
+  const isInvalidAutocompact = autocompact !== undefined && !(typeof autocompact === "number" && Number.isInteger(autocompact) && autocompact > 0);
+  if (isInvalidAutocompact) {
     return `${where}: \`autocompact\` must be a positive whole number of tokens (the window \`--autocompact\` takes), not ${JSON.stringify(autocompact)}.`;
   }
   return null;

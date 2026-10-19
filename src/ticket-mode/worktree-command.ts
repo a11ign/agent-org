@@ -41,7 +41,8 @@ export async function main(argv: string[], env: Record<string, string | undefine
   const [repo, flag, from] = argv;
   const key = env[TICKET_ENV.key];
   const branch = env[TICKET_ENV.branch];
-  if (!repo || (flag !== undefined && (flag !== "--from" || !from || !BRANCH.test(from))) || argv.length > 3) {
+  const isMalformedArgs = !repo || (flag !== undefined && (flag !== "--from" || !from || !BRANCH.test(from))) || argv.length > 3;
+  if (isMalformedArgs) {
     return { code: 2, out: "usage: ticket:worktree <repo> [--from <branch>]" };
   }
   if (!key || !branch) return { code: 2, out: `ticket:worktree: ${TICKET_ENV.key} and ${TICKET_ENV.branch} are unset; it runs inside a ticket-mode worker` };

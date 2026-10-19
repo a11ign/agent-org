@@ -430,7 +430,8 @@ function nearDuplicates(row: BoardRow, other: BoardRow): boolean {
 function supersededOf(row: BoardRow, known: Map<number, BoardRow>): Finding[] {
   const named = /^\s*Superseded by\s+#(\d+)/im.exec(row.body ?? "");
   const by = named ? known.get(Number(named[1])) : undefined;
-  if (!by || by.state !== "CLOSED" || String(by.stateReason ?? "").toUpperCase() !== "COMPLETED") return [];
+  const isUncompletedClose = !by || by.state !== "CLOSED" || String(by.stateReason ?? "").toUpperCase() !== "COMPLETED";
+  if (isUncompletedClose) return [];
   return [finding(row, QUESTIONS.DUPLICATE, "state (open)", `\`Superseded by #${by.number}\`, and #${by.number} is closed completed`, ownerOf(row))];
 }
 
@@ -792,7 +793,8 @@ const ROADMAP_ISSUE_FIELDS = `number repository { nameWithOwner } projectItems(f
 /** @param {any} issue a GraphQL `Issue` node with `ROADMAP_ISSUE_FIELDS` and up to two `parent` levels @returns {RoadmapNode} THROWS on a node that is not shaped so, or whose items were cut short */
 function roadmapNodeOf(issue: any): RoadmapNode {
   const items = issue?.projectItems;
-  if (typeof issue?.number !== "number" || !Array.isArray(items?.nodes) || (items.totalCount ?? items.nodes.length) > items.nodes.length) {
+  const isMalformedItems = typeof issue?.number !== "number" || !Array.isArray(items?.nodes) || (items.totalCount ?? items.nodes.length) > items.nodes.length;
+  if (isMalformedItems) {
     throw new Error(`roadmap read: #${issue?.number} came back without all of its project items`);
   }
   return { ref: `${issue.repository?.nameWithOwner}#${issue.number}`,

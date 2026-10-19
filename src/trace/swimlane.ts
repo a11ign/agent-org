@@ -253,7 +253,8 @@ function fitted(text: string, width: number) {
 
 function barSvg(item: ReturnType<typeof layoutOf>["lanes"][number]["bars"][number], dearest: number) {
   const { bar, x0, x1, y, h } = item;
-  const label = bar.kind === "order" || bar.kind === "review" || bar.kind === "compaction" || h < LAYOUT.rowHeight ? "" : fitted(bar.text, x1 - x0);
+  const isUnlabelled = bar.kind === "order" || bar.kind === "review" || bar.kind === "compaction" || h < LAYOUT.rowHeight;
+  const label = isUnlabelled ? "" : fitted(bar.text, x1 - x0);
   return `<g class="${barClass(bar, dearest)}" id="bar-${esc(bar.id)}" data-lane="${esc(bar.lane)}" data-kind="${bar.kind}"${bar.repeat ? ` data-repeat="${esc(bar.repeat.kind)}"` : ""}><title>${esc(barTitle(bar))}</title>`
     + `<rect x="${x0.toFixed(1)}" y="${y}" width="${(x1 - x0).toFixed(1)}" height="${h}" rx="3"/>${label ? `<text x="${(x0 + LAYOUT.textPad).toFixed(1)}" y="${y + h / 2 + 4}">${esc(label)}</text>` : ""}</g>`;
 }

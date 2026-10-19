@@ -1145,8 +1145,9 @@ export function fetchReadyRowsWithBodies({ run = defaultRun }: { run?: typeof de
     .map((node) => ({ ...node, labels: node?.labels?.nodes })); // the shape `gh issue list --json` gave, which the checks below read
   return parsed.map((entry: unknown, i: number) => {
     const obj = (entry as { number?: unknown, title?: unknown, labels?: unknown, body?: unknown });
-    if (typeof obj?.number !== "number" || typeof obj?.title !== "string" || !Array.isArray(obj?.labels)
-      || typeof obj?.body !== "string") {
+    const isReadyRow = (candidate: typeof obj): candidate is { number: number; title: string; labels: unknown[]; body: string } => typeof candidate.number === "number"
+      && typeof candidate.title === "string" && Array.isArray(candidate.labels) && typeof candidate.body === "string";
+    if (!isReadyRow(obj)) {
       throw new Error(`ready-label-audit: ready row entry ${i} is missing number/title/labels/body -- `
         + `refusing to guess. Got: ${JSON.stringify(entry).slice(0, 300)}`);
     }

@@ -80,7 +80,8 @@ function fixture(issues: Record<number, ReturnType<typeof issue>>) {
   const ghStub = (args: string[]) => {
     ghCalls.push(args);
     // the stub FAILS THE RUN on anything but a read, whatever the script's own guard did before it
-    if (!(args[0] === "issue" && args[1] === "view") && !(args[0] === "api" && !args.includes("-X"))) throw new Error(`STUB gh: a write reached the org: gh ${args.join(" ")}`);
+    const isWriteCall = !(args[0] === "issue" && args[1] === "view") && !(args[0] === "api" && !args.includes("-X"));
+    if (isWriteCall) throw new Error(`STUB gh: a write reached the org: gh ${args.join(" ")}`);
     return JSON.stringify(issues[Number(args[2])] ?? (() => { throw new Error(`no such issue ${args[2]}`); })());
   };
   const git = (args: string[]) => { gitCalls.push(args); return execFileSync("git", args, { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); };

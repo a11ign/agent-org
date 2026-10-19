@@ -1372,7 +1372,8 @@ const CANARY_FILE = "machinery-canary.json";
 function flagOnIn(text: string | null, name: string): boolean {
   if (text === null || text.trim() === "") return false;
   const raw = JSON.parse(text) as { flags?: Record<string, { on?: boolean; } | undefined>; samples?: unknown; };
-  if (typeof raw !== "object" || raw === null || typeof raw.flags !== "object" || !Array.isArray(raw.samples)) throw new Error(`${CANARY_FILE} is not { flags, samples, memo }`);
+  const isMalformedState = typeof raw !== "object" || raw === null || typeof raw.flags !== "object" || !Array.isArray(raw.samples);
+  if (isMalformedState) throw new Error(`${CANARY_FILE} is not { flags, samples, memo }`);
   return raw.flags?.[name]?.on === true;
 }
 

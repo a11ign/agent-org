@@ -228,7 +228,8 @@ function workerName(key: string): string {
 export function readFleetRoster({ statePath, capturesPath, now, maxAgeMs = FLEET_READING_MAX_AGE_MS }: { statePath: string; capturesPath: string; now: number; maxAgeMs?: number; }): { up: string[]; down: string[]; polledAt: number; } {
   const notReady = Object.keys(readFleetState({ path: statePath }).state);
   const captures = JSON.parse(readFileSync(capturesPath, "utf8"));
-  if (captures === null || typeof captures !== "object" || captures.workers === null || typeof captures.workers !== "object" || Array.isArray(captures.workers)) {
+  const isMalformedCaptures = captures === null || typeof captures !== "object" || captures.workers === null || typeof captures.workers !== "object" || Array.isArray(captures.workers);
+  if (isMalformedCaptures) {
     throw new TypeError(`${capturesPath}: an object with a \`workers\` object was expected`);
   }
   const wroteAt = statSync(capturesPath).mtimeMs;

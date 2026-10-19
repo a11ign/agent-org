@@ -81,7 +81,8 @@ function readAnswer(raw: unknown): AnswerReading | undefined {
 }
 
 function readDecision(line: Record<string, unknown>): DecisionLine | undefined {
-  if (typeof line.use !== "string" || line.use === "" || !isNumber(line.at) || !isRecord(line.answers)) return undefined;
+  if (typeof line.use !== "string" || line.use === "") return undefined;
+  if (!isNumber(line.at) || !isRecord(line.answers)) return undefined;
   const answers: Array<[string, AnswerReading]> = [];
   for (const [question, raw] of Object.entries(line.answers)) {
     const answer = readAnswer(raw);

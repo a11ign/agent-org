@@ -107,7 +107,8 @@ export function routeOutcomePass({ listed, record, closedRows, events }: RouteOu
   for (const line of lines) {
     const entry = line as { use?: unknown; id?: unknown; outcome?: unknown; at?: unknown } | null;
     const row = typeof entry?.id === "string" ? Number(ROW_ID.exec(entry.id)?.[1]) : Number.NaN;
-    if (entry?.use !== USE || !outstanding.has(row) || typeof entry.outcome !== "string" || !ROUTE_LINE.test(entry.outcome) || typeof entry.at !== "number") continue;
+    const isMalformedRouteLine = entry?.use !== USE || !outstanding.has(row) || typeof entry.outcome !== "string" || !ROUTE_LINE.test(entry.outcome);
+    if (isMalformedRouteLine || typeof entry.at !== "number") continue;
     routedAt.set(row, Math.min(entry.at, routedAt.get(row) ?? entry.at));
   }
   const owed = new Set([...routedAt].filter(([, at]) => at >= now - HORIZON_MS).map(([row]) => row));

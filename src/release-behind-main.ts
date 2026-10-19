@@ -252,7 +252,8 @@ function attempt<T>(read: () => T): T | null {
 export function cachedReleaseBehind({ stateDir, now, read }: { stateDir: string; now: number; read: () => RepoFact[]; }): RepoFact[] {
   const path = join(stateDir, CACHE_FILE);
   const kept = attempt(() => JSON.parse(readFileSync(path, "utf8")));
-  if (Array.isArray(kept?.facts) && Number.isFinite(kept.readAt) && kept.readAt <= now && now - kept.readAt < READ_INTERVAL_MS) return kept.facts;
+  const isFresh = Array.isArray(kept?.facts) && Number.isFinite(kept.readAt) && kept.readAt <= now && now - kept.readAt < READ_INTERVAL_MS;
+  if (isFresh) return kept.facts;
   const facts = read();
   attempt(() => {
     writeFileSync(`${path}.tmp`, JSON.stringify({ readAt: now, facts }));

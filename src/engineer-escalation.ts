@@ -99,7 +99,8 @@ export function claimFacts(recordText: string, row: number): ClaimRecord {
       // A START IS A FRESH COUNT: reds a previous worker was told of are not this one's, and the cap is about THIS worker not coping.
       failedHeads.clear();
     }
-    if (entry.kind === "continuation" && entry.claim === `row-${row}` && entry.cause === CI_FAILING_CAUSE && typeof entry.causeKey === "string") failedHeads.add(entry.causeKey);
+    const isCiFailingContinuation = entry.kind === "continuation" && entry.claim === `row-${row}` && entry.cause === CI_FAILING_CAUSE;
+    if (isCiFailingContinuation && typeof entry.causeKey === "string") failedHeads.add(entry.causeKey);
     if (entry.kind === ESCALATION_KIND && entry.row === row) found.escalated = true;
   }
   return { ...found, ciFailures: failedHeads.size };

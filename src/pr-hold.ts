@@ -105,7 +105,8 @@ export function holdRepository({ key, ref }: { key: string | undefined; ref: str
   const declared = code.map((entry) => `${entry.key === "" ? "(none: the first)" : entry.key} = ${entry.repo}`).join(", ");
   const byKey = key === undefined ? undefined : code.find((entry) => entry.key === key);
   const byRef = ref === null ? undefined : code.find((entry) => entry.repo === ref);
-  if ((key !== undefined && !byKey) || (ref !== null && !byRef)) {
+  const isUnmatched = (key !== undefined && !byKey) || (ref !== null && !byRef);
+  if (isUnmatched) {
     return { error: `REFUSING: ${key !== undefined && !byKey ? `--repo-key=${key}` : ref} is not a repository this project declares, so nothing was written. Declared: ${declared}.` };
   }
   if (byKey && byRef && byKey !== byRef) {

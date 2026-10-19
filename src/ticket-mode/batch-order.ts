@@ -62,10 +62,12 @@ export function parseOrder(text: string, keys: readonly string[]): { order: Orde
   if (!isObject(value)) return { refusal: "it is not one object keyed by ticket" };
   const batch = new Set(keys);
   const order = new Map<string, Place>();
+  const isPlace = (candidate: unknown): candidate is { repo: string | null; after: unknown[]; wait?: unknown } => isObject(candidate)
+    && (candidate.repo === null || typeof candidate.repo === "string") && Array.isArray(candidate.after)
+    && candidate.after.every((k) => typeof k === "string") && (candidate.wait === undefined || WAITS.includes(candidate.wait));
   for (const [key, place] of Object.entries(value)) {
     if (!batch.has(key)) return { refusal: `it names ${key}, which is not in the batch` };
-    if (!isObject(place) || !(place.repo === null || typeof place.repo === "string") || !Array.isArray(place.after) || !place.after.every((k) => typeof k === "string")
-      || !(place.wait === undefined || WAITS.includes(place.wait))) {
+    if (!isPlace(place)) {
       return { refusal: `its entry for ${key} is not ${PLACE_SHAPE}` };
     }
     const after = place.after as string[];

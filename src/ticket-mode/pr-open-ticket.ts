@@ -114,7 +114,8 @@ const titleOf = (file: string): string => basename(file).replace(/^attachment-\d
  */
 export function treeKeyUnder(folder: string, tree: string): string | null {
   const rel = relative(realpathOf(folder), realpathOf(tree));
-  return rel !== "" && rel !== ".." && !rel.includes(sep) && !isAbsolute(rel) ? rel : null;
+  const isInsideRoot = rel !== "" && rel !== ".." && !rel.includes(sep) && !isAbsolute(rel);
+  return isInsideRoot ? rel : null;
 }
 
 const realpathOf = (path: string): string => {

@@ -105,7 +105,8 @@ function instanceOrigin(name: string, value: unknown): string {
   if (url === null || (url.protocol !== "https:" && url.protocol !== "http:")) {
     throw new Error(`connection ${name}: https must be the instance's address, such as "https://agents.example.ts.net"`);
   }
-  if (url.username !== "" || url.password !== "" || url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+  const hasExtraParts = url.username !== "" || url.password !== "" || url.pathname !== "/" || url.search !== "" || url.hash !== "";
+  if (hasExtraParts) {
     throw new Error(`connection ${name}: https must be the instance's address alone, with no user, path, query or fragment`);
   }
   if (url.protocol === "http:" && !LOOPBACK_HOSTS.has(url.hostname)) {

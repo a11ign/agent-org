@@ -282,8 +282,9 @@ function runOneCommand(command: string, run: (command: string) => number, { pref
   // would let one line in the body convert an unrelated `gh` refutation into `NOT RUN ... declared
   // hand-run`, attributing to a human a run they never declared. `Refutation:` keeps its own verdict
   // semantics: a `gh` line there is REFUSED for `token`, exactly as before this row.
-  if (prefix === "ACCEPTANCE" && handRun && classification.verdict === "refused"
-      && !capabilities?.token && needsToken(executable)) {
+  const isRefusedHandRun = prefix === "ACCEPTANCE" && handRun && classification.verdict === "refused"
+    && !capabilities?.token && needsToken(executable);
+  if (isRefusedHandRun) {
     return { executed: false, handRun: true, ok: true,
       line: `${prefix}: NOT RUN ${command} -> declared hand-run: ${handRun}. This job has no credential `
         + "and did not attempt it; nothing here verified this command. Paste the run into the PR body "
@@ -416,7 +417,8 @@ function runSectionCommands(commands: string[], run: (command: string) => number
   // TO EXIST. `Hand-run:` is the one positive claim on this path -- `Acceptance: none -- <reason>` says
   // nothing was run, while this says a human DID run something -- and it was the only one nothing checked.
   // The trade survives intact: a declared, EVIDENCED hand-run is still green and loud and still merges.
-  if (options.prefix === "ACCEPTANCE" && commands.length > 0 && ran === 0 && handRun === commands.length) {
+  const isAllHandRun = options.prefix === "ACCEPTANCE" && commands.length > 0 && ran === 0 && handRun === commands.length;
+  if (isAllHandRun) {
     lines.push(`${options.prefix}: NOTHING RAN HERE -- every command above is a declared hand-run, so `
       + "this job verified NOTHING and is not claiming otherwise. The verdict is the output pasted into "
       + "the PR body by whoever holds the credential, read by a human; this line is not a pass.");

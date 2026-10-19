@@ -411,7 +411,8 @@ function readPublicUrl(value: unknown, source: string): string {
   } catch {
     throw refuse("it must be a URL `https://<host>/<path>`");
   }
-  if (url.protocol !== "https:" || url.port !== "" || url.search !== "" || url.hash !== "" || url.username !== "" || !PUBLIC_URL_PATH.test(url.pathname) || value !== url.href) {
+  const isNonPublicUrl = url.protocol !== "https:" || url.port !== "" || url.search !== "" || url.hash !== "" || url.username !== "" || !PUBLIC_URL_PATH.test(url.pathname) || value !== url.href;
+  if (isNonPublicUrl) {
     throw refuse("it must be exactly `https://<host>/<path>` with no port, query, credentials or trailing slash");
   }
   return value;
@@ -430,7 +431,8 @@ function readReconcileMinutes(events: Record<string, unknown>, source: string): 
 /** @param {Record<string, unknown>} receiver @param {string} source @returns {Readonly<EventsReceiver>} */
 function readReceiver(receiver: Record<string, unknown>, source: string): Readonly<EventsReceiver> {
   const port = receiver.port;
-  if (typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535) {
+  const isInvalidPort = typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535;
+  if (isInvalidPort) {
     const why = Object.hasOwn(receiver, "port") ? `it must be an integer from 1024 to 65535, not ${JSON.stringify(port)}` : "it is missing";
     throw new HostConfigRefusal("events.receiver.port", why, source);
   }

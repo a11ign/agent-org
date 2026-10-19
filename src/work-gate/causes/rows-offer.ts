@@ -161,7 +161,8 @@ export function parseEmergencyPriorityOption(text: string): EmergencyPriorityOpt
   const names = (key: "setters" | "incidentKeys", fallback: readonly string[]): readonly string[] => {
     const value = block[key];
     if (value === undefined) return fallback;
-    if (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item !== "")) return Object.freeze([...value]);
+    const isStringList = Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item !== "");
+    if (isStringList) return Object.freeze([...value]);
     sayEmergency(`\`emergencyPriority.${key}\` is not a non-empty list of strings; the default stands`);
     return fallback;
   };

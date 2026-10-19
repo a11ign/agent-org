@@ -83,7 +83,8 @@ export function entriesWithoutRun({ entries, runs, now }: { entries: readonly Qu
   const unread: QueueEntry[] = [];
   for (const entry of entries) {
     const minutes = minutesStood(entry, now);
-    if (entry.state !== AWAITING_CHECKS || minutes === null || minutes <= QUEUE_ENTRY_NO_RUN_MINUTES || entry.headSha === null) continue;
+    const isSkippedEntry = entry.state !== AWAITING_CHECKS || minutes === null || minutes <= QUEUE_ENTRY_NO_RUN_MINUTES;
+    if (isSkippedEntry || entry.headSha === null) continue;
     const count = runs.get(entry.headSha);
     if (count === undefined || count === null) unread.push(entry);
     else if (count === 0) stalled.push({ entry, minutes });
@@ -125,7 +126,9 @@ function readQueue(ctx: NoRunContext): Reads {
   for (const entry of entries) {
     const minutes = minutesStood(entry, ctx.now);
     const askable = entry === head || entry.state === AWAITING_CHECKS;
-    if (entry.headSha === null || runs.has(entry.headSha) || !askable || minutes === null || minutes <= QUEUE_ENTRY_NO_RUN_MINUTES) continue;
+    if (entry.headSha === null) continue;
+    const isSkippedCandidate = runs.has(entry.headSha) || !askable || minutes === null || minutes <= QUEUE_ENTRY_NO_RUN_MINUTES;
+    if (isSkippedCandidate) continue;
     try {
       runs.set(entry.headSha, mergeGroupRunCountOf({ repo: ctx.scope, sha: entry.headSha, run: ctx.run }));
     } catch (error) {

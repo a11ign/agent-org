@@ -52,6 +52,10 @@ type Line = { indent: number; col: number; marker: boolean; number: number | nul
 
 const isHint = (line: string): boolean => HINTS.some((hint) => hint.test(line));
 const isFrame = (line: string): boolean => line !== "" && FRAME.test(line);
+const isMenuTail = (line: string): boolean => line === "" || isFrame(line) || isHint(line);
+const isUnnumberedText = (line: Line | null | undefined): boolean => line !== null && line?.number === null && !line?.marker;
+const isParagraphLine = (line: string, parsedLine: Line | null | undefined): boolean => line !== "" && !isFrame(line)
+  && !(parsedLine?.marker === true || parsedLine?.number != null);
 
 /** One pane line with its frame's side bars and trailing blanks off, and its indentation kept: the options of one menu are aligned. */
 function cleaned(raw: string): string {
@@ -80,7 +84,7 @@ function numberedRun(lines: (Line | null)[], end: number): number[] | null {
   for (let at = last + 1; at <= end; at++) if (!continues(lines[at], lastLine)) return null;
   const found = [last];
   for (let want = (lastLine.number as number) - 1, at = last - 1; want >= 1; want--) {
-    while (at >= 0 && lines[at] !== null && lines[at]?.number === null && !lines[at]?.marker) at--;
+    while (at >= 0 && isUnnumberedText(lines[at])) at--;
     const line = at >= 0 ? lines[at] : null;
     if (line === null || line === undefined || line.number !== want) return null;
     for (let between = at + 1; between < found[0]; between++) if (!continues(lines[between], line)) return null;
@@ -116,7 +120,7 @@ export function readDialog(pane: string | null): Dialog | null {
   let end = raw.length - 1;
   let hinted = false;
   // THE TAIL IS ALL THAT MAY FOLLOW A LIVE MENU: blank lines, a frame, its key hints. Anything else (a prompt, a spinner, more output) means the menu is behind us.
-  while (end >= 0 && (raw[end] === "" || isFrame(raw[end]) || isHint(raw[end]))) {
+  while (end >= 0 && isMenuTail(raw[end])) {
     if (isHint(raw[end])) hinted = true;
     end--;
   }
@@ -133,7 +137,7 @@ export function readDialog(pane: string | null): Dialog | null {
   let at = start - 1;
   for (let skipped = 0; skipped < 2 && at >= 0 && (raw[at] === "" || isFrame(raw[at])); skipped++) at--;
   const paragraph: string[] = [];
-  while (at >= 0 && paragraph.length < QUESTION_LINES && raw[at] !== "" && !isFrame(raw[at]) && !(lines[at]?.marker === true || lines[at]?.number != null)) paragraph.unshift(raw[at--].trim());
+  while (at >= 0 && paragraph.length < QUESTION_LINES && isParagraphLine(raw[at], lines[at])) paragraph.unshift(raw[at--].trim());
   if (paragraph.length === 0) return null;
 
   const choices = run.map((index, position) => {

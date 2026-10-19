@@ -187,7 +187,8 @@ export const UNKNOWN_SINCE_FILE = "handoff-unknown-since.json";
  * (`worker-<n>`) is unknown only when its row is CLOSED, the same reading {@link settleOrphan} takes -- an open row may yet start its instance.
  */
 function sessionUnknown(session: string, deps: { agents: readonly { label: string; status: string; paneless?: boolean; }[]; roster: readonly string[]; isLead: (label: string) => boolean; holder: (ref: number) => { open: boolean; sessions: string[]; } | null; }): boolean {
-  if (session === "engineers" || deps.roster.includes(session) || reviewerInstance(session) !== null || deps.isLead(session)) return false;
+  const isOrgSession = session === "engineers" || deps.roster.includes(session) || reviewerInstance(session) !== null || deps.isLead(session);
+  if (isOrgSession) return false;
   const seat = deps.agents.find((a) => a.label === session);
   // agent-org#1413: A LISTED SEAT WHOSE PANE IS GONE IS NOT A SEAT THE ORG CAN DELIVER TO, WHATEVER ITS ROW SAYS: it is unknown, and its orders age out like any other's.
   if (seat?.paneless === true) return true;

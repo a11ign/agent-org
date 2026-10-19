@@ -53,7 +53,8 @@ export function recordEndedDeferrals({ logPath, previous, current, deliveries, n
 export function parseDeferralLog(text: string, source: string = DEFERRAL_LOG_FILE): EndedDeferral[] {
   return text.split("\n").filter((line) => line.trim() !== "").map((line) => {
     const [key, start, end, how, ...extra] = line.split("\t");
-    if (!key || !/^\d+$/.test(start ?? "") || !/^\d+$/.test(end ?? "") || (how !== "delivered" && how !== "gone") || extra.length > 0 || Number(end) < Number(start)) {
+    const isMalformedLine = !key || !/^\d+$/.test(start ?? "") || !/^\d+$/.test(end ?? "") || (how !== "delivered" && how !== "gone") || extra.length > 0 || Number(end) < Number(start);
+    if (isMalformedLine) {
       throw new Error(`${source} has a line that is not "<causeKey>\\t<startMs>\\t<endMs>\\t<delivered|gone>": ${line.slice(0, 120)}`);
     }
     return { key, startMs: Number(start), endMs: Number(end), how };

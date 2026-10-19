@@ -108,7 +108,8 @@ function resolveEpisode(state: AsksState, line: Line, outcome: string | null): v
 
 function addMessage(state: AsksState, line: Line): void {
   const ask = state.asks.get(line.key);
-  if (ask === undefined || ask.state !== "open" || line.status !== STATUS.sent || typeof line.providerMessageId !== "string") return;
+  const hasNothingToRecord = ask === undefined || ask.state !== "open" || line.status !== STATUS.sent || typeof line.providerMessageId !== "string";
+  if (hasNothingToRecord) return;
   ask.messages.push({ ref: line.providerMessageId, firstLine: firstLineOf(String(line.text ?? line.key)) });
 }
 
@@ -216,7 +217,8 @@ export function createAsks({ provider, history, now, append, noteDelivered, audi
 
   async function tickResolved({ key, outcome }: { key: string; outcome: string; }): Promise<boolean> {
     const ask = state.asks.get(key);
-    if (!kept || ask === undefined || ask.state !== "open" || ask.messages.length === 0) return false;
+    const isUnusableAsk = !kept || ask === undefined || ask.state !== "open" || ask.messages.length === 0;
+    if (isUnusableAsk) return false;
     const shown = (message: Message) => tickedText({ outcome, firstLine: message.firstLine, maxText });
     const record = { key, kind: "cleared", edited: true, audience: AUDIENCE.ask, askId: ask.askId, row: ask.row, outcome };
     try {

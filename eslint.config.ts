@@ -25,6 +25,7 @@ const recommended = {
 const adopted = {
   "clean-code/be-precise": "error", // a float compared with === or !== depends on exact rounding; parseInt without a radix guesses (G26)
   "clean-code/names-describe-side-effects": "error", // a function that mutates or does I/O must say so in its name; get/is/has/find must be pure (N7)
+  "clean-code/encapsulate-conditionals": "error", // a condition with more than two logical operators is named, so the branch reads as intent (G28)
   "clean-code/limited-public-api": "error", // a module exports at most 50 members (G8); a bigger one carries a stated reason in its own file
   "clean-code/prefer-exceptions-over-error-codes": "error", // flags only a `return -1;` statement (Ch3): throw instead; write a sort comparator as `(a, b) => (a < b ? -1 : 1)`, which is not flagged; a block-bodied `return -1` that is not an error code takes an eslint-disable-next-line with a `-- reason`
 };
@@ -39,4 +40,7 @@ export default [
   },
   // A test helper's boolean is the fixture's variant, which the rule cannot tell from a mode switch, and splitting it would double each fixture.
   { files: ["**/*.test.ts"], rules: { "clean-code/no-flag-arguments": "off" } },
+  // A COPY of packages/guards' walk-scope.ts: copies-drifted (src/org-health/sweep-readings.ts) reads any change to its body as drift, so its one
+  // condition stays as the original writes it. The fix belongs in the original, in a11ign, as a follow-up.
+  { files: ["src/lib/walk-scope.ts"], rules: { "clean-code/encapsulate-conditionals": "off" } },
 ];

@@ -119,7 +119,8 @@ function appendRefusal(logPath: string, text: string, append: typeof appendFileS
 export function parseFailureLedger(text: string, source: string = FAILURE_LEDGER_FILE): FailureEntry[] {
   return text.split("\n").filter((line) => line.trim() !== "").map((line) => {
     const [classKey, at, ref, ...extra] = line.split("\t");
-    if (!classKey || !/^\d+$/.test(at ?? "") || !ref || extra.length > 0) {
+    const isMalformedEntry = !classKey || !/^\d+$/.test(at ?? "") || !ref || extra.length > 0;
+    if (isMalformedEntry) {
       throw new Error(`${source} has a line that is not "<classKey>\\t<ts ms>\\t<ref>": ${line.slice(0, 120)}`);
     }
     return { classKey, at: Number(at), ref };

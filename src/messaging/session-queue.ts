@@ -105,7 +105,8 @@ function secretProblem(text: string): string | null {
  * Is `ref` the chairman's OK? A press is a ledger line; a message needs his words. `lines` is the delivery ledger.
  */
 export function verifyApproval(lines: Record<string, any>[], { ref, words }: { ref: string; words: string | null; }): { ok: true; } | { ok: false; why: string; } {
-  if (lines.some((line) => line.direction === "answer" && line.step === FORME_STEP && line.via === "button" && line.messageRef === ref)) return { ok: true };
+  const hasButtonAnswer = lines.some((line) => line.direction === "answer" && line.step === FORME_STEP && line.via === "button" && line.messageRef === ref);
+  if (hasButtonAnswer) return { ok: true };
   return checkMessage(lines, { ref, text: words ?? "" });
 }
 

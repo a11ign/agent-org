@@ -260,7 +260,8 @@ function carryArgs(argv: string[]): { branch: string; carrier: string; reason: s
   const [branch] = argv;
   const carrier = flag("carrier");
   const reason = flag("reason");
-  if (!branch || branch.startsWith("--") || !carrier || !reason) return null;
+  const isIncomplete = !branch || branch.startsWith("--") || !carrier || !reason;
+  if (isIncomplete) return null;
   return { branch, carrier, reason, repoRoot: flag("repo-root") };
 }
 

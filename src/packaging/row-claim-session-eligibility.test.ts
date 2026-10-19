@@ -621,8 +621,9 @@ test("#2126: the review-health read is ONE `pr list`, whatever the session holds
     prReviews: openPrReviews("APPROVED"),
   });
   const run = (cmd: string, args: string[]) => {
-    if (args[0] === "pr" && args[1] === "list"
-      && /reviewDecision/.test(args[args.indexOf("--json") + 1] ?? "")) reviewReads += 1;
+    const isReviewDecisionRead = args[0] === "pr" && args[1] === "list"
+      && /reviewDecision/.test(args[args.indexOf("--json") + 1] ?? "");
+    if (isReviewDecisionRead) reviewReads += 1;
     return base(cmd, args);
   };
   assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null);
@@ -646,8 +647,9 @@ test("#2126: a row IN BUILD is still reported without ANY `pr list` round trip",
 test("#2126: a FAILED review-health read refuses nothing, the way every lookup here fails OPEN", () => {
   const base = routedRun({ session: "worker-tooling", issueList: JSON.stringify([{ number: 472 }]), graphql: heldWithOpenPr });
   const run = (cmd: string, args: string[]) => {
-    if (args[0] === "pr" && args[1] === "list"
-      && /reviewDecision/.test(args[args.indexOf("--json") + 1] ?? "")) throw new Error("gh: 502");
+    const isFailingReviewDecisionRead = args[0] === "pr" && args[1] === "list"
+      && /reviewDecision/.test(args[args.indexOf("--json") + 1] ?? "");
+    if (isFailingReviewDecisionRead) throw new Error("gh: 502");
     return base(cmd, args);
   };
   assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
