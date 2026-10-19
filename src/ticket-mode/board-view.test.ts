@@ -658,10 +658,10 @@ test("a checked run is Checked, never Needs you: it finished with its reason, of
 test("A11-91: a done run is Completed, never Needs you, offers no Retry, and the tracker's cancel still wins", () => {
   const done = run({ outcome: { kind: "done", reason: "every Done-when holds", evidence: ["npm test: 12 pass"] } as ViewEntry["outcome"] });
   assert.equal(runStatus(done), "completed");
-  assert.equal(HANDED_BACK.has("done"), false, "nothing is asked of a person, so the pool does not park it");
   assert.equal(statusCounts([done]).get("needs-you"), 0, "it is not counted in Needs you");
   assert.deepEqual(runsShown([done], "completed").map((e) => e.ticket.key), ["NBF-1"]);
   assert.deepEqual(runActions(done), ["dismiss"], "the ticket is complete, so no worker is queued again");
+  assert.equal(HANDED_BACK.has("done"), false, "nothing is asked of a person, so the pool does not park it");
   assert.equal(runStatus({ ...done, trackerState: "canceled" }), "cancelled", "a ticket the tracker canceled is cancelled, whatever the run ended in");
 });
 
@@ -715,16 +715,19 @@ const waitingOn = (paths: string[], patch: Partial<ViewEntry> = {}): ViewEntry =
 
 test("A11-82: paths overlap only in one repository: equal, or a directory that holds the other; sibling directories and other repositories do not", () => {
   assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/pool.ts"), true);
-  assert.equal(pathsOverlap("agent-org:src/ticket-mode/", "agent-org:src/ticket-mode/pool.ts"), true, "a directory holds its file");
-  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/"), true, "the directory holds the file on either side");
-  assert.equal(pathsOverlap("agent-org:src/", "agent-org:src/ticket-mode/"), true, "one directory inside another");
-  assert.equal(pathsOverlap("agent-org:src/ticket-mode/", "agent-org:src/ticket-port/"), false, "sibling directories");
-  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool", "agent-org:src/ticket-mode/pool.ts"), false, "a name is not a prefix of another");
-  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/pool.ts/"), false, "a file is not a directory");
-  assert.equal(pathsOverlap("agent-org:src/a.ts", "nbl-ui-netbox:src/a.ts"), false, "different repositories never overlap");
-  assert.equal(pathsOverlap("agent-org:", "agent-org:src/ticket-mode/pool.ts"), true, "an empty path is the whole repository");
-  assert.equal(pathsOverlap("agent-org:docs/", "agent-org:"), true);
-  assert.equal(pathsOverlap("agent-org:", "nbl-ui-netbox:src/a.ts"), false, "and only that repository");
+  const cases: [string, string, boolean, string?][] = [
+    ["agent-org:src/ticket-mode/", "agent-org:src/ticket-mode/pool.ts", true, "a directory holds its file"],
+    ["agent-org:src/ticket-mode/pool.ts", "agent-org:src/", true, "the directory holds the file on either side"],
+    ["agent-org:src/", "agent-org:src/ticket-mode/", true, "one directory inside another"],
+    ["agent-org:src/ticket-mode/", "agent-org:src/ticket-port/", false, "sibling directories"],
+    ["agent-org:src/ticket-mode/pool", "agent-org:src/ticket-mode/pool.ts", false, "a name is not a prefix of another"],
+    ["agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/pool.ts/", false, "a file is not a directory"],
+    ["agent-org:src/a.ts", "nbl-ui-netbox:src/a.ts", false, "different repositories never overlap"],
+    ["agent-org:", "agent-org:src/ticket-mode/pool.ts", true, "an empty path is the whole repository"],
+    ["agent-org:docs/", "agent-org:", true],
+    ["agent-org:", "nbl-ui-netbox:src/a.ts", false, "and only that repository"],
+  ];
+  for (const [a, b, overlap, why] of cases) assert.equal(pathsOverlap(a, b), overlap, why);
 });
 
 test("A11-82: a pull request whose file list was cut short holds its whole repository, and no other", () => {

@@ -316,10 +316,12 @@ test("A11-91: the worker's brief says when to write done and when checked, lists
   assert.match(brief, /The `evidence` list has one line per Done-when item: what you ran or read, and what it showed/, "done: the evidence says what was seen");
   assert.match(brief, /A prediction is not evidence/, "done: a prediction never fills evidence");
   assert.match(brief, /Never write `done` for a ticket with open sub-issues, which complete it, and never after you opened a pull request/, "done: never for a parent, nor after a pull request");
-  assert.match(brief, /Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is \*\*not finished\*\*/, "checked: the ticket is not finished");
-  assert.match(brief, /a Done-when item is not verifiable by you, or the ticket is only a parent whose work is all in its child tickets/, "checked: why it is not finished");
-  assert.match(brief, /"edit": \{ "title": "<the title it should have>", "description": "<the whole description it should have>", "why": "<what is wrong, and what shows it>" \}/, "the edit field");
-  assert.match(brief, /A ticket's own title or description may be what is wrong/, "when to propose an edit");
+  for (const [pattern, why] of [
+    [/Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is \*\*not finished\*\*/, "checked: the ticket is not finished"],
+    [/a Done-when item is not verifiable by you, or the ticket is only a parent whose work is all in its child tickets/, "checked: why it is not finished"],
+    [/"edit": \{ "title": "<the title it should have>", "description": "<the whole description it should have>", "why": "<what is wrong, and what shows it>" \}/, "the edit field"],
+    [/A ticket's own title or description may be what is wrong/, "when to propose an edit"],
+  ] as const) assert.match(brief, pattern, why);
   assert.match(brief, /Propose an edit only to correct the text, never to narrow what the ticket asks/);
 });
 
@@ -352,9 +354,11 @@ test("A11-70: a batch's brief names the host file's clones keys as the only repo
 test("A11-80: a worker may end a turn on working only while its own background work runs and will wake it, and never to park a question", () => {
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes('{ "kind": "working", "reason": "<what of yours is still running in the background, and what you do when it wakes you>" }'), "working is one of the outcomes");
-  assert.match(brief, /Write `working` only while your own background work \(a background shell or a Monitor\) is genuinely still running and will wake you when it finishes/);
-  assert.match(brief, /Never write `working` to park a question or to wait on a person: that is `needs-human`/);
-  assert.match(brief, /write the outcome file again with how the run ended, or with `working` again if more of it is still running/);
+  for (const pattern of [
+    /Write `working` only while your own background work \(a background shell or a Monitor\) is genuinely still running and will wake you when it finishes/,
+    /Never write `working` to park a question or to wait on a person: that is `needs-human`/,
+    /write the outcome file again with how the run ended, or with `working` again if more of it is still running/,
+  ]) assert.match(brief, pattern);
 });
 
 test("A11-85: the brief says how to wait on a process started detached: a Monitor on its PID or its log, never a bare claim of working", () => {
@@ -496,15 +500,19 @@ test("A11-94: a new-ticket brief fills in the instruction, quotes the request, s
   assert.match(brief, /^# New ticket: Show the requests$/m);
   assert.match(brief, /> Show the requests\n> A person made/, "the request, quoted line by line");
   assert.match(brief, /for this request: Show the requests\nA person made\. Write each draft under \/state\/tickets\/writer\/w1\/drafts\./, "the instruction, with the request and the folder filled in");
-  assert.match(brief, /- Repository: `nbl-ui-netbox`/);
-  assert.match(brief, /- Priority: high/);
-  assert.match(brief, /These are requirements/);
-  assert.match(brief, /under `\/state\/tickets\/writer\/w1\/drafts\/`, named `NN-short-name\.json`/, "the drafts folder and its file names");
+  for (const [pattern, why] of [
+    [/- Repository: `nbl-ui-netbox`/, undefined],
+    [/- Priority: high/, undefined],
+    [/These are requirements/, undefined],
+    [/under `\/state\/tickets\/writer\/w1\/drafts\/`, named `NN-short-name\.json`/, "the drafts folder and its file names"],
+  ] as const) assert.match(brief, pattern, why);
   for (const field of ["title", "why", "doneWhen", "duplicates", "blockedBy", "parent"]) assert.match(brief, new RegExp(`"${field}"`), field);
-  assert.match(brief, /At most 10 files/);
-  assert.match(brief, /No other field is read, so a field that is not in this list is refused by name\./);
-  assert.match(brief, /\{ "kind": "drafted" \}/);
-  assert.match(brief, /\/state\/tickets\/writer\/w1\/outcome\.json/);
+  for (const pattern of [
+    /At most 10 files/,
+    /No other field is read, so a field that is not in this list is refused by name\./,
+    /\{ "kind": "drafted" \}/,
+    /\/state\/tickets\/writer\/w1\/outcome\.json/,
+  ]) assert.match(brief, pattern);
   assert.match(brief, /create no ticket, post no comment, edit no ticket/, "a writer creates nothing");
 });
 

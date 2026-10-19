@@ -8,6 +8,7 @@ import * as view_1 from "./board-view/settled-by-pulls.ts";
 import * as view_2 from "./board-view/view-ticket.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
+import { testEach } from "../lib/test-each.ts";
 
 /**
  * The page's module script, run as the browser would run it but in a `vm` context: its imports (`/board-view.js`, `/label-filters.js` and
@@ -186,7 +187,8 @@ test("status sections start collapsed, open and close from anywhere on their hea
   assert.deepEqual(JSON.parse(storage.get("ticket-mode.open")!), ["Backlog"]);
   const reloaded = await page(storage);
   assert.deepEqual(collapsed(reloaded), [false, true], "the reload keeps it open");
-  reloaded.groups()[0].children[0].all().find((n) => n.className === "fold")!.fire("click");
+  const fold = reloaded.groups()[0].children[0].all().find((n) => n.className === "fold")!;
+  fold.fire("click");
   assert.deepEqual(collapsed(reloaded), [true, true], "the arrow closes it");
   assert.equal(storage.get("ticket-mode.open"), "[]");
 });
@@ -358,11 +360,7 @@ test("Expand all opens every section and becomes Collapse all, which closes them
 
 test("Select all takes the visible tickets, and Queue sends exactly those with the model and effort and no repository", async () => {
   const p = await page(new Map([["ticket-mode.projects", JSON.stringify(["Alpha"])]]));
-  p.$("all").checked = true;
-  p.$("all").fire("change");
-  p.$("queue").fire("click");
-  await settle();
-  const body = p.posts.find((x) => x.path === "/api/queue")?.body;
+  const body = await queueAll(p);
   assert.deepEqual(body?.keys, ["T-1", "T-3"], "T-2 and T-4 are filtered out");
   assert.equal("repos" in (body ?? {}), false, "the worker chooses the repository");
 });
@@ -380,6 +378,22 @@ async function change(p: Page, id: string, value: string) {
   p.$(id).fire("change");
   await settle();
 }
+/** Open Settings from `button`, then change one of its controls. */
+async function changeFrom(p: Page, button: string, id: string, value: string) {
+  await openFrom(p, button);
+  await change(p, id, value);
+}
+/** A page with Settings opened from its button, as a person who opened it sees it. */
+async function settingsPage(options: Parameters<typeof page>[1]) {
+  const p = await page(new Map(), options);
+  await openFrom(p, "open-settings");
+  return p;
+}
+/** Press Queue, and let the board answer. */
+async function pressQueue(p: Page) {
+  p.$("queue").fire("click");
+  await settle();
+}
 
 /** The model and effort the Pick footer shows for the tickets queued next. */
 const footerChoice = (p: Page) => [p.$("batch-model").value, p.$("batch-effort").value];
@@ -390,6 +404,11 @@ async function queueAll(p: Page) {
   p.$("queue").fire("click");
   await settle();
   return p.posts.filter((x) => x.path === "/api/queue").at(-1)?.body;
+}
+/** The model and effort that Queue sends for the selected tickets. */
+async function queuedChoice(p: Page) {
+  const queued = await queueAll(p);
+  return [queued?.model, queued?.effort];
 }
 
 test("the Pick footer says what a queued ticket runs with, Settings saves each part on its own, and Queue sends what is saved", async () => {
@@ -404,12 +423,7 @@ test("the Pick footer says what a queued ticket runs with, Settings saves each p
   assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { effort: "max" } });
   assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
   assert.equal(p.$("settings-status").textContent, "Saved");
-  p.$("all").checked = true;
-  p.$("all").fire("change");
-  p.$("queue").fire("click");
-  await settle();
-  const queued = p.posts.find((x) => x.path === "/api/queue")?.body;
-  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "max"]);
+  assert.deepEqual(await queuedChoice(p), ["sonnet", "max"]);
 });
 
 test("Settings shows what another page saved, and changing one part keeps the other page's change to the other", async () => {
@@ -449,8 +463,7 @@ test("a number of workers the board refuses goes back to what is saved, and the 
 
 test("a model the board refuses goes back to what is saved, and the footer keeps what is saved", async () => {
   const p = await page(new Map(), { config: SETTINGS, refused: ["/api/choice"] });
-  await openFrom(p, "open-settings");
-  await change(p, "model", "sonnet");
+  await changeFrom(p, "open-settings", "model", "sonnet");
   assert.equal(p.$("model").value, "opus");
   assert.equal(p.$("settings-status").textContent, "/api/choice refused");
   assert.deepEqual(footerChoice(p), ["opus", "high"]);
@@ -465,21 +478,17 @@ test("a refused change reads what is saved again, so what another page saved sin
   assert.equal(p.$("settings-status").textContent, "/api/choice refused");
   assert.deepEqual([p.$("model").value, p.$("effort").value], ["sonnet", "high"]);
   assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
-  p.$("all").checked = true;
-  p.$("all").fire("change");
-  p.$("queue").fire("click");
-  await settle();
-  const queued = p.posts.find((x) => x.path === "/api/queue")?.body;
+  const queued = await queueAll(p);
   assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "high"]);
 });
 
 test("a refused number of workers reads what is saved again, so what another page saved since Settings opened is what shows", async () => {
-  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/max"] });
-  await openFrom(p, "open-settings");
+  const p = await settingsPage({ config: SETTINGS, refused: ["/api/max"] });
   p.saveElsewhere({ workers: 5 });
   await change(p, "max", "0");
   await settle();
-  assert.equal(p.$("max").value, "5");
+  const max = p.$("max");
+  assert.equal(max.value, "5");
   assert.equal(p.$("max-note").textContent, "Up to 5 workers at once");
 });
 
@@ -515,8 +524,7 @@ test("Use the default puts a batch back on the default, and so does choosing the
 test("a default that catches up to a batch's choice makes the batch the default again", async () => {
   const p = await page(new Map(), { config: SETTINGS });
   await change(p, "batch-effort", "max");
-  await openFrom(p, "change-choice");
-  await change(p, "effort", "max");
+  await changeFrom(p, "change-choice", "effort", "max");
   assert.equal(p.$("batch-note").textContent, "The default");
   assert.equal(p.$("batch-reset").hidden, true);
 });
@@ -524,12 +532,10 @@ test("a default that catches up to a batch's choice makes the batch the default 
 test("a batch keeps the part it chose when the default changes, and follows the default in the part it did not", async () => {
   const p = await page(new Map(), { config: SETTINGS });
   await change(p, "batch-model", "sonnet");
-  await openFrom(p, "change-choice");
-  await change(p, "effort", "max");
+  await changeFrom(p, "change-choice", "effort", "max");
   assert.deepEqual(footerChoice(p), ["sonnet", "max"]);
   assert.equal(p.$("batch-note").textContent, "These tickets only. The default is opus at max effort");
-  const queued = await queueAll(p);
-  assert.deepEqual([queued?.model, queued?.effort], ["sonnet", "max"]);
+  assert.deepEqual(await queuedChoice(p), ["sonnet", "max"]);
 });
 
 test("a batch chosen while the last one is being queued is kept for the next, and the last one is sent as it was", async () => {
@@ -575,24 +581,19 @@ test("the runs view lists every run with its status icon, most recently active f
   assert.deepEqual(icons, ["icon st-completed", "icon st-awaiting-review", "icon st-needs-you", "icon st-working", "icon st-failed", "icon st-queued"]);
 });
 
-test("a run stacked on its blocker's open pull request is Queued, and says what it is stacked on", async () => {
-  const pr = "https://github.com/x/libs/pull/3";
-  const runs = [entry("APP-1", { phase: "queued", plannedRepo: "libs", blockers: [{ key: "LIB-1", state: "started", status: "In Review", branch: "lib-1", pulls: { [pr]: "open" } }] })];
-  const p = await page(new Map(), { entries: runs });
-  const row = runRows(p)[0];
-  assert.equal(row.children[0].className, "icon st-queued");
-  assert.match(row.text(), /Stacked on LIB-1 #3/);
-  assert.equal(row.text().includes("Waits on"), false);
-});
+const BLOCKER_PR = "https://github.com/x/libs/pull/3";
+const BLOCKERS = [{ key: "LIB-1", state: "started", status: "In Review", branch: "lib-1", pulls: { [BLOCKER_PR]: "open" } }];
+const BLOCKED_RUNS = [
+  { name: "stacked on its blocker's open pull request, so it is Queued and says what it is stacked on", fields: { phase: "queued", plannedRepo: "libs", blockers: BLOCKERS }, icon: "icon st-queued", says: /Stacked on LIB-1 #3/, absent: "Waits on" },
+  { name: "A11-77: held by its planner until a blocker merges, so it is Blocked, says it waits for that merge, and is not stacked on the open pull request", fields: { phase: "queued", plannedRepo: "libs", waitMerged: ["LIB-1"], blockers: BLOCKERS }, icon: "icon st-blocked", says: /Waits for LIB-1 to merge/, absent: "Stacked on" },
+];
 
-test("A11-77: a run its planner held until a blocker merges is Blocked, says it waits for that merge, and is not stacked on the open pull request", async () => {
-  const pr = "https://github.com/x/libs/pull/3";
-  const runs = [entry("APP-1", { phase: "queued", plannedRepo: "libs", waitMerged: ["LIB-1"], blockers: [{ key: "LIB-1", state: "started", status: "In Review", branch: "lib-1", pulls: { [pr]: "open" } }] })];
-  const p = await page(new Map(), { entries: runs });
+testEach("a run on a blocker's open pull request is Queued when stacked on it, and Blocked when its planner holds it for the merge", BLOCKED_RUNS, async (c) => {
+  const p = await page(new Map(), { entries: [entry("APP-1", c.fields)] });
   const row = runRows(p)[0];
-  assert.equal(row.children[0].className, "icon st-blocked");
-  assert.match(row.text(), /Waits for LIB-1 to merge/);
-  assert.equal(row.text().includes("Stacked on"), false);
+  assert.equal(row.children[0].className, c.icon);
+  assert.match(row.text(), c.says);
+  assert.equal(row.text().includes(c.absent), false);
 });
 
 test("a run waiting on a blocker is Blocked, with its own filter, and names what it waits on", async () => {
@@ -712,8 +713,7 @@ test("Plan first shows once a selected ticket has no plan, Queue says how many i
   selectAll(p);
   assert.equal(p.$("plan-first-label").hidden, false);
   assert.equal(p.$("queue").textContent, "Queue 2 tickets, planning 1 first");
-  p.$("queue").fire("click");
-  await settle();
+  await pressQueue(p);
   assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, true);
 });
 
@@ -723,20 +723,19 @@ test("unticking Plan first queues every selected ticket to be worked as it is", 
   p.$("plan-first").checked = false;
   p.$("plan-first").fire("change");
   assert.equal(p.$("queue").textContent, "Queue 2 tickets");
-  p.$("queue").fire("click");
-  await settle();
+  await pressQueue(p);
   assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, false);
 });
 
 test("a board that plans nothing shows neither Plan first nor the planning settings, and asks for no planning", async () => {
   const p = await page(new Map(), { config: { ...SETTINGS, plan: "-plan-[^/]*\\.md$" }, tickets: PLAN_TICKETS });
   selectAll(p);
-  assert.equal(p.$("plan-first-label").hidden, true);
   assert.equal(p.$("planning-settings").hidden, true);
   assert.equal(p.$("queue").textContent, "Queue 2 tickets");
-  p.$("queue").fire("click");
-  await settle();
-  assert.equal(p.posts.find((x) => x.path === "/api/queue")?.body.plan, false);
+  assert.equal(p.$("plan-first-label").hidden, true);
+  await pressQueue(p);
+  const sent = p.posts.find((x) => x.path === "/api/queue")?.body.plan;
+  assert.equal(sent, false);
 });
 
 test("the planning model and effort are set in Settings part by part, apart from the run's", async () => {
@@ -974,7 +973,8 @@ test("a checked run shows Checked with its reason, not Needs you, and its Dismis
   assert.equal(filterButton(p, "Needs you").children.find((c) => c.className === "n")?.text(), "0");
   const dismiss = row.all().find((n) => n.tag === "button") as Node_ & { title?: string };
   assert.equal(dismiss.text(), "Dismiss");
-  assert.match(dismiss.title ?? "", /The ticket, its branch and its pull requests are left as they are/);
+  const dismissTitle = dismiss.title ?? "";
+  assert.match(dismissTitle, /The ticket, its branch and its pull requests are left as they are/);
   dismiss.fire("click");
   await settle();
   assert.ok(p.posts.some((x) => x.path === "/api/queue/C-1/dismiss"));
@@ -1154,16 +1154,15 @@ test("New ticket is shown only on a machine that names tickets.writer, and Grill
   on.$("new-ticket").fire("click");
   assert.equal(on.$("new-ticket-dialog").open, true);
   assert.equal(on.$("writer-grill").disabled, true);
-  assert.equal(on.$("writer-grill-note").hidden, false);
-  assert.match(on.$("writer-grill-note").textContent, /Grill needs a terminal: name tickets.terminal/);
+  const note = on.$("writer-grill-note");
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /Grill needs a terminal: name tickets.terminal/);
 });
 
 test("a request is sent with the choices the form made, and the run it starts shows as Writing with its request", async () => {
   const p = await page(new Map(), { config: WRITER_CONFIG, tickets: TICKETS, writers: { runs: [{ ...RUN, phase: "running", status: "writing", drafts: [], workspace: "w1", pane: "w1:p1" }] } });
   p.$("new-ticket").fire("click");
-  p.$("writer-request").value = "  Show the requests a person made  ";
-  p.$("writer-repo").value = "nbl-ui-netbox";
-  p.$("writer-priority").value = "high";
+  for (const [id, value] of [["writer-request", "  Show the requests a person made  "], ["writer-repo", "nbl-ui-netbox"], ["writer-priority", "high"]] as const) p.$(id).value = value;
   p.$("writer-start").fire("click");
   await settle();
   const sent = p.posts.find(({ path }) => path === "/api/writer")!;

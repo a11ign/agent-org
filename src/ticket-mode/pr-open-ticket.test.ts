@@ -11,7 +11,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acceptanceFileForBranch } from "../acceptance-file.ts";
-import { main, runFromCli, EXIT_NOTHING_SENT, sendToGitHub } from "../pr-open.ts";
 import { QUEUED_EXIT as EXIT_QUEUED } from "../gh-ledger.ts";
 import { REPO } from "../project-identity.ts";
 import { parseTicketSettings } from "./settings.ts";
@@ -19,6 +18,7 @@ import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
 import { CI_BODY_REPORTS } from "../acceptance-commands/unmet-command-closure-requirements.ts";
+import { main, runFromCli, EXIT_NOTHING_SENT, sendToGitHub } from "../pr-open.ts";
 
 const KEY = "A11-74";
 const BRANCH = "admin/a11-74-propen-works-in-ticket-mode-it-reads-the-ticket-through-the";
@@ -227,9 +227,9 @@ test("A11-74: tickets.drafts false opens a create ready and refuses --draft; dra
 test("A11-74: a repository with changesets needs a changeset in the diff or a no-release line; a repository without the config is not checked", () => {
   const releasing = ticket({ hasChangesets: true });
   const none = open(["--body", BODY, "--title", "t"], { ticket: releasing });
+  assert.equal(none.sent.length, 0);
   assert.equal(none.code, EXIT_NOTHING_SENT);
   assert.match(none.refused, /releases its packages with changesets, and this diff adds none/);
-  assert.equal(none.sent.length, 0);
 
   const readmeOnly = open(["--body", BODY, "--title", "t"], { ticket: releasing, git: gitFor({ added: [ACCEPTANCE_FILE, ".changeset/README.md"] }) });
   assert.equal(readmeOnly.code, EXIT_NOTHING_SENT, "the README is not a changeset");

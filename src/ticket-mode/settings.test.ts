@@ -176,18 +176,21 @@ test("a bad field is refused by its name", () => {
   for (const stallMinutes of [0, -5, 1.5, "30", null]) assert.equal(field({ clones, tickets: { stallMinutes } }), "tickets.stallMinutes", JSON.stringify(stallMinutes));
   assert.equal(field({ clones, tickets: { herdrSession: "has space" } }), "tickets.herdrSession");
   assert.equal(field({ clones, tickets: { linearKey: { keychain: "x", path: "/y" } } }), "tickets.linearKey");
-  assert.equal(field({ clones, tickets: { brief: "notes.md" } }), "tickets.brief", "a relative path");
-  assert.equal(field({ clones, tickets: { review: "review.md" } }), "tickets.review", "a relative path");
-  assert.equal(field({ clones, tickets: { plugins: ["nbl-ui"] } }), "tickets.plugins", "a plugin with no marketplace");
-  assert.equal(field({ clones, tickets: { plugins: "nbl-ui@applied-ai" } }), "tickets.plugins", "one plugin, not a list");
-  assert.equal(field({ clones, tickets: { deny: { pattern: "x", reason: "y" } } }), "tickets.deny", "one rule, not a list");
-  assert.equal(field({ clones, tickets: { deny: [{ pattern: "x" }] } }), "tickets.deny[0]", "a rule with no reason");
-  assert.equal(field({ clones, tickets: { deny: [{ pattern: "x", reason: "y" }, { pattern: "(", reason: "y" }] } }), "tickets.deny[1].pattern", "not a regular expression");
-  assert.equal(field({ clones, tickets: { linearKey: { path: "rel" } } }), "tickets.linearKey.path");
-  assert.equal(field({ clones, tickets: { terminal: "127.0.0.1:7318/?pane={pane}" } }), "tickets.terminal", "not a web address");
-  assert.equal(field({ clones, tickets: { terminal: "http://127.0.0.1:7318/" } }), "tickets.terminal", "names no run, so every link is the same");
-  assert.equal(field({ clones, tickets: { terminal: ["http://x/{pane}"] } }), "tickets.terminal", "not a string");
-  assert.equal(field({ clones, tickets: { connectors: "^mcp__x" } }), "tickets.connectors", "one pattern, not a list");
+  const refusals: [Record<string, unknown>, string, string?][] = [
+    [{ brief: "notes.md" }, "tickets.brief", "a relative path"],
+    [{ review: "review.md" }, "tickets.review", "a relative path"],
+    [{ plugins: ["nbl-ui"] }, "tickets.plugins", "a plugin with no marketplace"],
+    [{ plugins: "nbl-ui@applied-ai" }, "tickets.plugins", "one plugin, not a list"],
+    [{ deny: { pattern: "x", reason: "y" } }, "tickets.deny", "one rule, not a list"],
+    [{ deny: [{ pattern: "x" }] }, "tickets.deny[0]", "a rule with no reason"],
+    [{ deny: [{ pattern: "x", reason: "y" }, { pattern: "(", reason: "y" }] }, "tickets.deny[1].pattern", "not a regular expression"],
+    [{ linearKey: { path: "rel" } }, "tickets.linearKey.path"],
+    [{ terminal: "127.0.0.1:7318/?pane={pane}" }, "tickets.terminal", "not a web address"],
+    [{ terminal: "http://127.0.0.1:7318/" }, "tickets.terminal", "names no run, so every link is the same"],
+    [{ terminal: ["http://x/{pane}"] }, "tickets.terminal", "not a string"],
+    [{ connectors: "^mcp__x" }, "tickets.connectors", "one pattern, not a list"],
+  ];
+  for (const [tickets, expected, reason] of refusals) assert.equal(field({ clones, tickets }), expected, reason);
   assert.equal(field({ clones, tickets: { connectors: ["Linear"] } }), "tickets.connectors[0]", "not anchored at the tool's name");
   assert.equal(field({ clones, tickets: { connectors: ["^mcp__x", "^mcp__("] } }), "tickets.connectors[1]", "not a regular expression");
   assert.equal(field({ clones, tickets: { plan: "-plan-(" } }), "tickets.plan", "not a regular expression");
