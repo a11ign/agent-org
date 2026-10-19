@@ -31,10 +31,22 @@ const TICKET_ONLY = hostFile("ticket-only.json", { clones: { app: "/work/app" },
 const WITH_PROJECT = hostFile("with-project.json", { primary: "p", projects: [], tickets: { max: 1 } });
 const NO_TICKETS = hostFile("no-tickets.json", { clones: {} });
 
-/** `pr:open create` in a child process, as a worker runs it, with the env a test names. */
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd, env: sandboxGitEnv() });
+
+/** A linked worktree, which is where a worker runs: `pr:open` refuses to launch from a primary checkout, or from a directory that is no checkout. */
+const primary = join(scratch, "primary");
+const worktree = join(scratch, "worker-worktree");
+mkdirSync(primary);
+writeFileSync(join(primary, "a.txt"), "x\n");
+git(primary, "init", "-q", "-b", "main");
+git(primary, "add", ".");
+git(primary, "commit", "-q", "-m", "init");
+git(primary, "worktree", "add", "-q", "-b", "agent/x-1", worktree);
+
+/** `pr:open create` in a child process, from the worker's worktree, with the env a test names. */
 function prOpen(env: Record<string, string>): { status: number | null; stderr: string } {
   const run = spawnSync(process.execPath, [BIN, "pr:open", "create", "--draft", "--title", "t", "--body", "b"], {
-    cwd: scratch, encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: scratch, ...env },
+    cwd: worktree, encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: scratch, ...env },
   });
   return { status: run.status, stderr: run.stderr };
 }
@@ -80,10 +92,9 @@ test("the region read in a ticket run on a ticket-only host reads the worker's o
   const tree = join(scratch, "worker-tree");
   mkdirSync(join(tree, "packages"), { recursive: true });
   writeFileSync(join(tree, "packages", "a.ts"), "x\n");
-  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd: tree, env: sandboxGitEnv() });
-  git("init", "-q", "-b", "main");
-  git("add", ".");
-  git("commit", "-q", "-m", "init");
+  git(tree, "init", "-q", "-b", "main");
+  git(tree, "add", ".");
+  git(tree, "commit", "-q", "-m", "init");
   const read = spawnSync(process.execPath, ["--input-type=module", "-e",
     `import { trackedTopLevelDirs } from ${JSON.stringify(new URL("../region-paths.ts", import.meta.url).href)}; console.log(JSON.stringify(trackedTopLevelDirs()));`], {
     cwd: tree, encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: scratch, AGENT_ORG_HOST: TICKET_ONLY, AGENT_ORG_TICKET: "NBF-1" },
