@@ -28,6 +28,7 @@ const adopted = {
   "clean-code/encapsulate-conditionals": "error", // a condition with more than two logical operators is named, so the branch reads as intent (G28)
   "clean-code/limited-public-api": "error", // a module exports at most 50 members (G8); a bigger one carries a stated reason in its own file
   "clean-code/prefer-exceptions-over-error-codes": "error", // flags only a `return -1;` statement (Ch3): throw instead; write a sort comparator as `(a, b) => (a < b ? -1 : 1)`, which is not flagged; a block-bodied `return -1` that is not an error code takes an eslint-disable-next-line with a `-- reason`
+  "clean-code/no-duplication": "error", // A11-113: a block of 4 statements that repeats an earlier block of its file by shape is a copy to extract (G5); repeated test cases are one table through testEach, and an import list, which the shape match reads as a copy, is disabled line by line with its reason
 };
 
 export default [
@@ -47,4 +48,6 @@ export default [
   // A COPY of packages/guards' walk-scope.ts: copies-drifted (src/org-health/sweep-readings.ts) reads any change to its body as drift, so its one
   // condition stays as the original writes it. The fix belongs in the original, in a11ign, as a follow-up.
   { files: ["src/lib/walk-scope.ts"], rules: { "clean-code/encapsulate-conditionals": "off" } },
+  // A11-113: the fixture project is a copy of project code on purpose (its files repeat the project's own on purpose), so only this rule is off there; a global ignore would also drop every other rule
+  { files: ["src/packaging/fixtures/**"], rules: { "clean-code/no-duplication": "off" } },
 ];
