@@ -29,10 +29,10 @@ function linear(pages: unknown[], uploads: Record<string, { status: number; body
   return { fetch, requests };
 }
 
-test("assigned() reads every page of the open tickets the key can see, each with its assignee, sending the key and nothing else", async () => {
+test("assigned() reads every page of the key's own open tickets, each with its assignee, sending the key and nothing else", async () => {
   const { fetch, requests } = linear([
-    { data: { issues: { nodes: [node("NBF-1"), node("VE-2", { project: null })], pageInfo: { hasNextPage: true, endCursor: "c1" } } } },
-    { data: { issues: { nodes: [node("NBF-3")], pageInfo: { hasNextPage: false, endCursor: null } } } },
+    { data: { viewer: { assignedIssues: { nodes: [node("NBF-1"), node("VE-2", { project: null })], pageInfo: { hasNextPage: true, endCursor: "c1" } } } } },
+    { data: { viewer: { assignedIssues: { nodes: [node("NBF-3")], pageInfo: { hasNextPage: false, endCursor: null } } } } },
   ]);
   const tickets = await linearSource({ key: "lin_api_secret", fetch }).assigned();
   assert.deepEqual(tickets.map((t) => t.key), ["NBF-1", "VE-2", "NBF-3"]);
@@ -43,15 +43,15 @@ test("assigned() reads every page of the open tickets the key can see, each with
   const second = JSON.parse(String(requests[1].init.body));
   assert.equal(second.variables.after, "c1", "the second page starts where the first ended");
   assert.match(second.query, /nin: \["completed", "canceled", "duplicate"\]/, "finished tickets are not offered, nor duplicates, which Linear types on their own");
-  assert.equal(queried(requests).query.includes("viewer"), false, "every open ticket, not the key's own: the Pick view filters by assignee");
+  assert.ok(queried(requests).query.includes("viewer { assignedIssues"), "the key's own tickets: a workspace's every open ticket is too large to list (A11-108)");
 });
 
 test("A11-108: each ticket names its assignee, read with the list, and an unassigned ticket has a null assignee", async () => {
-  const { fetch, requests } = linear([{ data: { issues: { nodes: [
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
     node("NBF-1", { assignee: { id: "u-1", name: "Dan Beck" } }),
     node("NBF-2", { assignee: null }),
     node("NBF-3"),
-  ], pageInfo: { hasNextPage: false, endCursor: null } } } }]);
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
   const [assigned, nobody, unread] = await linearSource({ key: "k", fetch }).assigned();
   assert.deepEqual(assigned.assignee, { id: "u-1", name: "Dan Beck" });
   assert.equal(nobody.assignee, null, "a ticket nobody has been given is unassigned");
@@ -61,13 +61,13 @@ test("A11-108: each ticket names its assignee, read with the list, and an unassi
 });
 
 test("each ticket names the files uploaded to it, read in the same request as the list, and not its other links, such as a pull request", async () => {
-  const { fetch, requests } = linear([{ data: { issues: { nodes: [
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
     node("NBF-1", { attachments: { nodes: [
       { url: "https://uploads.linear.app/org/a/plan", title: "NBF-1-0001-plan-fit-to-view.md" },
       { url: "https://github.com/netboxlabs/nbl-ui-netbox/pull/1", title: "feat: fit to view" },
     ] } }),
     node("NBF-2"),
-  ], pageInfo: { hasNextPage: false, endCursor: null } } } }]);
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
   const [one, two] = await linearSource({ key: "k", fetch }).assigned();
   assert.deepEqual(one.uploads, ["NBF-1-0001-plan-fit-to-view.md"]);
   assert.deepEqual(two.uploads, [], "a ticket with nothing attached has no uploads");
@@ -75,11 +75,11 @@ test("each ticket names the files uploaded to it, read in the same request as th
 });
 
 test("A11-76: each ticket carries its open sub-issues, read with the list in the same request, counting none finished, canceled or a duplicate", async () => {
-  const { fetch, requests } = linear([{ data: { issues: { nodes: [
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
     node("A11-24", { children: { nodes: [{ identifier: "A11-25" }, { identifier: "A11-26" }] } }),
     node("A11-30", { children: { nodes: [] } }),
     node("A11-31"),
-  ], pageInfo: { hasNextPage: false, endCursor: null } } } }]);
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
   const [epic, done, unread] = await linearSource({ key: "k", fetch }).assigned();
   assert.deepEqual(epic.children, ["A11-25", "A11-26"], "a parent names its open sub-issues, so the board counts them");
   assert.deepEqual(done.children, [], "an epic whose sub-issues are all done or canceled has none open, and is an ordinary ticket again");
@@ -93,11 +93,11 @@ test("A11-76: each ticket carries its open sub-issues, read with the list in the
 });
 
 test("each ticket carries its labels, each with its label group, read with the list in the same request; a label with no group has a null group", async () => {
-  const { fetch, requests } = linear([{ data: { issues: { nodes: [
+  const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [
     node("A11-40", { labels: { nodes: [{ name: "Fleet", parent: { name: "Goal" } }, { name: "Bug", parent: null }] } }),
     node("A11-41", { labels: { nodes: [] } }),
     node("A11-42"),
-  ], pageInfo: { hasNextPage: false, endCursor: null } } } }]);
+  ], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
   const [labelled, bare, unread] = await linearSource({ key: "k", fetch }).assigned();
   assert.deepEqual(labelled.labels, [{ name: "Fleet", group: "Goal" }, { name: "Bug", group: null }], "a child label names its group; a label on its own names none");
   assert.deepEqual(bare.labels, [], "a ticket with no labels has none");
@@ -431,11 +431,11 @@ const FIELDS = "identifier title description url branchName priority state { nam
   + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } } '
   + "labels(first: 50) { nodes { name parent { name } } }";
 
-test("A11-108: with no tickets.pick, the Pick view reads every open ticket the key can see in one list, the same request for the default and for a source built without the setting", async () => {
-  const before = `query($after: String) { issues(first: 100, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
-            nodes { ${FIELDS} } pageInfo { hasNextPage endCursor } } }`;
+test("with no tickets.pick, the Pick view reads the key's own open tickets, the same request for the default and for a source built without the setting", async () => {
+  const before = `query($after: String) { viewer { assignedIssues(first: 100, after: $after, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
+            nodes { ${FIELDS} } pageInfo { hasNextPage endCursor } } } }`;
   for (const source of [(fetch: typeof globalThis.fetch) => linearSource({ key: "k", fetch }), (fetch: typeof globalThis.fetch) => linearSource({ key: "k", fetch, pick: "assigned" })]) {
-    const { fetch, requests } = linear([{ data: { issues: { nodes: [node("NBF-1")], pageInfo: { hasNextPage: false, endCursor: null } } } }]);
+    const { fetch, requests } = linear([{ data: { viewer: { assignedIssues: { nodes: [node("NBF-1")], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
     assert.deepEqual((await source(fetch).assigned()).map((t) => t.key), ["NBF-1"]);
     assert.equal(String(requests[0].init.body), JSON.stringify({ query: before, variables: { after: null } }), "the same request, byte for byte");
   }

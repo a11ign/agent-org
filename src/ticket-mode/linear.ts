@@ -147,20 +147,26 @@ const OPEN = 'state: { type: { nin: ["completed", "canceled", "duplicate"] } }';
 /**
  * The query the Pick view's list is read with, for the host file's `tickets.pick`. PURE.
  *
- * Every open ticket the key can see, or, for a team or a project, every open ticket of it: one `issues` list, paged a page at a time, whose
- * tickets carry their assignee. The Pick view picks the assignee in the page, so one read serves every choice and no request is made per person.
- * The team or the project is passed as a variable, never written into the query's text.
+ * With no `tickets.pick`, or `"assigned"`: the key's own open tickets, as the board always asked. Reading every open ticket the key can see
+ * (A11-108's first version) is 19 MB and 53 s on a workspace of this size, past the page's 30 s and 8 MB limits, so the Pick view showed nothing.
+ * For a team or a project: every open ticket of it, which is bounded, in one `issues` list paged a page at a time, each ticket carrying its assignee
+ * so the Pick view can choose the assignee in the page. The team or the project is passed as a variable, never written into the query's text.
  */
 export function pickQuery(scope: PickScope): PickQuery {
-  const narrowed = scope === "assigned" ? null
-    : "team" in scope ? { name: "team", filter: "team: { key: { eq: $team } }", value: scope.team }
+  if (scope === "assigned") {
+    return {
+      text: `query($after: String) { viewer { assignedIssues(first: ${PAGE}, after: $after, filter: { ${OPEN} }) {
+            nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`,
+      variables: {},
+      page: (data) => (data as { viewer: { assignedIssues: Connection } }).viewer.assignedIssues,
+    };
+  }
+  const narrowed = "team" in scope ? { name: "team", filter: "team: { key: { eq: $team } }", value: scope.team }
     : { name: "project", filter: "project: { name: { eq: $project } }", value: scope.project };
-  const declared = narrowed === null ? "" : `, $${narrowed.name}: String!`;
-  const filters = [...(narrowed === null ? [] : [narrowed.filter]), OPEN].join(", ");
   return {
-    text: `query($after: String${declared}) { issues(first: ${PAGE}, after: $after, filter: { ${filters} }) {
+    text: `query($after: String, $${narrowed.name}: String!) { issues(first: ${PAGE}, after: $after, filter: { ${narrowed.filter}, ${OPEN} }) {
             nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } }`,
-    variables: narrowed === null ? {} : { [narrowed.name]: narrowed.value },
+    variables: { [narrowed.name]: narrowed.value },
     page: (data) => (data as { issues: Connection }).issues,
   };
 }
