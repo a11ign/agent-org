@@ -1,4 +1,4 @@
-import { COMPLETING_KINDS, openPulls } from "../board-view/view-ticket.ts";
+import { COMPLETING_KINDS, openPulls, type StackBaseRecord } from "../board-view/view-ticket.ts";
 import { isParked, isPublishing, isWatched, resumesOnConflict, runStatus, settledByPulls } from "../board-view/settled-by-pulls.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type Queue, type WorkingNote, writerLive } from "./declared-remains.ts";
@@ -329,6 +329,40 @@ export function recordBlockers(queue: Queue, blockers: ReadonlyMap<string, reado
     return entry.phase === "queued" && found !== undefined ? { ...entry, blockers: found } : entry;
   }) };
 }
+
+/**
+ * Record the repository each queued run's project names (`project-repo.ts`), by key. A key the map leaves out keeps what it had, so a source that
+ * could not say does not clear a repository it named before.
+ */
+export function recordProjectRepos(queue: Queue, repos: ReadonlyMap<string, string | null>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) => {
+    const found = repos.get(entry.ticket.key);
+    return entry.phase === "queued" && found !== undefined ? { ...entry, projectRepo: found } : entry;
+  }) };
+}
+
+/** Record what a run was branched from (or clear it, for `undefined`), by key: the pool keeps it current as the blocker's branch moves (A11-116). */
+export function recordStackBase(queue: Queue, key: string, stackBase: StackBaseRecord | undefined): Queue {
+  return replace(queue, key, (entry) => ({ ...entry, stackBase }));
+}
+
+/**
+ * Record the commit each stacked blocker's branch is at, by run and then by blocker key (A11-116), on the blockers of the queued runs as they are now: a
+ * read that is slow to answer never writes back the blockers it read before the tracker answered again. A blocker with no head read has none.
+ */
+export function recordHeads(queue: Queue, heads: ReadonlyMap<string, ReadonlyMap<string, string>>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) => {
+    const found = heads.get(entry.ticket.key);
+    if (entry.phase !== "queued" || found === undefined || entry.blockers === undefined) return entry;
+    return { ...entry, blockers: entry.blockers.map((blocker) => withHead(blocker, found.get(blocker.key))) };
+  }) };
+}
+
+/** A blocker with the head given, or with none when `head` is undefined. PURE. */
+const withHead = (blocker: Blocker, head: string | undefined): Blocker => {
+  const { head: _stale, ...rest } = blocker;
+  return head === undefined ? rest : { ...rest, head };
+};
 
 /** The keys of queued runs whose blockers have not been read yet. */
 export const unreadBlockerKeys = (queue: Queue): string[] =>

@@ -245,7 +245,7 @@
 import {
   APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, draftControls, draftStatusText, duplicateLines, draftForm, draftFields,
-  runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -596,7 +596,8 @@ function row(e) {
     box.addEventListener("change", () => { state.toPublish = toggled(state.toPublish, e.ticket.key); renderBoard(); });
     tick = el("label", { className: "publish-tick" }, box, "Publish");
   }
-  const repos = e.repos && e.repos.length > 0 ? e.repos.join(", ") : e.phase === "queued" ? "the worker chooses the repo" : "choosing a repo";
+  // A run names the repository it is planned for, else its project's (A11-116); the worker chooses one only when neither names one.
+  const repos = repoLabel(e);
   const when = e.startedAt ? `${e.phase === "finished" ? "ran" : "running"} ${length((e.finishedAt ?? Date.now()) - e.startedAt)}, started ${since(e.startedAt)} ago` : `queued ${since(e.queuedAt)} ago`;
   const tokens = e.tokens ? ` · ${Math.round(e.tokens.input / 1000)}k in / ${Math.round(e.tokens.output / 1000)}k out` : "";
   return el("div", { className: "run" },
@@ -607,6 +608,7 @@ function row(e) {
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
+      rebaseNote(e) ? el("div", { className: "meta" }, rebaseNote(e)) : null,
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,

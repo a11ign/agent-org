@@ -56,7 +56,7 @@ export type BoardDeps = Readonly<{
   key: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "applyEdit" | "discardEdit" | "stopWriterRun">;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun">;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -481,21 +481,25 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
  * The sweeps the server runs on the feedback cadence, each on its own timer (A11-106): one that throws is said, and the others still run on theirs. `every` is
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
-export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked">,
+export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked">,
   every: (run: () => void, ms: number) => unknown): void {
-  const sweeps: { sweep: () => void; failure: string }[] = [
+  const sweeps: { sweep: () => void | Promise<void>; failure: string }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
     // Its own sweep, not `watchFeedback`'s: that one returns early when no run is watched, and a merged run is no longer watched.
     { sweep: () => pool.releaseReviewers(), failure: "the reviewers of merged or closed pull requests could not be released" },
     // A stacked pull request is retargeted when its base merges, whether or not a run is watched.
     { sweep: () => pool.retargetStacked(), failure: "the stacked pull requests' bases could not be checked" },
+    // The stacked branches are rebased when their blocker's branch moves (A11-116). Asynchronous, so a failure is said when it settles.
+    { sweep: () => pool.rebaseStacked(), failure: "the stacked branches could not be rebased" },
   ];
+  const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
   for (const { sweep, failure } of sweeps) {
     every(() => {
       try {
-        sweep();
+        const done = sweep();
+        if (done instanceof Promise) done.catch((err: unknown) => said(failure, err));
       } catch (err) {
-        process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
+        said(failure, err);
       }
     }, FEEDBACK_MS);
   }

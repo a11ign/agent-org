@@ -427,7 +427,7 @@ test("addBlockers() is refused when Linear answers success false, and when it ha
  * since the Pick view filters by label group. Each addition is a field of the same request, never a request of its own, and is changed here on
  * purpose: this pin is what notices a field list that grew or shrank by accident.
  */
-const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name } assignee { id name } parent { identifier } "
+const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name summary } assignee { id name } parent { identifier } "
   + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } } '
   + "labels(first: 50) { nodes { name parent { name } } }";
 
@@ -691,4 +691,14 @@ test("people() counts each person's open tickets and the unassigned ones across 
   assert.equal(requests.length, 2);
   const text = queried(requests).query;
   assert.ok(text.includes("nodes { assignee { id name } }") && !text.includes("description"), "only the assignee is read, so a page stays small");
+});
+
+test("A11-116: a ticket carries its project's summary, where its repository is written, and a read of the projects names each one's summary by key", async () => {
+  const found = linear([{ data: { issues: { nodes: [node("NBF-1", { project: { name: "agent-org", summary: "github.com/a11ign/agent-org" } })] } } }]);
+  assert.equal((await linearSource({ key: "k", fetch: found.fetch }).read("NBF-1"))?.projectSummary, "github.com/a11ign/agent-org");
+  const listed = linear([{ data: { viewer: { assignedIssues: { nodes: [node("NBF-2")], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
+  assert.equal((await linearSource({ key: "k", fetch: listed.fetch }).assigned())[0].projectSummary, null, "a project with no summary names none");
+  const read = linear([{ data: { k0: { nodes: [{ project: { summary: "github.com/a11ign/agent-org" } }] }, k1: { nodes: [{ project: null }] } } }]);
+  const summaries = await linearSource({ key: "k", fetch: read.fetch }).projectSummaries!(["NBF-1", "NBF-2"]);
+  assert.deepEqual([...summaries], [["NBF-1", "github.com/a11ign/agent-org"]], "a ticket with no project is left out");
 });

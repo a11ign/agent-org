@@ -20,7 +20,8 @@ export const defaultGit: Git = (cwd, args) => new Promise((resolve, reject) => {
   execFile("git", args, { cwd, encoding: "utf8", env: sandboxGitEnv() }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
 });
 
-export type Prepared = Readonly<{ repo: string; path: string; base: string }>;
+/** A worktree made or reused: its repository, path and base branch, and, when it was made from a stacked branch (`from`), the commit it was branched at. */
+export type Prepared = Readonly<{ repo: string; path: string; base: string; sha?: string }>;
 
 /** The remote's default branch, e.g. `develop`, from `ls-remote --symref origin HEAD`. PURE over that command's output. */
 export function parseDefaultBranch(lsRemote: string): string {
@@ -41,7 +42,10 @@ export async function addWorktree({ repo, clone, path, branch, from }: { repo: s
   const exists = await git(clone, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
   if (exists) throw new Error(`${repo}: branch ${branch} already exists in ${clone}; it is earlier work, so it is not reused`);
   await git(clone, ["worktree", "add", "--quiet", "-b", branch, path, `origin/${base}`]);
-  return { repo, path, base };
+  // Recorded only for a stacked branch: the commit the worktree was branched at, which a later rebase is made from (`stack-rebase.ts`).
+  if (from === undefined) return { repo, path, base };
+  const sha = (await git(clone, ["rev-parse", `origin/${base}`])).trim();
+  return { repo, path, base, sha };
 }
 
 /**

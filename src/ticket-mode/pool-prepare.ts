@@ -9,7 +9,8 @@ import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { isPlanning, runChoice, runPlace } from "./pool-state.ts";
-import { stackedOn } from "./board-view/settled-by-pulls.ts";
+import { repoOf, stackedOn } from "./board-view/settled-by-pulls.ts";
+import { STACK_BASE_FILE } from "./stack-rebase.ts";
 import { unreachablePlugins } from "./plugins.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { type DenyRule } from "./settings.ts";
@@ -90,7 +91,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
     const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
-      stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand, prOpenCommand,
+      stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS }));
   }
   writeRunFiles(ctx, entry, folder, dir);
@@ -109,7 +110,8 @@ export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void
   mkdirSync(dir, { recursive: true });
   // An earlier run's outcome and stop count would end this run before it began, and an earlier review or publish run's mark would lift a
   // refusal for it. An earlier run's pre-PR review log would say the skill ran on commits this run has not made (A11-86).
-  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE]) {
+  // A stacked branch an earlier run recorded is not this run's: its worktree records its own, if it is stacked (A11-116).
+  for (const file of [OUTCOME_FILE, STOP_COUNT_FILE, WORKING_STOP_FILE, REVIEW_FILE, PUBLISH_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, STACK_BASE_FILE]) {
     rmSync(join(dir, file), { force: true });
   }
 }

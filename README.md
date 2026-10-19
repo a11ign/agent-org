@@ -442,6 +442,23 @@ trust, such as a private network. The TLS proxy in front of it must send the ins
 keep the address off the public internet. Open terminal on that machine's runs shows only when its `tickets.terminal` is not on its own
 loopback.
 
+### Stacking, and the repository a ticket's work lands in
+
+A ticket blocked by another starts on top of its blocker rather than waiting for it to merge (A11-77, A11-116). A blocker stacks once its branch is
+pushed in the repository the run works in: the pull request is not needed for that. The worker branches from the blocker's branch and bases its own
+pull request on it, and links it with `gh stack link` only when both pull requests exist. A blocker that is canceled or a duplicate never releases
+the run, and nor does one the planner said to wait on to merge: a person decides. The board says why a Blocked run waits.
+
+A ticket's repository is its Linear project's: the project's summary names it with a `github.com/<owner>/<repo>` address, and it must be one of the
+host file's `clones`. A planner that names another repository for a ticket overrides it. A project that names none leaves the worker to choose.
+
+When the blocker's branch moves (a rebase, review fixes, or a force-push), agent-org rebases the stacked run onto it. It does that once the worker has
+stopped, never while the worker holds the worktree, and never the worker itself: the worker is told not to rebase, merge the base in or force-push.
+The rebase replays the run's commits from the commit it was branched at, which `ticket:worktree --from` records in the ticket's `stack-base.json`, so
+a force-pushed blocker's old commits are not repeated. The push is a lease on the run's own branch. A rebase that conflicts is aborted and left for a
+person: the board says "Rebase onto NBF-1 conflicted in <files>: a person resolves it". When the blocker merges, its stacked pull request is retargeted to
+the default branch (A11-106).
+
 ## What an install holds
 
 `src/` (the programs and their data, without `*.test.*`), `host/` (the unit templates `host:install` reads), `LICENSE`, `README.md` and

@@ -19,7 +19,7 @@ export function settledByPulls(entry: ViewEntry): RunStatus | null {
  * be stacked on ({@link stackedOn}) does not hold it back.
  */
 export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
-  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(entry, blocker, entries) && stackPullOf(entry, blocker) === null);
+  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(entry, blocker, entries) && stackBaseOf(entry, blocker) === null);
 }
 
 /** Whether the planner said the run waits for this blocker to merge, rather than stacking on it: its key is in the run's `waitMerged`. */
@@ -57,48 +57,79 @@ function parsePull(url: string): Readonly<{ repo: string; number: string }> | nu
 export const repoOfPull = (url: string): string | null => parsePull(url)?.repo ?? null;
 
 /**
- * The URL of a blocker's open pull request (a draft is open) in `repo`, or null when it has none there, or no repository is named. A canceled or
- * duplicate blocker has none to stack on, because the work it promised will not come, and nor has one whose branch is unknown.
+ * The repository a run is planned for: the planner's, when its batch named one, else its project's (`project-repo.ts`). A planner's `null` falls back
+ * to the project's, so a planner that names none does not suppress the default. PURE.
  */
-function stackPull(blocker: ViewBlocker, repo: string | null | undefined): string | null {
-  if (!blocker.branch || blocker.state === "canceled" || blocker.state === "duplicate") return null;
-  return Object.entries(blocker.pulls ?? {}).find(([url, state]) => state === "open" && repoOfPull(url) === repo)?.[0] ?? null;
-}
+export const repoOf = (entry: Pick<ViewEntry, "plannedRepo" | "projectRepo">): string | null => entry.plannedRepo ?? entry.projectRepo ?? null;
 
-/** The open pull request a run of `entry` can stack on for `blocker`: none when the planner said to wait for the blocker to merge. */
-const stackPullOf = (entry: ViewEntry, blocker: ViewBlocker): string | null =>
-  waitsToMerge(entry, blocker) ? null : stackPull(blocker, entry.plannedRepo);
-
-/** A blocker a run starts on top of: its key, its open pull request, the repository that is in, which is the run's, and its branch. */
-export type StackBase = Readonly<{ key: string; url: string; repo: string; branch: string }>;
+/** A blocker a run starts on top of: its key, the open pull request it stacks on in the run's repository (none when it has none there), that repository, its branch, and the commit the branch is at there (`head`, read by the pool; null when unknown). */
+export type StackBase = Readonly<{ key: string; url: string | null; repo: string; branch: string; head: string | null }>;
 
 /**
- * The blockers a run starts on top of rather than waits for. A blocker not yet done is one when the run's planner placed its work in a
- * repository where the blocker has an open pull request: the run branches from the blocker's branch, and its pull request is stacked on the
- * blocker's. A blocker the planner said to wait on to merge is never one. A run with no planned repository stacks on nothing, and a finished run
- * is stacked on nothing any more.
+ * What a run stacks on for `blocker`, or null when it waits for it. A blocker is stackable in the run's repository when its branch is pushed there (`head`) or
+ * it has an open pull request there, since a pull request is not needed for a branch to be built on. It is not when the planner said to wait for it to merge
+ * (`waitMerged`), when it is canceled or a duplicate (a person decides), when its pull requests have all merged (its work is on the default branch), or when no
+ * repository is planned or defaulted for the run. PURE.
+ */
+export function stackBaseOf(entry: ViewEntry, blocker: ViewBlocker): StackBase | null {
+  const repo = repoOf(entry);
+  if (repo === null || !blocker.branch || waitsToMerge(entry, blocker)) return null;
+  if (blocker.state === "canceled" || blocker.state === "duplicate" || pullsMerged(blocker)) return null;
+  const url = Object.entries(blocker.pulls ?? {}).find(([pull, state]) => state === "open" && repoOfPull(pull) === repo)?.[0] ?? null;
+  const head = blocker.head ?? null;
+  return url === null && head === null ? null : { key: blocker.key, url, repo, branch: blocker.branch, head };
+}
+
+/**
+ * The blockers a run starts on top of rather than waits for. A blocker not yet done is one the run can stack on in its repository ({@link stackBaseOf}):
+ * the run branches from the blocker's branch, and its pull request, when it opens one, is based on the blocker's branch. A run with no repository
+ * stacks on nothing, and a finished run is stacked on nothing any more.
  */
 export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): StackBase[] {
-  const repo = entry.plannedRepo;
-  if (entry.phase === "finished" || !repo) return [];
+  if (entry.phase === "finished") return [];
   return (entry.blockers ?? []).flatMap((blocker) => {
-    const url = isDoneFor(entry, blocker, entries) ? null : stackPullOf(entry, blocker);
-    return url === null || !blocker.branch ? [] : [{ key: blocker.key, url, repo, branch: blocker.branch }];
+    const base = isDoneFor(entry, blocker, entries) ? null : stackBaseOf(entry, blocker);
+    return base === null ? [] : [base];
   });
 }
 
-/** What the board says about a run stacked on its blockers, such as "Stacked on NBF-1 #12". */
-export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url }) => `${key} #${parsePull(url)?.number ?? url}`).join(", ")}`;
+/**
+ * What the board says about a run stacked on its blockers: each with its open pull request, such as "Stacked on NBF-1 #12", and each without one, which
+ * is stacked on its branch alone, such as "Stacked on NBF-1 (branch `x`, no pull request yet)".
+ */
+export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url, branch }) => (url === null ? `${key} (branch \`${branch}\`, no pull request yet)` : `${key} #${parsePull(url)?.number ?? url}`)).join(", ")}`;
+
+/** Why a run waits for one blocker it cannot stack on, as {@link waitNote} says it: a canceled blocker is a person's decision, and one whose pull requests merged waits for the tracker. PURE. */
+function blockerWait(entry: ViewEntry, blocker: ViewBlocker): string {
+  if (blocker.state === "canceled" || blocker.state === "duplicate") return `${blocker.key} was ${blocker.state === "canceled" ? "canceled" : "marked a duplicate"}: a person decides`;
+  if (pullsMerged(blocker)) return `Waits for ${blocker.key} to complete in the tracker`;
+  if (repoOf(entry) === null) return `Waits for ${blocker.key}: no repository is planned for this ticket, so it cannot stack`;
+  return `Waits for ${blocker.key} to push its branch`;
+}
 
 /**
- * What the board says about a queued run held back, or null when none holds it: until its blockers merge, such as "Waits for NBF-1 to merge", or
- * for a path another run holds, such as "Waits on NBF-1 #12: both touch pool.ts".
+ * What the board says about a queued run held back, or null when none holds it: until its blockers merge, such as "Waits for NBF-1 to merge"; why it
+ * cannot stack on one, such as "Waits for NBF-1 to push its branch"; or for a path another run holds, such as "Waits on NBF-1 #12: both touch pool.ts".
  */
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
-  const keys = waitsOn(entry, entries).filter((blocker) => waitsToMerge(entry, blocker)).map(({ key }) => key);
-  if (keys.length > 0) return `Waits for ${keys.join(", ")} to merge`;
+  const waits = waitsOn(entry, entries);
+  const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map(({ key }) => key);
+  if (merging.length > 0) return `Waits for ${merging.join(", ")} to merge`;
+  const reasons = waits.map((blocker) => blockerWait(entry, blocker));
   const overlap = overlapWait(entry, entries);
-  return overlap === null ? null : `Waits on ${overlap.key}${overlap.pull === null ? "" : ` #${overlap.pull}`}: both touch ${overlap.path}`;
+  if (overlap !== null) reasons.push(`Waits on ${overlap.key}${overlap.pull === null ? "" : ` #${overlap.pull}`}: both touch ${overlap.path}`);
+  return reasons.length === 0 ? null : reasons.join("; ");
+}
+
+/**
+ * The repository a run's row names: the repositories it has made worktrees in, else the one it is planned for, saying whether its planner named it or its
+ * project did; else the worker chooses one, which a queued run with no repository says (A11-116). PURE.
+ */
+export function repoLabel(entry: ViewEntry): string {
+  if (entry.repos !== undefined && entry.repos.length > 0) return entry.repos.join(", ");
+  const planned = repoOf(entry);
+  if (planned !== null) return `${planned} (${entry.plannedRepo ? "planned" : "from its project"})`;
+  return entry.phase === "queued" ? "the worker chooses the repo" : "choosing a repo";
 }
 
 /** Split a repository-prefixed path, `<repo>:<path>`, into its repository and its path within it. PURE. */
@@ -250,6 +281,24 @@ export function verdictNote(entry: ViewEntry): string | null {
 export function retargetNote(entry: ViewEntry): string | null {
   const notes = entry.phase === "finished" ? Object.values(entry.retargets ?? {}) : [];
   return notes.length > 0 ? notes.join("; ") : null;
+}
+
+/** The commit a stack note names: its first seven characters, as git's own short form does. PURE. */
+const short = (sha: string): string => sha.slice(0, 7);
+
+/**
+ * The line the board shows for a run stacked on a blocker's branch that agent-org keeps current (A11-116), or null when there is nothing to say: that the
+ * rebase failed and a person resolves it, such as "Rebase onto NBF-1 conflicted in pool.ts: a person resolves it"; that the blocker's branch moved and the
+ * run will be rebased when its worker stops; or that it was rebased onto the blocker's branch, such as "Rebased onto NBF-1 by agent-org (abc1234 → def5678)".
+ * The run's status does not change for it. PURE.
+ */
+export function rebaseNote(entry: ViewEntry): string | null {
+  const base = entry.stackBase;
+  if (base === undefined) return null;
+  if (base.failed !== undefined) return `Rebase onto ${base.key} ${base.failed.reason}: a person resolves it`;
+  if (base.seen !== undefined && entry.phase !== "finished") return `Will be rebased onto ${base.key} when the worker stops`;
+  if (base.rebased !== undefined && base.rebased.to === base.sha) return `Rebased onto ${base.key} by agent-org (${short(base.rebased.from)} → ${short(base.rebased.to)})`;
+  return null;
 }
 
 /**
