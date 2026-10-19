@@ -65,9 +65,10 @@ export function inScope(ticket: Owned, scope: string, viewer: Viewer): boolean {
 
 /**
  * The chips of the Assignee row, in order: the signed-in person (with "(you)", when known), Anyone, Unassigned, then each other person with an open
- * ticket, by most tickets and then by name. Counts are over every listed ticket, as the Projects counts are.
+ * ticket, by most tickets and then by name. Counts are over every listed ticket, as the Projects counts are. The chosen person keeps a chip at 0 when
+ * `tickets` holds none of theirs, named by any ticket of `universe` (the wider list) that is theirs.
  */
-export function scopeChips(tickets: readonly Owned[], scope: string, viewer: Viewer, held: Held | null = null): ScopeChip[] {
+export function scopeChips(tickets: readonly Owned[], scope: string, viewer: Viewer, held: Held | null = null, universe: readonly Owned[] = tickets): ScopeChip[] {
   const count = (value: string) => tickets.filter((t) => inScope(t, value, viewer)).length;
   const people = new Map<string, { name: string; count: number }>();
   if (held === null) {
@@ -78,7 +79,10 @@ export function scopeChips(tickets: readonly Owned[], scope: string, viewer: Vie
   } else {
     for (const person of held.people) if (person.id !== viewer?.id) people.set(person.id, { name: person.name, count: person.count });
   }
-  const chip = (value: string, text: string, n: number): ScopeChip => ({ scope: value, text, count: n, pressed: scope === value });
+  // Linear's ids are not the three words, so a person's id is never mistaken for one of them.
+  const chosenPerson = universe.find((t) => t.assignee?.id === scope)?.assignee;
+  if (chosenPerson && !people.has(scope)) people.set(scope, { name: chosenPerson.name, count: 0 });
+  const chip =(value: string, text: string, n: number): ScopeChip => ({ scope: value, text, count: n, pressed: scope === value });
   const others = [...people]
     .sort(([, a], [, b]) => b.count - a.count || a.name.localeCompare(b.name))
     .map(([id, person]) => chip(id, person.name, person.count));

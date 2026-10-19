@@ -6,13 +6,17 @@
 // name: a row is made for whatever groups the listed tickets carry, and a list with no labels has no rows. The labels in no group share one
 // row, "Labels", shown only when some ticket has one.
 //
-// IT WORKS AS THE PROJECTS ROW DOES. Each row has an All chip, which clears that row; its chips choose several at once, and a ticket shows when
-// it has any of them; rows combine with AND, with each other and with the page's other filters. A row also offers the tickets with no label
-// of it, "(no <group>)", when some have none, so the tickets still to be labelled can be found. Counts are over every listed ticket, as the
-// project counts are.
+// IT WORKS AS A FILTER ROW DOES. Each row has an All chip, which clears that row; its chips choose several at once, and a ticket shows when it
+// has any of them; rows combine with AND, with each other and with the page's other filters. A row also offers the tickets with no label of it,
+// "(no <group>)", when some have none, so the tickets still to be labelled can be found. Counts are over the listed tickets, the ones the page
+// shows, which are the chosen project's.
+//
+// A CHOICE THAT THE WIDER LIST HOLDS STAYS ON SCREEN. The rows are made from the listed tickets and from a wider list, every ticket the page holds
+// in the assignee scope. A chosen chip the wider list has but the listed tickets do not is still drawn, at 0, and its row with it, so a choice
+// made in one project still reads on the next. The choice then applies, so the list can be empty while the chip is pressed.
 //
 // A CHOICE THAT NAMES NO CHIP IS IGNORED. The choices are remembered in the browser, and a label renamed or a list narrowed can leave one that
-// no listed ticket carries. Applied, it would hide every ticket behind a row whose All chip still read as pressed; it filters nothing instead.
+// no ticket of the wider list carries. Applied, it would hide every ticket behind a row whose All chip still read as pressed; it filters nothing instead.
 //
 // SENT TO THE BROWSER AS IT IS, LIKE `board-view.ts`: `ui-server.ts` serves it as `/label-filters.js` with the types stripped. So it imports
 // nothing and uses no Node API. PURE throughout.
@@ -52,12 +56,11 @@ function choiceGroup(choice: string): string | null | undefined {
 /** The ticket's labels of one row: those of the group, or, for `null`, those in no group. */
 const labelsOf = (ticket: Labelled, group: string | null): string[] => (ticket.labels ?? []).filter((l) => l.group === group).map((l) => l.name);
 
-/**
- * The label rows for the listed tickets and the remembered choices: a row for each group any ticket has a label of, by name, then the row of
- * labels in no group when there are any. A row's chips are its labels, most tickets first and then by name, then "(no <name>)" when some
- * tickets have none of them.
- */
-export function labelRows(tickets: readonly Labelled[], chosen: ReadonlySet<string>): LabelRow[] {
+/** A row's chips in order: its labels, most tickets first and then by name, and the chip of the tickets with none of its labels last. */
+const chipOrder = (a: LabelChip, b: LabelChip): number => (a.label === null ? 1 : 0) - (b.label === null ? 1 : 0) || b.count - a.count || a.text.localeCompare(b.text);
+
+/** The rows of `tickets` alone, with their chips counted over them: see {@link labelRows}. */
+function rowsOf(tickets: readonly Labelled[], chosen: ReadonlySet<string>): LabelRow[] {
   const groups = new Map<string | null, Map<string, number>>();
   for (const t of tickets) {
     // A ticket counts once for a label, however many times a tracker lists it.
@@ -70,8 +73,7 @@ export function labelRows(tickets: readonly Labelled[], chosen: ReadonlySet<stri
       counts.set(name, (counts.get(name) ?? 0) + 1);
     }
   }
-  const order = [...groups.keys()].sort((a, b) => (a === null ? 1 : b === null ? -1 : a.localeCompare(b)));
-  return order.map((group) => {
+  return [...groups.keys()].map((group) => {
     const counts = groups.get(group) ?? new Map<string, number>();
     const name = group ?? UNGROUPED;
     const chip = (label: string | null, text: string, count: number): LabelChip => {
@@ -82,6 +84,26 @@ export function labelRows(tickets: readonly Labelled[], chosen: ReadonlySet<stri
     const none = tickets.filter((t) => labelsOf(t, group).length === 0).length;
     const chips = none > 0 ? [...labels, chip(null, group === null ? "(no label)" : `(no ${name})`, none)] : labels;
     return { group, name, chips, all: !chips.some((c) => c.pressed) };
+  });
+}
+
+/**
+ * The label rows for the listed tickets and the remembered choices: a row for each group any ticket has a label of, by name, then the row of
+ * labels in no group when there are any. A row's chips are its labels, most tickets first and then by name, then "(no <name>)" when some
+ * tickets have none of them. A chosen chip that only `universe` (the wider list) has is kept, at 0, with its row.
+ */
+export function labelRows(tickets: readonly Labelled[], chosen: ReadonlySet<string>, universe: readonly Labelled[] = tickets): LabelRow[] {
+  const chips = new Map<string | null, LabelChip[]>(rowsOf(tickets, chosen).map((row) => [row.group, [...row.chips]]));
+  for (const row of rowsOf(universe, chosen)) {
+    for (const chip of row.chips) {
+      const have = chips.get(row.group) ?? [];
+      if (chip.pressed && !have.some((c) => c.choice === chip.choice)) chips.set(row.group, [...have, { ...chip, count: 0 }]);
+    }
+  }
+  const order = [...chips.keys()].sort((a, b) => (a === null ? 1 : b === null ? -1 : a.localeCompare(b)));
+  return order.map((group) => {
+    const ordered = [...(chips.get(group) ?? [])].sort(chipOrder);
+    return { group, name: group ?? UNGROUPED, chips: ordered, all: !ordered.some((c) => c.pressed) };
   });
 }
 
@@ -98,9 +120,12 @@ export function meetsLabels(ticket: Labelled, rows: readonly LabelRow[]): boolea
   });
 }
 
-/** The tickets that meet the label filters chosen, with the rows made from `listed`, every ticket the Pick view lists. */
-export function withLabels<T extends Labelled>(tickets: readonly T[], chosen: ReadonlySet<string>, listed: readonly Labelled[] = tickets): T[] {
-  const rows = labelRows(listed, chosen);
+/**
+ * The tickets that meet the label filters chosen. The rows are made from `listed`, the tickets the page shows, and `universe`, the wider list
+ * that {@link labelRows} keeps a chosen chip for.
+ */
+export function withLabels<T extends Labelled>(tickets: readonly T[], chosen: ReadonlySet<string>, listed: readonly Labelled[] = tickets, universe: readonly Labelled[] = listed): T[] {
+  const rows = labelRows(listed, chosen, universe);
   return tickets.filter((t) => meetsLabels(t, rows));
 }
 

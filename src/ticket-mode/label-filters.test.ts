@@ -82,3 +82,30 @@ test("a ticket's tags are its labels in a group, by group then name; a label in 
   assert.deepEqual(groupTags(TICKETS[0]), [area("Board"), goal("Fleet")]);
   assert.deepEqual(groupTags(TICKETS[4]), []);
 });
+
+test("A11-123: a chosen label the wider list holds but the listed tickets do not is kept at 0, with its row, and applies, so the list can be empty", () => {
+  const listed = TICKETS.slice(3, 4);
+  const chosen = new Set([labelChoice("Goal", "Fleet"), labelChoice(null, "Bug")]);
+  const rows = labelRows(listed, chosen, TICKETS);
+  assert.deepEqual(rows.map((r) => [r.name, r.chips.map((c) => [c.text, c.count, c.pressed])]), [
+    ["Goal", [["Fleet", 0, true]]],
+    [UNGROUPED, [["Bug", 0, true]]],
+  ], "each row is drawn for its chosen chip alone, at 0");
+  assert.ok(rows.every((r) => !r.all), "All reads as not pressed while a chip in its row is");
+  assert.deepEqual(keys(withLabels(listed, chosen, listed, TICKETS)), [], "the listed ticket has neither, so the choice empties the list");
+});
+
+test("A11-123: a chosen (no <group>) the wider list holds but the listed tickets do not is kept at 0 beside their own chips", () => {
+  const listed = TICKETS.slice(1, 2);
+  const rows = labelRows(listed, new Set([labelChoice("Goal", null)]), TICKETS);
+  const goal = rows.find((r) => r.group === "Goal")!;
+  assert.deepEqual(goal.chips.map((c) => [c.text, c.count, c.pressed]), [["Ticket mode", 1, false], ["(no Goal)", 0, true]]);
+  assert.deepEqual(keys(withLabels(listed, new Set([labelChoice("Goal", null)]), listed, TICKETS)), []);
+});
+
+test("A11-123: a choice that no ticket of the wider list carries is still ignored, and adds no chip or row", () => {
+  const listed = TICKETS.slice(1, 2);
+  const stale = new Set([labelChoice("Gone", "Fleet"), labelChoice("Goal", "Renamed")]);
+  assert.deepEqual(labelRows(listed, stale, TICKETS).map((r) => [r.name, r.chips.map((c) => c.pressed)]), labelRows(listed, new Set()).map((r) => [r.name, r.chips.map((c) => c.pressed)]));
+  assert.deepEqual(keys(withLabels(listed, stale, listed, TICKETS)), keys(listed));
+});

@@ -20,7 +20,8 @@ const CHROME_PATHS = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chr
 const STATUSES = ["working", "publishing", "ready-to-merge"] as const;
 type Measure = Readonly<{ color: string; animation: string; running: number }>;
 
-const CSS = /<style>([\s\S]*?)<\/style>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
+const HTML = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
+const CSS = /<style>([\s\S]*?)<\/style>/.exec(HTML)![1];
 const PAGE = `<!doctype html><meta charset="utf-8"><style>${CSS}</style>
 <div class="runs"><div class="run-list">${STATUSES.map((s) => `<div class="run"><span class="icon st-${s}" id="${s}"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg></span></div>`).join("")}</div></div>
 <pre id="out"></pre>
@@ -44,22 +45,55 @@ function chromeOrSkip(t: { skip(reason: string): void }): string | null {
   return null;
 }
 
-function measure(chrome: string, reducedMotion: boolean): Readonly<Record<(typeof STATUSES)[number], Measure>> {
+/** Loads `html` in headless Chrome with `flags`, and returns what its `<pre id="out">` holds once its script has run. */
+function dumpOut(chrome: string, html: string, flags: readonly string[]): string {
   const dir = tmpDir("ticket-ui-css-");
   const file = join(dir, "page.html");
-  writeFileSync(file, PAGE);
+  writeFileSync(file, html);
   // Chrome puts a socket in its TMPDIR and aborts when that path is over 107 characters, which the suite's own TMPDIR on the CI runner is.
   const scratch = mkdtempSync(join("/tmp", "ui-css-"));
   try {
-    const flags = ["--headless=new", "--disable-gpu", "--no-sandbox", `--user-data-dir=${join(dir, "profile")}`, ...(reducedMotion ? ["--force-prefers-reduced-motion"] : [])];
-    const run = spawnSync(chrome, [...flags, "--dump-dom", `file://${file}`], { encoding: "utf8", env: { ...process.env, TMPDIR: scratch }, timeout: 60_000, killSignal: "SIGKILL" });
+    const run = spawnSync(chrome, ["--headless=new", "--disable-gpu", "--no-sandbox", `--user-data-dir=${join(dir, "profile")}`, ...flags, "--dump-dom", `file://${file}`],
+      { encoding: "utf8", env: { ...process.env, TMPDIR: scratch }, timeout: 60_000, killSignal: "SIGKILL" });
     assert.equal(run.status, 0, `Chrome exited ${run.status} (signal ${run.signal}): ${run.stderr.slice(-1500)}`);
     const out = /<pre id="out">([^<]*)<\/pre>/.exec(run.stdout)?.[1];
     assert.ok(out, `Chrome printed no measurement: ${run.stdout.slice(0, 500)}`);
-    return JSON.parse(out);
+    return out;
   } finally {
     rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
+}
+
+function measure(chrome: string, reducedMotion: boolean): Readonly<Record<(typeof STATUSES)[number], Measure>> {
+  return JSON.parse(dumpOut(chrome, PAGE, reducedMotion ? ["--force-prefers-reduced-motion"] : []));
+}
+
+/**
+ * THE PICK TAB'S LAYOUT, FROM A REAL CHROME. The sidebar of projects sits beside the list on a wide window and above it under 760px, and nothing
+ * scrolls sideways. The Pick section's own markup is read from `ui.html`, with the project buttons and one ticket row put where the page puts them,
+ * so `ui-css.test.ts` measures the page's layout and not a copy of it. The fake DOM in `ui.test.ts` has no layout, so this is the only proof of it.
+ */
+const PICK_SECTION = HTML.slice(HTML.indexOf('<section id="pick">'), HTML.indexOf('<section id="board"'));
+const SIDEBAR_SLOT = '<nav class="filters" id="projects" aria-label="Projects"></nav>';
+const LIST_SLOT = '<div id="groups"></div>';
+if (!PICK_SECTION.includes(SIDEBAR_SLOT) || !PICK_SECTION.includes(LIST_SLOT)) throw new Error("the Pick section of ui.html no longer has the sidebar and list slots this test fills");
+const PROJECT_BUTTONS = [["Visual Explorer - GA", 3], ["agent-org", 2], ["a11ign", 1], ["(no project)", 1]] as const;
+const SIDEBAR = PROJECT_BUTTONS.map(([name, n], i) => `<button class="filter" type="button" aria-pressed="${i === 0}"><span>${name}</span><span class="n">${n}</span></button>`).join("");
+const LIST = '<div class="group"><h2><span class="name">Backlog</span></h2><label class="row"><input type="checkbox"><span class="key">NBF-1</span>'
+  + '<span>Fit to View does nothing, a title long enough to wrap when the window is narrow</span><span class="pill">Visual Explorer - GA</span><span class="pill">Urgent</span></label></div>';
+const PICK = PICK_SECTION.replace(SIDEBAR_SLOT, `<nav class="filters" id="projects" aria-label="Projects">${SIDEBAR}</nav>`).replace(LIST_SLOT, `<div id="groups">${LIST}</div>`);
+
+type Box = Readonly<{ left: number; top: number; right: number; bottom: number }>;
+type PickMeasure = Readonly<{ innerWidth: number; scrollWidth: number; sidebar: Box; list: Box }>;
+
+function measurePick(chrome: string, width: number): PickMeasure {
+  const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${CSS}</style><main>${PICK}</main>
+<pre id="out"></pre>
+<script>
+const box = (id) => { const r = document.querySelector(id).getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom }; };
+document.getElementById("out").textContent = JSON.stringify({ innerWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth, sidebar: box("#projects"), list: box(".pick-main") });
+</script>`;
+  return JSON.parse(dumpOut(chrome, html, [`--window-size=${width},800`]));
 }
 
 test("a Publishing run's icon has the colour of In progress and its ring turns, and a Ready to merge icon does neither", (t) => {
@@ -79,4 +113,17 @@ test("a person who asked for reduced motion sees the Publishing ring hold still,
   const { working, publishing } = measure(chrome, true);
   assert.deepEqual([publishing.animation, publishing.running], ["none", 0]);
   assert.equal(publishing.color, working.color);
+});
+
+test("A11-123: the project sidebar sits beside the list on a wide window, above it under 760px, and nothing scrolls sideways", (t) => {
+  const chrome = chromeOrSkip(t);
+  if (chrome === null) return;
+  const wide = measurePick(chrome, 1000);
+  assert.equal(wide.innerWidth, 1000, "the window is the width asked for");
+  assert.ok(wide.sidebar.right <= wide.list.left, "on a wide window the sidebar is left of the list");
+  assert.equal(wide.sidebar.top, wide.list.top, "and starts level with it");
+  const narrow = measurePick(chrome, 700);
+  assert.equal(narrow.innerWidth, 700);
+  assert.ok(narrow.sidebar.bottom <= narrow.list.top, "under 760px the sidebar is above the list");
+  assert.ok(narrow.scrollWidth <= narrow.innerWidth, `no horizontal scroll: the page is ${narrow.scrollWidth}px wide in a ${narrow.innerWidth}px window`);
 });

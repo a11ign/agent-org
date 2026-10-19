@@ -61,6 +61,9 @@ const TICKETS = [
   { key: "T-3", title: "three", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "" },
   { key: "T-4", title: "four", status: "Todo", statusOrder: 1, priority: 2, project: null, url: "" },
 ];
+/** The same tickets, all in one project, for the tests that are not about projects: the Pick list shows one project, so these list every ticket. */
+const inOneProject = <T extends { project: string | null }>(tickets: readonly T[]) => tickets.map((t) => ({ ...t, project: "Alpha" }));
+const ONE_PROJECT = inOneProject(TICKETS);
 
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
@@ -140,21 +143,6 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
 /** Let the page's pending fetches and their handlers run. */
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test("a project chip filters the list, several can be chosen at once, and All projects clears them; the choice is kept in localStorage", async () => {
-  const storage = new Map<string, string>();
-  const p = await page(storage);
-  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
-  for (const chipText of ["Alpha2", "Beta1", "(no project)1"]) assert.ok(p.$("projects").text().includes(chipText), `a chip with its count: ${chipText}`);
-  p.chip("Beta").fire("click");
-  assert.deepEqual(p.shownKeys(), ["T-2"]);
-  p.chip("(no project)").fire("click");
-  assert.deepEqual(p.shownKeys(), ["T-2", "T-4"], "a second chip adds its tickets");
-  assert.deepEqual(JSON.parse(storage.get("ticket-mode.projects")!).sort(), ["(no project)", "Beta"]);
-  p.chip("All projects").fire("click");
-  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
-  assert.equal(storage.get("ticket-mode.projects"), "[]");
-});
-
 const BY_PRIORITY = [
   { key: "U-1", title: "urgent", status: "Backlog", statusOrder: 0, priority: 1, project: "Alpha", url: "" },
   { key: "H-1", title: "high", status: "Backlog", statusOrder: 0, priority: 2, project: "Alpha", url: "" },
@@ -180,22 +168,17 @@ test("a remembered priority filter is applied when the page loads again", async 
   assert.deepEqual(p.shownKeys(), ["H-1"]);
 });
 
-test("a remembered project filter is applied when the page loads again", async () => {
-  const p = await page(new Map([["ticket-mode.projects", JSON.stringify(["Alpha"])]]));
-  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"]);
-});
-
 /** Which status sections are collapsed, in order. */
 const collapsed = (p: Awaited<ReturnType<typeof page>>) => p.groups().map((g) => g.className.includes("collapsed"));
 
 test("status sections start collapsed, open and close from anywhere on their header, and stay as left after a reload", async () => {
   const storage = new Map<string, string>();
-  const first = await page(storage);
+  const first = await page(storage, { tickets: ONE_PROJECT });
   assert.deepEqual(collapsed(first), [true, true], "a first visit sees every section collapsed");
   first.groups()[0].children[0].all().find((n) => n.className === "name")!.fire("click");
   assert.deepEqual(collapsed(first), [false, true], "a click on the section's name opens only that section");
   assert.deepEqual(JSON.parse(storage.get("ticket-mode.open")!), ["Backlog"]);
-  const reloaded = await page(storage);
+  const reloaded = await page(storage, { tickets: ONE_PROJECT });
   assert.deepEqual(collapsed(reloaded), [false, true], "the reload keeps it open");
   const fold = reloaded.groups()[0].children[0].all().find((n) => n.className === "fold")!;
   fold.fire("click");
@@ -349,7 +332,7 @@ test("Expand all opens every parent with the sections, and Collapse all folds th
 });
 
 test("ticking a section's checkbox selects its tickets and leaves the section as it was", async () => {
-  const p = await page(new Map());
+  const p = await page(new Map(), { tickets: ONE_PROJECT });
   const tick = p.groups()[0].children[0].all().find((n) => n.tag === "input")!;
   tick.checked = true;
   tick.fire("click");
@@ -359,7 +342,7 @@ test("ticking a section's checkbox selects its tickets and leaves the section as
 });
 
 test("Expand all opens every section and becomes Collapse all, which closes them again", async () => {
-  const p = await page(new Map());
+  const p = await page(new Map(), { tickets: ONE_PROJECT });
   assert.equal(p.$("fold-all").textContent, "Expand all");
   p.$("fold-all").fire("click");
   assert.deepEqual(collapsed(p), [false, false]);
@@ -369,7 +352,7 @@ test("Expand all opens every section and becomes Collapse all, which closes them
 });
 
 test("Select all takes the visible tickets, and Queue sends exactly those with the model and effort and no repository", async () => {
-  const p = await page(new Map([["ticket-mode.projects", JSON.stringify(["Alpha"])]]));
+  const p = await page(new Map([["ticket-mode.project", JSON.stringify(["Alpha"])]]));
   const body = await queueAll(p);
   assert.deepEqual(body?.keys, ["T-1", "T-3"], "T-2 and T-4 are filtered out");
   assert.equal("repos" in (body ?? {}), false, "the worker chooses the repository");
@@ -956,7 +939,7 @@ test("a connection that cannot be reached is named in the page, and switching to
   p.$("connection").fire("change");
   await settleAll();
   assert.equal(p.$("error").textContent, "");
-  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"], "the first project of work's list");
 });
 
 test("a connections file the service refused is named above the board, which still shows this machine's instance", async () => {
@@ -964,7 +947,7 @@ test("a connections file the service refused is named above the board, which sti
   const p = await page(new Map(), { connections: { connections: [{ name: "local", kind: "local" }], refusal } });
   assert.equal(p.$("connections-note").hidden, false);
   assert.equal(p.$("connections-note").textContent, refusal);
-  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"], "the first project of this machine's list");
 });
 
 test("a run's links that are not http addresses, as a remote board could send, are drawn with no address", async () => {
@@ -981,10 +964,10 @@ test("an answer from the instance shown before a switch is dropped, so it never 
   p.$("connection").value = "work";
   p.$("connection").fire("change");
   for (let i = 0; i < 10; i++) await settle();
-  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"]);
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"]);
   p.release();
   for (let i = 0; i < 10; i++) await settle();
-  assert.deepEqual(p.shownKeys(), ["T-1", "T-2", "T-3", "T-4"], "personal's late tickets did not replace work's");
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"], "personal's late tickets did not replace work's");
   assert.equal(p.$("error").textContent, "", "and dropping it is not an error");
 });
 
@@ -1095,7 +1078,7 @@ const LABELLED = [
 ];
 
 test("a row of chips for each label group, named after it, and a Labels row for the labels in no group, each chip with its count", async () => {
-  const p = await page(new Map(), { tickets: LABELLED });
+  const p = await page(new Map(), { tickets: inOneProject(LABELLED) });
   const rows = p.$("label-rows").children;
   assert.deepEqual(rows.map((r) => r.children[0].text()), ["Goal", "Labels"], "each row is named after its group");
   for (const chipText of ["All", "Fleet2", "Ticket mode1", "(no Goal)1"]) assert.ok(rows[0].text().includes(chipText), `a chip with its count: ${chipText}`);
@@ -1109,26 +1092,29 @@ test("a list with no labels shows no label row, and a list with no label outside
   assert.deepEqual(grouped.$("label-rows").children.map((r) => r.children[0].text()), ["Goal"]);
 });
 
-test("label chips choose several at once within a row, combine with AND across rows and with the project row, All clears the row, and the choice is kept", async () => {
+test("label chips choose several at once within a row, combine with AND across rows and with the chosen project, All clears the row, and the choice is kept", async () => {
   const storage = new Map<string, string>();
   const p = await page(storage, { tickets: LABELLED });
   const rowChip = (row: number, name: string) => p.$("label-rows").children[row].children.find((c) => c.tag === "button" && (c.children[0]?.text() ?? c.textContent) === name)!;
   rowChip(0, "Fleet").fire("click");
-  assert.deepEqual(p.shownKeys(), ["L-1", "L-3"]);
-  rowChip(0, "Ticket mode").fire("click");
-  assert.deepEqual(p.shownKeys(), ["L-1", "L-2", "L-3"], "a second chip in the row adds its tickets");
+  assert.deepEqual(p.shownKeys(), ["L-1", "L-3"], "Alpha, the first project, has both Fleet tickets");
   rowChip(1, "Bug").fire("click");
   assert.deepEqual(p.shownKeys(), ["L-1"], "rows combine with AND");
   rowChip(1, "All").fire("click");
   p.chip("Beta").fire("click");
-  assert.deepEqual(p.shownKeys(), ["L-2"], "and with the project row");
-  p.chip("All projects").fire("click");
-  assert.equal(JSON.parse(storage.get("ticket-mode.labels")!).length, 2, "the Goal row's two choices are remembered");
+  assert.deepEqual(p.shownKeys(), [], "Beta has no Fleet ticket, so the Fleet chip reads 0 and the list is empty while it is chosen");
+  assert.equal(rowChip(0, "Fleet").children[1].text(), "0");
+  assert.equal(rowChip(0, "Fleet").getAttribute("aria-pressed"), "true", "and stays pressed");
+  rowChip(0, "Ticket mode").fire("click");
+  assert.deepEqual(p.shownKeys(), ["L-2"], "a chip with a ticket in the project adds it");
+  p.chip("Alpha").fire("click");
+  assert.deepEqual(p.shownKeys(), ["L-1", "L-3"], "back in Alpha, Ticket mode adds nothing: its one ticket is Beta's");
+  assert.deepEqual(JSON.parse(storage.get("ticket-mode.labels")!).length, 2, "the Goal row's two choices are remembered");
   const again = await page(storage, { tickets: LABELLED });
-  assert.deepEqual(again.shownKeys(), ["L-1", "L-2", "L-3"], "a new page starts from the remembered choice");
+  assert.deepEqual(again.shownKeys(), ["L-1", "L-3"], "a new page starts from the remembered choices and the remembered project");
   const clear = again.$("label-rows").children[0].children.find((c) => c.tag === "button" && (c.children[0]?.text() ?? c.textContent) === "All")!;
   clear.fire("click");
-  assert.deepEqual(again.shownKeys(), ["L-1", "L-2", "L-3", "L-4"]);
+  assert.deepEqual(again.shownKeys(), ["L-1", "L-3", "L-4"]);
   assert.equal(storage.get("ticket-mode.labels"), "[]");
 });
 
@@ -1345,7 +1331,7 @@ const ASSIGNED = [
 const WITH_ASSIGNEES = { viewer: DAN, pickDefault: "you" };
 /** Each chip of the Assignee row as its text, its count and whether it is pressed. */
 const assigneeChips = (p: Page) => p.$("assignees").children.filter((c) => c.tag === "button")
-  .map((c) => [c.children[0].text(), c.children[1].text(), c.getAttribute("aria-pressed")]);
+  .map((c) => [c.children[0].text(), c.children[1]?.text() ?? "none", c.getAttribute("aria-pressed")]);
 
 test("A11-108: the list starts on the signed-in person's tickets, the counter says so, and the rows of other people's tickets are not in it", async () => {
   const p = await page(new Map(), { tickets: ASSIGNED, config: WITH_ASSIGNEES });
@@ -1468,16 +1454,136 @@ test("A11-108: a parent outside the chosen scope with a ticket in it is shown as
   assert.match(rowFor(ben, "E-1").text(), /Ana Ruiz.*Not in this view/, "the context parent names its owner");
 });
 
-test("A11-108: the Projects counts are the chosen scope's, so the default view counts the signed-in person's own tickets", async () => {
+test("A11-108: the project sidebar's counts are the chosen scope's, so the default view counts the signed-in person's own tickets", async () => {
   const tickets = [
     ticketIn("M-1", { assignee: DAN, project: "Alpha" }),
     ticketIn("M-2", { assignee: ANA, project: "Beta" }),
     ticketIn("M-3", { assignee: ANA, project: "Beta" }),
   ];
   const p = await page(new Map(), { tickets, config: WITH_ASSIGNEES });
-  assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["All projects", "Alpha1"], "Beta holds nobody's ticket of the person's, so it has no chip");
+  assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["Alpha1"], "Beta holds nobody's ticket of the person's, so it is not listed");
   p.chip("Anyone", "assignees").fire("click");
-  assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["All projects", "Beta2", "Alpha1"], "the projects by count, as the row always lists them");
+  assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["Beta2", "Alpha1"], "the projects by count, as the sidebar always lists them");
+});
+
+/** The project sidebar as each button reads: its name, its count and whether it is pressed. */
+const projectButtons = (p: Page) => p.$("projects").children.filter((c) => c.tag === "button")
+  .map((c) => [c.children[0].text(), c.children[1].text(), c.getAttribute("aria-pressed")]);
+/** The text of each button in a row of chips, as its name and count. */
+const chipTexts = (p: Page, row: string) => p.$(row).children.filter((c) => c.tag === "button").map((c) => [c.text(), c.getAttribute("aria-pressed")]);
+
+test("A11-123: the sidebar beside the Pick list names each project with its open-ticket count, most first, and exactly one project is pressed", async () => {
+  const p = await page(new Map());
+  assert.deepEqual(projectButtons(p), [["Alpha", "2", "true"], ["(no project)", "1", "false"], ["Beta", "1", "false"]], "most tickets first, then by name");
+  assert.equal(p.$("projects").children.every((c) => c.tag === "button"), true, "each project is a button, so Enter and Space choose it");
+});
+
+test("A11-123: selecting a project lists only its tickets, and the other project's are not listed", async () => {
+  const p = await page(new Map());
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"], "a first visit shows the first project");
+  p.chip("Beta").fire("click");
+  assert.deepEqual(p.shownKeys(), ["T-2"]);
+  assert.deepEqual(projectButtons(p).map((b) => [b[0], b[2]]), [["Alpha", "false"], ["(no project)", "false"], ["Beta", "true"]]);
+  p.chip("(no project)").fire("click");
+  assert.deepEqual(p.shownKeys(), ["T-4"]);
+});
+
+test("A11-123: the project chosen is remembered and shown again on reload, and nothing is saved until a project is clicked", async () => {
+  const storage = new Map<string, string>();
+  const first = await page(storage);
+  assert.equal(storage.has("ticket-mode.project"), false, "a first visit saves nothing");
+  first.chip("Beta").fire("click");
+  assert.equal(storage.get("ticket-mode.project"), JSON.stringify(["Beta"]));
+  const reloaded = await page(storage);
+  assert.deepEqual(reloaded.shownKeys(), ["T-2"]);
+  assert.deepEqual(projectButtons(reloaded).map((b) => b[2]), ["false", "false", "true"]);
+});
+
+test("A11-123: a remembered project with no open tickets left shows the first project instead, with no error, and the saved choice is left as it was", async () => {
+  const storage = new Map([["ticket-mode.project", JSON.stringify(["Gone"])]]);
+  const p = await page(storage);
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"]);
+  assert.deepEqual(projectButtons(p).map((b) => b[2]), ["true", "false", "false"]);
+  assert.equal(p.$("error").textContent, "");
+  assert.equal(storage.get("ticket-mode.project"), JSON.stringify(["Gone"]), "a fallback is not a choice, so nothing is saved");
+});
+
+test("A11-123: the multi-select key the old Projects row saved is ignored, and is left in storage", async () => {
+  const storage = new Map([["ticket-mode.projects", JSON.stringify(["Beta"])]]);
+  const p = await page(storage);
+  assert.deepEqual(p.shownKeys(), ["T-1", "T-3"], "not Beta, the one it names");
+  assert.equal(storage.get("ticket-mode.projects"), JSON.stringify(["Beta"]));
+});
+
+// Two projects of two people each, with a priority, a plan and a Goal label on the tickets, so every filter has something to count.
+const SCOPED = [
+  ticketIn("S-1", { project: "Alpha", priority: 1, assignee: DAN, uploads: ["S-1-0001-plan-a.md"], labels: [{ name: "Fleet", group: "Goal" }] }),
+  ticketIn("S-2", { project: "Alpha", priority: 2, assignee: ANA, labels: [{ name: "Fleet", group: "Goal" }] }),
+  ticketIn("S-3", { project: "Beta", priority: 3, assignee: BEN, uploads: ["S-3-0001-plan-b.md"], labels: [{ name: "Ticket mode", group: "Goal" }] }),
+  ticketIn("S-4", { project: "Beta", priority: 3, assignee: null, uploads: ["S-4-0001-plan-c.md"] }),
+];
+const SCOPED_CONFIG = { viewer: DAN, pickDefault: "anyone", plan: PLAN };
+
+test("A11-123: the Assignee, Priority, Plan and Goal filters count the chosen project's tickets only, and a chip narrows the list within it", async () => {
+  const p = await page(new Map(), { tickets: SCOPED, config: SCOPED_CONFIG });
+  assert.deepEqual(p.shownKeys(), ["S-1", "S-2"]);
+  assert.deepEqual(assigneeChips(p).map(([name, count]) => [name, count]), [["Dan Beck (you)", "1"], ["Anyone", "2"], ["Unassigned", "0"], ["Ana Ruiz", "1"]],
+    "the people with a ticket in Alpha, and no chip for Ben, who has none there");
+  assert.deepEqual(chipTexts(p, "priorities").map(([text]) => text), ["All priorities", "Urgent1", "High1"]);
+  assert.deepEqual(chipTexts(p, "plans").map(([text]) => text), ["All", "With a plan1", "Without a plan1"]);
+  assert.equal(p.$("label-rows").text(), "GoalAllFleet2", "Ticket mode is Beta's, so it has no chip here");
+  p.chip("Urgent", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["S-1"], "a chip narrows the list within the project");
+});
+
+test("A11-123: a Priority chosen stays on screen at 0 in a project with none of it, and the list is empty while it is chosen", async () => {
+  const p = await page(new Map(), { tickets: SCOPED, config: SCOPED_CONFIG });
+  p.chip("Urgent", "priorities").fire("click");
+  p.chip("Beta").fire("click");
+  assert.deepEqual(p.shownKeys(), [], "Beta has no urgent ticket");
+  assert.deepEqual(chipTexts(p, "priorities"), [["All priorities", "false"], ["Urgent0", "true"], ["Medium2", "false"]]);
+  assert.deepEqual(chipTexts(p, "plans"), [["All", "true"], ["With a plan2", "false"], ["Without a plan0", "false"]], "Beta's tickets alone");
+  p.chip("All priorities", "priorities").fire("click");
+  assert.deepEqual(p.shownKeys(), ["S-3", "S-4"]);
+});
+
+test("A11-123: a Goal label chosen stays on screen at 0 in a project with none of it, and the list is empty while it is chosen", async () => {
+  const p = await page(new Map(), { tickets: SCOPED, config: SCOPED_CONFIG });
+  const goalChip = (text: string) => p.$("label-rows").children[0].children.find((c) => c.tag === "button" && c.children[0]?.text() === text)!;
+  goalChip("Fleet").fire("click");
+  assert.deepEqual(p.shownKeys(), ["S-1", "S-2"]);
+  p.chip("Beta").fire("click");
+  assert.equal(goalChip("Fleet").children[1].text(), "0", "Fleet reads 0 in Beta");
+  assert.equal(goalChip("Fleet").getAttribute("aria-pressed"), "true", "and stays pressed");
+  assert.deepEqual(p.shownKeys(), []);
+  goalChip("Ticket mode").fire("click");
+  assert.deepEqual(p.shownKeys(), ["S-3"]);
+});
+
+test("A11-123: the project shown is kept, with its selection and the queue footer's count, when the person switches to another", async () => {
+  const p = await page(new Map());
+  tickOf(p, "T-1").checked = true;
+  tickOf(p, "T-1").fire("change");
+  assert.equal(p.$("loaded").textContent, "2 of 2 assigned to you shown, 1 selected");
+  assert.equal(p.$("queue").textContent, "Queue 1 ticket");
+  p.chip("Beta").fire("click");
+  assert.equal(p.$("loaded").textContent, "1 of 1 assigned to you shown, 1 selected", "the selection is kept, though T-1 is not shown");
+  assert.equal(p.$("queue").textContent, "Queue 1 ticket", "and so is the footer's count");
+  p.$("queue").fire("click");
+  await settle();
+  assert.deepEqual(p.posts.filter((x) => x.path === "/api/queue").at(-1)?.body.keys, ["T-1"], "Queue sends the ticket of the project not shown");
+});
+
+test("A11-123: the search box and Select all shown work on the chosen project's tickets, and New ticket is still offered", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG });
+  assert.equal(p.$("new-ticket").hidden, false, "New ticket is offered whichever project is shown");
+  p.$("filter").value = "two";
+  p.$("filter").fire("input");
+  assert.deepEqual(p.shownKeys(), [], "T-2 matches the search, but it is in Beta, which is not shown");
+  p.$("filter").value = "";
+  p.$("filter").fire("input");
+  const body = await queueAll(p);
+  assert.deepEqual(body?.keys, ["T-1", "T-3"], "Select all shown takes the chosen project's tickets only");
 });
 
 // An instance whose list is the key's own reads the rest one scope at a time. Dan's own tickets are the first list; the others are read when chosen.
@@ -1485,21 +1591,22 @@ const HELD = { people: [{ id: "dan", name: "Dan Beck", count: 2 }, { id: "ana", 
 const OWN = ASSIGNED.filter((t) => (t as { assignee?: { id: string } | null }).assignee?.id === "dan");
 const ON_DEMAND = { viewer: DAN, pickDefault: "you", scopes: true };
 
-test("on demand: the chips count everyone from who holds the tickets, though the page holds only the signed-in person's", async () => {
+test("on demand: the chips list everyone who holds the tickets, but count only a scope the page has read, from the chosen project's tickets", async () => {
   const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, held: HELD });
   assert.deepEqual(p.shownKeys(), ["M-1", "M-4"]);
   assert.deepEqual(assigneeChips(p), [
-    ["Dan Beck (you)", "2", "true"], ["Anyone", "8", "false"], ["Unassigned", "3", "false"], ["Ana Ruiz", "2", "false"], ["Ben Park", "1", "false"],
-  ]);
+    ["Dan Beck (you)", "2", "true"], ["Anyone", "none", "false"], ["Unassigned", "none", "false"], ["Ana Ruiz", "none", "false"], ["Ben Park", "none", "false"],
+  ], "the people are the instance's, and nothing is counted from the instance's totals");
 });
 
-test("on demand: until the instance says who holds the tickets, only the signed-in person's chip has a count", async () => {
+test("on demand: until the instance says who holds the tickets, only the signed-in person's chip has a count, and a scope is counted once it is read", async () => {
   const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, hold: { "/api/people": HELD } });
   const counts = () => p.$("assignees").children.filter((c) => c.tag === "button").map((c) => [c.children[0].text(), c.children[1]?.text() ?? "none"]);
   assert.deepEqual(counts(), [["Dan Beck (you)", "2"], ["Anyone", "none"], ["Unassigned", "none"]]);
   p.release();
   for (let i = 0; i < 5; i++) await settle();
-  assert.deepEqual(counts().slice(0, 3), [["Dan Beck (you)", "2"], ["Anyone", "8"], ["Unassigned", "3"]], "the counts arrive after the first paint");
+  assert.deepEqual(counts(), [["Dan Beck (you)", "2"], ["Anyone", "none"], ["Unassigned", "none"], ["Ana Ruiz", "none"], ["Ben Park", "none"]],
+    "who holds the rest adds their chips, and none is counted until its scope is read");
 });
 
 test("on demand: choosing another person reads their tickets, which join the list, and choosing them again reads nothing", async () => {
