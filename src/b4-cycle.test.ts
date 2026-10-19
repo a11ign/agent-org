@@ -6,7 +6,7 @@
 // that always fires fails it). The walk is also tried through a cycle among the rows themselves, which must end, and through an edge that is closed, which is a wait that has cleared.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { deadlockLine, deadlocksOf } from "./b4-cycle.ts";
+import { advanceDeadlocks, deadlockKey, deadlockLine, deadlocksOf, type Sighting } from "./b4-cycle.ts";
 import { blockingImpactTick, deadlocksAmong, holdingsOf, resolverOf, type Shelved } from "./blocking-impact.ts";
 
 const EDGES: Record<number, number[]> = { 4575: [4514, 4580], 4514: [4516], 4580: [4278] };
@@ -91,4 +91,20 @@ test("a pull request held by a session still places its shelving on that holder,
 
 test("a bare `#32` is the home repository's, never control#32", () => {
   assert.deepEqual(deadlocksAmong([{ number: 4516, reason: "overlaps #32, which already touches: package.json. B4: no two open pull requests touch the same file" }], resolver()), []);
+});
+
+// A cycle is put to its holder on the first tick that reads it, escalated on the next, and then left alone: the branch that keeps an escalated cycle is the one a second escalation would come from.
+test("a cycle read again after its escalation is kept as it is: no second escalation, and it is not broken", () => {
+  const sighting: Sighting = { shelved: 4516, pr: "control#32", path: [4575, 4514, 4516], holder: "worker-1" };
+  const key = deadlockKey(sighting);
+  const first = advanceDeadlocks({}, [sighting], 1_000);
+  assert.deepEqual(first.moves, [{ kind: "wake-holder", deadlock: sighting, holder: "worker-1", since: 1_000 }]);
+  assert.equal(first.episodes[key].escalated, false);
+  const second = advanceDeadlocks(first.episodes, [sighting], 2_000);
+  assert.deepEqual(second.moves, [{ kind: "escalate", deadlock: sighting, woke: "worker-1", since: 1_000 }]);
+  assert.equal(second.episodes[key].escalated, true);
+  const third = advanceDeadlocks(second.episodes, [sighting], 3_000);
+  assert.deepEqual(third.moves, []);
+  assert.deepEqual(third.episodes, second.episodes);
+  assert.deepEqual(third.broken, []);
 });
