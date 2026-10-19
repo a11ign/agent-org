@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { LINEAR_API, downloadName, linearSource, pickQuery, pullState, readLinearKey, uploadLinks } from "./linear.ts";
+import { LINEAR_API, downloadName, linearSource, pickQuery, scopedQuery, pullState, readLinearKey, uploadLinks } from "./linear.ts";
 import type { Ticket } from "./source.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
@@ -653,4 +653,42 @@ test("a relation that fails after the ticket exists is a warning, and the ticket
   assert.equal(ticket.key, "NBF-77");
   assert.deepEqual(warnings, ["NBF-77 was created, but it did not block NBF-3", "NBF-77 was created, but NBF-4 did not block it"]);
   assert.equal(mutations("issueCreate").length, 1);
+});
+
+test("scopedQuery: a person's id is a variable and never in the text; Unassigned asks for tickets with no assignee; Anyone asks for every open ticket", () => {
+  const person = scopedQuery("u-7");
+  assert.deepEqual(person.variables, { who: "u-7" });
+  assert.ok(person.text.includes("assignee: { id: { eq: $who } }") && !person.text.includes("u-7"));
+  const nobody = scopedQuery("unassigned");
+  assert.ok(nobody.text.includes("assignee: { null: true }"));
+  assert.deepEqual(nobody.variables, {});
+  const everyone = scopedQuery("anyone");
+  assert.ok(!everyone.text.includes("assignee: {") && !everyone.text.includes("$who"));
+  for (const query of [person, nobody, everyone]) assert.ok(query.text.includes('nin: ["completed", "canceled", "duplicate"]'), "finished tickets are never offered");
+});
+
+test("scoped() reads one page of a scope with the cursor of the next, and the last page has none", async () => {
+  const { fetch, requests } = linear([
+    { data: { issues: { nodes: [node("NBF-1", { assignee: { id: "u-7", name: "Ana Ruiz" } })], pageInfo: { hasNextPage: true, endCursor: "c1" } } } },
+    { data: { issues: { nodes: [node("NBF-2")], pageInfo: { hasNextPage: false, endCursor: null } } } },
+  ]);
+  const source = linearSource({ key: "k", fetch });
+  const first = await source.scoped!("u-7", null);
+  assert.deepEqual([first.tickets.map((t) => t.key), first.next], [["NBF-1"], "c1"]);
+  const last = await source.scoped!("u-7", "c1");
+  assert.deepEqual([last.tickets.map((t) => t.key), last.next], [["NBF-2"], null]);
+  assert.equal(queried(requests).variables.who, "u-7");
+  assert.equal(JSON.parse(String(requests[1].init.body)).variables.after, "c1");
+});
+
+test("people() counts each person's open tickets and the unassigned ones across every page, reading only the assignee", async () => {
+  const { fetch, requests } = linear([
+    { data: { issues: { nodes: [{ assignee: { id: "a", name: "Ana" } }, { assignee: null }, { assignee: { id: "b", name: "Ben" } }], pageInfo: { hasNextPage: true, endCursor: "c1" } } } },
+    { data: { issues: { nodes: [{ assignee: { id: "a", name: "Ana" } }, { assignee: null }, { assignee: null }], pageInfo: { hasNextPage: false, endCursor: null } } } },
+  ]);
+  const held = await linearSource({ key: "k", fetch }).people!();
+  assert.deepEqual(held, { people: [{ id: "a", name: "Ana", count: 2 }, { id: "b", name: "Ben", count: 1 }], unassigned: 3, total: 6 });
+  assert.equal(requests.length, 2);
+  const text = queried(requests).query;
+  assert.ok(text.includes("nodes { assignee { id name } }") && !text.includes("description"), "only the assignee is read, so a page stays small");
 });

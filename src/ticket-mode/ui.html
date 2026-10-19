@@ -250,7 +250,7 @@ import {
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
 // The Assignee filter: whose tickets the list shows, its chips and their counts, and the words the counter and the empty state say. assignee-filter.ts decides them, tested there.
-import { ANYONE, NO_VIEWER, defaultScope, inScope, ownerName, scopeChips, scopeEmptyText, scopeWord, showsOwner } from "/assignee-filter.js";
+import { ANYONE, NO_VIEWER, defaultScope, inScope, ownerName, scopeChips, scopeEmptyText, scopeToRead, scopeWord, showsOwner } from "/assignee-filter.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -266,6 +266,9 @@ const state = {
   // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
   // default scope and the words for Anyone's count, and the scope chosen. Not remembered: every load starts on the default.
   assigneeRow: false, viewer: null, pickOpen: "open", assignee: ANYONE,
+  // On an instance whose list is the key's own, the rest are read one scope at a time: whether it says so (`scopes`), who holds the open tickets (`held`, read
+  // after the first paint), the scopes already read, the one being read, and a count of loads so that a read begun before the instance changed is dropped.
+  scopes: false, held: null, read: new Set(), reading: null, loads: 0,
   // Whether this machine publishes (the host file's `tickets.publish`), and the runs ticked for the next Publish.
   publishing: false, toPublish: new Set(),
   // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
@@ -336,9 +339,12 @@ function renderProjects() {
 function renderAssignees(chips) {
   $("assignees").hidden = !state.assigneeRow;
   if (!state.assigneeRow) return;
-  const choose = (scope) => { state.assignee = scope; render(); };
+  const choose = (scope) => { state.assignee = scope; render(); readScope(scope).catch(report); };
+  // Until the instance has said who holds the tickets, only the signed-in person's count is known: the others would read as what the page happens to hold.
+  const counted = (c) => (state.scopes && state.held === null && c.scope !== "you" ? undefined : c.count);
   $("assignees").replaceChildren(el("span", { className: "label", title: state.viewer ? "" : NO_VIEWER }, "Assignee"),
-    ...chips.map((c) => chip(c.text, c.pressed, () => choose(c.scope), c.count)));
+    ...chips.map((c) => chip(c.text, c.pressed, () => choose(c.scope), counted(c))),
+    ...(state.reading === null ? [] : [el("span", { className: "label" }, "Loading…")]));
 }
 
 /**
@@ -416,7 +422,7 @@ async function queueChildren(t) {
 
 function renderPick() {
   renderProjects();
-  const chips = state.assigneeRow ? scopeChips(state.tickets, state.assignee, state.viewer) : [];
+  const chips = state.assigneeRow ? scopeChips(state.tickets, state.assignee, state.viewer, state.held) : [];
   renderAssignees(chips);
   renderPriorities();
   renderPlans();
@@ -490,7 +496,7 @@ function renderPick() {
   $("all").checked = everyPickable.length > 0 && everyPickable.every((t) => state.selected.has(t.key));
   if (state.tickets.length === 0 && state.empty) list.append(el("div", { className: "empty" }, state.empty));
   // A scope that holds none of the tickets says whose it asked for, and where the others are.
-  const nothingInScope = state.assigneeRow && state.tickets.length > 0 && inView().length === 0 ? scopeEmptyText(state.assignee, state.viewer) : null;
+  const nothingInScope = state.assigneeRow && state.tickets.length > 0 && inView().length === 0 && state.reading !== state.assignee ? scopeEmptyText(state.assignee, state.viewer) : null;
   if (nothingInScope) list.append(el("div", { className: "empty" }, nothingInScope));
   const word = state.assigneeRow ? scopeWord(state.assignee, chips, state.pickOpen) : state.pick;
   $("loaded").textContent = `${tickets.length} of ${inView().length} ${word} shown, ${state.selected.size} selected`;
@@ -868,6 +874,7 @@ function setup(config) {
   state.pick = config.pick ?? "assigned to you";
   // An instance that names assignees sends `viewer` (null when the tracker cannot say whose key it is). An older one sends none, and lists as it did.
   state.assigneeRow = config.viewer !== undefined;
+  state.scopes = config.scopes === true;
   state.viewer = config.viewer ?? null;
   state.pickOpen = config.pickOpen ?? "open";
   state.assignee = defaultScope(config.pickDefault ?? "you", state.viewer);
@@ -952,6 +959,10 @@ async function load() {
   state.selected = new Set();
   state.toPublish = new Set();
   state.parents = [];
+  state.held = null;
+  state.read = new Set();
+  state.reading = null;
+  const loads = ++state.loads;
   $("children-note").hidden = true;
   report(null);
   setup(await call("GET", "/api/config"));
@@ -964,6 +975,39 @@ async function load() {
   // Parents are read after the first render, so the list never waits on them. Without them, every ticket stands on its own.
   state.parents = await call("GET", "/api/parents").catch(() => []);
   renderPick();
+  // Who holds the rest is read after the first paint: it takes a while on a large workspace, and the person's own tickets do not wait for it.
+  if (state.scopes) {
+    const held = await call("GET", "/api/people").catch(() => null);
+    if (loads === state.loads && held !== null) { state.held = held; renderPick(); }
+  }
+}
+
+/**
+ * Read the tickets of the scope just chosen, a page at a time, when the page does not hold them: another person's, the unassigned, or Anyone's. Each page
+ * joins the list as it arrives, so a scope of thousands fills in rather than waiting. Dropped when the instance is changed while it reads.
+ */
+async function readScope(scope) {
+  const want = scopeToRead(scope, state.read, state.scopes);
+  if (want === null || state.reading === want) return;
+  const loads = state.loads;
+  state.reading = want;
+  renderPick();
+  try {
+    let after = null;
+    do {
+      const query = `assignee=${encodeURIComponent(want)}${after === null ? "" : `&after=${encodeURIComponent(after)}`}`;
+      const page = await call("GET", `/api/tickets?${query}`);
+      if (loads !== state.loads) return;
+      const have = new Set(state.tickets.map((t) => t.key));
+      state.tickets = [...state.tickets, ...page.tickets.filter((t) => !have.has(t.key))];
+      after = page.next;
+      renderPick();
+    } while (after !== null);
+    state.read.add(want);
+    state.parents = await call("GET", "/api/parents").catch(() => state.parents);
+  } finally {
+    if (loads === state.loads) { state.reading = null; renderPick(); }
+  }
 }
 
 $("connection").addEventListener("change", () => {

@@ -1,7 +1,7 @@
 // no-token: gh -- pure functions over plain tickets
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ANYONE, defaultScope, inScope, NO_VIEWER, ownerName, scopeChips, scopeEmptyText, scopeWord, showsOwner, UNASSIGNED, YOU, type Owned, type Viewer } from "./assignee-filter.ts";
+import { ANYONE, defaultScope, inScope, NO_VIEWER, ownerName, scopeChips, scopeEmptyText, scopeToRead, scopeWord, showsOwner, UNASSIGNED, YOU, type Owned, type Viewer } from "./assignee-filter.ts";
 
 const DAN: Viewer = { id: "dan", name: "Dan Beck" };
 const ANA = { id: "ana", name: "Ana Ruiz" };
@@ -76,4 +76,30 @@ test("A11-108: a row names its owner whenever the list is not the signed-in pers
   assert.equal(showsOwner("ana"), true);
   assert.equal(ownerName({ key: "A-3", assignee: null }), "Unassigned");
   assert.equal(ownerName({ key: "A-2", assignee: ANA }), "Ana Ruiz");
+});
+
+const HELD = { people: [{ id: "dan", name: "Dan Beck", count: 2 }, { id: "ana", name: "Ana Ruiz", count: 3 }, { id: "ben", name: "Ben Park", count: 1 }], unassigned: 40, total: 46 };
+
+test("held counts: the chips count from who holds the tickets, not from the tickets the page has read so far", () => {
+  const own = TICKETS.filter((t) => t.assignee?.id === "dan");
+  assert.deepEqual(scopeChips(own, YOU, DAN, HELD).map((c) => [c.scope, c.text, c.count]), [
+    [YOU, "Dan Beck (you)", 2], [ANYONE, "Anyone", 46], [UNASSIGNED, "Unassigned", 40], ["ana", "Ana Ruiz", 3], ["ben", "Ben Park", 1],
+  ]);
+});
+
+test("held counts: with none, the chips count the tickets the page holds, as before", () => {
+  assert.deepEqual(scopeChips(TICKETS, YOU, DAN, null), scopeChips(TICKETS, YOU, DAN));
+});
+
+test("scopeToRead: the signed-in person's tickets are the first list, a scope is read once, and Anyone covers the rest", () => {
+  assert.equal(scopeToRead(YOU, new Set(), true), null);
+  assert.equal(scopeToRead("ana", new Set(), true), "ana");
+  assert.equal(scopeToRead(UNASSIGNED, new Set(), true), UNASSIGNED);
+  assert.equal(scopeToRead("ana", new Set(["ana"]), true), null, "a scope already read is not read again");
+  assert.equal(scopeToRead("ana", new Set([ANYONE]), true), null, "Anyone holds every person's tickets");
+  assert.equal(scopeToRead(ANYONE, new Set(["ana"]), true), ANYONE, "Anyone is more than the people read so far");
+});
+
+test("scopeToRead: an instance that lists everything at once reads no scope", () => {
+  for (const scope of [YOU, ANYONE, UNASSIGNED, "ana"]) assert.equal(scopeToRead(scope, new Set(), false), null, scope);
 });

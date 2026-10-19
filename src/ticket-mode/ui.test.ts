@@ -65,9 +65,11 @@ const TICKETS = [
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
   connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown>; pick?: unknown; children?: unknown;
   /** The new-ticket requests the board reads, and what a writer route answers for a path and body (default: the requests, as they are). */
-  writers?: { runs: unknown[] }; writerReply?: (path: string, body: any) => unknown };
+  writers?: { runs: unknown[] }; writerReply?: (path: string, body: any) => unknown;
+  /** An instance that reads scopes on demand: who holds the open tickets, and the pages of a scope (`/api/tickets?assignee=...`) by that query's text. */
+  held?: unknown; scoped?: Record<string, { tickets: unknown[]; next: string | null }> };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
-  writers = { runs: [] }, writerReply }: PageOptions = {}) {
+  writers = { runs: [] }, writerReply, held, scoped }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -96,12 +98,18 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       const reply = writerReply === undefined ? writers : writerReply(path, body);
       return { ok: true, json: async () => reply, statusText: "" };
     }
+    const scopedQuery = path.replace(/^\/c\/[^/]+(?=\/api\/)/, "").split("/api/tickets?")[1];
+    if (scopedQuery !== undefined) {
+      const reply = scoped?.[scopedQuery];
+      return reply === undefined ? { ok: false, json: async () => ({ error: `no page for ${scopedQuery}` }), statusText: "" } : { ok: true, json: async () => reply, statusText: "" };
+    }
     // Each connection's instance answers as one instance does, under its prefix.
     const answers: Record<string, () => unknown> = {
       ...(connections === undefined ? {} : { "/api/connections": () => connections }),
       "/api/config": () => ({ models: ["opus"], efforts: ["high"], max: 3, ...config, choice: saved }),
       "/api/tickets": () => tickets,
       "/api/parents": () => parents,
+      ...(held === undefined ? {} : { "/api/people": () => held }),
       ...(pick === undefined ? {} : { "/api/pick": () => pick }),
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
@@ -1430,4 +1438,78 @@ test("A11-108: the Projects counts are the chosen scope's, so the default view c
   assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["All projects", "Alpha1"], "Beta holds nobody's ticket of the person's, so it has no chip");
   p.chip("Anyone", "assignees").fire("click");
   assert.deepEqual(p.$("projects").children.filter((c) => c.tag === "button").map((c) => c.text()), ["All projects", "Beta2", "Alpha1"], "the projects by count, as the row always lists them");
+});
+
+// An instance whose list is the key's own reads the rest one scope at a time. Dan's own tickets are the first list; the others are read when chosen.
+const HELD = { people: [{ id: "dan", name: "Dan Beck", count: 2 }, { id: "ana", name: "Ana Ruiz", count: 2 }, { id: "ben", name: "Ben Park", count: 1 }], unassigned: 3, total: 8 };
+const OWN = ASSIGNED.filter((t) => (t as { assignee?: { id: string } | null }).assignee?.id === "dan");
+const ON_DEMAND = { viewer: DAN, pickDefault: "you", scopes: true };
+
+test("on demand: the chips count everyone from who holds the tickets, though the page holds only the signed-in person's", async () => {
+  const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, held: HELD });
+  assert.deepEqual(p.shownKeys(), ["M-1", "M-4"]);
+  assert.deepEqual(assigneeChips(p), [
+    ["Dan Beck (you)", "2", "true"], ["Anyone", "8", "false"], ["Unassigned", "3", "false"], ["Ana Ruiz", "2", "false"], ["Ben Park", "1", "false"],
+  ]);
+});
+
+test("on demand: until the instance says who holds the tickets, only the signed-in person's chip has a count", async () => {
+  const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, hold: { "/api/people": HELD } });
+  const counts = () => p.$("assignees").children.filter((c) => c.tag === "button").map((c) => [c.children[0].text(), c.children[1]?.text() ?? "none"]);
+  assert.deepEqual(counts(), [["Dan Beck (you)", "2"], ["Anyone", "none"], ["Unassigned", "none"]]);
+  p.release();
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(counts().slice(0, 3), [["Dan Beck (you)", "2"], ["Anyone", "8"], ["Unassigned", "3"]], "the counts arrive after the first paint");
+});
+
+test("on demand: choosing another person reads their tickets, which join the list, and choosing them again reads nothing", async () => {
+  const ana = ASSIGNED.filter((t) => (t as { assignee?: { id: string } | null }).assignee?.id === "ana");
+  const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, held: HELD, scoped: { "assignee=ana": { tickets: ana, next: null } } });
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(p.shownKeys(), ["M-2", "M-6"]);
+  assert.equal(p.$("loaded").textContent, "2 of 2 assigned to Ana Ruiz shown, 0 selected");
+  assert.ok(p.requested.some((r) => r.endsWith("/api/tickets?assignee=ana")));
+  p.chip("Dan Beck (you)", "assignees").fire("click");
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.equal(p.requested.filter((r) => r.endsWith("/api/tickets?assignee=ana")).length, 1, "a scope read once is not read again");
+});
+
+test("on demand: Unassigned is read a page at a time, each page joining the list as it arrives, and the cursor of one asks for the next", async () => {
+  const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, held: HELD, scoped: {
+    "assignee=unassigned": { tickets: [ticketIn("U-1", { assignee: null }), ticketIn("U-2", { assignee: null })], next: "c1" },
+    "assignee=unassigned&after=c1": { tickets: [ticketIn("U-3", { assignee: null })], next: null },
+  } });
+  p.chip("Unassigned", "assignees").fire("click");
+  for (let i = 0; i < 8; i++) await settle();
+  assert.deepEqual([...p.shownKeys()].sort(), ["U-1", "U-2", "U-3"]);
+  assert.ok(p.requested.some((r) => r.endsWith("/api/tickets?assignee=unassigned&after=c1")));
+});
+
+test("on demand: Anyone covers every scope, so a person chosen after it is not read on their own", async () => {
+  const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, held: HELD, scoped: { "assignee=anyone": { tickets: ASSIGNED, next: null } } });
+  p.chip("Anyone", "assignees").fire("click");
+  for (let i = 0; i < 5; i++) await settle();
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(p.shownKeys(), ["M-2", "M-6"]);
+  assert.equal(p.requested.some((r) => r.endsWith("assignee=ana")), false);
+});
+
+test("on demand: an instance that does not say so is read as before, from the one list, with no request for a person", async () => {
+  const p = await page(new Map(), { tickets: ASSIGNED, config: WITH_ASSIGNEES });
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.equal(p.requested.some((r) => r.includes("assignee=")), false);
+  assert.equal(p.requested.some((r) => r.endsWith("/api/people")), false);
+});
+
+test("on demand: choosing the same scope again while it is being read does not read it twice", async () => {
+  const ana = ASSIGNED.filter((t) => (t as { assignee?: { id: string } | null }).assignee?.id === "ana");
+  const p = await page(new Map(), { tickets: OWN, config: ON_DEMAND, held: HELD, scoped: { "assignee=ana": { tickets: ana, next: null } } });
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  p.chip("Ana Ruiz", "assignees").fire("click");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.equal(p.requested.filter((r) => r.endsWith("/api/tickets?assignee=ana")).length, 1);
 });
