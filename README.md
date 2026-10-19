@@ -208,8 +208,10 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
 - **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
   is moved to `outcome.prev.json`, and the worker must write a new one before it stops. A worker that writes a new outcome file after its
-  run parked, even between two of the board's looks, ends the run on it once its agent is idle. Close shuts a parked run's workspace and keeps its
-  outcome, and a parked run is retried only once it is closed.
+  run parked, even between two of the board's looks, ends the run on it once its agent is idle. The stop hook refuses an outcome file that does not
+  match the contract and names the field it wants (`ready-pr needs prs: [{repo, url}], you wrote pr`), so the worker fixes it in the same turn. A
+  finished run whose outcome file was unreadable is read again when the file changes, so a corrected file ends it without a Dismiss. Close shuts a
+  parked run's workspace and keeps its outcome, and a parked run is retried only once it is closed.
 - **The ticket goes back when its run ends without a pull request.** When a run moves its ticket to `tickets.workingState`, the board keeps the
   state the ticket came from on the run. A run that is stopped, crashes or checks its ticket, or a queued run that is removed, puts the ticket
   back in that state. A run that ends `needs-human`, `wrong-repo` or with no outcome keeps the ticket In Progress while it is parked, and Dismiss

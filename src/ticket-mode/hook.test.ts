@@ -128,7 +128,63 @@ test("a stop with no outcome is refused twice in a row, then allowed; an outcome
   writeFileSync(join(dir, "outcome.json"), "{\"kind\":\"needs-human\",\"reason\":\"r\"}");
   assert.equal(stopVerdict(dir).code, 0);
   writeFileSync(join(dir, "outcome.json"), "");
-  assert.equal(stopVerdict(dir).code, 0, "the outcome file's presence decides; the pool reads what it says");
+  const empty = stopVerdict(dir);
+  assert.equal(empty.code, 2, "an empty file is not an outcome the board can read, so it is refused");
+  assert.match(empty.say[0], /the file is not JSON/, "and the refusal says why");
+});
+
+test("A11-118: a ready-pr with `pr` for `prs` is refused at the stop naming prs; the corrected file is allowed and the count is reset", () => {
+  const dir = tmpDir("ticket-hook-shape-");
+  const outcome = join(dir, "outcome.json");
+  writeFileSync(outcome, JSON.stringify({ kind: "ready-pr", pr: "https://github.com/a11ign/control/pull/119", reason: "x" }));
+  const refused = stopVerdict(dir);
+  assert.equal(refused.code, 2, "POSITIVE: the near miss is refused, so the worker writes the contract's file in the same turn");
+  assert.match(refused.say[0], /ready-pr needs prs: \[\{repo, url\}\], you wrote pr/);
+  assert.equal(readFileSync(join(dir, "stop-refusals"), "utf8").trim(), "1", "the refusal counts");
+  writeFileSync(outcome, JSON.stringify({ kind: "ready-pr", prs: [{ repo: "a11ign/control", url: "https://github.com/a11ign/control/pull/119" }], reason: "x" }));
+  assert.equal(stopVerdict(dir).code, 0, "CONTROL: the corrected file is allowed");
+  assert.equal(readFileSync(join(dir, "stop-refusals"), "utf8").trim(), "0", "and the count is reset");
+});
+
+test("A11-118: each wrong shape is refused with the field it names, and the publish and new-ticket kinds are allowed", () => {
+  const named = [
+    [{ kind: "needs-human", why: "the question" }, /needs-human needs reason: a string, you wrote why/],
+    [{ kind: "wrong-repo" }, /wrong-repo needs where: a string, you wrote no where/],
+    [{ kind: "merged" }, /kind "merged" is not one of/],
+    [{ kind: "ready-pr", prs: [{ repo: "a11ign/control", link: "https://github.com/a11ign/control/pull/119" }] }, /ready-pr prs\[0\] needs url: a string, you wrote link/],
+  ] as const;
+  for (const [file, problem] of named) {
+    const dir = tmpDir("ticket-hook-kinds-");
+    writeFileSync(join(dir, "outcome.json"), JSON.stringify(file));
+    const verdict = stopVerdict(dir);
+    assert.equal(verdict.code, 2, JSON.stringify(file));
+    assert.match(verdict.say[0], problem);
+  }
+  for (const file of [{ kind: "published" }, { kind: "drafted" }, { kind: "planned" }]) {
+    const dir = tmpDir("ticket-hook-kinds-");
+    writeFileSync(join(dir, "outcome.json"), JSON.stringify(file));
+    assert.equal(stopVerdict(dir).code, 0, `${file.kind} is a kind some run writes, and its file has nothing beyond it`);
+  }
+});
+
+
+/** The verdicts of stopping on an outcome file that holds `text`, up to the count's limit and one stop past it (A11-118). */
+function stopsOn(text: string) {
+  const dir = tmpDir("ticket-hook-stuck-");
+  writeFileSync(join(dir, "outcome.json"), text);
+  return Array.from({ length: MAX_STOP_REFUSALS + 1 }, () => stopVerdict(dir));
+}
+
+test("A11-118: a worker that cannot fix its wrong-shape file is let through after the count, and the stop says the file is invalid", () => {
+  const verdicts = stopsOn(JSON.stringify({ kind: "ready-pr", prs: "one" }));
+  assert.deepEqual(verdicts.map((verdict) => verdict.code), [2, 2, 0]);
+  assert.match(verdicts[2].say[0], /2 stops in a row on the same invalid outcome in .*outcome\.json, so this one is allowed and the board hands the run back for a person/);
+});
+
+test("A11-118: a near miss the worker never fixes is let through after the count, and the stop says the pool records the pull request it names", () => {
+  const verdicts = stopsOn(JSON.stringify({ kind: "ready-pr", pr: "https://github.com/a11ign/control/pull/119" }));
+  assert.deepEqual(verdicts.map((verdict) => verdict.code), [2, 2, 0]);
+  assert.match(verdicts[2].say[0], /2 stops in a row on the same outcome in .*outcome\.json, which names one pull request in pr, so this one is allowed and the board records that pull request/);
 });
 
 test("`stop_hook_active` does not let a stop through: the nbl-ui gates set it, and the outcome would be skipped", () => {

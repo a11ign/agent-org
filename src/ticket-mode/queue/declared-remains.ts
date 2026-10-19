@@ -46,7 +46,11 @@ export type Outcome =
    */
   | Readonly<{ kind: "done"; reason: string; evidence: readonly string[]; edit?: ProposedEdit }>
   | Readonly<{ kind: "wrong-repo"; where: string }>
-  | Readonly<{ kind: "needs-human"; reason: string; edit?: ProposedEdit }>
+  /**
+   * `unreadable` is set when the worker's outcome file failed its contract, so the reason names the field and the run is read again once the file
+   * changes (A11-118). Optional, so a queue stored before it still reads.
+   */
+  | Readonly<{ kind: "needs-human"; reason: string; edit?: ProposedEdit; unreadable?: true }>
   | Readonly<{ kind: "no-outcome" }>
   | Readonly<{ kind: "crashed"; reason: string }>
   | Readonly<{ kind: "stopped" }>;

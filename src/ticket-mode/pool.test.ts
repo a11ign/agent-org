@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { stopVerdict } from "./hook.ts";
 import { rebaseNote, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
@@ -1863,6 +1864,73 @@ test("a parked run stays parked on an outcome file written before it parked, and
   assert.deepEqual([handed.entry("NBF-1").outcome, handed.entry("NBF-1").workspace], [{ kind: "needs-human", reason: "which colour?" }, "w1"], "the outcome it parked on");
 });
 
+/** NBF-1 started on a machine that opens ready pull requests, its agent working: nothing has ended yet (A11-118). */
+async function workingReadyRun() {
+  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }).run });
+  await ctx.pool.tick();
+  ctx.status.set(herdrName("NBF-1"), "working");
+  await ctx.pool.tick();
+  return ctx;
+}
+
+test("A11-118: a pool that reads `pr` for `prs` records the one pull request it names: the stop hook refuses that file, and the pool is the safety net", async () => {
+  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }).run });
+  await ctx.pool.tick();
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", pr: approvedPr.url, reason: "the pull request is open" }));
+  await ctx.pool.tick();
+  assert.deepEqual(ctx.entry("NBF-1").outcome, { kind: "ready-pr", prs: [{ repo: "x/nbl-ui-netbox", url: approvedPr.url }] });
+  assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
+});
+
+test("A11-118: a parked run whose outcome file was unreadable, with its agent idle, ends on the corrected file with no Dismiss", async () => {
+  const ctx = await workingReadyRun();
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  const file = join(ticketDir(ctx.settings, "NBF-1"), "outcome.json");
+  writeFileSync(file, JSON.stringify({ kind: "ready-pr", prs: "one", reason: "the pull request is open" }));
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").workspace, ctx.entry("NBF-1").outcome?.kind], ["finished", "w1", "needs-human"], "parked on the unreadable file");
+  assert.equal(runStatus(ctx.entry("NBF-1")), "needs-you");
+  writeFileSync(file, JSON.stringify({ kind: "ready-pr", prs: [approvedPr], reason: "the pull request is open" }));
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").workspace, ctx.entry("NBF-1").outcome], ["finished", undefined, { kind: "ready-pr", prs: [approvedPr] }]);
+  assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
+});
+
+test("A11-118: a finished run with no workspace whose outcome file was unreadable is read again when the file changes; a file that is still wrong changes nothing", async () => {
+  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }).run });
+  const unreadable: Outcome = { kind: "needs-human", reason: "the worker's outcome file is not valid: ready-pr prs[0] needs url: a string, you wrote link", unreadable: true };
+  ctx.store.set(finish(ctx.store.get(), "NBF-1", unreadable, 100));
+  const file = join(ticketDir(ctx.settings, "NBF-1"), "outcome.json");
+  mkdirSync(ticketDir(ctx.settings, "NBF-1"), { recursive: true });
+  writeFileSync(file, JSON.stringify({ kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", link: approvedPr.url }], reason: "x" }));
+  await ctx.pool.tick();
+  assert.deepEqual(ctx.entry("NBF-1").outcome, unreadable, "the file is still wrong: nothing changes");
+  writeFileSync(file, JSON.stringify({ kind: "ready-pr", prs: "one", reason: "x", again: true }));
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").outcome], ["finished", unreadable], "still wrong, rewritten: nothing changes either");
+  writeFileSync(file, JSON.stringify({ kind: "ready-pr", prs: [approvedPr], reason: "x" }));
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").outcome], ["finished", { kind: "ready-pr", prs: [approvedPr] }], "corrected: the run ends on its real outcome");
+  assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
+});
+
+test("A11-118: a worker that writes `pr` for `prs` is refused at its stop naming prs, corrects the file in its turn, and the board shows the pull request awaiting review with no human step", async () => {
+  const ctx = await workingReadyRun();
+  const dir = ticketDir(ctx.settings, "NBF-1");
+  const file = join(dir, "outcome.json");
+  writeFileSync(file, JSON.stringify({ kind: "ready-pr", pr: approvedPr.url, reason: "the pull request is open" }));
+  const refused = stopVerdict(dir);
+  assert.equal(refused.code, 2, "POSITIVE: the stop is refused");
+  assert.match(refused.say[0], /ready-pr needs prs: \[\{repo, url\}\], you wrote pr/, "naming prs");
+  writeFileSync(file, JSON.stringify({ kind: "ready-pr", prs: [approvedPr], reason: "the pull request is open" }));
+  assert.equal(stopVerdict(dir).code, 0, "CONTROL: the corrected file lets the stop through");
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  await ctx.pool.tick();
+  assert.deepEqual(ctx.entry("NBF-1").outcome, { kind: "ready-pr", prs: [approvedPr] });
+  assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review", "the board shows the pull request awaiting review, with no human step");
+});
+
 test("a parked run seen working after it wrote a new outcome keeps that outcome, and ends on it once idle", async () => {
   const { pool, entry, dir, status } = await parkedReview();
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
@@ -2636,10 +2704,10 @@ test("A11-91: a done outcome is read with its reason and evidence, and a bare or
   for (const bad of [{ kind: "done", reason: "verified" }, { kind: "done", reason: "verified", evidence: [] }, { kind: "done", reason: "verified", evidence: ["  "] }]) {
     const read = parseOutcome(JSON.stringify(bad));
     assert.equal(read.kind, "needs-human", JSON.stringify(bad));
-    assert.match(read.kind === "needs-human" ? read.reason : "", /without evidence/, "the reason names the evidence it lacks");
+    assert.match(read.kind === "needs-human" ? read.reason : "", /^the worker's outcome file is not valid: done (needs evidence|evidence\[0\] needs)/, "the reason names the evidence it lacks");
   }
   const bare = parseOutcome(JSON.stringify({ kind: "done", evidence: ["e"] }));
-  assert.match(bare.kind === "needs-human" ? bare.reason : "", /without a reason/);
+  assert.match(bare.kind === "needs-human" ? bare.reason : "", /done needs reason: a string, you wrote no reason/);
 });
 
 test("A11-91: a done outcome completes its ticket through the tracker, posts the reason and evidence on it, closes the workspace, and the run is Completed", async () => {

@@ -54,6 +54,7 @@ function watch(ctx: PoolContext): void {
   for (const [workspace, id] of readSessionIds(ctx)) claudeSessions.set(workspace, id);
   watchRunning(ctx, status);
   watchParked(ctx, status);
+  rereadUnreadable(ctx);
   watchPublish(ctx, status);
   watchWriters(ctx, status);
 }
@@ -136,6 +137,31 @@ function newOutcome(ctx: PoolContext, entry: Entry): WrittenOutcome | null {
   const edit = proposedEdit(entry);
   const stored = edit === undefined ? entry.outcome : { ...entry.outcome, edit: { ...edit, base: undefined } };
   return JSON.stringify(outcome) === JSON.stringify(stored) ? null : outcome;
+}
+
+/** A finished run that is not parked, whose outcome file the pool could not read (A11-118). */
+const isUnreadable = (entry: Entry): boolean => entry.phase === "finished" && !isParked(entry) && entry.outcome?.kind === "needs-human" && entry.outcome.unreadable === true;
+
+/**
+ * Each finished run whose outcome file was unreadable is checked again on every pass (A11-118). A file written after the run ended is read: a
+ * corrected one ends the run on its real outcome, so the board moves it off Needs you without a Dismiss. A file that is still wrong changes nothing.
+ */
+/** Whether a fresh outcome of an unreadable finished run ends it: a valid one other than `working`, which takes no note once a run has ended (A11-118). PURE. */
+const endsUnreadable = (fresh: WrittenOutcome | null): fresh is WrittenOutcome =>
+  fresh !== null && fresh.kind !== "working" && !(fresh.kind === "needs-human" && fresh.unreadable === true);
+
+function rereadUnreadable(ctx: PoolContext): void {
+  const { store } = ctx;
+  const watched = new Set<string>();
+  for (const entry of store.get().entries.filter(isUnreadable)) {
+    // A batch's run is read once, through its first ticket, as watchParked reads it.
+    const { name } = runPlace(ctx, entry);
+    if (watched.has(name)) continue;
+    watched.add(name);
+    const fresh = newOutcome(ctx, entry);
+    if (!endsUnreadable(fresh)) continue;
+    settle(ctx, store.get().entries.find((e) => e.ticket.key === entry.ticket.key) ?? entry, fresh);
+  }
 }
 
 /** A person answered a parked run: move its outcome aside, so the stop hook asks for a new one, and mark it live. */
