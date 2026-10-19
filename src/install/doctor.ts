@@ -169,9 +169,13 @@ function linearMcpCheck(deps: DoctorDeps): Check {
 /** The Linear tools a writer checks for duplicates with: either connector's read of a ticket, which a `tickets.connectors` entry must allow. */
 const LINEAR_READS = ["mcp__linear__get_issue", "mcp__claude_ai_Linear__get_issue"];
 
+/** A mode word in the instruction: the board passes the mode to the run, so the instruction need not name one (A11-124). */
+const MODE_WORD = /\b(quick|grill)\b/i;
+
 /**
  * The ticket writer (A11-94). Always informational when `tickets.writer` is absent, which hides New ticket on the board. When it is named, it fails
  * if no `tickets.connectors` entry lets a worker read a Linear ticket, since the writer checks for duplicates that way, and says whether Grill is on.
+ * It also says, without failing, when the instruction names a mode: the board's choice wins over it, and the word can go.
  */
 function writerCheck(settings: TicketSettings | null): Check {
   if (settings === null) return ok("ticket writer", "not checked: the host file did not parse");
@@ -181,7 +185,10 @@ function writerCheck(settings: TicketSettings | null): Check {
     return failed("ticket writer", "yes, but no tickets.connectors entry lets it read a Linear ticket, so it cannot check a new ticket for duplicates",
       "run `agent-org onboard`, which names the Linear reads in tickets.connectors");
   }
-  return ok("ticket writer", settings.terminal === null ? "yes: New ticket is shown, and Grill is off until tickets.terminal is named" : "yes: New ticket is shown, and Grill is on");
+  const grill = settings.terminal === null ? "Grill is off until tickets.terminal is named" : "Grill is on";
+  const mode = MODE_WORD.exec(settings.writer.run);
+  const named = mode === null ? "" : `; its instruction names the mode ${mode[1]}, which the board's choice overrides: remove the word`;
+  return ok("ticket writer", `yes: New ticket is shown, and ${grill}${named}`);
 }
 
 /**

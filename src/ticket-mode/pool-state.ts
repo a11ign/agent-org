@@ -89,11 +89,10 @@ export const writerPlace = (ctx: PoolContext, run: WriterRun): RunPlace => {
   return { name: herdrName(`writer-${run.id}`), dir: writerDir(settings, run.id), folder: writerFolder(settings, run.id) };
 };
 
-/** Whether the new-ticket run `id` is still under way: a stop or a failure while its drafts are read is the last word, so nothing overwrites it. */
-export const writerUnderWay = (ctx: PoolContext, id: string): boolean => {
+/** Whether the new-ticket run `id`'s agent is still running: a stop or a failure while its outcome is read is the last word, so nothing overwrites it. */
+export const writerAgentRunning = (ctx: PoolContext, id: string): boolean => {
   const { store } = ctx;
-  const phase = writerOf(store.get(), id)?.phase;
-  return phase === "running" || phase === "waiting";
+  return writerOf(store.get(), id)?.phase === "running";
 };
 
 /** Where a publish run lives. Its herdr name is its id's, which no ticket's key can be. */

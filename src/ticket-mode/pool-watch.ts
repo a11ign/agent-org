@@ -15,7 +15,8 @@ import { isParked, isWatched, resumesOnConflict } from "./board-view/settled-by-
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, type WriterRun, type WrittenOutcome } from "./queue/declared-remains.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
-import { observeWriter, writerFailed, writerResumed } from "./queue.ts";
+import { observeWriter, writerFailed } from "./queue.ts";
+import { createDrafts } from "./writer-create.ts";
 import { openPulls } from "./board-view/view-ticket.ts";
 import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
@@ -24,8 +25,10 @@ import { type PoolContext } from "./pool-context.ts";
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
 
-/** The longest a new-ticket run may spend writing its drafts, not counting the time a grill run waits on the person. */
+/** The longest a quick new-ticket run may take, from its start. */
 const WRITER_LIMIT_MS = 30 * 60_000;
+/** The longest a grill new-ticket run may take, from its start: it waits on the person between its questions, so it has longer. The person can stop it. */
+const WRITER_GRILL_LIMIT_MS = 4 * 60 * 60_000;
 
 /** What the board tells a worker whose run is idle with no background work to wake it, once (A11-85). */
 const BACKGROUND_GONE_PROMPT = "your background work is gone; check it and carry on";
@@ -221,16 +224,17 @@ function promptBackgroundGone(ctx: PoolContext, entry: Entry): void {
 
 /**
  * Each new-ticket run's status, from the same listing as the ticket runs'. A running one ends once its outcome file is there and its agent is idle or
- * done, when its drafts are read (`finishWriter`), and fails when its agent stops without one. A grill run waiting on a question is resumed once its
- * agent works again, and its earlier outcome is moved aside, as a parked ticket run's is.
+ * done, when its drafts are read and made into tickets (`finishWriter`). A quick run ends failed when its agent stops without one. A grill run is
+ * different: its agent goes idle between its questions, which the person answers in its terminal, so it ends only when its agent is done without an outcome.
  */
 function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): void {
   const { finishing, misses, now, startedHere, store } = ctx;
   for (const run of store.get().writers ?? []) {
-    if (run.phase !== "running" && run.phase !== "waiting") continue;
+    if (run.phase !== "running") continue;
     const place = writerPlace(ctx, run);
-    if (run.phase === "running" && now() - (run.startedAt ?? now()) > WRITER_LIMIT_MS) {
-      endWriter(ctx, run, `it did not finish within ${WRITER_LIMIT_MS / 60_000} minutes`);
+    const limit = run.mode === "grill" ? WRITER_GRILL_LIMIT_MS : WRITER_LIMIT_MS;
+    if (now() - (run.startedAt ?? now()) > limit) {
+      endWriter(ctx, run, `it did not finish within ${limit / 60_000} minutes`);
       continue;
     }
     const seen = status.get(place.name);
@@ -242,23 +246,23 @@ function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     if (["working", "idle", "done"].includes(seen)) startedHere.delete(place.name);
     if (!["working", "idle", "done"].includes(seen) && answerStartDialog(ctx, place)) continue;
     if (seen === "working") {
-      if (run.phase === "waiting") resumeWriter(ctx, run, place);
-      else update(ctx, (queue) => observeWriter(queue, run.id));
+      update(ctx, (queue) => observeWriter(queue, run.id));
       continue;
     }
-    if (run.phase === "waiting") continue;
     const outcomePath = join(place.dir, OUTCOME_FILE);
     if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) {
       if (!finishing.has(run.id)) void finishWriter(ctx, run, place, readFileSync(outcomePath, "utf8"));
-    } else if (seen === "done" || (seen === "idle" && run.seenWorking === true)) endWriter(ctx, run, "it stopped without writing an outcome");
+    } else if (stoppedWithoutOutcome(run, seen)) endWriter(ctx, run, "it stopped without writing an outcome");
   }
 }
 
-/** A waiting grill run's agent works again: its outcome, the question it asked, is moved aside, and the run is running. */
-function resumeWriter(ctx: PoolContext, run: WriterRun, place: RunPlace): void {
-  const { now } = ctx;
-  if (existsSync(join(place.dir, OUTCOME_FILE))) renameSync(join(place.dir, OUTCOME_FILE), join(place.dir, PREVIOUS_OUTCOME_FILE));
-  update(ctx, (queue) => writerResumed(queue, run.id, now()));
+/**
+ * Whether a new-ticket run's agent has stopped with no outcome: it is done, or a quick run went idle after it was seen working. A grill run goes idle
+ * between its questions, so going idle is not stopping for it.
+ */
+function stoppedWithoutOutcome(run: WriterRun, seen: string): boolean {
+  if (seen === "done") return true;
+  return seen === "idle" && run.seenWorking === true && run.mode === "quick";
 }
 
 /** The publish run's status, from the same listing as the ticket runs': it ends once its outcome file is there and its agent is idle or done. */
@@ -308,7 +312,9 @@ export function reconcile(ctx: PoolContext): void {
     update(ctx, (queue) => publishFailed(queue, "the pool restarted while it was running", now()));
   }
   for (const run of store.get().writers ?? []) {
-    const lost = run.phase === "starting" || ((run.phase === "running" || run.phase === "waiting") && !listed.has(writerPlace(ctx, run).name));
+    // A run that had its outcome read is making its tickets, which need no agent: the drafts still `creating` are asked again, with their ids.
+    if (run.phase === "creating") void createDrafts(ctx, run.id);
+    const lost = run.phase === "starting" || (run.phase === "running" && !listed.has(writerPlace(ctx, run).name));
     if (lost) update(ctx, (queue) => writerFailed(queue, run.id, "the pool restarted while it was running", now()));
   }
 }

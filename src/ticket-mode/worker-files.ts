@@ -11,7 +11,7 @@
 import { join } from "node:path";
 import type { StackBase } from "./board-view/settled-by-pulls.ts";
 import type { DenyRule } from "./settings.ts";
-import type { PullRequest, WriterForm } from "./queue/declared-remains.ts";
+import type { PullRequest, WriterForm, WriterMode } from "./queue/declared-remains.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { MAX_DRAFT_BYTES, MAX_DRAFTS } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
@@ -722,8 +722,9 @@ export function workerFlags({ name, model, effort, addDirs, resume }: { name: st
 }
 
 /** The first prompt of a new-ticket run: a pointer to its brief. */
-export function writerPrompt(dir: string): string {
-  return `Read ${dir}/${BRIEF_FILE} and follow it.`;
+export function writerPrompt(dir: string, mode: WriterMode = "quick"): string {
+  const first = mode === "grill" ? " Your first message to me is your first question." : "";
+  return `Read ${dir}/${BRIEF_FILE} and follow it.${first}`;
 }
 
 /** The first prompt: a pointer to the brief, short enough that no quoting or argument limit can cut it. */
@@ -748,6 +749,12 @@ export function reviewPrompt(ticketDir: string, cause: RoundCause = "approved"):
 /** The request, quoted line by line, so a request that names a command or a path reads as the person's words, not as instructions to this run. */
 const requestQuoted = (request: string): string => request.split("\n").map((line) => `> ${line}`).join("\n");
 
+/** What each mode asks of the run, which the brief's `## The mode` section says. */
+const MODE_TEXT: Readonly<Record<WriterMode, string>> = {
+  quick: "You are unattended. Nobody will answer a question: decide every question yourself, and write one or more drafts.",
+  grill: "You are interactive: the person is in this run's terminal. Ask them your questions one at a time, and wait for each answer before the next. Write no draft until the questions are done. Your first message to them is your first question. You may end your turn while you wait for an answer: the board keeps the run until you write the outcome.",
+};
+
 /** The form's choices as the brief's requirements: each one the person made, or none. PURE. */
 const formText = (form: WriterForm): string => {
   const lines = [
@@ -757,26 +764,22 @@ const formText = (form: WriterForm): string => {
     form.priority === undefined ? undefined : `- Priority: ${form.priority} (the draft's \`priority\`)`,
     form.parent === undefined ? undefined : `- Parent: ${form.parent} (the draft's \`parent\`)`,
   ].filter((line): line is string => line !== undefined);
-  return lines.length === 0 ? "None. The request decides each of these." : `${lines.join("\n")}\n\nThese are requirements. Use them as given; the person reviews each draft and may change it before anything is created.`;
+  return lines.length === 0 ? "None. The request decides each of these." : `${lines.join("\n")}\n\nThese are requirements. Use them as given: the board creates each ticket with them.`;
 };
 
 /**
- * A new-ticket run's brief (A11-94): the instruction the machine configures, with the person's request and the folder filled in, the choices the form
- * made, the repositories it may read, the one draft format the board reads, and the outcome it writes last. Quick runs unattended; grill asks the person
- * in its terminal before it drafts. The run reads the tracker with read-only tools only, to check for duplicates. PURE.
+ * A new-ticket run's brief (A11-94, A11-124): the instruction the machine configures, with the person's request, the folder and the board's mode filled in,
+ * the choices the form made, the repositories it may read, the one draft format the board reads, and the outcome it writes last. The mode decides how the
+ * run works: quick runs unattended, grill asks the person in its terminal first. The run reads the tracker with read-only tools only, to check for
+ * duplicates. The board makes the tickets from the drafts when the run ends. PURE.
  */
 export function writerBriefText({ run, request, mode, form, clones, dir }: {
-  run: string; request: string; mode: "quick" | "grill"; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
+  run: string; request: string; mode: WriterMode; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
 }): string {
-  const instruction = run.replaceAll("{request}", request).replaceAll("{dir}", dir);
-  const ask = mode === "grill"
-    ? "You are interactive: the person is in this run's terminal. Ask them your questions one at a time before you draft, and when you need an answer only they can give, write the needs-human outcome below with the question, then wait."
-    : "You are unattended. Nobody will answer a question: decide, and write one or more drafts.";
+  const instruction = run.replaceAll("{request}", request).replaceAll("{dir}", dir).replaceAll("{mode}", mode);
   return `# New ticket: ${request.split("\n")[0].slice(0, 120)}
 
-You are a ticket writer on this machine. A person asked for a ticket on the board. You write drafts of it and change nothing else: create no ticket, post no comment, edit no ticket, change no repository, and open no pull request. The person reviews each draft on the board, and only their approval creates the ticket.
-
-${ask}
+You are a ticket writer on this machine. A person asked for a ticket on the board. You write drafts of it and change nothing else: create no ticket, post no comment, edit no ticket, change no repository, and open no pull request. When this run ends, the board creates the ticket from each draft, and nothing is shown to the person before that.
 
 ## The request
 
@@ -785,6 +788,12 @@ ${requestQuoted(request)}
 ## The person's choices
 
 ${formText(form)}
+
+## The mode
+
+The board chose this run's mode, and it decides how the run works, whatever the instruction under "What to do" says: \`${mode}\`.
+
+${MODE_TEXT[mode]}
 
 ## What to do
 
@@ -829,9 +838,9 @@ Write \`${dir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
 { "kind": "drafted" }
-{ "kind": "needs-human", "reason": "<the question only the person can answer>" }
+{ "kind": "needs-human", "reason": "<why the run cannot finish, which the board shows as its failure>" }
 \`\`\`
 
-Write \`drafted\` once every draft is written. Write \`needs-human\` only in grill mode, for a question only the person can answer.
+Write \`drafted\` once every draft is written. Write \`needs-human\` only when the run cannot finish at all.
 `;
 }

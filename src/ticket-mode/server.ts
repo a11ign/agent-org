@@ -27,13 +27,12 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
-import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, writerStatus } from "./queue/declared-remains.ts";
+import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/declared-remains.ts";
 import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue } from "./queue/approve.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
-import { approveDraft, discardDraft } from "./writer-create.ts";
 import { PRIORITIES } from "./writer.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -175,7 +174,6 @@ type Board = Readonly<{
   known: { tickets: Map<string, Ticket> };
   plans: boolean;
   wake: () => void;
-  savedRun: () => RunChoice;
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
   whoAmI: () => Promise<Assignee | null>;
   terminalAddress: () => Promise<string | null>;
@@ -188,9 +186,17 @@ function queueView(board: Pick<Board, "store" | "pool">) {
   return { ...board.store.get(), held: board.pool.held?.() ?? null };
 }
 
+/** A new-ticket request as the page shows it: its status, and the tickets its drafts made, with their keys. Its drafts stay on the board. */
+function writerViewOf(run: WriterRun) {
+  const { drafts, ...shown } = run;
+  const tickets = drafts.flatMap(({ file, status, created, warnings }) => (status === "created" && created !== undefined
+    ? [{ file, key: created.key, url: created.url, inPick: created.inPick !== false, warnings: warnings ?? [] }] : []));
+  return { ...shown, status: writerStatus(run), tickets };
+}
+
 /** The new-ticket requests, each with its status, as the page shows them. */
 function writersViewOf(queue: Queue) {
-  return { runs: (queue.writers ?? []).map((run) => ({ ...run, status: writerStatus(run) })) };
+  return { runs: (queue.writers ?? []).map(writerViewOf) };
 }
 
 /** The GET routes: the board's config, the Pick lists, the queue and the new-ticket requests. `undefined` when no route here names the request. */
@@ -313,17 +319,17 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
   return undefined;
 }
 
-/** The new-ticket request routes: a request is queued, a run is stopped or dismissed, and a draft is approved or discarded. */
+/** The new-ticket request routes: a request is queued, and a run is stopped or dismissed. The board makes the tickets when a run's drafts are read. */
 async function writerRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
-  const { deps, settings, source, store, pool, now, wake, queueTickets, savedRun } = board;
+  const { deps, settings, source, store, pool, now, wake } = board;
   if (method === "POST" && path === "/api/writer") {
-    // A new-ticket request: a run of the ticket writer, which leaves drafts for the person to approve. It creates no ticket itself.
+    // A new-ticket request: a run of the ticket writer, which leaves drafts, and the board makes a ticket from each one when the run ends.
     if (settings.writer === null) throw new Error("this machine names no tickets.writer, so it writes no tickets: name one in the host file");
     const request = typeof body.request === "string" ? body.request.trim() : "";
     if (request === "" || request.length > WRITER_REQUEST_CHARS) throw new Error(`a request is 1 to ${WRITER_REQUEST_CHARS} characters`);
     const mode = body.mode === undefined ? "quick" : body.mode;
     if (mode !== "quick" && mode !== "grill") throw new Error("mode must be \"quick\" or \"grill\"");
-    if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or ask quick");
+    if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or choose quick");
     const form = writerForm(body, settings);
     if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
     // The model and effort are read now and stamped on the request, so a change in Settings reaches the next request, and this one keeps its own.
@@ -334,19 +340,12 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
     wake();
     return [200, writersViewOf(store.get())];
   }
-  const writer = /^\/api\/writer\/([A-Za-z0-9_-]+)(?:\/(stop|dismiss)|\/drafts\/([A-Za-z0-9_.-]+)\/(approve|discard))$/.exec(path);
+  const writer = /^\/api\/writer\/([A-Za-z0-9_-]+)\/(stop|dismiss)$/.exec(path);
   if (method === "POST" && writer) {
-    const [, run, verb, draft, action] = writer;
+    const [, run, verb] = writer;
     if (writerOf(store.get(), run) === undefined) throw new Error(`no new-ticket request ${run}`);
     if (verb === "stop") pool.stopWriterRun(run);
     if (verb === "dismiss") store.set(dismissWriter(store.get(), run));
-    if (action === "discard") discardDraft({ store }, { run, draft });
-    if (action === "approve") {
-      const { model, effort } = savedRun();
-      const created = await approveDraft({ settings, source, store, queueTicket: (ticket, plan) => queueTickets([ticket], { model, effort }, { plan }) },
-        { run, draft, fields: body.draft, acknowledgeDuplicates: body.acknowledgeDuplicates === true, queue: body.queue === true, plan: body.plan === true });
-      return [200, { ...writersViewOf(store.get()), created }];
-    }
     wake();
     return [200, writersViewOf(store.get())];
   }
@@ -434,11 +433,6 @@ export function createBoard(deps: BoardDeps) {
   }
 
   const wake = () => { void pool.tick(); };
-  /** The board's choice for a queued ticket: the model and effort saved on the page, as the Queue button uses. */
-  const savedRun = (): RunChoice => {
-    const saved = readChoice(deps.choicePath);
-    return { model: saved.model, effort: saved.effort };
-  };
   /** Add tickets to the queue as Queue does, with `choice`, and planned first when `plan` is on, then wake the pool. The one place a queue add is made. */
   function queueTickets(tickets: readonly Ticket[], choice: RunChoice, { plan }: { plan: boolean; }): void {
     store.set(enqueue(queue, tickets, choice, now(), plan ? planFirst(tickets) : null));
@@ -459,7 +453,7 @@ export function createBoard(deps: BoardDeps) {
       batch: plansInBatches(settings.planner) };
   }
 
-  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, savedRun, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds };
+  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds };
 
   async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
     return routeApi(board, method, path, body, query);

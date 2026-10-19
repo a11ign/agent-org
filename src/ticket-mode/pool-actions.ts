@@ -17,14 +17,15 @@ export function stop(ctx: PoolContext, key: string): void {
 }
 
 /**
- * The person stopped a new-ticket run: its workspace is closed, and the drafts it has written stay for review. A run that has ended is left as it is.
+ * The person stopped a new-ticket run: its workspace is closed, and the tickets it has made stay. A run that has ended is left as it is. A run making its
+ * tickets has no workspace left to close, since its agent ended when its outcome was read.
  */
 export function stopWriterRun(ctx: PoolContext, id: string): void {
   const { herdr, now, session, store } = ctx;
   const run = writerOf(store.get(), id);
   if (run === undefined || run.phase === "finished") return;
   const { name } = writerPlace(ctx, run);
-  if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
+  if (run.workspace && run.phase !== "creating") closedNote((args) => herdr(args), run.workspace, session);
   forgetRun(ctx, name);
   update(ctx, (queue) => stopWriter(queue, id, now()));
 }

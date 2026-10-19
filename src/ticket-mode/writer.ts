@@ -5,7 +5,7 @@
 // writer's brief (`worker-files.ts`) tells the run the one JSON shape the board reads, and this module checks it. A draft is refused BY NAME AND
 // FIELD (`02-wire.json: "priority" must be one of ...`), and a malformed draft never discards the good ones beside it: the caller shows the
 // refusals and keeps the rest. Nothing here reads the tracker to decide a draft is valid, except to resolve the duplicates a draft names, and
-// nothing here creates a ticket: `writer-create.ts` does, on a person's approval.
+// nothing here creates a ticket: `writer-create.ts` does, once the run's outcome is read.
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -159,13 +159,20 @@ export function draftFrom(file: string, value: unknown, repos: readonly string[]
   });
 }
 
-/** The ticket's text in the house shape: why, what finishes it, the repository it is for, then any notes. PURE. */
-export function descriptionOf(draft: Draft): string {
+/**
+ * The ticket's text in the house shape: why, what finishes it, the tickets the writer found it duplicates, the repository it is for, then any notes. PURE.
+ */
+export function descriptionOf(draft: Draft, duplicates: readonly ResolvedDuplicate[] = []): string {
   const lines = [`**Why:** ${draft.why}`, "", "**Done when:**", "", ...draft.doneWhen.map((item) => `* ${item}`)];
+  if (duplicates.length > 0) lines.push("", "**Possible duplicates:**", "", ...duplicates.map(duplicateLine));
   if (draft.repo !== null) lines.push("", `**Repository:** ${draft.repo}`);
   if (draft.notes !== null) lines.push("", draft.notes);
   return `${lines.join("\n")}\n`;
 }
+
+/** One possible duplicate as the ticket's text names it: its key, its title and address when the tracker has it, and the writer's reason. PURE. */
+const duplicateLine = ({ key, why, title, url }: ResolvedDuplicate): string =>
+  `* ${key}${title === null ? " (not found in the tracker)" : `: ${title}`}${url === null ? "" : ` ${url}`} - ${why}`;
 
 /**
  * Read the draft files a writer run left in `dir`'s drafts folder. Each file is refused by name when it is not a plain `.json` file, is larger than
@@ -230,7 +237,7 @@ export async function resolveDuplicates(duplicates: readonly Duplicate[], read: 
   }));
 }
 
-/** How a writer run's outcome file says it ended: its drafts are written, or it asks the person a question in its terminal (grill only). */
+/** How a writer run's outcome file says it ended: its drafts are written, or it cannot finish, and the reason is shown as the run's failure. */
 export type WriterOutcome = Readonly<{ kind: "drafted" } | { kind: "needs-human"; reason: string }>;
 
 /**

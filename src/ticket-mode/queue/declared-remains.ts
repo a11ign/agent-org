@@ -227,17 +227,18 @@ export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: b
 
 /**
  * A draft a writer run left, as the board holds it: the draft as checked, its duplicates as the tracker has them, and its status. `creating` is kept
- * before the tracker is asked, so a restart in between is seen: the approve is retried, and the tracker's own id keeps it to one ticket.
+ * before the tracker is asked, so a restart in between is seen: the creation is asked again with the same id, and the tracker's own id keeps it to one
+ * ticket. `created` carries the ticket's key and address, and whether Pick lists it; `failed` carries why the tracker refused it, or why it was not tried.
  */
 export type DraftRecord = Readonly<{
   id: string;
   file: string;
   draft: Draft;
   duplicates: readonly ResolvedDuplicate[];
-  status: "pending" | "creating" | "created" | "discarded";
-  /** The ticket the approve made, once it has. */
-  created?: Readonly<{ key: string; url: string }>;
-  /** Why the tracker refused the last approve, shown with the draft still editable. */
+  status: "creating" | "created" | "failed";
+  /** The ticket the board made, once it has. `inPick` says whether Pick's list shows it; absent on a ticket an older board made, which did not say. */
+  created?: Readonly<{ key: string; url: string; inPick?: boolean }>;
+  /** Why the draft's ticket was not made. */
   failure?: string;
   /** The tracker's warnings on the ticket it made: a relation that did not land. */
   warnings?: readonly string[];
@@ -246,11 +247,14 @@ export type DraftRecord = Readonly<{
 /** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal before it drafts. */
 export type WriterMode = "quick" | "grill";
 
-/** The choices the form made, each a requirement in the writer's brief and shown editable in the review. */
+/** The choices the form made, each a requirement in the writer's brief. */
 export type WriterForm = Readonly<{ project?: string; repo?: string; goal?: string; priority?: Priority; parent?: string }>;
 
-/** The phases of a writer run. Only `starting` and `running` hold a worker slot; `waiting` is a grill run whose question the person answers. */
-export type WriterPhase = "queued" | "starting" | "running" | "waiting" | "finished";
+/**
+ * The phases of a writer run. Only `starting` and `running` hold a worker slot. `creating` is the board making the tickets its drafts describe, once the
+ * run's outcome is read: no agent runs then.
+ */
+export type WriterPhase = "queued" | "starting" | "running" | "creating" | "finished";
 
 /** A new-ticket request and the run that writes its drafts: a record of its own, not a ticket entry, since its ticket does not exist yet. */
 export type WriterRun = Readonly<{
@@ -269,8 +273,6 @@ export type WriterRun = Readonly<{
   pane?: string;
   /** Whether the agent has been seen working, which lets a grill run's next outcome be told from its last. */
   seenWorking?: boolean;
-  /** The question a grill run waits on, which the person answers in its terminal. */
-  question?: string;
   /** Why the run failed, once it has. A stopped run says so. */
   failure?: string;
   drafts: readonly DraftRecord[];
@@ -280,16 +282,15 @@ export type WriterRun = Readonly<{
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
 export const MAX_WRITER_RUNS = 3;
 
-/** Where a new-ticket request is on the board: writing, waiting on the person, ready for review, done, or failed. */
-export type WriterStatus = "queued" | "writing" | "needs-you" | "to-review" | "done" | "failed";
+/** Where a new-ticket request is on the board: queued, writing (its agent, or the board making its tickets), done, or failed. */
+export type WriterStatus = "queued" | "writing" | "done" | "failed";
 
-/** The status of a writer run, from its phase, its failure and its drafts still to review. PURE. */
+/** The status of a writer run, from its phase and its failure. PURE. */
 export function writerStatus(run: WriterRun): WriterStatus {
   if (run.failure !== undefined) return "failed";
   if (run.phase === "queued") return "queued";
-  if (run.phase === "starting" || run.phase === "running") return "writing";
-  if (run.phase === "waiting") return "needs-you";
-  return run.drafts.some(({ status }) => status === "pending" || status === "creating") ? "to-review" : "done";
+  if (run.phase === "finished") return "done";
+  return "writing";
 }
 
 export type RunChoice = Readonly<{ model: string; effort: string }>;

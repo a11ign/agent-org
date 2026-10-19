@@ -1,6 +1,7 @@
 // no-token: gh -- nothing here spawns anything; the host file is handed in as text
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { HOST_FILE_ENV, parseTicketSettings, plansInBatches, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
@@ -270,7 +271,7 @@ test("a serve setting that is not valid is refused by name: another value, ports
   assert.throws(() => parseTicketSettings({ clones, tickets: { serve: "tailscale", servePorts: { ui: 0 } } }), /`tickets\.servePorts\.ui` in the host file must be a port from 1 to 65535, not 0/);
 });
 test("a machine names how a new ticket is written from a person's request: the writer's instruction, on opus at high effort unless it says otherwise", () => {
-  const run = "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts.";
+  const run = "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts.";
   assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run } } }).writer, { run, model: "opus", effort: "high" });
   assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run, model: "sonnet", effort: "low" } } }).writer, { run, model: "sonnet", effort: "low" });
   assert.equal(parseTicketSettings({ clones }).writer, null, "absent, the board offers no New ticket");
@@ -280,6 +281,19 @@ test("a machine names how a new ticket is written from a person's request: the w
     [{ run, model: "two words" }, "tickets.writer.model"], [{ run, effort: "" }, "tickets.writer.effort"],
   ] as const) {
     assert.throws(() => parseTicketSettings({ clones, tickets: { writer } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === field, JSON.stringify(writer));
+  }
+});
+
+test("A11-124: the writer's instruction may name the board's mode with {mode}, which is optional, and the shipped example and its fixtures name no mode", () => {
+  const withMode = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.";
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run: withMode } } }).writer?.run, withMode, "{mode} is accepted, and not required");
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  const example = /Run the a11ign:create-ticket skill[^"`]*\{dir\}\/drafts\./.exec(readme)?.[0];
+  assert.ok(example, "POSITIVE CONTROL: the README's example is found");
+  assert.doesNotMatch(example, /\b(quick|grill)\b/i, "the example names no mode: the board passes it");
+  for (const file of ["../install/doctor.test.ts", "./worker-files.test.ts", "./server.test.ts", "./pool.test.ts", "./serve-ticket-only-host.test.ts"]) {
+    const text = readFileSync(new URL(file, import.meta.url), "utf8");
+    for (const [, run] of text.matchAll(/run: "(Run the a11ign:create-ticket[^"]*)"/g)) assert.doesNotMatch(run, /\b(quick|grill)\b/i, `${file} names no mode`);
   }
 });
 
