@@ -427,7 +427,7 @@ test("addBlockers() is refused when Linear answers success false, and when it ha
  * since the Pick view filters by label group. Each addition is a field of the same request, never a request of its own, and is changed here on
  * purpose: this pin is what notices a field list that grew or shrank by accident.
  */
-const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name summary } assignee { id name } parent { identifier } "
+const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name summary: description } assignee { id name } parent { identifier } "
   + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } } '
   + "labels(first: 50) { nodes { name parent { name } } }";
 
@@ -701,4 +701,24 @@ test("A11-116: a ticket carries its project's summary, where its repository is w
   const read = linear([{ data: { k0: { nodes: [{ project: { summary: "github.com/a11ign/agent-org" } }] }, k1: { nodes: [{ project: null }] } } }]);
   const summaries = await linearSource({ key: "k", fetch: read.fetch }).projectSummaries!(["NBF-1", "NBF-2"]);
   assert.deepEqual([...summaries], [["NBF-1", "github.com/a11ign/agent-org"]], "a ticket with no project is left out");
+});
+
+test("a Linear project has no field called summary: its short text is `description`, asked for under the name `summary`, in every query that reads it", async () => {
+  // Linear's GraphQL Project type has `description`, `content` and no `summary` (the Linear MCP's name for it); a query that names `summary` is answered 400 and fails every ticket read.
+  const bare = /project \{[^}]*\bsummary\b(?!:)/;
+  const listing = linear([{ data: { viewer: { assignedIssues: { nodes: [node("NBF-1")], pageInfo: { hasNextPage: false, endCursor: null } } } } }]);
+  await linearSource({ key: "k", fetch: listing.fetch }).assigned();
+  const one = linear([{ data: { issues: { nodes: [node("NBF-1")] } } }]);
+  await linearSource({ key: "k", fetch: one.fetch }).read("NBF-1");
+  const summaries = linear([{ data: { k0: { nodes: [{ project: null }] } } }]);
+  await linearSource({ key: "k", fetch: summaries.fetch }).projectSummaries!(["NBF-1"]);
+  const team = linear([{ data: { issues: { nodes: [node("NBF-1")], pageInfo: { hasNextPage: false, endCursor: null } } } }]);
+  await linearSource({ key: "k", fetch: team.fetch, pick: { team: "NBF" } }).assigned();
+  const people = linear([{ data: { issues: { nodes: [node("NBF-1")], pageInfo: { hasNextPage: false, endCursor: null } } } }]);
+  await linearSource({ key: "k", fetch: people.fetch }).scoped!("anyone", null);
+  for (const { requests } of [listing, one, summaries, team, people]) {
+    const text = JSON.parse(String(requests[0].init.body)).query as string;
+    assert.equal(bare.test(text), false, `a bare \`summary\` field in: ${text.slice(0, 80)}`);
+    assert.ok(!text.includes("project {") || text.includes("summary: description"), "a project's text is read as `summary: description`");
+  }
 });
