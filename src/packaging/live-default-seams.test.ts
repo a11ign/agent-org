@@ -154,6 +154,19 @@ function injects(call: ts.CallExpression, seam: Seam): boolean {
     || passesKeyByName(a, seam.key));
 }
 
+/** The elements of a destructuring pattern whose default names a spawning function, as seams of the given shape. */
+function destructuredSeams(mod: Module, fn: string, elements: ts.NodeArray<ts.BindingElement>, spawning: (name: string) => boolean,
+  shape: Seam["shape"]): Seam[] {
+  const seams: Seam[] = [];
+  for (const el of elements) {
+    const dflt = identifierText(el.initializer);
+    const key = identifierText(el.name);
+    if (dflt === null || key === null || !spawning(dflt)) continue;
+    seams.push({ file: mod.file, fn, line: lineOf(mod.sf, el), key, dflt, shape });
+  }
+  return seams;
+}
+
 /** Seams declared in a function's parameter list: positional defaults and destructured defaults. */
 function parameterSeams(mod: Module, fn: string, node: FunctionLike, spawning: (name: string) => boolean): Seam[] {
   const seams: Seam[] = [];
@@ -163,12 +176,7 @@ function parameterSeams(mod: Module, fn: string, node: FunctionLike, spawning: (
       seams.push({ file: mod.file, fn, line: lineOf(mod.sf, p), key: p.name.text, dflt, shape: "positional", index });
     }
     if (!ts.isObjectBindingPattern(p.name)) return;
-    for (const el of p.name.elements) {
-      const elDefault = identifierText(el.initializer);
-      const key = identifierText(el.name);
-      if (elDefault === null || key === null || !spawning(elDefault)) continue;
-      seams.push({ file: mod.file, fn, line: lineOf(mod.sf, el), key, dflt: elDefault, shape: "destructured" });
-    }
+    seams.push(...destructuredSeams(mod, fn, p.name.elements, spawning, "destructured"));
   });
   return seams;
 }
@@ -185,12 +193,7 @@ function bodySeams(mod: Module, fn: string, node: FunctionLike, spawning: (name:
       seams.push({ file: mod.file, fn, line: lineOf(mod.sf, n), key: n.name.text, dflt: source, shape: "alias" });
     }
     if (!ts.isObjectBindingPattern(n.name) || !params.includes(source)) return;
-    for (const el of n.name.elements) {
-      const dflt = identifierText(el.initializer);
-      const key = identifierText(el.name);
-      if (dflt === null || key === null || !spawning(dflt)) continue;
-      seams.push({ file: mod.file, fn, line: lineOf(mod.sf, el), key, dflt, shape: "body-destructured" });
-    }
+    seams.push(...destructuredSeams(mod, fn, n.name.elements, spawning, "body-destructured"));
   });
   return seams;
 }

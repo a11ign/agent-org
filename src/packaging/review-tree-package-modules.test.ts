@@ -20,6 +20,15 @@ import { linkReviewDependencies } from "../wake/ensure-reviewer-token.ts";
 
 const realFs = { existsSync, readFileSync, mkdirSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync };
 
+/** `realFs`, with every write it makes recorded in `writes`. */
+function countingFs() {
+  const writes: string[] = [];
+  const counting = { ...realFs,
+    symlinkSync: (...a: Parameters<typeof symlinkSync>) => { writes.push(`symlink ${a[1]}`); return symlinkSync(...a); },
+    rmSync: (...a: Parameters<typeof rmSync>) => { writes.push(`rm ${a[0]}`); return rmSync(...a); } };
+  return { writes, counting };
+}
+
 function writePackage(root: string, dir: string, name: string) {
   mkdirSync(join(root, "packages", dir), { recursive: true });
   writeFileSync(join(root, "packages", dir, "package.json"), JSON.stringify({ name }));
@@ -113,10 +122,7 @@ test("#3558 (d): a package with no `node_modules` in the tick's checkout gets no
 
 test("#3558 (e): running it twice changes nothing, and a `node_modules` that is a link to the primary's is replaced, never written through", () => {
   linked((w) => {
-    const writes: string[] = [];
-    const counting = { ...realFs,
-      symlinkSync: (...a: Parameters<typeof symlinkSync>) => { writes.push(`symlink ${a[1]}`); return symlinkSync(...a); },
-      rmSync: (...a: Parameters<typeof rmSync>) => { writes.push(`rm ${a[0]}`); return rmSync(...a); } };
+    const { writes, counting } = countingFs();
     assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: counting as never }) ?? null, null);
     assert.deepEqual(writes, [], "a second run on a right tree writes nothing: it runs on every head-changing push");
 
@@ -229,10 +235,7 @@ test("#3816 (a): the root's registry `@a11ign/*` entry is linked to the store, a
 
 test("#3816 (b): a registry entry the tick's checkout no longer holds is unlinked, and a second run writes nothing", () => {
   rootScopeLinked((w) => {
-    const writes: string[] = [];
-    const counting = { ...realFs,
-      symlinkSync: (...a: Parameters<typeof symlinkSync>) => { writes.push(`symlink ${a[1]}`); return symlinkSync(...a); },
-      rmSync: (...a: Parameters<typeof rmSync>) => { writes.push(`rm ${a[0]}`); return rmSync(...a); } };
+    const { writes, counting } = countingFs();
     assert.equal(linkReviewDependencies({ path: w.tree, repoRoot: w.primary, fs: counting as never }) ?? null, null);
     assert.deepEqual(writes, [], "it runs on every head-changing push: a right tree is left alone");
 

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { WINDOW_MS, pauseOf, pausedIntervals, readAccountLimitLog } from "./org-retro/retro-cause.ts";
 import { buildReport, idleStats } from "./org-retro/readings.ts";
 import { compareReadings, renderReport } from "./org-retro.ts";
+import { testEach } from "./lib/test-each.ts";
 
 const MINUTE = 60 * 1000;
 const NOW = Date.parse("2026-10-15T08:10:00Z");
@@ -122,28 +123,29 @@ test("positive control: the verdict for idle minutes reads paused, not worse, an
 
 // CASE 2: the same journal and no pause: every tick is the org's own
 
-test("case 2: no pause file, the same journal: all 20 ticks are idle, and the verdict is worse", () => {
+test("case 2: no pause file, the same journal: all 20 ticks are idle", () => {
   const report = reportWith("");
   assert.equal(report.idle?.ticks, TICKS);
-  assert.equal(report.idle?.idleMinutes, 40);
-  assert.equal(report.idle?.pausedIdleMinutes, 0);
-  const previous = { status: "read", date: "2026-10-14", numbers: { idleMinutes: 4 } } as never;
-  const idle = compareReadings({ idleMinutes: 40 }, previous, [], report.pause).find((r) => r.id === "idleMinutes");
-  assert.equal(idle?.verdict, "worse");
-  assert.match(renderReport(report), /Claude work pause: not paused/);
 });
 
-// CASE 3: a pause log that cannot be read is unknown, and the figures are not corrected for it
-
-test("case 3: an unreadable pause log prints unknown and the idle minutes whole, with the verdict unchanged", () => {
+test("case 3: an unreadable pause log has no pause to report", () => {
   const report = reportWith(null);
   assert.equal(report.pause, null);
+});
+
+// CASES 2 AND 3: with no readable pause the figures are the org's own, whole, and the verdict is worse
+
+testEach("cases 2 and 3: the idle minutes are whole and the verdict is worse", [
+  { name: "no pause file: the verdict is worse, and the report says not paused", log: "", rendered: /Claude work pause: not paused/ },
+  { name: "an unreadable pause log prints unknown, with the verdict unchanged", log: null, rendered: /Claude work pause: unknown \(account-limit\.ndjson could not be read/ },
+], (c) => {
+  const report = reportWith(c.log);
   assert.equal(report.idle?.idleMinutes, 40);
   assert.equal(report.idle?.pausedIdleMinutes, 0);
   const previous = { status: "read", date: "2026-10-14", numbers: { idleMinutes: 4 } } as never;
   const idle = compareReadings({ idleMinutes: 40 }, previous, [], report.pause).find((r) => r.id === "idleMinutes");
   assert.equal(idle?.verdict, "worse");
-  assert.match(renderReport(report), /Claude work pause: unknown \(account-limit\.ndjson could not be read/);
+  assert.match(renderReport(report), c.rendered);
 });
 
 // the reader on its own: a pause outside the window does not move the idle count

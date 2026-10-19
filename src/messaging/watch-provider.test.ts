@@ -91,6 +91,14 @@ async function run({ root, home }: { root: string; home: string; }, fetchImpl: t
   return { code, ...sink, lines: [...sink.out, ...sink.err].join("\n") };
 }
 
+/** Runs `main` over a host built with `options`, with a fresh fake Telegram: the Telegram, and what the run returned. */
+async function runHost(options: Parameters<typeof host>[0]) {
+  const world = host(options);
+  const telegram = fakeTelegram();
+  const result = await run(world, telegram.fetchImpl);
+  return { telegram, result };
+}
+
 describe("main with the registry it SHIPS (no `providers` argument)", () => {
   test("it builds the Telegram provider from the two files and sends: the request goes to /sendMessage, and the token is in no line it writes", async () => {
     const world = host({ summary: {} }); // the summary is opt-in (#3410), and it is what this fixture sends
@@ -105,9 +113,7 @@ describe("main with the registry it SHIPS (no `providers` argument)", () => {
   });
 
   test("a token file at mode 0644 is refused with a line naming the file, exit 1, nothing fetched, the token in no line", async () => {
-    const world = host({ tokenMode: GROUP_READABLE });
-    const telegram = fakeTelegram();
-    const result = await run(world, telegram.fetchImpl);
+    const { telegram, result } = await runHost({ tokenMode: GROUP_READABLE });
     assert.equal(result.code, EXIT.failed);
     assert.match(result.err.join("\n"), /telegram-token/);
     assert.doesNotMatch(result.lines, new RegExp(TOKEN.split(":")[1]));
@@ -115,9 +121,7 @@ describe("main with the registry it SHIPS (no `providers` argument)", () => {
   });
 
   test("a checkout never paired is refused with a line naming the chairman file, exit 1, nothing fetched", async () => {
-    const world = host({ paired: false });
-    const telegram = fakeTelegram();
-    const result = await run(world, telegram.fetchImpl);
+    const { telegram, result } = await runHost({ paired: false });
     assert.equal(result.code, EXIT.failed);
     assert.match(result.err.join("\n"), /telegram-chairman/);
     assert.equal(telegram.requests.length, 0);

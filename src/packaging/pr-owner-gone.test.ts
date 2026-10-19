@@ -17,6 +17,7 @@ import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { ownerOfPr } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
 import { unresolvedOwnerEvents } from "../pr-ownership.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const row = (number: number, ...labels: string[]) => ({ number, labels: labels.map((name) => ({ name })) });
 /** Open rows the gate read: #4624 is NOT among them (closed); #4437 is an unrelated open one. */
@@ -29,6 +30,9 @@ const pr4626 = (over: Record<string, unknown> = {}) => ({
   author: { login: "a11ign-ai-workers" }, labels: [{ name: "session:worker-4624" }], closingIssuesReferences: [{ number: 4624 }], ...over,
 });
 const owned = (pr: Record<string, unknown>, rows: unknown[] = OPEN, io: typeof ENDED = ENDED) => withPrOwners([pr], rows as never, () => null, io)[0];
+/** The `pr-checks-failing` orders the gate makes for one red pull request over these open rows. */
+const redPrOrders = (pr: unknown, openRows: unknown[]) =>
+  (decide({ prs: [pr], readyRows: [], openRows } as never) as { session: string, cause: string, prompt: string }[]).filter((o) => o.cause === "pr-checks-failing");
 
 test("the #4626 shape is owned by product-manager, source owner-gone, and is not an owner-unresolved event", () => {
   const pr = owned(pr4626());
@@ -44,15 +48,6 @@ test("CONTROL: the same PR with its label ALIVE keeps the label", () => {
 test("CONTROL: the same PR with its closing row OPEN and claimed keeps closing-row", () => {
   const pr = owned(pr4626(), [...OPEN, row(4624, "in-progress", "session:worker-9")]);
   assert.deepEqual(ownerOfPr(pr), { session: "worker-9", source: "closing-row" });
-});
-
-test("the #4805 shape: label ENDED, closing row OPEN with NO claim, is owned by product-manager, source owner-gone, and is not an owner-unresolved event", () => {
-  const pr = owned(pr4626({ labels: [{ name: "session:worker-4804" }], closingIssuesReferences: [{ number: 4804 }], headRefName: "agent/the-core-s-scorer-4804" }),
-    [...OPEN, row(4804, "backlog", "lane:any"), row(1)], { ...ENDED, ended: () => new Map([["worker-4804", 1]]) });
-  assert.equal(pr.closingRowsUnheld, true);
-  assert.equal(pr.closingRowsClosed, undefined, "the row is open: the closed flag is for a closed row, and the words depend on which one it was");
-  assert.deepEqual(ownerOfPr(pr), { session: "product-manager", source: "owner-gone" });
-  assert.deepEqual(unresolvedOwnerEvents([pr], ownerOfPr, "a11ign/a11ign"), []);
 });
 
 test("the row open but UNCLAIMED (a released label with no `in-progress` is one too) is owner-gone, where it used to fall to ceo and be recorded", () => {
@@ -87,26 +82,30 @@ const pr5201 = (over: Record<string, unknown> = {}) => pr4626({
 });
 const OPEN_5197 = [...OPEN, row(5197, "backlog", "lane:any")];
 
-test("#5201: a PR with no label on a branch naming an open unheld row is owned by product-manager, source owner-gone, and is not an owner-unresolved event", () => {
-  const pr = owned(pr5201(), OPEN_5197);
-  assert.equal(pr.closingRowsUnheld, true);
-  assert.equal(pr.closingRowsNone, undefined, "no label means no ENDED label to answer for, and the flag that says so is for a labelled PR only");
-  assert.deepEqual(ownerOfPr(pr), { session: "product-manager", source: "owner-gone" });
-  assert.deepEqual(unresolvedOwnerEvents([pr], ownerOfPr, "a11ign/a11ign"), []);
+testEach("the #4805 shape: label ENDED, closing row OPEN with NO claim, is owned by product-manager, source owner-gone, and is not an owner-unresolved event", [
+  {
+    name: "label ENDED, closing row OPEN with NO claim",
+    pr: owned(pr4626({ labels: [{ name: "session:worker-4804" }], closingIssuesReferences: [{ number: 4804 }], headRefName: "agent/the-core-s-scorer-4804" }),
+      [...OPEN, row(4804, "backlog", "lane:any"), row(1)], { ...ENDED, ended: () => new Map([["worker-4804", 1]]) }),
+    flag: "closingRowsClosed",
+    flagMessage: "the row is open: the closed flag is for a closed row, and the words depend on which one it was",
+  },
+  {
+    name: "#5201: no label on a branch naming an open unheld row",
+    pr: owned(pr5201(), OPEN_5197),
+    flag: "closingRowsNone",
+    flagMessage: "no label means no ENDED label to answer for, and the flag that says so is for a labelled PR only",
+  },
+], (c) => {
+  assert.equal(c.pr.closingRowsUnheld, true);
+  assert.equal(c.pr[c.flag], undefined, c.flagMessage);
+  assert.deepEqual(ownerOfPr(c.pr), { session: "product-manager", source: "owner-gone" });
+  assert.deepEqual(unresolvedOwnerEvents([c.pr], ownerOfPr, "a11ign/a11ign"), []);
 });
 
 test("#5201 CONTROL: the same PR whose branch row is HELD by a live session keeps branch-row", () => {
   const pr = owned(pr5201({ headRefName: "agent/the-webhook-last-mile-4437" }));
   assert.deepEqual(ownerOfPr(pr), { session: "worker-4437", source: "branch-row" });
-});
-
-test("#5201: the order for an unlabelled PR says it carries no label and the row it names is open and held by nobody, and never says ENDED", () => {
-  const orders = decide({ prs: [owned(pr5201({ isDraft: false }), OPEN_5197)], readyRows: [], openRows: OPEN_5197 } as never);
-  const failing = orders.filter((o: any) => o.cause === "pr-checks-failing");
-  assert.equal(failing.length, 1, "POSITIVE CONTROL: the red pull request is ordered at all");
-  assert.equal(failing[0].session, "product-manager");
-  assert.match(failing[0].prompt, /[Ii]t carries no `session:` label, and the row it names is open and no session holds it/);
-  assert.doesNotMatch(failing[0].prompt, /ENDED|NOBODY COULD BE NAMED/);
 });
 
 test("CONTROL: a rows read that came back empty is neither 'every row closed' nor 'unclaimed'", () => {
@@ -122,15 +121,6 @@ test("a dependency bot's PR still outranks the rung, and a live session the bran
   assert.deepEqual(ownerOfPr(owned(pr4626({ author: { login: "app/dependabot" } }))), { session: "ceo", source: "dependency-bot" });
   const named = owned(pr4626({ headRefName: "agent/worker-4437-4624" }));
   assert.deepEqual(ownerOfPr(named), { session: "worker-4437", source: "branch-name" });
-});
-
-test("a red #4626 is ordered to product-manager in words that name the ended owner, not 'nobody could be named'", () => {
-  const orders = decide({ prs: [owned(pr4626({ isDraft: false }))], readyRows: [], openRows: OPEN } as never);
-  const failing = orders.filter((o: any) => o.cause === "pr-checks-failing");
-  assert.equal(failing.length, 1, "POSITIVE CONTROL: the red pull request is ordered at all");
-  assert.equal(failing[0].session, "product-manager");
-  assert.match(failing[0].prompt, /label names `worker-4624`, which has ENDED, and the row it closed is closed/);
-  assert.doesNotMatch(failing[0].prompt, /NOBODY COULD BE NAMED/);
 });
 
 test("the order's words say what state the row is in: 'is closed' for a closed row, 'open and no session holds it' for an open one", () => {
@@ -163,13 +153,30 @@ test("#5115: a label that ENDED on a PR closing no row is owned by product-manag
   assert.deepEqual(unresolvedOwnerEvents([pr], ownerOfPr, "a11ign/a11ign"), []);
 });
 
-test("#5115: the order says the owner ENDED and the PR closes no row, not 'nobody could be named'", () => {
-  const orders = decide({ prs: [owned(pr5115(), OPEN, NONE)], readyRows: [], openRows: OPEN } as never);
-  const failing = orders.filter((o: any) => o.cause === "pr-checks-failing");
-  assert.equal(failing.length, 1, "POSITIVE CONTROL: the red pull request is ordered at all");
-  assert.equal(failing[0].session, "product-manager");
-  assert.match(failing[0].prompt, /label names `worker-5109`, which has ENDED, and it closes no row/);
-  assert.doesNotMatch(failing[0].prompt, /NOBODY COULD BE NAMED/);
+testEach("a red #4626 is ordered to product-manager in words that name the ended owner, not 'nobody could be named'", [
+  {
+    name: "#5201: unlabelled PR on a branch naming an open unheld row",
+    failing: redPrOrders(owned(pr5201({ isDraft: false }), OPEN_5197), OPEN_5197),
+    says: /[Ii]t carries no `session:` label, and the row it names is open and no session holds it/,
+    notSays: /ENDED|NOBODY COULD BE NAMED/,
+  },
+  {
+    name: "#4626: label ENDED on a row that is closed",
+    failing: redPrOrders(owned(pr4626({ isDraft: false })), OPEN),
+    says: /label names `worker-4624`, which has ENDED, and the row it closed is closed/,
+    notSays: /NOBODY COULD BE NAMED/,
+  },
+  {
+    name: "#5115: the order says the owner ENDED and the PR closes no row",
+    failing: redPrOrders(owned(pr5115(), OPEN, NONE), OPEN),
+    says: /label names `worker-5109`, which has ENDED, and it closes no row/,
+    notSays: /NOBODY COULD BE NAMED/,
+  },
+], (c) => {
+  assert.equal(c.failing.length, 1, "POSITIVE CONTROL: the red pull request is ordered at all");
+  assert.equal(c.failing[0].session, "product-manager");
+  assert.match(c.failing[0].prompt, c.says);
+  assert.doesNotMatch(c.failing[0].prompt, c.notSays);
 });
 
 test("CONTROL: the same PR with its label ALIVE keeps the label", () => {

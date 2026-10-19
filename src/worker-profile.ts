@@ -88,8 +88,11 @@ export const MIN_WORKING_ROOM_TOKENS = 100_000;
  * own history), so a genuinely runaway row still compacts before reaching them -- the margin and the
  * base are cleared FIRST, not assumed away.
  */
-export const AUTOCOMPACT_WINDOW_TOKENS =
-  AUTO_COMPACT_TRIGGER_MARGIN_TOKENS + MEASURED_FRESH_WORKER_BASE_TOKENS + MIN_WORKING_ROOM_TOKENS;
+const sumTokens = (...parts: number[]): number => parts.reduce((total, part) => total + part, 0);
+
+export const AUTOCOMPACT_WINDOW_TOKENS = sumTokens(
+  AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, MEASURED_FRESH_WORKER_BASE_TOKENS, MIN_WORKING_ROOM_TOKENS,
+);
 
 // --- THE HAIKU TIER, A TRIAL (a11ign/a11ign#4382, the chairman's spend direction of 2026-10-09, part 2) ---
 //

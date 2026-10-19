@@ -134,6 +134,15 @@ function listener({ directory, telegram }: { directory: string; telegram: Return
   };
 }
 
+/** A fresh directory, a fake Telegram holding the update `id`, and a listener that has run once over them: the run before a restart. */
+async function firstRun(id: number) {
+  const telegram = fakeTelegram({ updates: [update(id)] });
+  const directory = freshDirectory();
+  const before = listener({ directory, telegram });
+  await before.run();
+  return { telegram, directory, before };
+}
+
 /** @param {any} telegram @returns {(number | undefined)[]} the offset each `getUpdates` asked from */
 const offsetsAsked = (telegram: any): (number | undefined)[] => telegram.calls("getUpdates").map((/** @type {Request} */ call: Request) => call.body.offset);
 
@@ -192,20 +201,14 @@ describe("the offset (done-when 1)", () => {
   });
 
   test("POSITIVE CONTROL: one accepted update is processed exactly once across a simulated restart, whether the offset survived it or not", async () => {
-    const survived = fakeTelegram({ updates: [update(20)] });
-    const directory = freshDirectory();
-    const before = listener({ directory, telegram: survived });
-    await before.run();
+    const { telegram: survived, directory, before } = await firstRun(20);
     const after = listener({ directory, telegram: survived });
     survived.arm(1);
     await after.run();
     assert.equal(before.forwarded.length + after.forwarded.length, 1, "offset kept: Telegram does not redeliver it");
 
     // The crash the ordering exists for: the update was handled and the offset never written, so Telegram hands it over again.
-    const lost = fakeTelegram({ updates: [update(21)] });
-    const lostDirectory = freshDirectory();
-    const crashed = listener({ directory: lostDirectory, telegram: lost });
-    await crashed.run();
+    const { telegram: lost, directory: lostDirectory, before: crashed } = await firstRun(21);
     rmSync(crashed.offsetPath);
     const resumed = listener({ directory: lostDirectory, telegram: lost });
     lost.arm(1);

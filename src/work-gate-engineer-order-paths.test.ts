@@ -21,6 +21,7 @@ import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { UNCLAIMABLE_AFTER_TICKS, claimRefusalOf, claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate/causes/rows-claims.ts";
 import { profileFor } from "./worker-profile.ts";
 import { worktreeTargetReason } from "./row-claim.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { addressed, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake/fyi-queue.ts";
 import { engineerRoles } from "./wake/pull-request-spawn-orders.ts";
 import { ENGINEER_BRIEF } from "./wake/ended-sessions.ts";

@@ -311,15 +311,23 @@ test("switch-row titles naming different flags are not near-duplicates (agent-or
 const standsAloneTitle = (fn: string) => `agent-org stands alone (${fn}): the a11ign half is deleted after a clean canary`;
 
 test("sibling rows of the agent-org stands-alone epic naming different functions are not near-duplicates (agent-org#1583)", () => {
-  const [trunk, board] = [row(5606, ["ready"], { title: standsAloneTitle("trunk") }), row(5608, ["ready"], { title: standsAloneTitle("board report") })];
+  const trunk = row(5606, ["ready"], { title: standsAloneTitle("trunk") });
+  const board = row(5608, ["ready"], { title: standsAloneTitle("board report") });
   // POSITIVE CONTROL for the line below: the pair clears the word threshold on its own (0.80), so the empty result is the function rule and not a short title.
   assert.ok(similarity(wordsOf(trunk.title), wordsOf(board.title)) >= DUPLICATE_SIMILARITY, "the two real titles clear the word threshold on their own");
   assert.deepEqual(found({ openRows: [trunk, board] }, QUESTIONS.DUPLICATE), [], "#5606 and #5608 are two rows for two functions");
   assert.deepEqual(found({ openRows: [board], closedRows: [{ ...trunk, state: "CLOSED", stateReason: "COMPLETED" }] }, QUESTIONS.DUPLICATE), [], "against a closed row of another function");
-  // the same function is still one row: the later of two is the duplicate, whatever the case of the function name
+});
+
+test("sibling rows naming the same function are still one row, whatever the case of the name (agent-org#1583)", () => {
+  const trunk = row(5606, ["ready"], { title: standsAloneTitle("trunk") });
+  // the later of two is the duplicate
   assert.deepEqual(found({ openRows: [trunk, row(5610, ["ready"], { title: standsAloneTitle("trunk") })] }, QUESTIONS.DUPLICATE), [5610]);
   assert.deepEqual(found({ openRows: [trunk, row(5610, ["ready"], { title: standsAloneTitle("Trunk") })] }, QUESTIONS.DUPLICATE), [5610], "a function name is compared lower-cased");
-  // a title not of the form is compared by words alone, whether or not the other title is of it
+});
+
+test("a sibling title not of the form is compared by words alone, whether or not the other title is of it (agent-org#1583)", () => {
+  const board = row(5608, ["ready"], { title: standsAloneTitle("board report") });
   const notOfTheForm = (number: number, title: string) => row(number, ["ready"], { title });
   assert.deepEqual(found({ openRows: [board, notOfTheForm(5611, standsAloneTitle("trunk").replace("agent-org stands alone (trunk):", "agent-org stands alone trunk:"))] }, QUESTIONS.DUPLICATE), [5611], "only one title is of the form: words decide");
   assert.deepEqual(found({ openRows: [notOfTheForm(5612, standsAloneTitle("trunk").replace("(trunk):", "trunk:")), notOfTheForm(5613, standsAloneTitle("board report").replace("(board report):", "board report:"))] }, QUESTIONS.DUPLICATE), [5613], "neither title is of the form: words decide");

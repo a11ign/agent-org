@@ -73,6 +73,11 @@ function fakeRow(options: {
 
 /** Runs `boardRow` and returns its exit code with what it printed. */
 function board(argv: string[], deps: ReturnType<typeof fakeRow>["deps"]) {
+  return captured(() => boardRow(argv, deps as never));
+}
+
+/** Runs `body` with stdout and stderr captured: its result, and what it printed. */
+function captured<T>(body: () => T): { code: T; out: string; err: string } {
   let out = "";
   let err = "";
   const stdout = process.stdout.write.bind(process.stdout);
@@ -80,7 +85,8 @@ function board(argv: string[], deps: ReturnType<typeof fakeRow>["deps"]) {
   process.stdout.write = ((chunk: string) => { out += chunk; return true; }) as typeof process.stdout.write;
   process.stderr.write = ((chunk: string) => { err += chunk; return true; }) as typeof process.stderr.write;
   try {
-    return { code: boardRow(argv, deps as never), out, err };
+    const code = body();
+    return { code, out, err };
   } finally {
     process.stdout.write = stdout;
     process.stderr.write = stderr;
@@ -119,6 +125,13 @@ test("#3330 ACCEPTANCE 2: a CLAIMED row that is already on the board is left alo
   assert.deepEqual(row.writes, []);
 });
 
+/** The fake row for `options` and the result of boarding it. */
+function runBoardOn(options: Parameters<typeof fakeRow>[0]) {
+  const { row, deps } = fakeRow(options);
+  const r = board(["--board=3329", "--lane=any"], deps);
+  return { row, r };
+}
+
 const REFUSED_ROWS: [string, NonNullable<Parameters<typeof fakeRow>[0]>][] = [
   ["a closed row", { state: "CLOSED" }],
   ["a claimed row", { labels: ["regression", CLAIM_LABEL] }],
@@ -126,8 +139,7 @@ const REFUSED_ROWS: [string, NonNullable<Parameters<typeof fakeRow>[0]>][] = [
 ];
 for (const [name, options] of REFUSED_ROWS) {
   test(`#3330 ACCEPTANCE 3: ${name} changes nothing and exits 1`, () => {
-    const { row, deps } = fakeRow(options);
-    const r = board(["--board=3329", "--lane=any"], deps);
+    const { row, r } = runBoardOn(options);
     assert.equal(r.code, 1);
     assert.deepEqual(row.writes, []);
     assert.match(r.err, /refused by the same claimability rules as `--promote=`/);
@@ -307,19 +319,8 @@ function fakeGitHub(options: { itemAddLandsOn?: { owner: string; number: number 
 
 /** `createIssue` with stdout and stderr captured. */
 function fileRow(argv: string[], declaration: typeof TWO_TRACKERS | typeof ONE_TRACKER, github = fakeGitHub(), extra: Record<string, unknown> = {}) {
-  let out = "";
-  let err = "";
-  const stdout = process.stdout.write.bind(process.stdout);
-  const stderr = process.stderr.write.bind(process.stderr);
-  process.stdout.write = ((chunk: string) => { out += chunk; return true; }) as typeof process.stdout.write;
-  process.stderr.write = ((chunk: string) => { err += chunk; return true; }) as typeof process.stderr.write;
-  try {
-    const code = createIssue(argv, { ...github.deps(extra), declaration } as never);
-    return { code, out, err, ...github };
-  } finally {
-    process.stdout.write = stdout;
-    process.stderr.write = stderr;
-  }
+  const { code, out, err } = captured(() => createIssue(argv, { ...github.deps(extra), declaration } as never));
+  return { code, out, err, ...github };
 }
 const filing = (body: string, ...more: string[]) => ["--title", "a row", "--body", body, "--session=worker-4078", ...more];
 const touched = (gh: ReturnType<typeof fakeGitHub>["gh"], verb: string) => gh.calls.filter((a) => a.slice(0, 2).join(" ") === verb);
@@ -476,8 +477,7 @@ const REFUSED_EPICS: [string, Parameters<typeof fakeRow>[0]][] = [
 ];
 for (const [name, options] of REFUSED_EPICS) {
   test(`#4456: ${name} is still refused -- the exemption is the body check only`, () => {
-    const { row, deps } = fakeRow(options);
-    const r = board(["--board=3329", "--lane=any"], deps);
+    const { row, r } = runBoardOn(options);
     assert.equal(r.code, 1);
     assert.deepEqual(row.writes, []);
   });

@@ -8,6 +8,7 @@
  * that "would have existed anyway".
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import {
   fetchBoardItems,
@@ -532,17 +533,18 @@ test("#2157: the discriminating read is asked ONLY about the rows absent from th
   assert.deepEqual(asked, [[2093]]);
 });
 
-test("#2157: a refused discriminating read is CANNOT TELL, loudly -- the floor still refuses, the rows "
-  + "are still named, and neither arm is asserted on the strength of a read that did not happen", () => {
+testEach("#2157: a refused discriminating read is CANNOT TELL, loudly -- the floor still refuses, the rows are still named, and neither arm is asserted on the strength of a read that did not happen", [
+  { name: "the refusal is named CANNOT TELL", expect: "match", pattern: /CANNOT TELL off-board from short-read: #2093/ },
+  { name: "the read's own refusal is carried", expect: "match", pattern: /FORBIDDEN/ },
+  { name: "no off-the-board arm", expect: "doesNotMatch", pattern: /OFF THE BOARD/ },
+  { name: "no short-read arm", expect: "doesNotMatch", pattern: /NOT YET IN THIS QUERY'S PAGES/ },
+] as const, (c) => {
   const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [2093]);
   assert.throws(() => fetchBoardItems({
     run,
     readTouched: () => { throw new Error("board-snapshot: could not read Project 1's item for #2093 -- FORBIDDEN"); },
   }), (error: Error) => {
-    assert.match(error.message, /CANNOT TELL off-board from short-read: #2093/);
-    assert.match(error.message, /FORBIDDEN/);
-    assert.doesNotMatch(error.message, /OFF THE BOARD/);
-    assert.doesNotMatch(error.message, /NOT YET IN THIS QUERY'S PAGES/);
+    assert[c.expect](error.message, c.pattern);
     return true;
   });
 });
@@ -635,6 +637,12 @@ function boardOf(pages: number) {
 const quiet = { fetchReady: () => [], mkdir: () => {}, writeFile: () => {}, log: () => {},
   exists: () => true };
 
+/** Forgets the process's record, then runs one board mutation through `withBoardSnapshot`: the sweep it pays is what a test counts. */
+function sweepOnce(run: (cmd: string, args: string[]) => string, io: Partial<typeof quiet>) {
+  forgetProcessSnapshot();
+  withBoardSnapshot(() => {}, { ...io, run });
+}
+
 test("#852: N board mutations in one process cost ONE sweep, not N", () => {
   forgetProcessSnapshot();
   const board = boardOf(3);
@@ -652,9 +660,8 @@ test("#852: N board mutations in one process cost ONE sweep, not N", () => {
 test("#852 POSITIVE CONTROL: a fresh process still sweeps, so the reuse is not a skip", () => {
   // Without this, "0 pages" would satisfy the test above perfectly — including for an implementation
   // that never snapshots at all, which is #399's guarantee deleted rather than made cheaper.
-  forgetProcessSnapshot();
   const board = boardOf(3);
-  withBoardSnapshot(() => {}, { ...quiet, run: board.run });
+  sweepOnce(board.run, quiet);
   assert.equal(board.boardPages(), 3, "the FIRST mutation of a process must pay for a real sweep");
 });
 
@@ -766,9 +773,8 @@ test("#1275 WIRING: a mutation that names its item makes ONE gh call, the scoped
 });
 
 test("#1275: the same wrapper with no `touches` still sweeps the board -- what every one-item move paid before", () => {
-  forgetProcessSnapshot();
   const gh = recordingGh(6);
-  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run });
+  sweepOnce(gh.run, quietIO);
   assert.equal(gh.boardPages(), 6, "six pages of 100 at today's 555 items -- and one more per hundred rows filed");
   assert.equal(gh.readyLists(), 1, "plus #747's ready-issue list, which `gh issue list --json` reads over GraphQL too");
 });

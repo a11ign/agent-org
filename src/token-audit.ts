@@ -133,13 +133,7 @@ function alreadyCounted(seen: Set<string>, id: string) {
  */
 export function claudeTurns(text: string, fallbackSession: string = "unattributed"): Turn[] {
   const session = sessionOf(text) ?? fallbackSession;
-  const turns: Turn[] = [];
-  const seen: Set<string> = new Set();
-  for (const d of records(text)) {
-    const turn = claudeTurn(d, session, seen);
-    if (turn) turns.push(turn);
-  }
-  return turns;
+  return turnsOf(text, (d, seen) => claudeTurn(d, session, seen));
 }
 
 /**
@@ -179,10 +173,21 @@ function claudeTurn(d: any, session: string, seen: Set<string>): Turn | null {
  * @returns {Turn[]}
  */
 export function codexTurns(text: string, session: string): Turn[] {
+  return turnsOf(text, (d, seen) => codexTurn(d, session, seen));
+}
+
+/**
+ * The Turns of one transcript: each record `turnOf` reads, kept when it is a Turn, with one `seen` set shared
+ * across the whole file so a response written twice is counted once.
+ *
+ * @param {string} text @param {(d: any, seen: Set<string>) => Turn | null} turnOf
+ * @returns {Turn[]}
+ */
+function turnsOf(text: string, turnOf: (d: any, seen: Set<string>) => Turn | null): Turn[] {
   const turns: Turn[] = [];
   const seen: Set<string> = new Set();
   for (const d of records(text)) {
-    const turn = codexTurn(d, session, seen);
+    const turn = turnOf(d, seen);
     if (turn) turns.push(turn);
   }
   return turns;

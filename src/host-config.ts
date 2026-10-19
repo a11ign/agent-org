@@ -489,18 +489,27 @@ export function hostConfigPath({ env = process.env, root = HOME_CHECKOUT }: { en
 }
 
 /**
- * Read the host's declaration. An absent file is REFUSED naming the path.
- * @param {string} [path] @param {(path: string, encoding: "utf8") => string} [read]
- * @returns {Readonly<HostConfig>}
+ * Reads a declaration file and parses it. A file that cannot be read is REFUSED naming the path.
+ * @param {string} path @param {(path: string, encoding: "utf8") => string} read @param {(text: string, source: string) => T} parse
+ * @returns {T}
  */
-export function readHostConfig(path: string = hostConfigPath(), read: (path: string, encoding: "utf8") => string = readFileSync): Readonly<HostConfig> {
+function readDeclaration<T>(path: string, read: (path: string, encoding: "utf8") => string, parse: (text: string, source: string) => T): T {
   let text: string;
   try {
     text = read(path, "utf8");
   } catch (cause) {
     throw new HostConfigRefusal("(file)", "the declaration cannot be read", path, { cause });
   }
-  return parseHostConfig(text, path);
+  return parse(text, path);
+}
+
+/**
+ * Read the host's declaration. An absent file is REFUSED naming the path.
+ * @param {string} [path] @param {(path: string, encoding: "utf8") => string} [read]
+ * @returns {Readonly<HostConfig>}
+ */
+export function readHostConfig(path: string = hostConfigPath(), read: (path: string, encoding: "utf8") => string = readFileSync): Readonly<HostConfig> {
+  return readDeclaration(path, read, parseHostConfig);
 }
 
 let homeHost: Readonly<HostConfig> | undefined;
@@ -546,14 +555,7 @@ export function parseUnitsDeclaration(text: string, source: string = PROJECT_DEC
  * @returns {Readonly<UnitsDeclaration>}
  */
 export function readUnitsDeclaration(root: string = HOME_CHECKOUT, read: (path: string, encoding: "utf8") => string = readFileSync): Readonly<UnitsDeclaration> {
-  const path = join(root, PROJECT_DECLARATION_PATH);
-  let text: string;
-  try {
-    text = read(path, "utf8");
-  } catch (cause) {
-    throw new HostConfigRefusal("(file)", "the declaration cannot be read", path, { cause });
-  }
-  return parseUnitsDeclaration(text, path);
+  return readDeclaration(join(root, PROJECT_DECLARATION_PATH), read, parseUnitsDeclaration);
 }
 
 /**
@@ -591,14 +593,7 @@ export function parseBeforeTick(text: string, source: string = PROJECT_DECLARATI
  * @returns {string | null}
  */
 export function readBeforeTick(checkout: string, read: (path: string, encoding: "utf8") => string = readFileSync): string | null {
-  const path = join(checkout, PROJECT_DECLARATION_PATH);
-  let text: string;
-  try {
-    text = read(path, "utf8");
-  } catch (cause) {
-    throw new HostConfigRefusal("(file)", "the declaration cannot be read", path, { cause });
-  }
-  return parseBeforeTick(text, path);
+  return readDeclaration(join(checkout, PROJECT_DECLARATION_PATH), read, parseBeforeTick);
 }
 
 /**

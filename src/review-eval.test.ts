@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tmpDir } from "./lib/tmp-fixture.ts";
+import { testEach } from "./lib/test-each.ts";
 import {
   SETS, REVIEWER_EFFORT, REVIEWER_MODEL, SKILL_SOURCE, closedRowOf, evaluateOne, idOf, installSkill, main, parseRequire, reviewPrompt, score, verdictOf,
   type EvalDeps, type EvalPr, type Label, type Result,
@@ -217,11 +218,14 @@ async function run(argv: string[], reviewer: (opts: { cwd: string; prompt: strin
   return { code, out, err };
 }
 
-test("main: the row's Acceptance spelling (`--set name --require 9/11`) passes when the reviewer agrees on all eleven", async () => {
-  const { code, out } = await run(["--set", "blind-2026-10-12", "--require", "9/11"], answering([]));
+testEach("main: the row's Acceptance spelling (`--set name --require 9/11`) passes when the reviewer agrees on all eleven", [
+  { name: "all eleven agree", argv: ["--set", "blind-2026-10-12", "--require", "9/11"], first: /agreement 11\/11 \(not convinced 5\/5\), required 9\/11/, second: /^PASS$/m },
+  { name: "a subset without a requirement runs just those and reports no verdict", argv: ["--set", "blind-2026-10-12", "--only", "agent-org#1063,agent-org#1138"], first: /agreement 2\/2/, second: /no requirement asked/ },
+], async (c) => {
+  const { code, out } = await run(c.argv, answering([]));
   assert.equal(code, 0);
-  assert.match(out, /agreement 11\/11 \(not convinced 5\/5\), required 9\/11/);
-  assert.match(out, /^PASS$/m);
+  assert.match(out, c.first);
+  assert.match(out, c.second);
 });
 
 test("main: two wrong approvals of positives still pass at 9/11, and the report names the two", async () => {
@@ -246,13 +250,6 @@ test("main: refusals exit 2 with nothing run: an unknown set, a bad requirement,
     assert.equal(code, 2, argv.join(" "));
     assert.match(err, /REFUSED/);
   }
-});
-
-test("main: a subset without a requirement runs just those and reports no verdict", async () => {
-  const { code, out } = await run(["--set", "blind-2026-10-12", "--only", "agent-org#1063,agent-org#1138"], answering([]));
-  assert.equal(code, 0);
-  assert.match(out, /agreement 2\/2/);
-  assert.match(out, /no requirement asked/);
 });
 
 test("main: `--jobs` bounds how many reviewers run at once", async () => {

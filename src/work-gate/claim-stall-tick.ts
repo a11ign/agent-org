@@ -25,6 +25,7 @@ import { readAgents, readAgentSessions } from "../herdr-agents.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
 import { waitingOn, fleetWaitingOn, describeWaiting, answersOwedBy } from "../waiting-condition.ts";
 import { declaredWaitsOf, waitItemOf, conditionHolds, type WaitFacts } from "../wait-condition.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { WORKER_STATE_DIR, readDeclarations, lastDeliveredTo, declarationReading } from "../worker-state.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";

@@ -93,9 +93,15 @@ function heldTree(primary: { root: string, tip: string }, name: string, { stampe
   return path;
 }
 
-test("#3850: a HELD tree whose row is closed, clean, nothing unpushed and idle past the age is REMOVED", () => {
+/** A fresh primary checkout with one held tree under `name`: the arrange every case below starts from. */
+function primaryWithHeld(name: string) {
   const primary = buildPrimary();
-  const tree = heldTree(primary, "wt-3001");
+  const tree = heldTree(primary, name);
+  return { primary, tree };
+}
+
+test("#3850: a HELD tree whose row is closed, clean, nothing unpushed and idle past the age is REMOVED", () => {
+  const { primary, tree } = primaryWithHeld("wt-3001");
   const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, rowsClosed: CLOSED });
   assert.deepEqual(report.removed.map((r) => r.path), [tree]);
   assert.deepEqual(report.held, []);
@@ -103,8 +109,7 @@ test("#3850: a HELD tree whose row is closed, clean, nothing unpushed and idle p
 });
 
 test("#3850 NEGATIVE 1/3: the same tree with its row OPEN is still refused, and the reason names the row", () => {
-  const primary = buildPrimary();
-  const tree = heldTree(primary, "wt-3002");
+  const { primary, tree } = primaryWithHeld("wt-3002");
   const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, rowsClosed: OPEN });
   assert.deepEqual(report.held.map((r) => r.path), [tree]);
   assert.match(report.held[0].reason, /row is open/);
@@ -113,8 +118,7 @@ test("#3850 NEGATIVE 1/3: the same tree with its row OPEN is still refused, and 
 });
 
 test("#3850 NEGATIVE 2/3: the same tree DIRTY is refused, and the row is never read for it", () => {
-  const primary = buildPrimary();
-  const tree = heldTree(primary, "wt-3003");
+  const { primary, tree } = primaryWithHeld("wt-3003");
   writeFileSync(join(tree, "wip.txt"), "not committed\n");
   const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, rowsClosed: NEVER_ASKED });
   assert.deepEqual(report.dirty.map((r) => r.path), [tree]);
@@ -123,8 +127,7 @@ test("#3850 NEGATIVE 2/3: the same tree DIRTY is refused, and the row is never r
 });
 
 test("#3850 NEGATIVE 3/3: the same tree with an UNPUSHED commit is refused, and the row is never read for it", () => {
-  const primary = buildPrimary();
-  const tree = heldTree(primary, "wt-3004");
+  const { primary, tree } = primaryWithHeld("wt-3004");
   writeFileSync(join(tree, "work.txt"), "real work\n");
   git(tree, "add", "work.txt");
   git(tree, "commit", "-q", "-m", "not on origin/main");
@@ -135,8 +138,7 @@ test("#3850 NEGATIVE 3/3: the same tree with an UNPUSHED commit is refused, and 
 });
 
 test("#3850: a closed row does NOT release a tree that git touched inside the age -- and the row is not read for it", () => {
-  const primary = buildPrimary();
-  const tree = heldTree(primary, "wt-3005");
+  const { primary, tree } = primaryWithHeld("wt-3005");
   const report = pruneWorktrees(primary.root, { now: QUIET_BUT_NOT_LONG(), claim: NOBODY_CLAIMS, rowsClosed: NEVER_ASKED });
   assert.deepEqual(report.held.map((r) => r.path), [tree]);
   assert.ok(existsSync(tree));

@@ -380,6 +380,14 @@ function verdictPort(tree: string, { status = new Map([["reviewer-7", "idle"]]),
   return { port, herd, order };
 }
 
+/** A fresh checkout whose `verdict-7.md` holds `content`: the checkout and the file's path. */
+function verdictTree(prefix: string, content: string): { tree: string; file: string } {
+  const tree = tmpDir(prefix);
+  const file = join(tree, "verdict-7.md");
+  writeFileSync(file, content);
+  return { tree, file };
+}
+
 test("a verdict file is found by what it says, in the checkout or one folder down, for the head it names, and the newest one wins", async () => {
   await loadReviewerGate();
   const tree = tmpDir("reviewer-tree-");
@@ -399,9 +407,7 @@ test("a verdict file is found by what it says, in the checkout or one folder dow
 
 test("a verdict file is posted again through the door: the token is minted first, and the door is given the word the file opens with", async () => {
   await loadReviewerGate();
-  const tree = tmpDir("reviewer-repost-");
-  const file = join(tree, "verdict-7.md");
-  writeFileSync(file, `${verdictLine(H1, "not convinced")}\n\nfindings\n`);
+  const { tree, file } = verdictTree("reviewer-repost-", `${verdictLine(H1, "not convinced")}\n\nfindings\n`);
   const doorCalls: { file: string; args: string[]; env: Record<string, string> }[] = [];
   const made = verdictPort(tree, { door: (path, args, env) => { doorCalls.push({ file: path, args, env }); } });
   assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { posted: true });
@@ -413,9 +419,7 @@ test("a verdict file is posted again through the door: the token is minted first
 
 test("a token that will not mint stops the repost before the door runs, and its reason is the refusal, which a later attempt may cure", async () => {
   await loadReviewerGate();
-  const tree = tmpDir("reviewer-mint-");
-  const file = join(tree, "verdict-7.md");
-  writeFileSync(file, `${verdictLine(H1, "convinced")}\n\nbody\n`);
+  const { tree, file } = verdictTree("reviewer-mint-", `${verdictLine(H1, "convinced")}\n\nbody\n`);
   const doorCalls: string[][] = [];
   const made = verdictPort(tree, { mint: () => "the reviewer's app token could not be minted: no key", door: (_path, args) => { doorCalls.push(args); } });
   assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: "the reviewer's app token could not be minted: no key", final: false });
@@ -424,9 +428,7 @@ test("a token that will not mint stops the repost before the door runs, and its 
 
 test("a door refusal is said with the door's own last line: a refusal a repost would repeat is final, and one for the token is not", async () => {
   await loadReviewerGate();
-  const tree = tmpDir("reviewer-refused-");
-  const file = join(tree, "verdict-7.md");
-  writeFileSync(file, `${verdictLine(H1, "convinced")}\n\nbody\n`);
+  const { tree, file } = verdictTree("reviewer-refused-", `${verdictLine(H1, "convinced")}\n\nbody\n`);
   for (const [status, reason, final] of [
     [5, "The head moved since you reviewed it: your verdict names a1a1a1a1.", true],
     [3, "#7 already has a review at an equal patch: APPROVED", true],
@@ -439,9 +441,7 @@ test("a door refusal is said with the door's own last line: a refusal a repost w
 
 test("a verdict file that names another head, or no verdict, is not posted", async () => {
   await loadReviewerGate();
-  const tree = tmpDir("reviewer-wrong-");
-  const file = join(tree, "verdict-7.md");
-  writeFileSync(file, `${verdictLine(H2, "convinced")}\n\nbody\n`);
+  const { tree, file } = verdictTree("reviewer-wrong-", `${verdictLine(H2, "convinced")}\n\nbody\n`);
   const made = verdictPort(tree);
   assert.deepEqual(made.port.repostVerdict({ pr: PR_URL, head: H1 }, file), { refusal: `the verdict file ${file} does not open with a verdict for ${H1.slice(0, 8)}`, final: true });
   assert.deepEqual(made.order, [], "nothing is minted or posted");

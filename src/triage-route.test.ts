@@ -30,6 +30,14 @@ function fakeProvider(route: Triage["route"], confidence = 0.95) {
   return { triage, asked };
 }
 const deps = (path: string, extra: Partial<RouteDeps> = {}): RouteDeps => ({ host: hostWith(JEV), digestPath: path, now: () => T0, ...extra });
+
+/** A digest that one order is offered to twice, three hours apart, by a seat whose triage answers `mode`. */
+async function offeredTwice(mode: Triage["route"]): Promise<string> {
+  const path = digestFile();
+  await routeOrders([order(1)], deps(path, { triage: fakeProvider(mode).triage }));
+  await routeOrders([order(1)], deps(path, { triage: fakeProvider(mode).triage, now: () => T0 + 3 * HOUR }));
+  return path;
+}
 const keys = (orders: readonly GateOrder[]) => orders.map((o) => o.causeKey);
 
 test("a digest answer holds the order, and a drop answer does the same: nothing is undelivered or deleted", async () => {
@@ -175,14 +183,10 @@ test("a digested order that comes back inside a day leaves ONE needed-action lin
 test("no outcome line for what did not need one: not delivered yet, delivered outright, another seat, or more than a day later", async () => {
   const outcomesOf = (path: string) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter((l) => l.includes('"outcome"')).length : 0);
   // held and never delivered: the gate emits it every tick, and that is not an outcome
-  const stillHeld = digestFile();
-  await routeOrders([order(1)], deps(stillHeld, { triage: fakeProvider("digest").triage }));
-  await routeOrders([order(1)], deps(stillHeld, { triage: fakeProvider("digest").triage, now: () => T0 + 3 * HOUR }));
+  const stillHeld = await offeredTwice("digest");
   assert.equal(outcomesOf(stillHeld), 0);
   // delivered outright (a wake), then offered again: it was never held
-  const woken = digestFile();
-  await routeOrders([order(1)], deps(woken, { triage: fakeProvider("wake").triage }));
-  await routeOrders([order(1)], deps(woken, { triage: fakeProvider("wake").triage, now: () => T0 + 3 * HOUR }));
+  const woken = await offeredTwice("wake");
   assert.equal(outcomesOf(woken), 0);
   // held and delivered to one seat, offered to another with the same key
   const otherSeat = digestFile();

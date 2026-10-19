@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
+import { testEach } from "./lib/test-each.ts";
 import { OPEN_ROWS_LIMIT, readWithFirstWaveTogether } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readChairmanBlocked } from "./work-gate/causes/rows-chairman.ts";
 import { readOpenRows, readPromotableRows, readReadyRows } from "./work-gate/reads.ts";
@@ -292,13 +293,21 @@ test("(2e) a 304 with nothing held to replay is NOT an answer: gh's own status a
   assert.match(lost.stderr, /HTTP 304/);
 });
 
-test("(2f) an error is what gh printed: the header block is cut off, the body and the message and the exit status stay, and nothing is held", () => {
+type MissingRead = ReturnType<ReturnType<typeof host>["call"]>;
+
+const MISSING_READ_CHECKS: { name: string; check: (missing: MissingRead, h: ReturnType<typeof host>) => void }[] = [
+  { name: "exits 1", check: (missing) => assert.equal(missing.status, 1) },
+  { name: "prints the body gh printed", check: (missing) => assert.equal(missing.stdout, '{"message":"Not Found"}\n') },
+  { name: "prints the message gh printed", check: (missing) => assert.match(missing.stderr, /Not Found \(HTTP 404\)/) },
+  {
+    name: "stores nothing",
+    check: (_missing, h) => assert.ok(!existsSync(join(h.rc, "c")) || readdirSync(join(h.rc, "c")).length === 0, "an error is never stored as the answer to the next read"),
+  },
+];
+
+testEach("(2f) an error is what gh printed: the header block is cut off, the body and the message and the exit status stay, and nothing is held", MISSING_READ_CHECKS, (c) => {
   const h = host();
-  const missing = h.call({ STUB_404: "1" }, "api", PATH);
-  assert.equal(missing.status, 1);
-  assert.equal(missing.stdout, '{"message":"Not Found"}\n');
-  assert.match(missing.stderr, /Not Found \(HTTP 404\)/);
-  assert.ok(!existsSync(join(h.rc, "c")) || readdirSync(join(h.rc, "c")).length === 0, "an error is never stored as the answer to the next read");
+  c.check(h.call({ STUB_404: "1" }, "api", PATH), h);
 });
 
 test("(2g) `A11Y_GH_READ_CACHE=off` turns it off with the rest: the call is the caller's, byte for byte", () => {

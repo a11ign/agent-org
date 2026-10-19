@@ -66,6 +66,13 @@ function inTempDir(body: (dir: string) => void): void {
 
 const PM = [{ label: "product-manager", status: "working" }];
 
+/** Sends the same declined-PR question as the upgrade tests below, with the stance the call declares. */
+function sendDeclined(path: string, stance: "decision" | "fyi") {
+  withStderr(() => queueOrLose({
+    label: "product-manager", text: "Do you want #2057 declined?", why: "is working", agents: PM, path, stance,
+  }));
+}
+
 test("THE DECLARATION IS RECORDED ON THE QUEUE ENTRY -- a decision as true, an FYI as false", () => {
   inTempDir((dir) => {
     const path = join(dir, "q");
@@ -89,12 +96,8 @@ test("RE-SENDING THE SAME WORDS WITH --decision UPGRADES THE ORDER RATHER THAN Q
   // demote it -- the dangerous direction, and the reason the field exists.
   inTempDir((dir) => {
     const path = join(dir, "q");
-    const send = (stance: "decision" | "fyi") => withStderr(() => queueOrLose({
-      label: "product-manager", text: "Do you want #2057 declined?", why: "is working", agents: PM, path,
-      stance,
-    }));
-    send(STANCE.FYI);
-    send(STANCE.DECISION);
+    sendDeclined(path, STANCE.FYI);
+    sendDeclined(path, STANCE.DECISION);
     const queued = readHandoffs(path);
     assert.equal(queued.length, 1, "one order");
     assert.equal(queued[0].decision, true, "and it is the declared decision");
@@ -102,12 +105,8 @@ test("RE-SENDING THE SAME WORDS WITH --decision UPGRADES THE ORDER RATHER THAN Q
   // AND THE OTHER DIRECTION IS NOT AN UPGRADE: a decision re-sent as FYI stays a decision.
   inTempDir((dir) => {
     const path = join(dir, "q");
-    const send = (stance: "decision" | "fyi") => withStderr(() => queueOrLose({
-      label: "product-manager", text: "Do you want #2057 declined?", why: "is working", agents: PM, path,
-      stance,
-    }));
-    send(STANCE.DECISION);
-    send(STANCE.FYI);
+    sendDeclined(path, STANCE.DECISION);
+    sendDeclined(path, STANCE.FYI);
     assert.equal(readHandoffs(path)[0].decision, true, "a later FYI never withdraws a declared ask");
   });
 });

@@ -156,6 +156,13 @@ test("#5100 (2c) A BASELINE FROM TEN MINUTES IS NOT A BASELINE: a flag turned on
 const writePause = (dir: string, until: number) =>
   writeFileSync(join(dir, ACCOUNT_LIMIT_FILE), JSON.stringify({ [homedir()]: { limitedUntil: until, seenOn: "2026-10-15", text: "usage limit reached" } }));
 
+/** Ticks the quiet hour before T0, then turns the `wakes-held` reading on in the flag and takes the tick that starts the hour. */
+function watchWakesHeld(h: ReturnType<typeof memoryIo>, tickWith: (minute: number, deferredWakes: number) => unknown) {
+  for (let minute = -60; minute <= -10; minute += 10) tickWith(minute, 0);
+  h.store.text = JSON.stringify(withMachineryFlag(h.state(), { name: FLAG, on: true, signals: [MACHINERY_SIGNALS.WAKES_HELD] }));
+  tickWith(0, 0); // the tick that finds the flag on starts the hour
+}
+
 /**
  * a11ign#5497: `wakes-held` on a flag turned on at T0. The account pause is recorded over the hour before it (`pausedBefore`), so every tick there is HELD; then the flag is on and
  * `wakes-held` reads 23 in its first ten minutes, which is the surge the first hour after a pause read as a regression.
@@ -165,9 +172,7 @@ function wakesHeldCanary({ pausedBefore }: { pausedBefore: boolean; }) {
   const h = memoryIo(JSON.stringify(withMachineryFlag(emptyCanaryState(), { name: ACCOUNT_LIMIT_FLAG, on: true, signals: [] })));
   if (pausedBefore) writePause(dir, T0 - 5 * MINUTE); // holds the ticks up to minute -10, lifted by minute 0
   const tickWith = (minute: number, deferredWakes: number) => machineryCanaryTick({ now: T0 + minute * MINUTE, facts: facts({ deferredWakes }), dir, options: OPTIONS, io: h.io });
-  for (let minute = -60; minute <= -10; minute += 10) tickWith(minute, 0);
-  h.store.text = JSON.stringify(withMachineryFlag(h.state(), { name: FLAG, on: true, signals: [MACHINERY_SIGNALS.WAKES_HELD] }));
-  tickWith(0, 0); // the tick that finds the flag on starts the hour
+  watchWakesHeld(h, tickWith);
   tickWith(10, 23);
   for (let minute = 20; minute <= 60 && machineryFlagOn(h.state(), FLAG); minute += 10) tickWith(minute, 0);
   return h;
@@ -195,9 +200,7 @@ test("#5497 (1c) A PAUSE THAT BEGINS INSIDE THE HOUR AFTER THE FLAG IS ON IS REA
   const dir = tmpDir("machinery-canary-");
   const h = memoryIo(JSON.stringify(withMachineryFlag(emptyCanaryState(), { name: ACCOUNT_LIMIT_FLAG, on: true, signals: [] })));
   const tickWith = (minute: number, deferredWakes: number) => machineryCanaryTick({ now: T0 + minute * MINUTE, facts: facts({ deferredWakes }), dir, options: OPTIONS, io: h.io });
-  for (let minute = -60; minute <= -10; minute += 10) tickWith(minute, 0);
-  h.store.text = JSON.stringify(withMachineryFlag(h.state(), { name: FLAG, on: true, signals: [MACHINERY_SIGNALS.WAKES_HELD] }));
-  tickWith(0, 0);
+  watchWakesHeld(h, tickWith);
   tickWith(10, 0);
   writePause(dir, T0 + 60 * MINUTE); // the pause begins after minute 10, inside the hour the flag now watches
   tickWith(20, 23);

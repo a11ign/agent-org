@@ -81,10 +81,15 @@ function world() {
   };
 }
 
+/** A fresh world that has ticked once over `rows`: the world, and what that first tick observed and decided. */
+async function tickedWorld(rows: any[]) {
+  const w = world();
+  return { w, first: await w.tick(rows) };
+}
+
 describe("a row that gains needs:chairman yields ONE request however many ticks see it (done-when 1)", () => {
   test("POSITIVE CONTROL: no labelled rows yields no request, and one labelled row yields exactly one message", async () => {
-    const empty = world();
-    const quiet = await empty.tick([]);
+    const { w: empty, first: quiet } = await tickedWorld([]);
     assert.deepEqual(quiet.observed.events, []);
     assert.equal(empty.provider.sent.length, 0);
 
@@ -159,8 +164,7 @@ describe("a row that loses the label yields ONE resolved event (done-when 1)", (
   });
 
   test("a row that never reached the chairman and loses the label sends nothing at all", async () => {
-    const w = world();
-    const gone = await w.tick([]);
+    const { w, first: gone } = await tickedWorld([]);
     assert.deepEqual(gone.observed.events, []);
     assert.equal(w.provider.sent.length, 0);
   });

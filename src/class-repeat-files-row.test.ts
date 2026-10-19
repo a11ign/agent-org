@@ -165,7 +165,7 @@ test("a refused filing keeps the order to ceo, says it was refused and why, and 
   const refusing = filer({ refuse: "row-file: REFUSING to file -- missing Open-check" });
   const { readings, fact, logs } = tick({ state, fileRow: refusing.fileRow });
   assert.deepEqual(filingsOf(fact), { x: { refused: "row-file: REFUSING to file -- missing Open-check" } }, "the reason is stderr's first line, not the whole message");
-  const [order] = orders(readings);
+  const order = orders(readings)[0];
   assert.ok(order, "the order to ceo stands");
   assert.match(order, /THE CLASS ROW WAS NOT FILED/);
   assert.match(order, /REFUSING to file -- missing Open-check/);

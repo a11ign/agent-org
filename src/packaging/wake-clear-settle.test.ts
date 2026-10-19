@@ -28,6 +28,7 @@ import { deliver, CLEAR_SETTLE_MS } from "../wake/fyi-queue.ts";
 import { deliverHandoffs } from "../wake/ended-sessions.ts";
 import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
 import { clearThenPrompt } from "../prompt-session.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const ROSTER = ["ceo", "product-manager", "orchestrator", "worker-capture", "worker-judge", "worker-tooling"];
 const agents = (labels: string[]) => labels.map((label) => ({ label, status: "idle" }));
@@ -64,111 +65,89 @@ test("#2546 (1) the settle is EXACTLY 5000 ms, so no fast test can lower the pro
   assert.equal(CLEAR_SETTLE_MS, 5_000);
 });
 
-test("#2546 (2) THROUGH deliver: /clear, wait, sleep(CLEAR_SETTLE_MS), and only then the order", () => {
-  const r = recorder();
-  const got = deliver([order("ceo")], agents(["ceo"]), ROSTER, { run: r.run, sleep: r.sleep, record: () => {}, contextRoot: NO_TRANSCRIPTS });
-  assert.deepEqual(got.refused, [], `delivered: ${JSON.stringify(got)}`);
-  assert.equal(r.log.length, 4, `exactly four events, in order: ${JSON.stringify(r.log)}`);
-  assert.deepEqual(r.log.slice(0, 3), ["prompt:/clear", "wait", `sleep:${CLEAR_SETTLE_MS}`],
-    "the settle sits BETWEEN the wait and the order, or the order is typed into the input the clear still occupies");
-  assert.match(r.log[3], /^prompt:(?!\/clear)/, "the order is the last thing typed, and it is not another /clear");
-});
-
-test("#2546 (2) the same seam reaches deliverHandoffs and clearThenPrompt, each waiting exactly CLEAR_SETTLE_MS once", () => {
-  const handed = recorder();
-  const out = deliverHandoffs([{ id: "h1", session: "ceo", prompt: ORDER_TEXT, queuedAt: Date.now() }],
-    agents(["ceo"]), ROSTER, { run: handed.run, sleep: handed.sleep, contextRoot: NO_TRANSCRIPTS });
-  assert.deepEqual(out.refused, [], `delivered: ${JSON.stringify(out)}`);
-  assert.deepEqual(handed.log.filter((e) => e.startsWith("sleep")), [`sleep:${CLEAR_SETTLE_MS}`]);
-
-  const direct = recorder();
-  assert.equal(clearThenPrompt(direct.run, "ceo", ORDER_TEXT, { sleep: direct.sleep, contextRoot: NO_TRANSCRIPTS }), null);
-  assert.deepEqual(direct.log.slice(0, 3), ["prompt:/clear", "wait", `sleep:${CLEAR_SETTLE_MS}`]);
-});
-
-test("#2546 (2) CONTROL: a per-row instance is not cleared, so it does not settle either", () => {
-  const r = recorder();
-  deliver([order("reviewer-2546")], agents(["reviewer-2546"]), ROSTER,
-    { run: r.run, sleep: r.sleep, record: () => {}, contextRoot: NO_TRANSCRIPTS });
-  assert.deepEqual(r.log.filter((e) => e.startsWith("sleep") || e === "wait"), [],
-    "a settle with nothing cleared before it would be five seconds spent for no reason");
-  assert.equal(r.log.length, 1, "one event: the order itself");
-});
-
-test("#2546 (3) THE DEFAULT IS REAL: deliver with no sleep dependency waits at least CLEAR_SETTLE_MS (five seconds, on purpose)", () => {
-  const r = recorder();
-  const started = process.hrtime.bigint();
-  const got = deliver([order("ceo")], agents(["ceo"]), ROSTER, { run: r.run, record: () => {}, contextRoot: NO_TRANSCRIPTS });
-  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-  assert.deepEqual(got.refused, [], `delivered: ${JSON.stringify(got)}`);
-  assert.ok(elapsedMs >= CLEAR_SETTLE_MS,
-    `no sleep injected, so the settle must really wait: ${elapsedMs.toFixed(0)} ms elapsed against ${CLEAR_SETTLE_MS}`);
-});
-
 // --- #2688: `/compact` GOES THROUGH THE SAME SEAM, FOR AN OVER-THRESHOLD PER-ROW INSTANCE ---
 
-test("#2688 THROUGH deliver: /compact, wait, sleep(CLEAR_SETTLE_MS), and only then the order -- for an over-threshold instance", () => {
-  const dir = transcriptRootFor("reviewer-2546", COMPACT_THRESHOLD_TOKENS + 1);
+testEach("#2546 (2) THROUGH deliver: /clear, wait, sleep(CLEAR_SETTLE_MS), and only then the order", [
+  { name: "/clear", label: "ceo", command: "/clear", cacheRead: undefined,
+    between: "the settle sits BETWEEN the wait and the order, or the order is typed into the input the clear still occupies",
+    notAgain: /^prompt:(?!\/clear)/ },
+  { name: "#2688 /compact for an over-threshold instance", label: "reviewer-2546", command: "/compact", cacheRead: COMPACT_THRESHOLD_TOKENS + 1,
+    between: "the settle sits BETWEEN the wait and the order, exactly as it does for /clear",
+    notAgain: /^prompt:(?!\/compact)/ },
+], (c) => {
+  const dir = c.cacheRead === undefined ? NO_TRANSCRIPTS : transcriptRootFor(c.label, c.cacheRead);
   try {
     const r = recorder();
-    const got = deliver([order("reviewer-2546")], agents(["reviewer-2546"]), ROSTER,
-      { run: r.run, sleep: r.sleep, record: () => {}, contextRoot: dir });
+    const got = deliver([order(c.label)], agents([c.label]), ROSTER, { run: r.run, sleep: r.sleep, record: () => {}, contextRoot: dir });
     assert.deepEqual(got.refused, [], `delivered: ${JSON.stringify(got)}`);
     assert.equal(r.log.length, 4, `exactly four events, in order: ${JSON.stringify(r.log)}`);
-    assert.deepEqual(r.log.slice(0, 3), ["prompt:/compact", "wait", `sleep:${CLEAR_SETTLE_MS}`],
-      "the settle sits BETWEEN the wait and the order, exactly as it does for /clear");
-    assert.match(r.log[3], /^prompt:(?!\/compact)/, "the order is the last thing typed, and it is not another /compact");
+    assert.deepEqual(r.log.slice(0, 3), [`prompt:${c.command}`, "wait", `sleep:${CLEAR_SETTLE_MS}`], c.between);
+    assert.match(r.log[3], c.notAgain, `the order is the last thing typed, and it is not another ${c.command}`);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (c.cacheRead !== undefined) rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("#2688 the same seam reaches deliverHandoffs and clearThenPrompt for an over-threshold instance, each waiting exactly CLEAR_SETTLE_MS once", () => {
-  // `worker-11`, NOT `reviewer-2546`, for the handoff half: a queued handoff to a reviewer names no pull
-  // request in its causeKey, so `reviewerMismatch` refuses it before any clear/compact question arises
-  // (the same caveat `wake-no-clear-for-instances.test.ts` documents on its own handoff test).
-  const handoffDir = transcriptRootFor("worker-11", COMPACT_THRESHOLD_TOKENS + 1);
-  const directDir = transcriptRootFor("reviewer-2546", COMPACT_THRESHOLD_TOKENS + 1);
+// `worker-11`, NOT `reviewer-2546`, for the handoff half: a queued handoff to a reviewer names no pull
+// request in its causeKey, so `reviewerMismatch` refuses it before any clear/compact question arises
+// (the same caveat `wake-no-clear-for-instances.test.ts` documents on its own handoff test).
+testEach("#2546 (2) the same seam reaches deliverHandoffs and clearThenPrompt, each waiting exactly CLEAR_SETTLE_MS once", [
+  { name: "/clear", handoffLabel: "ceo", directLabel: "ceo", command: "/clear", cacheRead: undefined },
+  { name: "#2688 /compact for an over-threshold instance", handoffLabel: "worker-11", directLabel: "reviewer-2546", command: "/compact",
+    cacheRead: COMPACT_THRESHOLD_TOKENS + 1 },
+], (c) => {
+  const handoffDir = c.cacheRead === undefined ? NO_TRANSCRIPTS : transcriptRootFor(c.handoffLabel, c.cacheRead);
+  const directDir = c.cacheRead === undefined ? NO_TRANSCRIPTS : transcriptRootFor(c.directLabel, c.cacheRead);
   try {
     const handed = recorder();
-    const out = deliverHandoffs([{ id: "h1", session: "worker-11", prompt: ORDER_TEXT, queuedAt: Date.now() }],
-      agents(["worker-11"]), ROSTER, { run: handed.run, sleep: handed.sleep, contextRoot: handoffDir });
+    const out = deliverHandoffs([{ id: "h1", session: c.handoffLabel, prompt: ORDER_TEXT, queuedAt: Date.now() }],
+      agents([c.handoffLabel]), ROSTER, { run: handed.run, sleep: handed.sleep, contextRoot: handoffDir });
     assert.deepEqual(out.refused, [], `delivered: ${JSON.stringify(out)}`);
     assert.deepEqual(handed.log.filter((e) => e.startsWith("sleep")), [`sleep:${CLEAR_SETTLE_MS}`]);
 
     const direct = recorder();
-    assert.equal(clearThenPrompt(direct.run, "reviewer-2546", ORDER_TEXT, { sleep: direct.sleep, contextRoot: directDir }), null);
-    assert.deepEqual(direct.log.slice(0, 3), ["prompt:/compact", "wait", `sleep:${CLEAR_SETTLE_MS}`]);
+    assert.equal(clearThenPrompt(direct.run, c.directLabel, ORDER_TEXT, { sleep: direct.sleep, contextRoot: directDir }), null);
+    assert.deepEqual(direct.log.slice(0, 3), [`prompt:${c.command}`, "wait", `sleep:${CLEAR_SETTLE_MS}`]);
   } finally {
-    rmSync(handoffDir, { recursive: true, force: true });
-    rmSync(directDir, { recursive: true, force: true });
+    if (c.cacheRead !== undefined) {
+      rmSync(handoffDir, { recursive: true, force: true });
+      rmSync(directDir, { recursive: true, force: true });
+    }
   }
 });
 
-test("#2688 CONTROL: an instance below the threshold does not settle either", () => {
-  const dir = transcriptRootFor("reviewer-2546", COMPACT_THRESHOLD_TOKENS);
+testEach("#2546 (2) CONTROL: a per-row instance is not cleared, so it does not settle either", [
+  { name: "a per-row instance", cacheRead: undefined,
+    msg: "a settle with nothing cleared before it would be five seconds spent for no reason" },
+  { name: "#2688 an instance below the threshold", cacheRead: COMPACT_THRESHOLD_TOKENS,
+    msg: "AT the threshold is not OVER it, so nothing is sent and nothing settles" },
+], (c) => {
+  const dir = c.cacheRead === undefined ? NO_TRANSCRIPTS : transcriptRootFor("reviewer-2546", c.cacheRead);
   try {
     const r = recorder();
-    deliver([order("reviewer-2546")], agents(["reviewer-2546"]), ROSTER, { run: r.run, sleep: r.sleep, record: () => {}, contextRoot: dir });
-    assert.deepEqual(r.log.filter((e) => e.startsWith("sleep") || e === "wait"), [],
-      "AT the threshold is not OVER it, so nothing is sent and nothing settles");
+    deliver([order("reviewer-2546")], agents(["reviewer-2546"]), ROSTER,
+      { run: r.run, sleep: r.sleep, record: () => {}, contextRoot: dir });
+    assert.deepEqual(r.log.filter((e) => e.startsWith("sleep") || e === "wait"), [], c.msg);
     assert.equal(r.log.length, 1, "one event: the order itself");
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (c.cacheRead !== undefined) rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("#2688 THE DEFAULT IS REAL for /compact too: an over-threshold instance with no sleep dependency waits at least CLEAR_SETTLE_MS", () => {
-  const dir = transcriptRootFor("reviewer-2546", COMPACT_THRESHOLD_TOKENS + 1);
+testEach("#2546 (3) THE DEFAULT IS REAL: deliver with no sleep dependency waits at least CLEAR_SETTLE_MS (five seconds, on purpose)", [
+  { name: "/clear", label: "ceo", cacheRead: undefined },
+  { name: "#2688 /compact for an over-threshold instance", label: "reviewer-2546", cacheRead: COMPACT_THRESHOLD_TOKENS + 1 },
+], (c) => {
+  const dir = c.cacheRead === undefined ? NO_TRANSCRIPTS : transcriptRootFor(c.label, c.cacheRead);
   try {
     const r = recorder();
     const started = process.hrtime.bigint();
-    const got = deliver([order("reviewer-2546")], agents(["reviewer-2546"]), ROSTER, { run: r.run, record: () => {}, contextRoot: dir });
+    const got = deliver([order(c.label)], agents([c.label]), ROSTER, { run: r.run, record: () => {}, contextRoot: dir });
     const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
     assert.deepEqual(got.refused, [], `delivered: ${JSON.stringify(got)}`);
     assert.ok(elapsedMs >= CLEAR_SETTLE_MS,
       `no sleep injected, so the settle must really wait: ${elapsedMs.toFixed(0)} ms elapsed against ${CLEAR_SETTLE_MS}`);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (c.cacheRead !== undefined) rmSync(dir, { recursive: true, force: true });
   }
 });

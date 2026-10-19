@@ -88,6 +88,13 @@ function host() {
   const handed = () => readFileSync(join(root, "handed"), "utf8").trim();
   return { root, run, canary, mints, lines, handed };
 }
+
+/** A host with the author-fallback switch ON, which every case below that exercises the refusal starts from. */
+function canaryHost() {
+  const h = host();
+  h.canary(true);
+  return h;
+}
 const tokenOf = (stdout: string) => /^token=(\S+)/.exec(stdout)?.[1];
 
 // ---- the switch's reading ----------------------------------------------------------------------------------------------------------
@@ -115,8 +122,7 @@ test("#1666: an authoring call is `pr create`, `pr merge` or `pr review`, and no
 // ---- 1. flag ON, every mint fails: the authoring call is minted again, then refused, nothing sent ---------------------------------
 
 test("#1666 POSITIVE CONTROL: switch ON and a mint that keeps failing REFUSES `pr create`: retried 3 times, non-zero, nothing sent, the reason on stderr, one incident per mint", () => {
-  const h = host();
-  h.canary(true);
+  const h = canaryHost();
   const call = h.run({}, "pr", "create", "--title", "t", "--body-file", "-");
   assert.deepEqual([call.status, call.stdout], [1, ""], "REFUSED: non-zero, and the stub that would have authored the pull request never ran");
   assert.equal(h.mints(), 3, "the mint was asked the default 3 times before the refusal");
@@ -129,8 +135,7 @@ test("#1666 POSITIVE CONTROL: switch ON and a mint that keeps failing REFUSES `p
 });
 
 test("#1666: switch ON refuses `pr merge` and `pr review` the same way (the review is the approval), and a read still goes out as the account", () => {
-  const h = host();
-  h.canary(true);
+  const h = canaryHost();
   for (const args of [["pr", "merge", "955", "--squash"], ["pr", "review", "955", "--approve"]]) {
     const call = h.run({}, ...args);
     assert.deepEqual([call.status, call.stdout], [1, ""], `${args.join(" ")} is refused, and nothing was sent`);
@@ -144,8 +149,7 @@ test("#1666: switch ON refuses `pr merge` and `pr review` the same way (the revi
 });
 
 test("#1666: the retry count is `A11Y_APP_AUTHOR_MINTS`: five mints before the refusal when it says five", () => {
-  const h = host();
-  h.canary(true);
+  const h = canaryHost();
   const call = h.run({ A11Y_APP_AUTHOR_MINTS: "5" }, "pr", "create", "--title", "t");
   assert.equal(call.status, 1);
   assert.equal(h.mints(), 5);
@@ -155,8 +159,7 @@ test("#1666: the retry count is `A11Y_APP_AUTHOR_MINTS`: five mints before the r
 // ---- 2. flag ON, a mint that works on a later try: the call goes out on the App's token ---------------------------------------------
 
 test("#1666 POSITIVE CONTROL: switch ON and a mint that fails twice then works sends `pr create` on the App's token, as `app:workers`", () => {
-  const h = host();
-  h.canary(true);
+  const h = canaryHost();
   const call = h.run({ MINT_FAIL_TIMES: "2" }, "pr", "create", "--title", "t");
   assert.equal(call.status, 0);
   assert.equal(tokenOf(call.stdout), "ghs_minted", "the call reached gh-real on the App's token: the retry worked");

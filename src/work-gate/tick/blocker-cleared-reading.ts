@@ -21,6 +21,7 @@ import { SESSION_PR_OUTSIDE_FLAG, sessionPrVerdictWakes } from "../outside-sessi
 import { treeWideGuardFilesIn, runTreeWideGuards, outsideGuardsOn, shadowGuardsVerdict, guardSweepJobOf, namedJobOf } from "../../lib/tree-wide-guard-org-side.ts";
 import { outsideOwnedPathsOn, ownedPathsVerdict, ownedPathsJobOf, shadowOwnedPathsVerdict } from "../../owned-path-signoff.ts";
 import { readFileSync } from "node:fs";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { newestPerName } from "../../newest-check-run.ts";
 import { decisionSwitchesPath, readSwitches } from "../../decision-provider.ts";
 import { HOME_CHECKOUT } from "../../project-config.ts";

@@ -23,6 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { testEach } from "../lib/test-each.ts";
 import { bareKeyedRegionReason, regionRefusalReason } from "../row-file/body-from-argv.ts";
 import { declaresRelease, outOfReleaseArgv, labelsOutOfRelease } from "../row-file/duplicate-title-refusal.ts";
 import { OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE } from "../project-vocabulary.ts";
@@ -552,16 +553,9 @@ test("ACCEPTANCE: the issue is added to Project 2 and its Status is moved to mat
 test("ACCEPTANCE, MUTATION TARGET: the issue number and https URL are read back and printed only after "
   + "every check confirms -- prints exactly the issue's own URL", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  let printed = "";
-  const original = process.stdout.write;
-  process.stdout.write = ((chunk: string) => { printed += chunk; return true; }) as typeof process.stdout.write;
-  try {
-    const code = createIssue(argv, happyDeps("worker-contracts", "backlog"));
-    assert.equal(code, 0);
-    assert.equal(printed, `${FILED_URL}\n`);
-  } finally {
-    process.stdout.write = original;
-  }
+  const { result: code, text: printed } = capturingWrites(process.stdout, () => createIssue(argv, happyDeps("worker-contracts", "backlog")));
+  assert.equal(code, 0);
+  assert.equal(printed, `${FILED_URL}\n`);
 });
 
 test("#883 ACCEPTANCE: a MULTI-LANE Region derives and applies BOTH lane labels through the whole "
@@ -644,25 +638,18 @@ test("#844 ACCEPTANCE: gh issue create succeeding but printing something that is
 test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distinctly (exit 2), naming "
   + "the issue number and the hand-recovery command -- it is NOT reported as a plain success", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  let stderr = "";
-  const original = process.stderr.write;
-  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
-  try {
-    const code = createIssue(argv, {
-      ...happyDeps("worker-contracts", "backlog"),
-      run: (_cmd: string, args: string[]) => {
-        if (args[1] === "item-add") throw new Error("gh: could not add item");
-        if (readsRowsByLabel(args) !== null) return connectionOf([]);
-        return args[0] === "issue" && args[1] === "list" ? "[]" : "";
-      },
-    });
-    assert.equal(code, 2);
-    assert.match(stderr, /FILED as #900/);
-    assert.match(stderr, /could NOT add it to Project/);
-    assert.match(stderr, /gh project item-add 1 --owner a11ign --url/);
-  } finally {
-    process.stderr.write = original;
-  }
+  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog"),
+    run: (_cmd: string, args: string[]) => {
+      if (args[1] === "item-add") throw new Error("gh: could not add item");
+      if (readsRowsByLabel(args) !== null) return connectionOf([]);
+      return args[0] === "issue" && args[1] === "list" ? "[]" : "";
+    },
+  }));
+  assert.equal(code, 2);
+  assert.match(stderr, /FILED as #900/);
+  assert.match(stderr, /could NOT add it to Project/);
+  assert.match(stderr, /gh project item-add 1 --owner a11ign --url/);
 });
 
 test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is refused distinctly "
@@ -678,68 +665,58 @@ test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is r
 test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is refused distinctly (exit "
   + "2), naming the issue number and the Status already set, never reported as filed cleanly", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  let stderr = "";
-  const original = process.stderr.write;
-  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
-  try {
-    const code = createIssue(argv, {
-      ...happyDeps("worker-contracts", "backlog"),
-      run: (_cmd: string, args: string[]) => {
-        if (args.includes("--add-label")) throw new Error("gh: label add failed");
-        return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(_cmd, args);
-      },
-    });
-    assert.equal(code, 2);
-    assert.match(stderr, /FILED as #900, boarded with Status "Backlog"/);
-    assert.match(stderr, /`backlog`\/`lane:any` could not be added/);
-  } finally {
-    process.stderr.write = original;
-  }
+  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog"),
+    run: (_cmd: string, args: string[]) => {
+      if (args.includes("--add-label")) throw new Error("gh: label add failed");
+      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(_cmd, args);
+    },
+  }));
+  assert.equal(code, 2);
+  assert.match(stderr, /FILED as #900, boarded with Status "Backlog"/);
+  assert.match(stderr, /`backlog`\/`lane:any` could not be added/);
 });
 
 test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK disagrees (e.g. the label "
   + "did not actually stick) -- refused distinctly (exit 2), naming what is missing, never reported as "
   + "filed cleanly on the strength of the write calls alone", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  let stderr = "";
-  const original = process.stderr.write;
-  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
-  try {
-    const code = createIssue(argv, {
-      ...happyDeps("worker-contracts", "backlog"),
-      fetchLabels: () => ({ number: 900, title: "x", labels: [] }), // the write claimed success; the read-back disagrees
-    });
-    assert.equal(code, 2);
-    assert.match(stderr, /FILED as #900/);
-    assert.match(stderr, /the `backlog` label/);
-  } finally {
-    process.stderr.write = original;
-  }
+  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog"),
+    fetchLabels: () => ({ number: 900, title: "x", labels: [] }), // the write claimed success; the read-back disagrees
+  }));
+  assert.equal(code, 2);
+  assert.match(stderr, /FILED as #900/);
+  assert.match(stderr, /the `backlog` label/);
 });
 
 // --- the REAL CLI, spawned -- proves it is guarded (cli-flags.test.ts's discovery test requires it) ---
 
-test("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", () => {
+testEach("REAL CLI: an unrecognised flag is refused by name, before gh ever runs", [
+  {
+    name: "an unrecognised flag is refused by name, before gh ever runs",
+    args: [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"],
+    status: 2,
+    statusMessage: "expected exit 2 from refuseUnknownFlags, got: ",
+    says: [/--bogus-flag/],
+    notSays: [],
+  },
+  {
+    name: "--session= itself is a KNOWN flag to the guard, never refused as unrecognised",
+    args: [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE],
+    status: 1,
+    statusMessage: "expected the section-check refusal, got: ",
+    says: [],
+    notSays: [/unknown flag/i],
+  },
+], (c) => {
   assert.throws(
-    () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "y", "--session=worker-contracts", ...RELEASE, "--bogus-flag"], { encoding: "utf8", env: CLI_ENV }),
+    () => execFileSync("node", c.args, { encoding: "utf8", env: CLI_ENV }),
     (error: unknown) => {
       const e = error as { status?: number; stderr?: string };
-      assert.equal(e.status, 2, `expected exit 2 from refuseUnknownFlags, got: ${e.stderr}`);
-      assert.match(e.stderr ?? "", /--bogus-flag/);
-      return true;
-    },
-  );
-});
-
-test("REAL CLI: --session= itself is a KNOWN flag to the guard, never refused as unrecognised", () => {
-  assert.throws(
-    () => execFileSync("node",
-      [CLI, "--title", "x", "--body", "no sections", "--session=worker-contracts", ...RELEASE], { encoding: "utf8", env: CLI_ENV }),
-    (error: unknown) => {
-      const e = error as { status?: number; stderr?: string };
-      assert.equal(e.status, 1, `expected the section-check refusal, got: ${e.stderr}`);
-      assert.doesNotMatch(e.stderr ?? "", /unknown flag/i);
+      assert.equal(e.status, c.status, `${c.statusMessage}${e.stderr}`);
+      for (const re of c.says) assert.match(e.stderr ?? "", re);
+      for (const re of c.notSays) assert.doesNotMatch(e.stderr ?? "", re);
       return true;
     },
   );
@@ -1340,37 +1317,30 @@ test("#1912: row-file never emits lane:any together with another lane: label", (
 });
 
 /** `createIssue` on `body`, with everything it wrote to stderr and the labels it ensured. */
-function fileCapturingStderr(body: string, labels: string[]) {
-  const argv = ["--title", "a real row", "--body", body, "--session=worker-contracts", ...RELEASE];
-  const ensured: string[][] = [];
-  let stderr = "";
-  const original = process.stderr.write;
-  process.stderr.write = ((chunk: string) => { stderr += chunk; return true; }) as typeof process.stderr.write;
+/** Runs `run` with `stream.write` taking what it writes into `text`, and returns what `run` returned with that text. */
+function capturingWrites<T>(stream: NodeJS.WriteStream, run: () => T): { result: T, text: string } {
+  let text = "";
+  const original = stream.write;
+  stream.write = ((chunk: string) => { text += chunk; return true; }) as typeof stream.write;
   try {
-    const code = createIssue(argv, {
-      ...happyDeps("worker-contracts", "backlog", {
-        fetchLabels: () => ({ number: 900, title: "a real row", labels }),
-      }),
-      run: afterRun(appendFiledBy(body, "worker-contracts")),
-      ensureLabels: (l: string[]) => { ensured.push(l); },
-    });
-    return { code, stderr, ensured: ensured[0]?.sort() };
+    return { result: run(), text };
   } finally {
-    process.stderr.write = original;
+    stream.write = original;
   }
 }
 
-test("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and without lane:any, and says why", { skip: SKIP_NO_PACKAGES }, () => {
-  const body = COMPLETE_BODY.replace("npx tsx --test x", "npm run fleet:status");
-  assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
-  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:orchestrator"]);
-  assert.equal(code, 0);
-  assert.deepEqual(ensured, ["backlog", "lane:orchestrator"],
-    "`happyDeps` derives lane:any from the Region; the fleet Acceptance must REPLACE it, not sit beside it");
-  assert.match(stderr, /lane:orchestrator added -- the Acceptance reaches the fleet/,
-    "#1911 was routed with nothing saying why; the filer must see the pattern that did it");
-  assert.doesNotMatch(stderr, /NOT routed/);
-});
+function fileCapturingStderr(body: string, labels: string[]) {
+  const argv = ["--title", "a real row", "--body", body, "--session=worker-contracts", ...RELEASE];
+  const ensured: string[][] = [];
+  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, {
+    ...happyDeps("worker-contracts", "backlog", {
+      fetchLabels: () => ({ number: 900, title: "a real row", labels }),
+    }),
+    run: afterRun(appendFiledBy(body, "worker-contracts")),
+    ensureLabels: (l: string[]) => { ensured.push(l); },
+  }));
+  return { code, stderr, ensured: ensured[0]?.sort() };
+}
 
 /**
  * #1988: A SENTENCE DECLARING THE WORK **OUT** ROUTED THE ROW TO THE SESSION THAT OWNS IT.
@@ -1452,17 +1422,45 @@ test("#1988: createIssue on a disclaimer-only systemd mention files lane:any and
   assert.doesNotMatch(stderr, /lane:orchestrator added/);
 });
 
-test("#1914: createIssue on a bullet-only Proxmox mention files lane:any and WARNS on stderr", { skip: SKIP_NO_PACKAGES }, () => {
-  const body = COMPLETE_BODY.replace("## Acceptance\n\n```\nnpx tsx --test x\n```\n", WRAPPED_1911);
+testEach("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator and without lane:any, and says why", [
+  {
+    name: "#1912: a fleet Acceptance replaces lane:any with lane:orchestrator",
+    from: "npx tsx --test x",
+    to: "npm run fleet:status",
+    labels: ["backlog", "lane:orchestrator"],
+    expected: ["backlog", "lane:orchestrator"],
+    expectedMessage: "`happyDeps` derives lane:any from the Region; the fleet Acceptance must REPLACE it, not sit beside it",
+    says: [{
+      pattern: /lane:orchestrator added -- the Acceptance reaches the fleet/,
+      message: "#1911 was routed with nothing saying why; the filer must see the pattern that did it",
+    }],
+    notSays: [{ pattern: /NOT routed/ }],
+  },
+  {
+    name: "#1914: createIssue on a bullet-only Proxmox mention files lane:any and WARNS on stderr",
+    from: "## Acceptance\n\n```\nnpx tsx --test x\n```\n",
+    to: WRAPPED_1911,
+    labels: ["backlog", "lane:any"],
+    expected: ["backlog", "lane:any"],
+    expectedMessage: "a bullet describing a test does not route the row",
+    says: [
+      {
+        pattern: /NOT routed to orchestrator -- a bullet in the Acceptance names something that uses the Proxmox key/,
+        message: "the one case the bullet rule can get wrong is said out loud, through the real filing path",
+      },
+      { pattern: /write that step as a numbered clause/, message: "and the refusal-shaped message is followable" },
+    ],
+    notSays: [{ pattern: /lane:orchestrator added/ }],
+  },
+], (c) => {
+  const body = COMPLETE_BODY.replace(c.from, c.to);
   assert.notEqual(body, COMPLETE_BODY, "the Acceptance replacement landed");
-  const { code, stderr, ensured } = fileCapturingStderr(body, ["backlog", "lane:any"]);
+  const { code, stderr, ensured } = fileCapturingStderr(body, c.labels);
   assert.equal(code, 0);
-  assert.deepEqual(ensured, ["backlog", "lane:any"], "a bullet describing a test does not route the row");
-  assert.match(stderr, /NOT routed to orchestrator -- a bullet in the Acceptance names something that uses the Proxmox key/,
-    "the one case the bullet rule can get wrong is said out loud, through the real filing path");
-  assert.match(stderr, /write that step as a numbered clause/, "and the refusal-shaped message is followable");
-  assert.doesNotMatch(stderr, /lane:orchestrator added/);
-});
+  assert.deepEqual(ensured, c.expected, c.expectedMessage);
+  for (const s of c.says) assert.match(stderr, s.pattern, s.message);
+  for (const s of c.notSays) assert.doesNotMatch(stderr, s.pattern);
+}, { skip: SKIP_NO_PACKAGES });
 
 // --- #1249: a Status failure must name the labels it skipped ------------------------------------
 //

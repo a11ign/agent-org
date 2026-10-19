@@ -69,11 +69,11 @@ test("a complete line that does not parse is counted, the lines around it are st
   appendFileSync(paths.queuePath, "{not json\n");
   appendFileSync(paths.queuePath, `${JSON.stringify({ event: "pull_request" })}\n`); // parses, but names no delivery
   append(paths.queuePath, line({ deliveryId: "d-3" }));
-  const read = readNewEvents(paths);
-  assert.deepEqual(ids(read.events), ["d-é", "d-3"]);
-  assert.equal(read.unreadable, 2);
-  ackThrough({ cursorPath: paths.cursorPath, through: read.through });
-  assert.deepEqual(readNewEvents(paths), { events: [], unreadable: 0, through: read.through });
+  const { events, unreadable, through } = readNewEvents(paths);
+  assert.deepEqual(ids(events), ["d-é", "d-3"]);
+  assert.equal(unreadable, 2);
+  ackThrough({ cursorPath: paths.cursorPath, through });
+  assert.deepEqual(readNewEvents(paths), { events: [], unreadable: 0, through });
 });
 
 test("a missing queue reads nothing; a queue shorter than the cursor is read from the start; a damaged cursor is read from the start", () => {

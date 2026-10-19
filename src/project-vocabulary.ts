@@ -160,10 +160,14 @@ export function homeVocabulary(): Readonly<Vocabulary> {
 
 const vocabulary = homeVocabulary();
 
-export const BACKLOG_LABEL = vocabulary.labels.backlog;
-export const NEEDS_CHAIRMAN_LABEL = vocabulary.labels.needsChairman;
-export const OUT_OF_RELEASE_LABEL = vocabulary.labels.outOfRelease;
-export const BLOCKED_LABEL = vocabulary.labels.blocked;
+export const {
+  labels: {
+    backlog: BACKLOG_LABEL,
+    needsChairman: NEEDS_CHAIRMAN_LABEL,
+    outOfRelease: OUT_OF_RELEASE_LABEL,
+    blocked: BLOCKED_LABEL,
+  },
+} = vocabulary;
 export const LANE_PREFIX = vocabulary.prefixes.lane;
 /** `lane:any`: the sentinel `laneLabelsFor` (`row-file.ts`) assigns when a Region touches no lane's
  * paths -- CODE'S OWN answer, never a value `docs/lane-ownership.json` declares, so it is a constant
@@ -174,8 +178,12 @@ export const ANSWER_PREFIX = vocabulary.prefixes.answer;
 export const ROAD_TO_VERSION_ONE_MILESTONE = vocabulary.milestones.roadToVersionOne;
 export const OUT_OF_RELEASE_MILESTONE = vocabulary.milestones.outOfRelease;
 export const LANES_FILE_PATH = vocabulary.lanesFile;
-export const ACCEPTANCE_FIELD = vocabulary.templateFields.acceptance;
-export const CLOSES_FIELD = vocabulary.templateFields.closes;
-export const FLEET_FIELD = vocabulary.templateFields.fleet;
+export const {
+  templateFields: {
+    acceptance: ACCEPTANCE_FIELD,
+    closes: CLOSES_FIELD,
+    fleet: FLEET_FIELD,
+  },
+} = vocabulary;
 export const FLEET_QUESTION = vocabulary.fleetQuestion;
 export const RESOURCES = vocabulary.resources;

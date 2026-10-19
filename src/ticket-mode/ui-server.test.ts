@@ -86,6 +86,13 @@ async function ui(list: readonly Connection[], { refusal = null, sshFails = fals
 
 const WORK: Connection = { name: "work", kind: "local" };
 const PERSONAL: Connection = { name: "personal", kind: "ssh", ssh: "agents", agentOrg: "agent-org" };
+
+/** A served script written to a fresh folder as `name`, imported the way the browser imports it. */
+async function importServed(prefix: string, name: string, script: string) {
+  const file = join(tmpDir(prefix), name);
+  writeFileSync(file, script);
+  return import(pathToFileURL(file).href);
+}
 const pairWith = (base: string, code: string) => fetch(`${base}/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) });
 
 async function pairedCookie(base: string, key: string): Promise<string> {
@@ -265,9 +272,7 @@ test("a request is paired by the board key in its header, or by a session the se
 test("the page's logic is served as JavaScript the browser can import, and it is the tested module, types stripped", async () => {
   const script = boardViewScript();
   assert.doesNotMatch(script, /:\s*readonly ViewTicket\[\]|export type /, "no type annotation reaches the browser");
-  const file = join(tmpDir("ticket-board-view-"), "board-view.mjs");
-  writeFileSync(file, script);
-  const view = await import(pathToFileURL(file).href);
+  const view = await importServed("ticket-board-view-", "board-view.mjs", script);
   const tickets = [{ key: "A-1", title: "x", status: "Backlog", statusOrder: 0, priority: 2, project: "P" }];
   assert.deepEqual(view.visibleTickets(tickets, { projects: new Set(["P"]) }).map((t: { key: string }) => t.key), ["A-1"], "the browser's copy filters as the tested one does");
 });
@@ -275,9 +280,7 @@ test("the page's logic is served as JavaScript the browser can import, and it is
 test("the label filters are served as JavaScript the browser can import, types stripped, and filter as the tested module does", async () => {
   const script = labelFiltersScript();
   assert.doesNotMatch(script, /export type |: readonly Labelled\[\]/, "no type annotation reaches the browser");
-  const file = join(tmpDir("ticket-label-filters-"), "label-filters.mjs");
-  writeFileSync(file, script);
-  const filters = await import(pathToFileURL(file).href);
+  const filters = await importServed("ticket-label-filters-", "label-filters.mjs", script);
   const tickets = [{ key: "A-1", labels: [{ name: "Fleet", group: "Goal" }] }, { key: "A-2", labels: [] }];
   assert.deepEqual(filters.withLabels(tickets, new Set([filters.labelChoice("Goal", "Fleet")])).map((t: { key: string }) => t.key), ["A-1"]);
 });
@@ -285,9 +288,7 @@ test("the label filters are served as JavaScript the browser can import, types s
 test("the assignee filter is served as JavaScript the browser can import, types stripped, and chooses as the tested module does", async () => {
   const script = assigneeFilterScript();
   assert.doesNotMatch(script, /export type |: readonly Owned\[\]/, "no type annotation reaches the browser");
-  const file = join(tmpDir("ticket-assignee-filter-"), "assignee-filter.mjs");
-  writeFileSync(file, script);
-  const filter = await import(pathToFileURL(file).href);
+  const filter = await importServed("ticket-assignee-filter-", "assignee-filter.mjs", script);
   const tickets = [{ key: "A-1", assignee: { id: "u1", name: "Dan Beck" } }, { key: "A-2", assignee: null }];
   assert.deepEqual(filter.inScope(tickets[1], filter.UNASSIGNED, null), true, "the browser's copy chooses as the tested one does");
   assert.deepEqual(filter.inScope(tickets[0], "u1", null), true);

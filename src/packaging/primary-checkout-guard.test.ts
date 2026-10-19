@@ -58,6 +58,15 @@ function markPrimary(sandbox: GitSandbox): void {
   sandbox.run(["config", "--local", "a11y.primaryCheckout", "true"]);
 }
 
+/** A marked primary whose one commit is `origin/main`: the arrange each post-checkout test starts from. Returns that commit. */
+function markedPrimaryAtMain(sandbox: GitSandbox): string {
+  sandbox.commit("init", ["--allow-empty"]);
+  markPrimary(sandbox);
+  const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
+  sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
+  return mainSha;
+}
+
 function runPreCommit(sandbox: GitSandbox, env: Record<string, string> = {}): Verdict {
   writeFileSync(join(sandbox.dir, "f.txt"), "content\n");
   sandbox.run(["add", "f.txt"]);
@@ -137,10 +146,7 @@ test("pre-commit does NOT fire in a linked worktree (.git is a file there)", () 
 
 test("post-checkout SELF-CORRECTS a branch landing in the primary, back to detached origin/main", () => {
   withGitSandbox((sandbox) => {
-    sandbox.commit("init", ["--allow-empty"]);
-    markPrimary(sandbox);
-    const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
-    sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
+    const mainSha = markedPrimaryAtMain(sandbox);
     sandbox.run(["checkout", "--detach", mainSha]);
     // The checkout git would already have performed by the time it invokes the hook:
     sandbox.run(["checkout", "-b", "stray-branch"]);
@@ -158,10 +164,7 @@ test("post-checkout SELF-CORRECTS a branch landing in the primary, back to detac
 
 test("post-checkout SELF-CORRECTS a detach at the wrong commit, back to origin/main", () => {
   withGitSandbox((sandbox) => {
-    sandbox.commit("init", ["--allow-empty"]);
-    markPrimary(sandbox);
-    const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
-    sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
+    const mainSha = markedPrimaryAtMain(sandbox);
     sandbox.commit("a second, non-origin commit", ["--allow-empty"]);
     const otherSha = sandbox.run(["rev-parse", "HEAD"]).trim();
     sandbox.run(["checkout", "--detach", otherSha]);
@@ -175,10 +178,7 @@ test("post-checkout SELF-CORRECTS a detach at the wrong commit, back to origin/m
 
 test("post-checkout is SILENT when already detached at origin/main — the correct resting state", () => {
   withGitSandbox((sandbox) => {
-    sandbox.commit("init", ["--allow-empty"]);
-    markPrimary(sandbox);
-    const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
-    sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
+    const mainSha = markedPrimaryAtMain(sandbox);
     sandbox.run(["checkout", "--detach", mainSha]);
 
     const result = runPostCheckout(sandbox, { prevHead: mainSha, newHead: mainSha, isBranchCheckout: "1" });
@@ -189,10 +189,7 @@ test("post-checkout is SILENT when already detached at origin/main — the corre
 
 test("post-checkout ALLOWS the override, and PRINTS the reason rather than correcting silently", () => {
   withGitSandbox((sandbox) => {
-    sandbox.commit("init", ["--allow-empty"]);
-    markPrimary(sandbox);
-    const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
-    sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
+    const mainSha = markedPrimaryAtMain(sandbox);
     sandbox.run(["checkout", "--detach", mainSha]);
     sandbox.run(["checkout", "-b", "deliberate-branch"]);
 
@@ -207,10 +204,7 @@ test("post-checkout ALLOWS the override, and PRINTS the reason rather than corre
 
 test("post-checkout ignores a FILE-level checkout — flag 0 never moves HEAD and is not its business", () => {
   withGitSandbox((sandbox) => {
-    sandbox.commit("init", ["--allow-empty"]);
-    markPrimary(sandbox);
-    const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
-    sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
+    const mainSha = markedPrimaryAtMain(sandbox);
     sandbox.run(["checkout", "-b", "some-branch"]); // deliberately left on a branch
     const result = runPostCheckout(sandbox, { prevHead: mainSha, newHead: mainSha, isBranchCheckout: "0" });
     assert.equal(result.status, 0, `expected silence on a file checkout, got: ${result.stderr}`);
@@ -221,10 +215,7 @@ test("post-checkout ignores a FILE-level checkout — flag 0 never moves HEAD an
 
 test("post-checkout does NOT fire in a linked worktree (.git is a file there)", () => {
   withGitSandbox((sandbox) => {
-    sandbox.commit("init", ["--allow-empty"]);
-    markPrimary(sandbox);
-    const mainSha = sandbox.run(["rev-parse", "HEAD"]).trim();
-    sandbox.run(["update-ref", "refs/remotes/origin/main", mainSha]);
+    const mainSha = markedPrimaryAtMain(sandbox);
     const wt = addWorktree(sandbox, "wt-branch");
     try {
       execFileSync("bash", [POST_CHECKOUT, mainSha, mainSha, "1"],

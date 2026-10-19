@@ -15,6 +15,7 @@
  * only it), and compare a pair with itself in `judgePair` (the control goes red, and the "differs" test with it).
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -108,30 +109,35 @@ test("fleet idle: with no last-capture time the discriminator is keyed on WHAT W
 
 // --- 2. copies-drifted ----------------------------------------------------------------------------------------------------
 
-test("copies: a pair that differs TRIPS and names BOTH paths", () => {
+test("copies: a pair that differs TRIPS, under the signal copies-drifted", () => {
   const reading = copyDriftReading({ pairs: [pairOf({ originalText: "one\nTWO\nthree\n" })] });
   assert.equal(reading.status, "tripped");
   assert.equal(reading.signal, "copies-drifted");
-  assert.match(reading.detail, /b\/lib\/orig\.mjs/, "the copy");
-  assert.match(reading.detail, /a\/orig\.mjs/, "the original");
-  assert.match(reading.detail, /1 line\(s\) only in the copy, 1 only in the original, and its header names 0/);
 });
 
-test("copies: two identical copies are clear, and a pair is only 'the same' within the lines its own header names", () => {
-  assert.equal(copyDriftReading({ pairs: [pairOf()] }).status, "clear");
-  const edited = pairOf({ copyText: `${header(", ONE LINE: an import.")}one\n2\nthree\n`, allowedLines: 1 });
-  assert.equal(copyDriftReading({ pairs: [edited] }).status, "clear", "the one named line is the allowance");
-  const twice = pairOf({ copyText: `${header(", ONE LINE: an import.")}1\n2\nthree\n`, allowedLines: 1 });
-  assert.equal(copyDriftReading({ pairs: [twice] }).status, "tripped", "two changed lines against a header naming one");
+testEach("copies: a pair that differs TRIPS and names BOTH paths", [
+  { name: "the copy", pattern: /b\/lib\/orig\.mjs/, message: "the copy" },
+  { name: "the original", pattern: /a\/orig\.mjs/, message: "the original" },
+  { name: "the line counts", pattern: /1 line\(s\) only in the copy, 1 only in the original, and its header names 0/ },
+], (c) => {
+  const reading = copyDriftReading({ pairs: [pairOf({ originalText: "one\nTWO\nthree\n" })] });
+  assert.match(reading.detail, c.pattern, c.message);
 });
 
-test("copies: ONE named line may become several (the #2884 shape), a header naming NOTHING allows no extra line, and an unnamed original line is still drift", () => {
-  const expanded = pairOf({ copyText: `${header(", ONE LINE: `two` became three lines.")}one\ntwo-a\n\ntwo-b\nthree\n`, originalText: "one\ntwo\nthree\n", allowedLines: 1 });
-  assert.equal(copyDriftReading({ pairs: [expanded] }).status, "clear", "one original line changed, named once, however many lines it became");
-  const unnamedAddition = pairOf({ copyText: `${header(": NOTHING but this header.")}one\ntwo\nthree\nfour\n`, allowedLines: 0 });
-  assert.equal(copyDriftReading({ pairs: [unnamedAddition] }).status, "tripped", "a header that names nothing above an extra line");
-  const unnamedChange = pairOf({ copyText: `${header(", ONE LINE: an import.")}ONE\nTWO\nthree\n`, allowedLines: 1 });
-  assert.equal(copyDriftReading({ pairs: [unnamedChange] }).status, "tripped", "two of the original's lines changed against a header naming one");
+testEach("copies: two identical copies are clear, and a pair is only 'the same' within the lines its own header names", [
+  { name: "two identical copies", pair: pairOf(), status: "clear" },
+  { name: "the one named line is the allowance", pair: pairOf({ copyText: `${header(", ONE LINE: an import.")}one\n2\nthree\n`, allowedLines: 1 }), status: "clear", message: "the one named line is the allowance" },
+  { name: "two changed lines against a header naming one", pair: pairOf({ copyText: `${header(", ONE LINE: an import.")}1\n2\nthree\n`, allowedLines: 1 }), status: "tripped", message: "two changed lines against a header naming one" },
+], (c) => {
+  assert.equal(copyDriftReading({ pairs: [c.pair] }).status, c.status, c.message);
+});
+
+testEach("copies: ONE named line may become several (the #2884 shape), a header naming NOTHING allows no extra line, and an unnamed original line is still drift", [
+  { name: "one original line became three", pair: pairOf({ copyText: `${header(", ONE LINE: `two` became three lines.")}one\ntwo-a\n\ntwo-b\nthree\n`, originalText: "one\ntwo\nthree\n", allowedLines: 1 }), status: "clear", message: "one original line changed, named once, however many lines it became" },
+  { name: "a header naming nothing", pair: pairOf({ copyText: `${header(": NOTHING but this header.")}one\ntwo\nthree\nfour\n`, allowedLines: 0 }), status: "tripped", message: "a header that names nothing above an extra line" },
+  { name: "an unnamed original line changed", pair: pairOf({ copyText: `${header(", ONE LINE: an import.")}ONE\nTWO\nthree\n`, allowedLines: 1 }), status: "tripped", message: "two of the original's lines changed against a header naming one" },
+], (c) => {
+  assert.equal(copyDriftReading({ pairs: [c.pair] }).status, c.status, c.message);
 });
 
 test("copies: a moved line is not an edit, a copy with no complete header has drifted, and a header that gives no count is unknown", () => {

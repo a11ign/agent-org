@@ -32,6 +32,7 @@ import {
 } from "../project-config.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const A11IGN_LITERAL = "a11ign/a11ign";
 
@@ -91,17 +92,37 @@ function withFixtureProject<T>(declaration: unknown, run: (project: { dir: strin
   }
 }
 
-test("a declaration shaped like a11ign's, read through the reader, gives exactly its values", () => {
-  withFixtureProject(A11IGN_SHAPED, ({ dir }) => {
-    const declaration = readProjectDeclaration(dir);
-    assert.equal(declaration.schema, SUPPORTED_SCHEMA);
-    assert.equal(declaration.repo, A11IGN_LITERAL);
-    assert.equal(declaration.boardOwner, "a11ign");
-    assert.equal(declaration.boardNumber, 1);
-    assert.deepEqual(declaration.code, A11IGN_SHAPED.code);
-    assert.deepEqual(declaration.tracker, A11IGN_SHAPED.tracker);
-  });
-});
+/** The two declarations read through the reader: a11ign's shape, and a second project's, which must give its own values and none of a11ign's. */
+testEach("the reader gives the declaration's values", [
+  {
+    name: "a declaration shaped like a11ign's, read through the reader, gives exactly its values",
+    declaration: A11IGN_SHAPED,
+    repo: A11IGN_LITERAL,
+    boardOwner: "a11ign",
+    boardNumber: 1,
+    check: (declaration: ReturnType<typeof readProjectDeclaration>) => {
+      assert.equal(declaration.schema, SUPPORTED_SCHEMA);
+    },
+  },
+  {
+    name: "a SECOND project resolves through the same reader to ITS values, and none of a11ign's",
+    declaration: SECOND_PROJECT,
+    repo: "acme-corp/widgets",
+    boardOwner: "acme-corp",
+    boardNumber: 7,
+    check: (declaration: ReturnType<typeof readProjectDeclaration>) => {
+      assert.ok(!JSON.stringify(declaration).includes("a11ign"), "the second project's answer must carry nothing of a11ign's");
+    },
+  },
+], (c) => withFixtureProject(c.declaration, ({ dir }) => {
+  const declaration = readProjectDeclaration(dir);
+  assert.equal(declaration.repo, c.repo);
+  assert.equal(declaration.boardOwner, c.boardOwner);
+  assert.equal(declaration.boardNumber, c.boardNumber);
+  assert.deepEqual(declaration.code, c.declaration.code);
+  assert.deepEqual(declaration.tracker, c.declaration.tracker);
+  c.check(declaration);
+}));
 
 test("the constants every importer reads are the declaration's values, read at import from the project the host file names", () => {
   withFixtureProject(SECOND_PROJECT, ({ hostPath }) => {
@@ -124,23 +145,6 @@ test("POSITIVE CONTROL: a11ign's declaration is non-empty and holds the empty ke
   }
   // The file on disk is what was read, not a constant: it carries the declaration's schema line.
   assert.ok(readFileSync(join(HOME_CHECKOUT, PROJECT_DECLARATION_PATH), "utf8").includes('"schema"'));
-});
-
-test("a SECOND project resolves through the same reader to ITS values, and none of a11ign's", () => {
-  const dir = mkdtempSync(join(tmpdir(), "project-config-"));
-  try {
-    mkdirSync(join(dir, ".agent-org"));
-    writeFileSync(join(dir, PROJECT_DECLARATION_PATH), JSON.stringify(SECOND_PROJECT));
-    const declaration = readProjectDeclaration(dir);
-    assert.equal(declaration.repo, "acme-corp/widgets");
-    assert.equal(declaration.boardOwner, "acme-corp");
-    assert.equal(declaration.boardNumber, 7);
-    assert.deepEqual(declaration.code, SECOND_PROJECT.code);
-    assert.deepEqual(declaration.tracker, SECOND_PROJECT.tracker);
-    assert.ok(!JSON.stringify(declaration).includes("a11ign"), "the second project's answer must carry nothing of a11ign's");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("POSITIVE CONTROL: the unmutated base of every refusal below is ACCEPTED", () => {

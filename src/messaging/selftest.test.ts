@@ -97,6 +97,12 @@ function harness({ roster = WORKING, port = fakePort(), recorder = createRecorde
   return { home, queuePath, clock, now, sleep, deps, port, recorder, ledgerLines: () => readLedgerLines(selftestPaths(home).ledger) };
 }
 
+/** A fresh harness built with `options`, the self-test sent through it, and the verdict once the seat has had its wait. */
+async function judgeHarness(options?: Parameters<typeof harness>[0]) {
+  const h = harness(options);
+  return judgeWaiting(await sendSelftest(h.deps), { now: h.now, sleep: h.sleep });
+}
+
 describe("done-when 1: a green path is read, from the ledger file", () => {
   test("a busy liaison: queued, the entry is taken, the acknowledgement came back -> pass, and the line holds the verdict, the ack and the handoff", async () => {
     const h = harness();
@@ -155,16 +161,14 @@ describe("done-when 2: each stage's failure is named, and the absent seat is the
   });
 
   test("the absent seat with ceo absent too is RED at queue: the message would have been lost", async () => {
-    const h = harness({ roster: [] });
-    const verdict = await judgeWaiting(await sendSelftest(h.deps), { now: h.now, sleep: h.sleep });
+    const verdict = await judgeHarness({ roster: [] });
     assert.equal(verdict.result, "red");
     assert.equal(verdict.stage, "queue");
     assert.match(verdict.detail, /neither liaison's queue nor ceo's took it/);
   });
 
   test("a full inbox: both inboxes full is RED at queue, and the full liaison inbox alone is only degraded", async () => {
-    const both = harness({ prefill: { liaison: DEEP, ceo: DEEP } });
-    const red = await judgeWaiting(await sendSelftest(both.deps), { now: both.now, sleep: both.sleep });
+    const red = await judgeHarness({ prefill: { liaison: DEEP, ceo: DEEP } });
     assert.equal(red.result, "red");
     assert.equal(red.stage, "queue");
     assert.match(red.detail, /already has 10 order/);
@@ -186,16 +190,14 @@ describe("done-when 2: each stage's failure is named, and the absent seat is the
   });
 
   test("a queue that says it held the message and holds nothing is RED at queue", async () => {
-    const h = harness({ port: fakePort({ lies: true }) });
-    const verdict = await judgeWaiting(await sendSelftest(h.deps), { now: h.now, sleep: h.sleep });
+    const verdict = await judgeHarness({ port: fakePort({ lies: true }) });
     assert.equal(verdict.result, "red");
     assert.equal(verdict.stage, "queue");
     assert.match(verdict.detail, /its entry is not in the queue file/);
   });
 
   test("an entry nobody takes within the bound is RED at seat, and the wait was the bound and no longer", async () => {
-    const h = harness();
-    const verdict = await judgeWaiting(await sendSelftest(h.deps), { now: h.now, sleep: h.sleep });
+    const verdict = await judgeHarness();
     assert.equal(verdict.result, "red");
     assert.equal(verdict.stage, "seat");
     assert.match(verdict.detail, /was still in liaison's queue after 600 s/);

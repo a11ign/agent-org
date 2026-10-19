@@ -76,13 +76,19 @@ function listOver(states: Record<string, string>, options?: { holdsMessage?: boo
   return { ledger, fixture, watches: createWatchList({ ledger, readers: fixture.readers, now: clock }) };
 }
 
+/** @param {Record<string, string>} states @param {{ kind: string, id: string, ref: string }} entry a list over `states`, asked to add `entry`: the list, its ledger and what `add` said */
+async function addOver(states: Record<string, string>, entry: { kind: string; id: string; ref: string; }) {
+  const { ledger, watches } = listOver(states);
+  const added = await watches.add(entry);
+  return { ledger, watches, added };
+}
+
 /** @param {ReturnType<typeof freshLedger>} ledger @returns {number} how many `watch` lines the ledger holds */
 const watchLines = (ledger: ReturnType<typeof freshLedger>): number => ledger.read().filter((line) => line.direction === "watch").length;
 
 describe("add records a watch once, and list shows it", () => {
   test("POSITIVE CONTROL: a pull request is added with a message the ledger holds, and is listed with the message that asked", async () => {
-    const { ledger, watches } = listOver({ "pr:3333": "open" });
-    const added = await watches.add({ kind: "pr", id: "3333", ref: MESSAGE });
+    const { ledger, watches, added } = await addOver({ "pr:3333": "open" }, { kind: "pr", id: "3333", ref: MESSAGE });
     assert.equal(added.outcome, "done");
     assert.match(added.say, /watching PR #3333 \(now open\)/);
     assert.deepEqual(watches.list().map(({ thing, label, messageRef }) => ({ thing, label, messageRef })), [{ thing: "pr:3333", label: "PR #3333", messageRef: MESSAGE }]);
@@ -120,8 +126,7 @@ describe("(4) a message ref the ledger does not hold as an accepted inbound line
 
 describe("(5) a thing the readers cannot read is refused at add, not at the first tick", () => {
   test("a pull request the reader has no answer for writes nothing and says why", async () => {
-    const { ledger, watches } = listOver({ "pr:3333": "open" });
-    const refused = await watches.add({ kind: "pr", id: "4040", ref: MESSAGE });
+    const { ledger, watches, added: refused } = await addOver({ "pr:3333": "open" }, { kind: "pr", id: "4040", ref: MESSAGE });
     assert.equal(refused.outcome, "refused");
     assert.match(refused.say, /PR #4040 cannot be read, so it was not watched: .*404/);
     assert.equal(watchLines(ledger), 0);

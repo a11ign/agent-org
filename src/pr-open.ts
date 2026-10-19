@@ -60,6 +60,7 @@ import { extractAcceptanceSection, runAcceptanceCommand } from "./acceptance-com
 import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsTextOf, writeAcceptanceFile } from "./acceptance-file.ts";
 import { declaredRegionFiles, splitRegionEntry } from "./region-paths.ts";
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "./pr-open-region.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 import { statedRepository } from "./row-file/body-from-argv.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";

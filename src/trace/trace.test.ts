@@ -14,6 +14,7 @@ import { aggregate, weekStart } from "./aggregate.ts";
 import { ACTION, wakeCache } from "./wake-cache.ts";
 import { budgetedGh, budgetLine, githubEventsOfMerged, githubEventsOfNamed, githubSummary, httpStatusOf, ingestDeferrals, ingestTranscripts, isAggregate, isMap, isWakeCache, listMergedPulls, listOpenRows, meteredGhApi, NOT_HELD, parseAggregateArgs, parseArgs, parseMapArgs, parseWakeCacheArgs, parseWeek, readListings, render, resolveSubject, splitHttp, waterfallsOf, writeSwimlanes } from "./trace.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { testEach } from "../lib/test-each.ts";
 import { readValidators, saveValidators } from "./publish.ts";
 
 const ROW_REPO = "a11ign/a11ign";
@@ -298,9 +299,9 @@ test("REPORT: GitHub events print between the turns, the footer says how many ca
   assert.match(text, /10:35:00 +github +REVIEW +APPROVED by a11ign-bot at head 0fde473/);
   assert.match(text, /QUEUED +by a11ign-bot/);
   assert.match(text, /DEQUEUED \(unmerged\)/);
+  assert.equal(text.indexOf("REVIEW") > text.indexOf("WAKE"), true, "the review falls between the turns, in time order");
   assert.match(text, /GitHub: 6 REST calls \(gh api\); 3 events read, 3 new to the store/);
   assert.match(text, /3 from GitHub/);
-  assert.equal(text.indexOf("REVIEW") > text.indexOf("WAKE"), true, "the review falls between the turns, in time order");
   assert.doesNotMatch(NOT_HELD, /GitHub/);
   assert.ok(NOT_HELD.includes("deferral spans"));
   assert.doesNotMatch(NOT_HELD, /gh call ledger/, "#3516: the ledger is a source now, and a footer that still said it was missing would deny the report above it");
@@ -588,13 +589,17 @@ test("REPRICED: a changed price in PRICES moves a turn stored at the old one", (
   assert.equal(repriceEvents([stored])[0].costUsd, stored.costUsd);
 });
 
-test("REPRICED: the report prints a turn stored null at its price (per line and per actor), and the Codex turn beside it is still $? and unpriced", () => {
+const REPRICED_REPORT = [
+  { name: "the line shows dollars", pattern: /turn\s+\?\s+\$0\.0070\s.*claude-sonnet-5\n/, message: "the line shows dollars" },
+  { name: "the Codex line stays unpriced", pattern: /turn\s+\?\s+\$\?\s.*gpt-5\.6-terra\n/, message: "the Codex line stays unpriced" },
+  { name: "the actor's total is priced", pattern: /\n {2}reviewer-9100\s+1 turns\s+\$0\.0070 over 1 priced\s+out 500\n/, message: undefined },
+  { name: "the Codex actor is unpriced", pattern: /\n {2}reviewer-9100 \(codex\)\s+1 turns\s+\$0\.0000 over 0 priced\s+out 500\n/, message: undefined },
+];
+
+testEach("REPRICED: the report prints a turn stored null at its price (per line and per actor), and the Codex turn beside it is still $? and unpriced", REPRICED_REPORT, (c) => {
   const events = [storedTurn("turn:late", "claude-sonnet-5", null), storedTurn("codex-turn:r1", "gpt-5.6-terra", null, { harness: "codex", at: at("2026-10-04T11:05:00Z") })];
   const text = render({ number: 9100, rows: [], prs: [9100], events, held: events });
-  assert.match(text, /turn\s+\?\s+\$0\.0070\s.*claude-sonnet-5\n/, "the line shows dollars");
-  assert.match(text, /turn\s+\?\s+\$\?\s.*gpt-5\.6-terra\n/, "the Codex line stays unpriced");
-  assert.match(text, /\n {2}reviewer-9100\s+1 turns\s+\$0\.0070 over 1 priced\s+out 500\n/);
-  assert.match(text, /\n {2}reviewer-9100 \(codex\)\s+1 turns\s+\$0\.0000 over 0 priced\s+out 500\n/);
+  assert.match(text, c.pattern, c.message);
 });
 
 test("REPRICED: the waterfall's dollars are at PRICES too (a turn stored null of a model priced since is in them, a Codex turn is counted unpriced)", () => {

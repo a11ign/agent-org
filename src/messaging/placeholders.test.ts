@@ -54,6 +54,13 @@ function fixtureReaders(overrides: Partial<import("./placeholders.ts").Readers>)
   };
 }
 
+/** Sends `text` through a reply over `readers`: what the reply answered, and what the provider received. @param {import("./placeholders.ts").Readers} readers */
+async function sendOver(readers: import("./placeholders.ts").Readers, text: string) {
+  const { reply, provider } = replyOver(readers);
+  const result = /** @type {any} */ (await reply.send(text));
+  return { result, provider };
+}
+
 /** @param {import("./placeholders.ts").Readers} readers */
 function replyOver(readers: import("./placeholders.ts").Readers) {
   const provider = createFakeProvider();
@@ -198,8 +205,7 @@ describe("(4) through the REAL readers: the worker's NAME and never its address,
     const readers = createGhReaders({
       gh: async () => "{}", systemctl: async () => "", repo: "a11ign/a11ign", fleet: stale, gateRecordPath: join(freshDirectory(), COMPLETION_FILE), now: () => NOW + 3 * 60 * MINUTE,
     });
-    const { reply, provider } = replyOver(readers);
-    const result = /** @type {any} */ (await reply.send("{{fleet.workers-down}} {{gate.last-tick.age}}"));
+    const { result, provider } = await sendOver(readers, "{{fleet.workers-down}} {{gate.last-tick.age}}");
     assert.equal(result.outcome, "refused");
     assert.match(result.problems[0].reason, /fleet-watch last wrote its state \d+ minutes ago/);
     assert.match(result.problems[1].reason, /no tick is known to have completed/);
@@ -208,8 +214,7 @@ describe("(4) through the REAL readers: the worker's NAME and never its address,
 
   test("a repository with no release refuses with what GitHub said (a 404 is not 'no release')", async () => {
     const readers = createGhReaders({ gh: async () => { throw new Error("HTTP 404: Not Found"); }, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW });
-    const { reply, provider } = replyOver(readers);
-    const result = /** @type {any} */ (await reply.send("{{release:a11ign/agent-org.latest}}"));
+    const { result, provider } = await sendOver(readers, "{{release:a11ign/agent-org.latest}}");
     assert.equal(result.outcome, "refused");
     assert.match(result.problems[0].reason, /404/);
     assert.deepEqual(provider.sent, []);
@@ -337,11 +342,11 @@ describe("(7) how many rows are open is a placeholder, so the figure is read and
 
   test("a page that is not a list refuses with that, and a failed read refuses and sends nothing", async () => {
     for (const gh of [async () => JSON.stringify({ message: "Bad credentials" }), async () => { throw new Error("HTTP 502"); }]) {
-      const { reply, provider } = replyOver(createGhReaders({ gh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
-      const refused = /** @type {any} */ (await reply.send("{{open.count}} rows are open"));
+      const { result: refused, provider } = await sendOver(createGhReaders({ gh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }), "{{open.count}} rows are open");
+      const [problem] = refused.problems;
       assert.equal(refused.outcome, "refused");
-      assert.equal(refused.problems[0].placeholder, "{{open.count}}");
-      assert.match(refused.problems[0].reason, /not a list|HTTP 502/);
+      assert.equal(problem.placeholder, "{{open.count}}");
+      assert.match(problem.reason, /not a list|HTTP 502/);
       assert.deepEqual(provider.sent, []);
     }
   });

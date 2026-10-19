@@ -73,13 +73,20 @@ test("the SAME PR with the edge closed emits it", () => {
   });
 });
 
+/** Three ticks: a wait recorded at HEAD_A, then the pushed HEAD_B under the same open edge, then HEAD_B again. */
+function pushedHeadTicks(dir: string) {
+  const waited = ordersOf(dir, [labPr(49, HEAD_A, 4278)], [OPEN_EDGE]);
+  const [order] = ordersOf(dir, [labPr(49, HEAD_B, 4278)], [OPEN_EDGE]);
+  return { waited, order, again: ordersOf(dir, [labPr(49, HEAD_B, 4278)], [OPEN_EDGE]) };
+}
+
 test("the SAME PR with an open edge and a NEW head sha emits it", () => {
   inTemp((dir) => {
-    assert.deepEqual(ordersOf(dir, [labPr(49, HEAD_A, 4278)], [OPEN_EDGE]), [], "the wait is recorded at HEAD_A");
-    const [order] = ordersOf(dir, [labPr(49, HEAD_B, 4278)], [OPEN_EDGE]);
+    const { waited, order, again } = pushedHeadTicks(dir);
+    assert.deepEqual(waited, [], "the wait is recorded at HEAD_A");
     assert.ok(order, "a push is new work, and a real defect on it still reaches its owner");
     assert.equal(order.causeKey, "worker-4278/pr-checks-failing/pr-lab#49/b6c74fb0");
-    assert.ok(ordersOf(dir, [labPr(49, HEAD_B, 4278)], [OPEN_EDGE]).length === 1, "and it stays emitted at that head: the exemption does not move to the pushed head");
+    assert.ok(again.length === 1, "and it stays emitted at that head: the exemption does not move to the pushed head");
   });
 });
 

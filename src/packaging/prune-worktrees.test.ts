@@ -36,6 +36,7 @@ import {
   claimRefusal, nestedWorktrees, recordRemoval, removalLogPath, REMOVAL_LOG_ENV, rowCandidates, rowsClosed, worktreeBranch,
 } from "../worktree-removal.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
+import { testEach } from "../lib/test-each.ts";
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host: a fixture branch
 // named `agent/delivered-1948` would otherwise read the real #1948 over `gh`, and every removal would land in the real log.
@@ -57,6 +58,51 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 // LIVE window is exercised by its own dedicated tests below, against real elapsed wall-clock time.
 const LONG_AFTER = () => Date.now() + ACTIVITY_WINDOW_MS + 60_000;
 
+/** A disposable repository on `main` with a committer set. Its root is REALPATH'd: on macOS `/var` is a symlink, and `git worktree list` reports resolved paths. */
+function initRepo(prefix: string): string {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  git(root, "init", "--quiet", "-b", "main");
+  git(root, "config", "user.email", "t@example.invalid");
+  git(root, "config", "user.name", "Fixture");
+  return root;
+}
+
+/** Writes `file` in `dir` with `content`, and commits it with `message`. */
+function commitFile(dir: string, spec: { file: string, content: string, message: string }): void {
+  writeFileSync(join(dir, spec.file), spec.content);
+  git(dir, "add", spec.file);
+  git(dir, "commit", "-q", "-m", spec.message);
+}
+
+const headOf = (dir: string): string => git(dir, "rev-parse", "HEAD").trim();
+
+/** A primary whose one commit, `file` with `content`, is `origin/main`. Returns its root. */
+function primaryAtOrigin(prefix: string, spec: { file: string, content: string, message: string }): string {
+  const root = initRepo(prefix);
+  commitFile(root, spec);
+  git(root, "update-ref", "refs/remotes/origin/main", headOf(root));
+  return root;
+}
+
+/** A primary with one commit and NO `origin/main`, and a linked worktree `wt-unknown` cut at that commit. */
+function unknownStatusFixture(prefix: string): { root: string, wt: string } {
+  const root = initRepo(prefix);
+  commitFile(root, { file: "base.txt", content: "base\n", message: "base" });
+  const baseSha = headOf(root);
+  const wt = join(root, "wt-unknown");
+  // deliberately NO refs/remotes/origin/main -- merge-base --is-ancestor cannot even ask the question,
+  // which is the real-world shape of a missing/renamed remote-tracking ref, not a contrived error.
+  git(root, "worktree", "add", "--quiet", "-b", "agent/unknown-status", wt, baseSha);
+  return { root, wt };
+}
+
+/** Adds a linked worktree of `root` at `spec.dir` on a new `spec.branch` from `spec.base`, commits one file in it, and returns that commit's SHA. */
+function committedWorktree(root: string, spec: { dir: string, branch: string, base: string, file: string, content: string, message: string }): string {
+  git(root, "worktree", "add", "--quiet", "-b", spec.branch, spec.dir, spec.base);
+  commitFile(spec.dir, spec);
+  return headOf(spec.dir);
+}
+
 /**
  * A disposable "primary" repo with three linked worktrees, each demonstrating one shape:
  *   - agent/merged-clean      -- fully merged into origin/main, no uncommitted changes: REMOVE
@@ -73,22 +119,13 @@ function buildFixtureRepo() {
   // REALPATH'd: on macOS /var is a symlink to /private/var, and `git worktree list` reports paths
   // resolved -- an unresolved root here makes every path comparison in this file fail on the string,
   // never on the logic (see CLAUDE.md's own recorded instance of this exact class).
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-fixture-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
-  writeFileSync(join(root, "base.txt"), "base\n");
-  git(root, "add", "base.txt");
-  git(root, "commit", "-q", "-m", "base");
-  const baseSha = git(root, "rev-parse", "HEAD").trim();
+  const root = initRepo("a11y-prune-fixture-");
+  commitFile(root, { file: "base.txt", content: "base\n", message: "base" });
+  const baseSha = headOf(root);
   git(root, "update-ref", "refs/remotes/origin/main", baseSha);
 
   const merged = join(root, "wt-merged-clean");
-  git(root, "worktree", "add", "--quiet", "-b", "agent/merged-clean", merged, baseSha);
-  writeFileSync(join(merged, "change.txt"), "done\n");
-  git(merged, "add", "change.txt");
-  git(merged, "commit", "-q", "-m", "finished work");
-  const mergedSha = git(merged, "rev-parse", "HEAD").trim();
+  const mergedSha = committedWorktree(root, { dir: merged, branch: "agent/merged-clean", base: baseSha, file: "change.txt", content: "done\n", message: "finished work" });
   git(root, "update-ref", "refs/remotes/origin/main", mergedSha); // "landed upstream"
   // root's OWN checked-out `main` must advance too, or a later cherry-pick done IN root (below) applies
   // on top of the stale `baseSha` instead of `mergedSha` and silently forks origin/main away from it.
@@ -99,10 +136,7 @@ function buildFixtureRepo() {
   writeFileSync(join(dirtyUncommitted, "wip.txt"), "not committed\n"); // never `git add`ed
 
   const dirtyUnmerged = join(root, "wt-dirty-unmerged");
-  git(root, "worktree", "add", "--quiet", "-b", "agent/dirty-unmerged", dirtyUnmerged, mergedSha);
-  writeFileSync(join(dirtyUnmerged, "unpushed.txt"), "real work\n");
-  git(dirtyUnmerged, "add", "unpushed.txt");
-  git(dirtyUnmerged, "commit", "-q", "-m", "not yet merged"); // origin/main NOT advanced to include this
+  committedWorktree(root, { dir: dirtyUnmerged, branch: "agent/dirty-unmerged", base: mergedSha, file: "unpushed.txt", content: "real work\n", message: "not yet merged" }); // origin/main NOT advanced to include this
 
   const standing = join(root, "wt-standing");
   git(root, "worktree", "add", "--quiet", "-b", "dispatcher/merge", standing, mergedSha);
@@ -117,17 +151,11 @@ function buildFixtureRepo() {
   // timestamp and produces a byte-identical commit (same SHA), which is a real fast-forward, not the
   // "same content, different history" shape this fixture exists to demonstrate.
   const cherryPicked = join(root, "wt-cherry-picked");
-  git(root, "worktree", "add", "--quiet", "-b", "agent/cherry-picked", cherryPicked, mergedSha);
-  writeFileSync(join(cherryPicked, "cherry.txt"), "picked content\n");
-  git(cherryPicked, "add", "cherry.txt");
-  git(cherryPicked, "commit", "-q", "-m", "the change that gets cherry-picked");
-  const cherrySourceSha = git(cherryPicked, "rev-parse", "HEAD").trim();
+  const cherrySourceSha = committedWorktree(root, { dir: cherryPicked, branch: "agent/cherry-picked", base: mergedSha, file: "cherry.txt", content: "picked content\n", message: "the change that gets cherry-picked" });
 
-  writeFileSync(join(root, "unrelated.txt"), "unrelated upstream work\n");
-  git(root, "add", "unrelated.txt");
-  git(root, "commit", "-q", "-m", "unrelated upstream commit, so the cherry-pick below has a different parent");
+  commitFile(root, { file: "unrelated.txt", content: "unrelated upstream work\n", message: "unrelated upstream commit, so the cherry-pick below has a different parent" });
   git(root, "cherry-pick", "--quiet", cherrySourceSha); // applied onto root's own `main`, a NEW commit
-  const cherryLandedSha = git(root, "rev-parse", "HEAD").trim();
+  const cherryLandedSha = headOf(root);
   assert.notEqual(cherryLandedSha, cherrySourceSha,
     "the fixture itself is broken if the cherry-pick reused the source SHA -- it must be a real, "
     + "different commit with equivalent content, or this fixture proves nothing");
@@ -163,12 +191,15 @@ test("#671/#696: `classify` CANNOT BE TOLD a branch name -- the strongest form t
   // assertion that a value is ignored can be defeated by adding the value back; a type cannot.
   //
   // What remains testable is that state alone decides, which is the whole predicate:
-  assert.equal(classify({ ...C }), "remove");
-  assert.equal(classify({ ...C, merge: "not-merged" }), "dirty");
-  assert.equal(classify({ ...C, workingTreeClean: false }), "dirty");
-  assert.equal(classify({ ...C, merge: "unknown" }), "inconclusive");
-  assert.equal(classify({ ...C, recentlyActive: true }), "active");
-  assert.equal(classify({ ...C, merge: "not-merged", contentMerged: true }), "cherry-picked");
+  const verdicts: [Parameters<typeof classify>[0], string][] = [
+    [{ ...C }, "remove"],
+    [{ ...C, merge: "not-merged" }, "dirty"],
+    [{ ...C, workingTreeClean: false }, "dirty"],
+    [{ ...C, merge: "unknown" }, "inconclusive"],
+    [{ ...C, recentlyActive: true }, "active"],
+    [{ ...C, merge: "not-merged", contentMerged: true }, "cherry-picked"],
+  ];
+  for (const [input, verdict] of verdicts) assert.equal(classify(input), verdict);
 });
 
 test("#671 LIVE: a merged, clean ROLE tree is removed -- against real branches, where the name still exists", () => {
@@ -269,18 +300,7 @@ test("isContentMerged: TRUE for a cherry-picked branch, FALSE for a genuinely un
 });
 
 test("mergeStatus: no origin/main to compare against is UNKNOWN, never guessed as merged or not-merged", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-inconclusive-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
-  writeFileSync(join(root, "base.txt"), "base\n");
-  git(root, "add", "base.txt");
-  git(root, "commit", "-q", "-m", "base");
-  const baseSha = git(root, "rev-parse", "HEAD").trim();
-  const wt = join(root, "wt-unknown");
-  // deliberately NO refs/remotes/origin/main -- merge-base --is-ancestor cannot even ask the question,
-  // which is the real-world shape of a missing/renamed remote-tracking ref, not a contrived error.
-  git(root, "worktree", "add", "--quiet", "-b", "agent/unknown-status", wt, baseSha);
+  const { root, wt } = unknownStatusFixture("a11y-prune-inconclusive-");
   try {
     assert.equal(mergeStatus(root, "agent/unknown-status"), "unknown");
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -346,16 +366,7 @@ test("#696 detachedMergeStatus: merged, not-merged and unknown are three answers
 });
 
 test("pruneWorktrees reports an UNKNOWN merge status as inconclusive, never as dirty or removed", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-inconclusive-e2e-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
-  writeFileSync(join(root, "base.txt"), "base\n");
-  git(root, "add", "base.txt");
-  git(root, "commit", "-q", "-m", "base");
-  const baseSha = git(root, "rev-parse", "HEAD").trim();
-  const wt = join(root, "wt-unknown");
-  git(root, "worktree", "add", "--quiet", "-b", "agent/unknown-status", wt, baseSha); // no origin/main at all
+  const { root, wt } = unknownStatusFixture("a11y-prune-inconclusive-e2e-");
   try {
     const report = pruneWorktrees(root, { remove: () => { assert.fail("must never attempt to remove an inconclusive worktree"); } });
     assert.deepEqual(report.inconclusive.map((i) => i.path), [wt]);
@@ -458,13 +469,8 @@ test("after the fix, the SAME sequence removes it once the activity window has g
 });
 
 test("CONTROL: a totally empty repo (no linked worktrees) reports nothing to remove or name", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-empty-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
-  writeFileSync(join(root, "x.txt"), "x\n");
-  git(root, "add", "x.txt");
-  git(root, "commit", "-q", "-m", "x");
+  const root = initRepo("a11y-prune-empty-");
+  commitFile(root, { file: "x.txt", content: "x\n", message: "x" });
   try {
     const report = pruneWorktrees(root);
     assert.deepEqual(report.removed, []);
@@ -549,14 +555,7 @@ test("#669 MUTATION DIRECTION: `--apply` reaches dryRun -- the heading is `remov
  *   - `agent/noise`        — an UNTRACKED file only: the 31-of-58 case that must NOT be listed
  */
 function buildStrandedFixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-stranded-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
-  writeFileSync(join(root, "base.txt"), "base\n");
-  git(root, "add", "base.txt");
-  git(root, "commit", "-q", "-m", "base");
-  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+  const root = primaryAtOrigin("a11y-stranded-", { file: "base.txt", content: "base\n", message: "base" });
 
   const live = join(root, "wt-live");
   git(root, "worktree", "add", "--quiet", "-b", "agent/live", live, "main");
@@ -564,9 +563,7 @@ function buildStrandedFixture() {
 
   const retired = join(root, "wt-retired");
   git(root, "worktree", "add", "--quiet", "-b", "dispatcher/retired", retired, "main");
-  writeFileSync(join(retired, "landed.txt"), "committed\n");
-  git(retired, "add", "landed.txt");
-  git(retired, "commit", "-q", "-m", "a commit origin/main does not have");
+  commitFile(retired, { file: "landed.txt", content: "committed\n", message: "a commit origin/main does not have" });
   writeFileSync(join(retired, "base.txt"), "base\nand an uncommitted one\n");
 
   const noise = join(root, "wt-noise");
@@ -726,59 +723,48 @@ function plantRecord(checkout: string, file: string) {
 
 /** A primary that ignores `/runs`, ONE merged and clean linked worktree, and `files` planted in its `runs/`. */
 function buildRecordsFixture(files: string[]) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-records-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
-  writeFileSync(join(root, ".gitignore"), "/runs\n");
-  git(root, "add", ".gitignore");
-  git(root, "commit", "-q", "-m", "base");
-  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+  const root = primaryAtOrigin("a11y-prune-records-", { file: ".gitignore", content: "/runs\n", message: "base" });
   const worktree = join(root, "wt-records");
   git(root, "worktree", "add", "--quiet", "-b", "agent/records", worktree);
   for (const file of files) plantRecord(worktree, file);
   return { root, worktree };
 }
 
-test("#1373: three runs/ records ABSENT from the primary refuse the removal, naming 3 -- and all three survive", () => {
+// Present in the primary AND identical, so nothing but the reading can refuse: the operator's chain whose
+// two failed `sha256sum` reads compared "" = "" and authorised the delete.
+testEach("#1373: three runs/ records ABSENT from the primary refuse the removal, naming 3 -- and all three survive", [
+  {
+    name: "ABSENT from the primary",
+    primary: [],
+    removedMessage: "a worktree holding the only copies of three records must not be removed",
+    reason: /holds 3 of 3 runs\/ file\(s\)/,
+  },
+  {
+    name: "THE INCIDENT'S SHAPE: an EMPTY reading on both sides never matches -- refused, never removed",
+    primary: RECORDS,
+    hash: () => "",
+    removedMessage: "two EMPTY readings compared equal must never authorise a removal",
+    reason: /holds 3 of 3 runs\/ file\(s\) not present, with a matching NON-EMPTY sha256/,
+  },
+], (c) => {
   const { root, worktree } = buildRecordsFixture(RECORDS);
   try {
-    const report = pruneWorktrees(root, { now: LONG_AFTER() });
-    assert.deepEqual(report.removed, [], "a worktree holding the only copies of three records must not be removed");
+    for (const file of c.primary) plantRecord(root, file);
+    const report = pruneWorktrees(root, { now: LONG_AFTER(), hash: c.hash });
+    assert.deepEqual(report.removed, [], c.removedMessage);
     assert.deepEqual(report.records.map((r) => r.path), [worktree]);
-    assert.match(report.records[0].reason, /holds 3 of 3 runs\/ file\(s\)/);
+    assert.match(report.records[0].reason, c.reason);
     for (const file of RECORDS) assert.ok(existsSync(join(worktree, file)), `${file} must still be on disk`);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#1373: the same three records PRESENT in the primary with matching sha256 -- removed", () => {
-  const { root, worktree } = buildRecordsFixture(RECORDS);
+testEach("#1373: the same three records PRESENT in the primary with matching sha256 -- removed", [
+  { name: "the same three records PRESENT in the primary with matching sha256", files: RECORDS, primary: RECORDS },
+  { name: "CONTROL: a merged, clean worktree with NO runs/ records is removed as it always was", files: [], primary: [] },
+], (c) => {
+  const { root, worktree } = buildRecordsFixture(c.files);
   try {
-    for (const file of RECORDS) plantRecord(root, file);
-    const report = pruneWorktrees(root, { now: LONG_AFTER() });
-    assert.deepEqual(report.records, []);
-    assert.deepEqual(report.removed.map((r) => r.path), [worktree]);
-    assert.equal(existsSync(worktree), false);
-  } finally { rmSync(root, { recursive: true, force: true }); }
-});
-
-test("#1373 THE INCIDENT'S SHAPE: an EMPTY reading on both sides never matches -- refused, never removed", () => {
-  // Present in the primary AND identical, so nothing but the reading can refuse: the operator's chain whose
-  // two failed `sha256sum` reads compared "" = "" and authorised the delete.
-  const { root, worktree } = buildRecordsFixture(RECORDS);
-  try {
-    for (const file of RECORDS) plantRecord(root, file);
-    const report = pruneWorktrees(root, { now: LONG_AFTER(), hash: () => "" });
-    assert.deepEqual(report.removed, [], "two EMPTY readings compared equal must never authorise a removal");
-    assert.deepEqual(report.records.map((r) => r.path), [worktree]);
-    assert.match(report.records[0].reason, /holds 3 of 3 runs\/ file\(s\) not present, with a matching NON-EMPTY sha256/);
-    for (const file of RECORDS) assert.ok(existsSync(join(worktree, file)), `${file} must still be on disk`);
-  } finally { rmSync(root, { recursive: true, force: true }); }
-});
-
-test("#1373 CONTROL: a merged, clean worktree with NO runs/ records is removed as it always was", () => {
-  const { root, worktree } = buildRecordsFixture([]);
-  try {
+    for (const file of c.primary) plantRecord(root, file);
     const report = pruneWorktrees(root, { now: LONG_AFTER() });
     assert.deepEqual(report.records, []);
     assert.deepEqual(report.removed.map((r) => r.path), [worktree]);
@@ -845,17 +831,10 @@ test("#1373: two of three records verified is NOT enough -- the verified count m
  *   - `unstamped` -- the held shape with NO stamp: REMOVE, which is the named gap rather than an oversight
  */
 function buildHeldFixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-held-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
   // The real `.gitignore`'s own entries, for the reason each is there: `.a11y-owner` (#1128) must be
   // invisible to `git status` or every stamped tree reads DIRTY and never reaches this gate at all, and
   // `node_modules` is the one untracked entry the row measured on all 82 trees.
-  writeFileSync(join(root, ".gitignore"), "node_modules\n.a11y-owner\n");
-  git(root, "add", ".gitignore");
-  git(root, "commit", "-q", "-m", "base");
-  git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD").trim());
+  const root = primaryAtOrigin("a11y-prune-held-", { file: ".gitignore", content: "node_modules\n.a11y-owner\n", message: "base" });
 
   // DELIVERED: commit on the branch, then merge it with --no-ff, exactly as every PR here lands. The
   // branch tip becomes the merge's SECOND parent -- reachable from origin/main, never on its own line.
@@ -1035,10 +1014,7 @@ test("#2149: a stamped tree whose branch state cannot be read is REFUSED, never 
 // a brand-new file nobody added.
 
 function buildPinnedIgnoreFixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "a11y-prune-pinned-ignore-")));
-  git(root, "init", "--quiet", "-b", "main");
-  git(root, "config", "user.email", "t@example.invalid");
-  git(root, "config", "user.name", "Fixture");
+  const root = initRepo("a11y-prune-pinned-ignore-");
   writeFileSync(join(root, "base.txt"), "base\n");
   // THE OLD RULE: a directory only. Every worktree below is cut at this commit and reads this line.
   writeFileSync(join(root, ".gitignore"), "node_modules/\n");

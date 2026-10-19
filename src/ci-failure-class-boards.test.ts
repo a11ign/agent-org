@@ -58,6 +58,14 @@ function createdBody(writes: string[][]): string {
   return create[create.indexOf("--body") + 1];
 }
 
+/** A filing whose board step is refused: the fake `gh`, the lines it logged, and what `recordIncident` reported. */
+function refusedFiling(refuse: (args: string[]) => boolean) {
+  const first = fakeGh({ refuse });
+  const log: string[] = [];
+  const reported = recordIncident(group, { run: first.run, log: (line) => log.push(line) });
+  return { first, log, reported };
+}
+
 test("a new incident is boarded when it is filed: the card, then Backlog, then the labels last", () => {
   const { run, writes } = fakeGh();
   assert.equal(recordIncident(group, { run, log: silent }), NEW_ROW, "the row is reported as filed");
@@ -71,9 +79,8 @@ test("a new incident is boarded when it is filed: the card, then Backlog, then t
 });
 
 test("a refused board step is not reported as filed, and the next tick boards the row it already filed", () => {
-  const first = fakeGh({ refuse: isItemAdd });
-  const log: string[] = [];
-  assert.equal(recordIncident(group, { run: first.run, log: (line) => log.push(line) }), null, "not reported as filed while the card is missing");
+  const { first, log, reported } = refusedFiling(isItemAdd);
+  assert.equal(reported, null, "not reported as filed while the card is missing");
   assert.match(log.join(""), /the next tick retries/);
   const open: FakeRow = { number: NEW_ROW, body: createdBody(first.writes), labels: ["ci-shared-failure"] };
   const second = fakeGh({ issues: [open] });
@@ -83,9 +90,8 @@ test("a refused board step is not reported as filed, and the next tick boards th
 });
 
 test("a refused Status write is not reported as filed, and the retry does not add the card a second time", () => {
-  const first = fakeGh({ refuse: isItemEdit });
-  const log: string[] = [];
-  assert.equal(recordIncident(group, { run: first.run, log: (line) => log.push(line) }), null, "not reported as filed while its Status is missing");
+  const { first, log, reported } = refusedFiling(isItemEdit);
+  assert.equal(reported, null, "not reported as filed while its Status is missing");
   assert.match(log.join(""), /the next tick retries/);
   assert.ok(first.writes.some(isItemAdd), "the card was added before its Status was refused");
   assert.ok(!first.writes.some(isLabelWrite), "and no label was written after the refusal");

@@ -148,6 +148,13 @@ const gateCall = (dir: string, toolName: string, input: Record<string, unknown>)
 const gateBash = (dir: string, command: string) => gateCall(dir, "Bash", { command });
 const review = (dir: string, skill = "a11ign:clean-code-review") => gateCall(dir, "Skill", { skill });
 
+/** A ticket dir whose configured review has already run, so the gate sees a reviewed tree. */
+function reviewedDir(): string {
+  const dir = reviewDir();
+  review(dir);
+  return dir;
+}
+
 test("A11-86: what a tool call is to the gate: the configured skill exactly is a review, and a git command that makes a commit is a commit", () => {
   const skill = "a11ign:clean-code-review";
   assert.equal(prReviewEvent("Skill", { skill }, skill), "review");
@@ -241,12 +248,12 @@ test("A11-86: with tickets.prReview named, no worker may write or name the pre-P
 });
 
 test("A11-86: the options git takes before its subcommand do not hide a commit or a push from the gate", () => {
-  const dir = reviewDir();
-  review(dir);
+  const dir = reviewedDir();
   assert.equal(gateBash(dir, "git --work-tree /w commit -m x").code, 0, "the commit is allowed");
   assert.equal(gateBash(dir, "git --work-tree /w push origin b").code, 2, "and it was logged, so the push is refused");
   review(dir);
-  assert.equal(gateBash(dir, "git -c user.name=\"A B\" commit -m x").code, 0, "the quoted value does not hide the commit");
+  const quoted = gateBash(dir, "git -c user.name=\"A B\" commit -m x");
+  assert.equal(quoted.code, 0, "the quoted value does not hide the commit");
   assert.equal(gateBash(dir, "git -c user.name=\"A B\" push origin b").code, 2);
   assert.equal(gateBash(reviewDir(), "git --work-tree /w push origin b").code, 2, "a push with an option before it is refused before any review");
 });
@@ -339,6 +346,14 @@ function transcriptIn(dir: string, text: string): string {
   return path;
 }
 
+/** Writes a `working` outcome in `dir`, dated before any stop, and returns its path. */
+function writeWorkingOutcome(dir: string, reason: string): string {
+  const outcome = join(dir, "outcome.json");
+  writeFileSync(outcome, JSON.stringify({ kind: "working", reason }));
+  utimesSync(outcome, 1000, 1000);
+  return outcome;
+}
+
 test("A11-80: a working outcome lets one stop through while background work runs; a later stop on the same file is refused until it is written again, at most twice", () => {
   const dir = tmpDir("ticket-hook-working-");
   const outcome = join(dir, "outcome.json");
@@ -364,9 +379,7 @@ test("A11-80: a working outcome lets one stop through while background work runs
 
 test("A11-85: `working` with no live background work is refused with the exact sentence, the count rises, and the stamp is not written", () => {
   const dir = tmpDir("ticket-hook-nothing-");
-  const outcome = join(dir, "outcome.json");
-  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the fleet patch runs detached" }));
-  utimesSync(outcome, 1000, 1000);
+  writeWorkingOutcome(dir, "the fleet patch runs detached");
   const transcriptPath = transcriptIn(dir, "");
   const first = stopVerdict(dir, { transcriptPath });
   assert.equal(first.code, 2, "POSITIVE: nothing running is refused");
@@ -381,9 +394,7 @@ test("A11-85: `working` with no live background work is refused with the exact s
 
 test("A11-85: `working` with a live background shell or Monitor is accepted and stamped; a Monitor its TaskStop ended is not live", () => {
   const dir = tmpDir("ticket-hook-live-");
-  const outcome = join(dir, "outcome.json");
-  writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "the roll runs under a Monitor" }));
-  utimesSync(outcome, 1000, 1000);
+  const outcome = writeWorkingOutcome(dir, "the roll runs under a Monitor");
   const monitor = [
     JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "m1", name: "Monitor", input: { command: "until false; do sleep 5; done" } }] } }),
     JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "m1", content: "Monitor started (task bk1caggue, expires in 30m)." }] } }),

@@ -64,6 +64,22 @@ function primaryHost(root: string): Record<string, unknown> {
   return { schema: 1, home: root, binDir: join(root, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout }], gh: { workers: join(root, "workers"), leads: join(root, "leads"), leadsHeader: [], leadsWorkspaces: [] } };
 }
 
+/** `ticket:serve` on a fresh host file in its own folder, with `tickets` added to the block, and its outcome. */
+async function serveFreshHost(prefix: string, tickets?: Record<string, unknown>): Promise<Outcome> {
+  const root = tmpDir(prefix);
+  const host = await hostFile(root, {}, tickets);
+  return runServe(host, root);
+}
+
+/** A host file with a primary, and a module run under it with a recorder of the gate's loads: the run's outcome and the recorder. */
+async function runWithPrimaryHost(prefix: string, code: string): Promise<{ outcome: Awaited<ReturnType<typeof runModule>>; recorder: ReturnType<typeof loadRecorder> }> {
+  const root = tmpDir(prefix);
+  const host = await hostFile(root, primaryHost(root));
+  const recorder = loadRecorder(root);
+  const outcome = await runModule(code, root, host, recorder.preload);
+  return { outcome, recorder };
+}
+
 /** The gate's modules, by their place under `src/`: the ones `reviewer-port.ts` loads, and nothing else loads them. */
 // The gate's modules: `wake.ts` is loaded through the four files of its directory the reviewer loader imports.
 const GATE_FILES = ["wake/ensure-reviewer-token.ts", "wake/ci-class-and-spares.ts", "wake/pull-request-spawn-orders.ts", "wake/seat-reset.ts", "review-trust.ts", "project-config.ts", "project-identity.ts", "work-gate/pr-orders.ts"];
@@ -127,18 +143,14 @@ function runServe(host: string | null, root: string, options: { home?: string; p
 const STACK = /\n\s+at /;
 
 test("ticket:serve starts on a host file with only clones and tickets, and no tickets.reviewer", async () => {
-  const root = tmpDir("serve-ticket-only-");
-  const host = await hostFile(root, {});
-  const outcome = await runServe(host, root);
+  const outcome = await serveFreshHost("serve-ticket-only-");
   assert.equal(outcome.started, true, outcome.stderr);
   assert.doesNotMatch(outcome.stderr, STACK);
   assert.doesNotMatch(outcome.stderr, /ProjectDeclarationRefusal/);
 });
 
 test("A11-94: ticket:serve starts on a ticket-only host that names tickets.writer, and no project is needed for the writer", async () => {
-  const root = tmpDir("serve-ticket-writer-start-");
-  const host = await hostFile(root, {}, WRITER_HOST);
-  const outcome = await runServe(host, root);
+  const outcome = await serveFreshHost("serve-ticket-writer-start-", WRITER_HOST);
   assert.equal(outcome.started, true, outcome.stderr);
   assert.doesNotMatch(outcome.stderr, STACK);
   assert.doesNotMatch(outcome.stderr, /ProjectDeclarationRefusal/);
@@ -190,19 +202,13 @@ test("loading the gate on a host with no primary keeps its refusal: reviewerRefu
 });
 
 test("importing reviewer-port.ts loads none of the gate's modules, even on a host with primary", async () => {
-  const root = tmpDir("serve-import-loads-");
-  const host = await hostFile(root, primaryHost(root));
-  const recorder = loadRecorder(root);
-  const outcome = await runModule(`await import(${PORT_URL});`, root, host, recorder.preload);
+  const { outcome, recorder } = await runWithPrimaryHost("serve-import-loads-", `await import(${PORT_URL});`);
   assert.equal(outcome.code, 0, outcome.stderr);
   assert.deepEqual(gateLoads(recorder.loads), [], "no gate module is loaded at import");
 });
 
 test("loading the gate loads all of its modules, which is what a machine that starts reviewers does before its pool is made", async () => {
-  const root = tmpDir("serve-gate-loads-");
-  const host = await hostFile(root, primaryHost(root));
-  const recorder = loadRecorder(root);
-  const outcome = await runModule(`const port = await import(${PORT_URL}); await port.loadReviewerGate();`, root, host, recorder.preload);
+  const { outcome, recorder } = await runWithPrimaryHost("serve-gate-loads-", `const port = await import(${PORT_URL}); await port.loadReviewerGate();`);
   assert.equal(outcome.code, 0, outcome.stderr);
   assert.deepEqual(gateLoads(recorder.loads), [...GATE_FILES].sort(), "every gate module is loaded once the gate is asked for");
 });

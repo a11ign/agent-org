@@ -1321,12 +1321,9 @@ test("#2241 (5) FAIL CLOSED: a row that cannot be parsed for a waiting condition
   assert.equal(inBuildReason([{ ...shelved1926, body: "Not-before: 2099-01-01T01:30:00Z" }], EVENING), null);
 });
 
-test("#2241: the lookup carries body, labels and blockedBy on the SAME `issue view` call", () => {
-  const seen: string[][] = [];
-  const view = { body: "## Region\n\n```\nscripts/held.mjs\n```\n\nNot-before: 2099-01-01\n",
-    labels: [{ name: "in-progress" }], blockedBy: { nodes: [], totalCount: 0 } };
-  const run = (args: string[]) => {
-    seen.push(args);
+/** A `gh` stand-in for a held row's lookup: the held-by answer, the empty lists, and `view` for the `issue view` call. */
+function heldRowRun(view: object) {
+  return (args: string[]): string => {
     if (readsRowsByLabel(args) !== null) return heldBy("worker-tooling", 1926);
     if (args[0] === "issue" && args[1] === "list") return "[]";
     if (args[0] === "api" && args[1] === "graphql") {
@@ -1334,6 +1331,17 @@ test("#2241: the lookup carries body, labels and blockedBy on the SAME `issue vi
     }
     if (args[0] === "issue") return JSON.stringify(view);
     return "[]";
+  };
+}
+
+test("#2241: the lookup carries body, labels and blockedBy on the SAME `issue view` call", () => {
+  const seen: string[][] = [];
+  const view = { body: "## Region\n\n```\nscripts/held.mjs\n```\n\nNot-before: 2099-01-01\n",
+    labels: [{ name: "in-progress" }], blockedBy: { nodes: [], totalCount: 0 } };
+  const answer = heldRowRun(view);
+  const run = (args: string[]) => {
+    seen.push(args);
+    return answer(args);
   };
   const rows = lookupHeldRows("worker-tooling", 2241, { run });
   assert.equal(rows?.[0].body, view.body);
@@ -1346,20 +1354,11 @@ test("#2241: the lookup carries body, labels and blockedBy on the SAME `issue vi
 });
 
 test("#2241: a lookup that carried a Region but NO wait fields leaves the row in build -- fail closed, end to end", () => {
-  const withView = (view: object) => (args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return heldBy("worker-tooling", 1926);
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: [] } } } } });
-    }
-    if (args[0] === "issue") return JSON.stringify(view);
-    return "[]";
-  };
   const region = "## Region\n\n```\nscripts/held.mjs\n```\n";
   // The wait lives in `blockedBy`, which this lookup answer does not carry: nothing to read it from.
-  const uncarried = lookupHeldRows("worker-tooling", 2241, { run: withView({ body: region }) });
+  const uncarried = lookupHeldRows("worker-tooling", 2241, { run: heldRowRun({ body: region }) });
   assert.ok(inBuildReason(uncarried ?? []), "a wait that could not be read is not a wait");
-  const carried = lookupHeldRows("worker-tooling", 2241, { run: withView({ body: region, labels: [],
+  const carried = lookupHeldRows("worker-tooling", 2241, { run: heldRowRun({ body: region, labels: [],
     blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } }) });
   assert.equal(inBuildReason(carried ?? []), null, "and the same row with the blocker CARRIED is the other direction");
 });

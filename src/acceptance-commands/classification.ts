@@ -214,17 +214,24 @@ export function declarationDisagreement(body: string): { declared: "no" | "yes";
  * hardware dependency still routes; only the paragraph saying the work is OUT does not.
  */
 function withoutScopeDisclaimer(section: string): string {
+  return withoutLazyBlocks(section, SCOPE_DISCLAIMER);
+}
+
+/** The section's lines minus each block that opens at a `marker` line and runs as far as `endsLazyBlock` lets it; fences are kept whole. */
+function withoutLazyBlocks(section: string, marker: RegExp): string {
   let inFence = false;
-  let inDisclaimer = false;
+  let inBlock = false;
   let afterBlank = false;
   return section.split(/\r\n|\r|\n/).filter((line) => {
     const isFence = /^\s*(```|~~~)/.test(line);
-    if (isFence) { inFence = !inFence; inDisclaimer = false; }
+    if (isFence) inFence = !inFence;
+    // A fence, opening or closing, ENDS the block (#1914's review): the line after a closing fence is not the bullet's continuation.
+    if (isFence) inBlock = false;
     if (inFence || isFence) return true;
-    if (SCOPE_DISCLAIMER.test(line)) { inDisclaimer = true; afterBlank = false; return false; }
-    if (line.trim() === "") { afterBlank = inDisclaimer; return true; }
-    if (inDisclaimer && !endsLazyBlock(line, { afterBlank })) return false;
-    inDisclaimer = false;
+    if (marker.test(line)) { inBlock = true; afterBlank = false; return false; }
+    if (line.trim() === "") { afterBlank = inBlock; return true; }
+    if (inBlock && !endsLazyBlock(line, { afterBlank })) return false;
+    inBlock = false;
     return true;
   }).join("\n");
 }
@@ -246,22 +253,7 @@ function withoutScopeDisclaimer(section: string): string {
  * `untrimmedFleetMention`), and the fix is to write that step as a numbered clause, which is read.
  */
 function withoutBulletProse(section: string): string {
-  let inFence = false;
-  let inItem = false;
-  let afterBlank = false;
-  return section.split(/\r\n|\r|\n/).filter((line) => {
-    const isFence = /^\s*(```|~~~)/.test(line);
-    if (isFence) inFence = !inFence;
-    // #1914's review: a fence, opening or closing, ENDS the item -- else the line after a closing fence
-    // reads as the bullet's lazy continuation and a real step is dropped.
-    if (isFence) inItem = false;
-    if (inFence || isFence) return true;
-    if (/^\s*[-*+]\s/.test(line)) { inItem = true; afterBlank = false; return false; }
-    if (line.trim() === "") { afterBlank = inItem; return true; }
-    if (inItem && !endsLazyBlock(line, { afterBlank })) return false;
-    inItem = false;
-    return true;
-  }).join("\n");
+  return withoutLazyBlocks(section, /^\s*[-*+]\s/);
 }
 
 /**

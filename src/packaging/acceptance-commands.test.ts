@@ -19,6 +19,7 @@ import { extractAcceptanceSection, unmetCommandRequirements, singleNodeInvocatio
 import { testFileRequirements, unmetRequirements, hasFullHistoryDeclaration, jobCapabilities, deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements, createClosureMemo, SUITE_SCRIPTS, SPAWNS_GH, handRunDeclaration, handRunEvidence, declaredFleetAnswer } from "../acceptance-commands/classification.ts";
 import { withGitSandbox, sandboxGitEnv } from "@a11ign/toolchain/lib/git-sandbox";
 import { trackedTopLevelDirs } from "../region-paths.ts";
+import { testEach } from "../lib/test-each.ts";
 
 /** #1604: these subtests read a11ign's own resource and corpus ban (the `RESOURCES` declaration in `.agent-org/project.json`), its tracked `packages/` tree and its `REAL_FILE` twin (docs/project-tree-dependency.md, row 1604). The fixture declares a different list and has no `packages/` tree, so they skip there and run wherever the tracked `packages/` tree is present. */
 const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
@@ -35,6 +36,20 @@ const TOOL_SRC = resolve(THIS_FILE, "..", "..");
 // Matches acceptance-commands.ts's own `fingerprint` -- concatenated so the resolver's name never
 // appears contiguously in this file's own source.
 const spell = (a: string, b: string) => a + b;
+
+/** Runs an acceptance body and captures the one command `run` is handed, as it reached `run`. */
+function runCapturing(body: string) {
+  let seen = "";
+  const report = acceptanceReport(body, (cmd) => { seen = cmd; return 0; });
+  return { report, seen };
+}
+
+/** Composes a report for `body` with every command exiting `exitCode`, counting how many `run` was handed. */
+function reportCountingRuns(body: string, exitCode: number) {
+  let runs = 0;
+  const report = acceptanceReport(body, () => { runs += 1; return exitCode; });
+  return { report, runs };
+}
 
 // A file known to exist, relative to the project root -- where every real invocation of this command runs
 // from. The fixture project holds a stand-in at this path; the one test that must walk THIS file reads THIS_FILE.
@@ -412,10 +427,9 @@ test("acceptanceReport: REFUSED and a real failure together -- the real failure 
 
 test("acceptanceReport: multiple runnable commands all pass -> ok:true, one line each", () => {
   const body = "Acceptance:\nnode -e \"process.exit(0)\"\nnode -e \"process.exit(0)\"\n";
-  let calls = 0;
-  const report = acceptanceReport(body, () => { calls += 1; return 0; });
+  const { report, runs } = reportCountingRuns(body, 0);
   assert.equal(report.ok, true);
-  assert.equal(calls, 2);
+  assert.equal(runs, 2);
   assert.equal(report.lines.length, 2);
 });
 
@@ -463,11 +477,10 @@ test("testFileArgumentsResolve: flags are never treated as file arguments", () =
 });
 
 test("acceptanceReport: a tsx --test command matching nothing fails the report WITHOUT calling run()", () => {
-  let called = false;
   const body = 'Acceptance:\nnpx tsx --test "packages/lab/src/packaging/nothing-matches-this-*.test.ts"\n';
-  const report = acceptanceReport(body, () => { called = true; return 0; });
+  const { report, runs } = reportCountingRuns(body, 0);
   assert.equal(report.ok, false);
-  assert.equal(called, false, "a command already known to be bogus must never actually run");
+  assert.equal(runs, 0, "a command already known to be bogus must never actually run");
   assert.match(report.lines[0], /matched no file/);
 });
 
@@ -520,8 +533,7 @@ test("#419 form 2: a WHOLE command wrapped in backticks, on its own line, is unw
 });
 
 test("#419 form 2: a backticked command actually RUNS unwrapped, never as a literal backtick token", () => {
-  let seen = "";
-  const report = acceptanceReport("Acceptance: `node -e \"process.exit(0)\"`", (cmd) => { seen = cmd; return 0; });
+  const { report, seen } = runCapturing("Acceptance: `node -e \"process.exit(0)\"`");
   assert.equal(report.ok, true);
   assert.equal(seen, 'node -e "process.exit(0)"', "run() must never see the wrapping backticks");
 });
@@ -555,9 +567,7 @@ test("#658 the identical shape on its own line (not inline on the header) unwrap
 });
 
 test("#658 a backticked command with trailing prose actually RUNS unwrapped, prose and all discarded", () => {
-  let seen = "";
-  const report = acceptanceReport(
-    "Acceptance: `node -e \"process.exit(0)\"` — 12/12 passing", (cmd) => { seen = cmd; return 0; });
+  const { report, seen } = runCapturing("Acceptance: `node -e \"process.exit(0)\"` — 12/12 passing");
   assert.equal(report.ok, true);
   assert.equal(seen, 'node -e "process.exit(0)"',
     "run() must see neither the backticks nor the trailing commentary");
@@ -920,25 +930,14 @@ test("#419 MUTATION TARGET (form 4): reverting to tokenizing the RAW command mus
 // #419 itself just made acceptable -- combined with that convention landed straight back on MISSING,
 // found live on PR #413. This form is MORE likely after #419's own fix, not less. ---
 
-test("#419b form 5: a markdown heading followed by a blank line, then the command, is NOT missing", () => {
-  // The exact shape measured on #413: `## Acceptance`, a blank line, then the command.
-  const body = "## Acceptance\n\nnpx tsx --test a.test.ts\n";
-  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
-});
-
-test("#419b form 5: the BARE header followed by a blank line is the identical shape and must work too", () => {
-  const body = "Acceptance:\n\nnpx tsx --test a.test.ts\n";
-  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
-});
-
-test("#419b form 5: MULTIPLE leading blank lines before the first command are all skipped", () => {
-  const body = "## Acceptance\n\n\nnpx tsx --test a.test.ts\n";
-  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
-});
-
-test("#419b form 5: a blank line AFTER a real command still ends the block, exactly as before", () => {
-  const body = "Acceptance:\nnpx tsx --test a.test.ts\n\nMore prose after a blank line.";
-  assert.deepEqual(extractAcceptanceSection(body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
+// The exact shape measured on #413 is `## Acceptance`, a blank line, then the command.
+testEach("#419b form 5: blank lines before the first command are skipped, and one after a command still ends the block", [
+  { name: "a markdown heading then a blank line, then the command, is NOT missing", body: "## Acceptance\n\nnpx tsx --test a.test.ts\n" },
+  { name: "the BARE header then a blank line is the identical shape and must work too", body: "Acceptance:\n\nnpx tsx --test a.test.ts\n" },
+  { name: "MULTIPLE leading blank lines before the first command are all skipped", body: "## Acceptance\n\n\nnpx tsx --test a.test.ts\n" },
+  { name: "a blank line AFTER a real command still ends the block, exactly as before", body: "Acceptance:\nnpx tsx --test a.test.ts\n\nMore prose after a blank line." },
+], (c) => {
+  assert.deepEqual(extractAcceptanceSection(c.body), { kind: "commands", commands: ["npx tsx --test a.test.ts"] });
 });
 
 test("#419b form 5: a header with a blank line and NOTHING after it stays MISSING -- the leading-blank "
@@ -1077,8 +1076,7 @@ test("#510 acceptanceReport: the history fixture is REFUSED (named), not RAN, wi
 });
 
 test("#497 acceptanceReport: `History: full` makes the same fixture actually RUN", () => {
-  const body = `Closes #1\nAcceptance: npx tsx --test ${HISTORY_FIXTURE}\nHistory: full\n`;
-  const report = acceptanceReport(body, () => 0);
+  const report = acceptanceReport(`Closes #1\nAcceptance: npx tsx --test ${HISTORY_FIXTURE}\nHistory: full\n`, () => 0);
   assert.equal(report.ok, true);
   assert.match(report.lines[0], /^ACCEPTANCE: RAN/);
 });
@@ -1581,24 +1579,44 @@ test("#731: a file that genuinely reads the corpus is UNAFFECTED -- the fix must
   assert.equal(hits[0].wrongDeclaration, undefined, "no declaration was made here, so none can be wrong");
 });
 
-test("#731: a `// writes:` declaration that does not hold is named as WRONG, never silently trusted and "
-  + "never silently overridden -- a file claiming a write location its own code never touches must still "
-  + "refuse as corpus, with a message pointing at the bad declaration rather than a generic one", () => {
-  const dir = mkdtempSync(join(tmpdir(), "acceptance-writes-"));
+// A declaration that does not hold is named as WRONG, never silently trusted or overridden, and the refusal points at
+// the bad declaration rather than a generic one. The two cases differ only in what the entry's own code does.
+testEach("#731/#827: a declaration that does not hold is named as WRONG, never silently trusted", [
+  {
+    name: "#731 `// writes:` claims a write location the file never touches, so it still refuses as corpus",
+    prefix: "acceptance-writes-",
+    requirement: "corpus",
+    message: /declares `\/\/ writes:`.*does not bear out/,
+    arrange: (dir: string) => {
+      const fixture = join(dir, "wrong-declaration-fixture.mjs");
+      writeFileSync(fixture, [
+        "// writes: runs/somewhere-this-file-never-touches",
+        "export function readsCorpusButClaimsToWrite() {",
+        `  const dir = ${spell("runsRo", "ot()")};`,
+        "  return dir;",
+        "}",
+      ].join("\n"));
+      return fixture;
+    },
+  },
+  {
+    name: "#827 `// no-token:` names a function the entry's OWN code DOES call, so it still refuses as token",
+    prefix: "acceptance-token-",
+    requirement: "token",
+    message: /declares `\/\/ no-token:`.*DOES call/,
+    arrange: (dir: string) => {
+      writeSyntheticMixedModule(dir, "checkRelease");
+      return writeNoTokenConsumer(dir, "import { checkRelease } from \"./mixed-module.mjs\";", "checkRelease();");
+    },
+  },
+], (c) => {
+  const dir = mkdtempSync(join(tmpdir(), c.prefix));
   try {
-    const fixture = join(dir, "wrong-declaration-fixture.mjs");
-    writeFileSync(fixture, [
-      "// writes: runs/somewhere-this-file-never-touches",
-      "export function readsCorpusButClaimsToWrite() {",
-      `  const dir = ${spell("runsRo", "ot()")};`,
-      "  return dir;",
-      "}",
-    ].join("\n"));
-    const hits = deriveClosureRequirements(fixture);
+    const hits = deriveClosureRequirements(c.arrange(dir));
     assert.equal(hits.length, 1);
-    assert.equal(hits[0].requirement, "corpus");
+    assert.equal(hits[0].requirement, c.requirement);
     assert.equal(hits[0].wrongDeclaration, true);
-    assert.match(closureRequirementMessage(hits[0]), /declares `\/\/ writes:`.*does not bear out/);
+    assert.match(closureRequirementMessage(hits[0]), c.message);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -1652,6 +1670,13 @@ function writeSyntheticMixedModule(dir: string, riskyFnName: string): string {
   return fixture;
 }
 
+/** Writes the consumer entry the #827 cases derive from: a `// no-token: checkRelease` header, then the given import and call. */
+function writeNoTokenConsumer(dir: string, importLine: string, callLine: string): string {
+  const entry = join(dir, "consumer.test.mjs");
+  writeFileSync(entry, ["// no-token: checkRelease", importLine, callLine].join("\n"));
+  return entry;
+}
+
 test("#827 REGRESSION: an entry importing ONLY the safe export of a mixed module is STILL charged token, "
   + "with no declaration -- the exact live shape (board-markdown.test.ts before this row) proving the "
   + "fix below is earned, not merely a walk that stopped looking", () => {
@@ -1676,12 +1701,7 @@ test("#827: an entry that declares `// no-token: <fn>` and genuinely never calls
   const dir = mkdtempSync(join(tmpdir(), "acceptance-token-"));
   try {
     writeSyntheticMixedModule(dir, "checkRelease");
-    const entry = join(dir, "consumer.test.mjs");
-    writeFileSync(entry, [
-      "// no-token: checkRelease",
-      "import { safeRender } from \"./mixed-module.mjs\";",
-      "safeRender(1);",
-    ].join("\n"));
+    const entry = writeNoTokenConsumer(dir, "import { safeRender } from \"./mixed-module.mjs\";", "safeRender(1);");
     const hits = deriveClosureRequirements(entry);
     assert.deepEqual(hits, [], `expected no hits; got: ${hits.map(closureRequirementMessage).join("; ")}`);
   } finally {
@@ -1698,36 +1718,9 @@ test("#827: `// no-token:` is checked ONCE against the entry, not per-file -- an
     writeFileSync(helper, [
       "export { safeRender } from \"./mixed-module.mjs\";",
     ].join("\n"));
-    const entry = join(dir, "consumer.test.mjs");
-    writeFileSync(entry, [
-      "// no-token: checkRelease",
-      "import { safeRender } from \"./helper.mjs\";",
-      "safeRender(1);",
-    ].join("\n"));
+    const entry = writeNoTokenConsumer(dir, "import { safeRender } from \"./helper.mjs\";", "safeRender(1);");
     const hits = deriveClosureRequirements(entry);
     assert.deepEqual(hits, [], `expected no hits two hops deep; got: ${hits.map(closureRequirementMessage).join("; ")}`);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("#827: a `// no-token:` declaration naming a function the entry's OWN code DOES call is named as "
-  + "WRONG, never silently trusted -- a file claiming it avoids a call it actually makes must still refuse "
-  + "as token, with a message pointing at the bad declaration rather than a generic one", () => {
-  const dir = mkdtempSync(join(tmpdir(), "acceptance-token-"));
-  try {
-    writeSyntheticMixedModule(dir, "checkRelease");
-    const entry = join(dir, "consumer.test.mjs");
-    writeFileSync(entry, [
-      "// no-token: checkRelease",
-      "import { checkRelease } from \"./mixed-module.mjs\";",
-      "checkRelease();",
-    ].join("\n"));
-    const hits = deriveClosureRequirements(entry);
-    assert.equal(hits.length, 1);
-    assert.equal(hits[0].requirement, "token");
-    assert.equal(hits[0].wrongDeclaration, true);
-    assert.match(closureRequirementMessage(hits[0]), /declares `\/\/ no-token:`.*DOES call/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -2820,6 +2813,21 @@ function withHandRunOutput(body: string, output: string = HAND_RUN_OUTPUT): stri
   return `${body}\n## Hand-run output\n\n${output}\n`;
 }
 
+/** The verdict for the declared hand-run, with no output pasted beneath it. */
+function bareHandRunReport() {
+  return acceptanceReport(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), () => 0);
+}
+
+/** The verdict for the declared hand-run, with the pasted run beneath it. */
+function evidencedHandRunReport() {
+  return acceptanceReport(withHandRunOutput(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON)), () => 0);
+}
+
+/** The verdict for a declared hand-run beside a command that really runs. */
+function besideRunningCommandReport() {
+  return acceptanceReport(`## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n${HAND_RUN_GH}\n\`\`\`\n`, () => 0);
+}
+
 const NO_CAPABILITIES = { history: false, token: false, fleet: false, corpus: false };
 
 test("#2099: a bare `gh` command is REFUSED for `token`, not classified runnable -- the job knows it has no "
@@ -2903,16 +2911,20 @@ test("#2099: a declared hand-run reports NOT RUN NAMING THE DECLARATION -- never
   // and the pasted output is now what keeps the report green (see the `NO HAND-RUN OUTPUT` tests below).
   // The `ok: true` assertion at the end of this test is the thing #2118 changed the precondition for --
   // it was true of the bare body when this test was written, and is true of an EVIDENCED one now.
-  const report = acceptanceReport(withHandRunOutput(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON)), () => 0);
+  const report = evidencedHandRunReport();
   const joined = report.lines.join("\n");
   assert.match(joined, /ACCEPTANCE: NOT RUN/);
   assert.ok(joined.includes(HAND_RUN_REASON), `the reason is quoted, not merely counted: ${joined}`);
   assert.doesNotMatch(joined, /EXECUTED NOTHING/);
-  // NEVER A PASS: the report says in its own words that it verified nothing.
-  assert.doesNotMatch(joined, /-> pass/);
-  assert.match(joined, /verified NOTHING/);
   assert.equal(report.ok, true,
     "green and loud, because the alternative is a row whose only honest acceptance makes it unmergeable");
+});
+
+test("#2099: a declared hand-run is never reported as a pass -- the report says in its own words that it verified NOTHING", () => {
+  // NEVER A PASS: the report says in its own words that it verified nothing.
+  const joined = evidencedHandRunReport().lines.join("\n");
+  assert.doesNotMatch(joined, /-> pass/);
+  assert.match(joined, /verified NOTHING/);
 });
 
 test("#2099 CONTROL: the SAME body without the declaration is the failure this row starts from -- REFUSED for "
@@ -2939,11 +2951,14 @@ test("#2099: the declaration silences EXECUTED NOTHING only when EVERY command i
 
 test("#2099: a declared hand-run BESIDE a command that really runs reports both -- a partial answer is what "
   + "#2084's amended Acceptance actually is", () => {
-  const body = `## Acceptance\n\nHand-run: ${HAND_RUN_REASON}\n\n\`\`\`\nnpx tsx --test ${REAL_FILE}\n${HAND_RUN_GH}\n\`\`\`\n`;
-  const report = acceptanceReport(body, () => 0);
-  const joined = report.lines.join("\n");
+  const joined = besideRunningCommandReport().lines.join("\n");
   assert.match(joined, /ACCEPTANCE: RAN/);
   assert.match(joined, /ACCEPTANCE: NOT RUN/);
+});
+
+test("#2099: a declared hand-run BESIDE a command that really runs does not claim the section executed nothing", () => {
+  const report = besideRunningCommandReport();
+  const joined = report.lines.join("\n");
   assert.doesNotMatch(joined, /EXECUTED NOTHING|NOTHING RAN HERE/);
   assert.equal(report.ok, true);
 });
@@ -3124,12 +3139,16 @@ test("#2099: #2084's REAL Acceptance -- the live correct-row case -- files clean
 
 test("#2118: a body whose Acceptance is ENTIRELY declared hand-runs and which pastes NO output is REFUSED -- "
   + "`ok: false`, and the NOTHING RAN HERE line it used to stop at is still printed beside it", () => {
-  const report = acceptanceReport(acceptanceBody(HAND_RUN_GH, HAND_RUN_REASON), () => 0);
+  const report = bareHandRunReport();
   assert.equal(report.ok, false, report.lines.join("\n"));
   const joined = report.lines.join("\n");
   assert.match(joined, /ACCEPTANCE: NO HAND-RUN OUTPUT/);
+});
+
+test("#2118: the refusal of a bare declared hand-run still prints NOTHING RAN HERE and says it verified NOTHING", () => {
   // THE TRUE STATEMENT STAYS. `NOTHING RAN HERE` is a fact about this job regardless of the evidence, and
   // dropping it on the refusal path would trade one honest line for another instead of adding one.
+  const joined = bareHandRunReport().lines.join("\n");
   assert.match(joined, /NOTHING RAN HERE/);
   assert.match(joined, /verified NOTHING/);
 });

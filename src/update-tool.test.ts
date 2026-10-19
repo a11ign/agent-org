@@ -311,8 +311,8 @@ test("#714 (D2): a FAILING install leaves the checkout and node_modules where th
     assert.ok(said.includes("pnpm install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace"), `naming the command: ${said}`);
     assert.equal(host.git(["rev-parse", "HEAD"]).trim(), host.v100, "THE CHECKOUT DID NOT ADVANCE");
     assert.equal(installedVersionIn(host, "@a11ign/toolchain"), "0.1.2", "node_modules is untouched");
-    assert.equal(installedVersionIn(host, "added-dep"), null);
     assert.deepEqual(worktrees(host), [`worktree ${host.tool}`], "and the half-made fresh tree was removed");
+    assert.equal(installedVersionIn(host, "added-dep"), null);
     assert.ok(!existsSync(join(host.tool, "node_modules.superseded")));
 
     const findings = installPendingFindings({ tool: host.tool, toolVersion: "latest", binDir: join(host.units, "bin"), prefix: "a11ign-", installedDir: host.units, run: host.git });

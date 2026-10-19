@@ -160,6 +160,14 @@ function fakeGithub(seed: { first?: string[], second?: string[], bodies?: { firs
 const CLAIM_DEPS = { drained: [], instance: { spare: false, rows: [] }, persistent: false };
 const issueWrites = (writes: Call[]) => writes.filter((call) => call.args[0] !== "project");
 
+/** The fake, with the claim record a claim of SESSION leaves in the keyed tracker's repository, so a decline has a claim to release. */
+function heldKeyedRow(seed: Parameters<typeof fakeGithub>[0]) {
+  const record = claimRecordComment({ session: SESSION, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
+  const gh = fakeGithub(seed);
+  gh.second().comments.push(record);
+  return gh;
+}
+
 test("PRECONDITION: the two trackers really are two repositories and two boards, so every assertion below can tell them apart", () => {
   assert.notEqual(FIRST_REPO, SECOND_REPO);
   assert.notEqual(PROJECT_NUMBER, SECOND_BOARD);
@@ -272,9 +280,7 @@ test("agent-org#1568: a claim of a `backlog` row leaves exactly `in-progress` as
 });
 
 test("agent-org#1568: a release of a row claimed from `backlog` puts `backlog` back and leaves no `in-progress`", () => {
-  const record = claimRecordComment({ session: SESSION, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
-  const gh = fakeGithub({ first: ["ready"], second: ["in-progress", "started", `session:${SESSION}`] });
-  gh.second().comments.push(record);
+  const gh = heldKeyedRow({ first: ["ready"], second: ["in-progress", "started", `session:${SESSION}`] });
   const result = declineRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, keepWorktree: true });
   assert.deepEqual(result, { declined: true, restoredReady: false, blocked: false, closed: false, statusMoved: true });
   assert.deepEqual(gh.second().labels, ["backlog"], "the released row is back in `backlog` and holds no claim");

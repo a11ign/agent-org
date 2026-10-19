@@ -24,6 +24,7 @@ import { buildReport, readAll } from "./org-retro/readings.ts";
 import { readUnderspecified } from "./org-retro/retro-cause.ts";
 import { renderReport } from "./org-retro.ts";
 import { commentsSince } from "./ticket-port/comments-since.ts";
+import { testEach } from "./lib/test-each.ts";
 
 // --- fixtures -----------------------------------------------------------------------------------------------------------------
 
@@ -275,15 +276,22 @@ test("`rows.specLint` is on only when exactly `true`: absent, false, a string, a
 
 // --- THE DEFAULT ANSWERS: bash, PATH and the checkout ---------------------------------------------------------------------------------
 
-test("the machine's answers: `bash -n` parses without running, PATH finds node and not a ghost, a prefix with no root is `null`", () => {
+const MACHINE_ANSWERS = [
+  { name: "bash -n parses a valid line", answer: () => bashParses("echo ok && true"), expected: true },
+  { name: "bash -n refuses a line that does not parse", answer: () => bashParses("if then fi ("), expected: false },
+  { name: "PATH finds node", answer: () => executableOnPath("node"), expected: true },
+  { name: "PATH does not find a ghost program", answer: () => executableOnPath("definitely-not-a-program-5117"), expected: false },
+];
+
+testEach("the machine's answers: `bash -n` parses without running, PATH finds node and not a ghost", MACHINE_ANSWERS, (c) => {
+  assert.equal(c.answer(), c.expected);
+});
+
+test("the checkout's answers: a file under a declared root exists, a missing one does not, a prefix with no root is `null`", () => {
   const dir = mkdtempSync(join(tmpdir(), "spec-lint-"));
   try {
     mkdirSync(join(dir, "src"));
     writeFileSync(join(dir, "src", "x.ts"), "");
-    assert.equal(bashParses("echo ok && true"), true);
-    assert.equal(bashParses("if then fi ("), false);
-    assert.equal(executableOnPath("node"), true);
-    assert.equal(executableOnPath("definitely-not-a-program-5117"), false);
     const real = machineDeps({ "": dir, other: dir });
     assert.equal(real.fileExists("src/x.ts"), true);
     assert.equal(real.fileExists("other:src/x.ts"), true);
@@ -342,12 +350,16 @@ const NOW = Date.parse("2026-10-11T18:00:00Z");
 const WINDOW = { since: NOW - 24 * 60 * 60 * 1000, until: NOW };
 const comment = (body: string, at = "2026-10-11T12:00:00Z", row = 6001) => ({ body, created_at: at, issue_url: `https://api.github.com/repos/a11ign/a11ign/issues/${row}` });
 
-test("a field token is normalised to the spec vocabulary, and anything else is `unnamed`", () => {
-  assert.equal(fieldOf("`tests.cases[2].then`"), "tests.cases");
-  assert.equal(fieldOf("Files"), "files");
-  assert.equal(fieldOf("out_of_scope"), "out_of_scope");
-  assert.equal(fieldOf("tests"), "tests");
-  assert.equal(fieldOf("the vibes"), UNNAMED_FIELD);
+const FIELD_TOKENS = [
+  { name: "a backticked path normalises to its field", token: "`tests.cases[2].then`", field: "tests.cases" },
+  { name: "a capitalised name normalises to the spec vocabulary", token: "Files", field: "files" },
+  { name: "a field name passes through", token: "out_of_scope", field: "out_of_scope" },
+  { name: "a bare section name passes through", token: "tests", field: "tests" },
+  { name: "anything else is unnamed", token: "the vibes", field: UNNAMED_FIELD },
+];
+
+testEach("a field token is normalised to the spec vocabulary, and anything else is `unnamed`", FIELD_TOKENS, (c) => {
+  assert.equal(fieldOf(c.token), c.field);
 });
 
 test("stops are the `Underspecified:` lines inside the window, one per named field, with the row they were said on", () => {

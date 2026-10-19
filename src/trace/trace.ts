@@ -94,8 +94,7 @@ export function parseArgs(argv: string[]) {
   const number = Number(first);
   if (!Number.isInteger(number) || number <= 0) throw new Error(USAGE);
   const rest = given.filter((word) => word !== HTML_FLAG); // `--html` takes no value, so it is taken out before the rest are read as flag/value pairs
-  const flags: Record<string, string> = {};
-  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const flags = flagsOf(rest);
   const since = flags.since ? Date.parse(flags.since) : Date.now() - DEFAULT_SINCE_DAYS * MS_PER_DAY;
   if (Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
   const html = given.includes(HTML_FLAG);
@@ -109,8 +108,7 @@ export function parseArgs(argv: string[]) {
  */
 export function parseAggregateArgs(argv: string[]) {
   const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== AGGREGATE_FLAG);
-  const flags: Record<string, string> = {};
-  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const flags = flagsOf(rest);
   const requested = flags.since ? Date.parse(flags.since) : weekStart(Date.now()) - DEFAULT_AGGREGATE_WEEKS * WEEK_DAYS * MS_PER_DAY;
   if (Number.isNaN(requested)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
   const budget = flags.calls === undefined ? DEFAULT_GITHUB_CALLS : Number(flags.calls);
@@ -207,6 +205,13 @@ function mainCost() {
   for (const line of costReport(costBy(events, by, since), { by, since, store, events: events.length })) console.log(line);
 }
 
+/** The `--flag value` pairs of `rest`, keyed by the flag's name without its dashes. */
+function flagsOf(rest: string[]): Record<string, string> {
+  const flags: Record<string, string> = {};
+  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  return flags;
+}
+
 /** `trace compact-store [--store <path>] [--dry-run]`: any other argument is refused, because a misspelt `--dry-run` would rewrite the store. */
 function parseCompactStoreArgs(argv: string[]) {
   const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== COMPACT_STORE_WORD);
@@ -224,8 +229,7 @@ function parseCompactStoreArgs(argv: string[]) {
  */
 function parseIngestArgs(argv: string[], now: number = Date.now()) {
   const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== INGEST_FLAG && word !== FRESHNESS_FLAG);
-  const flags: Record<string, string> = {};
-  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const flags = flagsOf(rest);
   const since = flags.since ? Date.parse(flags.since) : now - DEFAULT_SINCE_DAYS * MS_PER_DAY;
   if (Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
   return { since, store: flags.store ?? defaultStore() };
@@ -237,8 +241,7 @@ function parseIngestArgs(argv: string[], now: number = Date.now()) {
  */
 export function parseWakeCacheArgs(argv: string[], now: number = Date.now()) {
   const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== WAKE_CACHE_FLAG);
-  const flags: Record<string, string> = {};
-  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const flags = flagsOf(rest);
   const since = flags.since ? Date.parse(flags.since) : now - DEFAULT_WAKE_CACHE_DAYS * MS_PER_DAY;
   if (Number.isNaN(since)) throw new Error(`--since must be an ISO time (got ${flags.since})`);
   const until = flags.until ? Date.parse(flags.until) : now;
@@ -300,8 +303,7 @@ export function parseWeek(text: string, now: number) {
  */
 export function parseMapArgs(argv: string[], now: number = Date.now()) {
   const rest = (argv[0] === "--" ? argv.slice(1) : argv).filter((word) => word !== MAP_FLAG);
-  const flags: Record<string, string> = {};
-  for (let index = 0; index < rest.length; index += 2) flags[rest[index].replace(/^--/, "")] = rest[index + 1];
+  const flags = flagsOf(rest);
   if (!flags.out) throw new Error("usage: trace -- --map --out <path> [--repo <r>] [--week <n>] [--cause <c>] [--since <ISO>] [--calls <n>] [--store <path>]");
   const week = flags.week === undefined ? undefined : parseWeek(flags.week, now);
   const requested = flags.since ? Date.parse(flags.since) : (week ?? weekStart(now) - DEFAULT_AGGREGATE_WEEKS * WEEK_DAYS * MS_PER_DAY);

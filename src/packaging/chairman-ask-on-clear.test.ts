@@ -15,6 +15,7 @@
  * sent the wait to the generic stale-wait order (#4020's Open-check). MUTATIONS are recorded in the pull request, one per guard and in both directions.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { chairmanAskOrders, chairmanAskRefusal, askOf, withoutDeclaration, MARKER, postedBrief } from "../work-gate/chairman-ask-orders.ts";
 import { parseWaits, conditionHolds, versionAtLeast, waitItemOf } from "../wait-condition.ts";
@@ -76,11 +77,8 @@ test("#2887 (the whole shape): RED while the registry holds only the placeholder
   assert.match(posted, /Declared 2026-10-04 by the row's author\. The tick re-read only the condition above: NOT that `Checked:` was true/);
   assert.ok(posted.trimEnd().endsWith(MARKER));
   assert.deepEqual(label, ["issue", "edit", "2887", "--add-label", "needs:chairman"]);
-  const newBody = edit[edit.indexOf("--body") + 1];
-  assert.doesNotMatch(newBody, /Then-ask-chairman|Waiting-for|Declared:|Ask:/, "the declaration it has used is gone, or the row would be ordered twice");
-  assert.match(newBody, /## Why\n\nParked\./);
-  assert.match(newBody, /Filed-by: ceo/);
 
+  const newBody = edit[edit.indexOf("--body") + 1];
   assert.equal(orders.length, 1);
   assert.equal(orders[0].session, "ceo");
   assert.equal(orders[0].causeKey, "ceo/org-health/chairman-ask-raised-order@2887");
@@ -89,6 +87,18 @@ test("#2887 (the whole shape): RED while the registry holds only the placeholder
   const again = fakeGh();
   assert.deepEqual(tick([row(2887, newBody, ["lane:any", "parked", "needs:chairman"])], { latest: "0.5.1" }, again), [], "the next tick sees a labelled row with no declaration");
   assert.deepEqual(again.calls, []);
+});
+
+testEach("#2887 (the whole shape): the edited row keeps its Why and Filed-by, and loses the declaration the tick has used", [
+  { name: "the declaration is gone", expect: "doesNotMatch", pattern: /Then-ask-chairman|Waiting-for|Declared:|Ask:/, message: "the declaration it has used is gone, or the row would be ordered twice" },
+  { name: "the Why section is kept", expect: "match", pattern: /## Why\n\nParked\./ },
+  { name: "the filer is kept", expect: "match", pattern: /Filed-by: ceo/ },
+] as const, (c) => {
+  const after = fakeGh();
+  tick([row(2887, body(`published ${FLEET}@latest`))], { reserved: "0.0.0-reserved.0", latest: "0.5.1" }, after);
+  const [, , edit] = after.writes();
+  const newBody = edit[edit.indexOf("--body") + 1];
+  assert[c.expect](newBody, c.pattern, c.message);
 });
 
 test("the brief the tick posts is one the REAL alert source sends, with the declared lines in it", () => {

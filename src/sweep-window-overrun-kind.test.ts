@@ -199,24 +199,26 @@ const claimLive = (comments: unknown[], chairman = false) => claimRow(ASKER, `wo
   run: claimGh(comments, { chairman }), moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
   tracker: { key: "", repo: TRACKER },
 } as never) as { claimed: boolean; reason?: string };
+/** The claim on the swept Region, on a cleared default ledger: its verdict, and the ledger text it left. */
+function claimOnSweep(comments: unknown[]) {
+  freshLedger();
+  const result = claimLive(comments);
+  return { result, text: readBack(LEDGER) };
+}
 
 test("(3) THROUGH claimRow: a claim REFUSED on the swept Region after the overrun notice writes ONE sweep-overrun line to the default ledger, ref = the refused row", () => {
-  freshLedger();
-  const result = claimLive([liveClaim(200), notice(1)]);
+  const { result, text } = claimOnSweep([liveClaim(200), notice(1)]);
   assert.equal(result.claimed, false, "the released area still refuses the claim");
   assert.match(result.reason ?? "", new RegExp(`overlaps the Region of #${SWEEP}`));
-  const text = readBack(LEDGER);
   assert.equal(linesOf(text, SWEEP_OVERRUN_KIND).length, 1, `one failure from the claim:\n${text}`);
   assert.match(text, new RegExp(`^${SWEEP_OVERRUN_KIND}\\t\\d+\\t${TRACKER}#${ASKER}\\n$`), "ref is the REFUSED row");
 });
 
 test("(3) CONTROL: the same refused claim with NO overrun notice on the sweep writes no ledger line", () => {
-  freshLedger();
-  const result = claimLive([liveClaim(200)]);
+  const { result, text } = claimOnSweep([liveClaim(200)]);
   assert.equal(result.claimed, false, "the refusal is the same");
   assert.match(result.reason ?? "", new RegExp(`overlaps the Region of #${SWEEP}`));
   // The claim reports the overrun it finds (one release, the holder told once); the refusal that follows has no notice to name, so it is no failure.
-  const text = readBack(LEDGER);
   assert.equal(linesOf(text, SWEEP_OVERRUN_KIND).length, 0, `no notice, no failure:\n${text}`);
   assert.equal(linesOf(text, SWEEP_WINDOW_RELEASED_KIND).length, 1, `the claim's own release, once:\n${text}`);
 });

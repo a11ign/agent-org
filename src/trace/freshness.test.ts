@@ -42,11 +42,16 @@ function home() {
   return { dir, claude, transcript, storePath, touch, working, read };
 }
 
-test("FRESH: the newest turn is 3 minutes old and a message was written 6 minutes ago -- not stale", () => {
+/** The store's reading in a fresh home whose one turn is `storeAge` old and whose transcript was last written `touchAge` ago. */
+function readingAfter(storeAge: number, touchAge: number) {
   const h = home();
-  writeStore(h.storePath, [turn("t1", NOW - 3 * MINUTE)]);
-  h.touch(6 * MINUTE);
-  const reading = h.read();
+  writeStore(h.storePath, [turn("t1", NOW - storeAge)]);
+  h.touch(touchAge);
+  return h.read();
+}
+
+test("FRESH: the newest turn is 3 minutes old and a message was written 6 minutes ago -- not stale", () => {
+  const reading = readingAfter(3 * MINUTE, 6 * MINUTE);
   assert.equal(reading.working, true, "POSITIVE CONTROL: a session is working, so this reading could have been stale");
   assert.equal(reading.ageMs, 3 * MINUTE);
   assert.deepEqual(reading.unmet, [], "the message is not yet ten minutes old, so the ingest is not owed a turn for it");
@@ -54,10 +59,7 @@ test("FRESH: the newest turn is 3 minutes old and a message was written 6 minute
 });
 
 test("STALE: a message written 11 minutes ago is owed a turn, and the store has none for its transcript", () => {
-  const h = home();
-  writeStore(h.storePath, [turn("t1", NOW - 11 * MINUTE)]);
-  h.touch(11 * MINUTE);
-  const reading = h.read();
+  const reading = readingAfter(11 * MINUTE, 11 * MINUTE);
   assert.equal(reading.ageMs, 11 * MINUTE);
   assert.deepEqual(reading.unmet, [{ transcript: "session", at: NOW - 11 * MINUTE }]);
   assert.equal(reading.stale, true);
@@ -104,10 +106,7 @@ test("the edges: the hold-back decides what is working (a message exactly five m
 });
 
 test("NEGATIVE CONTROL: an 11-minute-old store is NOT stale when every transcript has been untouched for an hour", () => {
-  const h = home();
-  writeStore(h.storePath, [turn("t1", NOW - 11 * MINUTE)]);
-  h.touch(60 * MINUTE);
-  const reading = h.read();
+  const reading = readingAfter(11 * MINUTE, 60 * MINUTE);
   assert.equal(reading.ageMs, 11 * MINUTE, "the store is as old as in the stale case: only the owed message differs");
   assert.equal(reading.working, false);
   assert.deepEqual(reading.unmet, []);
@@ -303,8 +302,7 @@ test("the incident is raised ONCE over three consecutive stale checks, and again
   writeStore(h.storePath, [turn("t1", NOW - 11 * MINUTE)]);
   const first = await check(NOW);
   assert.deepEqual(first.raised, ["comment", "order"]);
-  await check(NOW + 5 * MINUTE);
-  await check(NOW + 10 * MINUTE);
+  for (const at of [NOW + 5 * MINUTE, NOW + 10 * MINUTE]) await check(at);
   assert.equal(sent.comment.length, 1, "one comment on the standing row across three stale checks");
   assert.equal(sent.order.length, 1, "one order to the owning seat across the same three");
   assert.match(sent.comment[0], new RegExp(`class \`${INCIDENT_CLASS}\``));
@@ -317,8 +315,7 @@ test("the incident is raised ONCE over three consecutive stale checks, and again
   assert.equal(recovered.episode.open, false);
   assert.deepEqual(recovered.raised, []);
   // ... and then it goes stale again: a second incident, once.
-  await check(NOW + 30 * MINUTE);
-  await check(NOW + 35 * MINUTE);
+  for (const at of [NOW + 30 * MINUTE, NOW + 35 * MINUTE]) await check(at);
   assert.equal(sent.comment.length, 2, "a second comment, for the second episode");
   assert.equal(sent.order.length, 2, "a second order, for the second episode");
 });
@@ -510,15 +507,14 @@ test("`--freshness` exits 1 for a stale store and 0 for a fresh one, and 0 for a
   const h = cliHome();
   const now = Date.now();
   const touch = (ageMs: number) => { writeFileSync(h.transcript, `${message("assistant", now - ageMs)}\n`); setMtime(h.transcript, now - ageMs); };
-  writeStore(h.storePath, [turn("t1", now - 3 * MINUTE)]);
-  touch(2 * MINUTE);
-  const fresh = h.run("--freshness");
+  // One run, for a store whose one turn is `storeAge` old and a transcript last written `touchAge` ago.
+  const freshnessRun = (storeAge: number, touchAge: number) => { writeStore(h.storePath, [turn("t1", now - storeAge)]); touch(touchAge); return h.run("--freshness"); };
+  const fresh = freshnessRun(3 * MINUTE, 2 * MINUTE);
   assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
   assert.match(fresh.stdout, /not stale/);
 
-  writeStore(h.storePath, [turn("t1", now - 11 * MINUTE)]);
-  touch(11 * MINUTE); // owed a turn, which the store does not have: the message is past the ten-minute mark
-  const stale = h.run("--freshness");
+  // owed a turn, which the store does not have: the message is past the ten-minute mark
+  const stale = freshnessRun(11 * MINUTE, 11 * MINUTE);
   assert.equal(stale.status, 1, stale.stdout + stale.stderr);
   assert.match(stale.stdout, /STALE/);
 

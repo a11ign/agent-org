@@ -11,6 +11,7 @@ import { markWriterRunning, markWriterStarting, queueWriter, writerDrafted } fro
 import { remove as removeQueued } from "./queue/declared-remains.ts";
 import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
+import type { Outcome } from "./queue/declared-remains.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -35,6 +36,13 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
   };
   const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
   return { ...made, ticks, dir, hold: (now: typeof held.now) => { held.now = now; } };
+}
+
+/** Queues NBF-1 on board `b`, then sets its run finished with `outcome`. */
+async function queueFinished(b: ReturnType<typeof board>, outcome: Outcome): Promise<void> {
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome })) });
 }
 
 test("/api/parents reads the parents of the person's tickets that are not the person's own, and leaves out one it cannot read", async () => {
@@ -194,25 +202,22 @@ test("the board's queue starts paused, and Start and Pause go through the API", 
 
 test("approve queues a finished run's draft pull requests again as a review run", async () => {
   const b = board();
-  await b.api("GET", "/api/tickets", {});
-  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
   const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
-  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "draft-pr" as const, prs: [pr] } })) });
+  await queueFinished(b, { kind: "draft-pr", prs: [pr] });
   await b.api("POST", "/api/queue/NBF-1/approve", {});
   const [entry] = b.store.get().entries;
   assert.deepEqual([entry.phase, entry.review], ["queued", [pr]]);
   assert.ok(b.ticks.includes("tick"), "approving wakes the pool");
 });
 
+const READY_PR = { repo: "app", url: "https://github.com/x/app/pull/1" };
+
 test("Respond to review queues a review round of a run whose pull requests are ready, through the board", async () => {
   const b = board();
-  await b.api("GET", "/api/tickets", {});
-  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
-  const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
-  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "reviewed" as const, prs: [pr] } })) });
+  await queueFinished(b, { kind: "reviewed", prs: [READY_PR] });
   await b.api("POST", "/api/queue/NBF-1/respond", {});
   const [entry] = b.store.get().entries;
-  assert.deepEqual([entry.phase, entry.review, entry.asked], ["queued", [pr], true]);
+  assert.deepEqual([entry.phase, entry.review, entry.asked], ["queued", [READY_PR], true]);
   assert.ok(b.ticks.includes("tick"), "responding wakes the pool");
 });
 
@@ -222,10 +227,8 @@ test("Publish queues one publish run for the ticked runs Ready to merge on a mac
     const b = board(4747, publish ? { publish } : {});
     const [, config] = await b.api("GET", "/api/config", {}) as [number, { publish: boolean }];
     assert.equal(config.publish, expected);
-    await b.api("GET", "/api/tickets", {});
-    await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
     const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
-    b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "reviewed" as const, prs: [pr] } })) });
+    await queueFinished(b, { kind: "reviewed", prs: [pr] });
     if (!expected) {
       await assert.rejects(b.api("POST", "/api/publish", { keys: ["NBF-1"] }), /names no tickets.publish/);
       continue;
@@ -239,10 +242,8 @@ test("Publish queues one publish run for the ticked runs Ready to merge on a mac
 
 test("the queue the page reads carries the running publish run's workspace and pane, so each run it posts can link its terminal", async () => {
   const b = board(4747, { publish: { run: "Post {prs}, then write {dir}/published.json" } });
-  await b.api("GET", "/api/tickets", {});
-  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
   const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
-  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome: { kind: "reviewed" as const, prs: [pr] } })) });
+  await queueFinished(b, { kind: "reviewed", prs: [pr] });
   await b.api("POST", "/api/publish", { keys: ["NBF-1"] });
   const read = async () => (await b.api("GET", "/api/queue", {}) as [number, { publish: { phase: string; workspace?: string; pane?: string } }])[1].publish;
   const queued = await read();
@@ -288,12 +289,18 @@ test("the page is given the pattern a ticket's plan is named by, or null when th
   assert.equal(named.plan, "-plan-[^/]*\\.md$");
 });
 
-/** A board listening on a free port on 127.0.0.1, for `run`, then closed. */
-async function overHttp(run: (base: string) => Promise<void>, extra: Partial<BoardDeps> = {}) {
+/** A port on 127.0.0.1 that nothing listens on: one a probe server had, and gave back. */
+async function freePort(): Promise<number> {
   const probe: Server = createServer();
   await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
   const port = (probe.address() as { port: number }).port;
   await new Promise<void>((done) => probe.close(() => done()));
+  return port;
+}
+
+/** A board listening on a free port on 127.0.0.1, for `run`, then closed. */
+async function overHttp(run: (base: string) => Promise<void>, extra: Partial<BoardDeps> = {}) {
+  const port = await freePort();
   const b = board(port, {}, extra);
   const server = createServer((req, res) => { void b.handle(req, res); });
   await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
@@ -503,10 +510,7 @@ test("A11-84: a child that cannot be started is an ERROR line, first line only, 
 });
 
 test("the instance mints a worker terminal's code for its key only, and says why there is none when the terminal is not set", async () => {
-  const probe = createServer();
-  await new Promise<void>((done) => probe.listen(0, "127.0.0.1", done));
-  const port = (probe.address() as { port: number }).port;
-  await new Promise<void>((done) => probe.close(() => done()));
+  const port = await freePort();
   const made = board(port, {}, { mintTerminal: async () => ({ code: "123456" }) });
   const server = createServer((request, response) => { void made.handle(request, response); });
   await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
@@ -545,6 +549,12 @@ function creating() {
 }
 
 /** A writer run that left one valid draft, as the pool hands the board, with the board's store set to it. */
+/** The writer's board, whose tracker creates the tickets it approves, and the list of the tickets created. */
+function writerBoard() {
+  const { tracker, created } = creating();
+  return { b: board(4747, WRITER, {}, tracker), created };
+}
+
 function withDraft(b: ReturnType<typeof board>, id = "w7", duplicates: { key: string; why: string }[] = []) {
   const draft = { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"], notes: null, team: null, project: null, repo: null, goal: null, labels: [], priority: "none",
     parent: null, blocks: [], blockedBy: [], duplicates } as never;
@@ -582,8 +592,7 @@ test("grill is refused without a terminal, and a machine with no writer writes n
 });
 
 test("only the approve route creates a ticket: it creates the one the person approved, and a discard, a stop or a dismiss creates none", async () => {
-  const { tracker, created } = creating();
-  const b = board(4747, WRITER, {}, tracker);
+  const { b, created } = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });
   withDraft(b);
   await b.api("GET", "/api/writer", {});
@@ -597,8 +606,7 @@ test("only the approve route creates a ticket: it creates the one the person app
 });
 
 test("approve creates the ticket with the person's edited fields and answers it; approve and queue queues it with the saved choice and plan first when asked", async () => {
-  const { tracker, created } = creating();
-  const b = board(4747, WRITER, {}, tracker);
+  const { b, created } = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });
   withDraft(b);
   const [status, answer] = await b.api("POST", "/api/writer/w7/drafts/d1/approve", { draft: { title: "feat: an edited title", why: "A person asks", doneWhen: ["It lists them"] }, queue: true, plan: false }) as [number, any];
@@ -614,8 +622,7 @@ test("approve creates the ticket with the person's edited fields and answers it;
 });
 
 test("the approve route refuses a duplicate until it is acknowledged, and a parent it cannot queue is said, with the ticket kept", async () => {
-  const { tracker, created } = creating();
-  const b = board(4747, WRITER, {}, tracker);
+  const { b, created } = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });
   // The duplicate is one the writer named in the draft: an edit cannot drop it, so the check is the draft's own.
   withDraft(b, "w7", [{ key: "NBF-1", why: "same request" }]);

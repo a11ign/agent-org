@@ -322,11 +322,15 @@ function moveThroughScope(context: ReturnType<typeof contextOf>, counter: { muta
   };
 }
 
-function settleCounted(n: number, answer: (issue: number) => string, { lookup = true } = {}) {
+/** A fresh scoped record, one answering request, the context built on it, and a mutation counter. */
+function scopedRun(answer: (issue: number) => string) {
   forgetScopedSnapshots();
   const { request, argv } = requestOf(answer);
-  const context = contextOf(request);
-  const counter = { mutations: 0 };
+  return { argv, context: contextOf(request), counter: { mutations: 0 } };
+}
+
+function settleCounted(n: number, answer: (issue: number) => string, { lookup = true } = {}) {
+  const { argv, context, counter } = scopedRun(answer);
   const outcome = settleClosedStatus(n, { moveStatus: moveThroughScope(context, counter), log: () => {},
     ...(lookup ? { currentStatus: (issue: number) => scopedStatusOf(issue, context) } : {}) });
   return { requests: argv.length, mutations: counter.mutations, outcome };
@@ -386,10 +390,7 @@ const unreadableProject = (): string => {
 
 /** The close path over `rows` in ONE process: one scoped context, and the lookup and move as the entry points build them. */
 function settleRows(rows: number[], answer: (issue: number) => string) {
-  forgetScopedSnapshots();
-  const { request, argv } = requestOf(answer);
-  const context = contextOf(request);
-  const counter = { mutations: 0 };
+  const { argv, context, counter } = scopedRun(answer);
   const outcomes = rows.map((n) => settleClosedStatus(n, { moveStatus: moveThroughScope(context, counter),
     log: () => {}, currentStatus: (issue: number) => scopedStatusOf(issue, context) }));
   return { requests: argv.length, mutations: counter.mutations, outcomes };

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { eventsOfTranscript, ToolRead, Tokens } from "./store.ts";
 import { BETWEEN, duration, Phase, PHASES, renderWaterfall, Spend, Repeat, waterfall } from "./waterfall.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const REPO_ROW = 9001;
 const PR = 9100;
@@ -293,18 +294,26 @@ test("NOT HELD vs NOT REACHED: a phase with no start record says what is missing
   assert.match(empty, /no phase has a record in the store/);
 });
 
-test("PRINT: the eight phases in order, each with wall-clock, WORKING, WAITING, unexplained, dollars and tokens", () => {
+const PRINTED_LINES = [
+  { name: "the header names the row and the reading time", pattern: /^WATERFALL row #9001 {2}\(read 2026-10-04 13:30:00Z\)/ },
+  { name: "the whole row's wall-clock is split into WORKING, WAITING and unexplained", pattern: /whole row 2026-10-04 10:00:00 -> 2026-10-04 12:50:05: wall-clock 2h50m05s = WORKING \S+ \+ WAITING \S+ \+ unexplained \S+/ },
+  { name: "a phase line carries its wall-clock and split", pattern: /verify +ENDED +wall-clock 30m00s \(exclusive \S+\) = WORKING 2m00s \+ WAITING 28m00s \+ unexplained 0s/ },
+  { name: "a waiting line names what it waited on", pattern: /WAITING +18m00s {2}approved draft #9100 not yet marked ready, waiting on orchestrator {2}\[INFERRED from: review 5001 APPROVED/ },
+  { name: "a repeated review at the same head is named", pattern: /REPEAT second review at the same head: #9100: review 5003 at head 2222222 after review 5002/ },
+  { name: "a repeated re-queue at the same head is named", pattern: /REPEAT re-queue at the same head/ },
+  { name: "a gap between phases is named", pattern: /between +ENDED/ },
+  { name: "the note that phases overlap", pattern: /phases overlap, so their wall-clocks add to more than the row's/ },
+];
+
+testEach("PRINT: the eight phases in order, each with wall-clock, WORKING, WAITING, unexplained, dollars and tokens", PRINTED_LINES, (c) => {
+  const text = renderWaterfall(waterfall({ events: ROW, now: NOW }), { title: "row #9001", now: NOW }).join("\n");
+  assert.match(text, c.pattern);
+});
+
+test("PRINT: the eight phases are printed in their order, each as an ENDED line", () => {
   const text = renderWaterfall(waterfall({ events: ROW, now: NOW }), { title: "row #9001", now: NOW }).join("\n");
   const order = PHASES.map((name) => text.search(new RegExp(`^  ${name.padEnd(7)} ENDED`, "m")));
   assert.ok(order.every((place, index) => place >= 0 && (index === 0 || place > order[index - 1])), `phases in order: ${order}`);
-  assert.match(text, /^WATERFALL row #9001 {2}\(read 2026-10-04 13:30:00Z\)/);
-  assert.match(text, /whole row 2026-10-04 10:00:00 -> 2026-10-04 12:50:05: wall-clock 2h50m05s = WORKING \S+ \+ WAITING \S+ \+ unexplained \S+/);
-  assert.match(text, /verify +ENDED +wall-clock 30m00s \(exclusive \S+\) = WORKING 2m00s \+ WAITING 28m00s \+ unexplained 0s/);
-  assert.match(text, /WAITING +18m00s {2}approved draft #9100 not yet marked ready, waiting on orchestrator {2}\[INFERRED from: review 5001 APPROVED/);
-  assert.match(text, /REPEAT second review at the same head: #9100: review 5003 at head 2222222 after review 5002/);
-  assert.match(text, /REPEAT re-queue at the same head/);
-  assert.match(text, /between +ENDED/);
-  assert.match(text, /phases overlap, so their wall-clocks add to more than the row's/);
 });
 
 test("DURATION: seconds, minutes and hours", () => {

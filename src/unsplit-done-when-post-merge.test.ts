@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createIssue } from "./row-file/roadmap-without-parent-refusal.ts";
 import { liveCheckItems, unfinishableItems, unsplitDoneWhenRefusal } from "./unsplit-done-when.ts";
+import { testEach } from "./lib/test-each.ts";
 
 const NOW = new Date("2026-10-10T20:40:00Z");
 const HEAD = "## Region\n\nscripts/foo.ts\n\n## Acceptance\n\n```\nnpx tsx --test src/foo.test.ts\n```\n\n## Open-check\n\n```\ngit grep -n foo origin/main | wc -l\n0\n```\n\n";
@@ -28,16 +29,17 @@ const ROW_475 = "1. The Acceptance passes and the PR is merged.\n"
 // agent-org#560, filed 2026-10-09T21:25Z, whole Done-when section.
 const ROW_560 = "1. The Acceptance passes and the pull request is merged.\n2. `a11ign#4623` is told on its row that the fix is in force, with the merge commit.";
 
-test("1. THE FAILING CASE: the Done-when of #475 and of #560 each name a `post-merge-act` (both read `[]` before), and ONLY that item", () => {
-  const found475 = findings(bodyWith(ROW_475));
-  assert.deepEqual(found475.map((item) => item.kind), ["post-merge-act"]);
-  assert.match(found475[0].text, /^`compact-store --dry-run` is run on the host against the live store/);
-  assert.match(found475[0].evidence, /run on the host/);
-  const found560 = findings(bodyWith(ROW_560));
-  assert.deepEqual(found560.map((item) => item.kind), ["post-merge-act"]);
-  assert.match(found560[0].text, /^`a11ign#4623` is told on its row that the fix is in force/);
-  assert.match(found560[0].evidence, /told on its row that the fix is in force/);
-  for (const found of [...found475, ...found560]) assert.deepEqual(found.rows, [], "an act names no row whose outcome it waits for");
+const FAILING_ROWS = [
+  { name: "#475", row: ROW_475, text: /^`compact-store --dry-run` is run on the host against the live store/, evidence: /run on the host/ },
+  { name: "#560", row: ROW_560, text: /^`a11ign#4623` is told on its row that the fix is in force/, evidence: /told on its row that the fix is in force/ },
+];
+
+testEach("1. THE FAILING CASE: the Done-when of #475 and of #560 each name a `post-merge-act` (both read `[]` before), and ONLY that item", FAILING_ROWS, (c) => {
+  const found = findings(bodyWith(c.row));
+  assert.deepEqual(found.map((item) => item.kind), ["post-merge-act"]);
+  assert.match(found[0].text, c.text);
+  assert.match(found[0].evidence, c.evidence);
+  for (const item of found) assert.deepEqual(item.rows, [], "an act names no row whose outcome it waits for");
 });
 
 test("2. NEGATIVE: the row's own first item and a lint item are not flagged, alone or beside a flagged one", () => {

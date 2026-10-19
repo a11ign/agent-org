@@ -890,6 +890,9 @@ export function specBlockRefusal(body: string): string | null {
  * @returns {string | null}
  */
 
+/** The `row-file:` refusal a check's reason makes, or `null` when the check passed (an empty reason passed). */
+const rowFileRefusalOf = (reason: string | null | undefined): string | null => (reason ? `row-file: ${reason}` : null);
+
 export function fileRefusalReason(body: string | null, options: { specBlock?: boolean } = {}): string | null {
   if (body === null) {
     return "row-file: no --body or --body-file (or --body-file -) found in these arguments -- this tool "
@@ -911,12 +914,9 @@ export function fileRefusalReason(body: string | null, options: { specBlock?: bo
   }
   const unreadableWait = unreadableWaitReason(body);
   if (unreadableWait) return unreadableWait;
-  const region = regionRefusalReason(body);
-  if (region) return `row-file: ${region}`;
-  const bareKeyed = bareKeyedRegionReason(body);
-  if (bareKeyed) return `row-file: ${bareKeyed}`;
-  const openCheck = openCheckTranscriptRefusal(body);
-  if (openCheck) return `row-file: ${openCheck}`;
+  // The first of the three that refuses, asked in this order: `??` stops at the first refusal, so the later checks are not asked.
+  const regionRefusal = rowFileRefusalOf(regionRefusalReason(body)) ?? rowFileRefusalOf(bareKeyedRegionReason(body)) ?? rowFileRefusalOf(openCheckTranscriptRefusal(body));
+  if (regionRefusal) return regionRefusal;
   // PRESENCE FIRST, THEN CONTENT. A row with no Acceptance section is refused above for that reason; a
   // row whose Acceptance names the whole suite has the section and cannot be run from it, and the two
   // refusals must not be collapsed -- the fix for each is different, which is the same argument

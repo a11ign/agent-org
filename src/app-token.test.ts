@@ -251,6 +251,13 @@ function host(wrapper = WRAPPER) {
   const lines = () => (existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n").filter(Boolean) : []);
   return { root, tokens, run, seed, mints, lines, ledger, handed };
 }
+
+/** A host with the given app tokens seeded, as `[role, token]` pairs. */
+function seededHost(...seeds: [string, string][]) {
+  const h = host();
+  for (const [role, token] of seeds) h.seed(role, token);
+  return h;
+}
 const tokenOf = (stdout: string) => /^token=(\S+)/.exec(stdout)?.[1];
 const WORKERS_CFG = (h: { root: string }) => join(h.root, "workers", "gh");
 const LEADS_CFG = (h: { root: string }) => join(h.root, "leads", "gh");
@@ -291,8 +298,7 @@ test("#817: an explicit GH_CONFIG_DIR that is neither the workers' nor the leads
 });
 
 test("#817: `AGENT_ORG_GH_ROLE` still wins over a config of its own, and a unit's own config with no workspace is no app either", () => {
-  const h = host();
-  h.seed("scheduler", "ghs_scheduler"); h.seed("workers", "ghs_workers");
+  const h = seededHost(["scheduler", "ghs_scheduler"], ["workers", "ghs_workers"]);
   const own = reviewerConfig(h);
   assert.equal(tokenOf(h.run({ HERDR_WORKSPACE_ID: "w3", GH_CONFIG_DIR: own, AGENT_ORG_GH_ROLE: "scheduler" }, "pr", "list").stdout), "ghs_scheduler",
     "a caller that declares its role is not second-guessed by its directory");

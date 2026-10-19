@@ -156,8 +156,7 @@ test("acceptanceReport: a REFUSED Refutation: command (fleet/lab/corpus) never c
 
 test("acceptanceReport: Acceptance: MISSING still fails the whole report even when Refutation: is present "
   + "and would otherwise pass -- Acceptance is mandatory, Refutation is not", () => {
-  const body = "Refutation: node -e \"process.exit(1)\"";
-  const report = acceptanceReport(body, () => 1);
+  const report = acceptanceReport("Refutation: node -e \"process.exit(1)\"", () => 1);
   assert.equal(report.ok, false);
   assert.equal(report.lines[0], "ACCEPTANCE: MISSING");
 });

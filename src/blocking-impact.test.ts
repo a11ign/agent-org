@@ -292,6 +292,20 @@ function tickThrough(dir: string, { from, to, count }: { from: number; to: numbe
   return orders;
 }
 
+/** The product-manager order after an hour of ticks every 5 minutes, with `open` as the board the resolver reads. */
+function escalationAnHourLater(dir: string, open: { rows?: object[]; prs?: object[] }) {
+  const orders = [];
+  for (let minute = 0; minute <= 60; minute += 5) {
+    orders.push(...blockingImpactTick({ blocked: behind(100, 5), resolve: keyedResolver(open), stateDir: dir, now: T0 + minute * MINUTE, comment: () => {}, log: () => {} }));
+  }
+  return orders.find((o) => o.session === "product-manager");
+}
+
+/** The parsed failure ledger under `dir`. */
+function ledgerOf(dir: string) {
+  return parseFailureLedger(readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"));
+}
+
 test("the live tick records the incident once, comments on the held row for the incident and for its escalation, wakes the holder once, escalates once, and prints each holder's count", () => {
   inScratch((dir) => {
     const seen = { comments: [] as [number, string][], log: [] as string[] };
@@ -323,7 +337,7 @@ test("positive control: an episode fired at 30 with 5 rows still shelved at 60 r
     assert.deepEqual(tickAt(dir, 62, 5, seen), [], "nor the one after");
     assert.deepEqual(seen.comments.map(([row]) => row), [100, 100], "the row write for the incident, and one for the escalation");
     assert.match(seen.comments[1][1], /lock-gridlock-escalated: worker-a since/);
-    const ledger = parseFailureLedger(readFileSync(join(dir, FAILURE_LEDGER_FILE), "utf8"));
+    const ledger = ledgerOf(dir);
     assert.deepEqual(ledger.map((e) => e.classKey), [LOCK_GRIDLOCK_KIND], "the escalation writes no ledger line: still one occurrence");
   });
 });
@@ -401,11 +415,7 @@ test("the escalation reads the holder's pull request and its review decision thr
 test("the escalation says the holder has no pull request the gate can read when its only pull request closes another row", () => {
   inScratch((dir) => {
     const open = { rows: [{ number: 100, session: "worker-a" }], prs: [{ number: 300, session: "worker-a", closes: [999], reviewDecision: "APPROVED" }] };
-    const orders = [];
-    for (let minute = 0; minute <= 60; minute += 5) {
-      orders.push(...blockingImpactTick({ blocked: behind(100, 5), resolve: keyedResolver(open), stateDir: dir, now: T0 + minute * MINUTE, comment: () => {}, log: () => {} }));
-    }
-    const escalation = orders.find((o) => o.session === "product-manager");
+    const escalation = escalationAnHourLater(dir, open);
     assert.ok(escalation, "the escalation is raised at 60");
     assert.match(escalation.prompt, /worker-a has no open pull request the gate could read/);
   });

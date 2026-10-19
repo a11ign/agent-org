@@ -97,6 +97,7 @@ import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fiel
 import { scopeHash, claimedScopeOf, CLAIM_RECORD_SCOPE } from "./claim-scope.ts"; // #4759: the leaf the tick compares the record with the live row from
 import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 import { stateEntryPath } from "./host-config.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { CLAIM_GUARD_HELD_KIND, CLAIM_REFUSED_KIND, FAILURE_LEDGER_FILE, recordFailure } from "./failure-ledger.ts"; // #972: a refusal is a line of the ledger the storm signal reads
 // #2031 EXTRACTED THE RULE THIS FILE DEFINED, and the extraction is the whole of this file's change.
 // `work-gate.ts` now asks the same question of every Ready row, and #2031's own filing names the reason
@@ -1115,6 +1116,30 @@ function failureReport(error: unknown): { exitCode: number; text: string; } {
   if (landedWritesOf(error) === null) return { exitCode: 2, text: `COULD NOT DETERMINE: ${message}` };
   return { exitCode: LANDED_WRITE_EXIT, text: `PARTIALLY WRITTEN (exit ${LANDED_WRITE_EXIT}, NOT "could not determine" `
     + `-- the row has changed): ${message}. Read the row by REST before retrying or editing it by hand.` };
+}
+
+/**
+ * The `NOT CLAIMED:` line of a refused claim or decline, the same line in the failure ledger, and exit 1.
+ * @param {string} refusal
+ */
+function refuseClaim(refusal: string): void {
+  process.stdout.write(`NOT CLAIMED: ${refusal}\n`);
+  recordClaimRefusal(refusal);
+  process.exitCode = 1;
+}
+
+/**
+ * The catch of every claim and decline: names a thrown error on stderr, records it as a refusal unless a
+ * write landed, and returns the exit code to set.
+ * @param {unknown} error
+ * @returns {number}
+ */
+function reportFailure(error: unknown): number {
+  const report = failureReport(error);
+  process.stderr.write(`${report.text}\n`);
+  // #972: only the "could not determine" outcome is a refusal; a partial write is not one, and says so on its own line.
+  if (report.exitCode !== LANDED_WRITE_EXIT) recordClaimRefusal((error as Error).message);
+  return report.exitCode;
 }
 
 /**
@@ -2906,6 +2931,22 @@ function renderStatus(issueNumber: number, title: string, status: { claimed: boo
     recordCheckSafely({ issueNumber, claimed: false, started: false, sessions: [], reachability });
     return;
   }
+  printClaimedRow({ subject: `#${issueNumber}`, title, filedBy, status, recorded });
+  recordCheckSafely({ issueNumber, claimed: true, started: status.started, sessions: status.sessions,
+    reachability: null });
+}
+
+/**
+ * The line a claimed row prints, and exit 1: who holds it, and the branch and worktree recorded for it.
+ * @param {{ subject: string, title: string, filedBy: string, status: { started: boolean, sessions: string[] },
+ *   recorded: { branch: string | null, worktree: string | null } }} line `subject` is the row's name as it
+ *   reads on the line: `#7`, or `<key>#7` for a row of another tracker.
+ */
+function printClaimedRow({ subject, title, filedBy, status, recorded }: {
+  subject: string; title: string; filedBy: string;
+  status: { started: boolean; sessions: string[]; };
+  recorded: { branch: string | null; worktree: string | null; };
+}): void {
   const by = status.sessions.length > 0 ? status.sessions.join(", ") : "someone (no session label yet)";
   const state = status.started ? "STARTED" : "DISPATCHED (not started)";
   // #656: THE RECORDED BRANCH, so a session weighing whether to escalate can tell a portable claim (no
@@ -2915,11 +2956,9 @@ function renderStatus(issueNumber: number, title: string, status: { claimed: boo
   // #665: THE RECORDED WORKTREE, for the identical reason -- and so a session reading a stale-looking
   // claim can see, from the board alone, whether a local directory is what is actually holding it open.
   const worktreeSuffix = recorded.worktree ? `, worktree ${recorded.worktree}` : "";
-  process.stdout.write(`${state} by ${by}${branchSuffix}${worktreeSuffix} -- #${issueNumber} "${title}" `
+  process.stdout.write(`${state} by ${by}${branchSuffix}${worktreeSuffix} -- ${subject} "${title}" `
     + `-- Filed-by: ${filedBy}\n`);
   process.exitCode = 1;
-  recordCheckSafely({ issueNumber, claimed: true, started: status.started, sessions: status.sessions,
-    reachability: null });
 }
 
 /**
@@ -3168,12 +3207,7 @@ function renderTrackerStatus(tracker: Tracker, { issueNumber, title, status, bod
     recordCheckSafely({ issueNumber, tracker: tracker.key, claimed: false, started: false, sessions: [], reachability: null });
     return;
   }
-  const by = status.sessions.length > 0 ? status.sessions.join(", ") : "someone (no session label yet)";
-  const state = status.started ? "STARTED" : "DISPATCHED (not started)";
-  const branchSuffix = recorded.branch ? `, branch ${recorded.branch}` : "";
-  const worktreeSuffix = recorded.worktree ? `, worktree ${recorded.worktree}` : "";
-  process.stdout.write(`${state} by ${by}${branchSuffix}${worktreeSuffix} -- ${name} "${title}" -- Filed-by: ${filedBy}\n`);
-  process.exitCode = 1;
+  printClaimedRow({ subject: name, title, filedBy, status, recorded });
   recordCheckSafely({ issueNumber, tracker: tracker.key, claimed: true, started: status.started, sessions: status.sessions, reachability: null });
 }
 
@@ -3322,9 +3356,7 @@ function recordHeldRow(mySession: string, issueNumber: number): void {
 function runDeclineOrConflict(mode: "decline" | "conflict", issueNumber: number, rest: string[]) {
   const refusal = trackerClaimRefusal({ mode, key: trackerKeyOf(rest), number: issueNumber });
   if (refusal) {
-    process.stdout.write(`NOT CLAIMED: ${refusal}\n`);
-    recordClaimRefusal(refusal);
-    process.exitCode = 1;
+    refuseClaim(refusal);
     return;
   }
   if (mode === "decline") runDecline(issueNumber, rest);
@@ -3425,17 +3457,13 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
   // #2617: A ROW OF ANOTHER TRACKER is named per decision 2 and refused before any write when it is not (agent-org#575, a11ign/a11ign#4737).
   const trackerRefusal = trackerClaimRefusal({ mode, key: trackerKeyOf(rest), number: issueNumber, session: mySession, worktree });
   if (trackerRefusal) {
-    process.stdout.write(`NOT CLAIMED: ${trackerRefusal}\n`);
-    recordClaimRefusal(trackerRefusal);
-    process.exitCode = 1;
+    refuseClaim(trackerRefusal);
     return;
   }
   const key = trackerKeyOf(rest);
   const cloned = claimCloneFor(key, { branch, worktree });
   if (cloned !== null && "refusal" in cloned) {
-    process.stdout.write(`NOT CLAIMED: ${cloned.refusal}\n`);
-    recordClaimRefusal(cloned.refusal);
-    process.exitCode = 1;
+    refuseClaim(cloned.refusal);
     return;
   }
   try {
@@ -3467,17 +3495,11 @@ function runDispatchOrClaim(mode: "dispatch" | "claim", issueNumber: number, res
         process.exitCode = 3;
       }
     } else {
-      process.stdout.write(`NOT CLAIMED: ${result.reason}\n`);
-      recordClaimRefusal(result.reason);
-      process.exitCode = 1;
+      refuseClaim(result.reason);
     }
   } catch (error) {
     // #1399: a failure after a landed write exits LANDED_WRITE_EXIT and names the writes; otherwise exit 2.
-    const report = failureReport(error);
-    process.stderr.write(`${report.text}\n`);
-    // #972: only the "could not determine" outcome is a refusal; a partial write is not one, and says so on its own line.
-    if (report.exitCode !== LANDED_WRITE_EXIT) recordClaimRefusal((error as Error).message);
-    process.exitCode = report.exitCode;
+    process.exitCode = reportFailure(error);
   }
 }
 
@@ -3553,11 +3575,7 @@ function runDecline(issueNumber: number, rest: string[]) {
     }
   } catch (error) {
     // #1399: a failure after a landed write exits LANDED_WRITE_EXIT and names the writes; otherwise exit 2.
-    const report = failureReport(error);
-    process.stderr.write(`${report.text}\n`);
-    // #972: only the "could not determine" outcome is a refusal; a partial write is not one, and says so on its own line.
-    if (report.exitCode !== LANDED_WRITE_EXIT) recordClaimRefusal((error as Error).message);
-    process.exitCode = report.exitCode;
+    process.exitCode = reportFailure(error);
   }
 }
 

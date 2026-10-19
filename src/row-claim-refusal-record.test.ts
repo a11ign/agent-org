@@ -50,6 +50,9 @@ function claimIn(home: string) {
 /** The ledger under HOME: the declared host sets no `stateDir`, so `host-config.ts`'s `stateEntryPath` falls back to `${HOME}/.cache/a11ign`. A directory tree, so a test can read the line the tool wrote. */
 const ledgerUnder = (home: string): string => join(home, ".cache", "a11ign", "failure-ledger");
 
+/** The entries under HOME, parsed, so a test reads them as the next tool would. */
+const ledgerEntriesUnder = (home: string) => parseFailureLedger(readFileSync(ledgerUnder(home), "utf8"));
+
 test("a refused claim leaves exactly one claim-refused line, whose reason is the refusal's first line", () => {
   const home = join(SCRATCH, "home-refused");
   mkdirSync(home, { recursive: true });
@@ -105,9 +108,9 @@ test("a decline that cannot read its row says COULD NOT DETERMINE, exits 2, and 
   // gh's own stderr comes first; the tool's verdict is the line that names the outcome.
   const printed = run.stderr.split("\n").find((line) => line.startsWith("COULD NOT DETERMINE: ")) ?? "";
   assert.notEqual(printed, "", "the verdict the tool printed is the could-not-determine one");
-  const lines = readFileSync(ledgerUnder(home), "utf8").split("\n").filter((line) => line !== "");
-  assert.equal(lines.length, 1, "one refusal, one line");
-  const [entry] = parseFailureLedger(lines.join("\n"));
+  const entries = ledgerEntriesUnder(home);
+  assert.equal(entries.length, 1, "one refusal, one line");
+  const [entry] = entries;
   assert.equal(entry.classKey, CLAIM_REFUSED_KIND);
   assert.equal(entry.ref, printed.slice("COULD NOT DETERMINE: ".length), "the reason is the printed message's first line");
 });

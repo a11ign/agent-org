@@ -13,6 +13,12 @@ import type { Draft } from "./writer.ts";
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const choice = { model: "opus", effort: "high" };
 const keys = (queue: Queue) => queue.entries.map((e) => e.ticket.key);
+/** Ticket A queued on a two-slot queue, not started. */
+const queuedA = () => enqueue(emptyQueue(2), [ticket("A")], choice, 1);
+/** Ticket A started on a one-slot queue, running on worker w1 in pane w1:p1. */
+const runningA = () => markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+/** Ticket A running on w1, with a working note, "the roll is still running", kept at 50 and set at 1000. */
+const workingA = () => noteWorking(runningA(), "A", "the roll is still running", 50, 1000);
 
 test("enqueue adds what you selected, in order, once each, with no repository until the worker chooses", () => {
   let queue = enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1);
@@ -129,7 +135,7 @@ test("amend and remove touch a queued entry only", () => {
 });
 
 test("a new queue is paused, and nothing starts until it is started; pausing again stops new starts", () => {
-  let queue = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
+  let queue = queuedA();
   assert.equal(queue.paused, true, "queueing is never also starting");
   assert.deepEqual(nextStarts(queue, 0, 14), []);
   queue = resumeQueue(queue);
@@ -186,7 +192,7 @@ test("retry puts a finished entry back at the end, except a draft pull request, 
 test("the queue file round-trips, and a missing one is an empty queue", () => {
   const path = join(tmpDir("ticket-queue-"), "tickets", "queue.json");
   assert.deepEqual(loadQueue(path, 4), emptyQueue(4));
-  const queue = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
+  const queue = queuedA();
   saveQueue(path, queue);
   assert.deepEqual(loadQueue(path, 9), queue, "the saved max wins over the default");
   saveQueue(path, resumeQueue(queue));
@@ -517,7 +523,7 @@ test("the live runs are the starting and running ones, a batch counted once, and
 });
 
 test("A11-80: a working note keeps a running run running; only a newer one replaces it, and the outcome the run ends on drops it", () => {
-  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const running = runningA();
   const noted = noteWorking(running, "A", "the roll is still running", 50, 60);
   const a = (q: Queue) => q.entries[0];
   assert.deepEqual([a(noted).phase, a(noted).working], ["running", { reason: "the roll is still running", at: 50, idleSince: 60 }]);
@@ -529,7 +535,7 @@ test("A11-80: a working note keeps a running run running; only a newer one repla
 });
 
 test("A11-80: a working run idle with no newer outcome for the stall time is marked stalled, and working again clears the clock", () => {
-  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const running = runningA();
   const stall = 30 * 60_000;
   const noted = noteWorking(running, "A", "the roll is still running", 50, 1000);
   const note = (q: Queue) => q.entries[0].working;
@@ -544,9 +550,8 @@ test("A11-80: a working run idle with no newer outcome for the stall time is mar
 });
 
 test("A11-85: an idle working run with no background work is stalled by background work gone once BACKGROUND_GONE_MS has passed, and resumed once", () => {
-  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
   const stall = 30 * 60_000;
-  const noted = noteWorking(running, "A", "the roll is still running", 50, 1000);
+  const noted = workingA();
   const note = (q: Queue) => q.entries[0].working;
   const none = (q: Queue, now: number) => watchWorking(q, "A", "idle", now, stall, "none");
   const first = none(noted, 1000);
@@ -559,7 +564,7 @@ test("A11-85: an idle working run with no background work is stalled by backgrou
 });
 
 test("A11-85: a shell or a Monitor on the pane clears the gone mark, and a pane that cannot be read changes nothing of it", () => {
-  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const running = runningA();
   const noted = noteWorking(running, "A", "the roll is still running", 50, 1000);
   const note = (q: Queue) => q.entries[0].working;
   const started = watchWorking(noted, "A", "idle", 1000, 30 * 60_000, "none");
@@ -572,7 +577,7 @@ test("A11-85: a shell or a Monitor on the pane clears the gone mark, and a pane 
 });
 
 test("A11-85: a newer working note keeps the resume, so the worker is not prompted twice, and working status clears the stall but not the resume", () => {
-  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1");
+  const running = runningA();
   const note = (q: Queue) => q.entries[0].working;
   const started = watchWorking(noteWorking(running, "A", "first", 50, 1000), "A", "idle", 1000, 30 * 60_000, "none");
   const gone = watchWorking(started, "A", "idle", 1000 + BACKGROUND_GONE_MS, 30 * 60_000, "none");
@@ -644,7 +649,7 @@ test("A11-82: paths are recorded on queued runs only, and the files of a pull re
   assert.deepEqual(a(started).paths, ["app:a.ts"], "a started run keeps what it started with");
   const finished = recordPullFiles(endedWith({ kind: "draft-pr", prs: [pr] }), "A", { [pr.url]: ["src/c.ts"] });
   assert.deepEqual(a(finished).pullFiles, { [pr.url]: ["src/c.ts"] });
-  assert.equal(recordPullFiles(enqueue(emptyQueue(2), [ticket("A")], choice, 1), "A", { [pr.url]: ["x"] }).entries[0].pullFiles, undefined, "a queued run has no pull request to read");
+  assert.equal(recordPullFiles(queuedA(), "A", { [pr.url]: ["x"] }).entries[0].pullFiles, undefined, "a queued run has no pull request to read");
 });
 
 test("a verdict that is not on a finished run's pull request is recorded on the run, and cleared once a review is on it", () => {
@@ -655,7 +660,7 @@ test("a verdict that is not on a finished run's pull request is recorded on the 
   const cleared = recordVerdictNotPosted(said, "A", undefined);
   assert.equal("verdictNotPosted" in a(cleared), false, "cleared: the key is gone, not left undefined");
   assert.deepEqual(a(cleared), a(finished), "and the run is otherwise as it was");
-  const queued = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
+  const queued = queuedA();
   assert.equal("verdictNotPosted" in recordVerdictNotPosted(queued, "A", "x").entries[0], false, "a queued run has no pull request to say of");
 });
 
@@ -668,8 +673,7 @@ test("A11-106: what a finished run's stacked pull requests need said of their ba
   const cleared = recordRetargets(said, "A", undefined);
   assert.equal("retargets" in a(cleared), false, "cleared: the key is gone, not left undefined");
   assert.deepEqual(a(cleared), a(finished), "and the run is otherwise as it was");
-  const queued = enqueue(emptyQueue(2), [ticket("A")], choice, 1);
-  assert.equal("retargets" in recordRetargets(queued, "A", note).entries[0], false, "a queued run has no pull request to say of");
+  assert.equal("retargets" in recordRetargets(queuedA(), "A", note).entries[0], false, "a queued run has no pull request to say of");
 });
 
 /*

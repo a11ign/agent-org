@@ -46,15 +46,21 @@ const head = (remaining: number) => probeOf(remaining)
   .replace("HTTP/2 200", "HTTP/2.0 403 Forbidden")
   .replace("\n\n", `\nX-Ratelimit-Reset: ${Math.floor(Date.now() / 1000) + 1800}\n\n`);
 
+/** A scratch root holding a config directory whose hosts file names the account, as an account's own config does. */
+function accountConfig(prefix: string) {
+  const root = tmpDir(prefix);
+  const cfg = join(root, "cfg");
+  mkdirSync(cfg);
+  writeFileSync(join(cfg, "hosts.yml"), "github.com:\n    user: a11ign-ai-workers\n    oauth_token: not-a-token\n");
+  return { root, cfg };
+}
+
 /**
  * A host whose stub `gh-real` answers the wrapper's probe (`-i`) with `headers` and refuses every other call with `reply`. Its env is the
  * account's own: a config that names no role, so the pacing directory is `account`.
  */
 function refusingHost({ reply, headers }: { reply: string; headers: string; }) {
-  const root = tmpDir("gh-secondary-1518-");
-  const cfg = join(root, "cfg");
-  mkdirSync(cfg);
-  writeFileSync(join(cfg, "hosts.yml"), "github.com:\n    user: a11ign-ai-workers\n    oauth_token: not-a-token\n");
+  const { root, cfg } = accountConfig("gh-secondary-1518-");
   writeFileSync(join(root, "headers"), headers);
   const stub = join(root, "gh-real");
   writeFileSync(stub, ["#!/bin/sh", `if [ "$2" = -i ]; then cat "${root}/headers"; exit 0; fi`, `printf '%s\\n' '${reply}' >&2`, "exit 1", ""].join("\n"), { mode: 0o755 });
@@ -98,10 +104,7 @@ const IN_FLIGHT = 2;
  * call starts, E when it ends) and the admissions the wrapper recorded, in its own clock.
  */
 async function pacedRun(env: Record<string, string>) {
-  const root = tmpDir("gh-pace-1518-");
-  const cfg = join(root, "cfg");
-  mkdirSync(cfg);
-  writeFileSync(join(cfg, "hosts.yml"), "github.com:\n    user: a11ign-ai-workers\n    oauth_token: not-a-token\n");
+  const { root, cfg } = accountConfig("gh-pace-1518-");
   const log = join(root, "log");
   const stub = join(root, "gh-real");
   // S when a call starts, E when it ends: the file's order is the order the calls ran in

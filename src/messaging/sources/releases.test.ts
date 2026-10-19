@@ -73,6 +73,14 @@ function watcher(/** @type {Record<string, unknown>} */ answers: Record<string, 
 
 const baselined = (/** @type {string} */ repo: string = REPO) => new Set([baselineKey(repo)]);
 
+/** Each answer becomes what GitHub lists next, and one pass reads it. */
+async function passOver(run: ReturnType<typeof watcher>, answers: Record<string, unknown>[]) {
+  for (const answer of answers) {
+    run.set(answer);
+    await run.pass();
+  }
+}
+
 describe("firstSentence", () => {
   test("the real v0.7.8 notes: the hash, the heading, the list marker and the backticks are gone, and the sentence ends at the first full stop", () => {
     const sentence = firstSentence(REAL_BODY);
@@ -113,10 +121,7 @@ describe("observeReleases", () => {
   test("(1) and through the real core: the chairman receives two messages, and a later pass sends nothing more", async () => {
     const run = watcher({ [REPO]: [release("v0.7.1")] });
     await run.pass();
-    run.set({ [REPO]: [release("v0.7.2"), release("v0.7.1")] });
-    await run.pass();
-    run.set({ [REPO]: [release("v0.7.3"), release("v0.7.2"), release("v0.7.1")] });
-    await run.pass();
+    await passOver(run, [{ [REPO]: [release("v0.7.2"), release("v0.7.1")] }, { [REPO]: [release("v0.7.3"), release("v0.7.2"), release("v0.7.1")] }]);
     await run.pass();
     assert.deepEqual(run.provider.sent.map((message) => message.text.split("\n")[0]), ["agent-org 0.7.2 is out: Change in v0.7.2.", "agent-org 0.7.3 is out: Change in v0.7.3."]);
     assert.ok(run.provider.sent.every((message) => message.text.includes("https://github.com/a11ign/agent-org/releases/tag/v0.7")), "the page is in the message");
@@ -188,8 +193,7 @@ describe("observeReleases", () => {
   test("(5) the same release twice yields one message, in one list and across ticks", async () => {
     const run = watcher({ [REPO]: [release("v0.7.1")] });
     await run.pass();
-    run.set({ [REPO]: [release("v0.7.2"), release("v0.7.2"), release("v0.7.1")] });
-    await run.pass();
+    await passOver(run, [{ [REPO]: [release("v0.7.2"), release("v0.7.2"), release("v0.7.1")] }]);
     await run.pass();
     assert.equal(run.provider.sent.length, 1);
     assert.equal(run.ledgerKeys().filter((entry) => entry === `${releaseKey(REPO, "v0.7.2")}|sent`).length, 1);

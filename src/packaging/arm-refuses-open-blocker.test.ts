@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as armPr from "../arm-pr.ts";
 import { refusalBeforeArming, SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const { runArmPr, EXIT } = armPr;
 const REPO = "a11ign/a11ign";
@@ -137,19 +138,22 @@ test("#470 the lab#39 case: `Closes: #5, #6` where row 5 is blocked by open #6 i
   assert.deepEqual(verdict, { kind: "clear" });
 });
 
-test("#470 CONTROL: the same body with row 5 blocked by open #7, which the PR does not close, is `open-blocker` naming #7 and not #6", () => {
-  const verdict = armPr.blockerVerdict({ repo: REPO, prBody: "Closes: #5, #6", run: answering({ 5: edges(node(7, "OPEN")), 6: UNBLOCKED }) });
+testEach("#470 CONTROL: the body `Closes: #5, #6` with row 5 blocked by open #7 is `open-blocker` naming #7 and not #6", [
+  {
+    name: "row 5 blocked by open #7, which the PR does not close",
+    row5Blockers: [7],
+    message: /closing row #5 is blocked by open #7\. Declared order is enforced: it arms on the tick after that blocker closes/,
+  },
+  {
+    name: "row 5 blocked by open #6 AND open #7 names #7 only",
+    row5Blockers: [6, 7],
+    message: /closing row #5 is blocked by open #7\. Declared order/,
+  },
+], (c) => {
+  const verdict = armPr.blockerVerdict({ repo: REPO, prBody: "Closes: #5, #6", run: answering({ 5: edges(...c.row5Blockers.map((number) => node(number, "OPEN"))), 6: UNBLOCKED }) });
   assert.equal(verdict.kind, "open-blocker");
   assert.deepEqual("blockers" in verdict ? verdict.blockers : null, [7]);
-  assert.match(why(verdict), /closing row #5 is blocked by open #7\. Declared order is enforced: it arms on the tick after that blocker closes/);
-  assert.doesNotMatch(why(verdict), /#6/);
-});
-
-test("#470 CONTROL: row 5 blocked by open #6 AND open #7 is `open-blocker` naming #7 only", () => {
-  const verdict = armPr.blockerVerdict({ repo: REPO, prBody: "Closes: #5, #6", run: answering({ 5: edges(node(6, "OPEN"), node(7, "OPEN")), 6: UNBLOCKED }) });
-  assert.equal(verdict.kind, "open-blocker");
-  assert.deepEqual("blockers" in verdict ? verdict.blockers : null, [7]);
-  assert.match(why(verdict), /closing row #5 is blocked by open #7\. Declared order/);
+  assert.match(why(verdict), c.message);
   assert.doesNotMatch(why(verdict), /#6/);
 });
 
@@ -180,8 +184,9 @@ test("#470 a closing blocker's OWN open blockers still count, and an unreadable 
   const own = armPr.blockerVerdict({ repo: REPO, prBody: body, run: answering({ 5: edges(node(6, "OPEN")), 6: edges(node(8, "OPEN")) }) });
   assert.equal(own.kind, "open-blocker");
   assert.deepEqual("blockers" in own ? own.blockers : null, [8]);
-  assert.match(why(own), /closing row #6 is blocked by open #8/);
-  assert.doesNotMatch(why(own), /closing row #5/);
+  const reason = why(own);
+  assert.match(reason, /closing row #6 is blocked by open #8/);
+  assert.doesNotMatch(reason, /closing row #5/);
   const unread = armPr.blockerVerdict({ repo: REPO, prBody: body, run: answering({ 5: edges(node(6, "OPEN")), 6: new Error("HTTP 502") }) });
   assert.equal(unread.kind, "cannot-ask", "row 5 is cleared by the pair, row 6 was not read: not a row with no blocker");
   assert.match(why(unread), /could not read closing row #6's blocked-by edges/);

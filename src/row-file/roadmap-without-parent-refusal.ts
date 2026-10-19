@@ -12,6 +12,7 @@ import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { rowTracker, trackerNamed } from "../row-tracker.ts";
 import { adopterFacingDeclared, adopterRowKind } from "../work-gate/org-health.ts";
 import { PRIMARY_MILESTONE_LINE } from "../org-health/thresholds.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { chairmanAskRefusal } from "../work-gate/chairman-ask-orders.ts";
 import { unsplitDoneWhenRefusal } from "../unsplit-done-when.ts";
 import { loadLanes } from "../lane-ownership.ts";

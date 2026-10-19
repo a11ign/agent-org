@@ -34,6 +34,7 @@ import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
 // #2391: WHAT "MAIN IS RED" MEANS IS THE GATE'S DEFINITION, IMPORTED. `newestVerdictRun` looks THROUGH a
 // cancelled or in-flight run, so the streak read below agrees with the order `work-gate.ts` wakes a fixer
 // with -- a second reading of red here would let the two disagree about whether the fix is owed.
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { newestVerdictRun, TRUNK_WORKFLOW } from "./trunk-red.ts";
 // agent-org#992: A LAB PULL REQUEST'S RED CROSS-REPO LEG, asked once for both arming doors (the sweep imports it from here as it does `blockerVerdict`).
 import { crossRepoRedMarker, crossRepoRedVerdict } from "./cross-repo-red.ts";

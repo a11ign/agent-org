@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
 import { MESSAGING_AUDIENCE_MISUSE_KIND } from "../failure-ledger.ts";
+import { testEach } from "../lib/test-each.ts";
 import { HALF } from "./audit.ts";
 import { composeDigest, composeText, createMessenger, planNotification, resolveConfig } from "./core.ts";
 import { createFakeProvider } from "./fake-provider.ts";
@@ -51,6 +52,12 @@ function request(number: number, more: Record<string, unknown> = {}) {
 /** @param {Record<string, unknown>} [more] */
 function incident(more: Record<string, unknown> = {}) {
   return { key: "incident:trunk-red", kind: "incident", severity: "critical", firstSeenAt: START, text: "trunk is red", links: [], ...more };
+}
+
+/** Sets the clock to `at`, then ticks `events`: one observation as a live run makes it. */
+function tickAt(run: ReturnType<typeof harness>, at: number, events: unknown[]) {
+  run.clock.set(at);
+  return run.tick(events);
 }
 
 describe("dedupe is by key, never by text (done-when 1)", () => {
@@ -100,57 +107,46 @@ describe("dedupe is by key, never by text (done-when 1)", () => {
 describe("an incident waits 30 minutes, unresolved (done-when 1)", () => {
   test("unresolved for 29 minutes is NOT sent, and at 30 IS", async () => {
     const run = harness();
-    run.clock.set(START + 29 * MINUTE);
-    const [held] = await run.tick([incident()]);
+    const [held] = await tickAt(run, START + 29 * MINUTE, [incident()]);
     assert.equal(held.action, "held");
     assert.equal(run.provider.sent.length, 0);
     assert.equal(run.lines().length, 0, "a held event is not an attempt");
-    run.clock.set(START + 30 * MINUTE);
-    const [sent] = await run.tick([incident()]);
+    const [sent] = await tickAt(run, START + 30 * MINUTE, [incident()]);
     assert.equal(sent.action, "sent");
     assert.equal(run.provider.sent.length, 1);
   });
 
   test("one resolved at 20 minutes sends nothing at all, not even a 'cleared'", async () => {
     const run = harness();
-    run.clock.set(START + 10 * MINUTE);
-    await run.tick([incident()]);
-    run.clock.set(START + 20 * MINUTE);
-    const [decision] = await run.tick([incident({ resolved: true })]);
+    await tickAt(run, START + 10 * MINUTE, [incident()]);
+    const [decision] = await tickAt(run, START + 20 * MINUTE, [incident({ resolved: true })]);
     assert.equal(decision.action, "resolved-before-sent");
-    run.clock.set(START + 40 * MINUTE);
-    await run.tick([incident({ resolved: true })]);
+    await tickAt(run, START + 40 * MINUTE, [incident({ resolved: true })]);
     assert.equal(run.provider.sent.length, 0);
     assert.equal(run.lines().length, 0);
   });
 
   test("one resolved AFTER it was sent produces ONE 'cleared', replying to the original, and then nothing more", async () => {
     const run = harness();
-    run.clock.set(START + 30 * MINUTE);
-    await run.tick([incident()]);
-    run.clock.set(START + 50 * MINUTE);
-    const [cleared] = await run.tick([incident({ resolved: true })]);
+    const [sent] = await tickAt(run, START + 30 * MINUTE, [incident()]);
+    assert.equal(sent.action, "sent");
+    const [cleared] = await tickAt(run, START + 50 * MINUTE, [incident({ resolved: true })]);
     assert.equal(cleared.action, "cleared");
     assert.equal(run.provider.sent.length, 2);
     assert.match(run.provider.sent[1].text, /^Cleared: trunk is red/);
     assert.equal(run.provider.sent[1].replyTo, run.provider.sent[0].messageRef);
-    run.clock.set(START + 70 * MINUTE);
-    await run.tick([incident({ resolved: true }), incident()]);
+    await tickAt(run, START + 70 * MINUTE, [incident({ resolved: true }), incident()]);
     assert.equal(run.provider.sent.length, 2, "the episode is over: neither the resolved nor a stale re-observation sends again");
   });
 
   test("a recurrence after it cleared is a NEW episode and is held down again", async () => {
     const run = harness();
-    run.clock.set(START + 30 * MINUTE);
-    await run.tick([incident()]);
-    run.clock.set(START + 50 * MINUTE);
-    await run.tick([incident({ resolved: true })]);
+    await tickAt(run, START + 30 * MINUTE, [incident()]);
+    await tickAt(run, START + 50 * MINUTE, [incident({ resolved: true })]);
     const again = START + 3 * HOUR;
-    run.clock.set(again + 10 * MINUTE);
-    const [held] = await run.tick([incident({ firstSeenAt: again })]);
+    const [held] = await tickAt(run, again + 10 * MINUTE, [incident({ firstSeenAt: again })]);
     assert.equal(held.action, "held");
-    run.clock.set(again + 30 * MINUTE);
-    const [sent] = await run.tick([incident({ firstSeenAt: again })]);
+    const [sent] = await tickAt(run, again + 30 * MINUTE, [incident({ firstSeenAt: again })]);
     assert.equal(sent.action, "sent");
   });
 
@@ -192,12 +188,10 @@ describe("a request is reminded at 24, 48 and 72 hours, then never until its sta
       await run.tick([request(12, { state: "needs:chairman" })]);
     }
     assert.equal(run.provider.sent.length, 4);
-    run.clock.set(START + 4 * DAY + HOUR);
-    const [updated] = await run.tick([request(12, { state: "needs:chairman answer:ceo" })]);
+    const [updated] = await tickAt(run, START + 4 * DAY + HOUR, [request(12, { state: "needs:chairman answer:ceo" })]);
     assert.equal(updated.action, "updated");
     assert.equal(run.provider.sent.length, 5);
-    run.clock.set(START + 5 * DAY + HOUR);
-    const [reminded] = await run.tick([request(12, { state: "needs:chairman answer:ceo" })]);
+    const [reminded] = await tickAt(run, START + 5 * DAY + HOUR, [request(12, { state: "needs:chairman answer:ceo" })]);
     assert.equal(reminded.action, "reminded");
     assert.match(run.provider.sent[5].text, /^Reminder 1 of 3/, "the count restarted");
   });
@@ -275,7 +269,8 @@ describe("thirteen events in an hour send 12 messages and ONE digest naming the 
 
   test("the hourly allowance survives a restart: it is what the ledger says went out", async () => {
     const run = harness({ config: { rate: { hourlyCap: 2 } } });
-    await run.tick([request(301)]);
+    const [first] = await run.tick([request(301)]);
+    assert.equal(first.action, "sent");
     run.restart();
     run.clock.advance(MINUTE);
     await run.tick([request(302)]);
@@ -534,16 +529,12 @@ describe("the audience guard refuses an announcement that asks, before any send 
     assert.match(line.error, /#3409/);
   });
 
-  test("an announcement whose line ends in '?' is refused, however the rest reads", async () => {
+  testEach("an announcement that asks is refused, however the rest reads", [
+    { name: "a line ends in '?'", key: "incident:fix", text: "Trunk is red again.\nIs it fixed?" },
+    { name: "a request marker outside a release key", key: "incident:rota", text: "rota gap, needs:chairman today" },
+  ], async (c) => {
     const run = harness({ refuses: true });
-    const [decision] = await run.tick([announcement({ key: "incident:fix", text: "Trunk is red again.\nIs it fixed?" })]);
-    assert.equal(decision.action, "invalid");
-    assert.equal(run.provider.sent.length, 0);
-  });
-
-  test("a request marker outside a release key is refused", async () => {
-    const run = harness({ refuses: true });
-    const [decision] = await run.tick([announcement({ key: "incident:rota", text: "rota gap, needs:chairman today" })]);
+    const [decision] = await run.tick([announcement({ key: c.key, text: c.text })]);
     assert.equal(decision.action, "invalid");
     assert.equal(run.provider.sent.length, 0);
   });

@@ -36,6 +36,7 @@ import { queueEjectionOf, ejectionQueryArgs, armedFromApi } from "../pr-armed-st
 import { readEjections } from "../work-gate/causes/pr-ejected.ts";
 import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { thrownBy } from "../lib/thrown-by.ts";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.ts");
 
@@ -348,34 +349,23 @@ test("headCommittedAt: empty stdout on a successful exit is also `null`, not an 
   assert.equal(headCommittedAt("deadbeef", () => ({ status: 0, stdout: "" })), null);
 });
 
+
 // --- the CLI, guarded like every other argv-reading script here ---
 
 test("queue-stalled.ts refuses an unknown flag rather than silently ignoring it", () => {
-  let threw = false;
-  try {
-    execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" });
-  } catch (cause) {
-    threw = true;
-    const err = cause as { status?: number, stderr?: string };
-    assert.equal(err.status, 2);
-    assert.match(String(err.stderr), /unknown flag --bogus/);
-  }
-  assert.ok(threw, "an unknown flag must exit non-zero, not silently run the default");
+  const err = thrownBy(() => execFileSync("node", [SCRIPT, "--bogus"], { encoding: "utf8", stdio: "pipe" }));
+  assert.ok(err, "an unknown flag must exit non-zero, not silently run the default");
+  assert.equal(err.status, 2);
+  assert.match(String(err.stderr), /unknown flag --bogus/);
 });
 
 test("queue-stalled.ts refuses to run without GITHUB_REPOSITORY -- CANNOT ASK, never a guessed default", () => {
-  let threw = false;
-  try {
-    const env = { ...process.env };
-    delete env.GITHUB_REPOSITORY;
-    execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env });
-  } catch (cause) {
-    threw = true;
-    const err = cause as { status?: number, stderr?: string };
-    assert.equal(err.status, 2);
-    assert.match(String(err.stderr), /GITHUB_REPOSITORY is unset/);
-  }
-  assert.ok(threw, "with no repo to examine, the script must refuse rather than guess one");
+  const env = { ...process.env };
+  delete env.GITHUB_REPOSITORY;
+  const err = thrownBy(() => execFileSync("node", [SCRIPT], { encoding: "utf8", stdio: "pipe", env }));
+  assert.ok(err, "with no repo to examine, the script must refuse rather than guess one");
+  assert.equal(err.status, 2);
+  assert.match(String(err.stderr), /GITHUB_REPOSITORY is unset/);
 });
 
 // --- #1623: an armed PR held by a superseding gate that did not succeed ---

@@ -15,6 +15,7 @@
  * session's claim on #849 over a file #848 had no intention of touching.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -108,32 +109,55 @@ test("the guidance states both rules, each with the mechanism rather than only t
  */
 const flat = () => guidance().replace(/\s+/g, " ");
 
-test("#1163: the acceptance rule says which POPULATION the files come from, not only that files are named", { skip: SKIP_FIXTURE }, () => {
-  const text = flat();
+testEach("#1163: the acceptance rule says which POPULATION the files come from, not only that files are named", [
+  {
+    name: "the wrong population is named",
+    pattern: /a transcript names the files a defect is IN/i,
+    message: "the wrong population has to be named, or the rule reads as advice about being careful",
+  },
+  {
+    name: "the right population is the contrast",
+    pattern: /an acceptance names the files that must RUN/i,
+    message: "the right population, stated as the contrast -- this is the half a filer applies",
+  },
+  {
+    name: "the two lists overlap",
+    pattern: /does not transfer/i,
+    message: "the two lists overlap enough to look interchangeable, which is why the rule exists at all",
+  },
+  {
+    name: "the command that checks it",
+    pattern: /comm -3/,
+    message: "a rule with no command to check it against is one nobody re-checks -- the same standard the Region "
+      + "rule above is held to, which carries `declaredRegionFiles` for the reader to run",
+  },
+], (c) => {
+  assert.match(flat(), c.pattern, c.message);
+}, { skip: SKIP_FIXTURE });
 
-  assert.match(text, /a transcript names the files a defect is IN/i,
-    "the wrong population has to be named, or the rule reads as advice about being careful");
-  assert.match(text, /an acceptance names the files that must RUN/i,
-    "the right population, stated as the contrast -- this is the half a filer applies");
-  assert.match(text, /does not transfer/i,
-    "the two lists overlap enough to look interchangeable, which is why the rule exists at all");
-  assert.match(text, /comm -3/,
-    "a rule with no command to check it against is one nobody re-checks -- the same standard the Region "
-    + "rule above is held to, which carries `declaredRegionFiles` for the reader to run");
-});
+testEach("#1163: `out-of-release` is stated as answering ONE question, with importance said elsewhere", [
+  { name: "answers one question", pattern: /answers one question/i, message: "the whole point is the singular" },
+  {
+    name: "the question itself",
+    pattern: /does this block the 20 September publish/i,
+    message: "the question itself, or the rule cannot be applied to a row",
+  },
+  {
+    name: "importance is not unimportance",
+    pattern: /does not mean unimportant/i,
+    message: "the reading that moved #1161 into the release on the wrong axis",
+  },
+  { name: "states both at once", pattern: /out of release, ready/i, message: "how a row says BOTH things at once" },
+  {
+    name: "importance is said by the ready order",
+    pattern: /importance is said by the ready order/i,
+    message: "where importance actually lives -- without this the rule only forbids and offers nothing",
+  },
+], (c) => {
+  assert.match(flat(), c.pattern, c.message);
+}, { skip: SKIP_FIXTURE });
 
-test("#1163: `out-of-release` is stated as answering ONE question, with importance said elsewhere", { skip: SKIP_FIXTURE }, () => {
-  const text = flat();
-
-  assert.match(text, /answers one question/i, "the whole point is the singular");
-  assert.match(text, /does this block the 20 September publish/i,
-    "the question itself, or the rule cannot be applied to a row");
-  assert.match(text, /does not mean unimportant/i,
-    "the reading that moved #1161 into the release on the wrong axis");
-  assert.match(text, /out of release, ready/i, "how a row says BOTH things at once");
-  assert.match(text, /importance is said by the ready order/i,
-    "where importance actually lives -- without this the rule only forbids and offers nothing");
-
+test("#1163: `out-of-release` keeps the collapsed phrase in the raw file too, so the collapse is not a weakening", { skip: SKIP_FIXTURE }, () => {
   // WHITESPACE COLLAPSED FIRST, because markdown wraps and every one of these spans a line break somewhere.
   // The live check learned this by failing on this page: `does not mean\nunimportant` matched nothing.
   assert.ok(/does not mean\s+unimportant/.test(guidance()) === true,

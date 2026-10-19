@@ -38,9 +38,13 @@ const ordersOf = (scope: ReturnType<typeof scopeOf>, readings: ReturnType<typeof
   (scopeTick(scope, { drain: false }, readLanes(scope, () => "[]"), readings).orders as { cause: string, causeKey: string, prompt: string }[])
     .filter((order) => order.cause === "answer-owed");
 
-test("(1) the primary scope, with a tracker declared, owes the answer once", () => {
+function owedOf(key: string) {
   const { readings, calls } = stubTracker();
-  const orders = ordersOf(scopeOf(""), readings);
+  return { orders: ordersOf(scopeOf(key), readings), calls };
+}
+
+test("(1) the primary scope, with a tracker declared, owes the answer once", () => {
+  const { orders, calls } = owedOf("");
   assert.equal(orders.length, 1);
   assert.equal(orders[0].causeKey, "product-manager/answer-owed/row-3423");
   assert.equal(calls.length, 1);
@@ -54,8 +58,7 @@ test("(2) a keyed scope with `tracker: null` yields NO answer-owed order, and th
 });
 
 test("(3) a keyed scope WITH its own tracker still gets its order, tagged with its key and its tracker's repo", () => {
-  const { readings, calls } = stubTracker();
-  const orders = ordersOf(scopeOf("own"), readings);
+  const { orders, calls } = owedOf("own");
   assert.equal(orders.length, 1);
   assert.equal(orders[0].causeKey, "product-manager/answer-owed/row-own#3423");
   assert.match(orders[0].prompt, /a11ign\/own/);

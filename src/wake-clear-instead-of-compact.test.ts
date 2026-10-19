@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { prepareContext } from "./wake/fyi-queue.ts";
 import { stateFileVerdict, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, STATE_FILE_MAX_BYTES } from "./wake/holds-as-fyi.ts";
 import { orderClockIn } from "./wake/merge-queue-wait.ts";
+import { testEach } from "./lib/test-each.ts";
 
 const MINUTE = 60_000;
 const NOW = 20 * 60 * 60 * 1000;
@@ -65,17 +66,15 @@ const OVER = KEEP_FILL_TOKENS + 1;
 const ROSTER = join(scratch, "sessions.json");
 writeFileSync(ROSTER, JSON.stringify({ live: [{ name: LEAD, role: "ceo" }] }));
 
-test("recent, over the line, state file present and under its cap: CLEARED, not compacted", () => {
-  const got = decide({ agoMs: 10 * MINUTE, tokens: OVER, stateBytes: 1_000 });
-  assert.equal(got.action, CONTEXT_ACTION.CLEARED);
-  assert.deepEqual(got.commands, ["/clear"]);
-  assert.equal(got.stateRefusal, undefined);
-});
+const RECENT_OVER_LINE = [
+  { name: "state file present and under its cap: CLEARED, not compacted", stateBytes: 1_000, action: CONTEXT_ACTION.CLEARED, commands: ["/clear"] },
+  { name: "NO state file: COMPACTED as before (the safe fallback), and silently, since absent is the ordinary state", stateBytes: null, action: CONTEXT_ACTION.COMPACTED, commands: ["/compact"] },
+];
 
-test("recent, over the line, NO state file: COMPACTED as before (the safe fallback), and silently, since absent is the ordinary state", () => {
-  const got = decide({ agoMs: 10 * MINUTE, tokens: OVER, stateBytes: null });
-  assert.equal(got.action, CONTEXT_ACTION.COMPACTED);
-  assert.deepEqual(got.commands, ["/compact"]);
+testEach("recent, over the line: CLEARED with a state file under its cap, COMPACTED without one", RECENT_OVER_LINE, (c) => {
+  const got = decide({ agoMs: 10 * MINUTE, tokens: OVER, stateBytes: c.stateBytes });
+  assert.equal(got.action, c.action);
+  assert.deepEqual(got.commands, c.commands);
   assert.equal(got.stateRefusal, undefined);
 });
 

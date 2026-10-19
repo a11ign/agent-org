@@ -57,6 +57,11 @@ function probe(mode: string, body: string, driver: string = DRIVER) {
   }
 }
 
+/** A refused probe whose stderr answers the herdr refusal `code` with `message`. */
+function refusedProbe(mode: string, code: string, message: string) {
+  return probe(mode, JSON.stringify({ error: { code, message } }));
+}
+
 for (const code of ["agent_not_found", "pane_not_found"]) {
   test(`an ended seat's ${code} is not written to the tick's stderr`, () => {
     const body = JSON.stringify({ error: { code, message: "not found" } });
@@ -68,16 +73,14 @@ for (const code of ["agent_not_found", "pane_not_found"]) {
 }
 
 test("the refusal rides on the thrown error, so callers that read it still do", () => {
-  const body = JSON.stringify({ error: { code: "agent_not_found", message: "agent target worker-1 not found" } });
-  const tick = probe("thrown", body);
+  const tick = refusedProbe("thrown", "agent_not_found", "agent target worker-1 not found");
   assert.equal(tick.status, 0, tick.stderr);
   assert.match(tick.stdout, /agent_not_found/);
   assert.equal(tick.stderr, "");
 });
 
 test("a refusal other than 'gone' is still written to the tick's stderr", () => {
-  const body = JSON.stringify({ error: { code: "agent_blocked", message: "agent is blocked" } });
-  const tick = probe("listing", body);
+  const tick = refusedProbe("listing", "agent_blocked", "agent is blocked");
   assert.equal(tick.status, 0, tick.stderr);
   assert.equal(tick.stdout, "null");
   assert.match(tick.stderr, /agent_blocked/, "a refusal that is not 'gone' must still reach the journal");

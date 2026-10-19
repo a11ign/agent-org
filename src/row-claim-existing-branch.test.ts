@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
+import { testEach } from "./lib/test-each.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { claimWithWorktree } from "./row-claim.ts";
 
@@ -42,6 +43,8 @@ function repository() {
   git(checkout, "push", "--quiet", "origin", "main");
   return { dir, checkout, tree: resolve(dir, "wt-1285") };
 }
+
+type Repository = ReturnType<typeof repository>;
 
 /** A local branch one commit ahead of origin/main, pushed to origin when `push` says so; the checkout is left on main. */
 function seedBranch(fx: ReturnType<typeof repository>, name: string, { push }: { push: boolean }): string {
@@ -81,6 +84,36 @@ function claimIn(fx: ReturnType<typeof repository>, { branch, records, order = [
 const claimedRecord = (branch: string) => claimRecordComment({ session: "worker-agent-org-1285", branch, worktree: "../wt-1285" });
 const releasedRecord = () => claimRecordComment({ session: "worker-agent-org-1285", released: true });
 
+/** A claim that is refused: the branch it asks for, the records it reads, and the reason patterns it must match, each with its message. */
+type Refusal = { name: string, seed: (fx: Repository) => void, branch: string, records: string[], reasons: { pattern: RegExp, message?: string }[] };
+
+const REFUSALS: Refusal[] = [
+  {
+    name: "another row's branch, which no record names",
+    seed: (fx) => seedBranch(fx, OTHER_ROW, { push: true }),
+    branch: OTHER_ROW,
+    records: [claimedRecord(OWN), releasedRecord()],
+    reasons: [{ pattern: /ALREADY EXISTS locally/ }, { pattern: /row #999's newest claim record does not name this branch/, message: "the refusal names the other row" }],
+  },
+  {
+    name: "a local-only branch of this row that no record names, and the remedy is the push",
+    seed: (fx) => seedBranch(fx, OWN, { push: false }),
+    branch: OWN,
+    records: [],
+    reasons: [{ pattern: /ALREADY EXISTS locally/ }, { pattern: new RegExp(`git push origin ${OWN}`), message: "the remedy is the push" }],
+  },
+  {
+    name: "a branch a tree already stands on, even when it is this row's own work",
+    seed: (fx) => {
+      seedBranch(fx, OWN, { push: true });
+      git(fx.checkout, "worktree", "add", "--quiet", resolve(fx.dir, "wt-standing"), OWN);
+    },
+    branch: OWN,
+    records: [claimedRecord(OWN), releasedRecord()],
+    reasons: [{ pattern: /held by the worktree/ }],
+  },
+];
+
 test("ADOPTION: a branch an earlier record names, after the gate released the claim, is checked out in the new tree with its commits", () => {
   const fx = repository();
   try {
@@ -108,51 +141,15 @@ test("ADOPTION: a branch carrying this row's number that origin holds is adopted
   }
 });
 
-test("REFUSAL: another row's branch is refused by name, with the remedy for that shape, and no tree or claim is made", () => {
+testEach("REFUSAL: another row's branch is refused by name, with the remedy for that shape, and no tree or claim is made", REFUSALS, (c) => {
   const fx = repository();
   try {
-    seedBranch(fx, OTHER_ROW, { push: true });
+    c.seed(fx);
     const order: string[] = [];
-    const result = claimIn(fx, { branch: OTHER_ROW, records: [claimedRecord(OWN), releasedRecord()], order });
+    const result = claimIn(fx, { branch: c.branch, records: c.records, order });
     assert.equal(result.claimed, false);
     if (result.claimed) return;
-    assert.match(result.reason, /ALREADY EXISTS locally/);
-    assert.match(result.reason, /row #999's newest claim record does not name this branch/, "the refusal names the other row");
-    assert.equal(existsSync(fx.tree), false, "no tree is made");
-    assert.deepEqual(order, [], "the claim is never asked");
-  } finally {
-    rmSync(fx.dir, { recursive: true, force: true });
-  }
-});
-
-test("REFUSAL: a local-only branch of this row that no record names is refused, and the remedy is the push that would make it the row's own", () => {
-  const fx = repository();
-  try {
-    seedBranch(fx, OWN, { push: false });
-    const order: string[] = [];
-    const result = claimIn(fx, { branch: OWN, records: [], order });
-    assert.equal(result.claimed, false);
-    if (result.claimed) return;
-    assert.match(result.reason, /ALREADY EXISTS locally/);
-    assert.match(result.reason, new RegExp(`git push origin ${OWN}`), "the remedy is the push");
-    assert.equal(existsSync(fx.tree), false, "no tree is made");
-    assert.deepEqual(order, [], "the claim is never asked");
-  } finally {
-    rmSync(fx.dir, { recursive: true, force: true });
-  }
-});
-
-test("REFUSAL: a branch a tree already stands on is refused even when it is this row's own work", () => {
-  const fx = repository();
-  try {
-    seedBranch(fx, OWN, { push: true });
-    const standing = resolve(fx.dir, "wt-standing");
-    git(fx.checkout, "worktree", "add", "--quiet", standing, OWN);
-    const order: string[] = [];
-    const result = claimIn(fx, { branch: OWN, records: [claimedRecord(OWN), releasedRecord()], order });
-    assert.equal(result.claimed, false);
-    if (result.claimed) return;
-    assert.match(result.reason, /held by the worktree/);
+    for (const { pattern, message } of c.reasons) assert.match(result.reason, pattern, message);
     assert.equal(existsSync(fx.tree), false, "no tree is made");
     assert.deepEqual(order, [], "the claim is never asked");
   } finally {

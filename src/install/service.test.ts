@@ -253,18 +253,23 @@ test("start, stop and status take the terminal by name", () => {
 });
 
 // AUTO-UPDATE: `agent-org update` every hour, so a merged fix reaches the instance without a person.
-test("auto-update on systemd is a timer and the oneshot service it starts; start writes both and enables the timer", () => {
-  const { deps: d, files, calls, home } = deps("linux");
+test("auto-update on systemd is a timer that fires every hour; start writes it and enables the timer", () => {
+  const { deps: d, calls } = deps("linux");
   const unit = startService("auto-update", d);
   assert.equal(unit.id, "agent-org-auto-update.timer");
   assert.match(unit.text, /^OnCalendar=\*-\*-\* \*:00:00$/m);
+  assert.deepEqual(calls, ["systemctl --user daemon-reload", "systemctl --user enable agent-org-auto-update.timer", "systemctl --user restart agent-org-auto-update.timer"]);
+});
+
+test("auto-update on systemd: the timer names its oneshot service, which runs the update command with the host file", () => {
+  const { deps: d, files, home } = deps("linux");
+  const unit = startService("auto-update", d);
   assert.match(unit.text, /^Unit=agent-org-auto-update\.service$/m);
   assert.match(unit.text, /^WantedBy=timers\.target$/m);
   const service = files.get(join(home, ".config", "systemd", "user", "agent-org-auto-update.service")) ?? "";
   assert.match(service, /^Type=oneshot$/m);
   assert.match(service, /^ExecStart="\/opt\/node\/bin\/node" "\/opt\/agent-org\/src\/bin\.ts" "update"$/m);
   assert.match(service, /^Environment="AGENT_ORG_HOST=/m);
-  assert.deepEqual(calls, ["systemctl --user daemon-reload", "systemctl --user enable agent-org-auto-update.timer", "systemctl --user restart agent-org-auto-update.timer"]);
 });
 
 test("auto-update follows main when the update-channel file says so, and on launchd runs every hour, not at load", () => {
@@ -373,13 +378,21 @@ test("start terminal serves the port tickets.terminal names on loopback, not the
   assert.equal(t.tailscale().at(-1), "tailscale serve --bg --https=9444 http://127.0.0.1:7400");
 });
 
-test("with tickets.serve absent, start and stop touch no tailscale, and the instance and auto-update never do", () => {
+test("with tickets.serve absent, start of ui and terminal touches no tailscale", () => {
   const plain = onTailnet({});
   assert.equal(startService("ui", plain.deps).address, null);
   assert.equal(startService("terminal", plain.deps).address, null);
+  assert.deepEqual(plain.tailscale(), []);
+});
+
+test("with tickets.serve absent, stop touches no tailscale", () => {
+  const plain = onTailnet({});
   plain.files.set(unitFor("ui", plain.deps).path, "");
   stopService("ui", plain.deps);
   assert.deepEqual(plain.tailscale(), []);
+});
+
+test("the instance and auto-update never touch tailscale, even with tickets.serve set", () => {
   const served = onTailnet(SERVED);
   assert.equal(startService("instance", served.deps).address, null);
   assert.equal(startService("auto-update", served.deps).address, null);

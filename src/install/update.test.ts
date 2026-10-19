@@ -229,11 +229,17 @@ test("A11-90 restart-safe: with herdr inside the cgroup but every agent idle, a 
   assert.match(said.join("\n"), /^agent-org update: no run is mid-tool-call \(2 agents, none working\)$/m);
 });
 
+test("A11-90 deferral: with herdr inside and an agent working, the move waits and the checkout is not moved", () => {
+  const { checkout, git } = installed();
+  const { deps: d } = deps(checkout, git, { instance: "running" }, 2);
+  assert.equal(update({ version: undefined, channel: "release" }, d), false);
+  assert.equal(at(git), "v0.1.0", "not moved, so the next hourly run still has a move to make");
+});
+
 test("A11-90 deferral: with herdr inside and an agent working, the move waits, says why and until when, and records when the deferral began", () => {
   const { checkout, git } = installed();
   const { deps: d, restarted, installs, said, statuses } = deps(checkout, git, { instance: "running" }, 2);
   assert.equal(update({ version: undefined, channel: "release" }, d), false);
-  assert.equal(at(git), "v0.1.0", "not moved, so the next hourly run still has a move to make");
   assert.deepEqual([installs, restarted], [[], []]);
   assert.match(said.join("\n"), /deferred: 2 runs live on the instance, which a restart would interrupt: herdr is inside the instance's cgroup \(\/user\.slice\/agent-org-instance\.service\), and an agent is mid-tool-call \(working: worker-1\)\. It updates anyway at 2026-10-18T12:00:00\.000Z/);
   assert.deepEqual([statuses.at(-1)?.deferredSince, statuses.at(-1)?.latest], ["2026-10-18T10:00:00.000Z", "v0.10.0"]);

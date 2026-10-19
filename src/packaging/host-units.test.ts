@@ -22,6 +22,7 @@
  * `inactive` on a host up for nine days -- `enable` without `--now`, and nothing ever said so.
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSync, statSync,
   existsSync, copyFileSync } from "node:fs";
@@ -30,7 +31,7 @@ import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { shippedUnits, SHIPPED_DIR, execCommands, entriesFromCommand, opaqueCommands, shellCommandWords, shellSpawnsGh, shippedHostScripts, unitEntryPoints, programCandidates, PROJECT_UNITS_DIR, shippedUnitText, shippedScriptText, leadsListText, OPTIONAL_UNITS, HOST_OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, declaredProjectKeys, workTickToolForm, autoMemorySeatLabels } from "../host-units/shipped-units.ts";
-import { unitState, unitDrift, systemdUserAvailable, orphanedUnits, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, humanLoginOnHost, HUMAN_LOGIN_ON_HOST, retiredHere, addedOnSomeRef, orphanOrigin, supersededHostScripts, hostIdentityDrift, hostIdentityNotes, ownedIdentityFiles, compileCacheNotes, WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, codexTrustDrift, codexTrustedProjects, windowEnd, seatWrapperNotes } from "../host-units/host-identity-drift.ts";
+import { type Finding, unitState, unitDrift, systemdUserAvailable, orphanedUnits, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, humanLoginOnHost, HUMAN_LOGIN_ON_HOST, retiredHere, addedOnSomeRef, orphanOrigin, supersededHostScripts, hostIdentityDrift, hostIdentityNotes, ownedIdentityFiles, compileCacheNotes, WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, codexTrustDrift, codexTrustedProjects, windowEnd, seatWrapperNotes } from "../host-units/host-identity-drift.ts";
 import { driftReport, hostUnitsNotChecked, hostUnitsInstall, hostUnitDrift, permissionModeDrift, missingUnitPrograms, workingDirectoryOf, rowReviewSkillInstall, rowReviewSkillDrift, rowReviewSkillPath, rowReviewSkillState, modelEffortDrift, sessionModelDrift, unclassifiedEntries, hostVariableAsRun } from "../host-units.ts";
 import { hostIdentityInstall, reviewerDoorInstall, ROW_REVIEW_SKILL_FILES, ROW_REVIEW_SKILL_SOURCE, sessionModelNotes, lastModelIn, liveClaudeSessions, windowEndNotes } from "../host-units/gh-wrapper-and-notes.ts";
 import { LONG_RUNNING_TEMPLATES } from "../host-config.ts";
@@ -54,6 +55,13 @@ const shippedText = (unit: string): string => {
   assert.ok(text !== null, `nothing ships a unit named ${unit}`);
   return text;
 };
+
+/** A shipped unit with the install's placeholders filled in for a checkout at `/p`, as `host:install` would render it. */
+const renderedUnit = (name: string): string => readFileSync(join(SHIPPED_DIR, name), "utf8")
+  .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
+
+/** A shipped unit as the tool installs it: rendered, then run from `/tool` with its project at `/project`. */
+const installedAsTool = (name: string): string => toolForm(name, renderedUnit(name), { tool: "/tool", checkout: "/project", beforeTicks: [] });
 
 /** Whether a unit holds this exact line: the fixture project's checkout is a temp path, so a line naming it is matched whole and not as a pattern. */
 const hasLine = (unit: string, line: string): boolean => unit.split("\n").includes(line);
@@ -425,16 +433,18 @@ test("agent-org#795: the default reading of a worker's name needs no declaration
   } finally { rmSync(projectsDir, { recursive: true, force: true }); }
 });
 
-test("agent-org#795: a worker on a model NEITHER the org nor the router names is still the finding, and it says the router's Haiku is allowed", () => {
+testEach("agent-org#795: a worker on a model NEITHER the org nor the router names is still the finding, and it says the router's Haiku is allowed", [
+  { name: "names what it found", check: (detail: string) => assert.match(detail, /`claude-sonnet-5`/, "it names what it found") },
+  { name: "the org's model", check: (detail: string) => assert.match(detail, /the org declares `claude-sonnet-5-5`/, "and the org's model") },
+  { name: "the router's Haiku", check: (detail: string) => assert.match(detail, new RegExp(`may also be on \`${HAIKU_MODEL_ID}\``), "and that the router's Haiku is not what it is reporting") },
+  { name: "the in-place remedy", check: (detail: string) => assert.match(detail, /\/model <alias>/, "and keeps the in-place remedy") },
+], (c) => {
   const projectsDir = sessionsDir({ "-x/o.jsonl": `${answered("claude-sonnet-5")}\n` });
   try {
     for (const name of ["worker-agent-org-791", "worker-4918"]) {
       const drift = sessionModelDrift({ sessions: [{ name, cwd: "/x", sessionId: "o" }], projectsDir, seatModels: rosterSeats({}), rowLabels: () => ["in-progress"], ...keys });
       assert.deepEqual(drift.map((d) => d.unit), [`session ${name}`]);
-      assert.match(drift[0].detail, /`claude-sonnet-5`/, "it names what it found");
-      assert.match(drift[0].detail, /the org declares `claude-sonnet-5-5`/, "and the org's model");
-      assert.match(drift[0].detail, new RegExp(`may also be on \`${HAIKU_MODEL_ID}\``), "and that the router's Haiku is not what it is reporting");
-      assert.match(drift[0].detail, /\/model <alias>/, "and keeps the in-place remedy");
+      c.check(drift[0].detail);
     }
   } finally { rmSync(projectsDir, { recursive: true, force: true }); }
 });
@@ -465,7 +475,13 @@ test("#4457: a session that is not a worker is never looked up, whatever the loo
   } finally { rmSync(projectsDir, { recursive: true, force: true }); }
 });
 
-test("#4762: a seat on the model its roster entry declares is clean; one on another is the finding, naming the roster and a remedy that keeps the declaration", () => {
+testEach("#4762: a seat on the model its roster entry declares is clean; one on another is the finding, naming the roster and a remedy that keeps the declaration", [
+  { name: "names the roster", check: (detail: string) => assert.match(detail, /its roster entry declares `claude-haiku-5-5`/, "it names the roster as the source") },
+  { name: "what it found", check: (detail: string) => assert.match(detail, /`claude-sonnet-5-5`/, "and what it found") },
+  { name: "the declared model", check: (detail: string) => assert.match(detail, new RegExp(`/model ${HAIKU_MODEL_ID}`), "the remedy names the DECLARED model") },
+  { name: "no bare placeholder", check: (detail: string) => assert.doesNotMatch(detail, /\/model (<alias>|sonnet)/, "and never Sonnet or a bare placeholder") },
+  { name: "not the org's table", check: (detail: string) => assert.doesNotMatch(detail, /the org declares/, "the org's table is not the source for this seat") },
+], (c) => {
   const projectsDir = sessionsDir({
     "-x/lh.jsonl": `${answered(HAIKU_MODEL_ID)}\n`,
     "-x/ls.jsonl": `${answered("claude-sonnet-5-5")}\n`,
@@ -476,11 +492,7 @@ test("#4762: a seat on the model its roster entry declares is clean; one on anot
     assert.deepEqual(onHaiku, [], "POSITIVE CONTROL: the declared model, which is NOT the org's Sonnet, raises nothing");
     const onSonnet = sessionModelDrift({ sessions: [{ name: "scribe", cwd: "/x", sessionId: "ls" }], projectsDir, seatModels });
     assert.deepEqual(onSonnet.map((d) => d.unit), ["session scribe"]);
-    assert.match(onSonnet[0].detail, /its roster entry declares `claude-haiku-5-5`/, "it names the roster as the source");
-    assert.match(onSonnet[0].detail, /`claude-sonnet-5-5`/, "and what it found");
-    assert.match(onSonnet[0].detail, new RegExp(`/model ${HAIKU_MODEL_ID}`), "the remedy names the DECLARED model");
-    assert.doesNotMatch(onSonnet[0].detail, /\/model (<alias>|sonnet)/, "and never Sonnet or a bare placeholder");
-    assert.doesNotMatch(onSonnet[0].detail, /the org declares/, "the org's table is not the source for this seat");
+    c.check(onSonnet[0].detail);
   } finally { rmSync(projectsDir, { recursive: true, force: true }); }
 });
 
@@ -711,18 +723,20 @@ const dirs = (shipped: string[], installed: string[],
   git,
 });
 
-test("#1951: a unit the repository RETIRED is ORPHANED, and the message says why it matters", () => {
+testEach("#1951: a unit the repository RETIRED is ORPHANED, and the message says why it matters", [
+  { name: "the unit", check: (f: Finding) => assert.equal(f.unit, "a11ign-fleet-gated-nightly.timer") },
+  { name: "the problem", check: (f: Finding) => assert.equal(f.problem, "ORPHANED -- RETIRED HERE") },
+  { name: "deleting the file is not enough", check: (f: Finding) => assert.match(f.detail, /does not\s+uninstall it/,
+    "the reader must learn that deleting the file was not enough -- that is the whole misconception") },
+  { name: "the consequence", check: (f: Finding) => assert.match(f.detail, /both are now firing/,
+    "and the consequence, which is worse than an idle leftover: a replacement running beside it") },
+  { name: "the remedy", check: (f: Finding) => assert.match(f.detail, /pnpm run host:install` removes it/,
+    "and for a unit a commit deliberately deleted, the remedy IS the remedy") },
+  { name: "the deletion is the intent", check: (f: Finding) => assert.notEqual(f.removesUnit, true, "this is the branch where deleting it is the intent") },
+], (c) => {
   const [f] = orphanedUnits(dirs(["a11ign-work-tick.timer"],
     ["a11ign-work-tick.timer", "a11ign-fleet-gated-nightly.timer"], RETIRED_HERE));
-  assert.equal(f.unit, "a11ign-fleet-gated-nightly.timer");
-  assert.equal(f.problem, "ORPHANED -- RETIRED HERE");
-  assert.match(f.detail, /does not\s+uninstall it/,
-    "the reader must learn that deleting the file was not enough -- that is the whole misconception");
-  assert.match(f.detail, /both are now firing/,
-    "and the consequence, which is worse than an idle leftover: a replacement running beside it");
-  assert.match(f.detail, /pnpm run host:install` removes it/,
-    "and for a unit a commit deliberately deleted, the remedy IS the remedy");
-  assert.notEqual(f.removesUnit, true, "this is the branch where deleting it is the intent");
+  c.check(f);
 });
 
 // --- #1993: "not shipped" has two causes and the check used to know only one ------------------------
@@ -734,14 +748,16 @@ test("#1951: a unit the repository RETIRED is ORPHANED, and the message says why
 // remedy it has, `pnpm run host:install`, which DELETES an orphan -- and nothing would have reported the
 // loss except a board edition that never arrived.
 
-test("#1993: a unit NO COMMIT HERE EVER SHIPPED is not a retirement, and must not be offered for deletion", () => {
+testEach("#1993: a unit NO COMMIT HERE EVER SHIPPED is not a retirement, and must not be offered for deletion", [
+  { name: "the problem", check: (f: Finding) => assert.equal(f.problem, "ORPHANED -- NEVER SHIPPED HERE") },
+  { name: "the deletion is on the remedy line", check: (f: Finding) => assert.equal(f.removesUnit, true, "which is what puts the DELETION on the remedy line") },
+  { name: "the wrong remedy", check: (f: Finding) => assert.match(f.detail, /DO NOT reach for `pnpm run host:install`/,
+    "the one remedy this report has is the wrong one here, and saying so is the whole fix") },
+  { name: "both exits", check: (f: Finding) => assert.match(f.detail, /ship it under packages\/agent-org\/host\/ or\s+confirm it is dead/,
+    "a refusal nobody can follow is a refusal nobody acts on: both exits are named") },
+], (c) => {
   const [f] = orphanedUnits(dirs([], ["a11ign-board-report.timer"], NEVER_SHIPPED_HERE));
-  assert.equal(f.problem, "ORPHANED -- NEVER SHIPPED HERE");
-  assert.equal(f.removesUnit, true, "which is what puts the DELETION on the remedy line");
-  assert.match(f.detail, /DO NOT reach for `pnpm run host:install`/,
-    "the one remedy this report has is the wrong one here, and saying so is the whole fix");
-  assert.match(f.detail, /ship it under packages\/agent-org\/host\/ or\s+confirm it is dead/,
-    "a refusal nobody can follow is a refusal nobody acts on: both exits are named");
+  c.check(f);
 });
 
 test("#1993: a history it CANNOT read is UNKNOWN, and falls to the careful branch rather than the tidy one", () => {
@@ -1018,7 +1034,13 @@ test("#1974: every shipped unit that spawns `gh` declares which account -- over 
     + "person's account -- and spends a human's rate limit until it runs out");
 });
 
-test("#1974 NEGATIVE CONTROL: an undeclared gh-spawning unit IS a finding, and names its entry point", () => {
+testEach("#1974 NEGATIVE CONTROL: an undeclared gh-spawning unit IS a finding, and names its entry point", [
+  { name: "the unit", check: (f: Finding) => assert.equal(f.unit, "a11ign-spends.service") },
+  { name: "the problem", check: (f: Finding) => assert.equal(f.problem, "NO IDENTITY DECLARED") },
+  { name: "the entry point", check: (f: Finding) => assert.match(f.detail, /work-tick\.ts/, "it names the entry point, not just the unit") },
+  { name: "the line to add", check: (f: Finding) => assert.match(f.detail, /Environment=GH_CONFIG_DIR=/,
+    "and the line to add -- a refusal nobody can follow is a refusal nobody acts on") },
+], (c) => {
   // The assertion above is an emptiness assertion, so this is where it is shown capable of failing.
   // Stub directories, so the finding is produced by the rule rather than by the repository's own state.
   const unit = "[Service]\nExecStart=/usr/bin/node packages/agent-org/src/work-tick.ts\n";
@@ -1027,11 +1049,11 @@ test("#1974 NEGATIVE CONTROL: an undeclared gh-spawning unit IS a finding, and n
     readDir: (() => ["a11ign-spends.service"]) as never,
     read: ((p: string) => (String(p).startsWith("/shipped") ? unit : "execFileSync(\"gh\", [])")) as never,
   });
-  assert.equal(f.unit, "a11ign-spends.service");
-  assert.equal(f.problem, "NO IDENTITY DECLARED");
-  assert.match(f.detail, /work-tick\.ts/, "it names the entry point, not just the unit");
-  assert.match(f.detail, /Environment=GH_CONFIG_DIR=/,
-    "and the line to add -- a refusal nobody can follow is a refusal nobody acts on");
+  c.check(f);
+});
+
+test("#1974 NEGATIVE CONTROL: the SAME unit with the declaration line is not a finding", () => {
+  const unit = "[Service]\nExecStart=/usr/bin/node packages/agent-org/src/work-tick.ts\n";
   assert.deepEqual(identityDrift({
     shippedDir: "/shipped",
     readDir: (() => ["a11ign-spends.service"]) as never,
@@ -2115,6 +2137,7 @@ const wrapperHost = ({ workers = true, leads = true, list = true } = {}) => {
   };
   return { root, workersDir, leadsDir, run };
 };
+type WrapperRun = ReturnType<ReturnType<typeof wrapperHost>["run"]>;
 
 test("#2332: an agent workspace that is NOT on the leads list gets the workers account", () => {
   const { root, workersDir, run } = wrapperHost();
@@ -2163,15 +2186,22 @@ test("#3642: a shell with NO workspace id and NO GH_CONFIG_DIR is refused, never
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("#2332: an agent workspace whose account is MISSING refuses and never reaches gh-real", () => {
+testEach("#2332: an agent workspace whose account is MISSING refuses and never reaches gh-real", [
+  { name: "a non-zero exit", check: (r: WrapperRun) => assert.notEqual(r.status, 0) },
+  { name: "the refusal", check: (r: WrapperRun) => assert.match(r.stderr, /must not act as the human account/) },
+  { name: "not the human's login", check: (r: WrapperRun) => assert.equal(r.reached, false, "the whole point: it does NOT fall through to the human's login") },
+  { name: "no output", check: (r: WrapperRun) => assert.equal(r.stdout, "") },
+], (c) => {
+  const noWorkers = wrapperHost({ workers: false });
+  try {
+    c.check(noWorkers.run({ HERDR_WORKSPACE_ID: "w9" }, "api", "user"));
+  } finally { rmSync(noWorkers.root, { recursive: true, force: true }); }
+});
+
+test("#2332: a lead whose account is MISSING refuses by name, and each missing account stops only the workspaces that route to it", () => {
   const noWorkers = wrapperHost({ workers: false });
   const noLeads = wrapperHost({ leads: false });
   try {
-    const worker = noWorkers.run({ HERDR_WORKSPACE_ID: "w9" }, "api", "user");
-    assert.notEqual(worker.status, 0);
-    assert.match(worker.stderr, /must not act as the human account/);
-    assert.equal(worker.reached, false, "the whole point: it does NOT fall through to the human's login");
-    assert.equal(worker.stdout, "");
     // THE SAME FOR A LEAD: a missing leads config is a refusal and not a quiet fall-back to the workers
     // account (which would spend the pool the chairman gave the leads their own to avoid) or the person.
     const lead = noLeads.run({ HERDR_WORKSPACE_ID: "w6" }, "api", "user");
@@ -2353,26 +2383,28 @@ test("#2332: a person's global user.name/user.email is a NOTE -- reported, never
 
 // --- #2552: THE INTERACTIVE HALF OF THE COMPILE CACHE, which `compileCacheDrift` cannot see ------------
 
-test("#2552: a .zshenv that does not export NODE_COMPILE_CACHE under $HOME/.cache is ONE note, never a failure", () => {
-  const home = "/home/agent";
-  const notes = (zshenv: string | null) => compileCacheNotes({ home, zshenvPath: `${home}/.zshenv`,
-    read: ((path: string) => {
-      if (zshenv === null) throw new Error(`ENOENT: ${path}`);
-      return zshenv;
-    }) as never });
-  assert.equal(notes("export PATH=/usr/local/bin:$PATH\n").length, 1, "no such line");
-  assert.equal(notes("export NODE_COMPILE_CACHE=/tmp/node-compile-cache\n").length, 1, "pointing at /tmp");
-  assert.equal(notes("# export NODE_COMPILE_CACHE=\"$HOME/.cache/x\"\n").length, 1, "a comment is not an export");
-  assert.equal(notes(null).length, 1, "a missing file is the regression itself");
-  assert.equal(notes('export NODE_COMPILE_CACHE="$HOME/.cache/node-compile-cache"\n\nexport X=1\n').length, 0,
-    "CONTROL: the shipped spelling reads clean");
-  assert.equal(notes("export NODE_COMPILE_CACHE=${HOME}/.cache/nc\n").length, 0, "braced HOME");
-  assert.equal(notes("export NODE_COMPILE_CACHE=/home/agent/.cache/nc\n").length, 0, "the literal home");
-  assert.equal(notes('export NODE_COMPILE_CACHE="$HOME/.cache/nc"\nexport NODE_COMPILE_CACHE=/tmp/x\n').length, 1,
-    "the LAST export is the one in force");
-  const [note] = notes(null);
+const ZSHENV_HOME = "/home/agent";
+const zshenvNotes = (zshenv: string | null) => compileCacheNotes({ home: ZSHENV_HOME, zshenvPath: `${ZSHENV_HOME}/.zshenv`,
+  read: ((path: string) => {
+    if (zshenv === null) throw new Error(`ENOENT: ${path}`);
+    return zshenv;
+  }) as never });
+
+testEach("#2552: a .zshenv that does not export NODE_COMPILE_CACHE under $HOME/.cache is ONE note, never a failure", [
+  { name: "no such line", zshenv: "export PATH=/usr/local/bin:$PATH\n", count: 1 },
+  { name: "pointing at /tmp", zshenv: "export NODE_COMPILE_CACHE=/tmp/node-compile-cache\n", count: 1 },
+  { name: "a comment is not an export", zshenv: "# export NODE_COMPILE_CACHE=\"$HOME/.cache/x\"\n", count: 1 },
+  { name: "a missing file is the regression itself", zshenv: null, count: 1 },
+  { name: "CONTROL: the shipped spelling reads clean", zshenv: 'export NODE_COMPILE_CACHE="$HOME/.cache/node-compile-cache"\n\nexport X=1\n', count: 0 },
+  { name: "braced HOME", zshenv: "export NODE_COMPILE_CACHE=${HOME}/.cache/nc\n", count: 0 },
+  { name: "the literal home", zshenv: "export NODE_COMPILE_CACHE=/home/agent/.cache/nc\n", count: 0 },
+  { name: "the LAST export is the one in force", zshenv: 'export NODE_COMPILE_CACHE="$HOME/.cache/nc"\nexport NODE_COMPILE_CACHE=/tmp/x\n', count: 1 },
+], (c) => assert.equal(zshenvNotes(c.zshenv).length, c.count, c.name));
+
+test("#2552: the one note for a missing export names its file and problem, and never turns a clean host into problems", () => {
+  const [note] = zshenvNotes(null);
   assert.equal(note.problem, "INTERACTIVE SHELLS GET NO COMPILE CACHE UNDER THE HOME");
-  assert.equal(note.unit, `${home}/.zshenv`);
+  assert.equal(note.unit, `${ZSHENV_HOME}/.zshenv`);
   const report = driftReport([], [note]);
   assert.match(report, /^host units: every shipped unit is installed/, "a note never turns a clean host into problems");
   assert.doesNotMatch(report, /problem\(s\)/);
@@ -3126,34 +3158,27 @@ test("#3464: a tool command is the same command however its words are separated 
 });
 
 // a11ign/a11ign#3627: here and not in trace-weekly-post.test.ts, which must not import this module (that would charge it `History: full`, work-gate.test.ts #2174).
-test("#3627: installed as the tool, the weekly report's service runs the script from the tool and is told where the project's declaration is", () => {
-  const rendered = readFileSync(join(SHIPPED_DIR, "trace-weekly.service.in"), "utf8")
-    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  const installed = toolForm("trace-weekly.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
-  assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m);
-});
+testEach("#3627: installed as the tool, the weekly report's service runs the script from the tool and is told where the project's declaration is", [
+  { name: "runs from the tool", check: (installed: string) => assert.match(installed, /^WorkingDirectory=\/tool$/m) },
+  { name: "the project's declaration", check: (installed: string) => assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m) },
+  { name: "the script", check: (installed: string) => assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/trace-weekly-post\.sh$/m) },
+], (c) => c.check(installedAsTool("trace-weekly.service.in")));
 
 // agent-org#912: the daily reading, installed the same way as the weekly report above, so the two cannot drift apart unnoticed.
-test("#912: installed as the tool, the daily manager-spend service runs the script from the tool and is told where the project's declaration is", () => {
-  const rendered = readFileSync(join(SHIPPED_DIR, "manager-spend-post.service.in"), "utf8")
-    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  const installed = toolForm("manager-spend-post.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
-  assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m);
-  assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/manager-spend-post\.sh$/m);
-});
+testEach("#912: installed as the tool, the daily manager-spend service runs the script from the tool and is told where the project's declaration is", [
+  { name: "runs from the tool", check: (installed: string) => assert.match(installed, /^WorkingDirectory=\/tool$/m) },
+  { name: "the project's declaration", check: (installed: string) => assert.match(installed, /^Environment=AGENT_ORG_PROJECT=\/project\/\.agent-org\/project\.json$/m) },
+  { name: "the script", check: (installed: string) => assert.match(installed, /^ExecStart=\/usr\/bin\/bash host\/manager-spend-post\.sh$/m) },
+], (c) => c.check(installedAsTool("manager-spend-post.service.in")));
 
-test("#3515: installed as the tool, the trace pages' service runs publish.ts from the tool and is told where the host's declaration is", () => {
-  const rendered = readFileSync(join(SHIPPED_DIR, "trace-publish.service.in"), "utf8")
-    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/publish\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
-  const installed = toolForm("trace-publish.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
-  assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m);
-  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/publish\.ts$/m);
-  assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's");
+testEach("#3515: installed as the tool, the trace pages' service runs publish.ts from the tool and is told where the host's declaration is", [
+  { name: "runs from the tool", check: (installed: string) => assert.match(installed, /^WorkingDirectory=\/tool$/m) },
+  { name: "the host's declaration", check: (installed: string) => assert.match(installed, /^Environment=AGENT_ORG_HOST=\/project\/\.agent-org\/host\.json$/m) },
+  { name: "the script", check: (installed: string) => assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/publish\.ts$/m) },
+  { name: "the workers account", check: (installed: string) => assert.match(installed, /^Environment=GH_CONFIG_DIR=\/w\/gh$/m, "it spends the workers account, never the person's") },
+], (c) => {
+  assert.match(renderedUnit("trace-publish.service.in"), /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/publish\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  c.check(installedAsTool("trace-publish.service.in"));
 });
 
 // a11ign/agent-org#498: the trace store's own clock. What the row asks pinned: the account it declares, the compile cache, and a five-minute `OnUnitActiveSec`.
@@ -3231,14 +3256,17 @@ test("a11ign#4879: the daily confidence reading's pair ships, its service names 
   assert.match(timer, /^WantedBy=timers\.target$/m);
   assert.doesNotMatch(timer.replace(/^OnCalendar=.*$/m, "OnCalendar=Mon *-*-* 07:50:00 Europe/London"), DAILY, "NEGATIVE CONTROL: a weekly expression is not a daily one");
   assert.doesNotMatch(timer.replace(PERSISTENT, "Persistent=false"), PERSISTENT, "NEGATIVE CONTROL: a timer that forgot the missed morning is seen");
+});
 
-  // INSTALLED AS THE TOOL: the program runs from the tool's checkout, and the declaration the template names is kept (added once, never twice).
-  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/decision-confidence-post\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
-  const installed = toolForm("confidence-post.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
-  assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/decision-confidence-post\.ts$/m);
-  assert.equal(installed.match(/^Environment=AGENT_ORG_HOST=/gm)?.length, 1, "named once");
-  assert.equal(hostVariableAsRun([installed]), "/p/.agent-org/host.json", "and it is the declaration of the host the template was rendered for");
+// INSTALLED AS THE TOOL: the program runs from the tool's checkout, and the declaration the template names is kept (added once, never twice).
+testEach("a11ign#4879: installed as the tool, the daily confidence reading runs its program from the tool and names the host's declaration once", [
+  { name: "runs from the tool", check: (installed: string) => assert.match(installed, /^WorkingDirectory=\/tool$/m) },
+  { name: "the program", check: (installed: string) => assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/decision-confidence-post\.ts$/m) },
+  { name: "named once", check: (installed: string) => assert.equal(installed.match(/^Environment=AGENT_ORG_HOST=/gm)?.length, 1, "named once") },
+  { name: "the host the template was rendered for", check: (installed: string) => assert.equal(hostVariableAsRun([installed]), "/p/.agent-org/host.json", "and it is the declaration of the host the template was rendered for") },
+], (c) => {
+  assert.match(renderedUnit("confidence-post.service.in"), /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/decision-confidence-post\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  c.check(installedAsTool("confidence-post.service.in"));
 });
 
 test("#4071: the OTel receiver's unit is listed where this guard looks -- classified as the tool's, long-running with no timer, installed as the tool runs it", () => {
@@ -3255,14 +3283,15 @@ test("#4071: the OTel receiver's unit is listed where this guard looks -- classi
   assert.deepEqual(unclassifiedEntries({ shippedDir: stray, projectUnitsDir: null }), []);
   copyFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), join(stray, "stray-otel.service.in"));
   assert.deepEqual(unclassifiedEntries({ shippedDir: stray, projectUnitsDir: null }).map((finding) => finding.unit), ["stray-otel.service.in"]);
+});
 
-  const rendered = readFileSync(join(SHIPPED_DIR, "otel-receiver.service.in"), "utf8")
-    .replaceAll("@@checkout@@", "/p").replaceAll("@@binDir@@", "/b").replaceAll("@@home@@", "/h").replaceAll("@@workersDir@@", "/w");
-  assert.match(rendered, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
-  const installed = toolForm("otel-receiver.service.in", rendered, { tool: "/tool", checkout: "/project", beforeTicks: [] });
-  assert.match(installed, /^WorkingDirectory=\/tool$/m);
-  assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/otel-receiver\.ts$/m);
-  assert.doesNotMatch(installed, /--host|0\.0\.0\.0/, "no address is configurable from the unit");
+testEach("#4071: installed as the tool, the OTel receiver's unit runs its program from the tool and takes no configurable address", [
+  { name: "runs from the tool", check: (installed: string) => assert.match(installed, /^WorkingDirectory=\/tool$/m) },
+  { name: "the program", check: (installed: string) => assert.match(installed, /^ExecStart=%h\/\.local\/bin\/node src\/trace\/otel-receiver\.ts$/m) },
+  { name: "no address", check: (installed: string) => assert.doesNotMatch(installed, /--host|0\.0\.0\.0/, "no address is configurable from the unit") },
+], (c) => {
+  assert.match(renderedUnit("otel-receiver.service.in"), /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/trace\/otel-receiver\.ts$/m, "POSITIVE CONTROL: the shipped form is the one the tool form rewrites");
+  c.check(installedAsTool("otel-receiver.service.in"));
 });
 
 // --- #3702: A CLONE `host.json` DECLARES MUST BE ONE THE REVIEWER'S CODEX TRUSTS -----------------------------------------------------------

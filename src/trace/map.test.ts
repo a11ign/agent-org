@@ -15,6 +15,7 @@ import type { MapFilter } from "./map.ts";
 import { repriceEvents } from "./store.ts";
 import type { TraceEvent } from "./store.ts";
 import type { PullRequest } from "../wakes-per-row.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso: string): number => Date.parse(iso);
@@ -168,20 +169,26 @@ test("A ROW WITH NO TURN IN THE STORE has no dollars, never 0: its node figure i
   assert.match(page({}, events), /<td class="loop-row">review -&gt; rework -&gt; review<\/td><td>1<\/td><td>1<\/td><td>n\/a<\/td>/);
 });
 
-test("LOOPS: review -> rework -> review, queue -> eject -> queue and wake -> compaction are counted with their dollars", () => {
+test("LOOPS: the loops are review, queue and compaction, in that order, and the wakes beside compaction are four", () => {
   const m = model();
   assert.deepEqual(LOOPS.map((entry) => entry.id), ["review", "queue", "compaction"]);
-  // review: 101 was reviewed twice, so one trip round. Its dollars are the row's turns from the first review to the second (12:00 -> 14:00): 4.0 + the reviewer's 0.75.
-  assert.equal(loop(m, "review").count, 1);
-  near(loop(m, "review").dollars, 4.75);
-  // queue: 101 was ejected at 15:00 and re-entered at 16:00: one trip, and the turns between are 0.25 and one unpriced, so 0.25 is a floor.
-  assert.equal(loop(m, "queue").count, 1);
-  near(loop(m, "queue").dollars, 0.25);
-  assert.equal(loop(m, "queue").floor, true);
-  // compaction: one, priced at the INPUT side of the next turn of worker-101 (1000 input at $2/M + 100000 cache read at $0.10/M = 0.002 + 0.01), not its 4.0.
-  assert.equal(loop(m, "compaction").count, 1);
-  near(loop(m, "compaction").dollars, 0.012);
   assert.equal(m.wakes, 4, "wake, beside compaction: the wakes on the rows (101 has two, 102 and 201 one each)");
+});
+
+// review: 101 was reviewed twice, so one trip round. Its dollars are the row's turns from the first review to the second (12:00 -> 14:00): 4.0 + the reviewer's 0.75.
+// queue: 101 was ejected at 15:00 and re-entered at 16:00: one trip, and the turns between are 0.25 and one unpriced, so 0.25 is a floor.
+// compaction: one, priced at the INPUT side of the next turn of worker-101 (1000 input at $2/M + 100000 cache read at $0.10/M = 0.002 + 0.01), not its 4.0.
+const LOOP_FIGURES = [
+  { name: "review: one trip round, 4.75 with the reviewer's 0.75", id: "review", dollars: 4.75 },
+  { name: "queue: one trip, 0.25 and a floor", id: "queue", dollars: 0.25, floor: true },
+  { name: "compaction: one, priced at the next turn's input, 0.012", id: "compaction", dollars: 0.012 },
+];
+
+testEach("LOOPS: review -> rework -> review, queue -> eject -> queue and wake -> compaction are counted with their dollars", LOOP_FIGURES, (c) => {
+  const m = model();
+  assert.equal(loop(m, c.id).count, 1);
+  near(loop(m, c.id).dollars, c.dollars);
+  if (c.floor) assert.equal(loop(m, c.id).floor, true);
 });
 
 test("LOOPS: a compaction is priced at the session's own next turn, never a subagent's (sidechain) turn between", () => {
@@ -280,16 +287,19 @@ test("ESCAPING: a cause or repository name from the store is text on the page, n
   assert.doesNotMatch(html, /<[a-z]+[^>]*\sonerror=/i, "and no element carries a handler");
 });
 
-test("ACCESSIBLE: the picture has a name and a description, and everything it shows is also in a table", () => {
-  const html = page();
-  assert.match(html, /<svg role="img" aria-labelledby="map-title map-desc"/);
-  assert.match(html, /<title id="map-title">Across-rows process map<\/title>/);
-  assert.match(html, /<desc id="map-desc">Process map of 5 merged rows: 10 steps between phases/);
-  assert.match(html, /<h2>Phases<\/h2><table>/);
-  assert.match(html, /<h2>Steps between phases<\/h2><table>/);
-  assert.match(html, /<h2>Loops \(the waste\)<\/h2><table>/);
-  assert.match(html, /<td>boarded<\/td><td colspan="4">not held/);
-  assert.match(html, /<td>review<\/td><td>filed<\/td>|<td>filed<\/td><td>claimed<\/td><td>3<\/td>/);
+const ACCESSIBLE_MARKUP = [
+  { name: "the picture is named and described by its title and description", pattern: /<svg role="img" aria-labelledby="map-title map-desc"/ },
+  { name: "the title", pattern: /<title id="map-title">Across-rows process map<\/title>/ },
+  { name: "the description", pattern: /<desc id="map-desc">Process map of 5 merged rows: 10 steps between phases/ },
+  { name: "the phases table", pattern: /<h2>Phases<\/h2><table>/ },
+  { name: "the steps table", pattern: /<h2>Steps between phases<\/h2><table>/ },
+  { name: "the loops table", pattern: /<h2>Loops \(the waste\)<\/h2><table>/ },
+  { name: "the boarded row", pattern: /<td>boarded<\/td><td colspan="4">not held/ },
+  { name: "the filed review row", pattern: /<td>review<\/td><td>filed<\/td>|<td>filed<\/td><td>claimed<\/td><td>3<\/td>/ },
+];
+
+testEach("ACCESSIBLE: the picture has a name and a description, and everything it shows is also in a table", ACCESSIBLE_MARKUP, (c) => {
+  assert.match(page(), c.pattern);
 });
 
 test("AN EMPTY WINDOW is a page, not a crash: no rows, every figure n/a, and it says so", () => {

@@ -20,7 +20,7 @@ import { readRecentlyClosed, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate/ca
 import { claimRecordComment } from "./row-claim.ts";
 import { readsRecentlyClosed, recentlyClosedConnection } from "./packaging/rows-by-label-fixtures.ts";
 
-const T = (hms: string) => Date.parse(`2026-10-04T${hms}Z`);
+const T = (hms: string, day = "2026-10-04") => Date.parse(`${day}T${hms}Z`);
 const CLEARED = T("10:35:57");
 const TODAY = "2026-10-04";
 const ROW = 3390;
@@ -183,7 +183,7 @@ test("#3451 `decide` carries it: the order is absent with the facts and present 
 // (3532, 2026-10-05T02:02:42Z), so a bound taken from the oldest closing -- the refuted one -- fails (3).
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-const D = (iso: string) => Date.parse(`2026-10-05T${iso}Z`);
+const D = (iso: string) => T(iso, "2026-10-05");
 const BOUND = D("02:02:42");
 const NUMBER = 3534;
 const HOLDER = "worker-3534";

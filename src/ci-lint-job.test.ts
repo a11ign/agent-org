@@ -83,6 +83,12 @@ const ci = parse(read(".github/workflows/ci.yml")) as Workflow;
 const pins = JSON.parse(read("package.json")) as Pins;
 const lock = parse(read("pnpm-lock.yaml")) as Lock;
 const clone = <T>(value: T): T => structuredClone(value);
+/** A copy of the workflow whose `job` steps have `from` replaced by `to` in each `run`. */
+const editedRun = (job: "lint" | "gate", from: string | RegExp, to: string): Workflow => {
+  const edited = clone(ci);
+  edited.jobs[job].steps = edited.jobs[job].steps?.map((step) => ({ ...step, run: step.run?.replace(from, to) }));
+  return edited;
+};
 
 test("the real files pass every lint check: the lint job, gate, the pins and the lockfile", () => {
   assert.deepEqual(lintJobProblems(ci), []);
@@ -100,16 +106,13 @@ test("the lint job check sees each thing it checks, broken on a copy", () => {
   conditional.jobs.lint.if = "github.event_name == 'pull_request'";
   assert.match(lintJobProblems(conditional).join("\n"), /`if:`/);
 
-  const floating = clone(ci);
-  floating.jobs.lint.steps = floating.jobs.lint.steps?.map((step) => ({ ...step, run: step.run?.replace("--frozen-lockfile", "") }));
+  const floating = editedRun("lint", "--frozen-lockfile", "");
   assert.match(lintJobProblems(floating).join("\n"), /frozen-lockfile/);
 
-  const noScripts = clone(ci);
-  noScripts.jobs.lint.steps = noScripts.jobs.lint.steps?.map((step) => ({ ...step, run: step.run?.replace(" --ignore-scripts", "") }));
+  const noScripts = editedRun("lint", " --ignore-scripts", "");
   assert.match(lintJobProblems(noScripts).join("\n"), /frozen-lockfile --ignore-scripts/);
 
-  const noRun = clone(ci);
-  noRun.jobs.lint.steps = noRun.jobs.lint.steps?.map((step) => ({ ...step, run: step.run?.replace(/^npm run lint$/m, "echo skipped") }));
+  const noRun = editedRun("lint", /^npm run lint$/m, "echo skipped");
   assert.match(lintJobProblems(noRun).join("\n"), /npm run lint/);
 
   const otherPnpm = clone(ci);
@@ -122,8 +125,7 @@ test("the gate check sees a gate that does not need lint, and one that does not 
   notNeeded.jobs.gate.needs = ["suite", "typecheck", "changeset", "release-dry-run"];
   assert.match(gateProblems(notNeeded).join("\n"), /does not need/);
 
-  const notRead = clone(ci);
-  notRead.jobs.gate.steps = notRead.jobs.gate.steps?.map((step) => ({ ...step, run: step.run?.replace("${{ needs.lint.result }}", "success") }));
+  const notRead = editedRun("gate", "${{ needs.lint.result }}", "success");
   assert.match(gateProblems(notRead).join("\n"), /does not read/);
 });
 

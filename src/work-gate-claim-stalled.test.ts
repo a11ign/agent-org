@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import assert from "node:assert/strict";
@@ -34,16 +34,15 @@ import {
   implicitAdoptSession, worktreeCleanliness, predecessorLivenessUnknown, predecessorGoneReading, recordPredecessorGone, adoptFor, ROW_CLAIM_FLAGS,
 } from "./row-claim.ts";
 import { unknownFlags } from "./lib/cli-flags.ts";
+import { sandboxGitEnv } from "./lib/git-env.ts";
+import { moduleSource } from "./lib/module-source.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, commentMove, workAtRisk, fileMove, claimReading, claimFactsFrom, readClaim, RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit } from "./claim-stall/claim-stalled.ts";
 import { nudgeKey, nudgeDeliveredAt, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart, statMtime, pathExists } from "./claim-stall.ts";
 import { claimRecordOf } from "./claim-record.ts";
 import { decidedBy } from "./decided-by.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
 import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { moduleSource } from "./lib/module-source.ts";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-09-25T16:00:00Z");
@@ -345,6 +344,12 @@ const claimNothing = (minutesAgo: number, { session = "worker-7", author = "a11i
   body: claimRecordComment({ session, nothing: "the claim named no branch and no worktree" }), createdAt: iso(ago(minutesAgo)), author: { login: author },
 });
 const released = (minutesAgo: number): Comment => ({ body: claimRecordComment({ session: "worker-7", released: true }), createdAt: iso(ago(minutesAgo)), author: { login: "x" } });
+/** A holder past the interval, at its first tick: the memory that tick wrote, the comments it read, and the tick's reading. */
+function firstTickOf(claimComment: (minutesAgo: number) => Comment) {
+  const memory: Record<string, unknown> = {};
+  const comments = [claimComment(N_MIN * 3)];
+  return { memory, comments, first: tickWith({ commit: null }, comments, { memory }) };
+}
 
 test("#3407 (1) a nothing-claim round-trips through the REAL writer as a CLAIM with a null branch and worktree; a release is still `null`", () => {
   const record = claimRecordOf([claimNothing(300)]);
@@ -393,9 +398,7 @@ test("#3407 (2) a row whose only record is a RELEASE followed by a nothing-claim
 });
 
 test("#3407 (3) an evaluated nothing-claim past the interval gets the NUDGE and is NEVER released, however long it stays quiet", () => {
-  const memory: Record<string, unknown> = {};
-  const comments = [claimNothing(N_MIN * 3)];
-  const first = tickWith({ commit: null }, comments, { memory });
+  const { memory, comments, first } = firstTickOf(claimNothing);
   assert.equal(first.orders.length, 1);
   assert.equal(first.orders[0].cause, "claim-stalled");
   assert.equal(first.orders[0].release, undefined, "the first reading is the nudge");
@@ -1932,13 +1935,19 @@ test("#2864 the claim DROPS a kept record whose tree is gone and deletes its lef
   assert.equal(kept.execs.some((e) => e.args[0] === "git" && e.args[1] === "branch"), false);
 });
 
-/** A scratch `origin`/primary pair: `main` published, plus one local branch that is MERGED into main and one holding a commit nowhere else. */
-function keptScratch() {
-  const root = mkdtempSync(join(tmpdir(), "a11y-2864-"));
-  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { env: sandboxGitEnv(), encoding: "utf8" });
+/** A repository at `dir` on `main` with one commit, and `agent/merged-9` branched from it, so the branch is merged. Returns the git runner for it. */
+function initRepoWithMergedBranch(dir: string) {
+  const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { env: sandboxGitEnv(), encoding: "utf8" });
   git("init", "-q", "-b", "main");
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
   git("branch", "agent/merged-9");
+  return git;
+}
+
+/** A scratch `origin`/primary pair: `main` published, plus one local branch that is MERGED into main and one holding a commit nowhere else. */
+function keptScratch() {
+  const root = mkdtempSync(join(tmpdir(), "a11y-2864-"));
+  const git = initRepoWithMergedBranch(root);
   git("checkout", "-q", "-b", "agent/unmerged-8");
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "work only here");
   git("checkout", "-q", "main");
@@ -1987,10 +1996,7 @@ test("#2864 the wake ENTRY prunes a gone tree's kept record on a QUIET tick -- e
     // The tick's primary under `--worktrees-dir=<dir>` is `<dir>/<basename of the real primary>`: make THAT a real repo with a merged branch.
     const primary = join(dir, basename(PRIMARY_CHECKOUT));
     execFileSync("mkdir", [primary]);
-    const git = (...args: string[]) => execFileSync("git", ["-C", primary, ...args], { env: sandboxGitEnv(), encoding: "utf8" });
-    git("init", "-q", "-b", "main");
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
-    git("branch", "agent/merged-9");
+    const git = initRepoWithMergedBranch(primary);
     const live = join(dir, "live-tree");
     execFileSync("mkdir", [live]);
     const record = (branch: string, worktree: string) => ({ worktree, branch, from: "worker-1", at: NOW, why: "merged", dirty: 0, unpushed: 0 });
@@ -2287,9 +2293,7 @@ test("#743 the tick: red + `waiting-review` is nudged naming the check and green
 });
 
 test("#743 the tick: a holder with NO pull request is released exactly as before -- one nudge, then N after its delivery -- and never counted", () => {
-  const memory: Record<string, unknown> = {};
-  const comments = [claim(N_MIN * 3)];
-  const first = tickWith({ commit: null }, comments, { memory });
+  const { memory, comments, first } = firstTickOf(claim);
   assert.equal(first.orders.length, 1);
   assert.doesNotMatch(first.orders[0].prompt, /NUDGE \d OF 3/);
   const nudgedAt = (memory["2407"] as { nudgedAt: number }).nudgedAt;

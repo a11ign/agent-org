@@ -74,9 +74,13 @@ test("doctor names the fix for a missing launcher, herdr, host file, key and ser
   assert.equal(checks["instance answering"].ok, false);
 });
 
-test("doctor tells a key it cannot read, and a running service that does not answer", async () => {
-  const checks = byName(await diagnose(deps({ readKey: () => { throw new Error("no key"); }, answers: async (port) => port !== 4800 })));
+test("doctor tells a key it cannot read, and names the keychain command to store it", async () => {
+  const checks = byName(await diagnose(deps({ readKey: () => { throw new Error("no key"); } })));
   assert.equal(checks["tracker key"].fix, "security add-generic-password -a \"$USER\" -s agent-org-linear -w");
+});
+
+test("doctor tells a running service that does not answer, and names the log to read", async () => {
+  const checks = byName(await diagnose(deps({ answers: async (port) => port !== 4800 })));
   assert.equal(checks["instance service"].ok, true);
   assert.equal(checks["instance answering"].ok, false);
   assert.equal(checks["ui answering"].ok, true);
@@ -90,7 +94,7 @@ test("doctor fails a key file other users can read, and names the chmod", async 
   assert.equal(checks["tracker key"].fix, "chmod 600 /home/me/.agent-org/linear.key");
 });
 
-test("doctor asks each service's state by its own name, and a stopped ui does not hide behind a running instance", async () => {
+test("doctor asks each service's state by its own name, and a running instance answers", async () => {
   const asked: string[] = [];
   const checks = byName(await diagnose(deps({
     serviceState: (name) => { asked.push(name); return name === "instance" ? "running" : "not-registered"; },
@@ -98,6 +102,10 @@ test("doctor asks each service's state by its own name, and a stopped ui does no
   assert.deepEqual(asked, ["instance", "ui", "terminal", "auto-update"]);
   assert.equal(checks["instance service"].ok, true);
   assert.equal(checks["instance answering"].ok, true);
+});
+
+test("a stopped ui does not hide behind a running instance, and a ui started by hand still answers", async () => {
+  const checks = byName(await diagnose(deps({ serviceState: (name) => (name === "instance" ? "running" : "not-registered") })));
   assert.equal(checks["ui service"].ok, false);
   assert.equal(checks["ui service"].fix, "stop the one started by hand, then run `agent-org start ui`, so it starts at login and restarts after a crash");
   assert.equal(checks["ui answering"].ok, true, "it answers on its port, started by hand, and saying nothing answers would be false");
@@ -434,9 +442,10 @@ test("doctor runs each preflight command and reports a pass and a failure, namin
     preflight: async (command) => (command === "login-ok" ? { status: 0, timedOut: false, output: "" } : { status: 1, timedOut: false, output: "only 2 GB free\nmore" }),
   })));
   assert.equal(checks["preflight fontawesome login"].ok, true);
-  assert.equal(checks["preflight disk"].ok, false);
-  assert.equal(checks["preflight disk"].detail, "only 2 GB free");
-  assert.match(checks["preflight disk"].fix ?? "", /starts no run while it fails/);
+  const disk = checks["preflight disk"];
+  assert.equal(disk.ok, false);
+  assert.equal(disk.detail, "only 2 GB free");
+  assert.match(disk.fix ?? "", /starts no run while it fails/);
 });
 
 test("doctor says nothing of preflight on a host that names none, and runs nothing", async () => {

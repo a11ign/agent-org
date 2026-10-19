@@ -76,15 +76,20 @@ export type Marker = { at: number, pid: number | null, unreadable: boolean, phas
 
 // ---- THE START MARKER ------------------------------------------------------------------------------------------------------------------------
 
+/** Writes a value as JSON whole through a rename, so a reader never sees half of it. @param {string} path @param {unknown} value */
+function writeJsonWhole(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(value)}\n`);
+  renameSync(temporary, path);
+}
+
 /**
  * Written whole through a rename, so a reader sees the marker before a phase boundary or after it and never half of one (agent-org#1542).
  * @param {string} path @param {{ at: number, pid: number, phase?: string, phaseAt?: number }} marker
  */
 export function writeStartMarker(path: string, marker: { at: number; pid: number; phase?: string; phaseAt?: number; }) {
-  mkdirSync(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(marker)}\n`);
-  renameSync(temporary, path);
+  writeJsonWhole(path, marker);
 }
 
 /**
@@ -358,10 +363,7 @@ export function readTickRecordState(path: string, now: number = Date.now()): Tic
 
 /** Written whole through a rename, so a tick killed mid-write leaves the old state and never half of one. @param {string} path @param {TickRecordState} state */
 export function writeTickRecordState(path: string, state: TickRecordState) {
-  mkdirSync(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(state)}\n`);
-  renameSync(temporary, path);
+  writeJsonWhole(path, state);
 }
 
 /**

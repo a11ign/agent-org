@@ -25,6 +25,7 @@ import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { CODEX_AUTH_FAILURE_TEXT, CODEX_LOGGED_OUT_SCREEN, REVIEWER_SILENCE_MS, REVIEWER_REFRESH_LEDGER_FILE, authFailureShownIn, readLastRefresh, readReviewerRegistry, reviewerAuthFailures, reviewerAuthOrders, reviewerAuthTick, refreshLedgerLines, herdrPaneReader, sessionsOwingVerdict } from "./work-gate/causes/org-health-reviewer-auth.ts";
 import { REVIEWER_REGISTRY_FILE } from "./work-gate/vocabulary.ts";
 import { profileFor } from "./worker-profile.ts";
+import { testEach } from "./lib/test-each.ts";
 
 const T0 = Date.UTC(2026, 8, 24, 12, 0, 0);
 const MIN = 60_000;
@@ -77,34 +78,35 @@ test("#2401: an unreadable or unstamped credential is `null` -- 'could not ask' 
 
 // --- signal (a): codex's own text --------------------------------------------------------------------------
 
-test("#2401 (a): codex's auth-failure text is matched verbatim as codex spells it -- and a healthy pane matches none", () => {
-  const codexSays = "Your access token could not be refreshed. Please log out and sign in again.";
-  assert.equal(authFailureShownIn(`> review #2398\n■ ${codexSays}\n`), "Your access token could not be refreshed");
-  assert.equal(authFailureShownIn("Your authentication session could not be refreshed automatically. Please log out and sign in again."),
-    "Your authentication session could not be refreshed automatically");
-  assert.equal(authFailureShownIn("Failed to refresh token: 401"), "Failed to refresh token");
-  // THE POSITIVE CONTROL for every `null` in this file: a pane mid-review reads healthy, and so does no pane at all.
-  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything"), null);
-  assert.equal(authFailureShownIn(null), null);
-  assert.equal(authFailureShownIn(""), null);
-});
+// THE POSITIVE CONTROL for every `null` in this file: a pane mid-review reads healthy, and so does no pane at all.
+testEach("#2401 (a): codex's auth-failure text is matched verbatim as codex spells it -- and a healthy pane matches none", [
+  { name: "codex's own access-token text", pane: "> review #2398\n■ Your access token could not be refreshed. Please log out and sign in again.\n", expected: "Your access token could not be refreshed" },
+  { name: "codex's own session text", pane: "Your authentication session could not be refreshed automatically. Please log out and sign in again.", expected: "Your authentication session could not be refreshed automatically" },
+  { name: "the 401 refresh line", pane: "Failed to refresh token: 401", expected: "Failed to refresh token" },
+  { name: "a healthy pane", pane: "• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything", expected: null },
+  { name: "no pane", pane: null, expected: null },
+  { name: "an empty pane", pane: "", expected: null },
+], (c) => assert.equal(authFailureShownIn(c.pane), c.expected));
 
 // PROVENANCE OF THE FIXTURE, a comment and not an assertion: codex 0.157.0, its TUI started in tmux with a REJECTED
 // credential (expired, structurally valid, private CODEX_HOME, 401), 2026-09-25. It does NOT establish what a pane
 // that loses its login MID-SESSION renders; that stays unseen (`docs/known-gaps.md` §49).
 const LOGGED_OUT_STARTUP = "Welcome to Codex, OpenAI's command-line coding agent\n  Sign in with ChatGPT\n  or connect an API key";
 
-test("#2555 (a): codex's logged-out startup screen is recognised by its welcome line -- and quoting the sign-in phrase is not it", () => {
-  assert.equal(authFailureShownIn(LOGGED_OUT_STARTUP), CODEX_LOGGED_OUT_SCREEN.anchor);
-  assert.equal(authFailureShownIn(`  ${LOGGED_OUT_STARTUP}\n`), CODEX_LOGGED_OUT_SCREEN.anchor);
-  // The four phrases still win where a pane shows one, so their answers are unchanged.
-  assert.equal(authFailureShownIn(`${LOGGED_OUT_STARTUP}\nFailed to refresh token: 401`), "Failed to refresh token");
-  // FALSE-POSITIVE CONTROLS: a reviewer DISCUSSING the screen, and each half alone, read healthy.
-  assert.equal(authFailureShownIn("• The docs say to choose \"Sign in with ChatGPT\" or connect an API key.\n› Ask Codex to do anything"), null);
-  assert.equal(authFailureShownIn("Sign in with ChatGPT"), null);
-  assert.equal(authFailureShownIn("Welcome to Codex, OpenAI's command-line coding agent"), null);
+// The four phrases still win where a pane shows one, so their answers are unchanged.
+// FALSE-POSITIVE CONTROLS: a reviewer DISCUSSING the screen, and each half alone, read healthy.
+testEach("#2555 (a): codex's logged-out startup screen is recognised by its welcome line -- and quoting the sign-in phrase is not it", [
+  { name: "the startup screen", pane: LOGGED_OUT_STARTUP, expected: CODEX_LOGGED_OUT_SCREEN.anchor },
+  { name: "the startup screen, indented", pane: `  ${LOGGED_OUT_STARTUP}\n`, expected: CODEX_LOGGED_OUT_SCREEN.anchor },
+  { name: "the startup screen with a phrase", pane: `${LOGGED_OUT_STARTUP}\nFailed to refresh token: 401`, expected: "Failed to refresh token" },
+  { name: "a reviewer discussing the screen", pane: "• The docs say to choose \"Sign in with ChatGPT\" or connect an API key.\n› Ask Codex to do anything", expected: null },
+  { name: "the sign-in phrase alone", pane: "Sign in with ChatGPT", expected: null },
+  { name: "the welcome line alone", pane: "Welcome to Codex, OpenAI's command-line coding agent", expected: null },
   // Positive control for those nulls: the same healthy pane as above, and an invented phrase, are absent.
-  assert.equal(authFailureShownIn("• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything"), null);
+  { name: "a healthy pane", pane: "• Reading packages/agent-org/src/wake.ts\n› Ask Codex to do anything", expected: null },
+], (c) => assert.equal(authFailureShownIn(c.pane), c.expected));
+
+test("#2555 (a): the fixture can fail: an invented phrase is absent from the startup screen", () => {
   assert.ok(!LOGGED_OUT_STARTUP.includes("Nothing in codex says this, invented"), "and the fixture can fail: an invented phrase is absent");
 });
 

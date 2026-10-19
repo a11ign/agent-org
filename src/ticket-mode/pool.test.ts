@@ -69,6 +69,36 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   return { settings, pool, restart, status, h, entry, store, root, screen };
 }
 
+/** A pool over `queue` whose herdr takes the person's Stop for `key` while a start is in flight, so the Stop lands during the start. */
+function stopDuringStart(queue: Queue, key: string, deps: Omit<Parameters<typeof createPool>[1], "herdr" | "herdrAsync">) {
+  let current = queue;
+  const store = { get: () => current, set: (next: Queue) => { current = next; } };
+  const h = herdr(new Map());
+  let pool: ReturnType<typeof createPool>;
+  const herdrAsync = async (args: string[]) => { pool.stop(key); return h.run(args); };
+  pool = createPool(store, { ...deps, herdr: h.run, herdrAsync });
+  return { pool, store, h };
+}
+
+/** `setup` on NBF-1 alone, then one tick: the run is started, and `dir` is its ticket folder. */
+async function startedRun(tickets: Record<string, unknown> = {}, options: NonNullable<Parameters<typeof setup>[3]> = {}) {
+  const made = setup(1, ["NBF-1"], tickets, options);
+  await made.pool.tick();
+  return { ...made, dir: ticketDir(made.settings, "NBF-1") };
+}
+
+/** The agent under `name` goes to `state`, and the pool's next tick reads it. */
+async function agentIs(run: Pick<ReturnType<typeof setup>, "pool" | "status">, name: string, state: string) {
+  run.status.set(name, state);
+  await run.pool.tick();
+}
+
+/** The run's worker writes `outcome` in `dir`, goes idle under `name`, and the pool's next tick reads it. */
+async function endWith(run: Pick<ReturnType<typeof setup>, "pool" | "status">, dir: string, name: string, outcome: Record<string, unknown>) {
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify(outcome));
+  await agentIs(run, name, "idle");
+}
+
 test("a tick starts as many as `max` allows, each in ticket mode's own herdr session, prompt first and the tool list last", async () => {
   const { pool, h, entry, settings } = setup(2);
   await pool.tick();
@@ -108,9 +138,7 @@ test("each run's brief carries the machine's notes, and its ticket dir a copy of
 
 test("a run's brief names the connectors the machine allows, and its ticket dir holds the copy the hook reads", async () => {
   const connectors = ["^mcp__claude_ai_Linear__(get|list|search|extract)_"];
-  const { pool, settings } = setup(1, ["NBF-1"], { connectors });
-  await pool.tick();
-  const dir = ticketDir(settings, "NBF-1");
+  const { dir } = await startedRun({ connectors });
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /## Connectors\n\nThis machine lets you call/);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "connectors.json"), "utf8")), connectors);
 });
@@ -470,8 +498,7 @@ test("a run showing a start dialog for its worktree is answered with down-enter 
 });
 
 test("a retry's earlier outcome does not end it before it starts", async () => {
-  const { pool, status, entry, settings, store } = setup(1, ["NBF-1"]);
-  await pool.tick();
+  const { pool, status, entry, settings, store } = await startedRun();
   status.set(herdrName("NBF-1"), "working");
   await pool.tick();
   status.set(herdrName("NBF-1"), "idle");
@@ -489,16 +516,13 @@ test("a retry's earlier outcome does not end it before it starts", async () => {
 test("a run stopped while it was starting stays stopped, and the workspace its start raced is closed", async () => {
   const root = tmpDir("ticket-race-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: root });
-  let queue: Queue = resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0));
-  const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const h = herdr(new Map());
-  let pool: ReturnType<typeof createPool>;
   // The person presses Stop while Claude is starting.
-  const herdrAsync = async (args: string[]) => { pool.stop("NBF-1"); return h.run(args); };
-  pool = createPool(store, { settings, source, hook: { node: "n", bin: "b" }, herdr: h.run, herdrAsync, wait: async () => {}, load: () => ({ load: 0, cores: 1 }) });
-  await pool.tick();
-  assert.deepEqual(queue.entries[0].outcome, { kind: "stopped" });
-  assert.ok(h.calls.some((args) => args.includes("close") && args.includes("w1")), "the raced workspace is closed");
+  const racing = stopDuringStart(resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0)), "NBF-1", {
+    settings, source, hook: { node: "n", bin: "b" }, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
+  });
+  await racing.pool.tick();
+  assert.deepEqual(racing.store.get().entries[0].outcome, { kind: "stopped" });
+  assert.ok(racing.h.calls.some((args) => args.includes("close") && args.includes("w1")), "the raced workspace is closed");
 });
 
 test("a tick asked for during a tick runs once more after it, so a ticket queued meanwhile does not wait for the next interval", async () => {
@@ -777,6 +801,14 @@ async function endedOn(outcome: Record<string, unknown> | null, max = 1, keys = 
 }
 const closes = (h: { calls: string[][] }, workspace: string) => h.calls.filter((args) => args.includes("close") && args.includes(workspace)).length;
 
+/** A run that asked a person a question and parked, on a machine that moves its ticket to In Progress; its workspace is closed and a retry is queued. */
+async function retriedParked(tracker: TicketSource) {
+  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  parked.pool.close("NBF-1");
+  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  return parked;
+}
+
 test("a run that hands its ticket back is parked: its workspace and pane stay, and it holds no slot", async () => {
   for (const outcome of [{ kind: "needs-human", reason: "which colour?" }, { kind: "wrong-repo", where: "netbox" }, null]) {
     const { entry, h } = await endedOn(outcome, 1, ["NBF-1", "NBF-2"]);
@@ -867,11 +899,20 @@ async function captureStderr(act: () => Promise<void>): Promise<string[]> {
 /** Let the pool's attaching, which a tick starts and does not wait for, finish. */
 const settled = async () => { for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
 
+/** Starts NBF-1 on a machine whose working state is In Progress, on `tracker`, with the board's log captured and the move settled. */
+async function startingOn(tracker: TicketSource) {
+  let made!: ReturnType<typeof setup>;
+  const written = await captureStderr(async () => {
+    made = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+    await made.pool.tick();
+    await settled();
+  });
+  return { ...made, written };
+}
+
 test("a ticket queued to be planned first starts a planning run: it plans and changes no code, on the planning model, with the planning refusals added", async () => {
   const { tracker } = planTracker();
-  const { pool, h, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
-  await pool.tick();
-  const dir = ticketDir(settings, "NBF-1");
+  const { h, settings, dir } = await startedRun(PLANNER, { source: tracker, planFirst: ["NBF-1"] });
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.match(brief, /^# Plan NBF-1: NBF-1\n/);
   assert.ok(brief.includes(`Run the planner with: unattended: plan NBF-1 into ${join(dir, "plan")}`), "the machine's instruction, with the ticket and its plan folder filled in");
@@ -911,17 +952,13 @@ test("a plan is attached once, though more ticks see its outcome while it is att
   let release: () => void = () => {};
   const calls: string[] = [];
   const tracker: TicketSource = { ...source, attachPlan: (key) => { calls.push(key); return new Promise<string | null>((resolve) => { release = () => resolve(null); }); } };
-  const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
-  await pool.tick();
-  writeFileSync(join(ticketDir(settings, "NBF-1"), "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
-  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
-  status.set(herdrName("NBF-1"), "idle");
-  await pool.tick();
-  await pool.tick();
+  const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await plannedRun(made);
+  await made.pool.tick();
   release();
   await settled();
   assert.deepEqual(calls, ["NBF-1"]);
-  assert.equal(entry("NBF-1").phase, "queued");
+  assert.equal(made.entry("NBF-1").phase, "queued");
 });
 
 test("a plan the tracker will not take, a planning run that wrote no plan, and a planned outcome from a run that was not planning each end for a person", async () => {
@@ -935,9 +972,7 @@ test("a plan the tracker will not take, a planning run that wrote no plan, and a
     await pool.tick();
     const dir = ticketDir(settings, "NBF-1");
     if (c.files) writeFileSync(join(dir, "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
-    writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
-    status.set(herdrName("NBF-1"), "idle");
-    await pool.tick();
+    await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "planned" });
     await settled();
     const outcome = entry("NBF-1").outcome;
     assert.equal(outcome?.kind, "needs-human", c.name);
@@ -949,16 +984,12 @@ test("a plan the tracker will not take, a planning run that wrote no plan, and a
 test("a stop while a plan is attached is the person's last word: the ticket is not queued again", async () => {
   let release: () => void = () => {};
   const tracker: TicketSource = { ...source, attachPlan: () => new Promise<string | null>((resolve) => { release = () => resolve(null); }) };
-  const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
-  await pool.tick();
-  writeFileSync(join(ticketDir(settings, "NBF-1"), "plan", "NBF-1-0001-plan-fit.md"), "# Fit\n");
-  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
-  status.set(herdrName("NBF-1"), "idle");
-  await pool.tick();
-  pool.stop("NBF-1");
+  const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await plannedRun(made);
+  made.pool.stop("NBF-1");
   release();
   await settled();
-  assert.equal(entry("NBF-1").outcome?.kind, "stopped");
+  assert.equal(made.entry("NBF-1").outcome?.kind, "stopped");
 });
 
 test("a planning outcome is read as planned, and nothing else is", () => {
@@ -999,26 +1030,30 @@ async function plannedRun(made: ReturnType<typeof setup>) {
   await made.pool.tick();
 }
 
-test("a run stopped and retried while its plan was attached is a new run, which the old attach leaves alone", async () => {
+/** A planning run of NBF-1 that has written its plan and `planned`, its attach held by `heldTracker` until the test lets it go. */
+async function heldPlanning() {
   const { tracker, held } = heldTracker();
   const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
   await plannedRun(made);
+  return { ...made, held };
+}
+
+test("a run stopped and retried while its plan was attached is a new run, which the old attach leaves alone", async () => {
+  const made = await heldPlanning();
   made.pool.stop("NBF-1");
   made.store.set(retry(made.store.get(), "NBF-1", 200));
   made.status.delete(herdrName("NBF-1"));
   await made.pool.tick();
   assert.equal(made.entry("NBF-1").workspace, "w2", "the retried planning run has started");
-  held.release();
+  made.held.release();
   await settled();
   assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").workspace, made.entry("NBF-1").plan !== undefined], ["running", "w2", true]);
 });
 
 test("a run stopped while its plan was attached stays stopped when the attach then fails", async () => {
-  const { tracker, held } = heldTracker();
-  const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
-  await plannedRun(made);
+  const made = await heldPlanning();
   made.pool.stop("NBF-1");
-  held.fail(new Error("Linear answered 500"));
+  made.held.fail(new Error("Linear answered 500"));
   await settled();
   assert.equal(made.entry("NBF-1").outcome?.kind, "stopped");
 });
@@ -1033,9 +1068,7 @@ test("a plan folder holding a link or a file too big to be a plan attaches nothi
     const { pool, status, entry, settings } = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
     await pool.tick();
     write(join(ticketDir(settings, "NBF-1"), "plan"));
-    writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "planned" }));
-    status.set(herdrName("NBF-1"), "idle");
-    await pool.tick();
+    await endWith({ pool, status }, ticketDir(settings, "NBF-1"), herdrName("NBF-1"), { kind: "planned" });
     await settled();
     assert.deepEqual(attached, []);
     const outcome = entry("NBF-1").outcome;
@@ -1067,8 +1100,7 @@ test("a plan attached without the planner's state still sends the ticket to be w
 test("a run whose plugin is installed only for another folder is not started, and says how to install it for every folder", async () => {
   const record = join(tmpDir("ticket-plugins-"), "installed_plugins.json");
   writeFileSync(record, JSON.stringify({ version: 2, plugins: { "nbl-ui@applied-ai": [{ scope: "project", projectPath: "/work", installPath: "/cache/nbl-ui/0.17.0" }] } }));
-  const { pool, h, entry } = setup(1, ["NBF-1"], { plugins: ["nbl-ui@applied-ai"] }, { pluginRecord: record });
-  await pool.tick();
+  const { h, entry } = await startedRun({ plugins: ["nbl-ui@applied-ai"] }, { pluginRecord: record });
   const outcome = entry("NBF-1").outcome;
   assert.equal(outcome?.kind, "crashed");
   assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /nbl-ui@applied-ai is installed only for \/work, so a worker in .* runs without it: install it for every folder with `claude plugin install nbl-ui@applied-ai --scope user`/);
@@ -1132,28 +1164,20 @@ test("a move the tracker refuses, or one its team has no state for, goes to the 
     [null, "Linear answered 500", "ticket:serve: NBF-1 could not be moved to In Progress: Linear answered 500\n"],
   ] as const) {
     const { tracker } = startTracker(note, failure);
-    const written = await captureStderr(async () => {
-      const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
-      await pool.tick();
-      await settled();
-      assert.equal(entry("NBF-1").phase, "running");
-    });
+    const { entry, written } = await startingOn(tracker);
+    assert.equal(entry("NBF-1").phase, "running");
     assert.ok(written.includes(line), line);
   }
 });
 
 test("a tracker that throws before it answers the move cannot stop the run, and one that cannot move tickets is not asked", async () => {
   const throwing: TicketSource = { ...source, moveToWorkingState: () => { throw new Error("not ready"); } };
-  const written = await captureStderr(async () => {
-    const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: throwing });
-    await pool.tick();
-    await settled();
-    assert.equal(entry("NBF-1").phase, "running");
-  });
+  const { entry, written } = await startingOn(throwing);
+  assert.equal(entry("NBF-1").phase, "running");
   assert.ok(written.includes("ticket:serve: NBF-1 could not be moved to In Progress: not ready\n"));
-  const { pool, entry } = setup(1, ["NBF-1"], { workingState: "In Progress" });
-  await pool.tick();
-  assert.equal(entry("NBF-1").phase, "running", "a source without the move starts the run as before");
+  const plain = setup(1, ["NBF-1"], { workingState: "In Progress" });
+  await plain.pool.tick();
+  assert.equal(plain.entry("NBF-1").phase, "running", "a source without the move starts the run as before");
 });
 
 test("a run that is stopped puts its ticket back in the state the board moved it out of", async () => {
@@ -1210,9 +1234,7 @@ test("a parked run that is closed keeps its ticket In Progress, and a refresh do
 
 test("removing a queued retry that carries the record puts its ticket back, and the retry carries the record from the parked run", async () => {
   const { tracker, current } = stateTracker();
-  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
-  parked.pool.close("NBF-1");
-  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  const parked = await retriedParked(tracker);
   assert.deepEqual([parked.entry("NBF-1").phase, parked.entry("NBF-1").movedFrom], ["queued", { from: "Todo", to: "In Progress" }]);
   await parked.pool.remove("NBF-1");
   assert.deepEqual([current.get("NBF-1"), parked.store.get().entries], ["Todo", []]);
@@ -1280,9 +1302,7 @@ test("a restore the tracker refuses is logged at the run's end and kept, the nex
 
 test("Remove of a queued retry whose ticket the tracker refuses to put back throws, and the run stays queued", async () => {
   const { tracker, control } = stateTracker();
-  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
-  parked.pool.close("NBF-1");
-  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  const parked = await retriedParked(tracker);
   control.refuseRestore = "Linear answered 500";
   await assert.rejects(parked.pool.remove("NBF-1"), /NBF-1 could not be put back to Todo: Linear answered 500/);
   assert.equal(parked.entry("NBF-1").phase, "queued");
@@ -1290,9 +1310,7 @@ test("Remove of a queued retry whose ticket the tracker refuses to put back thro
 
 test("no tick starts a queued run while Remove puts its ticket back, so the run Remove takes off is the one that was queued", async () => {
   const { tracker, current, control } = stateTracker();
-  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
-  parked.pool.close("NBF-1");
-  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  const parked = await retriedParked(tracker);
   const starts = () => parked.h.calls.filter((args) => args.includes("start")).length;
   const before = starts();
   let release!: () => void;
@@ -1309,9 +1327,7 @@ test("no tick starts a queued run while Remove puts its ticket back, so the run 
 
 test("a retried run that finds its ticket already started keeps the record its first run made", async () => {
   const { tracker, current } = stateTracker();
-  const parked = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
-  parked.pool.close("NBF-1");
-  parked.store.set(retry(parked.store.get(), "NBF-1", 200));
+  const parked = await retriedParked(tracker);
   await parked.pool.tick();
   await settled();
   assert.deepEqual([parked.entry("NBF-1").phase, current.get("NBF-1"), parked.entry("NBF-1").movedFrom], ["running", "In Progress", { from: "Todo", to: "In Progress" }]);
@@ -1364,6 +1380,10 @@ const put = (path: string, text: string) => {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, text);
 };
+/** Writes each file of a batch's plan folder, keyed by its path under the folder. */
+function writePlans(plan: string, files: Record<string, string>) {
+  for (const [path, text] of Object.entries(files)) put(join(plan, path), text);
+}
 
 test("the tickets queued together are planned by one run in one slot: each shows Planning on the run's workspace and pane, and one agent starts", async () => {
   const { tracker } = batchTracker({ ...source, download: async (t, dir) => [join(dir, `attachment-1-${t.key}.png`)] });
@@ -1429,19 +1449,12 @@ test("a batch's planned outcome attaches each ticket's plan, hands back the one 
 
 test("an order.json that fails its checks records no blockers and is logged, and the plans are still attached", async () => {
   const { tracker, attached, relations } = batchTracker();
-  const written = await captureStderr(async () => {
-    const { pool, status, entry, settings } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
-    await pool.tick();
-    const plan = join(batchDir(settings, BATCH), "plan");
+  const { entry, written } = await plannedBatch(tracker, (plan) => {
     put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
     put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
     put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "a", after: ["NBF-2"] }, "NBF-2": { repo: "b", after: ["NBF-1"] } }));
-    writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
-    status.set(herdrName(BATCH), "idle");
-    await pool.tick();
-    await settled();
-    assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).planned, entry(key).plannedRepo]), [[true, null], [true, null]]);
   });
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => [entry(key).planned, entry(key).plannedRepo]), [[true, null], [true, null]]);
   assert.deepEqual([attached, [...relations]], [["NBF-1", "NBF-2"], []]);
   assert.ok(written.some((line) => /order\.json was not used, so no order was recorded: its order goes round in a cycle: NBF-1 -> NBF-2 -> NBF-1/.test(line)), written.join(""));
 });
@@ -1524,9 +1537,7 @@ test("a batch's run is answered at its own folder's trust dialog, and a QUESTION
   mkdirSync(join(plan, "NBF-1"), { recursive: true });
   symlinkSync(secret, join(plan, "NBF-1", "QUESTION.md"));
   put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
-  writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
-  status.set(herdrName(BATCH), "idle");
-  await pool.tick();
+  await endWith({ pool, status }, batchDir(settings, BATCH), herdrName(BATCH), { kind: "planned" });
   await settled();
   const outcome = entry("NBF-1").outcome;
   const reason = outcome?.kind === "needs-human" ? outcome.reason : "";
@@ -1553,10 +1564,11 @@ test("a batch's ticket queued again while a pass reads blockers waits for the ne
   };
   const { pool, status, entry, settings, store } = setup(3, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: racing, planFirst: ["NBF-1", "NBF-2"], batch: true });
   await pool.tick();
-  const plan = join(batchDir(settings, BATCH), "plan");
-  put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
-  put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
-  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] } }));
+  writePlans(join(batchDir(settings, BATCH), "plan"), {
+    "NBF-1/NBF-1-0001-plan-a.md": "# A\n",
+    "NBF-2/NBF-2-0001-plan-b.md": "# B\n",
+    "order.json": JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] } }),
+  });
   writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
   status.set(herdrName(BATCH), "idle");
   store.set(enqueue(store.get(), [ticket("NBF-3")], { model: "sonnet", effort: "high" }, 50));
@@ -1576,9 +1588,7 @@ test("A11-77: an order that says a ticket waits on its blocker to merge keeps th
   for (const key of keys) put(join(plan, key, `${key}-0001-plan.md`), `# ${key}\n`);
   put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] },
     "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"], wait: "merged" }, "NBF-3": { repo: "nbl-ui-netbox", after: ["NBF-1"], wait: "stacked" } }));
-  writeFileSync(join(batchDir(settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
-  status.set(herdrName(BATCH), "idle");
-  await pool.tick();
+  await endWith({ pool, status }, batchDir(settings, BATCH), herdrName(BATCH), { kind: "planned" });
   await settled();
   assert.deepEqual([...relations].sort(), [["NBF-2", ["NBF-1"]], ["NBF-3", ["NBF-1"]]], "the order is recorded as blockers either way");
   assert.deepEqual(keys.map((key) => [entry(key).plannedRepo, entry(key).waitMerged]),
@@ -1592,18 +1602,15 @@ test("a batch whose start fails crashes every ticket of it, and a stop while it 
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => broken.entry(key).outcome), Array(2).fill({ kind: "crashed", reason: "Linear answered 500" }));
   const root = tmpDir("ticket-batch-race-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: root, tickets: BATCH_PLANNER });
-  let queue: Queue = resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0,
-    { keys: new Set(["NBF-1", "NBF-2"]), choice: { model: "opus", effort: "max" }, batch: true }));
-  const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const h = herdr(new Map());
-  let pool: ReturnType<typeof createPool>;
   // The person presses Stop on the second ticket while the batch's Claude is starting.
-  const herdrAsync = async (args: string[]) => { pool.stop("NBF-2"); return h.run(args); };
-  pool = createPool(store, { settings, source: batchTracker().tracker, hook: { node: "n", bin: "b" }, herdr: h.run, herdrAsync, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
-    pluginRecord: join(root, "none.json") });
-  await pool.tick();
-  assert.deepEqual(queue.entries.map((e) => e.outcome), [{ kind: "stopped" }, { kind: "stopped" }]);
-  assert.ok(h.calls.some((args) => args.includes("close") && args.includes("w1")), "the raced workspace is closed");
+  const racing = stopDuringStart(resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0,
+    { keys: new Set(["NBF-1", "NBF-2"]), choice: { model: "opus", effort: "max" }, batch: true })), "NBF-2", {
+    settings, source: batchTracker().tracker, hook: { node: "n", bin: "b" }, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
+    pluginRecord: join(root, "none.json"),
+  });
+  await racing.pool.tick();
+  assert.deepEqual(racing.store.get().entries.map((e) => e.outcome), [{ kind: "stopped" }, { kind: "stopped" }]);
+  assert.ok(racing.h.calls.some((args) => args.includes("close") && args.includes("w1")), "the raced workspace is closed");
 });
 
 /** Run a batch of NBF-1 and NBF-2 to a planned outcome, after `write` has filled its plan folder. Returns the setup and the board's log. */
@@ -1678,15 +1685,21 @@ const gitIn = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, 
 /** The committer the real-repository tests commit as. */
 const identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
 
-test("A11-116: a ticket in a project that names a repository is planned for it, and starts on its blocker's branch once that branch is pushed, with no pull request", async () => {
-  // The blocker's branch lives in a clone of this machine's `nbl-ui-netbox`, pushed to a bare origin, and is not pushed until the second pass.
-  const root = tmpDir("ticket-pool-stacked-branch-");
+/** A bare `origin` with `main` pushed, and a clone of it: the real repositories a stacked run is rebased in. */
+function originAndClone(prefix: string): { root: string; origin: string; clone: string } {
+  const root = tmpDir(prefix);
   const origin = join(root, "origin.git");
   const clone = join(root, "nbl-ui-netbox");
   gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
   gitIn(root, ["clone", "-q", origin, clone]);
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
   gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
+  return { root, origin, clone };
+}
+
+test("A11-116: a ticket in a project that names a repository is planned for it, and starts on its blocker's branch once that branch is pushed, with no pull request", async () => {
+  // The blocker's branch lives in a clone of this machine's `nbl-ui-netbox`, pushed to a bare origin, and is not pushed until the second pass.
+  const { clone } = originAndClone("ticket-pool-stacked-branch-");
   gitIn(clone, ["checkout", "-q", "-b", "nbf-1-fit"]);
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "blocker"]);
   const tracker: TicketSource = { ...source,
@@ -1709,13 +1722,7 @@ test("A11-116: a ticket in a project that names a repository is planned for it, 
 });
 
 test("A11-116: a stacked run is rebased onto its blocker's moved branch by agent-org once its worker has stopped, and only noted while it runs", async () => {
-  const root = tmpDir("ticket-pool-rebase-");
-  const origin = join(root, "origin.git");
-  const clone = join(root, "nbl-ui-netbox");
-  gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
-  gitIn(root, ["clone", "-q", origin, clone]);
-  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
-  gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
+  const { root, clone } = originAndClone("ticket-pool-rebase-");
   gitIn(clone, ["checkout", "-q", "-b", "nbf-1-fit"]);
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "blocker"]);
   gitIn(clone, ["push", "-q", "origin", "nbf-1-fit"]);
@@ -1770,13 +1777,7 @@ function fakeGitHub(pulls: Record<string, { head: string; base: string; state: s
 }
 
 test("A11-116: two tickets of one project run in order over real repositories: the second starts on the first's pushed branch before any pull request, and once the first merges its own is retargeted to the default branch, so both merge in order", async () => {
-  const root = tmpDir("ticket-pool-two-tickets-");
-  const origin = join(root, "origin.git");
-  const clone = join(root, "nbl-ui-netbox");
-  gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
-  gitIn(root, ["clone", "-q", origin, clone]);
-  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
-  gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
+  const { root, clone } = originAndClone("ticket-pool-two-tickets-");
   const pullOne = "https://github.com/x/nbl-ui-netbox/pull/1";
   const pullTwo = "https://github.com/x/nbl-ui-netbox/pull/2";
   // What the tracker says of NBF-1, the blocker of NBF-2: its branch, and its pull request's state once one is open.
@@ -1794,7 +1795,8 @@ test("A11-116: two tickets of one project run in order over real repositories: t
   gitIn(clone, ["push", "-q", "origin", "nbf-1"]);
   await pool.refreshTracker();
   await pool.tick();
-  assert.equal(entry("NBF-2").phase, "running", "the second starts on the pushed branch before any pull request exists");
+  const second = entry("NBF-2");
+  assert.equal(second.phase, "running", "the second starts on the pushed branch before any pull request exists");
   assert.ok(readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8").includes("- NBF-1: its branch `nbf-1` is pushed in `nbl-ui-netbox`; there is no pull request yet"));
   // The second's worker makes its worktree the way ticket:worktree does, from the first's branch, and pushes its own.
   const made = await worktreeMain(["nbl-ui-netbox", "--from", "nbf-1"], { [TICKET_ENV.key]: "NBF-2", [TICKET_ENV.branch]: "nbf-2" }, () => settings);
@@ -1841,9 +1843,8 @@ async function parkedReview() {
 }
 
 test("a parked review run whose worker wrote reviewed between two looks, never seen working, settles Ready to merge and closes its workspace", async () => {
-  const { pool, entry, dir, h } = await parkedReview();
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
-  await pool.tick();
+  const { pool, entry, dir, h, status } = await parkedReview();
+  await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "reviewed" });
   assert.deepEqual(entry("NBF-1").outcome, { kind: "reviewed", prs: [approvedPr] });
   assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
   assert.equal(entry("NBF-1").workspace, undefined);
@@ -1914,6 +1915,11 @@ async function readyRun(gh: (args: string[]) => string, tickets: Record<string, 
 }
 /** Let the tick that a feedback round wakes, which `watchFeedback` does not wait for, start the round. */
 const roundStarted = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+/** Watches for feedback once, then waits for the round it starts. */
+async function watchRound(pool: ReturnType<typeof createPool>) {
+  pool.watchFeedback();
+  await roundStarted();
+}
 
 test("new review feedback on a run Ready to merge starts a feedback round that resumes its worker and names the feedback; its own account's does not", async () => {
   const gh = ghFor({ 1: feedbackPull({
@@ -1921,8 +1927,7 @@ test("new review feedback on a run Ready to merge starts a feedback round that r
   }) });
   const { pool, entry, dir, h } = await readyRun(gh.run);
   h.calls.length = 0;
-  pool.watchFeedback();
-  await roundStarted();
+  await watchRound(pool);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
   assert.equal(entry("NBF-1").feedback, `New review feedback on ${approvedPr.url}, the newest from a11ign-reviewer.`);
   const start = h.calls.find((args) => args.includes("start"))!;
@@ -1988,26 +1993,27 @@ function planFiles(paths: Record<string, string[]>, refuse: () => void = () => {
   } };
 }
 
-/** NBF-1 finished with a draft pull request, watched with `gh` and not approved: a draft is read for its footprint, and never woken. */
-async function draftRun(gh: (args: string[]) => string) {
-  const ctx = setup(1, ["NBF-1"], {}, { gh });
+/** NBF-1 started on `tickets`, then ended on pull requests of `kind` (draft or ready), watched with `gh` and not approved. */
+async function endedWithPulls(gh: (args: string[]) => string, tickets: Record<string, unknown>, kind: "draft-pr" | "ready-pr") {
+  const ctx = setup(1, ["NBF-1"], tickets, { gh });
   await ctx.pool.tick();
   ctx.status.set(herdrName("NBF-1"), "idle");
-  writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind, prs: [approvedPr] }));
   await ctx.pool.tick();
   ctx.status.delete(herdrName("NBF-1"));
+  return ctx;
+}
+
+/** NBF-1 finished with a draft pull request, watched with `gh` and not approved: a draft is read for its footprint, and never woken. */
+async function draftRun(gh: (args: string[]) => string) {
+  const ctx = await endedWithPulls(gh, {}, "draft-pr");
   assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
   return ctx;
 }
 
 /** NBF-1 finished with ready pull requests, on a machine that opens them ready, so no Approve comes and the board watches them. */
 async function readyPrRun(gh: (args: string[]) => string) {
-  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh });
-  await ctx.pool.tick();
-  ctx.status.set(herdrName("NBF-1"), "idle");
-  writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [approvedPr] }));
-  await ctx.pool.tick();
-  ctx.status.delete(herdrName("NBF-1"));
+  const ctx = await endedWithPulls(gh, { drafts: false }, "ready-pr");
   assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
   return ctx;
 }
@@ -2077,19 +2083,17 @@ async function parkedOnQuestion(gh: (args: string[]) => string) {
 }
 
 test("A11-89: a parked run whose pull request conflicts is resumed: its workspace is closed once, the same worker resumes once with the conflict named, and its brief merges the base in", async () => {
-  const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) });
-  const { pool, entry, dir, h } = await parkedOnQuestion(gh.run);
+  const { pool, entry, dir, h } = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) }).run);
   h.calls.length = 0;
   pool.watchFeedback();
-  pool.watchFeedback();
-  await roundStarted();
+  await watchRound(pool);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
   assert.equal(entry("NBF-1").feedback, `${approvedPr.url} conflicts with its base branch main.`);
-  assert.equal(closes(h, "w2"), 1, "the parked workspace is closed once, before the round starts");
   const starts = h.calls.filter((args) => args.includes("start"));
+  assert.equal(closes(h, "w2"), 1, "the parked workspace is closed once, before the round starts");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.equal(starts.length, 1, "the same worker is started once, not once per watch");
   assert.deepEqual(starts[0].slice(starts[0].indexOf("--resume"), starts[0].indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
-  const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.match(brief, /^1\. The feedback above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else/m);
   assert.equal(existsSync(join(dir, "outcome.json")), false, "the needs-human it parked on is cleared, so it does not end this round");
 });
@@ -2113,9 +2117,9 @@ test("A11-89: a parked run whose pull request is clear, unknown, or has only new
 });
 
 test("A11-89: a parked run whose conflicting pull request merged, or whose run was stopped, gets no round", async () => {
-  const merged = await parkedOnQuestion(ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) }).run);
-  merged.pool.watchFeedback();
-  await roundStarted();
+  const gh = ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) });
+  const merged = await parkedOnQuestion(gh.run);
+  await watchRound(merged.pool);
   assert.deepEqual([merged.entry("NBF-1").phase, merged.entry("NBF-1").rounds], ["finished", undefined], "merged: nothing to resolve");
 
   const stopped = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }).run);
@@ -2141,11 +2145,11 @@ test("A11-89: a parked run whose workspace herdr will not close stays parked, na
 });
 
 test("A11-89: a parked run at the cap of rounds is left parked: nothing is closed or started", async () => {
-  const capped = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }).run);
+  const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) });
+  const capped = await parkedOnQuestion(gh.run);
   capped.store.set({ ...capped.store.get(), entries: capped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, rounds: 3 } : e)) });
   capped.h.calls.length = 0;
-  capped.pool.watchFeedback();
-  await roundStarted();
+  await watchRound(capped.pool);
   assert.deepEqual([capped.entry("NBF-1").phase, capped.entry("NBF-1").rounds, capped.entry("NBF-1").workspace, capped.entry("NBF-1").handedBack], ["finished", 3, "w2", undefined]);
   assert.deepEqual(capped.h.calls, [], "nothing is closed or started");
 });
@@ -2211,9 +2215,7 @@ test("A11-82: tickets queued and planned together whose plans share a path, with
     put(join(plan, "NBF-1", "NBF-1-0001-plan-a.md"), "# A\n");
     put(join(plan, "NBF-2", "NBF-2-0001-plan-b.md"), "# B\n");
     put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-netbox", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: [] } }));
-    writeFileSync(join(batchDir(ran.settings, BATCH), "outcome.json"), JSON.stringify({ kind: "planned" }));
-    ran.status.set(herdrName(BATCH), "idle");
-    await ran.pool.tick();
+    await endWith(ran, batchDir(ran.settings, BATCH), herdrName(BATCH), { kind: "planned" });
     await settled();
     await ran.pool.tick();
   });
@@ -2343,8 +2345,7 @@ test("a publish run's outcome is read with its links file: needs-human and any o
 test("a parked run that wrote a new outcome while a dialog waits on a person is left for the person, and settles once its agent is idle", async () => {
   const { pool, entry, dir, status } = await parkedReview();
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "reviewed" }));
-  status.set(herdrName("NBF-1"), "blocked");
-  await pool.tick();
+  await agentIs({ pool, status }, herdrName("NBF-1"), "blocked");
   assert.deepEqual([entry("NBF-1").outcome?.kind, entry("NBF-1").workspace], ["no-outcome", "w2"]);
   status.set(herdrName("NBF-1"), "idle");
   await pool.tick();
@@ -2434,6 +2435,14 @@ function fakeReviewer() {
   const starts: ReviewerRef[] = [];
   const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: () => false, ...idleTeardown, ...idleVerdict };
   return { port, starts };
+}
+
+/** NBF-1 Ready to merge with `port` as its reviewer and its pull requests read from `pulls`, after one feedback watch. */
+async function reviewedRun(port: ReviewerPort, pulls: Record<number, unknown>) {
+  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
+  ctx.pool.watchFeedback();
+  await roundStarted();
+  return ctx;
 }
 
 /** Ends the feedback round a watch started: its worker is idle and writes a reviewed outcome, which settles the run Ready to merge again. */
@@ -2543,10 +2552,7 @@ test("the reviewer's own review never moves feedbackAt: its comment after the ro
 
 test("the reviewer's verdict on the head reaches the worker: changes requested starts a round that names the reviewer, and an approval starts none", async () => {
   for (const [state, rounds] of [["CHANGES_REQUESTED", 1], ["APPROVED", undefined]] as const) {
-    const gh = ghFor({ 1: feedbackPull({ reviews: [{ state, submittedAt: at(200), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }] }) });
-    const ctx = await readyRun(gh.run, REVIEWING, fakeReviewer().port);
-    ctx.pool.watchFeedback();
-    await roundStarted();
+    const ctx = await reviewedRun(fakeReviewer().port, { 1: feedbackPull({ reviews: [{ state, submittedAt: at(200), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }] }) });
     assert.equal(ctx.entry("NBF-1").rounds, rounds, state);
     if (rounds !== undefined) assert.ok(ctx.entry("NBF-1").feedback?.includes(`${REVIEWER_LOGIN} requested changes on ${approvedPr.url} at h1`), state);
   }
@@ -2885,8 +2891,7 @@ test("A11-80: a working outcome is read with its reason and does not end the run
   assert.equal(entry("NBF-2").phase, "queued", "it still holds the one slot");
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "running", "reading the same file again ends nothing");
-  status.set(herdrName("NBF-1"), "working");
-  await pool.tick();
+  await agentIs({ pool, status }, herdrName("NBF-1"), "working");
   assert.equal(entry("NBF-1").phase, "running", "its Monitor woke it");
   const prs = [{ repo: "nbl-ui-netbox", url: "https://github.com/o/nbl-ui-netbox/pull/7" }];
   writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs }));
@@ -2903,9 +2908,7 @@ test("A11-80: a working run idle with no newer outcome for tickets.stallMinutes 
   await pool.tick();
   status.set(herdrName("NBF-1"), "working");
   await pool.tick();
-  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "working", reason: "the roll is still running" }));
-  status.set(herdrName("NBF-1"), "idle");
-  await pool.tick();
+  await endWith({ pool, status }, ticketDir(settings, "NBF-1"), herdrName("NBF-1"), { kind: "working", reason: "the roll is still running" });
   clock += 30 * 60_000 - 1;
   await pool.tick();
   assert.equal(entry("NBF-1").working?.stalled, undefined, "not before the stall time");
@@ -2937,7 +2940,7 @@ async function idleWithWork(screen: string, { refuseRead = false }: { refuseRead
   made.screen.text = screen;
   if (refuseRead) made.h.refused.add("read");
   await made.pool.tick();
-  return { ...made, advance: (ms: number) => { clock += ms; } };
+  return { ...made, advance: (ms: number) => { clock += ms; }, pass: async (ms: number) => { clock += ms; await made.pool.tick(); } };
 }
 
 test("A11-85: a working run whose pane shows no background work for BACKGROUND_GONE_MS is marked stalled and prompted once, not before", async () => {
@@ -2976,7 +2979,7 @@ test("A11-85: a pane that cannot be read leaves the thirty-minute rule to decide
 });
 
 test("A11-85: background work seen again clears the mark, so a later gone is a new one; a second working with nothing running is not prompted again", async () => {
-  const { pool, entry, h, screen, advance, settings } = await idleWithWork(PANE());
+  const { pool, entry, h, screen, advance, settings, pass } = await idleWithWork(PANE());
   advance(BACKGROUND_GONE_MS);
   await pool.tick();
   assert.equal(resumes(h), 1, "the first gone is prompted");
@@ -2996,8 +2999,7 @@ test("A11-85: background work seen again clears the mark, so a later gone is a n
   writeFileSync(outcome, JSON.stringify({ kind: "working", reason: "a third play, still nothing running" }));
   utimesSync(outcome, new Date(later.getTime() + 60_000), new Date(later.getTime() + 60_000));
   await pool.tick();
-  advance(BACKGROUND_GONE_MS);
-  await pool.tick();
+  await pass(BACKGROUND_GONE_MS);
   assert.equal(entry("NBF-1").working?.stalled, true, "stalled again");
   assert.equal(resumes(h), 2, "not prompted again without real work between");
 });
@@ -3099,9 +3101,7 @@ test("a merged pull request's reviewer is retired by the sweep, and what the poo
 test("a closed pull request is retired the same way as a merged one", async () => {
   const { port, retired } = reviewerWith();
   const pulls = { 1: feedbackPull() };
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
-  ctx.pool.watchFeedback();
-  await roundStarted();
+  const ctx = await reviewedRun(port, pulls);
   pulls[1] = feedbackPull({ state: "CLOSED" });
   ctx.pool.releaseReviewers();
   assert.deepEqual(retired, [approvedPr.url]);
@@ -3109,9 +3109,7 @@ test("a closed pull request is retired the same way as a merged one", async () =
 
 test("an open pull request's reviewer is left alone by the sweep, and still remembered", async () => {
   const { port, retired } = reviewerWith();
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
-  ctx.pool.watchFeedback();
-  await roundStarted();
+  const ctx = await reviewedRun(port, { 1: feedbackPull() });
   ctx.pool.releaseReviewers();
   assert.deepEqual(retired, []);
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 1);
@@ -3120,9 +3118,7 @@ test("an open pull request's reviewer is left alone by the sweep, and still reme
 test("a pull request whose state cannot be read is kept and logged, and asked again on the next sweep", async () => {
   const { port, retired } = reviewerWith();
   const pulls: Record<number, unknown> = { 1: feedbackPull() };
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
-  ctx.pool.watchFeedback();
-  await roundStarted();
+  const ctx = await reviewedRun(port, pulls);
   delete pulls[1];
   const logged = await captureStderr(async () => { ctx.pool.releaseReviewers(); });
   assert.deepEqual(retired, []);
@@ -3134,9 +3130,7 @@ test("a retire that is refused keeps what the pool remembers, and the next sweep
   let refuse = true;
   const { port, retired } = reviewerWith({ retire: () => (refuse ? { refusal: "no retire for it: reviewer-7 is still working" } : { retired: true, report: null }) });
   const pulls = { 1: feedbackPull() };
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
-  ctx.pool.watchFeedback();
-  await roundStarted();
+  const ctx = await reviewedRun(port, pulls);
   pulls[1] = feedbackPull({ state: "MERGED" });
   const logged = await captureStderr(async () => { ctx.pool.releaseReviewers(); });
   assert.ok(logged.some((line) => line.includes("still working")), "the refusal is logged");
@@ -3148,11 +3142,9 @@ test("a retire that is refused keeps what the pool remembers, and the next sweep
 });
 
 test("a restarted pool retires a merged pull request from the memory read off disk", async () => {
-  const { port, retired } = reviewerWith();
   const pulls = { 1: feedbackPull() };
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
-  ctx.pool.watchFeedback();
-  await roundStarted();
+  const { port, retired } = reviewerWith();
+  const ctx = await reviewedRun(port, pulls);
   pulls[1] = feedbackPull({ state: "MERGED" });
   ctx.restart().releaseReviewers();
   assert.deepEqual(retired, [approvedPr.url], "the restarted pool retires it");
@@ -3268,12 +3260,10 @@ test("a verdict the door refuses for good is said at once, and is not posted aga
 
 test("a reviewer that ended with no verdict file is prompted once, and the second look with no file says so on the run", async () => {
   const made = unpostedReviewer({ file: null });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, made.port);
+  const ctx = await reviewedRun(made.port, { 1: feedbackPull() });
   ctx.pool.watchFeedback();
   await roundStarted();
-  ctx.pool.watchFeedback();
-  await roundStarted();
-  assert.deepEqual(made.prompts, [{ pr: approvedPr.url, head: "h1" }], "prompted once, as a reviewer that has just started is");
+  assert.deepEqual(made.prompts,[{ pr: approvedPr.url, head: "h1" }], "prompted once, as a reviewer that has just started is");
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined, "the first look says nothing yet");
   ctx.pool.watchFeedback();
   await roundStarted();
@@ -3407,19 +3397,15 @@ test("a run whose drafts are all refused fails, naming each file, and a run that
   await pool.tick();
   mkdirSync(join(dir, "drafts"), { recursive: true });
   writeFileSync(join(dir, "drafts", "01-bad.json"), JSON.stringify({ ...goodDraft, why: "" }));
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "drafted" }));
-  status.set(name, "idle");
-  await pool.tick();
+  await endWith({ pool, status }, dir, name, { kind: "drafted" });
   await writerSettled();
   assert.equal(run().failure, 'none of its drafts is valid: 01-bad.json: "why" must be a non-empty string');
   assert.equal(run().phase, "finished");
 
   const quiet = writing({ id: "w2" });
   await quiet.pool.tick();
-  quiet.status.set(quiet.name, "working");
-  await quiet.pool.tick();
-  quiet.status.set(quiet.name, "done");
-  await quiet.pool.tick();
+  await agentIs(quiet, quiet.name, "working");
+  await agentIs(quiet, quiet.name, "done");
   await writerSettled();
   assert.equal(quiet.run().failure, "it stopped without writing an outcome");
 });
@@ -3428,9 +3414,7 @@ test("a grill run asks its question and holds no slot while it waits, and resume
   const { pool, status, name, dir, run, store } = writing({ mode: "grill" });
   await pool.tick();
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "Which goal does it serve?" }));
-  status.set(name, "idle");
-  await pool.tick();
+  await endWith({ pool, status }, dir, name, { kind: "needs-human", reason: "Which goal does it serve?" });
   await writerSettled();
   assert.equal(run().phase, "waiting");
   assert.equal(run().question, "Which goal does it serve?");

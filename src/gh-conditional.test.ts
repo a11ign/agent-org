@@ -128,11 +128,16 @@ test("the flag is a marker file: present turns the REST path on, absent leaves t
   }
 });
 
-test("(c) metered: the GraphQL read that would pass the cap is refused before gh runs, and the refusal throws as a failed gh does", () => {
+/** A metered run over a fake gh that answers `output` to each call and records the call in `sent`, with a budget of `cap` points. */
+function meteredFake(output: string, cap: number) {
   const sent: string[][] = [];
-  const run = (args: string[]) => { sent.push(args); return "[]"; };
-  const budget = budgetOf({ cap: 2 });
-  const metered = meteredRun(run, budget);
+  const run = (args: string[]) => { sent.push(args); return output; };
+  const budget = budgetOf({ cap });
+  return { sent, budget, metered: meteredRun(run, budget) };
+}
+
+test("(c) metered: the GraphQL read that would pass the cap is refused before gh runs, and the refusal throws as a failed gh does", () => {
+  const { sent, budget, metered } = meteredFake("[]", 2);
   metered(["pr", "list", "--limit", "100"]);
   metered(["issue", "list", "--limit", "500"]);
   assert.throws(() => metered(["pr", "list"]), /gate-budget: refused `gh pr list` at 2\/2 points/);
@@ -141,10 +146,7 @@ test("(c) metered: the GraphQL read that would pass the cap is refused before gh
 });
 
 test("(c) positive control: REST, a mutation and a plain write are not charged, so the cap cannot refuse them", () => {
-  const sent: string[][] = [];
-  const run = (args: string[]) => { sent.push(args); return ""; };
-  const budget = budgetOf({ cap: 1 });
-  const metered = meteredRun(run, budget);
+  const { sent, budget, metered } = meteredFake("", 1);
   metered(["api", "repos/a11ign/a11ign/pulls/5/files?per_page=100"]);
   metered(["api", "graphql", "-f", "query=mutation { enablePullRequestAutoMerge(input: {}) { clientMutationId } }"]);
   metered(["pr", "merge", "5", "--squash"]);

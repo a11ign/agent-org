@@ -96,12 +96,17 @@ const validIssues = () => ({ [NAMED_ON]: issue(NAMED_ON, { body: `Pilot rows.\nP
 const options = (over = {}) => ({ row: EVEN_ROW, namedOn: NAMED_ON, caps: CAPS, dryRun: false, ...over });
 const play = (subtype: string, accept: "pass" | "fail", exit = 0) => { process.env.FAKE_SUBTYPE = subtype; process.env.FAKE_ACCEPT = accept; process.env.FAKE_EXIT = String(exit); };
 const refusedWith = (got: any) => ("refused" in got ? got.refused.refusal : null);
-
-test("the arguments claude is launched with EQUAL agentArgs(profile, { headless }) for the per-row engineer profile, with the given caps", async () => {
+/** A fixture of the row whose fake claude succeeds, after the one headless run it makes: `launch` is that run's launch. */
+async function succeededRun() {
   const f = fixture(validIssues());
   play("success", "pass");
   await runPilot(options(), f.deps);
   const [launch] = f.launches();
+  return { f, launch };
+}
+
+test("the arguments claude is launched with EQUAL agentArgs(profile, { headless }) for the per-row engineer profile, with the given caps", async () => {
+  const { f, launch } = await succeededRun();
   const profile = profileFor("ready-row-unclaimed") as { kind: string; model: string; effort: string };
   assert.deepEqual(launch.args, agentArgs(profile, { headless: CAPS }), "a script that built its own flags is red");
   assert.equal(launch.args[launch.args.indexOf("--max-turns") + 1], "40");
@@ -113,10 +118,7 @@ test("the arguments claude is launched with EQUAL agentArgs(profile, { headless 
 });
 
 test("the order is the pane worker's first-contact order for the row (addressed() with the spawned facts) plus the measurement tail", async () => {
-  const f = fixture(validIssues());
-  play("success", "pass");
-  await runPilot(options(), f.deps);
-  const [launch] = f.launches();
+  const { f, launch } = await succeededRun();
   const sent = JSON.parse(launch.stdin.trim());
   assert.equal(sent.type, "user");
   const claimed = { row: EVEN_ROW, branch: `pilot/headless-${EVEN_ROW}`, launchDir: f.worktree, worktree: f.worktree };

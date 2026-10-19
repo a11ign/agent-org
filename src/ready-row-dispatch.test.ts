@@ -186,9 +186,8 @@ test("#459 (change 2) THE ADDRESS: a holder at the address the row would be name
 });
 
 test("#459 (change 2) THE ADDRESS, `done`: a spare that finished its turn without claiming its row is offered that row, not deferred behind itself", () => {
-  const herdr = recordingHerdr();
   const got = deliver([orderFor(4475)], agents({ ...BUSY, "worker-4475": "done" }), [],
-    { run: herdr.run, ineligibleReason: pool(), claimer: claimer() });
+    { run: recordingHerdr().run, ineligibleReason: pool(), claimer: claimer() });
 
   assert.deepEqual(got.refused, []);
   assert.match(got.sent[0], /^worker-4475 <- engineers\/ready-row-unclaimed\/4475/);

@@ -142,9 +142,9 @@ test("POSITIVE CONTROL: the day's wakes group by cause, one served by a run, one
   ];
   const reading = managerSpendReading(byCause, { day: DAY });
   assert.deepEqual(reading.causes.map((c) => [c.cause, c.wakes, c.servedByRun, c.share]), [["pr-review-blocked", 2, 0, 0.5], [null, 1, 0, 0.25], ["row-call-count-signal", 1, 1, 0.25]]);
-  assert.equal(reading.causes.reduce((sum, c) => sum + c.wakes, 0), reading.total.wakes);
   const text = renderReading(reading);
   assert.match(text, /^Wakes by cause, largest first \(the rows add up to the 4 wakes\):$/m);
+  assert.equal(reading.causes.reduce((sum, c) => sum + c.wakes, 0), reading.total.wakes);
   assert.match(text, /^\| pr-review-blocked \| 2 \| 0 \| 50\.0% \|$/m);
   assert.match(text, /^\| \(no cause\) \| 1 \| 0 \| 25\.0% \|$/m);
   assert.match(text, /^\| row-call-count-signal \| 1 \| 1 \| 25\.0% \|$/m);

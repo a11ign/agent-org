@@ -125,6 +125,10 @@ test("done-when 1, the control: the same 502 then list with the switch OFF is to
   const { run, listed } = runSweep({ seq: ["502", "ok"], on: false });
   assert.equal(run.status, 2, run.stderr + run.stdout);
   assert.equal(listed, 1, "one read, as before");
+});
+
+test("done-when 1, the control's CANNOT ASK names the failed read and says nothing about a retry", () => {
+  const { run } = runSweep({ seq: ["502", "ok"], on: false });
   assert.match(run.stderr, /^CANNOT ASK: listing merged PRs failed -- Command failed: gh api graphql /m);
   assert.doesNotMatch(run.stderr + run.stdout, /attempts|reading again/, "the OFF path says nothing about a retry");
 });
@@ -140,5 +144,9 @@ test("the 4xx clause, end to end: a 404 exits CANNOT ASK after one read, switch 
   const { run, listed } = runSweep({ seq: ["404"], on: true });
   assert.equal(run.status, 2, run.stderr + run.stdout);
   assert.equal(listed, 1, "one read");
+});
+
+test("the 4xx clause, end to end: a 404 is reported without any attempt count", () => {
+  const { run } = runSweep({ seq: ["404"], on: true });
   assert.doesNotMatch(run.stderr, /attempts/);
 });

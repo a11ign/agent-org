@@ -139,6 +139,14 @@ const writeGeneration = (rc: string, slug: string, counter: number, verifiedSeco
   writeFileSync(join(rc, "gen", slug), `${counter} ${Math.floor(Date.now() / 1000) - verifiedSecondsAgo}\n`);
 };
 
+/** A tick call stores its entry under generation 1; 200 s later the repository sits at generation `next`. */
+const storedThenAged = (h: ReturnType<typeof host>, tick: Record<string, string>, next: number) => {
+  writeGeneration(h.rc, "a11ign_agent-org", 1, 5);
+  h.call(tick, "pr", "list");
+  h.age(200);
+  writeGeneration(h.rc, "a11ign_agent-org", next, 5);
+};
+
 test("#4148: the TICK's snapshot: an old entry is served to a tick process while the generation holds, and never to a session", () => {
   const stored = (h: ReturnType<typeof host>) => {
     writeGeneration(h.rc, "a11ign_agent-org", 1, 5);
@@ -157,10 +165,7 @@ test("#4148: the TICK's snapshot: an old entry is served to a tick process while
 test("#4148: the generation decides: unchanged is served, moved is read again, and a stale verification is not believed", () => {
   const h = host();
   const tick = { A11Y_TICK_SNAPSHOT: "1", GH_REPO: "a11ign/agent-org" };
-  writeGeneration(h.rc, "a11ign_agent-org", 1, 5);
-  h.call(tick, "pr", "list"); // call 1, stored under generation 1
-  h.age(200);
-  writeGeneration(h.rc, "a11ign_agent-org", 1, 5);
+  storedThenAged(h, tick, 1);
   assert.equal(h.call(tick, "pr", "list").stdout, `${HIT}1\n`, "generation 1 still, verified 5 s ago: the entry from 200 s ago is served");
   assert.equal(h.calls().length, 1);
   h.age(200);
@@ -263,10 +268,7 @@ test("agent-org#742: the ledger's last field is the cache verdict: miss-absent, 
   assert.equal(second.split(":")[DIGEST_ARGV], first.split(":")[DIGEST_ARGV], "the same question has the same argument digest");
   assert.equal(write, "-", "a write is not a read the cache looked at");
   const g = host();
-  writeGeneration(g.rc, "a11ign_agent-org", 1, 5);
-  g.call(tick, "pr", "list");
-  g.age(200);
-  writeGeneration(g.rc, "a11ign_agent-org", 2, 5);
+  storedThenAged(g, tick, 2);
   g.call(tick, "pr", "list");
   assert.match(verdictOf(g)[1], /^miss-generation-moved:[0-9a-f]{8}:[0-9a-f]{8}:a11ign_agent-org$/, "the repository changed since the entry was stored: that is the reason, named");
   const s = host();

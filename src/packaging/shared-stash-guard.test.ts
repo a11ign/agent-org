@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 import { ownerOf, stashLines } from "../stash-whose.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { testEach } from "../lib/test-each.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 
 const HOOK = join(HOME_CHECKOUT, "scripts/git-hooks/reference-transaction");
@@ -82,20 +83,77 @@ test("THE PREMISE: refs/stash is SHARED — a stash made in one worktree is visi
   } finally { cleanup(); }
 });
 
-test("an UNLABELLED stash is refused, and the change stays in the working tree", () => {
-  const { main, cleanup } = twoWorktrees();
+type Git = ReturnType<typeof git>;
+type Dirs = { main: string; second: string };
+
+/**
+ * Each attempt performs the action the guard must refuse and returns git's result. The shared body asserts that it was refused and then runs
+ * the case's own check, so the refusal message and what the refusal left behind are each asserted by the case that owns them.
+ */
+testEach("the guard REFUSES a stash it cannot name, or a pop onto a live branch, and keeps the work", [
+  {
+    name: "an UNLABELLED stash is refused, and the change stays in the working tree",
+    refusedMessage: "an unlabelled stash must not succeed",
+    attempt: (main: string): Git => {
+      writeFileSync(join(main, "a.txt"), "unsaved work\n");
+      return git(main, ["stash", "push"]);
+    },
+    check: (result: Git, { main }: Dirs) => {
+      assert.match(result.stderr, /carries no message/);
+      assert.match(result.stderr, /SHARED between all worktrees/, "it must say WHY, not just refuse");
+      assert.match(result.stderr, /git stash push -m/, "and name the exact remedy");
+      // THE HALF THAT MATTERS: refusing must not cost the work.
+      const content = execFileSync("cat", [join(main, "a.txt")], { encoding: "utf8" });
+      assert.equal(content, "unsaved work\n", "the working tree keeps the change when the stash is refused");
+      assert.equal(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8", env: sandboxGitEnv() }), "",
+        "and nothing reached the shared pile");
+    },
+  },
+  {
+    // `main` never leaves its branch, so at the moment `second` pops, git worktree list --porcelain says
+    // unambiguously that 'main' is checked out elsewhere -- exactly #1866's and #1896's own incident shape.
+    //
+    // WHAT THIS CANNOT PROTECT, VERIFIED RATHER THAN ASSUMED: `git stash pop` applies the entry to the
+    // working tree BEFORE it ever touches `refs/stash` -- applying is a working-tree/index write, not a ref
+    // update, so no hook sees it and refusing the drop that follows cannot undo it. And `git stash drop`'s
+    // own reflog rewrite (what makes an entry disappear from `git stash list`) happens as a side effect
+    // that reference-transaction never observes either -- the ONLY refs/stash transaction this hook is
+    // asked about is the final pointer delete, confirmed by instrumenting the hook to log every phase it
+    // received. Refusing THAT still leaves the pointer itself intact (the commit is not orphaned), which is
+    // the one thing this hook can actually hold the line on.
+    name: "a pop whose named branch is checked out LIVE in another worktree right now is REFUSED -- #1896",
+    refusedMessage: "a pop taking a LIVE worktree's own branch must not succeed silently",
+    attempt: (main: string, second: string): Git => {
+      writeFileSync(join(main, "a.txt"), "mine on main\n");
+      assert.equal(git(main, ["stash", "push", "-m", "quick fix"]).code, 0);
+      writeFileSync(join(second, "b.txt"), "second's own unrelated work\n");
+      return git(second, ["stash", "pop"]);
+    },
+    check: (result: Git, { main, second }: Dirs) => {
+      assert.match(result.stderr, /REFUSED/);
+      assert.match(result.stderr, /'main'/, "names the branch the stash was actually made on");
+      assert.match(result.stderr, new RegExp(main.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        "names A's worktree path, not just its branch");
+      assert.match(result.stderr, /stash:whose/);
+
+      // The pointer this hook actually protects: refs/stash still resolves to the stash commit, so the
+      // data is recoverable (`git stash apply <that sha>`) even though `git stash list` no longer shows it.
+      assert.doesNotThrow(() => execFileSync("git", ["rev-parse", "-q", "--verify", "refs/stash"],
+        { cwd: main, encoding: "utf8", env: sandboxGitEnv() }),
+        "the stash commit itself survives the refused delete -- nothing was garbage-collected");
+
+      // Unrelated, untracked files in B are untouched -- the apply only ever touches paths the stash itself
+      // named.
+      assert.equal(execFileSync("cat", [join(second, "b.txt")], { encoding: "utf8" }), "second's own unrelated work\n",
+        "an unrelated file in B's working tree is untouched by the refused pop");
+    },
+  },
+], (c) => {
+  const { main, second, cleanup } = twoWorktrees();
   try {
-    writeFileSync(join(main, "a.txt"), "unsaved work\n");
-    const result = git(main, ["stash", "push"]);
-    assert.notEqual(result.code, 0, "an unlabelled stash must not succeed");
-    assert.match(result.stderr, /carries no message/);
-    assert.match(result.stderr, /SHARED between all worktrees/, "it must say WHY, not just refuse");
-    assert.match(result.stderr, /git stash push -m/, "and name the exact remedy");
-    // THE HALF THAT MATTERS: refusing must not cost the work.
-    const content = execFileSync("cat", [join(main, "a.txt")], { encoding: "utf8" });
-    assert.equal(content, "unsaved work\n", "the working tree keeps the change when the stash is refused");
-    assert.equal(execFileSync("git", ["stash", "list"], { cwd: main, encoding: "utf8", env: sandboxGitEnv() }), "",
-      "and nothing reached the shared pile");
+    const result = c.attempt(main, second);
+    assert.notEqual(result.code, 0, c.refusedMessage);
+    c.check(result, { main, second });
   } finally { cleanup(); }
 });
 
@@ -125,44 +183,6 @@ test("pop, drop and clear are NOT refused — the first version broke all three"
   } finally { cleanup(); }
 });
 
-test("a pop whose named branch is checked out LIVE in another worktree right now is REFUSED -- #1896", () => {
-  // `main` never leaves its branch, so at the moment `second` pops, git worktree list --porcelain says
-  // unambiguously that 'main' is checked out elsewhere -- exactly #1866's and #1896's own incident shape.
-  //
-  // WHAT THIS CANNOT PROTECT, VERIFIED RATHER THAN ASSUMED: `git stash pop` applies the entry to the
-  // working tree BEFORE it ever touches `refs/stash` -- applying is a working-tree/index write, not a ref
-  // update, so no hook sees it and refusing the drop that follows cannot undo it. And `git stash drop`'s
-  // own reflog rewrite (what makes an entry disappear from `git stash list`) happens as a side effect
-  // that reference-transaction never observes either -- the ONLY refs/stash transaction this hook is
-  // asked about is the final pointer delete, confirmed by instrumenting the hook to log every phase it
-  // received. Refusing THAT still leaves the pointer itself intact (the commit is not orphaned), which is
-  // the one thing this hook can actually hold the line on.
-  const { main, second, cleanup } = twoWorktrees();
-  try {
-    writeFileSync(join(main, "a.txt"), "mine on main\n");
-    assert.equal(git(main, ["stash", "push", "-m", "quick fix"]).code, 0);
-    writeFileSync(join(second, "b.txt"), "second's own unrelated work\n");
-
-    const result = git(second, ["stash", "pop"]);
-    assert.notEqual(result.code, 0, "a pop taking a LIVE worktree's own branch must not succeed silently");
-    assert.match(result.stderr, /REFUSED/);
-    assert.match(result.stderr, /'main'/, "names the branch the stash was actually made on");
-    assert.match(result.stderr, new RegExp(main.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-      "names A's worktree path, not just its branch");
-    assert.match(result.stderr, /stash:whose/);
-
-    // The pointer this hook actually protects: refs/stash still resolves to the stash commit, so the
-    // data is recoverable (`git stash apply <that sha>`) even though `git stash list` no longer shows it.
-    assert.doesNotThrow(() => execFileSync("git", ["rev-parse", "-q", "--verify", "refs/stash"],
-      { cwd: main, encoding: "utf8", env: sandboxGitEnv() }),
-      "the stash commit itself survives the refused delete -- nothing was garbage-collected");
-
-    // Unrelated, untracked files in B are untouched -- the apply only ever touches paths the stash itself
-    // named.
-    assert.equal(execFileSync("cat", [join(second, "b.txt")], { encoding: "utf8" }), "second's own unrelated work\n",
-      "an unrelated file in B's working tree is untouched by the refused pop");
-  } finally { cleanup(); }
-});
 
 test("the identical pop, once A has switched off that branch, warns but still succeeds -- unchanged from #1872", () => {
   const { main, second, cleanup } = twoWorktrees();

@@ -16,6 +16,7 @@
  * still offered with the shipped allowlist, so neither pattern is a bare prefix.
  */
 import { test } from "node:test";
+import { testEach } from "./lib/test-each.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -78,21 +79,31 @@ function readMemoLine(): string | undefined {
   }
 }
 
-test("the gate-rest line is the tick's own line, and the shipped allowlist allows it with a reason that names its writer", () => {
-  assert.equal(GATE_REST, "gate-rest: 15 of 21 conditional reads answered 304", "the formatter's own line");
-  const entry = entryFor(GATE_REST ?? "");
-  assert.ok(entry, "an entry matches the line");
-  assert.notEqual(entry.reason.trim(), "", "the entry carries its reason");
-  assert.match(entry.reason, /src\/work-gate\/tick\/blocker-cleared-reading\.ts/, "the reason names the file that writes it");
-});
-
-test("the read memo line is the gate's own line, and the shipped allowlist allows it with a reason that names its writer", () => {
-  const line = readMemoLine();
-  assert.match(line ?? "", /^read memo: 1 identical read\(s\) answered from memory, 1 distinct answer\(s\) held at the end of the tick\.$/, "the gate's own line");
+/** Each counter line is found in the shipped allowlist, and its reason names the file that writes the counter. */
+testEach("the shipped allowlist allows a counter line, with a reason that names its writer", [
+  {
+    name: "the gate-rest line is the tick's own line, and the shipped allowlist allows it with a reason that names its writer",
+    line: () => GATE_REST,
+    lineCheck: (line: string | undefined) => {
+      assert.equal(line, "gate-rest: 15 of 21 conditional reads answered 304", "the formatter's own line");
+    },
+    writer: /src\/work-gate\/tick\/blocker-cleared-reading\.ts/,
+  },
+  {
+    name: "the read memo line is the gate's own line, and the shipped allowlist allows it with a reason that names its writer",
+    line: () => readMemoLine(),
+    lineCheck: (line: string | undefined) => {
+      assert.match(line ?? "", /^read memo: 1 identical read\(s\) answered from memory, 1 distinct answer\(s\) held at the end of the tick\.$/, "the gate's own line");
+    },
+    writer: /src\/work-gate\/reads\/read-memo-and-exit\.ts/,
+  },
+], (c) => {
+  const line = c.line();
+  c.lineCheck(line);
   const entry = entryFor(line ?? "");
   assert.ok(entry, "an entry matches the line");
   assert.notEqual(entry.reason.trim(), "", "the entry carries its reason");
-  assert.match(entry.reason, /src\/work-gate\/reads\/read-memo-and-exit\.ts/, "the reason names the file that writes it");
+  assert.match(entry.reason, c.writer, "the reason names the file that writes it");
 });
 
 test("40 ticks of each counter are offered with an empty allowlist and not with the shipped one", () => {

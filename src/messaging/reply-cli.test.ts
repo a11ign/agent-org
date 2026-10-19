@@ -17,6 +17,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { completionPath, writeCompletion } from "../lib/tick-completion.ts";
+import { testEach } from "../lib/test-each.ts";
 import { createFakeProvider } from "./fake-provider.ts";
 import { readLedgerLines } from "./ledger.ts";
 import { EXIT, assertReadOnlyGh, assertReadOnlySystemctl, main } from "./reply-cli.ts";
@@ -123,14 +124,25 @@ describe("done-when 2: with a fake provider and fixture readers it sends one mes
   });
 });
 
-describe("done-when 2: with messaging off the command sends nothing and says so", () => {
-  test("no `messaging` key: exit 2 (a caller believes it spoke to the chairman), a stderr line saying OFF, no provider built, no ledger file", async () => {
-    const { code, err, provider, ledgerPath } = await run(["Row {{issue:3071.state}}"], { messaging: false, providers: { telegram: () => { throw new Error("a provider was built while messaging is off"); } } });
-    assert.equal(code, EXIT.refused);
-    assert.match(err, /messaging is OFF.*nothing was sent/);
-    assert.deepEqual(provider.sent, []);
-    assert.equal(existsSync(ledgerPath), false);
-  });
+testEach("done-when 2 and the refusals to start: exit 2, the reason on stderr, nothing sent, no ledger file", [
+  {
+    name: "messaging off: no `messaging` key, a caller believes it spoke to the chairman, so a stderr line says OFF and no provider is built",
+    argv: ["Row {{issue:3071.state}}"],
+    options: { messaging: false, providers: { telegram: () => { throw new Error("a provider was built while messaging is off"); } } },
+    reason: /messaging is OFF.*nothing was sent/,
+  },
+  {
+    name: "no GitHub account declared: it would read as whoever `gh` last logged in as (#1967)",
+    argv: ["Row {{issue:3071.state}}"],
+    options: { env: {} },
+    reason: /no GitHub account is declared/,
+  },
+], async (c) => {
+  const { code, err, provider, ledgerPath } = await run(c.argv, c.options);
+  assert.equal(code, EXIT.refused);
+  assert.match(err, c.reason);
+  assert.deepEqual(provider.sent, []);
+  assert.equal(existsSync(ledgerPath), false);
 });
 
 describe("done-when 3: a refused reply exits 2, names the placeholder or the claim, and writes no ledger line", () => {
@@ -185,14 +197,6 @@ describe("done-when 3: a failed send exits 1 and writes the ONE failed line", ()
 });
 
 describe("the command refuses to START, with exit 2, rather than guess", () => {
-  test("no GitHub account declared: it would read as whoever `gh` last logged in as (#1967); nothing sent, no ledger", async () => {
-    const { code, err, provider, ledgerPath } = await run(["Row {{issue:3071.state}}"], { env: {} });
-    assert.equal(code, EXIT.refused);
-    assert.match(err, /no GitHub account is declared/);
-    assert.deepEqual(provider.sent, []);
-    assert.equal(existsSync(ledgerPath), false);
-  });
-
   test("an unknown flag is a usage refusal, not a send of the flag as text", async () => {
     const { code, provider } = await run(["--surprise", "hello"]);
     assert.equal(code, EXIT.refused);
@@ -213,10 +217,23 @@ describe("#3411 `--to` records the inbound message a reply answers, and refuses 
     assert.deepEqual(ledger.map(({ replyTo }) => replyTo), ["45"]);
   });
 
-  test("a ref no inbound line holds is refused (exit 2), nothing is sent and the ledger gains no line", async () => {
-    const { code, err, provider, ledger } = await run(["Row {{issue:3071.state}}", "--to", "999"], { inbound: ["44", "45"] });
+  testEach("a `--to` no inbound line holds is refused, nothing is sent and the ledger gains no line", [
+    {
+      name: "a ref no inbound line holds is refused (exit 2)",
+      argv: ["Row {{issue:3071.state}}", "--to", "999"],
+      inbound: ["44", "45"],
+      reason: /REFUSED --to 999: no message from the chairman with that ref/,
+    },
+    {
+      name: "`--dry-run` with a `--to` no inbound line holds is refused as a send would be",
+      argv: ["--dry-run", "hello", "--to", "999"],
+      inbound: ["77"],
+      reason: /REFUSED --to 999/,
+    },
+  ], async (c) => {
+    const { code, err, provider, ledger } = await run(c.argv, { inbound: c.inbound });
     assert.equal(code, EXIT.refused);
-    assert.match(err, /REFUSED --to 999: no message from the chairman with that ref/);
+    assert.match(err, c.reason);
     assert.deepEqual(provider.sent, []);
     assert.deepEqual(ledger, []);
   });
@@ -292,14 +309,6 @@ describe("#3564 text that looks like a flag is refused, and `--dry-run` does eve
     const unreadable = await run(["--dry-run", "PR #{{pr:2881.nonsense}}"]);
     assertNothingSent(unreadable);
     assert.match(unreadable.err, /REFUSED/);
-  });
-
-  test("`--dry-run` with a `--to` no inbound line holds is refused as a send would be", async () => {
-    const { code, err, provider, ledger } = await run(["--dry-run", "hello", "--to", "999"], { inbound: ["77"] });
-    assert.equal(code, EXIT.refused);
-    assert.match(err, /REFUSED --to 999/);
-    assert.deepEqual(provider.sent, []);
-    assert.deepEqual(ledger, []);
   });
 
   test("`--dry-run` still refuses a project that declares no messaging, rather than printing a send that could not happen", async () => {
@@ -384,11 +393,15 @@ describe("#3446 the fleet-watch files and the gate record reach the readers, so 
     assert.equal(provider.sent[0].text, `Up: worker-a (fleet-watch poll 10m ago). Gate: 4m.\n\n${STAMP}`);
   });
 
-  test("CONTROL for the one above: with the files absent it exits 2 naming the placeholder, sends nothing and writes no ledger line", async () => {
-    const { code, err, provider, ledger } = await run([FACTS], withHostFiles({ files: false, gate: false }));
+  test("CONTROL for the one above: with the files absent it exits 2 naming the placeholder", async () => {
+    const { code, err } = await run([FACTS], withHostFiles({ files: false, gate: false }));
     assert.equal(code, EXIT.refused);
     assert.match(err, /REFUSED \{\{fleet\.workers-up\}\}/);
     assert.match(err, /REFUSED \{\{gate\.last-tick\.age\}\}/);
+  });
+
+  test("CONTROL for the one above: with the files absent it sends nothing and writes no ledger line", async () => {
+    const { provider, ledger } = await run([FACTS], withHostFiles({ files: false, gate: false }));
     assert.deepEqual(provider.sent, []);
     assert.deepEqual(ledger, []);
   });
