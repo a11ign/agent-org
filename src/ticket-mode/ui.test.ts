@@ -67,9 +67,11 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   /** The new-ticket requests the board reads, and what a writer route answers for a path and body (default: the requests, as they are). */
   writers?: { runs: unknown[] }; writerReply?: (path: string, body: any) => unknown;
   /** An instance that reads scopes on demand: who holds the open tickets, and the pages of a scope (`/api/tickets?assignee=...`) by that query's text. */
-  held?: unknown; scoped?: Record<string, { tickets: unknown[]; next: string | null }> };
+  held?: unknown; scoped?: Record<string, { tickets: unknown[]; next: string | null }>;
+  /** Why this instance starts no run (`tickets.preflight`), as its queue answer carries it. */
+  queueHeld?: { name: string; reason: string; since: number } };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
-  writers = { runs: [] }, writerReply, held, scoped }: PageOptions = {}) {
+  writers = { runs: [] }, writerReply, held, scoped, queueHeld }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -115,7 +117,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
       ...(children === undefined ? {} : { "/api/queue-children": () => children }),
     };
-    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}) };
+    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}) };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -1512,4 +1514,18 @@ test("on demand: choosing the same scope again while it is being read does not r
   p.chip("Ana Ruiz", "assignees").fire("click");
   for (let i = 0; i < 5; i++) await settle();
   assert.equal(p.requested.filter((r) => r.endsWith("/api/tickets?assignee=ana")).length, 1);
+});
+
+test("preflight: the page says no run starts while a host's check fails, naming the check and what it printed, and says nothing while none does", async () => {
+  const calm = await page(new Map());
+  assert.equal(calm.$("held").hidden, true);
+  const held = await page(new Map(), { queueHeld: { name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 5 } });
+  assert.equal(held.$("held").hidden, false);
+  assert.equal(held.$("held").textContent, "No run starts while fontawesome login fails: EXPIRED: run assume repo-resources");
+});
+
+test("preflight: the reason is shown as text, never as markup", async () => {
+  const held = await page(new Map(), { queueHeld: { name: "x", reason: "<img src=x onerror=alert(1)>", since: 5 } });
+  assert.equal(held.$("held").textContent.includes("<img src=x onerror=alert(1)>"), true);
+  assert.equal(held.$("held").children.length, 0, "set as text, so it holds no element");
 });

@@ -124,6 +124,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     applyEdit: (key: string) => applyEdit(ctx, key),
     discardEdit: (key: string) => discardEdit(ctx, key),
     stopWriterRun: (id: string) => stopWriterRun(ctx, id),
+    /** Why runs are held: the `tickets.preflight` command that failed and what it said, or null while none has. */
+    held: () => ctx.gate.held(),
   };
 }
 

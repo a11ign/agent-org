@@ -274,7 +274,10 @@ export async function fill(ctx: PoolContext): Promise<void> {
   // A run queued again while this pass read the blockers or the paths, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
   const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined && !pathsUnread(entry));
   const begun = new Set<string>();
-  for (const entry of starts) {
+  // A host's own condition for starting work (`tickets.preflight`): while one fails, no ticket run starts and every queued one stays Queued, with the reason on the board.
+  // Publishing and the new-ticket writer need none of it, so they go on.
+  const mayStart = starts.length === 0 || (await ctx.gate.check()).ok;
+  for (const entry of mayStart ? starts : []) {
     if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key) || rebasing.has(entry.ticket.key)) continue;
     const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch);
     for (const member of batch) begun.add(member.ticket.key);

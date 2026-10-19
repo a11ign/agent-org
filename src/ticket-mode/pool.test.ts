@@ -1,4 +1,5 @@
 // no-token: gh -- herdr, git, Linear and the clock are all injected; nothing is spawned
+import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -47,9 +48,9 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort, now = () => 100, clones }:
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort, preflight, now = () => 100, clones }:
     { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: (args: string[]) => string;
-      reviewerPort?: ReviewerPort; now?: () => number; clones?: Record<string, string> } = {}) {
+      reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string> } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: clones ?? { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -60,7 +61,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const screen = { text: "" };
   const h = herdr(status, screen);
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}), ...(reviewerPort ? { reviewerPort } : {}) };
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}), ...(reviewerPort ? { reviewerPort } : {}), ...(preflight ? { preflight } : {}) };
   const pool = createPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
@@ -3548,4 +3549,64 @@ test("A11-106: a run that has not finished is not swept, so its pull requests ar
   ctx.pool.retargetStacked();
   assert.deepEqual(asked, [], "no pull request of a run that is not finished is read");
   assert.equal(ctx.store.get(), before, "and the queue is not written: the same object comes back");
+});
+
+// `tickets.preflight` (a host's own condition for starting work): while a command fails, no ticket run starts, and the board is told why.
+const FAILING_LOGIN = { name: "fontawesome login", run: "check-login", timeoutSeconds: 30 };
+const answering = (answers: { status: number | null; output: string }[]) => {
+  const asked: string[] = [];
+  const exec: PreflightExec = async (command) => { asked.push(command); const a = answers[Math.min(asked.length - 1, answers.length - 1)]; return { status: a.status, timedOut: false, output: a.output }; };
+  return { exec, asked };
+};
+
+test("preflight: a failing command holds every start, the runs stay Queued, and the pool says which command and why", async () => {
+  const { exec } = answering([{ status: 1, output: "EXPIRED: run assume repo-resources\nsecond line" }]);
+  const { pool, entry, h } = setup(2, ["NBF-1", "NBF-2"], { preflight: [FAILING_LOGIN] }, { preflight: exec });
+  await pool.tick();
+  assert.deepEqual(["NBF-1", "NBF-2"].map((k) => entry(k).phase), ["queued", "queued"]);
+  assert.ok(!h.calls.some((args) => args.includes("start")), "no worker was started");
+  assert.deepEqual({ ...pool.held()!, since: 0 }, { name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 0 });
+});
+
+test("preflight: a command that passes starts the runs, and a pass stands, so the command is not run at every tick", async () => {
+  let clock = 100_000;
+  const { exec, asked } = answering([{ status: 0, output: "" }]);
+  const { pool, entry } = setup(1, ["NBF-1", "NBF-2"], { preflight: [FAILING_LOGIN] }, { preflight: exec, now: () => clock });
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.equal(pool.held(), null);
+  clock += 10_000;
+  await pool.tick();
+  assert.equal(asked.length, 1, "within a minute of a pass the command is not asked again");
+});
+
+test("preflight: a held queue starts its runs once the command passes, and the reason is gone", async () => {
+  let clock = 100_000;
+  const { exec, asked } = answering([{ status: 1, output: "expired" }, { status: 0, output: "" }]);
+  const { pool, entry } = setup(1, ["NBF-1"], { preflight: [FAILING_LOGIN] }, { preflight: exec, now: () => clock });
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "queued");
+  assert.equal(pool.held()?.reason, "expired");
+  clock += 30_000;
+  await pool.tick();
+  assert.equal(asked.length, 1, "a failure is tried again only after a minute");
+  clock += 31_000;
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.equal(pool.held(), null);
+});
+
+test("preflight: a host that names none runs no command and holds nothing", async () => {
+  const { exec, asked } = answering([{ status: 1, output: "would refuse" }]);
+  const { pool, entry } = setup(1, ["NBF-1"], {}, { preflight: exec });
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.deepEqual([asked.length, pool.held()], [0, null]);
+});
+
+test("preflight: nothing is asked while nothing is waiting to start", async () => {
+  const { exec, asked } = answering([{ status: 1, output: "would refuse" }]);
+  const { pool } = setup(1, [], { preflight: [FAILING_LOGIN] }, { preflight: exec });
+  await pool.tick();
+  assert.equal(asked.length, 0);
 });
