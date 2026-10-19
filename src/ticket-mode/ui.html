@@ -77,7 +77,7 @@
   .empty { padding: 32px 16px; color: var(--muted); text-align: center; }
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
-  .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); }
+  .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); } .st-waiting { color: var(--st-needs); }
   .st-publishing { color: var(--st-progress); } .st-published { color: var(--st-done); }
   .action-respond { display: inline-flex; align-items: center; gap: 4px; } .action-respond .action-icon { color: var(--st-review); display: inline-flex; }
   .action-respond svg { width: 12px; height: 12px; }
@@ -630,7 +630,7 @@ function row(e) {
   const repos = repoLabel(e);
   const when = e.startedAt ? `${e.phase === "finished" ? "ran" : "running"} ${length((e.finishedAt ?? Date.now()) - e.startedAt)}, started ${since(e.startedAt)} ago` : `queued ${since(e.queuedAt)} ago`;
   const tokens = e.tokens ? ` · ${Math.round(e.tokens.input / 1000)}k in / ${Math.round(e.tokens.output / 1000)}k out` : "";
-  return el("div", { className: "run" },
+  return el("div", { className: "run", id: `run-${e.ticket.key}` },
     statusIcon(status),
     el("div", {},
       el("div", { className: "title" }, el("a", { href: safeHref(e.ticket.url), target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
@@ -868,10 +868,12 @@ function writerCard(run) {
     actions.stop ? actionButton("Stop", "Stop writing: the tickets already made stay", () => writerAction(run, "stop")) : null,
     actions.dismiss ? actionButton("Dismiss", "Take this request off the board. Nothing is created or changed in the tracker", () => writerAction(run, "dismiss")) : null,
   ];
-  return el("article", { className: "writer" },
+  return el("article", { className: "writer", id: `writer-${run.id}` },
     el("div", { className: "writer-head" }, el("span", { className: `st st-${run.status}`, textContent: WRITER_STATUS_LABEL[run.status] ?? run.status }),
       choice === "" ? null : el("span", { className: "hint", textContent: choice }),
       el("span", { className: "request", textContent: run.request.split("\n")[0] }), ...buttons),
+    // The question the agent asked, which the person answers in the terminal: shown until it is answered (A11-129).
+    run.waiting ? el("p", { className: "waiting", textContent: run.waiting.question }) : null,
     ...run.tickets.map(writerTicket),
     run.failure ? el("p", { className: "hint failed", textContent: run.failure }) : null,
     ...run.rejected.map(({ reason }) => el("p", { className: "hint failed", textContent: reason })));
@@ -1050,9 +1052,13 @@ $("connection").addEventListener("change", () => {
 try {
   const listed = await call("GET", "/api/connections").catch(() => null);
   state.connections = Array.isArray(listed?.connections) ? listed.connections : [];
-  state.connection = chosenConnection(state.connections, [...recall(storage, "ticket-mode.connection")][0] ?? null);
+  // A link from a run that has ended names the connection its run is on (A11-129): that one is chosen over the one remembered.
+  const named = new URLSearchParams(location.search).get("connection");
+  state.connection = chosenConnection(state.connections, named ?? [...recall(storage, "ticket-mode.connection")][0] ?? null);
   renderConnections(listed?.refusal);
   await load();
+  // The card the link names is scrolled to, once the page has drawn it (A11-129).
+  if (location.hash) document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();
 } catch (err) { report(err); }
 setInterval(() => {
   call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); renderHeld(); }, report);

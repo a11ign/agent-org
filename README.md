@@ -262,7 +262,9 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   ticket is for, in plain words, and optionally choose its project, repository, goal, priority or parent. Quick (the default) runs unattended:
   a short writer run reads the repositories and the tracker, checks for a ticket that already asks for the same thing, and leaves one or
   more drafts. Grill runs in a terminal the board opens, and asks you its questions there, one at a time, before it drafts; it needs
-  `tickets.terminal`. Nothing is shown for review: when the run ends, the board creates a ticket from each draft, assigned to the key's own
+  `tickets.terminal`. When a Grill run asks a question, its card shows "Waiting for you" with the question, keeps its terminal open until you
+  answer there, and resumes; it fails only when its agent exits, or when nobody answers for 4 hours. A link to a run that has ended says so, with
+  a link to the run on the board. Nothing is shown for review: when the run ends, the board creates a ticket from each draft, assigned to the key's own
   user so it shows in Pick, with its project, goal, labels, priority, parent and relations, and a draft that names a duplicate lists it in the
   ticket's description. The Board shows the run's status and each ticket's key as a link, and a run that fails says why. A draft that another
   draft names is made after it. The writer's model and effort are set in Settings, apart from the run's and the planner's, and

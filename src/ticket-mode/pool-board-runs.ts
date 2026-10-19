@@ -6,15 +6,19 @@ import { type RunPlace } from "./pool-paths.ts";
 import { newDraftId, parseWriterOutcome, readDrafts, resolveDuplicates } from "./writer.ts";
 import { createDrafts } from "./writer-create.ts";
 import { forgetRun, messageOf, publishPlace, update, writerPlace, writerAgentRunning } from "./pool-state.ts";
-import { writerDrafted, writerFailed, writerOf } from "./queue.ts";
+import { writerDrafted, writerFailed, writerOf, writerWaiting } from "./queue.ts";
 import { QUESTION_CHARS } from "./pool-outcome.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { publishDone, publishFailed } from "./queue/approve.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { ASKED_FILE, OUTCOME_FILE, WAITING_FILE } from "./worker-files.ts";
 
 /**
- * The run's outcome, read once its agent is idle. `needs-human` ends the run failed, with its reason. `drafted` reads each draft file, resolves its duplicates
- * in the tracker, and makes each draft's ticket (`createDrafts`), then ends the run. Its workspace is closed once its drafts are read.
+ * The run's outcome, read once its agent is idle. `needs-human` ends a quick run failed, with its reason; a grill run's is its question, which it waits on
+ * (`askPerson`). `drafted` reads each draft file, resolves its duplicates in the tracker, and makes each draft's ticket (`createDrafts`), then ends
+ * the run. Its workspace is closed once its drafts are read.
  */
 export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunPlace, text: string): Promise<void> {
   const { finishing, herdr, now, session, settings, source, store } = ctx;
@@ -22,7 +26,9 @@ export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunP
   try {
     const outcome = parseWriterOutcome(text);
     if (typeof outcome === "string") return endWriter(ctx, run, outcome);
-    if (outcome.kind === "needs-human") return endWriter(ctx, run, outcome.reason.slice(0, QUESTION_CHARS));
+    if (outcome.kind === "needs-human") {
+      return run.mode === "grill" ? askPerson(ctx, run, place, outcome.reason) : endWriter(ctx, run, outcome.reason.slice(0, QUESTION_CHARS));
+    }
     const read = readDrafts(place.dir, Object.keys(settings.clones));
     const drafts = await Promise.all(read.drafts.map(async ({ file, draft }): Promise<DraftRecord> => ({
       id: newDraftId(), file, draft, duplicates: await resolveDuplicates(draft.duplicates, (key) => source.read(key)), status: "creating",
@@ -36,6 +42,19 @@ export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunP
   } finally {
     finishing.delete(run.id);
   }
+}
+
+/**
+ * A grill run's `needs-human` is its question, not a failure (A11-129): the run waits for the person to answer in its terminal, with the reason as the
+ * question. The question is written beside the outcome and the outcome moved aside, so the answer is not met by the same outcome read again.
+ */
+function askPerson(ctx: PoolContext, run: WriterRun, place: RunPlace, reason: string): void {
+  const { now } = ctx;
+  if (!writerAgentRunning(ctx, run.id)) return;
+  const question = reason.slice(0, QUESTION_CHARS);
+  writeFileSync(join(place.dir, WAITING_FILE), `${JSON.stringify({ question, at: now() })}\n`);
+  renameSync(join(place.dir, OUTCOME_FILE), join(place.dir, ASKED_FILE));
+  update(ctx, (queue) => writerWaiting(queue, run.id, question, now()));
 }
 
 /** Close a new-ticket run's workspace and record why it failed. Nothing it wrote is kept as a draft. */

@@ -7,7 +7,7 @@ import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/declared-remains.ts";
 import { approve, conflictRound, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths } from "./queue/approve.ts";
-import { emptyQueue, loadQueue, nextStarts, saveQueue, changeDraft, dismissWriter, draftOf, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerCreated, writerDrafted, writerFailed, writerOf, writerToStart } from "./queue.ts";
+import { emptyQueue, loadQueue, nextStarts, saveQueue, changeDraft, dismissWriter, draftOf, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerCreated, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
 import type { Draft } from "./writer.ts";
 
@@ -774,6 +774,38 @@ test("a writer run records the model and effort it is queued with, and a run que
   const queue = queueWriter(emptyQueue(1), { ...request, model: "sonnet", effort: "max" }, 1);
   assert.deepEqual([writerOf(queue, "w1")?.model, writerOf(queue, "w1")?.effort], ["sonnet", "max"]);
   assert.equal(writerOf(queueWriter(emptyQueue(1), request, 1), "w1")?.model, undefined, "a run queued before the choice was stamped has none, so it starts on the host file's");
+});
+
+test("A11-129: a grill run whose agent ends its turn on a question is Waiting, with the question and when the wait began; the same question is no change, and the answer resumes it", () => {
+  const grill = { ...request, mode: "grill" as const };
+  let queue = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), grill, 1), "w1", 2), "w1", "ws", "p");
+  queue = writerWaiting(queue, "w1", "Q1: editable or read-only?", 10);
+  assert.deepEqual([writerStatus(writerOf(queue, "w1")!), writerOf(queue, "w1")?.waiting], ["waiting", { question: "Q1: editable or read-only?", since: 10 }]);
+  assert.equal(liveRunCount(queue), 1, "it holds its slot while the person answers");
+  assert.deepEqual(writerWaiting(queue, "w1", "Q1: editable or read-only?", 99), queue, "the same question keeps its time, so the board is not rewritten each pass");
+  queue = writerWaiting(queue, "w1", "Q2: which goal?", 20);
+  assert.deepEqual(writerOf(queue, "w1")?.waiting, { question: "Q2: which goal?", since: 20 }, "a new question starts a new wait");
+  queue = writerResumed(queue, "w1", 30);
+  assert.equal(writerOf(queue, "w1")?.waiting, undefined, "the answer clears the wait");
+  assert.equal(writerOf(queue, "w1")?.startedAt, 30, "and the working clock starts again from it");
+  assert.equal(writerStatus(writerOf(queue, "w1")!), "writing");
+  assert.deepEqual(writerResumed(queue, "w1", 40), queue, "a run that is not waiting is unchanged");
+});
+
+test("A11-129: a waiting run that fails or is drafted is no longer waiting, and the run's terminal is kept on the record", () => {
+  const waiting = writerWaiting(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), { ...request, mode: "grill" as const }, 1), "w1", 2), "w1", "ws", "p"), "w1", "a question", 3);
+  const failed = writerOf(writerFailed(waiting, "w1", "nobody answered its question for 4 hours", 4), "w1")!;
+  assert.deepEqual([writerStatus(failed), failed.waiting, failed.workspace, failed.pane], ["failed", undefined, "ws", "p"], "a failed run keeps its workspace on the record");
+  const done = writerOf(writerDrafted(waiting, "w1", { drafts: [drafted("01-a.json")], rejected: [] }, 4), "w1")!;
+  assert.equal(done.waiting, undefined, "a run that drafted has its answer, and no question");
+});
+
+test("A11-129: a run that ends keeps the terminal it was in once its workspace and pane are cleared, so a link to that terminal can say it ended", () => {
+  const started = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  const ended = finish(started, "A", { kind: "done", reason: "shipped", evidence: [] }, 5).entries[0];
+  assert.deepEqual([ended.workspace, ended.pane, ended.lastTerminal], [undefined, undefined, { workspace: "w1", pane: "w1:p1" }]);
+  const parked = unpark(park(started, "A", { kind: "needs-human", reason: "a question" }, 5), "A").entries[0];
+  assert.deepEqual(parked.lastTerminal, { workspace: "w1", pane: "w1:p1" }, "a parked run that is unparked keeps it too");
 });
 
 test("a writer run waits for a worker slot as a ticket does, and is not held by Pause", () => {

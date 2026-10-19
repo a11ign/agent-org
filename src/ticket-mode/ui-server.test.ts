@@ -14,7 +14,7 @@ import { httpForward, type Forward } from "./remote-proxy.ts";
 import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
-import { assigneeFilterScript, boardViewScript, createUi, labelFiltersScript, pairedBy, sameTerminal } from "./ui-server.ts";
+import { assigneeFilterScript, boardViewScript, createUi, endedPage, isEnded, labelFiltersScript, pairedBy, sameTerminal } from "./ui-server.ts";
 import type { TerminalMint } from "./terminal-pair.ts";
 
 const REMOTE_KEY = "c".repeat(48);
@@ -36,14 +36,15 @@ async function listen(handle: (port: number) => (req: IncomingMessage, res: Serv
 }
 
 /** This machine's instance, a real one, on its own port with its own key, and the state directory both services share. */
-async function instance(mintTerminal?: () => Promise<TerminalMint>) {
+async function instance(mintTerminal?: () => Promise<TerminalMint>, { queue, terminal = "http://127.0.0.1:7318/?ws={workspace}" }: { queue?: object; terminal?: string } = {}) {
   const stateDir = tmpDir("ticket-ui-state-");
+  if (queue !== undefined) writeFileSync(join(stateDir, "queue.json"), JSON.stringify(queue));
   const key = boardKey(boardKeyPath(stateDir));
   const seen: IncomingMessage["headers"][] = [];
   const pool = { tick: async () => {}, stopWriterRun: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, applyEdit: async () => {}, discardEdit: () => {} };
   const source: TicketSource = { assigned: async () => [{ ...ticket("NBF-1"), labels: LABELS }], read: async () => null, download: async () => [] };
   const served = await listen((port) => {
-    const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal: "http://127.0.0.1:7318/?ws={workspace}" } });
+    const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal } });
     const board = createBoard({ settings, source, key, queuePath: join(stateDir, "queue.json"), choicePath: join(stateDir, "choice.json"), pool, now: () => 7, mintTerminal });
     return (req, res) => { seen.push(req.headers); return board.handle(req, res); };
   });
@@ -67,14 +68,17 @@ function sshRunner(fails = false) {
 }
 
 /** The page's service for `list`, in front of this machine's real instance, with ssh connections answered by `forward` or failing. */
-async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal }: { refusal?: string | null; sshFails?: boolean; mintTerminal?: () => Promise<TerminalMint> } = {}) {
-  const local = await instance(mintTerminal);
+async function ui(list: readonly Connection[], { refusal = null, sshFails = false, mintTerminal, queue, terminal, lookupFails = false }: { refusal?: string | null; sshFails?: boolean;
+  mintTerminal?: () => Promise<TerminalMint>; queue?: object; terminal?: string; lookupFails?: boolean } = {}) {
+  const local = await instance(mintTerminal, { queue, terminal });
   const ssh = sshRunner(sshFails);
   const forwarded: { path: string; key: string; host: string }[] = [];
   const read: ConnectionsRead = { connections: list, refusal, migrated: null };
   const remotes = createRemotes(list.filter((c) => c.kind === "ssh") as never, { runner: ssh.runner, log: () => {}, schedule: () => () => {} });
   const connections = createConnections(list, { local: { port: local.port, keyPath: boardKeyPath(local.stateDir) }, remotes });
   const forward: Forward = async (target, request) => {
+    // A lookup the instance cannot answer for is a failed one, which a worker link still redirects past (A11-129).
+    if (lookupFails && request.path === "/api/terminal-run") return { status: 500, body: "{}" };
     if ("origin" in target.address) return httpForward(target, request);
     forwarded.push({ path: request.path, key: target.key, host: target.host });
     return { status: 200, body: JSON.stringify({ entries: [], max: 1, paused: false }) };
@@ -424,6 +428,60 @@ test("a worker link whose terminal cannot mint a code redirects to the plain lin
   } finally {
     await u.close();
   }
+});
+
+/** The terminal template with the pane too, and the run whose terminal a link names: a finished new-ticket request on `w1:p1`. */
+const TERMINAL_WITH_PANE = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
+const ENDED_QUEUE = { entries: [], max: 1, paused: true, writers: [{ id: "w1", request: "r", mode: "grill", form: {}, phase: "finished", queuedAt: 1, finishedAt: 5,
+  failure: "its agent exited: its herdr workspace is gone", drafts: [], rejected: [], workspace: "w1", pane: "w1:p1" }] };
+
+test("A11-129: a worker link whose run has ended answers a page that says so, with a link to the run and no code minted; a link to a live run still redirects with its code", async () => {
+  let asked = 0;
+  const u = await ui([WORK], { mintTerminal: async () => { asked += 1; return { code: "654321" }; }, queue: ENDED_QUEUE, terminal: TERMINAL_WITH_PANE });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    const ended = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal")}`, { headers: { cookie }, redirect: "manual" });
+    assert.equal(ended.status, 200, "no redirect to a terminal that is gone");
+    assert.equal(ended.headers.get("cache-control"), "no-store");
+    const page = await ended.text();
+    assert.match(page, /<h1>This run ended: failed<\/h1>/);
+    assert.match(page, /its agent exited: its herdr workspace is gone/);
+    assert.match(page, /href="\/\?connection=work#writer-w1"/, "a link to the run on the board, with its connection chosen and its card named");
+    assert.equal(asked, 0, "no code is minted for a run that is over");
+    const live = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent("http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal")}`, { headers: { cookie }, redirect: "manual" });
+    assert.equal(live.status, 302, "a link no run holds still redirects, as it always has");
+    assert.equal(live.headers.get("location"), "http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal&pair=654321");
+    assert.equal(asked, 1);
+  } finally {
+    await u.close();
+  }
+});
+
+test("A11-129: a worker link whose run lookup fails still redirects, as it did before the lookup existed", async () => {
+  const u = await ui([WORK], { queue: ENDED_QUEUE, terminal: TERMINAL_WITH_PANE, lookupFails: true, mintTerminal: async () => ({ code: null, note: "the worker terminal did not answer" }) });
+  try {
+    const cookie = await pairedCookie(u.base, u.local.key);
+    const link = "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal";
+    const res = await fetch(`${u.base}/c/work/terminal?link=${encodeURIComponent(link)}`, { headers: { cookie }, redirect: "manual" });
+    assert.equal(res.status, 302, "a failed lookup never blocks a good link");
+    assert.equal(res.headers.get("location"), link, "the link goes out as it was, since no code could be minted either");
+  } finally {
+    await u.close();
+  }
+});
+
+test("A11-129: only an answer naming an ended run ends a worker link, and the ended page shows each value as text, never as markup", () => {
+  assert.equal(isEnded({ state: "live" }), false);
+  assert.equal(isEnded({ state: "unknown" }), false);
+  assert.equal(isEnded({ state: "ended", outcome: "weird", run: "w1" }), false, "an outcome the page does not name is not an ended run");
+  assert.equal(isEnded(null), false);
+  assert.equal(isEnded({ state: "ended", outcome: "finished", run: "NBF-1", kind: "ticket" }), true);
+  const page = endedPage("a<b", { state: "ended", outcome: "finished", run: "NBF-1", kind: "ticket", reason: "<script>alert(1)</script>" });
+  assert.match(page, /<h1>This run ended: finished<\/h1>/);
+  assert.doesNotMatch(page, /<script>/, "the reason is text");
+  assert.match(page, /&#60;script&#62;/);
+  assert.match(page, /href="\/\?connection=a%3Cb#run-NBF-1"/, "a ticket run links to its row, with its connection chosen");
+  assert.match(endedPage("work", { state: "ended", outcome: "failed", run: "p1", kind: "publish" }), /href="\/\?connection=work"/, "a publish run has no card of its own, so the board opens at the top");
 });
 
 test("a worker link is followed only for a paired browser, and a link that is not this connection's worker terminal is refused before any code is asked for", async () => {

@@ -67,6 +67,11 @@ test("the instance is sent its own host, the key and the JSON body over the tunn
   assert.deepEqual(Object.keys(forwardHeaders({ host: "127.0.0.1:1", key: KEY }, null)).sort(), ["accept", "host", "x-ticket-token"], "nothing else is sent");
 });
 
+test("A11-129: a worker link's run lookup is passed on as a POST, and never as a GET", () => {
+  assert.equal(passedOn("POST", "/api/terminal-run"), true);
+  assert.equal(passedOn("GET", "/api/terminal-run"), false);
+});
+
 test("the worker terminal's pairing code is passed on as a POST, and never as a GET", () => {
   assert.equal(passedOn("POST", "/api/terminal-pair"), true);
   assert.equal(passedOn("GET", "/api/terminal-pair"), false);

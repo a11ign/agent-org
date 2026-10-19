@@ -70,6 +70,21 @@ export function liveBackgroundWork(transcript: string): LiveBackgroundWork {
   return { shells: live.filter(([, kind]) => kind === "shell").map(([id]) => id), monitors: live.filter(([, kind]) => kind === "monitor").map(([id]) => id) };
 }
 
+/**
+ * The last text the assistant wrote in a session's transcript, or "" when it wrote none: the question a grill run asked before its turn ended, when
+ * the Stop payload does not carry the message (A11-129). A turn of tool calls only leaves the text of the turn before it. PURE.
+ */
+export function lastAssistantText(transcript: string): string {
+  let last = "";
+  for (const line of transcript.split("\n")) {
+    const record = line.trim() === "" ? null : recordOf(line);
+    if (record?.type !== "assistant") continue;
+    const text = textOf((record.message as { content?: unknown } | undefined)?.content).trim();
+    if (text !== "") last = text;
+  }
+  return last;
+}
+
 /** A `<task-notification>` a user message or a queue operation carries: its task id and its text. Null for any other record. */
 function notificationOf(record: Record<string, unknown>): { id: string; body: string } | null {
   if (record.type !== "user" && record.type !== "queue-operation") return null;

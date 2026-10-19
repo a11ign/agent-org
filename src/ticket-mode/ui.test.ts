@@ -42,6 +42,9 @@ class Node_ {
   replaceChildren(...nodes: Node_[]) { this.children = []; this.append(...nodes); }
   showModal() { this.open = true; }
   close() { this.open = false; }
+  /** Set by the page when it scrolls a card into view, as a test of the link to a run checks. */
+  scrolled = false;
+  scrollIntoView() { this.scrolled = true; }
   setAttribute(k: string, v: string) { this.attrs[k] = v; }
   getAttribute(k: string) { return this.attrs[k]; }
   addEventListener(type: string, fn: (event: { stopPropagation(): void }) => void) { (this.listeners[type] ??= []).push(fn); }
@@ -86,12 +89,14 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   writers?: { runs: unknown[] }; writerReply?: (path: string, body: any) => unknown;
   /** A browser that blocks a new tab: `window.open` answers null, as a pop-up blocker does. */
   blockTabs?: boolean;
+  /** The address the page was opened at: its query (`?connection=...`) and its hash (the card to scroll to). */
+  search?: string; hash?: string;
   /** An instance that reads scopes on demand: who holds the open tickets, and the pages of a scope (`/api/tickets?assignee=...`) by that query's text. */
   held?: unknown; scoped?: Record<string, { tickets: unknown[]; next: string | null }>;
   /** Why this instance starts no run (`tickets.preflight`), as its queue answer carries it. */
   queueHeld?: { name: string; reason: string; since: number } };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
-  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false }: PageOptions = {}) {
+  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "" }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -143,7 +148,8 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
   const browser = browserStubs(blockTabs);
   runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, document, fetch, window: { localStorage, open: browser.open },
-    setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number, Boolean, Math });
+    location: { search, hash }, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
+    Boolean, Math });
   for (let i = 0; i < 10; i++) await settle();
   const $ = (id: string) => document.getElementById(id);
   const groups = () => $("groups").children;
@@ -1275,6 +1281,24 @@ test("a grill tab the browser blocks is not used, and the run's card offers Open
   const terminal = cardOf(p).all().find((n) => n.tag === "a" && n.textContent === "Open terminal") as (Node_ & { href?: string }) | undefined;
   assert.equal(terminal?.href, opens("http://127.0.0.1:7318/?ws=w4&pane=w4%3Ap1&view=terminal"), "the run's card links its terminal");
   assert.ok(p.posts.some(({ path }) => path.endsWith("/api/writer")), "the request is still sent: only the tab was blocked");
+});
+
+test("A11-129: a grill run waiting for the person shows Waiting for you, its question and Open terminal; a finished run has no Open terminal", async () => {
+  const waiting = { ...RUN, phase: "running", status: "waiting", workspace: "w4", pane: "w4:p1", waiting: { question: "Q1: editable or read-only?", since: 10 } };
+  const p = await page(new Map(), { config: { ...WRITER_CONFIG, terminal: TERMINAL }, connections: WORK_ALONE, writers: { runs: [waiting] } });
+  assert.ok(cardOf(p).text().includes("Waiting for you"), "the status is said in words");
+  assert.ok(cardOf(p).text().includes("Q1: editable or read-only?"), "the question is on the card");
+  assert.equal((cardOf(p).all().find((n) => n.tag === "a" && n.textContent === "Open terminal") as (Node_ & { href?: string }) | undefined)?.href,
+    opens("http://127.0.0.1:7318/?ws=w4&pane=w4%3Ap1&view=terminal"), "Open terminal stays while it waits, for the answer");
+  const finished = await page(new Map(), { config: { ...WRITER_CONFIG, terminal: TERMINAL }, connections: WORK_ALONE, writers: { runs: [RUN] } });
+  assert.equal(cardOf(finished).all().some((n) => n.tag === "a" && n.textContent === "Open terminal"), false, "a finished run has no terminal to open");
+});
+
+test("A11-129: a board opened from a link to a run chooses that run's connection, and scrolls to its card", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, connections: WORK_AND_PERSONAL, writers: { runs: [RUN] }, search: "?connection=personal", hash: "#writer-w7" });
+  assert.ok(p.requested.some((path) => path.startsWith("/c/personal/api/")), "the link's connection is the one the page reads");
+  assert.ok(!p.requested.some((path) => path.startsWith("/c/work/api/")), "and the one remembered or local is not");
+  assert.equal(p.$("writer-w7").scrolled, true, "the card the link names is scrolled to");
 });
 
 test("a run that made its tickets shows each as a link by its key, and says so when Pick does not list it", async () => {

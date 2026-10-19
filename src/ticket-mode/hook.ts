@@ -7,6 +7,10 @@
 // `worker-stop-hook.ts` does: the nbl-ui plugin's own Stop gates block once and then let the next stop through on that flag, and a hook that also
 // honoured it would let a worker end on that second stop with no outcome. Its own count is what bounds it.
 //
+// A GRILL RUN WAITS, IT DOES NOT FAIL (A11-129). A grill new-ticket run ends its turn with no outcome to ask the person a question. That stop is let
+// through, and the hook records the question beside the outcome file (`waiting.json`: the Stop payload's last message, else the transcript's last
+// assistant text), so the board shows it. Nothing depends on the agent writing a file to say so.
+//
 // A `working` OUTCOME LETS ONE STOP THROUGH, AND ONLY WHILE SOMETHING WILL WAKE THE WORKER (A11-80, A11-85). A worker whose own background work runs on
 // writes `{ "kind": "working", ... }` and ends its turn; the pool keeps the run running. The stop is let through only if the session's transcript
 // (`transcript_path`, in the Stop payload) shows a background shell or Monitor still live (`background-work.ts`). With none, it is refused, so a
@@ -45,11 +49,12 @@ import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, write
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { liveBackgroundWork } from "./background-work.ts";
+import { escapeRegExp } from "../lib/escape-regexp.ts";
+import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
 import { checkOutcome } from "./outcome.ts";
 import type { DenyRule } from "./settings.ts";
-import { CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE, STOP_COUNT_FILE,
-  WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
+  STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -77,21 +82,24 @@ const BASH_REFUSALS: readonly Refusal[] = [
     why: "a stack's pushes, rebases and merges are the person's: a worker runs only `gh stack link`" },
 ];
 
-const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Marking a pull request ready is the person's, until they approve it on the board: then a review run may mark the pull requests they
  * approved, each named by its URL, and never undo one.
  */
 function readyRefusal(approved: readonly string[]): Refusal {
-  const named = approved.length === 0 ? "" : `(?![^\\n;&|]*(?:${approved.map(escape).join("|")})(?![\\w/]))`;
+  const named = approved.length === 0 ? "" : `(?![^\\n;&|]*(?:${approved.map(escapeRegExp).join("|")})(?![\\w/]))`;
   return { pattern: new RegExp(`\\bgh\\s+pr\\s+ready\\b${named}|\\bgh\\s+pr\\s+ready\\b[^\\n;&|]*--undo\\b`),
     why: "marking a pull request ready is the person's, except a review run's own approved pull requests, by URL" };
 }
 
-/** The review, publish, writer and ready marks are the board's: a worker that wrote one would lift a refusal. */
-const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${REVIEW_FILE}|${PUBLISH_FILE}|${WRITER_FILE}|${READY_FILE})\\b`),
-  why: `${REVIEW_FILE}, ${PUBLISH_FILE}, ${WRITER_FILE} and ${READY_FILE} are the board's to write` };
+/**
+ * The review, publish, writer and ready marks are the board's: a worker that wrote one would lift a refusal. So are a grill run's question and its moved
+ * outcome: a worker that wrote them would answer its own question (A11-129).
+ */
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE];
+const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
+  why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
 /**
  * The connector tools a new-ticket run may call: the reads only, by name (`get`, `list`, `search`, `extract`, `read`, `find`, `fetch`). A run that
@@ -102,7 +110,7 @@ const READ_ONLY_CONNECTOR = /^mcp__[\w-]+__(get|list|search|extract|read|find|fe
  * The pre-PR review's files, the hook's log and the pool's copy of the setting. Only the gate refuses them, and only when the setting is named, so a machine
  * without it is unchanged (A11-86).
  */
-const PR_REVIEW_FILE_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${[PR_REVIEW_FILE, PR_REVIEW_LOG_FILE].map(escape).join("|")})\\b`),
+const PR_REVIEW_FILE_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${[PR_REVIEW_FILE, PR_REVIEW_LOG_FILE].map(escapeRegExp).join("|")})\\b`),
   why: `${PR_REVIEW_FILE} and ${PR_REVIEW_LOG_FILE} are the pool's and the hook's: a worker may not write them, nor name them in a command` };
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
@@ -117,7 +125,7 @@ const HOST_INSTALL_REFUSAL: Refusal = { pattern: /(?:\b(?:pnpm|agent-org)\s+(?:r
 function protectedWriteRefusal(paths: readonly string[]): Refusal {
   const home = homedir();
   const names = paths.flatMap((path) => path.startsWith(`${home}/`)
-    ? [escape(path), escape(`~${path.slice(home.length)}`), escape(`$HOME${path.slice(home.length)}`)] : [escape(path)]);
+    ? [escapeRegExp(path), escapeRegExp(`~${path.slice(home.length)}`), escapeRegExp(`$HOME${path.slice(home.length)}`)] : [escapeRegExp(path)]);
   const named = names.length === 0 ? "(?!)" : `(?:${names.join("|")})(?![\\w.-])`;
   // A verb counts only at the head of a command, so `grep install ~/.local/bin/gh` is a read. `cp`, `mv`, `install` and `ln` write their LAST argument, so
   // a protected path as their source is a read; the others change or remove the file wherever it sits.
@@ -458,20 +466,39 @@ function interactiveWriter(ticketDir: string, io: StopIo): boolean {
 }
 
 /**
+ * The question a grill run asked before it ended its turn: the Stop payload's last message when it carries one, else the transcript's last assistant
+ * text, else "". A transcript that cannot be read gives "", and the board shows its fixed line for a wait with no question (A11-129).
+ */
+function questionAsked(lastMessage: string | undefined, transcriptPath: string | undefined, read: (path: string) => string): string {
+  const said = lastMessage?.trim() ?? "";
+  if (said !== "") return said;
+  if (transcriptPath === undefined) return "";
+  try {
+    return lastAssistantText(read(transcriptPath));
+  } catch {
+    return "";
+  }
+}
+
+/**
  * The Stop verdict: allowed once the outcome file is there and passes the contract, refused with what to fix otherwise, up to
  * {@link MAX_STOP_REFUSALS} in a row. A `working` outcome allows one stop, and only while the session has live background work to wake it
  * (`transcriptPath`); a later stop on the same file, by its time, is refused the same way, so a worker its background work woke says how the run stands now.
+ * A grill run that ends its turn with no outcome is waiting for the person: that stop is allowed, and its question is recorded for the board (A11-129).
  */
 export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t),
-  mtime = (p: string) => statSync(p).mtimeMs, transcriptPath }: {
+  mtime = (p: string) => statSync(p).mtimeMs, transcriptPath, lastMessage }: {
   exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void; mtime?: (path: string) => number;
   transcriptPath?: string;
+  /** The message the agent ended its turn with, as the Stop payload carries it. */
+  lastMessage?: string;
 } = {}): HookResult {
   const outcome = join(ticketDir, OUTCOME_FILE);
   const counter = join(ticketDir, STOP_COUNT_FILE);
   const io: StopIo = { exists, read, write, mtime };
   if (!exists(outcome) && interactiveWriter(ticketDir, io)) {
     write(counter, "0");
+    write(join(ticketDir, WAITING_FILE), `${JSON.stringify({ question: questionAsked(lastMessage, transcriptPath, read), at: Date.now() })}\n`);
     return ALLOW;
   }
   const judged: Judgment = exists(outcome)
@@ -487,13 +514,21 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
   return refuse(judged.ask);
 }
 
-/** The transcript a Stop payload names, where Claude Code writes the session, or undefined when the payload names none it can read. */
-function transcriptOf(stdin: string): string | undefined {
+/**
+ * What a Stop payload gives the verdict: the transcript it names, where Claude Code writes the session, and the message the agent ended its turn with.
+ * Each is left out when the payload does not carry it as a string the verdict can use.
+ */
+function stopPayload(stdin: string): { transcriptPath?: string; lastMessage?: string } {
   try {
-    const path = (JSON.parse(stdin) as { transcript_path?: unknown } | null)?.transcript_path;
-    return typeof path === "string" && path !== "" ? path : undefined;
+    const payload = JSON.parse(stdin) as { transcript_path?: unknown; last_assistant_message?: unknown } | null;
+    const path = payload?.transcript_path;
+    const message = payload?.last_assistant_message;
+    return {
+      ...(typeof path === "string" && path !== "" ? { transcriptPath: path } : {}),
+      ...(typeof message === "string" ? { lastMessage: message } : {}),
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -501,7 +536,7 @@ export function main(stdin: string, argv: string[]): HookResult {
   const [event, ticketDir] = argv;
   if ((event !== "stop" && event !== "pre-tool-use") || !ticketDir) return { code: 0, say: [`ticket:hook: usage is ticket:hook stop|pre-tool-use <ticket dir>, so this call is ALLOWED.`] };
   try {
-    if (event === "stop") return stopVerdict(ticketDir, { transcriptPath: transcriptOf(stdin) });
+    if (event === "stop") return stopVerdict(ticketDir, stopPayload(stdin));
     const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown> };
     const tool = String(payload.tool_name ?? "");
     const input = payload.tool_input ?? {};

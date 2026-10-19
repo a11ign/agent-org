@@ -128,6 +128,8 @@ export type Entry = Readonly<{
   workspace?: string;
   /** The herdr pane the run's agent is in, beside its workspace. */
   pane?: string;
+  /** The terminal the run's agent was in when the run ended, kept after its workspace and pane are cleared, so a link to it says the run ended (A11-129). */
+  lastTerminal?: Readonly<{ workspace: string; pane: string }>;
   /** Seen `working` at least once, so a later `idle` means a finished turn and not a prompt not yet taken. */
   seenWorking?: boolean;
   /** The agent is in a state that needs a person (a dialog, a prompt), as herdr reported it. */
@@ -227,6 +229,8 @@ export type PublishRun = Readonly<{
   finishedAt?: number;
   workspace?: string;
   pane?: string;
+  /** The terminal the publish run's agent was in when it ended, kept after its workspace and pane are cleared (A11-129). */
+  lastTerminal?: Readonly<{ workspace: string; pane: string }>;
   seenWorking?: boolean;
   /** Why it failed, once it has: the runs stay Ready to merge. */
   failure?: string;
@@ -286,6 +290,13 @@ export type WriterRun = Readonly<{
   pane?: string;
   /** Whether the agent has been seen working, which lets a grill run's next outcome be told from its last. */
   seenWorking?: boolean;
+  /**
+   * A grill run whose agent has ended its turn with no outcome, and is waiting for the person to answer in its terminal: the question the agent asked,
+   * and when the wait began. Cleared when the agent works again (A11-129).
+   */
+  waiting?: Readonly<{ question: string; since: number }>;
+  /** The terminal the run's agent was in when the run ended, kept after the run's record ends so a link to it says so (A11-129). */
+  lastTerminal?: Readonly<{ workspace: string; pane: string }>;
   /** Why the run failed, once it has. A stopped run says so. */
   failure?: string;
   drafts: readonly DraftRecord[];
@@ -295,14 +306,18 @@ export type WriterRun = Readonly<{
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
 export const MAX_WRITER_RUNS = 3;
 
-/** Where a new-ticket request is on the board: queued, writing (its agent, or the board making its tickets), done, or failed. */
-export type WriterStatus = "queued" | "writing" | "done" | "failed";
+/**
+ * Where a new-ticket request is on the board: queued, writing (its agent, or the board making its tickets), waiting for the person to answer its
+ * agent in the terminal, done, or failed.
+ */
+export type WriterStatus = "queued" | "writing" | "waiting" | "done" | "failed";
 
-/** The status of a writer run, from its phase and its failure. PURE. */
+/** The status of a writer run, from its phase, its wait and its failure. PURE. */
 export function writerStatus(run: WriterRun): WriterStatus {
   if (run.failure !== undefined) return "failed";
   if (run.phase === "queued") return "queued";
   if (run.phase === "finished") return "done";
+  if (run.waiting !== undefined) return "waiting";
   return "writing";
 }
 

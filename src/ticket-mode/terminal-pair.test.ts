@@ -4,8 +4,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { terminalLink } from "./board-view/settled-by-pulls.ts";
+import { finish, markRunning, markStarting } from "./queue/approve.ts";
+import { enqueue, type PublishRun, type Queue, type WriterRun } from "./queue/declared-remains.ts";
+import { emptyQueue } from "./queue.ts";
 import { parseTicketSettings, type TicketSettings } from "./settings.ts";
-import { mintTerminalCode, pluginToken, type MintDeps } from "./terminal-pair.ts";
+import type { Ticket } from "./source.ts";
+import { mintTerminalCode, pluginToken, runOfTerminalLink, terminalRunOf, type MintDeps } from "./terminal-pair.ts";
 
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 const START = "http://127.0.0.1:7318/api/devices/pair/start";
@@ -91,4 +96,43 @@ test("neither the code nor the token is ever in a note, even when the failure it
   const minted = await mintTerminalCode(machine(), 7318, d.mint);
   assert.equal(minted.code, null);
   assert.ok(!JSON.stringify(minted).includes("secret-token-value"));
+});
+
+const TERMINAL_WITH_KEY = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&key={key}&view=terminal";
+
+test("A11-129: a link terminalLink built gives back the workspace, pane and key it carries; a link off the template, or a value that cannot be read, gives none", () => {
+  const entry = { ticket: { key: "NBF-1" }, phase: "running", workspace: "w1", pane: "w1:p1" } as unknown as Parameters<typeof terminalLink>[1];
+  assert.deepEqual(runOfTerminalLink(TERMINAL_WITH_KEY, terminalLink(TERMINAL_WITH_KEY, entry)!), { workspace: "w1", pane: "w1:p1", key: "NBF-1" });
+  assert.deepEqual(runOfTerminalLink(TERMINAL, terminalLink(TERMINAL, entry)!), { workspace: "w1", pane: "w1:p1" }, "a template without a key names none");
+  assert.equal(runOfTerminalLink(TERMINAL, "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=other"), null, "another view is another address");
+  assert.equal(runOfTerminalLink(TERMINAL, "http://evil.example/?ws=w1&pane=w1%3Ap1&view=terminal"), null, "another site is another address");
+  assert.equal(runOfTerminalLink(TERMINAL, "http://127.0.0.1:7318/?ws=%E0%A4%A&pane=w1&view=terminal"), null, "a value that cannot be decoded is none");
+});
+
+/** A ticket as the queue holds it, for a run the terminal lookup is asked about. */
+const ticketOf = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
+const choice = { model: "opus", effort: "high" };
+/** The address a run's terminal is at, as the board links it. */
+const linkTo = (workspace: string, pane: string) => terminalLink(TERMINAL, { ticket: { key: "x" }, phase: "running", workspace, pane } as unknown as Parameters<typeof terminalLink>[1])!;
+
+test("A11-129: a terminal a run holds is live; a run that has ended says how and why, for a ticket, a new-ticket request or a publish; and a link no run holds is unknown", () => {
+  let queue = markRunning(markStarting(enqueue(emptyQueue(3), [ticketOf("NBF-1")], choice, 1), "NBF-1", 2), "NBF-1", "w1", "w1:p1");
+  assert.deepEqual(terminalRunOf(queue, TERMINAL, linkTo("w1", "w1:p1")), { state: "live" });
+  queue = finish(queue, "NBF-1", { kind: "crashed", reason: "its herdr workspace is gone" }, 5);
+  assert.deepEqual(terminalRunOf(queue, TERMINAL, linkTo("w1", "w1:p1")), { state: "ended", outcome: "failed", run: "NBF-1", kind: "ticket", reason: "its herdr workspace is gone" });
+  assert.deepEqual(terminalRunOf(queue, TERMINAL, linkTo("w9", "w9:p1")), { state: "unknown" }, "a terminal no run holds");
+  assert.deepEqual(terminalRunOf(queue, TERMINAL, "http://elsewhere.example/?ws=w1&pane=w1%3Ap1&view=terminal"), { state: "unknown" }, "not this machine's terminal");
+
+  const writing = { id: "w2", request: "r", mode: "grill", form: {}, phase: "running", queuedAt: 1, drafts: [], rejected: [], workspace: "w2", pane: "w2:p1" } as unknown as WriterRun;
+  const asking = { ...emptyQueue(3), writers: [writing] };
+  assert.deepEqual(terminalRunOf(asking, TERMINAL, linkTo("w2", "w2:p1")), { state: "live" }, "a new-ticket run's terminal while it runs");
+  const failed = { ...asking, writers: [{ ...writing, phase: "finished", finishedAt: 5, failure: "its agent exited: its herdr workspace is gone" }] } as Queue;
+  assert.deepEqual(terminalRunOf(failed, TERMINAL, linkTo("w2", "w2:p1")),
+    { state: "ended", outcome: "failed", run: "w2", kind: "writer", reason: "its agent exited: its herdr workspace is gone" }, "a finished request keeps its workspace on the record, so its link says so");
+  const done = { ...asking, writers: [{ ...writing, phase: "finished", finishedAt: 5 }] } as Queue;
+  assert.deepEqual(terminalRunOf(done, TERMINAL, linkTo("w2", "w2:p1")), { state: "ended", outcome: "finished", run: "w2", kind: "writer" });
+
+  const published = { ...emptyQueue(3), publish: { id: "p1", keys: [], prs: [], phase: "finished", queuedAt: 1, failure: "it stopped without writing an outcome",
+    lastTerminal: { workspace: "w3", pane: "w3:p1" } } as unknown as PublishRun } as Queue;
+  assert.deepEqual(terminalRunOf(published, TERMINAL, linkTo("w3", "w3:p1")), { state: "ended", outcome: "failed", run: "p1", kind: "publish", reason: "it stopped without writing an outcome" });
 });

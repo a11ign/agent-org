@@ -7,7 +7,66 @@
 // link then goes out plain, which is today's behaviour. The mint is an optimisation, never a requirement.
 import { join } from "node:path";
 import { pluginConfigDir } from "../install/terminal.ts";
+import { escapeRegExp } from "../lib/escape-regexp.ts";
+import { type Queue, writerStatus } from "./queue/declared-remains.ts";
 import type { TicketSettings } from "./settings.ts";
+
+/*
+ * A RUN'S TERMINAL LINK (A11-129). A worker link whose run has ended says so, rather than redirecting to a terminal that is gone (herdr web ui's page
+ * spins there). The board answers that from its own record: which run held the workspace and pane the link names, and whether it still does.
+ */
+
+/** The values a worker terminal's link carries: the workspace, pane and key of the run it opens, as `terminalLink` wrote them into the template. */
+export type TerminalValues = Readonly<{ workspace?: string; pane?: string; key?: string }>;
+
+/** What the board holds for a worker terminal's link: `live` while a run's agent is in it, `ended` with the run it was, or `unknown` for none. */
+export type TerminalRun = Readonly<{ state: "live" | "unknown" }>
+  | Readonly<{ state: "ended"; outcome: "failed" | "finished"; run: string; kind: "ticket" | "writer" | "publish"; reason?: string }>;
+
+/** The workspace and pane a link names, when it names both, else null. PURE. */
+const placeOf = (values: TerminalValues | null): Readonly<{ workspace: string; pane: string }> | null =>
+  values?.workspace === undefined || values.pane === undefined ? null : { workspace: values.workspace, pane: values.pane };
+
+/** A run that has ended, with its reason when it has one. */
+const ended = (outcome: "failed" | "finished", run: string, kind: "ticket" | "writer" | "publish", reason: string | undefined): TerminalRun =>
+  ({ state: "ended", outcome, run, kind, ...(reason === undefined ? {} : { reason }) });
+
+/**
+ * The values a link carries when it is `template` with each `{workspace}`, `{pane}` and `{key}` filled in, or null when it is not that address. Each value
+ * is read as `terminalLink` encoded it, so one that cannot be decoded is not the address either. PURE.
+ */
+export function runOfTerminalLink(template: string, link: string): TerminalValues | null {
+  const parts = template.split(/\{(workspace|pane|key)\}/);
+  const literals = parts.filter((_, i) => i % 2 === 0);
+  const names = parts.filter((_, i) => i % 2 === 1);
+  const matched = new RegExp(`^${literals.map(escapeRegExp).join("([^&#/?]*)")}$`).exec(link);
+  if (matched === null) return null;
+  try {
+    return Object.fromEntries(names.map((name, i) => [name, decodeURIComponent(matched[i + 1])]));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The run that holds the terminal a link names: `live` when a run's agent is in it now (a ticket run, parked or running; a new-ticket run or a publish run
+ * while it runs), `ended` with the run it was when that run has ended, and `unknown` for a link no run holds, or one that is not the template's address.
+ * A run that holds it now is live, whatever a run that held it before says. PURE.
+ */
+export function terminalRunOf(queue: Queue, template: string, link: string): TerminalRun {
+  const place = placeOf(runOfTerminalLink(template, link));
+  if (place === null) return { state: "unknown" };
+  const held = (other: Readonly<{ workspace?: string; pane?: string }> | undefined): boolean => other?.workspace === place.workspace && other?.pane === place.pane;
+  const writers = queue.writers ?? [];
+  const runningHere = (run: Readonly<{ phase: string; workspace?: string; pane?: string }> | undefined): boolean => run?.phase === "running" && held(run);
+  if (queue.entries.some(held) || [...writers, queue.publish].some(runningHere)) return { state: "live" };
+  const writer = writers.find((run) => run.phase !== "running" && held(run));
+  if (writer !== undefined) return ended(writerStatus(writer) === "failed" ? "failed" : "finished", writer.id, "writer", writer.failure);
+  const entry = queue.entries.find((e) => held(e.lastTerminal));
+  if (entry !== undefined) return ended(entry.outcome?.kind === "crashed" ? "failed" : "finished", entry.ticket.key, "ticket", entry.outcome && "reason" in entry.outcome ? entry.outcome.reason : undefined);
+  if (queue.publish !== undefined && held(queue.publish.lastTerminal)) return ended(queue.publish.failure === undefined ? "finished" : "failed", queue.publish.id, "publish", queue.publish.failure);
+  return { state: "unknown" };
+}
 
 /** A terminal pairing code, or the reason there is none. */
 export type TerminalMint = Readonly<{ code: string; note?: undefined }> | Readonly<{ code: null; note: string }>;
