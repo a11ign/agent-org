@@ -193,6 +193,7 @@
 <main>
   <div id="error" class="error" role="alert"></div>
   <div id="connections-note" class="notice" hidden></div>
+  <div id="held" class="notice" role="status" hidden></div>
   <section id="pick">
     <div class="bar">
       <input id="filter" type="search" placeholder="Filter by key, title or project">
@@ -245,7 +246,7 @@
 import {
   APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, draftControls, draftStatusText, duplicateLines, draftForm, draftFields,
-  runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -596,7 +597,8 @@ function row(e) {
     box.addEventListener("change", () => { state.toPublish = toggled(state.toPublish, e.ticket.key); renderBoard(); });
     tick = el("label", { className: "publish-tick" }, box, "Publish");
   }
-  const repos = e.repos && e.repos.length > 0 ? e.repos.join(", ") : e.phase === "queued" ? "the worker chooses the repo" : "choosing a repo";
+  // A run names the repository it is planned for, else its project's (A11-116); the worker chooses one only when neither names one.
+  const repos = repoLabel(e);
   const when = e.startedAt ? `${e.phase === "finished" ? "ran" : "running"} ${length((e.finishedAt ?? Date.now()) - e.startedAt)}, started ${since(e.startedAt)} ago` : `queued ${since(e.queuedAt)} ago`;
   const tokens = e.tokens ? ` · ${Math.round(e.tokens.input / 1000)}k in / ${Math.round(e.tokens.output / 1000)}k out` : "";
   return el("div", { className: "run" },
@@ -607,6 +609,7 @@ function row(e) {
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
+      rebaseNote(e) ? el("div", { className: "meta" }, rebaseNote(e)) : null,
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
@@ -726,7 +729,14 @@ function saveMax() {
   }).catch(report);
 }
 
-function render() { renderPick(); renderBoard(); renderFooter(); }
+/** Why this instance starts no run (its host's `tickets.preflight`): the check that failed and what it printed. Nothing is drawn while no run is held. */
+function renderHeld() {
+  const held = state.queue.held;
+  $("held").hidden = !held;
+  $("held").textContent = held ? `No run starts while ${held.name} fails: ${held.reason}` : "";
+}
+
+function render() { renderPick(); renderBoard(); renderFooter(); renderHeld(); }
 
 // NEW TICKETS (A11-94). A request's form, its runs, and each draft's review. The board creates a ticket only when a person approves a draft here.
 const writerForm = () => ({
@@ -1024,7 +1034,7 @@ try {
   await load();
 } catch (err) { report(err); }
 setInterval(() => {
-  call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); }, report);
+  call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); renderHeld(); }, report);
   refreshWriters().catch(report);
 }, 5000);
 </script>

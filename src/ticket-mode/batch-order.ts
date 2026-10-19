@@ -93,5 +93,5 @@ export function unknownRepos(order: Order, clones: readonly string[]): ReadonlyM
   const known = new Set(clones);
   const names = clones.map((name) => `\`${name}\``).join(", ");
   return new Map([...order].flatMap(([key, { repo }]) => (repo === null || known.has(repo) ? []
-    : [[key, `the planner placed ${key} in the repository \`${repo}\`, which is not one of this machine's clones (${names}), so the board gave it none. Its plan is attached: Retry works it with no planned repository, and the worker chooses one`] as const])));
+    : [[key, `the planner placed ${key} in the repository \`${repo}\`, which is not one of this machine's clones (${names}), so the board gave it none. Its plan is attached: Retry works it with no planned repository, so it starts in its project's repository, or, where its project names none, the worker chooses one`] as const])));
 }

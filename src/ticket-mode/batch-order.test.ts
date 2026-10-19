@@ -63,6 +63,6 @@ test("A11-70: a repository that is not one of the host file's clones keys is ref
   const refused = unknownRepos(order, ["a11ign", "agent-org"]);
   assert.deepEqual([...refused.keys()], ["NBF-2"], "only the ticket placed in a folder's name, not a clone's");
   const reason = refused.get("NBF-2")!;
-  for (const part of ["NBF-2", "`a11y-witness`", "not one of this machine's clones (`a11ign`, `agent-org`)", "gave it none", "Retry"]) assert.ok(reason.includes(part), part);
+  for (const part of ["NBF-2", "`a11y-witness`", "not one of this machine's clones (`a11ign`, `agent-org`)", "gave it none", "Retry", "its project's repository, or, where its project names none, the worker chooses one"]) assert.ok(reason.includes(part), part);
   assert.equal(unknownRepos(new Map([["NBF-1", { repo: "a11ign", after: [], wait: "stacked" }]]), ["a11ign"]).size, 0, "a known repository is accepted");
 });

@@ -15,6 +15,8 @@ export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
+  /** The repositories the run has made worktrees in, once it has made any. */
+  repos?: readonly string[];
   /** Set while the ticket still needs its plan: the model and effort its planning run uses. */
   plan?: Readonly<{ model: string; effort: string }>;
   /** Its plan was written by a planning run, not agreed with a person. */
@@ -23,6 +25,8 @@ export type ViewEntry = Readonly<{
   review?: readonly PullRef[];
   /** The repository its batch's planner said its work lands in, or null when it named none. */
   plannedRepo?: string | null;
+  /** The repository its project names, or null when it names none: what a run without a planned repository stacks in (see `repoOf`). */
+  projectRepo?: string | null;
   /** The repository-prefixed paths its plan says its work touches, as last read: unset until read, empty when the plan declares none. */
   paths?: readonly string[];
   /**
@@ -42,6 +46,20 @@ export type ViewEntry = Readonly<{
   verdictNotPosted?: string;
   /** Set while a stacked pull request of the run needs its base said: by URL, what is needed (A11-106). */
   retargets?: Readonly<Record<string, string>>;
+  /** The blocker branch a run was branched from, and what agent-org has done to keep it on that branch (A11-116). */
+  stackBase?: StackBaseRecord;
+}>;
+
+/**
+ * The branch a run was branched from: the blocker's key, the repository and branch, the commit it was at (`sha`), and what agent-org did since. `seen`
+ * is the head the blocker's branch moved to, while the run has not been rebased onto it; `rebased` is the last rebase (from the old commit to the new);
+ * `failed` is a rebase that could not be made against that head, and why: nothing is tried again until the blocker's branch is at another head.
+ */
+export type StackBaseRecord = Readonly<{
+  key: string; repo: string; branch: string; sha: string;
+  seen?: string;
+  rebased?: Readonly<{ from: string; to: string; at: number }>;
+  failed?: Readonly<{ head: string; reason: string }>;
 }>;
 
 /** A worker's proposed edit to its ticket's text, as a run records it (A11-91): only whether it is there matters to the board. */
@@ -54,7 +72,7 @@ export type PullRef = Readonly<{ url: string; repo?: string }>;
  * A ticket that blocks a queued one: its key, its state's type and name in the tracker, and, where the tracker gave them, its branch and the state
  * of each pull request it links, by URL.
  */
-export type ViewBlocker = Readonly<{ key: string; state: string; status: string; branch?: string; pulls?: Readonly<Record<string, string>> }>;
+export type ViewBlocker = Readonly<{ key: string; state: string; status: string; branch?: string; head?: string; pulls?: Readonly<Record<string, string>> }>;
 
 /** Where a browser keeps the view's settings between visits; `localStorage` in the page. */
 export type Storage = Readonly<{ getItem(name: string): string | null; setItem(name: string, value: string): void }>;

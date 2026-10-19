@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
+import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
@@ -44,6 +45,8 @@ export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: s
 export type GhWrapperReport = Readonly<{ unchecked: string }> | Readonly<{ divergence: string | null; mints: readonly Readonly<{ role: string; failure: string | null }>[] }>;
 
 export type DoctorDeps = Readonly<{
+  /** Runs one `tickets.preflight` command; a shell when absent. A test injects one so no process runs. */
+  preflight?: PreflightExec;
   env: Env;
   home: string;
   /** `node --version` of the `node` on PATH, or null when there is none. */
@@ -277,6 +280,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     keyCheck(settings, deps),
     linearMcpCheck(deps),
     writerCheck(settings),
+    ...await preflightChecks(settings, deps),
     ...instance,
     ...herdrScopeChecks(settings, instanceState, deps),
     ...ui,
@@ -286,6 +290,21 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
   ];
+}
+
+/**
+ * Each command of `tickets.preflight`, run now as the pool runs it before a start: a pass, or a failure with what the command printed, since a run starts only
+ * while all of them pass. Nothing is run, and nothing said, on a host that names none. One command at a time, each its own line.
+ */
+async function preflightChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
+  const exec = deps.preflight ?? shellPreflight;
+  const checks: Check[] = [];
+  for (const command of settings?.preflight ?? []) {
+    const result = await runPreflights([command], exec);
+    checks.push(result.ok ? ok(`preflight ${command.name}`, "passes, so runs may start")
+      : failed(`preflight ${command.name}`, result.reason, "fix what it says: the board starts no run while it fails"));
+  }
+  return checks;
 }
 
 /**

@@ -1,6 +1,7 @@
 // @ts-check
 // module: the pool's context -- its deps and seams, and the state its parts share, built once for each pool
 
+import { createGate, shellPreflight, type PreflightExec } from "./preflight.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
@@ -10,6 +11,7 @@ import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.t
 import { type TicketSource } from "./source.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
+import { defaultGit, type Git } from "./worktree.ts";
 import { atomicReviewerPort, reviewerMemoryPath, reviewerRefusal, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, withoutReviewerReviews } from "./reviewer-port.ts";
 
 export type PoolDeps = Readonly<{
@@ -34,8 +36,12 @@ export type PoolDeps = Readonly<{
   wait?: (ms: number) => Promise<void>;
   /** `gh`, for the feedback on the pull requests of runs Ready to merge. */
   gh?: (args: string[]) => string;
+  /** `git` in a clone or worktree, for the heads of stacked blockers' branches and the rebase of a stacked run (A11-116). */
+  git?: Git;
   /** The reviewer a machine with `tickets.reviewer: "atomic"` starts for each ready head; ignored on a machine that names none. */
   reviewerPort?: ReviewerPort;
+  /** Runs one `tickets.preflight` command; a shell by default. A test injects one so no process runs. */
+  preflight?: PreflightExec;
 }>;
 
 /** The pool holds the queue through these two, so the server stays its one writer. */
@@ -55,8 +61,11 @@ export type PoolContext = Readonly<{
   herdrAsync: HerdrAsync;
   wait: (ms: number) => Promise<void>;
   now: () => number;
+  /** The `tickets.preflight` commands, asked before a run starts: a failure holds every start, and says why. */
+  gate: ReturnType<typeof createGate>;
   transcripts: string;
   gh: (args: string[]) => string;
+  git: Git;
   feedbackGh: (args: string[]) => string;
   hostFile: string | undefined;
   stallMs: number;
@@ -65,6 +74,8 @@ export type PoolContext = Readonly<{
   answered: Map<string, number>;
   startedHere: Set<string>;
   attaching: Set<string>;
+  /** The runs whose worktree agent-org is rebasing onto a stacked branch now: no run of theirs starts until it is done (A11-116). */
+  rebasing: Set<string>;
   pendingMoves: Map<string, Promise<void>>;
   removing: Set<string>;
   batches: boolean;
@@ -93,8 +104,10 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const herdrAsync: HerdrAsync = deps.herdrAsync ?? (injected ? async (args, timeoutMs) => injected(args, timeoutMs) : defaultHerdrAsync);
   const wait = deps.wait ?? defaultWait;
   const now = deps.now ?? Date.now;
+  const gate = createGate(settings.preflight, deps.preflight ?? shellPreflight, now);
   const transcripts = deps.transcriptsRoot ?? join(homedir(), ".claude", "projects");
   const gh = deps.gh ?? defaultGh;
+  const git = deps.git ?? defaultGit;
   /** How long a run with a working note may sit idle with no newer outcome before the board marks it stalled. */
   const stallMs = settings.stallMinutes * 60_000;
   const session = { session: settings.herdrSession };
@@ -136,7 +149,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, hook, deps, herdr, herdrAsync, wait, now, transcripts, gh, feedbackGh, hostFile, stallMs, session, misses, answered,
+    store, settings, source, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackGh, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerStarted, reviewerResumed,
     reviewerReposts, closing, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };

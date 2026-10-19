@@ -325,6 +325,9 @@ test("a drafts-off run may open a ready pull request and a drafts-on run may not
   assert.equal(bash("gh pr create --title t --body b"), 2, "POSITIVE CONTROL: drafts on refuses a pull request that is not a draft");
   assert.equal(ready("gh pr create --title t --body b"), 0, "a ready run may open one");
   assert.equal(ready("gh pr create --draft --title t --body b"), 0, "and a draft");
+  // A stacked run bases its pull request on its blocker's branch, which may have no pull request under it (A11-116): the base is not refused.
+  assert.equal(ready("gh pr create --base nbf-1-fit --title t --body b"), 0, "a ready pull request based on a stacked branch is allowed");
+  assert.equal(bash("gh pr create --base nbf-1-fit --draft --title t --body b"), 0, "and a draft one on a drafts-on machine");
   assert.equal(ready("gh pr ready 12"), 2, "marking a pull request ready is still refused");
   assert.equal(toolVerdict("Write", { file_path: "/state/tickets/NBF-1/ready-run", content: "\n" }).code, 2, "no worker writes the ready mark with a file tool");
   assert.equal(bash("touch /state/tickets/NBF-1/ready-run"), 2, "no worker writes the ready mark with a command");

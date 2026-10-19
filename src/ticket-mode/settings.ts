@@ -3,7 +3,8 @@
 //
 // MACHINE FACTS ONLY, IN THE HOST FILE AGENT-ORG ALREADY READS. Which repositories this machine has checked out, where worktrees go, how many
 // workers it can carry and where the tracker's key lives are facts no repository can know, which is the host file's rule (`host-config.ts`'s
-// header). Nothing here is a fact about one repository: a worker chooses the repository and reads its own `CLAUDE.md`. The optional `brief`,
+// header). Nothing here is a fact about one repository: a worker reads its own `CLAUDE.md`, and chooses the repository only when none is planned or
+// defaulted from its ticket's project (A11-116). The optional `brief`,
 // `deny`, `plugins` and `connectors` say how workers behave on this machine, for example how they share its dev servers with each other and with
 // the person, and which of the person's connectors they may call.
 // The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does, and the optional `plan` how the board
@@ -16,6 +17,7 @@
 //
 // IT REFUSES BY NAME. An absent host file, a `clones` that is not a map of absolute paths, and a mistyped `tickets` field are each refused naming
 // the field, never answered with a guess.
+import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -59,6 +61,8 @@ export type TicketSettings = Readonly<{
   planner: Planner | null;
   /** How a new ticket is written from a person's request on the board, or null when the board offers no New ticket. */
   writer: Writer | null;
+  /** The commands that must exit 0 before a run starts, in order: none by default. A failure holds the queue, and the board says why. */
+  preflight: readonly Preflight[];
   /** The tracker state a ticket moves to when a worker starts implementing it, if it has not started, or null to leave its state alone. */
   workingState: string | null;
   /**
@@ -253,6 +257,31 @@ function connectorPatterns(value: unknown, list = "tickets.connectors"): readonl
 
 const WRITER_SHAPE = "must be { \"run\": \"<the ticket writer's instruction, naming {request} and {dir}>\", \"model\": \"<optional, opus>\", \"effort\": \"<optional, high>\" }";
 
+const PREFLIGHT_SHAPE = `must be a list of { "name": "<shown on the board>", "run": "<a shell command that exits 0 when work may start>", "timeoutSeconds": "<optional, 1 to ${MAX_TIMEOUT_SECONDS}, ${DEFAULT_TIMEOUT_SECONDS} by default>" }`;
+
+/** Whether `value` is a whole number of seconds a preflight command may be given. */
+const isTimeLimit = (value: unknown): boolean => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= MAX_TIMEOUT_SECONDS;
+
+/** `tickets.preflight`: a list of named shell commands, each of which must exit 0 before a run starts. Absent is none. Anything else is refused by name and place. */
+function preflightOf(value: unknown): readonly Preflight[] {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.preflight", `${PREFLIGHT_SHAPE}, not ${JSON.stringify(value)}`);
+  const names = new Set<string>();
+  return Object.freeze(value.map((entry, index) => {
+    const at = `tickets.preflight[${index}]`;
+    if (!isObject(entry)) throw new TicketSettingsRefusal(at, `${PREFLIGHT_SHAPE}, not ${JSON.stringify(entry)}`);
+    const { name, run, timeoutSeconds } = entry;
+    if (typeof name !== "string" || name.trim() === "") throw new TicketSettingsRefusal(`${at}.name`, "must be a non-empty string, the name the board shows");
+    if (names.has(name)) throw new TicketSettingsRefusal(`${at}.name`, `\`${name}\` is named twice`);
+    names.add(name);
+    if (typeof run !== "string" || run.trim() === "") throw new TicketSettingsRefusal(`${at}.run`, "must be a non-empty shell command");
+    if (timeoutSeconds !== undefined && !isTimeLimit(timeoutSeconds)) {
+      throw new TicketSettingsRefusal(`${at}.timeoutSeconds`, `must be a whole number from 1 to ${MAX_TIMEOUT_SECONDS}, not ${JSON.stringify(timeoutSeconds)}`);
+    }
+    return Object.freeze({ name, run, timeoutSeconds: (timeoutSeconds as number | undefined) ?? DEFAULT_TIMEOUT_SECONDS });
+  }));
+}
+
 /** `tickets.writer`: the ticket writer's instruction names both `{request}` and `{dir}`; its model and effort are one word each. Absent is null. */
 function writerOf(value: unknown): Writer | null {
   if (value === undefined) return null;
@@ -412,6 +441,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     plan,
     planner: plannerOf(tickets.planner, plan),
     writer: writerOf(tickets.writer),
+    preflight: preflightOf(tickets.preflight),
     workingState: stateName(tickets.workingState, "tickets.workingState"),
     connectors: connectorPatterns(tickets.connectors),
     publish: publisherOf(tickets.publish),

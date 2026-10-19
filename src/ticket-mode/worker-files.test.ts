@@ -189,10 +189,10 @@ test("a run stacked on its blockers is told to branch from one, link its pull re
   const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } },
     { key: "NBF-5", state: "completed", status: "Done", pulls: {} }];
   const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
-    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit" }] });
-  for (const part of ["## Stack on the work you wait for", "open pull request in `nbl-ui-netbox`", `- NBF-1: ${draft}, on branch \`nbf-1-fit\``,
+    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }] });
+  for (const part of ["## Stack on the work you wait for", "Each has its branch pushed to `nbl-ui-netbox`", `- NBF-1: ${draft}, on branch \`nbf-1-fit\``,
     "`node bin.ts ticket:worktree nbl-ui-netbox --from <branch>`", "`gh pr view <its pull request url> --json headRefName`", "or on the last one listed when the plan does not say",
-    "`gh stack link <its pull request url> <your pull request url>`", "Run no other `gh stack` command", "which pull request yours is stacked on"]) {
+    "`gh stack link <its pull request url> <your pull request url>`", "Run no other `gh stack` command", "which branch, and which pull request if there is one, yours is stacked on"]) {
     assert.ok(text.includes(part), part);
   }
   assert.match(text, /This ticket waited until each of these was done:\n\n- NBF-5, Done: no pull request linked\n/, "only the blockers it waited for");
@@ -203,11 +203,32 @@ test("A11-106: the stack section says pull request, not draft pull request, and 
   const draft = "https://github.com/o/nbl-ui-netbox/pull/12";
   const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Review", branch: "nbf-1-fit", pulls: { [draft]: "open" as const } }];
   const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
-    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit" }] });
-  assert.ok(text.includes("2. After you open your own pull request, stack it on that one, bottom first:"), "the step names the pull request whether or not tickets.drafts makes it a draft");
+    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }] });
+  assert.ok(text.includes("2. Open your pull request in place of the pull request step below, with its base set to that branch: `gh pr create --draft --base <branch>`."), "the step names the base, as a draft on a machine that keeps drafts");
+  const ready = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
+    stackedOn: [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }], drafts: false });
+  assert.ok(ready.includes("with its base set to that branch: `gh pr create --base <branch>`, ready."), "and ready on one that does not");
   assert.equal(text.includes("draft pull request"), false, "no draft in the stack section");
-  assert.ok(text.includes("4. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself."), "the worker is told agent-org moves a stale base");
+  assert.ok(text.includes("6. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself."), "the worker is told agent-org moves a stale base");
   assert.ok(text.includes("That is expected, not a failure: do not retarget, rebase, push or merge to fix it."), "and that a stale base is not a failure");
+});
+
+test("A11-116: a stacked run whose blocker has no pull request yet is told its branch is pushed, branches from it, and never rebases it", () => {
+  const head = "c".repeat(40);
+  const blockers: Blocker[] = [{ key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1-fit", head, pulls: {} }];
+  const text = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "node bin.ts ticket:worktree", prOpenCommand: "/node /tool/src/bin.ts pr:open", blockers,
+    stackedOn: [{ key: "NBF-1", url: null, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head }] });
+  assert.ok(text.includes("- NBF-1: its branch `nbf-1-fit` is pushed in `nbl-ui-netbox`; there is no pull request yet"), "the base is named by its pushed branch");
+  assert.ok(text.includes("`node bin.ts ticket:worktree nbl-ui-netbox --from <branch>`"), "the worktree is made from the branch");
+  assert.ok(text.includes("`git ls-remote origin <branch>`"), "the branch is checked on the remote when there is no pull request");
+  assert.ok(text.includes("`gh pr create --draft --base <branch>`"), "the pull request is based on the branch");
+  const named = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "p", repo: "agent-org" });
+  assert.ok(named.includes("The ticket's project names `agent-org`, so its work lands there unless it belongs in another of these repositories"), "the project's repository is the default the worker is told");
+  assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "p" }).includes("project names"), false, "no project repository, no line");
+  assert.equal(text.includes("has an open pull request"), false, "it never says the base has an open pull request");
+  assert.equal(text.includes("gh stack link <its pull request url>"), true, "the link is named for when both pull requests exist");
+  assert.ok(text.includes("Never rebase it, merge it in, or force-push"), "the worker never rebases the branch it builds on");
+  assert.ok(text.includes("agent-org rebases your branch onto it for you after you stop"), "agent-org does the rebase");
 });
 
 const reviewed = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/806" }];

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/settled-by-pulls.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
-import { hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
+import { rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
 import { terminalOpenHref, runChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
@@ -427,7 +427,7 @@ test("a blocker with an open pull request in the run's planned repository is sta
   const merged = { key: "NBF-3", state: "started", status: "In Review", branch: "nbf-3", pulls: { "https://github.com/acme/nbl-ui-netbox/pull/13": "merged" } };
   const notStarted = { key: "NBF-4", state: "unstarted", status: "Todo", branch: "nbf-4", pulls: {} };
   const waiting = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable, otherRepo, merged, notStarted] });
-  assert.deepEqual(stackedOn(waiting, [waiting]), [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit" }]);
+  assert.deepEqual(stackedOn(waiting, [waiting]), [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }]);
   assert.deepEqual(waitsOn(waiting, [waiting]).map((b) => b.key), ["NBF-2", "NBF-3", "NBF-4"], "another repository's, a merged-only or no pull request still holds it");
   const onlyStackable = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable] });
   assert.equal(runStatus(onlyStackable, [onlyStackable]), "queued", "a run stacked on every blocker it has is ready to start");
@@ -445,7 +445,7 @@ test("a blocker with an open pull request in the run's planned repository is sta
   const done = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [{ ...stackable, state: "completed" }] });
   assert.deepEqual(stackedOn(done, [done]), [], "a blocker that is done is not stacked on: there is nothing to wait for");
   assert.equal(stackNote(stackedOn(waiting, [waiting])), "Stacked on NBF-1 #12");
-  assert.equal(stackNote([{ key: "NBF-1", url: `${draft}/`, repo: "nbl-ui-netbox", branch: "b" }]), "Stacked on NBF-1 #12", "a URL with a trailing slash keeps its number");
+  assert.equal(stackNote([{ key: "NBF-1", url: `${draft}/`, repo: "nbl-ui-netbox", branch: "b", head: null }]), "Stacked on NBF-1 #12", "a URL with a trailing slash keeps its number");
 });
 
 test("A11-77: a blocker the planner said to wait on to merge is never stacked on, holds the run until its pull requests merge, then lets it go", () => {
@@ -479,6 +479,66 @@ test("A11-77: a blocker the planner said to wait on to merge is never stacked on
   assert.deepEqual(stackedOn(mixed, [mixed]).map((b) => b.key), ["NBF-2"], "a blocker the planner did not mark is still stacked on");
   assert.deepEqual(waitsOn(mixed, [mixed]).map((b) => b.key), ["NBF-1", "NBF-3"], "and one with no open pull request still waits");
   assert.equal(waitNote(mixed, [mixed]), "Waits for NBF-1 to merge", "the note names only the blocker the planner marked");
+});
+
+test("A11-116: a run is planned for its planner's repository, else its project's, and a planner's null falls back to the project's", () => {
+  assert.equal(repoOf({ plannedRepo: "control", projectRepo: "agent-org" }), "control", "the planner names another: it wins");
+  assert.equal(repoOf({ plannedRepo: null, projectRepo: "agent-org" }), "agent-org", "the planner names none: the project's is the default");
+  assert.equal(repoOf({ projectRepo: "agent-org" }), "agent-org", "a ticket planned alone has the project's");
+  assert.equal(repoOf({ projectRepo: null }), null, "a project with no repository leaves the worker to choose");
+  assert.equal(repoOf({}), null);
+});
+
+test("A11-116: a run's row names the repository it works in, from its worktrees, its planner, or its project, and the worker chooses only when none names one", () => {
+  assert.equal(repoLabel({ ticket: { key: "A" }, phase: "running", repos: ["agent-org"], projectRepo: "control" }), "agent-org", "the worktrees it made say most");
+  assert.equal(repoLabel({ ticket: { key: "A" }, phase: "queued", plannedRepo: "control", projectRepo: "agent-org" }), "control (planned)");
+  assert.equal(repoLabel({ ticket: { key: "A" }, phase: "queued", plannedRepo: null, projectRepo: "agent-org" }), "agent-org (from its project)", "a planner's null is the project's");
+  assert.equal(repoLabel({ ticket: { key: "A" }, phase: "queued", projectRepo: null }), "the worker chooses the repo", "a project with no repository");
+  assert.equal(repoLabel({ ticket: { key: "A" }, phase: "finished" }), "choosing a repo");
+});
+
+test("A11-116: a blocker whose branch is pushed stacks on it with no pull request, so the run starts before one exists", () => {
+  const head = "a".repeat(40);
+  const pushed = { key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1-fit", head, pulls: {} };
+  const waiting = run({ ticket: { key: "NBF-9" }, phase: "queued", projectRepo: "agent-org", blockers: [pushed] });
+  assert.deepEqual(stackedOn(waiting, [waiting]), [{ key: "NBF-1", url: null, repo: "agent-org", branch: "nbf-1-fit", head }]);
+  assert.deepEqual(waitsOn(waiting, [waiting]), [], "its branch is pushed: nothing holds the run");
+  assert.equal(runStatus(waiting, [waiting]), "queued");
+  assert.equal(stackNote(stackedOn(waiting, [waiting])), "Stacked on NBF-1 (branch `nbf-1-fit`, no pull request yet)");
+  const planned = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "agent-org", projectRepo: null, blockers: [pushed] });
+  assert.equal(runStatus(planned, [planned]), "queued", "a planned repository is enough, with no project default");
+});
+
+test("A11-116: a blocker not pushed, canceled, or in a run with no repository holds the run, and the board says why", () => {
+  const stackable = { key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1-fit", pulls: {} };
+  const waitingFor = (blocker: object, fields: Partial<ViewEntry> = {}) => run({ ticket: { key: "NBF-9" }, phase: "queued", projectRepo: "agent-org", blockers: [blocker as never], ...fields });
+  const notPushed = waitingFor(stackable);
+  assert.equal(runStatus(notPushed, [notPushed]), "blocked");
+  assert.equal(waitNote(notPushed, [notPushed]), "Waits for NBF-1 to push its branch");
+  const canceled = waitingFor({ ...stackable, state: "canceled", head: "b".repeat(40) });
+  assert.equal(runStatus(canceled, [canceled]), "blocked", "a canceled blocker never releases, even with its branch pushed");
+  assert.equal(waitNote(canceled, [canceled]), "NBF-1 was canceled: a person decides");
+  const duplicate = waitingFor({ ...stackable, state: "duplicate", head: "b".repeat(40) });
+  assert.equal(waitNote(duplicate, [duplicate]), "NBF-1 was marked a duplicate: a person decides");
+  const noRepo = waitingFor({ ...stackable, head: "b".repeat(40) }, { projectRepo: null });
+  assert.equal(waitNote(noRepo, [noRepo]), "Waits for NBF-1: no repository is planned for this ticket, so it cannot stack");
+  const merged = waitingFor({ ...stackable, pulls: { "https://github.com/acme/agent-org/pull/3": "merged" } });
+  assert.equal(waitNote(merged, [merged]), "Waits for NBF-1 to complete in the tracker", "its pull requests merged: the tracker decides");
+  const marked = waitingFor({ ...stackable, head: "b".repeat(40) }, { waitMerged: ["NBF-1"] });
+  assert.deepEqual(stackedOn(marked, [marked]), [], "a blocker the planner said to wait on to merge is never stacked on, pushed or not");
+  assert.equal(waitNote(marked, [marked]), "Waits for NBF-1 to merge");
+});
+
+test("A11-116: the board says when a stacked run's branch was rebased, will be, or could not be rebased", () => {
+  const base = { key: "NBF-1", repo: "agent-org", branch: "nbf-1-fit", sha: "1111111aaaaaaaa" };
+  assert.equal(rebaseNote(run({ phase: "finished" })), null, "a run stacked on nothing says nothing");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: base })), null, "a base that has not moved says nothing");
+  assert.equal(rebaseNote(run({ phase: "running", stackBase: { ...base, seen: "2222222bbbbbbbb" } })), "Will be rebased onto NBF-1 when the worker stops");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, seen: "2222222bbbbbbbb" } })), null, "a finished run is rebased by the sweep, not noted");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, sha: "2222222bbbbbbbb", rebased: { from: base.sha, to: "2222222bbbbbbbb", at: 1 } } })),
+    "Rebased onto NBF-1 by agent-org (1111111 → 2222222)");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, failed: { head: "2222222bbbbbbbb", reason: "conflicted in src/pool.ts" } } })),
+    "Rebase onto NBF-1 conflicted in src/pool.ts: a person resolves it");
 });
 
 test("a pull request's repository is read from its GitHub URL, and anything else names none", () => {
