@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The daily retro trends `idleClaimedHours` (a11ign/agent-org#862, a11ign/a11ign#4957, the chairman's headline metric): worker-hours spent idle on a claimed row with no open pull request and no fresh `worker:state` declaration, summed over every claimed row of EVERY declared tracker, over the day. `idleMinutes` counts the gate's idleness while a claimable row existed; this counts the claimed worker's. `idleClaimedHours()` in `idle-claim-incident.ts` is the pure sum and `readIdleClaimedHours()` in `org-retro.ts` is the live read (each tracker's open `claimed` rows, each code repository's open pull requests by `session:` label, the worker declarations and the wake ledger). Any list that cannot be read makes the number `unknown`, never 0. The figure is a floor: an idle run is counted from the latest of the window's start, the claim, the holder's last declaration and its last turn's start. The report prints it with the count of claimed rows and the rows whose claim could not be dated, and the readings file carries it.

@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-The reviewer door's second-review refusal no longer counts a verdict its own account's LATER dismissed review superseded (a11ign#4029, found on agent-org#358). GitHub reads `reviewDecision` from each account's latest non-`COMMENTED` review, so after the door's `APPROVED`, a hand-run `gh pr review --approve` duplicate and its dismissal left the account's latest review `DISMISSED`: `REVIEW_REQUIRED` and `BLOCKED`, while the door still saw a standing approval at an equal patch and refused (exit `3`) the one post that clears it, leaving a push, which voids the verdict, as the only exit. The door now reads `DISMISSED` reviews of any body too, and a verdict by an account whose latest review is a dismissed one does not stand, so ONE fresh approval posts; an `APPROVED` with no later dismissal, a dismissal by another account, and a dismissal that predates the approval are all still refused. The by-hand duplicate itself is not prevented here: the door is the narrow place a rule can refuse, and a hand-run `gh pr review` never passes through it.
