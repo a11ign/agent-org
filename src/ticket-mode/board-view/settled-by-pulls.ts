@@ -100,6 +100,13 @@ export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): strin
   return overlap === null ? null : `Waits on ${overlap.key}${overlap.pull === null ? "" : ` #${overlap.pull}`}: both touch ${overlap.path}`;
 }
 
+/**
+ * The directories each ticket writes into under a name of its own: `.acceptance/<branch>.md` (ADR 0044) and a changeset with a generated name. No
+ * two tickets write the same file there, so they never hold each other (A11-117). `REGION_EXEMPT` in `pr-open-region.ts` names the same two, and a
+ * test keeps the two lists equal, since this file cannot import it.
+ */
+export const SCAFFOLD_DIRS: readonly string[] = [".acceptance/", ".changeset/"];
+
 /** Split a repository-prefixed path, `<repo>:<path>`, into its repository and its path within it. PURE. */
 const repoPath = (path: string): [string, string] => {
   const cut = path.indexOf(":");
@@ -107,25 +114,33 @@ const repoPath = (path: string): [string, string] => {
 };
 
 /**
+ * Whether a repository-prefixed path counts for overlap: it names a file, and it is not the scaffolding of a ticket's own file (see
+ * {@link SCAFFOLD_DIRS}). An empty name is a list cut short, which names no file. PURE.
+ */
+const countsForOverlap = (path: string): boolean => {
+  const [, inRepo] = repoPath(path);
+  return inRepo !== "" && !SCAFFOLD_DIRS.some((dir) => inRepo.startsWith(dir));
+};
+
+/**
  * Whether two repository-prefixed paths touch the same files: they are in one repository, and are equal, or one is a directory (its path ends in
- * `/`) that holds the other. Sibling directories, and a file and a directory it is not in, do not overlap. An empty path is the whole repository:
- * what a pull request holds when the list of its files is cut short, so that what is not listed is not taken for untouched. PURE.
+ * `/`) that holds the other. Sibling directories, and a file and a directory it is not in, do not overlap. PURE.
  */
 export function pathsOverlap(a: string, b: string): boolean {
   const [repoA, pathA] = repoPath(a);
   const [repoB, pathB] = repoPath(b);
   if (repoA !== repoB) return false;
-  if (pathA === "" || pathB === "") return true;
   return pathA === pathB || (pathA.endsWith("/") && pathB.startsWith(pathA)) || (pathB.endsWith("/") && pathA.startsWith(pathB));
 }
 
 /**
  * A run's footprint: the paths its plan says its work touches, and the files each of its open pull requests changes, each in the repository that
- * pull request is in. PURE.
+ * pull request is in, without the scaffolding (see {@link countsForOverlap}). A pull request whose list was cut short holds the files listed, and no
+ * others: the files past those are unknown, not untouched, and an empty name marks them. PURE.
  */
 export function footprintOf(entry: ViewEntry): string[] {
   const changed = openPulls(entry).flatMap(({ url, repo }) => (repo === undefined ? [] : (entry.pullFiles?.[url] ?? []).map((file) => `${repo}:${file}`)));
-  return [...(entry.paths ?? []), ...changed];
+  return [...(entry.paths ?? []), ...changed].filter(countsForOverlap);
 }
 
 /** The tracker's states that end a ticket's work: a run on such a ticket is done, or was dropped, and holds nothing once it is not live. */
@@ -148,6 +163,13 @@ const holds = (entry: ViewEntry): boolean => {
 const exempt = (entry: ViewEntry, other: ViewEntry): boolean =>
   (entry.blockers ?? []).some(({ key }) => key === other.ticket.key) || (other.blockers ?? []).some(({ key }) => key === entry.ticket.key);
 
+/** The counted paths a queued run contests: none for a run that is not queued, is planning or is a review round, since no path holds those. PURE. */
+const contested = (entry: ViewEntry): string[] =>
+  entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined ? [] : (entry.paths ?? []).filter(countsForOverlap);
+
+/** Whether `other` is a run a queued run contests paths with: a run that holds its footprint, other than its own and not sequenced with it. PURE. */
+const competes = (entry: ViewEntry, other: ViewEntry): boolean => other.ticket.key !== entry.ticket.key && holds(other) && !exempt(entry, other);
+
 /** The run a queued run waits on for a shared path: its key, the number of its first open pull request when it has one, and the path both touch. */
 export type OverlapWait = Readonly<{ key: string; pull: string | null; path: string }>;
 
@@ -155,19 +177,34 @@ export type OverlapWait = Readonly<{ key: string; pull: string | null; path: str
  * Why a queued run waits, for a path it shares with a run already held in its repository (see {@link holds}), or null when it waits on none. A
  * run is not held by one of whose blockers it is or that is one of its blockers, since those are sequenced on purpose (`waitsOn`, `stackedOn`).
  * Tickets planned together are worked as separate runs, and are held against each other like any others. A review round, a conflict round and a
- * planning run are never held, and nor is a run with no paths declared. `entries` is the whole queue, or the queue with the runs a pass has just
- * chosen counted as starting, so a batch of starts keeps to one another. PURE.
+ * planning run are never held, and nor is a run with no paths declared, or one whose paths are only scaffolding (see {@link footprintOf}).
+ * `entries` is the whole queue, or the queue with the runs a pass has just chosen counted as starting, so a batch of starts keeps to one another. PURE.
  */
 export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): OverlapWait | null {
-  const mine = entry.paths ?? [];
-  if (entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined || mine.length === 0) return null;
+  const mine = contested(entry);
+  if (mine.length === 0) return null;
   for (const other of entries) {
-    if (other.ticket.key === entry.ticket.key || !holds(other) || exempt(entry, other)) continue;
+    if (!competes(entry, other)) continue;
     const held = footprintOf(other);
     const path = mine.find((own) => held.some((theirs) => pathsOverlap(own, theirs)));
     if (path !== undefined) return { key: other.ticket.key, pull: parsePull(openPulls(other)[0]?.url ?? "")?.number ?? null, path: repoPath(path)[1] };
   }
   return null;
+}
+
+/**
+ * What the board says about a queued run that has paths declared, when a run that holds its repository has a pull request whose list of files was
+ * cut short (A11-117): each such pull request, as "A11-98 #12 lists only part of its changed files, so a clash in the rest shows only as a conflict
+ * on the pull request". It says what is unknown and does not hold the run, so it is never worded as a wait; null when there is none. PURE.
+ */
+export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
+  const mine = contested(entry);
+  if (mine.length === 0) return null;
+  const repos = new Set(mine.map((path) => repoPath(path)[0]));
+  const notes = entries.filter((other) => competes(entry, other)).flatMap((other) => openPulls(other)
+    .filter(({ url, repo }) => repo !== undefined && repos.has(repo) && (other.pullFiles?.[url] ?? []).includes(""))
+    .map(({ url }) => `${other.ticket.key} #${parsePull(url)?.number ?? url} lists only part of its changed files, so a clash in the rest shows only as a conflict on the pull request.`));
+  return notes.length === 0 ? null : notes.join(" ");
 }
 
 /**

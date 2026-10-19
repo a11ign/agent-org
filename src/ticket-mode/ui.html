@@ -245,7 +245,7 @@
 import {
   APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, draftControls, draftStatusText, duplicateLines, draftForm, draftFields,
-  runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, waitNote, waitsOn, workersLabel,
+  runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -558,6 +558,7 @@ function row(e) {
   const waits = waitsOn(e, state.queue.entries);
   const stacked = stackedOn(e, state.queue.entries);
   const mergeNote = waitNote(e, state.queue.entries);
+  const cutNote = cutListNote(e, state.queue.entries);
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
   for (const verb of runActions(e, state.queue.publish)) {
@@ -601,6 +602,7 @@ function row(e) {
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
+      cutNote ? el("div", { className: "meta" }, cutNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
       evidence,
       o && o.edit ? proposal(o.edit) : null,

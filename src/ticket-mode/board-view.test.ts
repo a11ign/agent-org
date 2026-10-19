@@ -4,8 +4,9 @@ import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/settled-by-pulls.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
-import { hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
+import { hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, SCAFFOLD_DIRS, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
 import { terminalOpenHref, runChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
+import { REGION_EXEMPT } from "../pr-open-region.ts";
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
   ({ key, title, status, statusOrder, priority, project });
@@ -722,18 +723,62 @@ test("A11-82: paths overlap only in one repository: equal, or a directory that h
   assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool", "agent-org:src/ticket-mode/pool.ts"), false, "a name is not a prefix of another");
   assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/pool.ts/"), false, "a file is not a directory");
   assert.equal(pathsOverlap("agent-org:src/a.ts", "nbl-ui-netbox:src/a.ts"), false, "different repositories never overlap");
-  assert.equal(pathsOverlap("agent-org:", "agent-org:src/ticket-mode/pool.ts"), true, "an empty path is the whole repository");
-  assert.equal(pathsOverlap("agent-org:docs/", "agent-org:"), true);
-  assert.equal(pathsOverlap("agent-org:", "nbl-ui-netbox:src/a.ts"), false, "and only that repository");
+  assert.equal(pathsOverlap("agent-org:src/ticket-mode/pool.ts", "nbl-ui-netbox:src/ticket-mode/pool.ts"), false, "and only that repository");
 });
 
-test("A11-82: a pull request whose file list was cut short holds its whole repository, and no other", () => {
+test("A11-117: a pull request whose file list was cut short holds only the files listed, so a run that touches none of them is not held", () => {
   const url = "https://github.com/a11ign/agent-org/pull/3";
   const cut = holderOf("APP-1", { phase: "finished", outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullFiles: { [url]: ["src/a.ts", ""] } });
-  assert.deepEqual(footprintOf(cut), ["agent-org:src/a.ts", "agent-org:"]);
+  assert.deepEqual(footprintOf(cut), ["agent-org:src/a.ts"], "the empty name is no file");
   const waiting = waitingOn(["agent-org:docs/unrelated.md"]);
-  assert.deepEqual(overlapWait(waiting, [cut, waiting]), { key: "APP-1", pull: "3", path: "docs/unrelated.md" }, "a path it was never listed in is held too");
+  assert.equal(overlapWait(waiting, [cut, waiting]), null, "a path it was not listed in is not held: the files past the list are unknown, not untouched");
+  assert.equal(cutListNote(waiting, [cut, waiting]), "APP-1 #3 lists only part of its changed files, so a clash in the rest shows only as a conflict on the pull request.");
+  const overlapping = waitingOn(["agent-org:src/a.ts"]);
+  assert.deepEqual(overlapWait(overlapping, [cut, overlapping]), { key: "APP-1", pull: "3", path: "src/a.ts" }, "a file it lists still holds the run");
+  assert.equal(cutListNote(overlapping, [cut, overlapping]), cutListNote(waiting, [cut, waiting]), "the note is the same whatever the path");
   assert.equal(overlapWait(waitingOn(["nbl-ui-netbox:docs/unrelated.md"]), [cut]), null, "another repository is not");
+  assert.equal(cutListNote(waitingOn(["nbl-ui-netbox:docs/unrelated.md"]), [cut]), null, "and its cut list is no note for that repository");
+  assert.equal(cutListNote(waitingOn([]), [cut]), null, "a run with no paths declared has no note");
+  assert.equal(cutListNote(waitingOn(["agent-org:.acceptance/admin~a11-2.md"]), [cut]), null, "a run whose paths are only scaffolding contests nothing, so it has no note");
+  assert.equal(pathsOverlap("agent-org:", "agent-org:src/a.ts"), false, "an empty name is no path, so it overlaps nothing");
+});
+
+test("A11-117: a run's footprint and its hold leave out the scaffolding of .acceptance/ and .changeset/, in the plan and in its pull requests, and keep the source", () => {
+  const url = "https://github.com/a11ign/agent-org/pull/4";
+  const run = holderOf("APP-1", {
+    phase: "finished",
+    paths: ["agent-org:.acceptance/", "agent-org:.acceptance/admin~a11-1.md", "agent-org:.changeset/", "agent-org:.changeset/brave-fox.md", "agent-org:src/a.ts", "agent-org:docs/.acceptance/x.md"],
+    outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullFiles: { [url]: [".acceptance/admin~a11-1.md", ".changeset/brave-fox.md", "src/b.ts"] },
+  });
+  assert.deepEqual(footprintOf(run), ["agent-org:src/a.ts", "agent-org:docs/.acceptance/x.md", "agent-org:src/b.ts"], "only the scaffolding at the root is left out");
+  const scaffoldOnly = waitingOn([".acceptance/", ".changeset/", ".acceptance/admin~a11-2.md", ".changeset/calm-owl.md"].map((path) => `agent-org:${path}`));
+  assert.equal(overlapWait(scaffoldOnly, [run, scaffoldOnly]), null, "a run whose paths are only scaffolding is not held, though the other run holds the same directories");
+  assert.equal(overlapWait(waitingOn(["agent-org:.acceptance/admin~a11-1.md"]), [run]), null, "a ticket's own file is not held, though the other run listed it");
+  assert.equal(overlapWait(waitingOn(["agent-org:src/b.ts"]), [run])?.path, "src/b.ts", "a source file a pull request changes holds the run that touches it");
+});
+
+test("A11-117: the scaffolding directories are the two the Region exempts, so the two lists cannot drift", () => {
+  assert.deepEqual(SCAFFOLD_DIRS, [".acceptance/", ".changeset/"]);
+  assert.deepEqual(SCAFFOLD_DIRS.map((dir) => REGION_EXEMPT.some(({ entry }) => entry === dir)), [true, true]);
+});
+
+test("A11-117: a shared file a run lists still holds the run beside it, and the note names that file", () => {
+  const url = "https://github.com/a11ign/agent-org/pull/7";
+  const live = holderOf("APP-1", { phase: "finished", paths: ["agent-org:eslint.config.ts"], outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullFiles: { [url]: [] } });
+  const waiting = waitingOn(["agent-org:eslint.config.ts"]);
+  assert.equal(waitNote(waiting, [live, waiting]), "Waits on APP-1 #7: both touch eslint.config.ts");
+  assert.equal(runStatus(waiting, [live, waiting]), "blocked");
+});
+
+test("A11-117: two tickets that each list .acceptance/, .changeset/ and eslint.config.ts are held only by the shared file, and the note names it", () => {
+  const url = "https://github.com/a11ign/agent-org/pull/7";
+  const paths = ["agent-org:.acceptance/", "agent-org:.changeset/", "agent-org:eslint.config.ts"];
+  const live = holderOf("APP-1", { phase: "finished", paths, outcome: { kind: "draft-pr", prs: [pulled(url)] }, pullFiles: { [url]: [] } });
+  const waiting = waitingOn(paths);
+  assert.equal(waitNote(waiting, [live, waiting]), "Waits on APP-1 #7: both touch eslint.config.ts", "named as the shared file, never the directory");
+  assert.equal(runStatus(waiting, [live, waiting]), "blocked");
+  const unshared = waitingOn(["agent-org:.acceptance/", "agent-org:.changeset/", "agent-org:src/a.ts"]);
+  assert.equal(waitNote(unshared, [live, unshared]), null, "the same directories and no shared file: it starts");
 });
 
 test("A11-82: a run's footprint is its plan's paths and the files each open pull request changes, in that pull request's repository", () => {
