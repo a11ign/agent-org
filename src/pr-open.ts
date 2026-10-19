@@ -69,6 +69,7 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { launchGate } from "./board-snapshot-scope.ts";
 import { worktreeOwner } from "./worktree-owner.ts";
 import { isLiveSession } from "./arm-pr.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { APP_ROLE_LANE_OWNER, laneAuthorshipRefusal, loadLanes, reviewOnlyPathsIn } from "./lane-ownership.ts";
 import { declarationRefusal } from "./hand-fix-ledger.ts";
 import { referencesInReason } from "./merged-row-open-incident.ts";

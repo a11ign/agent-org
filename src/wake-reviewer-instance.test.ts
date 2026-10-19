@@ -40,6 +40,7 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REMOVAL_LOG_ENV } from "./worktree-removal.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./packaging/started-pane.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
+import { testEach } from "./lib/test-each.ts";
 
 // #2827: `removeReviewCheckout` now writes #2782's removal log, and a test must not write the host's real record.
 process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("review-removal-log-"), "worktree-removals");
@@ -495,17 +496,41 @@ test("#2498 (1a): the dependency step runs AFTER the tree exists and BEFORE the 
   assert.equal(w.events.filter((e) => e.startsWith("link ")).length, 2, "every head-changing push re-links: the PR may add a package");
 });
 
-test("#2498 (1b): a tree whose dependencies could NOT be prepared REFUSES the order -- no pane, no prompt, the reason said", () => {
+type UnpreparedTree = {
+  w: ReturnType<typeof world>;
+  out: ReturnType<typeof deliver>;
+  idle: ReturnType<typeof world>;
+  again: ReturnType<typeof deliver>;
+  control: ReturnType<typeof world>;
+};
+
+const UNPREPARED_TREE_CHECKS: { name: string; check: (s: UnpreparedTree) => void }[] = [
+  { name: "sends nothing", check: ({ out }) => assert.deepEqual(out.sent, []) },
+  {
+    name: "refuses with the reason",
+    check: ({ out }) => assert.match(out.refused[0], /no review dependencies for PR #2398 at \/reviews-root\/reviewer-2398 \(.*node_modules does not exist/),
+  },
+  {
+    name: "opens no pane",
+    check: ({ w }) => assert.equal(w.h.said("workspace create").length, 0, "the pane never opens on a tree that cannot run its Acceptance"),
+  },
+  {
+    name: "does not prompt an existing instance",
+    check: ({ again, idle }) => assert.deepEqual([again.sent, idle.h.said("agent prompt")], [[], []], "an EXISTING instance is not prompted onto such a tree either"),
+  },
+  {
+    name: "the same order is placed when they can",
+    check: ({ control }) => assert.equal(deliver([reviewOrder(2398)], agents({}), ROSTER, control.deps).sent.length, 1, "CONTROL: the same order is placed when they can"),
+  },
+];
+
+testEach("#2498 (1b): a tree whose dependencies could NOT be prepared REFUSES the order -- no pane, no prompt, the reason said", UNPREPARED_TREE_CHECKS, (c) => {
   const w = world({ failLink: true });
   const out = deliver([reviewOrder(2398)], agents({}), ROSTER, w.deps);
-  assert.deepEqual(out.sent, []);
-  assert.match(out.refused[0], /no review dependencies for PR #2398 at \/reviews-root\/reviewer-2398 \(.*node_modules does not exist/);
-  assert.equal(w.h.said("workspace create").length, 0, "the pane never opens on a tree that cannot run its Acceptance");
   const idle = world({ failLink: true });
   const again = deliver([reviewOrder(2398)], agents({ "reviewer-2398": "idle" }), ROSTER, idle.deps);
-  assert.deepEqual([again.sent, idle.h.said("agent prompt")], [[], []], "an EXISTING instance is not prompted onto such a tree either");
   const control = world();
-  assert.equal(deliver([reviewOrder(2398)], agents({}), ROSTER, control.deps).sent.length, 1, "CONTROL: the same order is placed when they can");
+  c.check({ w, out, idle, again, control });
 });
 
 test("#2498 (1c): `linkReviewDependencies` builds the HYBRID `node_modules` -- third-party and `.bin` to the tick's checkout, "
@@ -1066,11 +1091,17 @@ test("#1348 (2): `ensureReviewerToken` MINTS into the tree's token directory thr
   assert.deepEqual(readdirSync(join(tree, "node_modules/.cache/app-tokens")), ["reviewer.token"], "the scratch directory is gone");
 });
 
-test("#1348 (2b): a token with more than the refresh margin left is KEPT -- no mint -- and a stale one is replaced", () => {
-  const dir = tmpDirForFile("reviewer-token-keep-");
+/** A scratch directory holding a checkout whose app-token cache directory exists: the arrange of the token cases. */
+function tokenCacheIn(prefix: string) {
+  const dir = tmpDirForFile(prefix);
   const tree = join(dir, "tree");
   const tokens = join(tree, "node_modules/.cache/app-tokens");
   mkdirSync(tokens, { recursive: true });
+  return { dir, tree, tokens };
+}
+
+test("#1348 (2b): a token with more than the refresh margin left is KEPT -- no mint -- and a stale one is replaced", () => {
+  const { dir, tree, tokens } = tokenCacheIn("reviewer-token-keep-");
   const stub = stubMinter(dir);
   writeFileSync(join(tokens, "reviewer.token"), EXPIRES_IN(REVIEWER_TOKEN_REFRESH_SECONDS + 60));
   assert.equal(ensureReviewerToken(tree, APP, { now: NOW_MS, script: stub.script }), null);
@@ -1083,10 +1114,7 @@ test("#1348 (2b): a token with more than the refresh margin left is KEPT -- no m
 });
 
 test("#1348 (2c): a FAILED refresh keeps the token that is there, and says why", () => {
-  const dir = tmpDirForFile("reviewer-token-fail-");
-  const tree = join(dir, "tree");
-  const tokens = join(tree, "node_modules/.cache/app-tokens");
-  mkdirSync(tokens, { recursive: true });
+  const { dir, tree, tokens } = tokenCacheIn("reviewer-token-fail-");
   writeFileSync(join(tokens, "reviewer.token"), EXPIRES_IN(10));
   const why = ensureReviewerToken(tree, APP, { now: NOW_MS, script: stubMinter(dir, { fail: true }).script });
   assert.match(why ?? "", /could not be minted: .*stub refusal/);

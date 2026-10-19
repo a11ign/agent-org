@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { withClosingRowOwners } from "./work-gate/pr-owners.ts";
+import { testEach } from "./lib/test-each.ts";
 
 type Fixture = Record<string, unknown>;
 
@@ -41,25 +42,49 @@ test("an unlabelled red PR whose closed row holds one live session is addressed 
  * #5201: a PR with NO label whose closing row is not held is OWNER-GONE, to `product-manager`, not "nobody could be named": the row it
  * closes is open and unheld, or closed and absent from the open list. Only a row list that was not read, or a PR naming no row, is still `ceo`.
  */
-test("the same PR whose closed row nobody holds is owner-gone to product-manager, a released claim too; no read at all or no row named still falls to ceo", () => {
-  const ownerGone = (openRows: Fixture[], closes = [2875]) => {
-    const [order] = failingOrders([pr(closes)], openRows);
-    assert.equal(order.session, "product-manager");
-    assert.equal(order.causeKey, "product-manager/pr-checks-failing/pr-2880/24b0e94f");
-    assert.doesNotMatch(order.prompt, /NOBODY COULD BE NAMED/);
-  };
-  ownerGone([row(2875, "in-progress")]); // open, claimed by nobody (#5201)
-  ownerGone([row(2875, "session:worker-2875")]); // a released claim: the label outlived `in-progress` (#5201)
-  ownerGone([claimed(9999, "worker-9999")]); // a live row, but not the one this PR closes: the one it closes is not open, so closed (#5201)
+type Order = ReturnType<typeof failingOrders>[number];
 
-  const fallsBack = (openRows: Fixture[], closes = [2875]) => {
-    const [order] = failingOrders([pr(closes)], openRows);
-    assert.equal(order.session, "ceo");
-    assert.equal(order.causeKey, "ceo/pr-checks-failing/pr-2880/24b0e94f");
-    assert.match(order.prompt, /NOBODY COULD BE NAMED/);
-  };
-  fallsBack([]); // the rows were not read
-  fallsBack([claimed(2875, "worker-2875")], []); // GitHub resolved no closing reference, and the branch names no row
+const OWNER_GONE = (order: Order) => {
+  assert.equal(order.session, "product-manager");
+  assert.equal(order.causeKey, "product-manager/pr-checks-failing/pr-2880/24b0e94f");
+  assert.doesNotMatch(order.prompt, /NOBODY COULD BE NAMED/);
+};
+
+const FALLS_BACK = (order: Order) => {
+  assert.equal(order.session, "ceo");
+  assert.equal(order.causeKey, "ceo/pr-checks-failing/pr-2880/24b0e94f");
+  assert.match(order.prompt, /NOBODY COULD BE NAMED/);
+};
+
+const FALLS_BACK_NOBODY_NAMED = (order: Order) => {
+  assert.equal(order.session, "ceo");
+  assert.match(order.prompt, /NOBODY COULD BE NAMED/);
+};
+
+const CLOSED_ROW_ROUTES: { name: string; openRows: Fixture[]; closes?: number[]; check: (order: Order) => void }[] = [
+  { name: "an open row claimed by nobody is owner-gone (#5201)", openRows: [row(2875, "in-progress")], check: OWNER_GONE },
+  {
+    name: "a released claim is owner-gone (#5201)",
+    openRows: [row(2875, "session:worker-2875")],
+    check: OWNER_GONE,
+  },
+  {
+    name: "a live row that is not the one this PR closes is owner-gone (#5201)",
+    openRows: [claimed(9999, "worker-9999")],
+    check: OWNER_GONE,
+  },
+  { name: "the rows were not read fall to ceo", openRows: [], check: FALLS_BACK },
+  {
+    name: "no closing reference falls to ceo",
+    openRows: [claimed(2875, "worker-2875")],
+    closes: [],
+    check: FALLS_BACK,
+  },
+];
+
+testEach("the same PR whose closed row nobody holds is owner-gone to product-manager, a released claim too; no read at all or no row named still falls to ceo", CLOSED_ROW_ROUTES, (c) => {
+  const [order] = failingOrders([pr(c.closes ?? [2875])], c.openRows);
+  c.check(order);
 });
 
 test("two rows naming two different sessions are a question, so ceo keeps it; two naming the SAME one are an answer", () => {
@@ -99,35 +124,68 @@ test("the NOT CONVINCED order takes the row's session too, and keeps ceo when th
  */
 const onBranch = (headRefName: string, ...labels: string[]) => ({ ...pr([], ...labels), headRefName });
 
-test("a PR with no label and no closing row, on a branch whose suffix names a held row, goes to that row's session", () => {
+const SUFFIX_ROW_CHECKS: { name: string; check: (order: Order, rest: Order[]) => void }[] = [
+  { name: "one order", check: (_order, rest) => assert.equal(rest.length, 0) },
+  { name: "to the row's session", check: (order) => assert.equal(order.session, "worker-2892") },
+  {
+    name: "under a causeKey carrying the session",
+    check: (order) => assert.equal(order.causeKey, "worker-2892/pr-checks-failing/pr-2880/24b0e94f"),
+  },
+  {
+    name: "names the branch and the row it was claimed for",
+    check: (order) => assert.match(order.prompt, /branch `agent\/finish-the-move-to-2892` was claimed for row #2892, which is held by you/),
+  },
+];
+
+testEach("a PR with no label and no closing row, on a branch whose suffix names a held row, goes to that row's session", SUFFIX_ROW_CHECKS, (c) => {
   const [order, ...rest] = failingOrders([onBranch("agent/finish-the-move-to-2892")], [claimed(2892, "worker-2892")]);
-  assert.equal(rest.length, 0);
-  assert.equal(order.session, "worker-2892");
-  assert.equal(order.causeKey, "worker-2892/pr-checks-failing/pr-2880/24b0e94f");
-  assert.match(order.prompt, /branch `agent\/finish-the-move-to-2892` was claimed for row #2892, which is held by you/);
+  c.check(order, rest);
 });
 
 /** #5201: a suffix naming a row nobody holds (open, or closed and absent from the open list) is owner-gone, `product-manager`, as above. */
-test("a branch whose suffix names a row nobody holds is owner-gone to product-manager; an unread row list, no numeric suffix or no `agent/` branch still falls to ceo", () => {
-  const ownerGone = (headRefName: string, openRows: Fixture[]) => {
-    const [order] = failingOrders([onBranch(headRefName)], openRows);
-    assert.equal(order.session, "product-manager");
-    assert.equal(order.causeKey, "product-manager/pr-checks-failing/pr-2880/24b0e94f");
-    assert.doesNotMatch(order.prompt, /NOBODY COULD BE NAMED/);
-  };
-  ownerGone("agent/finish-the-move-to-2892", [claimed(9999, "worker-9999")]); // a held row, but not the suffix's: the suffix's is closed
-  ownerGone("agent/finish-the-move-to-2892", [row(2892, "session:worker-2892")]); // released: the label outlived `in-progress`
-  ownerGone("agent/finish-the-move-to-2892", [row(2892, "in-progress")]); // claimed by nobody
+const BRANCH_ROUTES: { name: string; headRefName: string; openRows: Fixture[]; check: (order: Order) => void }[] = [
+  {
+    name: "a held row that is not the suffix's is owner-gone",
+    headRefName: "agent/finish-the-move-to-2892",
+    openRows: [claimed(9999, "worker-9999")],
+    check: OWNER_GONE,
+  },
+  {
+    name: "a released claim on the suffix's row is owner-gone",
+    headRefName: "agent/finish-the-move-to-2892",
+    openRows: [row(2892, "session:worker-2892")],
+    check: OWNER_GONE,
+  },
+  {
+    name: "an unclaimed suffix row is owner-gone",
+    headRefName: "agent/finish-the-move-to-2892",
+    openRows: [row(2892, "in-progress")],
+    check: OWNER_GONE,
+  },
+  { name: "the rows were not read fall to ceo", headRefName: "agent/finish-the-move-to-2892", openRows: [], check: FALLS_BACK_NOBODY_NAMED },
+  {
+    name: "no numeric suffix falls to ceo",
+    headRefName: "agent/finish-the-move-to",
+    openRows: [claimed(2892, "worker-2892")],
+    check: FALLS_BACK_NOBODY_NAMED,
+  },
+  {
+    name: "a number that is not the suffix falls to ceo",
+    headRefName: "agent/2892-finish-the-move",
+    openRows: [claimed(2892, "worker-2892")],
+    check: FALLS_BACK_NOBODY_NAMED,
+  },
+  {
+    name: "a branch that is not agent/ falls to ceo",
+    headRefName: "feature/finish-the-move-to-2892",
+    openRows: [claimed(2892, "worker-2892")],
+    check: FALLS_BACK_NOBODY_NAMED,
+  },
+];
 
-  const fallsBack = (headRefName: string, openRows: Fixture[]) => {
-    const [order] = failingOrders([onBranch(headRefName)], openRows);
-    assert.equal(order.session, "ceo");
-    assert.match(order.prompt, /NOBODY COULD BE NAMED/);
-  };
-  fallsBack("agent/finish-the-move-to-2892", []); // the rows were not read
-  fallsBack("agent/finish-the-move-to", [claimed(2892, "worker-2892")]); // no numeric suffix
-  fallsBack("agent/2892-finish-the-move", [claimed(2892, "worker-2892")]); // a number that is not the SUFFIX
-  fallsBack("feature/finish-the-move-to-2892", [claimed(2892, "worker-2892")]); // not an `agent/` branch
+testEach("a branch whose suffix names a row nobody holds is owner-gone to product-manager; an unread row list, no numeric suffix or no `agent/` branch still falls to ceo", BRANCH_ROUTES, (c) => {
+  const [order] = failingOrders([onBranch(c.headRefName)], c.openRows);
+  c.check(order);
 });
 
 test("a closing row naming a different session than the suffix keeps the closing row's; a closing split stays a question", () => {

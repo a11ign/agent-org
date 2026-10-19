@@ -33,6 +33,7 @@ import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
 import { stateFingerprint } from "./event.ts";
 import { STATUS, createLedger, describeError } from "./ledger.ts";
 import { createGhReaders, parsePlaceholders, readPlaceholders } from "./placeholders.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import type { Readers } from "./placeholders.ts";
 import { assertReadOnlyGh, assertReadOnlySystemctl } from "./reply-cli.ts";
 import { checkMessage } from "./record.ts";

@@ -23,6 +23,7 @@ import { postOutsideVerdictsOf } from "./wake/holds-as-fyi.ts";
 import { DEPENDENCY_BOT_LOGIN } from "./dependency-bot-login.ts";
 import { reviewerDoorPath } from "./reviewer-door-path.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
+import { testEach } from "./lib/test-each.ts";
 import {
   AUTOMATION_WRITER_LOGIN, INSIDE, OUTSIDE, REVIEWER_GH_CONFIG_DIR, declaredIdentities, isDeclaredLogin, outsidePrompt, outsideReviewArgs,
   outsideReviewerEnvironment,
@@ -202,18 +203,14 @@ test("#1311: the order path carries the trust: a fork is OUTSIDE, a same-reposit
 
 // --- the spawn path: deliver starts the reviewer, through recorders -----------------------------------------------
 
-test("#1311 (fork): a fork pull request is started READ-ONLY: codex sandboxed read-only, no account in the pane, no dependency link, a read-only prompt", () => {
+testEach("#1311 (fork): a fork pull request is started READ-ONLY: codex sandboxed read-only, no account in the pane, no dependency link, a read-only prompt", [
+  { name: "fork pull request", number: 7100, crossRepository: true, login: "worker-1" },
+  { name: "same repository, undeclared human: read-only too, the same as a fork", number: 7101, crossRepository: false, login: "mallory-human" },
+], (c) => {
   const w = world();
-  const out = deliver([reviewOrderFor(pullRequest(7100, { crossRepository: true, login: "worker-1" }))], agents({}), ROSTER, w.deps);
+  const out = deliver([reviewOrderFor(pullRequest(c.number, { crossRepository: c.crossRepository, login: c.login }))], agents({}), ROSTER, w.deps);
   assert.equal(out.sent.length, 1, `started; refused: ${JSON.stringify(out.refused)}`);
-  assertOutsideStart(w, "reviewer-7100", 7100);
-});
-
-test("#1311 (same repository, undeclared human): read-only too, the same as a fork", () => {
-  const w = world();
-  const out = deliver([reviewOrderFor(pullRequest(7101, { crossRepository: false, login: "mallory-human" }))], agents({}), ROSTER, w.deps);
-  assert.equal(out.sent.length, 1, `started; refused: ${JSON.stringify(out.refused)}`);
-  assertOutsideStart(w, "reviewer-7101", 7101);
+  assertOutsideStart(w, `reviewer-${c.number}`, c.number);
 });
 
 /** What an outside start must show, all of it: the recorder is the only witness, so each claim reads one recorded call. */

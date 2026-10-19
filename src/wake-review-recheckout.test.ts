@@ -59,6 +59,14 @@ function fakeCheckout({ failFetch = false } = {}) {
 const treeOf = (co: ReturnType<typeof fakeCheckout>, pr: number) => co.trees.get(`${REVIEW_ROOT}/reviewer-${pr}`);
 
 /** The first order, as the tick generates it, brings the instance up at the FIRST head. */
+/** A fake checkout with the reviewer of `pr` at its first head, and the pull request's head pushed. */
+function checkoutAtFirstHead(pr: number) {
+  const co = fakeCheckout();
+  reviewerAtFirstHead(pr, co);
+  co.push(pr);
+  return co;
+}
+
 function reviewerAtFirstHead(pr: number, co: ReturnType<typeof fakeCheckout>) {
   const sent: string[][] = [];
   const pane = startedPanes();
@@ -89,9 +97,7 @@ test("#2771 (1a): a tick-delivered order about an ALREADY-LIVE reviewer's own pu
 
 test("#2771 (1c) / #3031: a direct prompt that is QUEUED (the reviewer is mid-turn) moves no tree then; the tick delivers it once the "
   + "reviewer is idle, re-pointing first", () => {
-  const co = fakeCheckout();
-  reviewerAtFirstHead(2754, co);
-  co.push(2754);
+  const co = checkoutAtFirstHead(2754);
   const before = co.events.length;
   const dir = mkdtempSync(join(tmpdir(), "recheckout-"));
   try {
@@ -112,9 +118,7 @@ test("#2771 (1c) / #3031: a direct prompt that is QUEUED (the reviewer is mid-tu
 });
 
 test("#2771 (1b): a DIRECT `prompt:session` to an idle reviewer re-points BEFORE the prompt is typed, so the text and the tree agree", () => {
-  const co = fakeCheckout();
-  reviewerAtFirstHead(2754, co);
-  co.push(2754);
+  const co = checkoutAtFirstHead(2754);
   const typed: string[] = [];
   const run = (args: string[]) => { co.events.push(`herdr ${args.slice(2, 4).join(" ")}`); typed.push(args[args.length - 1]); return "{}"; };
   const dir = mkdtempSync(join(tmpdir(), "recheckout-"));
@@ -140,9 +144,7 @@ test("#2771 (1d): a refused re-point does NOT swallow the order -- it goes with 
 
 test("#2771 (2): NEGATIVE CONTROL -- an order for another pull request's reviewer, or for a session that is no reviewer, touches "
   + "no tree", () => {
-  const co = fakeCheckout();
-  reviewerAtFirstHead(2754, co);
-  co.push(2754);
+  const co = checkoutAtFirstHead(2754);
   const before = co.events.length;
   // reviewer-2754 is asked about PR 2755: refused, and the refusal is BEFORE any git.
   const out = deliver([{ session: "reviewer-2754", cause: "draft-awaiting-verdict", causeKey: "reviewer-2754/draft-awaiting-verdict/pr-2755/abc12345",

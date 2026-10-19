@@ -12,6 +12,7 @@ import {
   compareReadings, dailyMeans, isWake, keyInstanceRows, matchLedger, measure, parseArgs, parseLedger, parseTranscript, readInstances, readMergedPulls, renderReading, reviewerTarget, rowsClosedBy, workerRowFor,
 } from "./wakes-per-row.ts";
 import * as everyTracker from "./wakes-per-row.ts"; // the readers #4080 adds, by namespace so a run without them fails each test and not the file's import
+import { testEach } from "./lib/test-each.ts";
 
 const at = (iso: any) => Date.parse(iso);
 const WINDOW = { from: at("2026-10-04T00:00:00Z"), to: at("2026-10-04T13:00:00Z") };
@@ -71,22 +72,29 @@ const run = (overrides = {}) => measure({
 });
 
 // ---- (1) the worked example ----------------------------------------------------------------------------------------------------------------------------
-test("worker-3390: 3 wakes and 1 compaction, 2 after the pull request opened, 1 after it merged", () => {
-  const transcript = parseTranscript(worker3390Transcript(), "w3390.jsonl");
-  assert.equal(transcript.ok, true);
-  assert.equal(transcript.wakes.length, 3);
-  assert.equal(transcript.compactions, 1);
-  assert.equal(transcript.session, "worker-3390");
+type ParsedTranscript = Extract<ReturnType<typeof parseTranscript>, { ok: true }>;
+type Worked = { transcript: ParsedTranscript; reading: ReturnType<typeof run> };
 
-  const reading = run();
-  assert.equal(reading.mergedRows, 1);
-  assert.equal(reading.attributedWakes, 3);
-  assert.equal(reading.wakesPerRow.mean, 3);
-  assert.equal(reading.afterOpened, 2);
-  assert.equal(reading.afterMerged, 1);
-  assert.equal(reading.compactions, 1);
-  assert.deepEqual(reading.byCause, { "ready-row-unclaimed": 1, "blocker-cleared": 1, "claim-stalled": 1 });
-  assert.equal(reading.remainder.total, 0);
+const WORKED_EXAMPLE_CHECKS: { name: string; check: (w: Worked) => void }[] = [
+  { name: "the transcript parses", check: ({ transcript }) => assert.equal(transcript.ok, true) },
+  { name: "three wakes", check: ({ transcript }) => assert.equal(transcript.wakes.length, 3) },
+  { name: "one compaction in the transcript", check: ({ transcript }) => assert.equal(transcript.compactions, 1) },
+  { name: "the worker's session", check: ({ transcript }) => assert.equal(transcript.session, "worker-3390") },
+  { name: "one merged row", check: ({ reading }) => assert.equal(reading.mergedRows, 1) },
+  { name: "three attributed wakes", check: ({ reading }) => assert.equal(reading.attributedWakes, 3) },
+  { name: "three wakes per row on average", check: ({ reading }) => assert.equal(reading.wakesPerRow.mean, 3) },
+  { name: "two wakes after the pull request opened", check: ({ reading }) => assert.equal(reading.afterOpened, 2) },
+  { name: "one wake after it merged", check: ({ reading }) => assert.equal(reading.afterMerged, 1) },
+  { name: "one compaction in the reading", check: ({ reading }) => assert.equal(reading.compactions, 1) },
+  {
+    name: "wakes by cause",
+    check: ({ reading }) => assert.deepEqual(reading.byCause, { "ready-row-unclaimed": 1, "blocker-cleared": 1, "claim-stalled": 1 }),
+  },
+  { name: "no remainder", check: ({ reading }) => assert.equal(reading.remainder.total, 0) },
+];
+
+testEach("worker-3390: 3 wakes and 1 compaction, 2 after the pull request opened, 1 after it merged", WORKED_EXAMPLE_CHECKS, (c) => {
+  c.check({ transcript: parseTranscript(worker3390Transcript(), "w3390.jsonl") as ParsedTranscript, reading: run() });
 });
 
 test("worker-3390: the two wakes that named a cause already false when typed are counted as stale, the first order is not", () => {

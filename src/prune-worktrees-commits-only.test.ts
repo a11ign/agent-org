@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { testEach } from "./lib/test-each.ts";
 
 const BASE = realpathSync(mkdtempSync(join(tmpdir(), "prune-commits-only-")));
 after(() => { rmSync(BASE, { recursive: true, force: true }); });
@@ -61,6 +62,7 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 const NOBODY_CLAIMS = () => ({ refused: false as const });
 const OPEN = () => ({ closed: false as const, reason: "row is open, so the stamp is not stale (stub)" });
 const NEVER_ASKED = () => { assert.fail("must not be asked for a tree that cannot be removed anyway"); };
+const UNWRITABLE_LOG = () => { throw new Error("ENOSPC (simulated)"); };
 
 /** Every fixture was built moments ago, so "past the ten-minute command window (#220)" is a `now` that far ahead, standing in for time passing. */
 const QUIET = () => Date.now() + ACTIVITY_WINDOW_MS + 60_000;
@@ -144,15 +146,33 @@ test("#4620 COMMITS CONTROL 2/3: the same tree on a branch whose ref is MISSING 
   assert.deepEqual(salvageRefs(primary), []);
 });
 
-test("#4620 COMMITS CONTROL 2b/3: a branch ref that reads back as a DIFFERENT commit than HEAD is not the work's ref either", () => {
-  const primary = buildPrimary();
-  const path = committedTree(primary, "wt-commits-e");
-  const run = (cmd: string, args: string[], opts: { cwd: string }) =>
-    args[0] === "rev-parse" && args.includes("refs/heads/agent/wt-commits-e^{commit}") ? `${primary.tip}\n` : realRun(cmd, args, opts);
-  const report = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, run });
+testEach("#4620 COMMITS CONTROL 2b/3: a branch ref that reads back as a DIFFERENT commit than HEAD is not the work's ref either", [
+  {
+    name: "branch ref reads back as another commit",
+    arrange: () => {
+      const primary = buildPrimary();
+      return { primary, path: committedTree(primary, "wt-commits-e") };
+    },
+    run: (primary: Primary) => (cmd: string, args: string[], opts: { cwd: string }) =>
+      args[0] === "rev-parse" && args.includes("refs/heads/agent/wt-commits-e^{commit}") ? `${primary.tip}\n` : realRun(cmd, args, opts),
+    reason: /refs\/heads\/agent\/wt-commits-e reads [0-9a-f]{12}, not HEAD [0-9a-f]{12}/,
+  },
+  {
+    name: "salvage ref reads back as another commit",
+    // `update-ref` "succeeds" and the read-back answers a different commit: the shape of a ref store that lies.
+    arrange: () => editedTree("wt-edit-c", "one\nanother edit\n"),
+    run: (primary: Primary) => (cmd: string, args: string[], opts: { cwd: string }) => {
+      if (args[0] === "rev-parse" && args.some((a) => a.startsWith(SALVAGE_REF_PREFIX))) return `${primary.tip}\n`;
+      return realRun(cmd, args, opts);
+    },
+    reason: /reads back as .*, not /,
+  },
+], (c) => {
+  const { primary, path } = c.arrange();
+  const report = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, run: c.run(primary) });
   assert.deepEqual(report.removed, []);
   assert.ok(existsSync(path));
-  assert.match(report.dirty[0].reason ?? "", /refs\/heads\/agent\/wt-commits-e reads [0-9a-f]{12}, not HEAD [0-9a-f]{12}/);
+  assert.match(report.dirty[0].reason ?? "", c.reason);
 });
 
 test("#4620 COMMITS CONTROL 3/3: a DETACHED tree whose commits no ref holds stays DIRTY (only its edits are pinned, never its history)", () => {
@@ -195,9 +215,7 @@ test("#4620 SALVAGE: a tree with a tracked edit is removed only after refs/salva
 });
 
 test("#4620 SALVAGE CONTROL 1/4: a FAILED update-ref leaves the tree standing, the edit in it, and no ref", () => {
-  const primary = buildPrimary();
-  const path = tree(primary, "wt-edit-b");
-  writeFileSync(join(path, "app.txt"), "one\nprecious edit\n");
+  const { primary, path } = editedTree("wt-edit-b", "one\nprecious edit\n");
   const run = (cmd: string, args: string[], opts: { cwd: string }) => {
     if (args[0] === "update-ref") throw new Error("simulated: cannot lock ref");
     return realRun(cmd, args, opts);
@@ -211,36 +229,44 @@ test("#4620 SALVAGE CONTROL 1/4: a FAILED update-ref leaves the tree standing, t
   assert.match(report.dirty[0].reason ?? "", /could not be pinned under refs\/salvage\/ and read back \(simulated: cannot lock ref\)/);
 });
 
-test("#4620 SALVAGE CONTROL 2/4: a ref that does not READ BACK as the salvage commit is not trusted", () => {
-  const primary = buildPrimary();
-  const path = tree(primary, "wt-edit-c");
-  writeFileSync(join(path, "app.txt"), "one\nanother edit\n");
-  // `update-ref` "succeeds" and the read-back answers a different commit: the shape of a ref store that lies.
-  const run = (cmd: string, args: string[], opts: { cwd: string }) => {
-    if (args[0] === "rev-parse" && args.some((a) => a.startsWith(SALVAGE_REF_PREFIX))) return `${primary.tip}\n`;
-    return realRun(cmd, args, opts);
-  };
-  const report = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, run });
-  assert.deepEqual(report.removed, []);
-  assert.ok(existsSync(path));
-  assert.match(report.dirty[0].reason ?? "", /reads back as .*, not /);
-});
+/** The stderr `git stash create` fails with in the lock case: longer than the reason keeps, so only its first 200 characters are shown. */
+const LOCK_STDERR = `fatal: simulated index lock ${"x".repeat(300)}`;
 
-test("#4620 SALVAGE CONTROL 2b/4: a failed `git stash create` names git's stderr in the line, not only the command (first 200 characters)", () => {
-  const primary = buildPrimary();
-  const path = tree(primary, "wt-edit-g");
-  writeFileSync(join(path, "app.txt"), "one\nedit\n");
-  const stderr = `fatal: simulated index lock ${"x".repeat(300)}`;
+/** Each case arranges its own tree, makes `git stash create` fail with its own stderr, and checks the reason the prune gives for that tree. */
+testEach("a failed `git stash create` names git's stderr in the reason, not only the command", [
+  {
+    name: "#4620 SALVAGE CONTROL 2b/4: a failed `git stash create` names git's stderr in the line, not only the command (first 200 characters)",
+    arrange: () => editedTree("wt-edit-g", "one\nedit\n"),
+    thrown: `${LOCK_STDERR}\n`,
+    tail: `(${LOCK_STDERR.slice(0, 200)})`,
+    check: () => {},
+  },
+  {
+    name: "#4620 INTENT-TO-ADD CONTROL 1/2: a failed `git stash create` names the entries AND git's stderr in the reason",
+    arrange: () => {
+      const primary = buildPrimary();
+      const { path } = intentToAddTree(primary, "wt-ita-b", 1);
+      return { primary, path };
+    },
+    thrown: "error: Entry 'pkg/ita-1.txt' not uptodate. Cannot merge.\nCannot save the current worktree state\n",
+    tail: "(error: Entry 'pkg/ita-1.txt' not uptodate. Cannot merge. Cannot save the current worktree state)",
+    check: (reason: string) => {
+      assert.match(reason, /holds 1 intent-to-add entry \(pkg\/ita-1\.txt\)/, reason);
+    },
+  },
+], (c) => {
+  const { primary, path } = c.arrange();
   const run = (cmd: string, args: string[], opts: { cwd: string }) => {
-    if (args.includes("stash")) throw Object.assign(new Error("Command failed: git stash create"), { stderr: `${stderr}\n` });
+    if (args.includes("stash")) throw Object.assign(new Error("Command failed: git stash create"), { stderr: c.thrown });
     return realRun(cmd, args, opts);
   };
   const report = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, run });
   assert.deepEqual(report.removed, []);
   assert.ok(existsSync(path), "the tree stands");
   const reason = report.dirty[0].reason ?? "";
-  assert.ok(reason.endsWith(`(${stderr.slice(0, 200)})`), reason);
+  assert.ok(reason.endsWith(c.tail), reason);
   assert.ok(!reason.includes("Command failed"), "the command line is not what the reader is left with");
+  c.check(reason);
 });
 
 /** A tree with a tracked edit and `count` intent-to-add entries (`git add -N`) under `pkg/`, which `git stash create` cannot carry. */
@@ -266,23 +292,6 @@ test("#4620 INTENT-TO-ADD: a tree holding `git add -N` entries is refused before
   const reason = report.dirty[0].reason ?? "";
   assert.match(reason, /holds 5 intent-to-add entries \(pkg\/ita-1\.txt, pkg\/ita-2\.txt, pkg\/ita-3\.txt and 2 more\)/, reason);
   assert.ok(!reason.includes("pkg/ita-4.txt"), "only the first few are named");
-});
-
-test("#4620 INTENT-TO-ADD CONTROL 1/2: a failed `git stash create` names the entries AND git's stderr in the reason", () => {
-  const primary = buildPrimary();
-  const { path } = intentToAddTree(primary, "wt-ita-b", 1);
-  const stderr = "error: Entry 'pkg/ita-1.txt' not uptodate. Cannot merge.\nCannot save the current worktree state\n";
-  const run = (cmd: string, args: string[], opts: { cwd: string }) => {
-    if (args.includes("stash")) throw Object.assign(new Error("Command failed: git stash create"), { stderr });
-    return realRun(cmd, args, opts);
-  };
-  const report = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, run });
-  assert.deepEqual(report.removed, []);
-  assert.ok(existsSync(path), "the tree stands");
-  const reason = report.dirty[0].reason ?? "";
-  assert.match(reason, /holds 1 intent-to-add entry \(pkg\/ita-1\.txt\)/, reason);
-  assert.ok(reason.endsWith("(error: Entry 'pkg/ita-1.txt' not uptodate. Cannot merge. Cannot save the current worktree state)"), reason);
-  assert.ok(!reason.includes("Command failed"), "the command line is not what the reader is left with");
 });
 
 test("#4620 INTENT-TO-ADD CONTROL 2/2: a `git stash create` that DOES print a commit still refuses, and writes no ref for a detached head", () => {
@@ -321,9 +330,7 @@ test("#4620 SAME NAME: three dirty trees under different parents that share one 
 });
 
 test("#4620 SALVAGE CONTROL 3/4: untracked WORK is never salvaged -- the tree stays DIRTY before any ref is written", () => {
-  const primary = buildPrimary();
-  const path = tree(primary, "wt-edit-d");
-  writeFileSync(join(path, "app.txt"), "one\nan edit\n");
+  const { primary, path } = editedTree("wt-edit-d", "one\nan edit\n");
   writeFileSync(join(path, "notes.txt"), "never added\n");
   const report = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF });
   assert.deepEqual(report.removed, []);
@@ -348,9 +355,7 @@ test("#4620 SALVAGE CONTROL 4/4: untracked paths the primary IGNORES do not stop
 });
 
 test("#4620 SALVAGE CONTROL: an edit made AFTER the salvage is not discarded -- the tree stands with it", () => {
-  const primary = buildPrimary();
-  const path = tree(primary, "wt-edit-h");
-  writeFileSync(join(path, "app.txt"), "one\npinned edit\n");
+  const { primary, path } = editedTree("wt-edit-h", "one\npinned edit\n");
   // The session types again in the instant between `stash create` and the discard.
   const run = (cmd: string, args: string[], opts: { cwd: string }) => {
     const out = realRun(cmd, args, opts);
@@ -382,10 +387,16 @@ test("#4620 DETACHED: a detached tree with a tracked edit has its HEAD and its e
   assert.equal(report.removed[0].salvaged?.length, 2);
 });
 
-test("#4620 A REMOVAL GIT REFUSES leaves the tree DIRTY and its work in the ref -- the run goes on, and the next run finds a clean tree", () => {
+/** A fresh primary checkout with one tree under `name`, whose app.txt holds `content`: the edit the salvage cases pin. */
+function editedTree(name: string, content: string) {
   const primary = buildPrimary();
-  const path = tree(primary, "wt-edit-f");
-  writeFileSync(join(path, "app.txt"), "one\nstill here\n");
+  const path = tree(primary, name);
+  writeFileSync(join(path, "app.txt"), content);
+  return { primary, path };
+}
+
+test("#4620 A REMOVAL GIT REFUSES leaves the tree DIRTY and its work in the ref -- the run goes on, and the next run finds a clean tree", () => {
+  const { primary, path } = editedTree("wt-edit-f", "one\nstill here\n");
   const refuses = () => { throw new Error("fatal: cannot remove a locked working tree (simulated)"); };
   const report = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, remove: refuses });
   assert.deepEqual(report.removed, []);
@@ -397,18 +408,15 @@ test("#4620 A REMOVAL GIT REFUSES leaves the tree DIRTY and its work in the ref 
 });
 
 test("#4620 SALVAGE IS IDEMPOTENT: a salvage whose removal could not be logged is not written twice by the next hour's run", () => {
-  const primary = buildPrimary();
-  const path = tree(primary, "wt-edit-g");
-  writeFileSync(join(path, "app.txt"), "one\nlog disk full\n");
-  const unwritable = () => { throw new Error("ENOSPC (simulated)"); };
-  const first = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, record: unwritable });
+  const { primary, path } = editedTree("wt-edit-g", "one\nlog disk full\n");
+  const first = pruneWorktrees(primary.root, { now: QUIET(), ...REMOVE_BY_REF, record: UNWRITABLE_LOG });
   assert.deepEqual(first.removed, []);
   assert.deepEqual(first.held.map((r) => r.path), [path], "a delete nobody can see is refused (#2782)");
   assert.ok(existsSync(path));
   const written = salvageRefs(primary);
   assert.equal(written.length, 1, "the work was pinned before the refused removal");
   assert.equal(readFileSync(join(path, "app.txt"), "utf8"), "one\nlog disk full\n", "and the tree still has its edit: nothing is discarded before the log line");
-  const second = pruneWorktrees(primary.root, { now: QUIET() + 5000, ...REMOVE_BY_REF, record: unwritable });
+  const second = pruneWorktrees(primary.root, { now: QUIET() + 5000, ...REMOVE_BY_REF, record: UNWRITABLE_LOG });
   assert.deepEqual(second.held.map((r) => r.path), [path]);
   assert.deepEqual(salvageRefs(primary), written, "same work, same ref: an hourly run does not make twenty-four a day");
   const third = pruneWorktrees(primary.root, { now: QUIET() + 10_000, ...REMOVE_BY_REF });

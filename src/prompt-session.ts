@@ -31,6 +31,7 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { herdrRun } from "./herdr-agents.ts";
 import { prepareContext, handoffBacklog, waitedFor, addressed } from "./wake/fyi-queue.ts";
 import { orderClockIn } from "./wake/merge-queue-wait.ts";

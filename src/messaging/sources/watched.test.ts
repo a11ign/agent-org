@@ -82,6 +82,11 @@ function setup(states: Record<string, string>) {
   return { fixture, ledger, provider, watches, tick };
 }
 
+/** Watches each `[kind, id]` from the chairman's message, in order. */
+async function watchAll(watches: ReturnType<typeof setup>["watches"], things: [string, string][]) {
+  for (const [kind, id] of things) await watches.add({ kind, id, ref: MESSAGE });
+}
+
 describe("(1) a watched pull request changing state yields ONE event", () => {
   test("add a PR, move it, and the next tick sends one line carrying the new state and a link", async () => {
     const { fixture, provider, watches, tick } = setup({ "pr:3333": "open" });
@@ -172,8 +177,7 @@ describe("(3) reaching a final state yields one final event, and the watch is go
 
   test("a PR closed without merging is final too; a unit has no final state and is still asked after the same ticks", async () => {
     const { fixture, provider, watches, tick } = setup({ "pr:1": "open", "unit:u.service": "active" });
-    await watches.add({ kind: "pr", id: "1", ref: MESSAGE });
-    await watches.add({ kind: "unit", id: "u.service", ref: MESSAGE });
+    await watchAll(watches, [["pr", "1"], ["unit", "u.service"]]);
     fixture.states["pr:1"] = "closed";
     fixture.states["unit:u.service"] = "inactive";
     await tick();

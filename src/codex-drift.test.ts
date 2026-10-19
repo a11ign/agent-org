@@ -10,6 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { testEach } from "./lib/test-each.ts";
 import { CLIENT_DAEMON_DISAGREE, codexClientDaemonDrift, codexDeclaredFeatures, codexFeatureDefaults } from "./codex-drift.ts";
 
 const HOME = "/h";
@@ -82,14 +83,22 @@ test("#4437: the real version JSON and the real defaults raise the finding, nami
   assert.doesNotMatch(finding.detail, /shell_tool|agent_message_board/, "a flag that is the same in both builds is not listed");
 });
 
-test("#4437: the remedy names the line to add and the value the CLIENT already runs with, and the check writes nothing", () => {
+const REMEDY_CHECKS: { name: string; pattern: RegExp; message?: string }[] = [
+  { name: "api_key_model_discovery", pattern: /`api_key_model_discovery = false`/, message: "the CLI's default, not the daemon's" },
+  { name: "guardianv2 thread_context", pattern: /`guardianv2\.thread_context = true`/, message: "and the other direction: the CLI's default is the true one here" },
+  { name: "write_stdin_approval", pattern: /`write_stdin_approval = false`/ },
+  { name: "features config line", pattern: /under `\[features\]` in `\/h\/\.codex\/config\.toml`/ },
+  { name: "no edit", pattern: /edits nothing/ },
+];
+
+testEach("#4437: the remedy names the line to add and the value the CLIENT already runs with", REMEDY_CHECKS, (c) => {
+  const [finding] = codexClientDaemonDrift(host(TODAY));
+  assert.match(finding.detail, c.pattern, c.message);
+});
+
+test("#4437: the check runs only read-only programs and writes nothing", () => {
   const reads = host(TODAY);
-  const [finding] = codexClientDaemonDrift(reads);
-  assert.match(finding.detail, /`api_key_model_discovery = false`/, "the CLI's default, not the daemon's");
-  assert.match(finding.detail, /`guardianv2\.thread_context = true`/, "and the other direction: the CLI's default is the true one here");
-  assert.match(finding.detail, /`write_stdin_approval = false`/);
-  assert.match(finding.detail, /under `\[features\]` in `\/h\/\.codex\/config\.toml`/);
-  assert.match(finding.detail, /edits nothing/);
+  codexClientDaemonDrift(reads);
   assert.deepEqual(reads.ran.map((line) => line.replace(/^\S+/, "<program>")),
     ["<program> app-server daemon version", "<program> features list", "<program> features list"],
     "the only programs run are the read-only version and features-list questions");

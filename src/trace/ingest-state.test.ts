@@ -48,6 +48,12 @@ function world() {
   const run = (now = NOW, ledger = LEDGER) => ingestTranscripts({ root, since: 0, ledger, rowRepo: ROW_REPO, storePath, now }).report;
   return { dir, root, storePath, file, write, append, run, statePath: stateFileFor(storePath), stored: () => readStore(storePath) };
 }
+/** A world whose transcripts are written, in the order given, before the first run. */
+function worldWith(files: Record<string, any[]>) {
+  const w = world();
+  for (const [name, lines] of Object.entries(files)) w.write(name, lines);
+  return w;
+}
 const byId = (events: TraceEvent[]) => [...events].sort((a, b) => a.id.localeCompare(b.id));
 const size = (lines: any[]) => Buffer.byteLength(`${lines.join("\n")}\n`);
 
@@ -129,14 +135,12 @@ test("(4) a file that SHRANK is read again from zero and listed in the report; s
 });
 
 test("(5) EQUIVALENCE: two incremental runs leave exactly the events (id AND content) one full ingest of the same final files does", () => {
-  const w = world();
-  w.write("lead", LEAD_1);
-  w.write("worker", WORKER);
+  const w = worldWith({ lead: LEAD_1, worker: WORKER });
   w.run();
-  w.append("lead", LEAD_2);
-  w.run();
-  w.append("lead", LEAD_3);
-  w.run();
+  for (const lines of [LEAD_2, LEAD_3]) {
+    w.append("lead", lines);
+    w.run();
+  }
   const full = world();
   full.write("lead", [...LEAD_1, ...LEAD_2, ...LEAD_3]);
   full.write("worker", WORKER);

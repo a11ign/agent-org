@@ -6,6 +6,7 @@ import { newestPerName } from "../../newest-check-run.ts";
 import { sharedFailureTick, type RedPr } from "../../ci-failure-class.ts";
 import { subjectRef } from "../../review-attribution.ts";
 import { machineryCanaryTick, readCanaryOptions, realCanaryIo, type Suppression, type CanaryIo } from "../../org-health.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readClaimRefusals } from "../../org-health/claim-refusal.ts";
 import type { ReleaseRuns } from "../../org-health/sweep-readings.ts";
 import { type UnarmedFacts, hungCheckOf } from "../pr-orders/red-only-by-superseded-run.ts";

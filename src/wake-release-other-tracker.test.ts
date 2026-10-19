@@ -149,9 +149,9 @@ test("a tracker the project does not declare, or whose clone the host does not g
 
   const noClone = host({ clone: { refusal: "host.json declares no absolute `clones.agent-org` path" } });
   const refused = performRelease(KEYED, noClone.deps);
+  assert.deepEqual([noClone.gh, noClone.execs, noClone.closed], [[], [], []], "the clone is asked before the row is read, so a refusal changes nothing");
   assert.equal(refused.released, false);
   assert.match(refused.why, /agent-org#476: no clone of tracker `agent-org` to read its tree in \(host\.json declares no absolute `clones\.agent-org` path\)/);
-  assert.deepEqual([noClone.gh, noClone.execs, noClone.closed], [[], [], []], "the clone is asked before the row is read, so a refusal changes nothing");
 
   assert.equal(performRelease(KEYED, host().deps).released, true, "twin: declared, with a clone");
 });

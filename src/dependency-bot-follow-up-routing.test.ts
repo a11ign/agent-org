@@ -12,6 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { testEach } from "./lib/test-each.ts";
 import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
 
 type Order = { session: string; cause: string; subject?: string; causeKey: string; };
@@ -54,29 +55,18 @@ const onlySubject = (orders: Order[], number: number) => orders.filter((o) => o.
 const workerOrders = (orders: Order[], number: number, cause: string) => onlySubject(orders, number).filter((o) => o.session === "engineers" && o.cause === cause);
 const ceoOrders = (orders: Order[], number: number) => onlySubject(orders, number).filter((o) => o.session === "ceo");
 
-test("DEPENDABOT, RED: flag on, the red build goes to a worker and ceo is not woken; flag off, ceo is ordered (positive control)", () => {
-  const prs = [prOf(1020, { statusCheckRollup: RED })];
-  const on = decided(prs, true);
-  assert.equal(workerOrders(on, 1020, "pr-checks-failing").length, 1, "the bot's red build is a worker's to fix");
-  assert.deepEqual(ceoOrders(on, 1020), [], "ceo is not woken for the bot's red build");
-  const off = decided(prs, false);
-  assert.equal(ceoOrders(off, 1020).filter((o) => o.cause === "pr-checks-failing").length, 1, "POSITIVE CONTROL: flag off orders the bot's red build to ceo");
-});
+const BOT_FOLLOW_UPS = [
+  { name: "RED", number: 1020, over: { statusCheckRollup: RED }, cause: "pr-checks-failing", worker: "the bot's red build is a worker's to fix", ceoSilent: "ceo is not woken for the bot's red build", control: "POSITIVE CONTROL: flag off orders the bot's red build to ceo" },
+  { name: "CONFLICTING", number: 1021, over: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }, cause: "pr-merge-conflict", worker: "the bot's conflict is a worker's to resolve", ceoSilent: "ceo is not woken for the bot's conflict", control: "POSITIVE CONTROL: flag off orders the conflict to ceo" },
+  { name: "NOT-CONVINCED", number: 1022, over: { comments: [verdictComment(1022, "Not convinced")] }, cause: "verdict-not-convinced", worker: "the bot's not-convinced verdict is a worker's rework", ceoSilent: "ceo is not woken for the bot's not-convinced verdict", control: "POSITIVE CONTROL: flag off orders the verdict to ceo" },
+];
 
-test("DEPENDABOT, CONFLICTING: flag on, the conflict goes to a worker and ceo is not woken; flag off, ceo is ordered (positive control)", () => {
-  const prs = [prOf(1021, { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" })];
+testEach("DEPENDABOT: flag on, the follow-up goes to a worker and ceo is not woken; flag off, ceo is ordered (positive control)", BOT_FOLLOW_UPS, (c) => {
+  const prs = [prOf(c.number, c.over)];
   const on = decided(prs, true);
-  assert.equal(workerOrders(on, 1021, "pr-merge-conflict").length, 1, "the bot's conflict is a worker's to resolve");
-  assert.deepEqual(ceoOrders(on, 1021), [], "ceo is not woken for the bot's conflict");
-  assert.equal(ceoOrders(decided(prs, false), 1021).filter((o) => o.cause === "pr-merge-conflict").length, 1, "POSITIVE CONTROL: flag off orders the conflict to ceo");
-});
-
-test("DEPENDABOT, NOT-CONVINCED: flag on, the verdict goes to a worker and ceo is not woken; flag off, ceo is ordered (positive control)", () => {
-  const prs = [prOf(1022, { comments: [verdictComment(1022, "Not convinced")] })];
-  const on = decided(prs, true);
-  assert.equal(workerOrders(on, 1022, "verdict-not-convinced").length, 1, "the bot's not-convinced verdict is a worker's rework");
-  assert.deepEqual(ceoOrders(on, 1022), [], "ceo is not woken for the bot's not-convinced verdict");
-  assert.equal(ceoOrders(decided(prs, false), 1022).filter((o) => o.cause === "verdict-not-convinced").length, 1, "POSITIVE CONTROL: flag off orders the verdict to ceo");
+  assert.equal(workerOrders(on, c.number, c.cause).length, 1, c.worker);
+  assert.deepEqual(ceoOrders(on, c.number), [], c.ceoSilent);
+  assert.equal(ceoOrders(decided(prs, false), c.number).filter((o) => o.cause === c.cause).length, 1, c.control);
 });
 
 test("DEPENDABOT, OTHER FOLLOW-UPS: flag on, the bot's pull request is still withheld from ceo for every cause but the three above", () => {

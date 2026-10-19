@@ -691,32 +691,50 @@ function claimsNobodyIsWorking(issues: { number: number; title: string; labels: 
  * @returns {Map<number, ClosingPrRef[]>}
  */
 function fetchClosingPrRefs(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, ClosingPrRef[]> {
-  const map: Map<number, ClosingPrRef[]> = new Map();
-  if (issueNumbers.length === 0) return map;
-  const [owner, name] = trackerRepo().split("/");
-  const fields = issueNumbers.map((n, i) => `i${i}: issue(number: ${n}) { number `
-    + `closedByPullRequestsReferences(first: 20) { nodes { number state mergedAt } } }`).join(" ");
+  return queryAliasedRepoNodes({ repoSlug: trackerRepo(), alias: "i", numbers: issueNumbers,
+    select: (n) => `issue(number: ${n}) { number closedByPullRequestsReferences(first: 20) { nodes { number state mergedAt } } }`,
+    readNodes: (repo) => closingPrRefsFromRepoNode(repo, issueNumbers),
+    what: "closing PR references", response: "closing-references", run });
+}
+
+/**
+ * One GraphQL round trip for a list of aliased sub-queries against `repoSlug`: each number becomes the
+ * alias `<alias><i>` in the query, and `readNodes` reads the answers back out of the repository node.
+ * Empty input makes no call at all, since an empty alias list is not valid GraphQL. `what` names the
+ * question and `response` names gh's answer to it, both as they read in the error.
+ * @param {{ repoSlug: string, alias: string, numbers: number[], select: (n: number) => string,
+ *   readNodes: (repo: Record<string, any>) => Map<number, V>, what: string, response: string,
+ *   run: typeof defaultRun }} spec
+ * @returns {Map<number, V>}
+ */
+function queryAliasedRepoNodes<V>({ repoSlug, alias, numbers, select, readNodes, what, response, run }: {
+  repoSlug: string; alias: string; numbers: number[]; select: (n: number) => string;
+  readNodes: (repo: Record<string, any>) => Map<number, V>; what: string; response: string; run: typeof defaultRun;
+}): Map<number, V> {
+  if (numbers.length === 0) return new Map();
+  const [owner, name] = repoSlug.split("/");
+  const fields = numbers.map((n, i) => `${alias}${i}: ${select(n)}`).join(" ");
   const query = `{ repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
   let raw: string;
   try {
     raw = run("gh", ["api", "graphql", "-f", `query=${query}`]);
   } catch (cause) {
-    throw new Error(`ready-label-audit: could not resolve closing PR references -- refusing to guess. `
+    throw new Error(`ready-label-audit: could not resolve ${what} -- refusing to guess. `
       + `${(cause as Error).message}`, { cause });
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (cause) {
-    throw new Error(`ready-label-audit: gh's closing-references response was not JSON -- refusing to `
-      + `guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
+    throw new Error(`ready-label-audit: gh's ${response} response was not JSON -- refusing to guess. `
+      + `First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
   const repo = (parsed as any)?.data?.repository;
   if (!repo || typeof repo !== "object") {
-    throw new Error(`ready-label-audit: gh's closing-references response had no repository -- refusing `
-      + `to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
+    throw new Error(`ready-label-audit: gh's ${response} response had no repository -- refusing to guess. `
+      + `Got: ${JSON.stringify(parsed).slice(0, 300)}`);
   }
-  return closingPrRefsFromRepoNode(repo, issueNumbers);
+  return readNodes(repo);
 }
 
 /**
@@ -741,33 +759,10 @@ function fetchClosingPrRefs(issueNumbers: number[], { run = defaultRun }: { run?
  *   the issue has never been reopened
  */
 function fetchLatestReopenedAt(issueNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, string | null> {
-  const map: Map<number, string | null> = new Map();
-  if (issueNumbers.length === 0) return map;
-  const [owner, name] = trackerRepo().split("/");
-  const fields = issueNumbers.map((n, i) => `i${i}: issue(number: ${n}) { number `
-    + `timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } } }`)
-    .join(" ");
-  const query = `{ repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
-  let raw: string;
-  try {
-    raw = run("gh", ["api", "graphql", "-f", `query=${query}`]);
-  } catch (cause) {
-    throw new Error(`ready-label-audit: could not resolve reopen history -- refusing to guess. `
-      + `${(cause as Error).message}`, { cause });
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(`ready-label-audit: gh's reopen-history response was not JSON -- refusing to guess. `
-      + `First 200 chars: ${raw.slice(0, 200)}`, { cause });
-  }
-  const repo = (parsed as any)?.data?.repository;
-  if (!repo || typeof repo !== "object") {
-    throw new Error(`ready-label-audit: gh's reopen-history response had no repository -- refusing to `
-      + `guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
-  }
-  return latestReopenedAtFromRepoNode(repo, issueNumbers);
+  return queryAliasedRepoNodes({ repoSlug: trackerRepo(), alias: "i", numbers: issueNumbers,
+    select: (n) => `issue(number: ${n}) { number timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } } }`,
+    readNodes: (repo) => latestReopenedAtFromRepoNode(repo, issueNumbers),
+    what: "reopen history", response: "reopen-history", run });
 }
 
 /**
@@ -1812,32 +1807,10 @@ function fetchClosedUnmergedPrs({ run = defaultRun }: { run?: typeof defaultRun;
  * @returns {Map<number, number[]>} PR number -> the issue numbers it would have closed
  */
 function fetchClosingIssueRefs(prNumbers: number[], { run = defaultRun }: { run?: typeof defaultRun; } = {}): Map<number, number[]> {
-  const map: Map<number, number[]> = new Map();
-  if (prNumbers.length === 0) return map;
-  const [owner, name] = codeRepo().split("/");
-  const fields = prNumbers.map((n, i) => `p${i}: pullRequest(number: ${n}) { number `
-    + `closingIssuesReferences(first: 20) { nodes { number } } }`).join(" ");
-  const query = `{ repository(owner: "${owner}", name: "${name}") { ${fields} } }`;
-  let raw: string;
-  try {
-    raw = run("gh", ["api", "graphql", "-f", `query=${query}`]);
-  } catch (cause) {
-    throw new Error(`ready-label-audit: could not resolve closing issue references -- refusing to guess. `
-      + `${(cause as Error).message}`, { cause });
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(`ready-label-audit: gh's closing-issue-references response was not JSON -- refusing `
-      + `to guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
-  }
-  const repo = (parsed as any)?.data?.repository;
-  if (!repo || typeof repo !== "object") {
-    throw new Error(`ready-label-audit: gh's closing-issue-references response had no repository -- `
-      + `refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
-  }
-  return closingIssueRefsFromRepoNode(repo, prNumbers);
+  return queryAliasedRepoNodes({ repoSlug: codeRepo(), alias: "p", numbers: prNumbers,
+    select: (n) => `pullRequest(number: ${n}) { number closingIssuesReferences(first: 20) { nodes { number } } }`,
+    readNodes: (repo) => closingIssueRefsFromRepoNode(repo, prNumbers),
+    what: "closing issue references", response: "closing-issue-references", run });
 }
 
 /**

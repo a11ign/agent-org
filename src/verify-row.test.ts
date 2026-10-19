@@ -151,8 +151,8 @@ test("12. a build with a future-time AND a live-check item files ONE row carryin
   const outcome = fileVerifyRow(both, CTX, effects);
   assert.equal(outcome.kind, "filed");
   if (outcome.kind !== "filed") return;
-  assert.equal(outcome.plan.items.length, 2);
   assert.match(outcome.plan.body, /1\. The count is read on 2026-10-14 and posted\.\n2\. One record per use is quoted on #4627\./, "in the order the row wrote them");
+  assert.equal(outcome.plan.items.length, 2);
   assert.equal(outcome.plan.notBefore, "2026-10-14T00:00:00Z");
   assert.doesNotMatch(outcome.plan.body, /names no time this could place/, "the latest wait WAS placed");
 });

@@ -33,6 +33,7 @@ import { CLAIM_LABEL } from "./claim-labels.ts";
 import { declaredClosedRows } from "./row-claim/file-overlap-rule.ts";
 import { declaredGhAccount } from "./gh-identity.ts";
 import { repeatingLinesTick } from "./repeating-lines.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readToolAgreement } from "./org-health/board-truth-readings.ts";
 import { fileReleaseIncidents, type ReleaseRuns } from "./org-health/sweep-readings.ts";
 import { machineryFlagOn, type CanaryState } from "./org-health/fleet-build-readings.ts";
@@ -66,6 +67,7 @@ import { performActions, reportWithheld } from "./work-gate/orders.ts";
 import { chainWaitOrders } from "./work-gate/causes/org-health-chain-wait.ts";
 import { authorFallbackTimes, holdForIncidentNow, machineryCanaryNow, startGithubStatus } from "./work-gate/causes/org-health-github-incident.ts";
 import { cannotAskReport, deadMansSwitch, diskHeadroomTick } from "./work-gate/causes/org-health-host.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { HOST_DRIFT_SESSION, withStalePrimaryNotice } from "./work-gate/causes/org-health-host-drift.ts";
 import { blockingImpactOrders, fileResolverDefects } from "./work-gate/causes/org-health-resolver-defects.ts";
 import { reviewerAuthTick } from "./work-gate/causes/org-health-reviewer-auth.ts";
@@ -79,6 +81,7 @@ import { type Pacing, orgHealthSkipped, pacedUnread, pacingNow, pacingOn, primar
 import { answerGivenOrders, bareAnswerLabelOrders, closedAnswerRows, endedAnswerSessionTest, endedSessionLabels, liveWorkspaceLabels, readClosedAnswerRows, rowsOwingAnswers, withAnswerLabel } from "./work-gate/causes/rows-answers.ts";
 import { readRecentlyClosed, unclaimedClearings } from "./work-gate/causes/rows-blocker-cleared.ts";
 import { chairmanAsksNow, chairmanReadsRefused } from "./work-gate/causes/rows-chairman.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { offeredRefusalStreaks, partitionUnclaimed } from "./work-gate/causes/rows-claims.ts";
 import { closedClaimDebris, closedClaimLabelsWhenListed } from "./work-gate/causes/rows-claims-closed.ts";
 import { closedUnderHalfOrders } from "./work-gate/causes/rows-closed-under-half.ts";

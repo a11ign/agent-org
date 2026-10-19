@@ -3,12 +3,14 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { classifyCiFailure, classLine, classNote, notesTheOrder, readCiFailure } from "../ci-failure-class.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { CI_RERUN_ON_5XX } from "../ci-rerun-on-5xx.ts";
 import { depthLine, readDepthState, reviewDepth, type Depth } from "../review-depth.ts";
 import { ANSWER_PREFIX } from "../waiting-condition.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { REPO } from "../project-identity.ts";
 import { SESSION_PREFIX, READY_LABEL } from "../project-vocabulary.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readClaimedRows } from "../ticket-port/rows-by-label.ts";
 import { lookupOtherHeldIssues } from "../row-claim/own-pr-health-rule.ts";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus } from "../prune-worktrees.ts";

@@ -22,6 +22,7 @@ import { readOpenRowFollowUps } from "./work-gate.ts";
 import { readTrackerLanes } from "./work-gate/tick.ts";
 import { closedAnswerConnection, connectionOfSelected, readsClosedAnswerRows, readsRecentlyClosed, readsRowsByLabel, recentlyClosedConnection } from "./packaging/rows-by-label-fixtures.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { testEach } from "./lib/test-each.ts";
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };
@@ -110,15 +111,30 @@ test("wave 2: open arrives alone in the batch and backlog and needs:chairman are
   assert.deepEqual(together, readTrackerLanes(sequentialRun([], { open }) as never), "the same lanes as the one-at-a-time by-label reads give (the fake answers backlog from the open rows)");
 });
 
-test("a FULL open page is not folded: the two label lists are asked, together in ONE more batch, and the lanes are the one-at-a-time read's", () => {
+type FullPageRead = { batches: Call[][]; seen: Call[]; together: ReturnType<typeof readTrackerLanes> };
+
+const FULL_PAGE_CHECKS: { name: string; check: (r: FullPageRead) => void }[] = [
+  {
+    name: "the open list, then the lists it could not answer",
+    check: ({ batches }) => assert.equal(batches.length, 2, "the open list, then the lists it could not answer"),
+  },
+  { name: "the open list alone first", check: ({ batches }) => assert.deepEqual(batches[0].map(shape), ["issue list"]) },
+  {
+    name: "the two label lists together in the second",
+    check: ({ batches }) => assert.deepEqual(batches[1].map(shape).sort(), ["rows labelled backlog", "rows labelled needs:chairman"]),
+  },
+  { name: "nothing left to read one at a time", check: ({ seen }) => assert.deepEqual(seen, [], "nothing left over to read one at a time") },
+  {
+    name: "the lanes are the one-at-a-time read's",
+    check: ({ together }) => assert.deepEqual(together, readTrackerLanes(sequentialRun([], { open: FULL_PAGE }) as never), "the same lanes"),
+  },
+];
+
+testEach("a FULL open page is not folded: the two label lists are asked, together in ONE more batch, and the lanes are the one-at-a-time read's", FULL_PAGE_CHECKS, (c) => {
   const batches: Call[][] = [];
   const seen: Call[] = [];
   const together = readTrackerLanes(sequentialRun(seen, { open: FULL_PAGE }) as never, fakeBatch(batches, { open: FULL_PAGE }));
-  assert.equal(batches.length, 2, "the open list, then the lists it could not answer");
-  assert.deepEqual(batches[0].map(shape), ["issue list"]);
-  assert.deepEqual(batches[1].map(shape).sort(), ["rows labelled backlog", "rows labelled needs:chairman"]);
-  assert.deepEqual(seen, [], "nothing left over to read one at a time");
-  assert.deepEqual(together, readTrackerLanes(sequentialRun([], { open: FULL_PAGE }) as never), "the same lanes");
+  c.check({ batches, seen, together });
 });
 
 test("a refusal in ANY one lane is that lane's null, beside the other lanes' answers", () => {

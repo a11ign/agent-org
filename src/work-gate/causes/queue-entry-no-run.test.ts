@@ -75,6 +75,13 @@ function gate(dir: string, harness: ReturnType<typeof queue>, { now, state = ON 
   return { orders, said };
 }
 
+/** Two gate runs over a memory file that does not parse: the first re-queues nothing, and the second is the one returned. */
+function gateOverGarbledMemory(dir: string) {
+  const harness = queue({ entries: () => [entry(5227)], runs: { [SHA(5227)]: 0 } });
+  gate(dir, harness, { now: T0 });
+  return { harness, garbled: gate(dir, harness, { now: T0 + 5 * MIN }) };
+}
+
 const classesOf = (orders: { subject: string }[]) => orders.map((order) => order.subject);
 const memoryOf = (dir: string) => JSON.parse(readFileSync(join(dir, QUEUE_ENTRY_NO_RUN_FILE), "utf8"));
 
@@ -191,9 +198,7 @@ test("a queue that cannot be read names nothing, writes nothing and says so; a m
   assert.equal(existsSync(join(dir, QUEUE_ENTRY_NO_RUN_FILE)), false);
 
   writeFileSync(join(dir, QUEUE_ENTRY_NO_RUN_FILE), "{ not json");
-  const harness = queue({ entries: () => [entry(5227)], runs: { [SHA(5227)]: 0 } });
-  gate(dir, harness, { now: T0 });
-  const garbled = gate(dir, harness, { now: T0 + 5 * MIN });
+  const { harness, garbled } = gateOverGarbledMemory(dir);
   assert.deepEqual(harness.calls.dequeued, [], "a memory read as empty would re-queue twice, so nothing is done");
   assert.deepEqual(garbled.orders, []);
   assert.equal(readFileSync(join(dir, QUEUE_ENTRY_NO_RUN_FILE), "utf8"), "{ not json", "and the file is left as it was");

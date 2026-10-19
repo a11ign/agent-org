@@ -68,6 +68,12 @@ function host({ start = OLD, target = NEW, working = [[]], screens = {}, moveBeh
   return { deps, versions, log };
 }
 const run = (h: ReturnType<typeof host>, options: Options = {}) => updateAgentTools(h.deps, options);
+// The dialog drill: the reviewer's smoke start shows a trust prompt, so the move is reverted. The cases differ only in how the revert behaves.
+function dialogRevert(revertBehaviour: Partial<Record<Tool, "throws" | "no-effect">> = {}) {
+  const h = host({ screens: { reviewer: { opened: true, started: true, pane: TRUST } }, revertBehaviour });
+  const result = updateAgentTools({ ...h.deps, dialogOf: plainDialogOnScreen });
+  return { h, result };
+}
 
 // (1) A MOVE WHOSE SMOKE START REACHES THE PROMPT IS KEPT. Control: the same move with a dialog is case (2).
 test("a move whose smoke start reaches the prompt is kept: nothing reverted, nothing recorded, exit 0", () => {
@@ -149,8 +155,7 @@ test("a tool already at its target is not touched; with every tool at target not
 
 // (4) A FAILURE TO REVERT IS REPORTED BY NAME, NOT AS SUCCESS.
 test("a revert that throws is reported by tool name and is not success; the incident is still recorded", () => {
-  const h = host({ screens: { reviewer: { opened: true, started: true, pane: TRUST } }, revertBehaviour: { "codex-cli": "throws" } });
-  const result = updateAgentTools({ ...h.deps, dialogOf: plainDialogOnScreen });
+  const { h, result } = dialogRevert({ "codex-cli": "throws" });
   assert.equal(result.outcome, "revert-failed");
   assert.equal(result.exitCode, 1);
   assert.match(result.line, /REVERT FAILED, host left half-moved: codex-cli \(no release directory for 0\.157\.0\)/);
@@ -160,8 +165,7 @@ test("a revert that throws is reported by tool name and is not success; the inci
 });
 
 test("a revert that reports success but leaves the new version is caught by the read-back and named", () => {
-  const h = host({ screens: { reviewer: { opened: true, started: true, pane: TRUST } }, revertBehaviour: { "codex-cli": "no-effect" } });
-  const result = updateAgentTools({ ...h.deps, dialogOf: plainDialogOnScreen });
+  const { result } = dialogRevert({ "codex-cli": "no-effect" });
   assert.equal(result.outcome, "revert-failed");
   assert.match(result.line, /codex-cli reads 0\.162\.1, not 0\.157\.0/);
 });
@@ -212,6 +216,11 @@ test("the caller's own session is not held on, and an unreadable listing HOLDS t
 const CODEX_ONLY = { start: OLD, target: NEW } as const;
 const CLAUDE_ONLY = { start: OLD, target: { ...OLD, "claude-code": "2.1.297" } } as const;
 const BOTH = { start: OLD, target: { ...NEW, "claude-code": "2.1.297" } } as const;
+// One seat mid-turn while the move runs: the host it ran on, and the result.
+function seatRun(move: typeof CODEX_ONLY | typeof CLAUDE_ONLY, seat: string) {
+  const h = host({ ...move, working: [[seat]] });
+  return { h, result: run(h) };
+}
 
 test("#665: only codex-cli to move and Claude seats mid-turn gives NO refusal, no wait, and the seat is not named", () => {
   for (const seat of ["worker-agent-org-665", "worker-1", "ceo", "orchestrator", "product-manager"]) {
@@ -228,8 +237,7 @@ test("#665: only codex-cli to move and Claude seats mid-turn gives NO refusal, n
 
 test("#665: only claude-code to move and a reviewer mid-turn gives no refusal; the control is a worker, which is held", () => {
   for (const seat of ["reviewer-1", "reviewer-agent-org-601", "reviewer"]) {
-    const h = host({ ...CLAUDE_ONLY, working: [[seat]] });
-    const result = run(h);
+    const { h, result } = seatRun(CLAUDE_ONLY, seat);
     assert.equal(result.outcome, "kept", seat);
     assert.deepEqual(h.log.moves, ["claude-code->2.1.297"], seat);
     assert.deepEqual(h.log.sleeps, []);
@@ -247,9 +255,9 @@ test("#665: both products moving, either seat mid-turn refuses naming that seat,
   assert.equal(worker.outcome, "busy");
   assert.match(worker.line, /REFUSED: worker-3 \(runs claude, held for claude-code\) is mid-turn/);
   const both = host({ ...BOTH, working: [["worker-3", "reviewer-2"]] });
-  const refusal = run(both);
-  assert.match(refusal.line, /worker-3 \(runs claude/);
-  assert.match(refusal.line, /reviewer-2 \(runs codex/);
+  const { line } = run(both);
+  assert.match(line, /worker-3 \(runs claude/);
+  assert.match(line, /reviewer-2 \(runs codex/);
   assert.deepEqual(both.log.moves, []);
 });
 
@@ -296,6 +304,11 @@ test("an installer that exits 0 and leaves the old version is a failed move: rev
   const result = run(h);
   assert.equal(result.outcome, "move-failed");
   assert.match(result.line, /codex-cli reads 0\.157\.0, not 0\.162\.1 after the installer said it was done/);
+});
+
+test("an install that did not take runs no smoke and records no interactive-prompt drift", () => {
+  const h = host({ moveBehaviour: { "codex-cli": "no-effect" } });
+  run(h);
   assert.deepEqual(h.log.smokes, []);
   assert.deepEqual(h.log.recorded, [], "an install that did not take is not an interactive-prompt drift");
 });
@@ -312,13 +325,13 @@ test("an installer that throws stops the run, reverts what was touched (the fail
 
 test("a smoke that could not be RUN is UNPROVEN: kept, exit non-zero, never reverted on a reading nobody made", () => {
   const h = host({ screens: { reviewer: { opened: false, why: "herdr is not running" } } });
-  const result = run(h);
-  assert.equal(result.outcome, "unproven");
-  assert.equal(result.exitCode, 1);
+  const { outcome, exitCode, line } = run(h);
+  assert.equal(outcome, "unproven");
+  assert.equal(exitCode, 1);
   assert.deepEqual(h.log.reverts, []);
   assert.deepEqual(h.log.recorded, []);
-  assert.match(result.line, /smoke start NOT PROVEN/);
-  assert.match(result.line, /no scratch pane could be opened \(herdr is not running\)/);
+  assert.match(line, /smoke start NOT PROVEN/);
+  assert.match(line, /no scratch pane could be opened \(herdr is not running\)/);
   const throws = host();
   throws.deps.smoke = () => { throw new Error("herdr died"); };
   assert.equal(run(throws).outcome, "unproven", "a smoke seam that throws is unrun, not a failure of the tool");
@@ -326,9 +339,9 @@ test("a smoke that could not be RUN is UNPROVEN: kept, exit non-zero, never reve
 
 test("a target that cannot be read, or a tool that cannot be read, is named and nothing moves", () => {
   const noTarget = host({ target: { "codex-cli": "0.162.1", "codex-daemon": "0.162.1" } });
-  const a = run(noTarget);
-  assert.equal(a.outcome, "not-read");
-  assert.match(a.line, /NO TARGET for claude-code/);
+  const { outcome, line } = run(noTarget);
+  assert.equal(outcome, "not-read");
+  assert.match(line, /NO TARGET for claude-code/);
   assert.deepEqual(noTarget.log.moves, []);
   const unreadable = host();
   unreadable.deps.installed = () => { throw new Error("codex-daemon: daemon is not running"); };
@@ -351,10 +364,10 @@ test("--check reads and plans and moves nothing, and does not switch the daemon'
 test("a loop that cannot be switched off is said on the line and is not 'at target' success", () => {
   const h = host({ start: { ...NEW } });
   h.deps.pinDaemon = () => { throw new Error("EACCES: settings.json"); };
-  const result = run(h);
-  assert.equal(result.outcome, "at-target");
-  assert.equal(result.exitCode, 1);
-  assert.match(result.line, /NOT SWITCHED OFF \(EACCES: settings\.json\): the daemon can still move itself/);
+  const { outcome, exitCode, line } = run(h);
+  assert.equal(outcome, "at-target");
+  assert.equal(exitCode, 1);
+  assert.match(line, /NOT SWITCHED OFF \(EACCES: settings\.json\): the daemon can still move itself/);
 });
 
 // The dialog reader.

@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, checklessPrOrders, CHECKLESS_QUIET_MINUTES } from "./work-gate/pr-orders.ts";
 import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { testEach } from "./lib/test-each.ts";
 
 type Order = { session: string, fallback?: string, fallbackPrompt?: string, cause: string, causeKey: string, prompt: string };
 
@@ -69,13 +70,26 @@ test("a CONFLICTING PR is left to `pr-merge-conflict`, whose rebase is also what
   assert.equal(checkless(prOf({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" })).length, 1, "the control: clean is not skipped");
 });
 
-test("done-when 2: a PR in a KEYED repository is ordered, keyed by its repository, and the remedy aims at it", () => {
+const KEYED_REPO_CHECKS: { name: string; check: (order: Order) => void }[] = [
+  { name: "is ordered", check: (order) => assert.ok(order, "a keyed PR must yield an order") },
+  {
+    name: "is keyed by its repository",
+    check: (order) => assert.equal(order.causeKey, "worker-3076/pr-checks-failing/pr-agent-org#7/checkless/0123abcd"),
+  },
+  { name: "names the repository in its prompt", check: (order) => assert.match(order.prompt, /agent-org#7 at/) },
+  {
+    name: "aims its remedy at the repository",
+    check: (order) => assert.match(order.prompt, /gh pr close 7 --repo a11ign\/agent-org && gh pr reopen 7 --repo a11ign\/agent-org/),
+  },
+  {
+    name: "the home repository's remedy names no repo",
+    check: () => assert.doesNotMatch(checkless(prOf())[0].prompt, /--repo/, "the home repository's remedy names no repo, as before"),
+  },
+];
+
+testEach("done-when 2: a PR in a KEYED repository is ordered, keyed by its repository, and the remedy aims at it", KEYED_REPO_CHECKS, (c) => {
   const [order] = checkless(prOf({ number: 7, repoKey: "agent-org", repo: "a11ign/agent-org" }));
-  assert.ok(order, "a keyed PR must yield an order");
-  assert.equal(order.causeKey, "worker-3076/pr-checks-failing/pr-agent-org#7/checkless/0123abcd");
-  assert.match(order.prompt, /agent-org#7 at/);
-  assert.match(order.prompt, /gh pr close 7 --repo a11ign\/agent-org && gh pr reopen 7 --repo a11ign\/agent-org/);
-  assert.doesNotMatch(checkless(prOf())[0].prompt, /--repo/, "the home repository's remedy names no repo, as before");
+  c.check(order);
 });
 
 test("an owner whose session is gone falls back to product-manager, with words that say the remedy is its own to apply", () => {

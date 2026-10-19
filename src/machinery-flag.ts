@@ -31,6 +31,7 @@ import { OPEN_PR_HOLD_FLAG } from "./prune-worktrees.ts";
 import { REFUSE_ASKING_ANNOUNCEMENTS_FLAG } from "./messaging/core.ts";
 import { PACING_FLAG } from "./work-gate/pacing.ts";
 import { OWNERLESS_ASK_FLAG } from "./work-gate/pr-orders.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { PR_OWNER_ROUTING_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
 import { SESSION_PR_OUTSIDE_FLAG } from "./work-gate/outside-session-pr.ts"; // agent-org#1667
 import { ACCOUNT_LIMIT_FLAG } from "./account-limit.ts";

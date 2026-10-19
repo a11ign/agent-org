@@ -5,6 +5,7 @@
  * a11ign's own project text, so they are not part of the fixture run (agent-org#1601).
  */
 import { test } from "node:test";
+import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -61,19 +62,28 @@ function reposNamed(calls: string[]): string[] {
   return calls.map((c) => c.match(/--repo (\S+)|repos\/([^/]+\/[^/]+)\//)?.slice(1).find(Boolean) ?? "(none)");
 }
 
-test("unset GH_REPO: every gh call names a11ign/a11ign (the default is unchanged, and the control for the next test)", () => {
-  const { status, calls } = runDoor(undefined);
+/** Each case runs the door once with its own GH_REPO, and checks every gh call it made names the repository the case expects. */
+testEach("every gh call the door makes names the repository it was given", [
+  {
+    name: "unset GH_REPO: every gh call names a11ign/a11ign (the default is unchanged, and the control for the next test)",
+    repo: undefined,
+    expected: DEFAULT_REPO,
+    check: () => {},
+  },
+  {
+    name: "GH_REPO=a11ign/agent-org: every gh call names that repository and none names the default",
+    repo: OTHER_REPO,
+    expected: OTHER_REPO,
+    check: (calls: string[]) => {
+      assert.ok(calls.every((c) => !c.includes(DEFAULT_REPO)), calls.join("\n"));
+    },
+  },
+], (c) => {
+  const { status, calls } = runDoor(c.repo);
   assert.equal(status, 0);
   assert.equal(calls.length, DOOR_CALLS, calls.join("\n"));
-  assert.deepEqual(reposNamed(calls), Array(DOOR_CALLS).fill(DEFAULT_REPO));
-});
-
-test("GH_REPO=a11ign/agent-org: every gh call names that repository and none names the default", () => {
-  const { status, calls } = runDoor(OTHER_REPO);
-  assert.equal(status, 0);
-  assert.equal(calls.length, DOOR_CALLS, calls.join("\n"));
-  assert.deepEqual(reposNamed(calls), Array(DOOR_CALLS).fill(OTHER_REPO));
-  assert.ok(calls.every((c) => !c.includes(DEFAULT_REPO)), calls.join("\n"));
+  assert.deepEqual(reposNamed(calls), Array(DOOR_CALLS).fill(c.expected));
+  c.check(calls);
 });
 
 test("a GH_REPO that is not owner/name is refused with exit 2 before any gh call", () => {

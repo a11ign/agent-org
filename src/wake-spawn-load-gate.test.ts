@@ -16,6 +16,7 @@ import { MAX_SPAWNS_PER_TICK } from "./wake/pull-request-spawn-orders.ts";
 import { hostLoadRefusal } from "./wake/holds-as-fyi.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { INSIDE } from "./review-trust.ts";
+import { testEach } from "./lib/test-each.ts";
 
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
@@ -72,15 +73,27 @@ test("#3560 CONTROL: load 4 on 16 cores starts the engineer", () => {
   assert.equal(herdr.started().length, 1, "a process was started");
 });
 
-test("#3560: load 98 on 16 cores refuses the spawn, naming both numbers, and starts nothing", () => {
+type Delivery = ReturnType<typeof deliver>;
+type Herdr = ReturnType<typeof recordingHerdr>;
+
+const REFUSED_AT_LOAD_98: { name: string; check: (got: Delivery, herdr: Herdr) => void }[] = [
+  { name: "sends nothing", check: (got) => assert.deepEqual(got.sent, []) },
+  { name: "refuses one order", check: (got) => assert.equal(got.refused.length, 1) },
+  {
+    name: "names the order it refuses",
+    check: (got) => assert.ok(got.refused[0].startsWith("engineers/ready-row-unclaimed/2131: "), got.refused[0]),
+  },
+  {
+    name: "names both numbers",
+    check: (got) => assert.ok(got.refused[0].includes("host load 98 is over its 16 cores: no new engineer is started"), got.refused[0]),
+  },
+  { name: "starts no process", check: (_got, herdr) => assert.deepEqual(herdr.started(), [], "no process was started") },
+];
+
+testEach("#3560: load 98 on 16 cores refuses the spawn, naming both numbers, and starts nothing", REFUSED_AT_LOAD_98, (c) => {
   const herdr = recordingHerdr();
   const got = deliver([engineerOrder], BUSY, [], { run: herdr.run, hostLoad: reading(98) });
-
-  assert.deepEqual(got.sent, []);
-  assert.equal(got.refused.length, 1);
-  assert.ok(got.refused[0].startsWith("engineers/ready-row-unclaimed/2131: "), got.refused[0]);
-  assert.ok(got.refused[0].includes("host load 98 is over its 16 cores: no new engineer is started"), got.refused[0]);
-  assert.deepEqual(herdr.started(), [], "no process was started");
+  c.check(got, herdr);
 });
 
 test("#3560: it clears itself -- the same order on the next tick, with the load down, starts", () => {

@@ -157,9 +157,9 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
 
   test("a running host job defers the same way", async () => {
     const h = host({ jobs: "a11ign-tmp-prune.service loaded activating start start a11ign: remove old test fixtures\n" });
-    const result = await drainedReboot((h.deps as any));
-    assert.equal(result.outcome, "deferred");
-    assert.deepEqual(result.held, ["host job a11ign-tmp-prune.service is running"]);
+    const { outcome, held } = await drainedReboot((h.deps as any));
+    assert.equal(outcome, "deferred");
+    assert.deepEqual(held, ["host job a11ign-tmp-prune.service is running"]);
     assert.equal(sudoCalls(h.calls).length, 0);
     assert.equal(timerCalls(h.calls, "start").length, 1);
   });

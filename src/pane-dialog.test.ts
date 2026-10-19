@@ -14,6 +14,7 @@ import { parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { dialogOrder, dialogOwner, dialogSignature, raisePaneDialogs, readDialog, readRaised, writeRaised, type Memory } from "./pane-dialog.ts";
 import { STANCE, EXIT, failureLedgerPath, orderClass, promptOrQueue } from "./prompt-session.ts";
 import { isLimitMenu } from "./worker-state.ts";
+import { testEach } from "./lib/test-each.ts";
 
 /** The chairman's quoted question and three choices (a11ign/a11ign#4437, comment 6078759093), drawn the way Codex draws a selection: `› 1.` on the selected line and its key hint under. */
 const REVIEWER_LAB_45 = [
@@ -152,20 +153,45 @@ function tick(panes: Record<string, string | null>, memory: Memory, { accept = t
   return { ...result, orders, said };
 }
 
-test("(5) the first tick that sees a dialog orders its owner; the second tick over the same text raises nothing; a changed text raises again", () => {
-  const first = tick({ "reviewer-lab-45": REVIEWER_LAB_45, "worker-4202": WORKING, ceo: CODEX_IDLE }, {});
-  assert.equal(first.orders.length, 1, "one dialog, one order, and the other two panes are none");
+type Tick = ReturnType<typeof tick>;
+
+/** Each case ticks its own panes once, and asserts the one order that tick raises; the case's own checks follow. */
+testEach("a dialog raises one order to its owner, and a raised one is not raised again until it changes", [
+  {
+    name: "(5) the first tick that sees a dialog orders its owner; the second tick over the same text raises nothing; a changed text raises again",
+    panes: { "reviewer-lab-45": REVIEWER_LAB_45, "worker-4202": WORKING, ceo: CODEX_IDLE },
+    countMessage: "one dialog, one order, and the other two panes are none",
+    check: (first: Tick) => {
+      assert.deepEqual(first.sent.map((s) => s.label), ["reviewer-lab-45"]);
+
+      const second = tick({ "reviewer-lab-45": REVIEWER_LAB_45, "worker-4202": WORKING, ceo: CODEX_IDLE }, first.raised);
+      assert.equal(second.orders.length, 0, "the same text, the next tick: nothing");
+      assert.deepEqual(second.raised, first.raised, "and it is still remembered, so the tick after is as quiet");
+
+      const changed = tick({ "reviewer-lab-45": REVIEWER_LAB_45.replace("3. Cancel", "3. Quit") }, second.raised);
+      assert.equal(changed.orders.length, 1, "a changed text is a new dialog");
+      assert.ok(changed.orders[0].text.includes("3. Quit"));
+    },
+  },
+  {
+    name: "(5f) the usage-limit menu is not a decision order: a seat on it is ordered to nobody, and the dialog on the other seat is raised as before (agent-org#1481)",
+    panes: { "worker-4202": LIMIT_MENU, "reviewer-lab-45": REVIEWER_LAB_45, ceo: CODEX_IDLE },
+    countMessage: "one order, for the Codex dialog; the limit-menu seat and the plain pane are none",
+    check: (first: Tick) => {
+      assert.equal(isLimitMenu(LIMIT_MENU), true);
+      assert.ok(readDialog(LIMIT_MENU) !== null, "the reader still reads it as a dialog: the exclusion is the raise's, not the reader's");
+      assert.ok(!first.orders.some((o) => o.text.includes("Switch to usage credits")), "no order offers usage credits to a manager");
+      assert.deepEqual(first.sent.map((s) => s.label), ["reviewer-lab-45"]);
+      assert.deepEqual(first.refused, []);
+      assert.deepEqual(Object.keys(first.raised), ["reviewer-lab-45"], "the limit-menu seat is remembered for nothing");
+    },
+  },
+], (c) => {
+  const first = tick(c.panes, {});
+  assert.equal(first.orders.length, 1, c.countMessage);
   assert.equal(first.orders[0].owner, "product-manager");
   assert.ok(first.orders[0].text.includes(REVIEWER_QUESTION));
-  assert.deepEqual(first.sent.map((s) => s.label), ["reviewer-lab-45"]);
-
-  const second = tick({ "reviewer-lab-45": REVIEWER_LAB_45, "worker-4202": WORKING, ceo: CODEX_IDLE }, first.raised);
-  assert.equal(second.orders.length, 0, "the same text, the next tick: nothing");
-  assert.deepEqual(second.raised, first.raised, "and it is still remembered, so the tick after is as quiet");
-
-  const changed = tick({ "reviewer-lab-45": REVIEWER_LAB_45.replace("3. Cancel", "3. Quit") }, second.raised);
-  assert.equal(changed.orders.length, 1, "a changed text is a new dialog");
-  assert.ok(changed.orders[0].text.includes("3. Quit"));
+  c.check(first);
 });
 
 test("(5b) a dialog answered and met again later is a new incident; a pane that could not be read is not an answer", () => {
@@ -198,19 +224,6 @@ test("(5d) a session that is no longer listed is forgotten, and each session is 
   assert.deepEqual(both.orders.map((o) => o.owner), ["product-manager", "product-manager"]);
   assert.ok(both.orders[0].text.includes("agent read reviewer-lab-45") && both.orders[1].text.includes("agent read worker-agent-org-463"));
   assert.deepEqual(Object.keys(tick({ "worker-agent-org-463": CLAUDE_PERMISSION }, both.raised).raised), ["worker-agent-org-463"]);
-});
-
-test("(5f) the usage-limit menu is not a decision order: a seat on it is ordered to nobody, and the dialog on the other seat is raised as before (agent-org#1481)", () => {
-  assert.equal(isLimitMenu(LIMIT_MENU), true);
-  assert.ok(readDialog(LIMIT_MENU) !== null, "the reader still reads it as a dialog: the exclusion is the raise's, not the reader's");
-  const first = tick({ "worker-4202": LIMIT_MENU, "reviewer-lab-45": REVIEWER_LAB_45, ceo: CODEX_IDLE }, {});
-  assert.equal(first.orders.length, 1, "one order, for the Codex dialog; the limit-menu seat and the plain pane are none");
-  assert.equal(first.orders[0].owner, "product-manager");
-  assert.ok(first.orders[0].text.includes(REVIEWER_QUESTION));
-  assert.ok(!first.orders.some((o) => o.text.includes("Switch to usage credits")), "no order offers usage credits to a manager");
-  assert.deepEqual(first.sent.map((s) => s.label), ["reviewer-lab-45"]);
-  assert.deepEqual(first.refused, []);
-  assert.deepEqual(Object.keys(first.raised), ["reviewer-lab-45"], "the limit-menu seat is remembered for nothing");
 });
 
 test("(5g) a seat that showed the usage-limit menu on one tick and a different dialog on the next raises on the next tick", () => {

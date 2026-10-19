@@ -164,6 +164,14 @@ export function settle(entries: LedgerEntry[]): LedgerEntry[] {
   return out;
 }
 
+/** Counts one ledger call into a row of `topCallers` or `topQueries`. */
+function countCall(row: { calls: number; points: number; measured: number; failed: number; }, e: LedgerEntry): void {
+  row.calls += 1;
+  row.points += points(e);
+  row.measured += readCost(e);
+  row.failed += e.status === 0 ? 0 : 1;
+}
+
 /**
  * The callers ranked by points, within one account (and one resource, if named).
  * `measured` counts the points a response REPORTED, and `points` adds the one-point floor for every call that did not, so a
@@ -179,10 +187,7 @@ export function topCallers(entries: LedgerEntry[], { account, resource, limit = 
     const caller = callerScript(e.caller);
     const key = `${caller}\t${e.command}`;
     const row = byKey.get(key) ?? { caller, command: e.command, calls: 0, points: 0, measured: 0, failed: 0 };
-    row.calls += 1;
-    row.points += points(e);
-    row.measured += readCost(e);
-    row.failed += e.status === 0 ? 0 : 1;
+    countCall(row, e);
     byKey.set(key, row);
   }
   return [...byKey.values()].sort((a, b) => b.points - a.points || b.calls - a.calls).slice(0, limit);
@@ -221,10 +226,7 @@ export function topQueries(entries: LedgerEntry[], { account, resource = "graphq
     if (e.resource.replace(/\?$/, "") !== resource || !e.command.startsWith("api graphql")) continue;
     const query = e.query ?? UNNAMED_QUERY;
     const row = byQuery.get(query) ?? { query, calls: 0, points: 0, measured: 0, failed: 0 };
-    row.calls += 1;
-    row.points += points(e);
-    row.measured += readCost(e);
-    row.failed += e.status === 0 ? 0 : 1;
+    countCall(row, e);
     byQuery.set(query, row);
   }
   return [...byQuery.values()].sort((a, b) => b.points - a.points || b.calls - a.calls || a.query.localeCompare(b.query)).slice(0, limit);

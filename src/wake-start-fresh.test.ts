@@ -15,6 +15,7 @@ import { refusalReport } from "./wake/merge-queue-wait.ts";
 import { sayClaimRefusal, spawnClaimability } from "./wake/release-line-and-seats.ts";
 import { startsFresh, type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
+import { testEach } from "./lib/test-each.ts";
 
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: () => {} });
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
@@ -52,13 +53,22 @@ test("#4524 CONTROL: a plain order at load 98 starts nothing", () => {
   assert.deepEqual(herdr.started(), []);
 });
 
-test("#4524: a chairman order at load 98 with no engineer idle starts a fresh one for its row", () => {
+type Delivery = ReturnType<typeof deliver>;
+type Herdr = ReturnType<typeof recordingHerdr>;
+
+const FRESH_START_AT_LOAD_98: { name: string; check: (got: Delivery, herdr: Herdr) => void }[] = [
+  { name: "refuses nothing", check: (got) => assert.deepEqual(got.refused, []) },
+  {
+    name: "starts the engineer for its row",
+    check: (got) => assert.match(got.sent[0], /^worker-4588 <- engineers\/ready-row-unclaimed\/4588 \(STARTED /),
+  },
+  { name: "starts one process", check: (_got, herdr) => assert.equal(herdr.started().length, 1) },
+];
+
+testEach("#4524: a chairman order at load 98 with no engineer idle starts a fresh one for its row", FRESH_START_AT_LOAD_98, (c) => {
   const herdr = recordingHerdr();
   const got = deliver([chairman], BUSY, [], { run: herdr.run, hostLoad: overLoaded });
-
-  assert.deepEqual(got.refused, []);
-  assert.match(got.sent[0], /^worker-4588 <- engineers\/ready-row-unclaimed\/4588 \(STARTED /);
-  assert.equal(herdr.started().length, 1);
+  c.check(got, herdr);
 });
 
 test("#4524: a chairman order is started after the tick's allowance is spent; a plain one behind it is not", () => {
@@ -88,12 +98,14 @@ test("#4524: the safety checks still bind -- the memory floor refuses a chairman
   assert.deepEqual(herdr.started(), []);
 });
 
-test("#4524: the claim's own eligibility still binds -- a row the claim would refuse is not started", () => {
-  const herdr = recordingHerdr();
-  const got = deliver([chairman], BUSY, [], { run: herdr.run, claimable: () => "overlaps #1 in a11ign/agent-org" });
+const CLAIM_STILL_BINDS: { name: string; check: (got: Delivery) => void }[] = [
+  { name: "sends nothing", check: (got) => assert.deepEqual(got.sent, []) },
+  { name: "refuses the row with the claim's reason", check: (got) => assert.match(got.refused[0], /overlaps #1 in a11ign\/agent-org/) },
+];
 
-  assert.deepEqual(got.sent, []);
-  assert.match(got.refused[0], /overlaps #1 in a11ign\/agent-org/);
+testEach("#4524: the claim's own eligibility still binds -- a row the claim would refuse is not started", CLAIM_STILL_BINDS, (c) => {
+  const herdr = recordingHerdr();
+  c.check(deliver([chairman], BUSY, [], { run: herdr.run, claimable: () => "overlaps #1 in a11ign/agent-org" }));
 });
 
 test("#4524: an idle engineer still takes the chairman order, and nothing new is started", () => {

@@ -63,12 +63,20 @@ function harness(overrides: Partial<import("./placeholders.ts").Readers> = {}, {
   return { provider, ledger, reply, calls };
 }
 
+/**
+ * Sends `text` through a fresh harness whose readers are `overrides`, and hands back the provider with what the checker returned.
+ * @param {Partial<import("./placeholders.ts").Readers>} overrides @param {string} text
+ */
+async function replyOver(overrides: Partial<import("./placeholders.ts").Readers>, text: string) {
+  const { reply, provider } = harness(overrides);
+  return { provider, result: /** @type {any} */ (await reply.send(text)) };
+}
+
 const PLACEHOLDERS_ONLY = "#{{pr:2881.number}} is {{pr:2881.state}}, review {{pr:2881.review}}; {{ready.count}} ready.";
 
 describe("done-when 1: a placeholder renders what its reader returns, and the message ends with the as-of stamp", () => {
   test("{{pr:2881.state}} renders the fixture's state, and the stamp is the last line", async () => {
-    const { reply, provider } = harness();
-    const result = await reply.send("Status: {{pr:2881.state}}");
+    const { provider, result } = await replyOver({}, "Status: {{pr:2881.state}}");
     assert.equal(result.outcome, "sent");
     assert.deepEqual(provider.sent.map((message) => message.text), [`Status: merged\n\n${STAMP}`]);
   });
@@ -180,18 +188,17 @@ describe("done-when 2: a reader that fails REFUSES the send and names the placeh
 
 describe("done-when 3: a claim in free text is refused, and the same sentence through placeholders passes", () => {
   test("'#2881 is merged' with no placeholder is refused, with both claims named, and nothing is sent", async () => {
-    const { reply, provider } = harness();
-    const result = /** @type {any} */ (await reply.send("#2881 is merged"));
+    const { provider, result } = await replyOver({}, "#2881 is merged");
     assert.equal(result.outcome, "refused");
-    assert.equal(result.problems.length, 2);
-    assert.match(result.problems[0].reason, /"#2881" is a row or pull request number/);
-    assert.match(result.problems[1].reason, /"merged" is a state word/);
+    const { problems } = result;
+    assert.equal(problems.length, 2);
+    assert.match(problems[0].reason, /"#2881" is a row or pull request number/);
+    assert.match(problems[1].reason, /"merged" is a state word/);
     assert.deepEqual(provider.sent, []);
   });
 
   test("'#{{pr:2881.number}} is {{pr:2881.state}}' passes and says '#2881 is merged' (the positive control)", async () => {
-    const { reply, provider } = harness();
-    const result = await reply.send("#{{pr:2881.number}} is {{pr:2881.state}}");
+    const { provider, result } = await replyOver({}, "#{{pr:2881.number}} is {{pr:2881.state}}");
     assert.equal(result.outcome, "sent");
     assert.deepEqual(provider.sent.map((message) => message.text), [`#2881 is merged\n\n${STAMP}`]);
   });
@@ -516,8 +523,7 @@ describe("#3565: a refusal reads the row itself and names the fix with its value
   });
 
   test("(b) a state the reader did NOT return is still refused: '#3542 is merged' over a row that reads closed (positive control for the filter)", async () => {
-    const { reply, provider } = harness(closedRow);
-    const refused = /** @type {any} */ (await reply.send("#3542 is merged"));
+    const { provider, result: refused } = await replyOver(closedRow, "#3542 is merged");
     assert.equal(refused.outcome, "refused");
     assert.equal(refused.corrected, undefined);
     assert.match(refused.problems[1].reason, /"merged" is a state word.*the reader returned "closed" for #3542, not "merged"/);
@@ -538,17 +544,16 @@ describe("#3565: a refusal reads the row itself and names the fix with its value
 describe("#3565: a refusal reads the row itself and names the fix with its values in, and the corrected text then sends", () => {
   test("a number neither reader can return is refused with why, and offers nothing to send", async () => {
     const nothing = async () => { throw new Error("HTTP 404"); };
-    const { reply, provider } = harness({ issue: nothing, pr: nothing });
-    const refused = /** @type {any} */ (await reply.send("#9999 is closed"));
+    const { provider, result: refused } = await replyOver({ issue: nothing, pr: nothing }, "#9999 is closed");
     assert.equal(refused.outcome, "refused");
     assert.equal(refused.corrected, undefined);
-    assert.match(refused.problems[0].reason, /neither a row nor a pull request #9999 could be read \(.*HTTP 404/);
+    const [problem] = refused.problems;
+    assert.match(problem.reason, /neither a row nor a pull request #9999 could be read \(.*HTTP 404/);
     assert.deepEqual(provider.sent, []);
   });
 
   test("(c) a secret-shaped string is still refused, and the row's fix does not carry it into a corrected text", async () => {
-    const { reply, provider } = harness(closedRow);
-    const refused = /** @type {any} */ (await reply.send("#3542 token 123456:fixture-token"));
+    const { provider, result: refused } = await replyOver(closedRow, "#3542 token 123456:fixture-token");
     assert.equal(refused.outcome, "refused");
     assert.equal(refused.corrected, undefined);
     assert.ok(refused.problems.some((problem: any) => /"123456" is a number outside a placeholder/.test(problem.reason)));

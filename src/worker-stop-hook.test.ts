@@ -69,6 +69,19 @@ const declare = (dir: string, atMinutes: number, state: "done" | "waiting-ci" = 
   writeDeclaration(`${dir}/${WORKER_STATE_DIR}`, { session: SESSION, state, at: T0 + atMinutes * MIN, ...(state === "done" ? {} : { pr: { number: 901 } }) });
 const countFile = (dir: string) => `${dir}/${STOP_HOOK_DIR}/${SESSION}.json`;
 const ledgerEntries = (dir: string) => (existsSync(`${dir}/${FAILURE_LEDGER_FILE}`) ? parseFailureLedger(readFileSync(`${dir}/${FAILURE_LEDGER_FILE}`, "utf8")) : []);
+/** The hook's verdict on a stop, with the session's declaration made `atMinutes` from the clock and a delivery ten minutes before it. */
+const stopVerdictAfterDelivery = (atMinutes: number): number => {
+  const dir = stateDir();
+  declare(dir, atMinutes);
+  writeFileSync(`${dir}/wake-ledger`, `${T0 - 10 * MIN}\t${SESSION}/claim-stalled/row-853\n`);
+  return runHook(OFF, seams(dir)).code;
+};
+/** A row's third consecutive stop, `T0 + 5 min`, after two refusals: the verdict on the third. */
+const thirdStopAtBound = (dir: string, gh: Gh) => {
+  runHook(OFF, seams(dir, { gh }));
+  runHook(OFF, seams(dir, { gh }));
+  return runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
+};
 const OFF = {};
 
 test("POSITIVE CONTROL: a claimed worker with no open pull request and no declaration is refused, and the message names both commands", () => {
@@ -95,14 +108,8 @@ test("a fresh declaration, an open pull request, a merged one, stop_hook_active 
 });
 
 test("the twins of the allowances still refuse: a declaration older than the turn, a closed pull request, another row's", () => {
-  const stale = stateDir();
-  declare(stale, -30);
-  writeFileSync(`${stale}/wake-ledger`, `${T0 - 10 * MIN}\t${SESSION}/claim-stalled/row-853\n`);
-  assert.equal(runHook(OFF, seams(stale)).code, 2, "a delivery to the session after the declaration: it describes an earlier turn");
-  const fresh = stateDir();
-  declare(fresh, -5);
-  writeFileSync(`${fresh}/wake-ledger`, `${T0 - 10 * MIN}\t${SESSION}/claim-stalled/row-853\n`);
-  assert.equal(runHook(OFF, seams(fresh)).code, 0, "twin: the same ledger, a declaration made after the delivery");
+  assert.equal(stopVerdictAfterDelivery(-30), 2, "a delivery to the session after the declaration: it describes an earlier turn");
+  assert.equal(stopVerdictAfterDelivery(-5), 0, "twin: the same ledger, a declaration made after the delivery");
   assert.equal(runHook(OFF, seams(stateDir(), { prs: [{ ...PR_OF_THE_ROW, state: "CLOSED" }] })).code, 2, "closed without merging is not a deliverable");
   assert.equal(runHook(OFF, seams(stateDir(), { prs: [{ number: 7, state: "OPEN", headRefName: "agent/other-row-852", title: "Other (agent-org#852)", labels: [] }] })).code, 2, "another row's pull request");
 });
@@ -137,9 +144,7 @@ test("at the bound, a reason a manager has ALREADY RULED ON restores no label: t
   const dir = stateDir();
   const calls: string[][] = [];
   const gh = fakeGh(calls, "open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "product-manager")]);
-  runHook(OFF, seams(dir, { gh }));
-  runHook(OFF, seams(dir, { gh }));
-  const third = runHook(OFF, seams(dir, { now: T0 + 5 * MIN, gh }));
+  const third = thirdStopAtBound(dir, gh);
   assert.equal(third.code, 0, "the bound");
   assert.ok(!calls.some((args) => args.includes("--add-label")), "no answer label is put back on the row");
   assert.ok(!calls.some((args) => args[0] === "issue" && args[1] === "comment"), "no comment is posted");
@@ -150,16 +155,12 @@ test("negative controls for the ruling at the bound: a ruling older than the wor
   const older = stateDir();
   const olderCalls: string[][] = [];
   const olderGh = fakeGh(olderCalls, "open", [seatComment(T0 - 90 * MIN, "product-manager"), ownBoundComment(T0 - 60 * MIN)]);
-  runHook(OFF, seams(older, { gh: olderGh }));
-  runHook(OFF, seams(older, { gh: olderGh }));
-  runHook(OFF, seams(older, { now: T0 + 5 * MIN, gh: olderGh }));
+  thirdStopAtBound(older, olderGh);
   assert.ok(olderCalls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "a ruling older than the own comment answers nothing new");
   const reviewer = stateDir();
   const reviewerCalls: string[][] = [];
   const reviewerGh = fakeGh(reviewerCalls, "open", [ownBoundComment(T0 - 60 * MIN), seatComment(T0 - 30 * MIN, "reviewer-agent-org-853")]);
-  runHook(OFF, seams(reviewer, { gh: reviewerGh }));
-  runHook(OFF, seams(reviewer, { gh: reviewerGh }));
-  runHook(OFF, seams(reviewer, { now: T0 + 5 * MIN, gh: reviewerGh }));
+  thirdStopAtBound(reviewer, reviewerGh);
   assert.ok(reviewerCalls.some((args) => args.join(" ") === `issue edit 853 --repo ${REPO} --add-label ${ANSWER_PREFIX}product-manager`), "a reviewer's comment is not a ruling");
 });
 

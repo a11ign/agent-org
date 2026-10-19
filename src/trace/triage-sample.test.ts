@@ -21,6 +21,15 @@ const MINUTE = 60_000;
 const made: string[] = [];
 after(() => { for (const dir of made) rmSync(dir, { recursive: true, force: true }); });
 
+/** A scratch directory named by `prefix`, removed after the run, holding `events` as its store file; returns that file's path. */
+function storeWith(prefix: string, events: unknown[]): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  made.push(dir);
+  const store = join(dir, "events.ndjson");
+  writeFileSync(store, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  return store;
+}
+
 let serial = 0;
 /** A manager wake at `at` ms from FROM. `cause` null is a wake whose ledger line named none. */
 const wake = ({ session = "ceo", cause, at, bytes = 1000, lag = 10 }) => {
@@ -158,10 +167,7 @@ test("it refuses what it cannot do honestly", () => {
 });
 
 test("the command prints a sheet from a store file, the same twice, and refuses without a seed", () => {
-  const dir = mkdtempSync(join(tmpdir(), "triage-sample-"));
-  made.push(dir);
-  const store = join(dir, "events.ndjson");
-  writeFileSync(store, `${EVENTS.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  const store = storeWith("triage-sample-", EVENTS);
   const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.ts");
   const run = (...args: (string|undefined)[]) => spawnSync(process.execPath, [script, "--store", store, "--from", new Date(FROM).toISOString(), "--to", new Date(TO).toISOString(), "--size", "20", ...args], { encoding: "utf8" });
   const first = run("--seed", "4074");
@@ -387,10 +393,7 @@ test("the CLI: --labels scores a week-2 sheet against WEEK2_BAR and never reads 
 });
 
 test("the CLI draws only the named classes and says so in its provenance; an unknown name exits 1 with the usage", () => {
-  const dir = mkdtempSync(join(tmpdir(), "triage-cause-"));
-  made.push(dir);
-  const store = join(dir, "events.ndjson");
-  writeFileSync(store, `${EVENTS.map((one) => JSON.stringify(one)).join("\n")}\n`);
+  const store = storeWith("triage-cause-", EVENTS);
   const script = join(dirname(fileURLToPath(import.meta.url)), "triage-sample.ts");
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
   const draw = ["--seed", "4074", "--store", store, "--from", "2026-10-07T00:00:00Z", "--to", "2026-10-08T00:00:00Z", "--size", "20", "--cause", "answer-owed", "--cause", "org-health"];

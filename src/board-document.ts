@@ -540,119 +540,106 @@ function sourceTable(d: any) {
   return rows;
 }
 
+/** Adds one block of Markdown and the blank line the document keeps after it. */
+/** @param {string[]} L @param {string} text */
+function pushBlock(L: string[], text: string) {
+  L.push(text);
+  L.push("");
+}
+
 /** What the rename costs, and why the naming rule is more than a coat of paint. */
 /** @param {string[]} L */
 function renameBackground(L: string[]) {
   const counts = criteriaCounts();
   if (counts) {
-    L.push("### What the tool claims about how many accessibility rules, and the one it withdrew.");
-    L.push("");
-    L.push(`Counted from the source rather than maintained by hand: **${counts.assessed} rules it `
+    pushBlock(L, "### What the tool claims about how many accessibility rules, and the one it withdrew.");
+    pushBlock(L, `Counted from the source rather than maintained by hand: **${counts.assessed} rules it `
       + `assesses**, **${counts.partial} it assesses in part**, and **${counts.reachable} it could reach `
       + "and does not yet.**");
-    L.push("");
     // THE CLAIM IS GONE RATHER THAN RE-DERIVED. It read "None of those numbers moved today" beside three
     // numbers computed from the source -- and one HAD moved (yesterday's edition said 13/9/6 against
     // today's 12/10/6, #251's 4.1.3 partial). Prose asserting a diff nobody computed is the failure this
     // document exists to prevent, and the honest fix is to stop asserting it: nothing records yesterday's
     // counts, so the day's diff cannot be derived here without inventing the comparison.
-    L.push("**One of them nearly moved.** Content on hover or focus is "
+    pushBlock(L, "**One of them nearly moved.** Content on hover or focus is "
       + "claimed as partly assessed. Downgrading it to *reachable* was ruled and then **refused by our "
       + "own coverage test**: the rule still produces findings, and calling it unassessed would document "
       + "a criterion we report on as one we do not. **Partial is true as written**, and it stays.");
-    L.push("");
-    L.push("**What changed is what the check says when it cannot see.** A page that FAILS this rule "
+    pushBlock(L, "**What changed is what the check says when it cannot see.** A page that FAILS this rule "
       + "leaves its panel open, so the check compared a changed page against a changed page and found no "
       + "change. **On a page that passes, the same check is correct** — which is why it read as working "
       + "for exactly as long as it was only ever asked about pages that pass. It now speaks only from a "
       + "baseline it trusts and is silent otherwise, so the claim is narrower than it looked and true. "
       + "Widening it is tracked work.");
-    L.push("");
   }
 
-  L.push("### Commit authorship, disclosed rather than listed as a risk.");
-  L.push("");
-  L.push("An automated test overwrote our identity settings, so some saved changes carry the wrong "
+  pushBlock(L, "### Commit authorship, disclosed rather than listed as a risk.");
+  pushBlock(L, "An automated test overwrote our identity settings, so some saved changes carry the wrong "
     + "author's name — the count and its window are in the table above. **The settings are fixed; the "
     + "record is not**, and we leave it rather than rewrite history other people are building on. It is "
     + "here rather than among the risks because it changes no decision: it is disclosed so that nobody "
     + "discovers it and wonders what else was not mentioned.");
-  L.push("");
 
-  L.push("### The rename, and what it costs to do it before publication rather than after.");
-  L.push("");
-  L.push("Three hundred and fifty-two files in the project mention the old name, and every one of the "
+  pushBlock(L, "### The rename, and what it costs to do it before publication rather than after.");
+  pushBlock(L, "Three hundred and fifty-two files in the project mention the old name, and every one of the "
     + "six things we will publish changes its name. **Doing it now costs a fortnight's care; doing it "
     + "after publication would cost every person who had already installed it** — and there is nobody in "
     + "that position yet, which is exactly why now is the moment.");
-  L.push("");
-  L.push("**The naming rule is what makes it worth more than a coat of paint.** A part that produces one "
+  pushBlock(L, "**The naming rule is what makes it worth more than a coat of paint.** A part that produces one "
     + "kind of evidence carries that in its name; a part belonging to the product itself never does. So "
     + "the screen-reader pieces say so, and the pieces that would serve any future kind of checking do "
     + "not. A second kind of checking can then join without a second rename, which is the debt this "
     + "avoids.");
-  L.push("");
 }
 
 /** Why re-reading the library is expensive, and the programme opened for it. */
 /** @param {string[]} L */
 function throughputBackground(L: string[]) {
   renameBackground(L);
-  L.push("### The architect's two findings, and what was done with each.");
-  L.push("");
-  L.push("**Our development copies read one another's build output rather than their own**, because they "
+  pushBlock(L, "### The architect's two findings, and what was done with each.");
+  pushBlock(L, "**Our development copies read one another's build output rather than their own**, because they "
     + "share one dependency folder between them — so building in your own copy changes nothing the tools "
     + "see, which cost an engineer an hour convinced a component was broken when it was faithfully using "
     + "two-hour-old code. The fix is a different dependency tool that gives each copy its own; it is "
     + "**scheduled for after publication**, because that tool sits on the publishing path and changing it "
     + "a fortnight before the one irreversible step is the wrong order.");
-  L.push("");
-  L.push("**What accumulates on the single machine we run everything from is now measured rather than "
+  pushBlock(L, "**What accumulates on the single machine we run everything from is now measured rather than "
     + "guessed at** — thirty-six working copies, 4.4 gigabytes of them, a gigabyte of Python "
     + "environments, and a 417-megabyte local copy of the test library. **Each now gets a rule or a "
     + "recorded decision that it needs none**, rather than a clear-out that decays: the one accumulator "
     + "that was given a rule today is the one that stopped growing.");
-  L.push("");
-  L.push("### Why re-reading every test page is expensive, and the programme opened for it.");
-  L.push("");
-  L.push("The tool learns from several thousand recordings of a screen reader reading web pages. "
+  pushBlock(L, "### Why re-reading every test page is expensive, and the programme opened for it.");
+  pushBlock(L, "The tool learns from several thousand recordings of a screen reader reading web pages. "
     + "Changing anything that alters what those recordings contain means making them all again, which "
     + "costs hours of machine time — and that is why a list of improvements sits deferred. The "
     + `${numberWord(STAGES.length).toLowerCase()} stages are: ${STAGES.join("; ")}.`);
-  L.push("");
-  L.push("### Why the capacity measure is not instrumented yet, and what the first design got wrong.");
-  L.push("");
-  L.push("The measure is the gap between a session finishing a piece of work and being given the next. "
+  pushBlock(L, "### Why the capacity measure is not instrumented yet, and what the first design got wrong.");
+  pushBlock(L, "The measure is the gap between a session finishing a piece of work and being given the next. "
     + "The first design keyed it on who a row was assigned to — and **every session in this project "
     + "operates as the same account**, of which there are two assignable and nine sessions. It could "
     + "have recorded *assigned* and never *which*, accruing a week of data that could not answer the "
     + "question it was collected for. It now keys on a per-session label instead, which carries "
     + "attribution and timing in one mechanism.");
-  L.push("");
-  L.push("**One thing that will distort the first week, recorded now so it cannot be read as progress:** "
+  pushBlock(L, "**One thing that will distort the first week, recorded now so it cannot be read as progress:** "
     + "the rule for taking the next piece of work changed today, from taking it after reporting to "
     + "taking it before. The measured gap becomes structurally smaller from that moment. A first week "
     + "spanning the change will show an improvement that is a definition change rather than anyone "
     + "waiting less.");
-  L.push("");
-  L.push("**WITHDRAWN: a figure this board was given yesterday.** Yesterday's edition said our own "
+  pushBlock(L, "**WITHDRAWN: a figure this board was given yesterday.** Yesterday's edition said our own "
     + "documentation claimed 12.4 seconds to record a page while measurement showed 48.7 — a fourfold "
     + "gap presented as the thing to explain. **Checked on 6 September against everything on disk, it "
     + "cannot be derived.** No document in the project produces 48.7, and the 12.4 comes from three "
     + "retired machines under an older recording format, measured as a median where the other number is "
     + "a rate. Three different things compared as one ratio. There is no fourfold gap, and the stage that "
     + "was to explain it is now the stage that establishes what a page should cost.");
-  L.push("");
-  L.push("**What the same check did establish, on the sample it could read:** the four costliest steps "
+  pushBlock(L, "**What the same check did establish, on the sample it could read:** the four costliest steps "
     + "in recording a page are all the screen reader answering, and everything our own software controls "
     + "sums to under two and a half seconds. If that holds on the current machines, faster software is "
     + "not the lever.");
-  L.push("");
-  L.push("**One figure to discard if the board has heard it: twelve format changes in thirty-two days "
+  pushBlock(L, "**One figure to discard if the board has heard it: twelve format changes in thirty-two days "
     + "is not twelve re-readings of the library.** Five of those versions produced almost no recordings "
     + "at all, and grouping changes together is already done deliberately. We are measuring the true "
     + "rate and expect it several times lower.");
-  L.push("");
 }
 
 /** @param {any} d */

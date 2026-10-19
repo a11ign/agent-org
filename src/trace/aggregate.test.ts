@@ -14,6 +14,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { eventsOfTranscript, PRICES, type TraceEvent } from "./store.ts";
 import { parseMergePaths, readMergePaths, readMoves } from "./trace.ts";
 import { waterfall } from "./waterfall.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const ROW_REPO = "a11ign/a11ign";
 const at = (iso: string) => Date.parse(iso);
@@ -538,10 +539,10 @@ test("PHASE SHARE RENDER: the table, the dearest phase beside each dear row, and
   const text = renderAggregate(aggregate({ events: PHASED_EVENTS, pulls: PHASED_PULLS, rowRepo: ROW_REPO, now: NOW, since: WEEK_B, held: { from: HELD_FROM, basis: "t" } }));
   assert.match(text, /PHASE SHARE over 2 merged rows \(1 with no phase record are in no share\): 3\.5h of wall-clock/);
   assert.match(text, /build +38\.1% of wall-clock \(1\.3h to itself\) +90\.9% of dollars \(\$10\.0000\)/);
+  assert.ok(DEFINITIONS.some((line) => line.startsWith("PHASE SHARE (#3511)")) && DEFINITIONS.some((line) => line.startsWith("DEAREST PHASE (#3511)")));
   assert.match(text, /verify +0\.0% of wall-clock/);
   assert.match(text, /#602 .*\n +dearest phase: build >= \$6\.0000 \(100\.0% of its turns' dollars\); most wall-clock to itself: build 0\.7h \(44\.4%\)/);
   assert.match(text, /#603 .*\n +phases: none \(no phase record of this row in the store\)/);
-  assert.ok(DEFINITIONS.some((line) => line.startsWith("PHASE SHARE (#3511)")) && DEFINITIONS.some((line) => line.startsWith("DEAREST PHASE (#3511)")));
 });
 
 // STORED BEFORE ITS PRICE (#3638). The store keeps the cost a turn had when it was INGESTED, and an unchanged transcript is not read again, so a price added later reached none of the
@@ -817,13 +818,19 @@ test("TRACKER SPLIT: a merged row's turns go to its tracker, the standing seats 
   assert.equal(parts.reduce((sum, part) => sum + part.turns, 0), week.spend.turns, "product + org + unclassified + UNMEASURED + UNPLACED + overhead is every turn of the week");
 });
 
-test("TRACKER SPLIT: week B's open row 301 has no Region read, so its turn is UNCLASSIFIED with row 202's, and the standing seats are four turns", () => {
-  const week = weekOf(report({ trackerOf: TRACKERS }), WEEK_B);
-  assert.deepEqual(week.mergedBy, { product: 1, org: 0, unclassified: 1 });
-  assert.equal(week.spend.byTracker.product.turns, 3); near(week.spend.byTracker.product.dollars, 10);
-  assert.equal(week.spend.byTracker.org.turns, 0);
-  assert.equal(week.spend.byTracker.unclassified.turns, 3); near(week.spend.byTracker.unclassified.dollars, 120);
-  assert.equal(week.spend.overhead.standingSeats.turns, 4); near(week.spend.overhead.standingSeats.dollars, 0.724);
+const WEEK_B_FIGURES = [
+  { name: "the merged rows: one product, one unclassified", check: (week: any) => assert.deepEqual(week.mergedBy, { product: 1, org: 0, unclassified: 1 }) },
+  { name: "product: three turns", check: (week: any) => assert.equal(week.spend.byTracker.product.turns, 3) },
+  { name: "product: $10", check: (week: any) => near(week.spend.byTracker.product.dollars, 10) },
+  { name: "org: no turns", check: (week: any) => assert.equal(week.spend.byTracker.org.turns, 0) },
+  { name: "unclassified: three turns", check: (week: any) => assert.equal(week.spend.byTracker.unclassified.turns, 3) },
+  { name: "unclassified: $120", check: (week: any) => near(week.spend.byTracker.unclassified.dollars, 120) },
+  { name: "standing seats: four turns", check: (week: any) => assert.equal(week.spend.overhead.standingSeats.turns, 4) },
+  { name: "standing seats: $0.724", check: (week: any) => near(week.spend.overhead.standingSeats.dollars, 0.724) },
+];
+
+testEach("TRACKER SPLIT: week B's open row 301 has no Region read, so its turn is UNCLASSIFIED with row 202's, and the standing seats are four turns", WEEK_B_FIGURES, (c) => {
+  c.check(weekOf(report({ trackerOf: TRACKERS }), WEEK_B));
 });
 
 test("TRACKER SPLIT, positive control against a ratio split: the standing seats are not shared out, so product is its own $3.5 and not $3.5 plus its ratio of the $6", () => {
@@ -848,10 +855,13 @@ test("TRACKER SPLIT: a run that does not read Regions (trackerOf not given) puts
   assert.doesNotMatch(String(week.partial), /Region/);
 });
 
-test("TRACKER SPLIT RENDER: the by-tracker lines, the standing-seats line for each week, and the identity line print", () => {
-  const text = renderAggregate(report({ trackerOf: TRACKERS }));
-  assert.match(text, /by tracker \(a merged row's Region/);
-  assert.match(text, /standing seats, not attributed: 2 turns/);
-  assert.match(text, /standing seats, not attributed: 4 turns/);
-  assert.match(text, /every turn of the week = product \+ org \+ unclassified \+ UNMEASURED \+ UNPLACED \+ overhead/);
+const TRACKER_LINES = [
+  { name: "the by-tracker lines", pattern: /by tracker \(a merged row's Region/ },
+  { name: "the standing seats of week A", pattern: /standing seats, not attributed: 2 turns/ },
+  { name: "the standing seats of week B", pattern: /standing seats, not attributed: 4 turns/ },
+  { name: "the identity line", pattern: /every turn of the week = product \+ org \+ unclassified \+ UNMEASURED \+ UNPLACED \+ overhead/ },
+];
+
+testEach("TRACKER SPLIT RENDER: the by-tracker lines, the standing-seats line for each week, and the identity line print", TRACKER_LINES, (c) => {
+  assert.match(renderAggregate(report({ trackerOf: TRACKERS })), c.pattern);
 });

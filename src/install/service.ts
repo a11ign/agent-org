@@ -144,13 +144,19 @@ function hostJson(deps: ServiceDeps): Record<string, unknown> {
   const path = hostFilePath(deps.env, deps.home, deps.read);
   const text = deps.read(path);
   if (text === null) throw new ServiceRefusal(`the terminal service reads its herdr session and port from the host file, and ${path} cannot be read. Run \`agent-org onboard\` first.`);
+  return parseHostObject(text, `the terminal service reads its herdr session and port from the host file, and ${path} is not valid JSON. Fix it, then start the terminal again.`,
+    `${path} does not hold a JSON object, so the terminal service has no herdr session or port to serve`);
+}
+
+/** The host file's text as a JSON object. `notJson` and `notObject` are the refusals for text that is not JSON and for JSON that is not an object. */
+function parseHostObject(text: string, notJson: string, notObject: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new ServiceRefusal(`the terminal service reads its herdr session and port from the host file, and ${path} is not valid JSON. Fix it, then start the terminal again.`);
+    throw new ServiceRefusal(notJson);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new ServiceRefusal(`${path} does not hold a JSON object, so the terminal service has no herdr session or port to serve`);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new ServiceRefusal(notObject);
   return parsed as Record<string, unknown>;
 }
 
@@ -347,14 +353,8 @@ function hostObject(deps: ServiceDeps): Record<string, unknown> | null {
     if (deps.exists(path)) throw new ServiceRefusal(`${path} exists but cannot be read, so the tailnet cannot be checked: make it readable, then run the command again`);
     return null;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new ServiceRefusal(`${path} is not valid JSON, so the tailnet cannot be checked: fix it, then run the command again`);
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new ServiceRefusal(`${path} does not hold a JSON object, so the tailnet cannot be checked: fix it, then run the command again`);
-  return parsed as Record<string, unknown>;
+  return parseHostObject(text, `${path} is not valid JSON, so the tailnet cannot be checked: fix it, then run the command again`,
+    `${path} does not hold a JSON object, so the tailnet cannot be checked: fix it, then run the command again`);
 }
 
 /**

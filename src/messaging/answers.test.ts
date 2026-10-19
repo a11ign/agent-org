@@ -71,6 +71,13 @@ function fixtureGithub(initial = openRow()) {
   };
 }
 
+/** A harness whose GitHub write named `step` throws once, on its next call. @param {string} step */
+function harnessFailingOn(step: string) {
+  const h = harness();
+  h.github.failOnce.add(step);
+  return h;
+}
+
 /** A ledger already holding the ask (sent as message 501) and a reminder (502), an inbound and an answers over it. `restart()` is a NEW process, same file. */
 function harness(initial = openRow(), { orders } = /** @type {{orders?: any}} */ ({})) {
   const path = join(scratch, `ledger-${nextLedger += 1}.jsonl`);
@@ -130,8 +137,7 @@ describe("a button press (done-whens 1 and 4)", () => {
   });
 
   test("the comment is written BEFORE either label: a failed comment leaves the row still asking", async () => {
-    const h = harness();
-    h.github.failOnce.add("comment");
+    const h = harnessFailingOn("comment");
     const result = await h.hear(press(1));
     assert.equal(/** @type {any} */ (result).reason, "write-failed");
     assert.deepEqual(h.github.writes(), ["comment"], "nothing was written after the failed comment");
@@ -161,8 +167,7 @@ describe("a button press (done-whens 1 and 4)", () => {
 
 describe("a button press (done-whens 1 and 4)", () => {
   test("a failure between the steps is RESUMED by the next press, without a second comment", async () => {
-    const h = harness();
-    h.github.failOnce.add("set-answer");
+    const h = harnessFailingOn("set-answer");
     const failed = await h.hear(press(1));
     assert.equal(/** @type {any} */ (failed).reason, "write-failed");
     const row = /** @type {any} */ (h.github.rows.get(`${REPO}#${ROW}`));
@@ -547,8 +552,7 @@ describe("a press on a message that can no longer be answered is told so, and it
     const typed = /** @type {any} */ (await h.hear(reply(1, "yes, publish")));
     assert.equal(typed.reason, "answered");
     assert.equal(typed.clearKeyboard, ASK_REF);
-    const g = harness();
-    g.github.failOnce.add("remove-label");
+    const g = harnessFailingOn("remove-label");
     const failed = /** @type {any} */ (await g.hear(press(1)));
     assert.equal(failed.reason, "write-failed");
     assert.equal(failed.clearKeyboard, null, "the press must be possible again to resume the answer");

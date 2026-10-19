@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { sharedFileOrders, RECHECK_FLAG } from "./shared-file-orders.ts";
+import { testEach } from "../lib/test-each.ts";
 
 type Order = { session: string, fallback?: string, cause: string, causeKey: string, prompt: string, subject: string, discriminator: string };
 type Pr = { number: number, files: { path: string }[], changedFiles: number, labels: { name: string }[], body: string, comments: unknown[],
@@ -89,16 +90,37 @@ test("(2) the CONTROL: two approved pull requests overlapping keep the number or
   assert.equal(ordersOf(prs(), ON)[0].session, "worker-149");
 });
 
-test(`(3) ${RECHECK_FLAG}: a pull request GitHub reports DIRTY against main is told to rebase now, and is not held`, () => {
+type DirtyOrders = { off: Order; on: Order };
+
+const DIRTY_CHECKS: { name: string; check: (orders: DirtyOrders) => void }[] = [
+  {
+    name: "off: the hold, as it always was",
+    check: ({ off }) => assert.match(off.prompt, /Do not rebase onto `main` yet and do not ask for a review; hold behind it/, "off: the hold, as it always was"),
+  },
+  {
+    name: "the same pull request is still the one told",
+    check: ({ on }) => assert.equal(on.session, "worker-149", "the same pull request is still the one told"),
+  },
+  {
+    name: "told to rebase now",
+    check: ({ on }) => assert.match(on.prompt, /Rebase onto `main` now and push: GitHub reports #149 `DIRTY` against `main`/),
+  },
+  { name: "told to resolve the shared file", check: ({ on }) => assert.match(on.prompt, /Resolve `src\/shared\.ts` as you go/) },
+  {
+    name: "not given a hold",
+    check: ({ on }) => assert.doesNotMatch(on.prompt, /pr:hold|Waiting-for|Do not rebase onto/, "a DIRTY pull request is not given a hold (the text may still say a hold would not help)"),
+  },
+  {
+    name: "no 'until DIRTY' sentence",
+    check: ({ on }) => assert.doesNotMatch(on.prompt, /Whichever merges second conflicts/, "the 'until DIRTY' sentence is false once it is DIRTY"),
+  },
+];
+
+testEach(`(3) ${RECHECK_FLAG}: a pull request GitHub reports DIRTY against main is told to rebase now, and is not held`, DIRTY_CHECKS, (c) => {
   const prs = () => [prOf(148, ["src/a.ts", "src/shared.ts"]), prOf(149, ["src/shared.ts"], { mergeStateStatus: "DIRTY" })];
   const [off] = ordersOf(prs(), OFF);
-  assert.match(off.prompt, /Do not rebase onto `main` yet and do not ask for a review; hold behind it/, "off: the hold, as it always was");
   const [on] = ordersOf(prs(), ON);
-  assert.equal(on.session, "worker-149", "the same pull request is still the one told");
-  assert.match(on.prompt, /Rebase onto `main` now and push: GitHub reports #149 `DIRTY` against `main`/);
-  assert.match(on.prompt, /Resolve `src\/shared\.ts` as you go/);
-  assert.doesNotMatch(on.prompt, /pr:hold|Waiting-for|Do not rebase onto/, "a DIRTY pull request is not given a hold (the text may still say a hold would not help)");
-  assert.doesNotMatch(on.prompt, /Whichever merges second conflicts/, "the 'until DIRTY' sentence is false once it is DIRTY");
+  c.check({ off, on });
 });
 
 test("(3) the CONTROL: a pull request that is not DIRTY is still held, with the flag on", () => {

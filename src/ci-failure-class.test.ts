@@ -321,11 +321,17 @@ test("shared failure: a log that cannot be read, a hung check and a PR with a se
   assert.deepEqual(out.orders.map((o) => o.subject), ["pr-2"]);
 });
 
-test("#1557 POSITIVE: an open, UNCLAIMED incident row 16 minutes old (the shape of #5228) holds its four red PRs, wakes none, and is named in the log", () => {
+/** Four red PRs, each with its own install job, and the orders that hold them: the shared-failure tick reads these. */
+function fourRedHolds() {
   const numbers = [4969, 4977, 5001, 5008];
   const gh = ghFake({ jobs: Object.fromEntries(numbers.map((n, i) => [11 + i, installJob()])) });
   const prs = numbers.map((n, i) => redPr(n, 11 + i));
   const orders = numbers.map(redOrder);
+  return { gh, prs, orders };
+}
+
+test("#1557 POSITIVE: an open, UNCLAIMED incident row 16 minutes old (the shape of #5228) holds its four red PRs, wakes none, and is named in the log", () => {
+  const { gh, prs, orders } = fourRedHolds();
   sharedFailureTick(orders, { prs, run: gh.run, log }); // files the row now
   const logs: string[] = [];
   const later = sharedFailureTick(orders, { prs, run: gh.run, log: (line) => logs.push(line), nowMs: Date.now() + 16 * 60_000 });
@@ -337,10 +343,7 @@ test("#1557 POSITIVE: an open, UNCLAIMED incident row 16 minutes old (the shape 
 });
 
 test("#1557 NEGATIVE: an incident row CLOSED by its fix releases its four held PRs at once, naming the row", () => {
-  const numbers = [4969, 4977, 5001, 5008];
-  const gh = ghFake({ jobs: Object.fromEntries(numbers.map((n, i) => [11 + i, installJob()])) });
-  const prs = numbers.map((n, i) => redPr(n, 11 + i));
-  const orders = numbers.map(redOrder);
+  const { gh, prs, orders } = fourRedHolds();
   sharedFailureTick(orders, { prs, run: gh.run, log });
   gh.issues[0].state = "closed";
   gh.issues[0].closedAt = new Date().toISOString();

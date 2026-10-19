@@ -118,11 +118,17 @@ test("#1247 RECORD: a reading is written once; the same reading again is refused
   assert.equal(identityProofs(file)["reviewer"]?.length, 1);
 });
 
-test("#1247 RECORD: a present proof file that does not parse is refused and is not overwritten", () => {
-  const root = tmpDir("identity-canary-1247-garbled-");
+/** A scratch home with the reviewer's app configured, and its identity proof file recorded once. */
+function recordedProof(prefix: string) {
+  const root = tmpDir(prefix);
   const host = hostWithReviewerApp(root);
   const file = identityProofFile({ host, home: root, env: {} });
   recordIdentityProof("reviewer", reading(), { file }); // creates the file and its directory
+  return { host, file };
+}
+
+test("#1247 RECORD: a present proof file that does not parse is refused and is not overwritten", () => {
+  const { host, file } = recordedProof("identity-canary-1247-garbled-");
   writeFileSync(file, "{ not json");
   assert.throws(() => recordIdentityProof("reviewer", reading({ pr: 1248 }), { file }), /does not parse as a map of role to readings/);
   assert.equal(readFileSync(file, "utf8"), "{ not json", "the unreadable record is left as it was");
@@ -130,10 +136,7 @@ test("#1247 RECORD: a present proof file that does not parse is refused and is n
 });
 
 test("#1247 RECORD: a proof file whose role value or reading entry is malformed is refused by the gate and the writer, and is not overwritten", () => {
-  const root = tmpDir("identity-canary-1247-shape-");
-  const host = hostWithReviewerApp(root);
-  const file = identityProofFile({ host, home: root, env: {} });
-  recordIdentityProof("reviewer", reading(), { file }); // creates the file and its directory
+  const { host, file } = recordedProof("identity-canary-1247-shape-");
   const partial = JSON.stringify({ reviewer: [{ who: REVIEWER_BOT }] });
   for (const garbled of ['{"reviewer":{}}', '{"reviewer":"APPROVED"}', '{"reviewer":[null]}', partial, "[]", "null"]) {
     writeFileSync(file, garbled);

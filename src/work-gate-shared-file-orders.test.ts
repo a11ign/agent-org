@@ -14,6 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sharedFileOrders } from "./work-gate/shared-file-orders.ts";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
+import { testEach } from "./lib/test-each.ts";
 
 type Order = { session: string, fallback?: string, cause: string, causeKey: string, prompt: string, subject: string };
 type Pr = { number: number, files: { path: string }[], changedFiles: number, labels: { name: string }[], body: string, comments: unknown[], repoKey?: string, repo?: string,
@@ -159,18 +160,36 @@ test("(7) a keyed repository's order names its pull requests by key, and a wait 
   assert.equal(ordersOf([keyed(148, PR_148), keyed(149, PR_149, { ...held, body: "Waiting-for: merged a11ign/a11ign#148" })]).length, 1, "another repository's #148 is no sequence");
 });
 
-test("(8) a pull request with no `session:` label routes to product-manager, and the text says it has no owner", () => {
+type NoSessionOrders = { order: Order; owned: Order };
+
+const NO_SESSION_CHECKS: { name: string; check: (orders: NoSessionOrders) => void }[] = [
+  { name: "routes to product-manager", check: ({ order }) => assert.equal(order.session, "product-manager") },
+  { name: "says it has no owner", check: ({ order }) => assert.match(order.prompt, /IT HAS NO OWNER/) },
+  {
+    name: "keys its cause to product-manager",
+    check: ({ order }) => assert.match(order.causeKey, /^product-manager\/pr-merge-conflict\/pr-149\/shares\//),
+  },
+  {
+    name: "has no second hop",
+    check: ({ order }) => assert.equal(order.fallback, undefined, "product-manager is already the fallback, so no second hop"),
+  },
+  {
+    name: "takes the hold for whoever is given the pull request",
+    check: ({ order }) => assert.match(order.prompt, /--session=<its-owner>/, "the hold is taken by whoever is given the pull request, not by the reader of this order"),
+  },
+  { name: "CONTROL: a labelled pull request goes to its session", check: ({ owned }) => assert.equal(owned.session, "worker-3419") },
+  { name: "CONTROL: and does not say it has no owner", check: ({ owned }) => assert.doesNotMatch(owned.prompt, /NO OWNER/) },
+  {
+    name: "CONTROL: an owner whose session is gone is routed on",
+    check: ({ owned }) => assert.equal(owned.fallback, "product-manager", "an owner whose session is gone is routed on, as the checkless order's is"),
+  },
+];
+
+testEach("(8) a pull request with no `session:` label routes to product-manager, and the text says it has no owner", NO_SESSION_CHECKS, (c) => {
   const [order] = ordersOf([prOf(148, PR_148), prOf(149, PR_149, { session: null })]);
-  assert.equal(order.session, "product-manager");
-  assert.match(order.prompt, /IT HAS NO OWNER/);
-  assert.match(order.causeKey, /^product-manager\/pr-merge-conflict\/pr-149\/shares\//);
-  assert.equal(order.fallback, undefined, "product-manager is already the fallback, so no second hop");
-  assert.match(order.prompt, /--session=<its-owner>/, "the hold is taken by whoever is given the pull request, not by the reader of this order");
   // the control: with a label it goes to that session and does not say so
   const [owned] = ordersOf([prOf(148, PR_148), prOf(149, PR_149, { session: "worker-3419" })]);
-  assert.equal(owned.session, "worker-3419");
-  assert.doesNotMatch(owned.prompt, /NO OWNER/);
-  assert.equal(owned.fallback, "product-manager", "an owner whose session is gone is routed on, as the checkless order's is");
+  c.check({ order, owned });
 });
 
 test("a pull request with no files read at all, or none handed in, is not an accusation and says nothing", () => {
@@ -181,22 +200,44 @@ test("a pull request with no files read at all, or none handed in, is not an acc
   assert.deepEqual(said, []);
 });
 
-test("(#4624) a dependency bot's pull request overlapping an earlier one goes to ceo with the bot's reason, not 'its label or row names you'", () => {
+type OverlapOrders = { order: Order; rest: Order[] };
+
+const BOT_OVERLAP_CHECKS: { name: string; check: (orders: OverlapOrders) => void }[] = [
+  { name: "POSITIVE CONTROL: the overlap is ordered at all", check: ({ rest }) => assert.equal(rest.length, 0, "POSITIVE CONTROL: the overlap is ordered at all") },
+  { name: "goes to ceo", check: ({ order }) => assert.equal(order.session, "ceo") },
+  {
+    name: "gives the bot's reason",
+    check: ({ order }) => assert.match(order.prompt, /A dependency bot opened it and no session works such a pull request/),
+  },
+  {
+    name: "does not name the session label or the row",
+    check: ({ order }) => assert.doesNotMatch(order.prompt, /its session label, or the row it closes, names you/),
+  },
+  { name: "does not say it has no owner", check: ({ order }) => assert.doesNotMatch(order.prompt, /IT HAS NO OWNER/) },
+];
+
+testEach("(#4624) a dependency bot's pull request overlapping an earlier one goes to ceo with the bot's reason, not 'its label or row names you'", BOT_OVERLAP_CHECKS, (c) => {
   const bot = prOf(149, PR_149, { session: null, headRefName: "dependabot/npm_and_yarn/axe-core-4.14.0", author: { login: "app/dependabot" } } as Partial<Pr>);
   const [order, ...rest] = ordersOf([prOf(148, PR_148), bot]);
-  assert.equal(rest.length, 0, "POSITIVE CONTROL: the overlap is ordered at all");
-  assert.equal(order.session, "ceo");
-  assert.match(order.prompt, /A dependency bot opened it and no session works such a pull request/);
-  assert.doesNotMatch(order.prompt, /its session label, or the row it closes, names you/);
-  assert.doesNotMatch(order.prompt, /IT HAS NO OWNER/);
+  c.check({ order, rest });
 });
 
-test("(#4644) a dead owner's pull request whose row is closed overlapping an earlier one goes to product-manager with the ended owner named", () => {
+const ENDED_OWNER_CHECKS: { name: string; check: (orders: OverlapOrders) => void }[] = [
+  { name: "POSITIVE CONTROL: the overlap is ordered at all", check: ({ rest }) => assert.equal(rest.length, 0, "POSITIVE CONTROL: the overlap is ordered at all") },
+  { name: "goes to product-manager", check: ({ order }) => assert.equal(order.session, "product-manager") },
+  {
+    name: "names the ended owner and the closed row",
+    check: ({ order }) => assert.match(order.prompt, /label names `worker-4624`, which has ENDED, and the row it closed is closed/),
+  },
+  {
+    name: "does not name the session label or the row",
+    check: ({ order }) => assert.doesNotMatch(order.prompt, /its session label, or the row it closes, names you/),
+  },
+  { name: "does not say it has no owner", check: ({ order }) => assert.doesNotMatch(order.prompt, /IT HAS NO OWNER/) },
+];
+
+testEach("(#4644) a dead owner's pull request whose row is closed overlapping an earlier one goes to product-manager with the ended owner named", ENDED_OWNER_CHECKS, (c) => {
   const gone = prOf(149, PR_149, { session: "worker-4624", labelEnded: true, closingRowsClosed: true } as Partial<Pr>);
   const [order, ...rest] = ordersOf([prOf(148, PR_148), gone]);
-  assert.equal(rest.length, 0, "POSITIVE CONTROL: the overlap is ordered at all");
-  assert.equal(order.session, "product-manager");
-  assert.match(order.prompt, /label names `worker-4624`, which has ENDED, and the row it closed is closed/);
-  assert.doesNotMatch(order.prompt, /its session label, or the row it closes, names you/);
-  assert.doesNotMatch(order.prompt, /IT HAS NO OWNER/);
+  c.check({ order, rest });
 });

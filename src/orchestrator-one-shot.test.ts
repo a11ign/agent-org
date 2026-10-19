@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { deliver } from "./wake/fyi-queue.ts";
 import { spawnableRole, type ClaimedRow, type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { SPAWN_CAUSES } from "./wake/exit-and-limits.ts";

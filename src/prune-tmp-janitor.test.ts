@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { testEach } from "./lib/test-each.ts";
 const BASE = mkdtempSync(join(tmpdir(), "prune-tmp-janitor-"));
 after(() => { rmSync(BASE, { recursive: true, force: true }); });
 
@@ -141,14 +142,41 @@ test("#3849: a fixture younger than an hour is REFUSED, with the reason", () => 
   assert.match(verdict.reason, /less than 1\.0h ago, so a test may still be using it/);
 });
 
-test("#3849: a fixture a running process names is REFUSED however old it is, and its neighbour goes", () => {
-  const root = fresh("held");
-  const held = fixture(root, "host-units-held1", { hoursOld: 30 });
-  const free = fixture(root, "host-units-free1", { hoursOld: 30 });
+type Run = ReturnType<typeof run>;
+
+/** A fixture a running process holds is REFUSED, whatever its age; each case checks its own neighbour and the reasons it was refused for. */
+testEach("a fixture a running process holds is REFUSED, and its neighbour is judged on its own", [
+  {
+    name: "#3849: a fixture a running process names is REFUSED however old it is, and its neighbour goes",
+    label: "held",
+    heldName: "host-units-held1",
+    otherName: "host-units-free1",
+    otherHours: 30,
+    check: (held: string, other: string, report: Run) => {
+      assert.ok(existsSync(held), "a held fixture must still be there");
+      assert.equal(existsSync(other), false, "the same age, not held, must be gone: the refusal is the HELD check and not the age");
+      assert.match(report.refused.find((entry) => entry.path === held)!.reason, /a running process holds this/);
+    },
+  },
+  {
+    name: "A11-60: a leaked-family fixture younger than an hour, or one a process holds, is kept and says why",
+    label: "leaked-keep",
+    heldName: "installed-layout-held1",
+    otherName: "patch-target-young1",
+    otherHours: 0.25,
+    check: (held: string, young: string, report: Run) => {
+      assert.ok(existsSync(young), "a young fixture stays");
+      assert.ok(existsSync(held), "a held fixture stays");
+      assert.match(report.refused.find((entry) => entry.path === young)!.reason, /less than 1\.0h ago/);
+      assert.match(report.refused.find((entry) => entry.path === held)!.reason, /a running process holds this/);
+    },
+  },
+], (c) => {
+  const root = fresh(c.label);
+  const held = fixture(root, c.heldName, { hoursOld: 30 });
+  const other = fixture(root, c.otherName, { hoursOld: c.otherHours });
   const report = run(root, { procRoot: procHolding(held) });
-  assert.ok(existsSync(held), "a held fixture must still be there");
-  assert.equal(existsSync(free), false, "the same age, not held, must be gone: the refusal is the HELD check and not the age");
-  assert.match(report.refused.find((entry) => entry.path === held)!.reason, /a running process holds this/);
+  c.check(held, other, report);
 });
 
 // A11-60: the prefixes the 2026-10-17 pile carried, which the list did not name until that day (`FIXTURE_PREFIXES` after its first sixteen).
@@ -184,17 +212,6 @@ test("A11-60: a /tmp of 3N leaked-family fixtures needs three runs, and a fourth
   const fourth = run(root);
   assert.equal(fourth.removed.length, 0);
   assert.match(formatAppliedReport(fourth), /nothing to remove: 0 classified path\(s\) found/);
-});
-
-test("A11-60: a leaked-family fixture younger than an hour, or one a process holds, is kept and says why", () => {
-  const root = fresh("leaked-keep");
-  const young = fixture(root, "patch-target-young1", { hoursOld: 0.25 });
-  const held = fixture(root, "installed-layout-held1", { hoursOld: 30 });
-  const report = run(root, { procRoot: procHolding(held) });
-  assert.ok(existsSync(young), "a young fixture stays");
-  assert.ok(existsSync(held), "a held fixture stays");
-  assert.match(report.refused.find((entry) => entry.path === young)!.reason, /less than 1\.0h ago/);
-  assert.match(report.refused.find((entry) => entry.path === held)!.reason, /a running process holds this/);
 });
 
 test("#3849: a file, or a symlink, with a fixture's name is not walked at all", () => {

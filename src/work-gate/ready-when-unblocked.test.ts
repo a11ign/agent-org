@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { NOT_STARTABLE } from "./vocabulary.ts";
+import { testEach } from "../lib/test-each.ts";
 import { unclaimedBlockerClearedOrders, unclaimedClearings } from "./causes/rows-blocker-cleared.ts";
 import { PROMOTED_REASON, declaresReadyWhenUnblocked, promoteReadyWhenUnblocked, reportReadyWhenUnblocked } from "./ready-when-unblocked.ts";
 
@@ -106,16 +107,26 @@ test("THE DECLARATION IS RE-READ TOO: a line removed since the tick read the row
   assert.ok(!calls.includes("promote 10"));
 });
 
-test("AN EDGE THAT REOPENED SINCE THE TICK READ IT IS A WAIT AGAIN: the fresh read's `blockedBy` is what decides, not the tick's snapshot", () => {
+type ReopenedRun = ReturnType<typeof tick>;
+
+const REOPENED_EDGE_CHECKS: { name: string; check: (run: ReopenedRun) => void }[] = [
+  { name: "promotes nothing", check: ({ result }) => assert.deepEqual(result.promoted, []) },
+  { name: "keeps the row for the waiting reason", check: ({ result }) => assert.match(result.kept[0].reason, /waiting again \(row\)/) },
+  { name: "writes no promotion", check: ({ calls }) => assert.ok(!calls.includes("promote 10")) },
+  { name: "logs the row as not promoted", check: ({ log }) => assert.match(log[0], /^NOT PROMOTED #10 /) },
+  {
+    name: "leaves the row to product-manager",
+    check: ({ asked }) => assert.deepEqual(asked, ["row-10"], "left alone, so product-manager is asked as before (the tick's snapshot still says cleared)"),
+  },
+  {
+    name: "a closed edge on the same fresh read promotes",
+    check: () => assert.deepEqual(tick({ rows: [tickRow(10)], live: { 10: { blockedBy: { nodes: [{ number: 1, state: "CLOSED" }] } } } }).result.promoted, [10], "the same fresh read with the edge still closed promotes, so only the reopened edge stopped it"),
+  },
+];
+
+testEach("AN EDGE THAT REOPENED SINCE THE TICK READ IT IS A WAIT AGAIN: the fresh read's `blockedBy` is what decides, not the tick's snapshot", REOPENED_EDGE_CHECKS, (c) => {
   const reopened = { nodes: [{ number: 1, state: "OPEN" }] };
-  const { result, calls, log, asked } = tick({ rows: [tickRow(10)], live: { 10: { blockedBy: reopened } } });
-  assert.deepEqual(result.promoted, []);
-  assert.match(result.kept[0].reason, /waiting again \(row\)/);
-  assert.ok(!calls.includes("promote 10"));
-  assert.match(log[0], /^NOT PROMOTED #10 /);
-  assert.deepEqual(asked, ["row-10"], "left alone, so product-manager is asked as before (the tick's snapshot still says cleared)");
-  const stillClosed = tick({ rows: [tickRow(10)], live: { 10: { blockedBy: { nodes: [{ number: 1, state: "CLOSED" }] } } } });
-  assert.deepEqual(stillClosed.result.promoted, [10], "the same fresh read with the edge still closed promotes, so only the reopened edge stopped it");
+  c.check(tick({ rows: [tickRow(10)], live: { 10: { blockedBy: reopened } } }));
 });
 
 test("a `Not-before:` still in the future is not promoted, whether the tick saw it or only the fresh read did", () => {

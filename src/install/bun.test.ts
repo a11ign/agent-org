@@ -4,6 +4,16 @@ import assert from "node:assert/strict";
 import { crc32, deflateRawSync } from "node:zlib";
 import { bunAsset, bunReleaseUrl, ensureBun, findBun, zipEntry, type BunDeps } from "./bun.ts";
 
+/** A little-endian record of `size` bytes, with each `[offset, bits, value]` field written at its offset; `bits` is 16 or 32. */
+function recordOf(size: number, fields: [offset: number, bits: 16 | 32, value: number][]): Buffer {
+  const record = Buffer.alloc(size);
+  for (const [offset, bits, value] of fields) {
+    if (bits === 32) record.writeUInt32LE(value, offset);
+    else record.writeUInt16LE(value, offset);
+  }
+  return record;
+}
+
 /** A zip holding `entries`, each deflated or stored, as `zip` would write it. */
 function makeZip(entries: Record<string, Buffer>, store = false): Buffer {
   const locals: Buffer[] = [];
@@ -12,21 +22,8 @@ function makeZip(entries: Record<string, Buffer>, store = false): Buffer {
   for (const [name, data] of Object.entries(entries)) {
     const body = store ? data : deflateRawSync(data);
     const nameBytes = Buffer.from(name);
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(store ? 0 : 8, 8);
-    local.writeUInt32LE(crc32(data), 14);
-    local.writeUInt32LE(body.length, 18);
-    local.writeUInt32LE(data.length, 22);
-    local.writeUInt16LE(nameBytes.length, 26);
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE(store ? 0 : 8, 10);
-    central.writeUInt32LE(crc32(data), 16);
-    central.writeUInt32LE(body.length, 20);
-    central.writeUInt32LE(data.length, 24);
-    central.writeUInt16LE(nameBytes.length, 28);
-    central.writeUInt32LE(offset, 42);
+    const local = recordOf(30, [[0, 32, 0x04034b50], [8, 16, store ? 0 : 8], [14, 32, crc32(data)], [18, 32, body.length], [22, 32, data.length], [26, 16, nameBytes.length]]);
+    const central = recordOf(46, [[0, 32, 0x02014b50], [10, 16, store ? 0 : 8], [16, 32, crc32(data)], [20, 32, body.length], [24, 32, data.length], [28, 16, nameBytes.length], [42, 32, offset]]);
     locals.push(local, nameBytes, body);
     centrals.push(central, nameBytes);
     offset += 30 + nameBytes.length + body.length;

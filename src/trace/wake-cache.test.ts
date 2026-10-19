@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ACTION, DEFINITIONS, GAP, isCold, NOT_DERIVABLE, renderWakeCache, wakeCache } from "./wake-cache.ts";
+import { testEach } from "../lib/test-each.ts";
 
 const T0 = Date.parse("2026-10-05T00:00:00Z");
 const minute = (n: number) => T0 + n * 60_000;
@@ -87,21 +88,25 @@ test("the first turn after each wake is counted once per wake, never every turn 
   near(ceo.share, 126_500 / 133_600);
 });
 
-test("kept, compacted and cleared wakes are three figures, never one (positive control: pooling them is RED)", () => {
-  const kept = action("ceo", ACTION.KEPT);
-  assert.equal(kept.wakes, 3); // w2, w3, w5
-  assert.equal(kept.write.p50, 2_000); // nearest rank of [1,000 2,000 31,000]
-  assert.equal(kept.write.total, 34_000);
-  const compacted = action("ceo", ACTION.COMPACTED);
-  assert.equal(compacted.wakes, 1); // w6, by the compaction at minute 209
-  assert.equal(compacted.write.p50, 33_000);
-  const cleared = action("ceo", ACTION.CLEARED);
-  assert.equal(cleared.wakes, 3); // w1 (transcript Z to A), w4 (A to B), w8 (B to C)
-  assert.equal(cleared.write.p50, 29_000); // nearest rank of [500 29,000 30,000]
-  assert.equal(cleared.write.p90, 30_000);
-  assert.equal(cleared.write.total, 59_500);
-  assert.notEqual(kept.write.p50, cleared.write.p50);
-  assert.equal(action("ceo", ACTION.UNKNOWN).wakes, 0); // every ceo wake had a previous turn, w0's, which lies BEFORE the window
+const FIGURES = [
+  { name: "kept: three wakes, w2, w3, w5", which: ACTION.KEPT, read: (a: any) => a.wakes, expected: 3 },
+  { name: "kept: the median write is 2,000, nearest rank of [1,000 2,000 31,000]", which: ACTION.KEPT, read: (a: any) => a.write.p50, expected: 2_000 },
+  { name: "kept: the writes total 34,000", which: ACTION.KEPT, read: (a: any) => a.write.total, expected: 34_000 },
+  { name: "compacted: one wake, w6, by the compaction at minute 209", which: ACTION.COMPACTED, read: (a: any) => a.wakes, expected: 1 },
+  { name: "compacted: the median write is 33,000", which: ACTION.COMPACTED, read: (a: any) => a.write.p50, expected: 33_000 },
+  { name: "cleared: three wakes, w1 (transcript Z to A), w4 (A to B), w8 (B to C)", which: ACTION.CLEARED, read: (a: any) => a.wakes, expected: 3 },
+  { name: "cleared: the median write is 29,000, nearest rank of [500 29,000 30,000]", which: ACTION.CLEARED, read: (a: any) => a.write.p50, expected: 29_000 },
+  { name: "cleared: the p90 write is 30,000", which: ACTION.CLEARED, read: (a: any) => a.write.p90, expected: 30_000 },
+  { name: "cleared: the writes total 59,500", which: ACTION.CLEARED, read: (a: any) => a.write.total, expected: 59_500 },
+  { name: "unknown: no wakes, since every ceo wake had a previous turn, w0's, which lies BEFORE the window", which: ACTION.UNKNOWN, read: (a: any) => a.wakes, expected: 0 },
+];
+
+testEach("kept, compacted and cleared wakes are three figures, never one (positive control: pooling them is RED)", FIGURES, (c) => {
+  assert.equal(c.read(action("ceo", c.which)), c.expected);
+});
+
+test("kept and cleared wakes are not pooled: their median writes differ", () => {
+  assert.notEqual(action("ceo", ACTION.KEPT).write.p50, action("ceo", ACTION.CLEARED).write.p50);
 });
 
 test("each action is split by the gap since the previous turn, and a kept wake after a lapse is its own figure", () => {

@@ -18,6 +18,7 @@ import { startedPanes } from "./packaging/started-pane.ts";
 import { addressed, deliver } from "./wake/fyi-queue.ts";
 import { type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { HAIKU_MODEL_ID, type TierProfile } from "./worker-profile.ts";
+import { testEach } from "./lib/test-each.ts";
 
 const HAIKU = "claude-haiku-5-5";
 const SONNET = "claude-sonnet-5-5";
@@ -84,18 +85,14 @@ test("a spawned seat with no profile (a resume into its worktree) gets nothing",
   assert.ok(carriesNone(text));
 });
 
-test("a standing seat on Haiku with the flag on is byte-identical to the flag off", () => {
-  const standing = { session: "orchestrator", prompt: "Read the tick." };
-  const off = withHost(flagOff, () => addressed(standing, "orchestrator", { model: HAIKU, engineers: [] }));
-  const on = withHost(flagOn, () => addressed(standing, "orchestrator", { model: HAIKU, engineers: [] }));
-  assert.equal(on, off);
-  assert.ok(carriesNone(on));
-});
+const HAIKU_SEATS = [
+  { name: "a standing seat", order: { session: "orchestrator", prompt: "Read the tick." }, label: "orchestrator" },
+  { name: "a reviewer", order: { session: "reviewer-5113", prompt: "Review the pull request.", cause: "draft-awaiting-verdict" }, label: "reviewer-5113" },
+];
 
-test("a reviewer on Haiku with the flag on is byte-identical to the flag off", () => {
-  const reviewer = { session: "reviewer-5113", prompt: "Review the pull request.", cause: "draft-awaiting-verdict" };
-  const off = withHost(flagOff, () => addressed(reviewer, "reviewer-5113", { model: HAIKU, engineers: [] }));
-  const on = withHost(flagOn, () => addressed(reviewer, "reviewer-5113", { model: HAIKU, engineers: [] }));
+testEach("a seat on Haiku with the flag on is byte-identical to the flag off", HAIKU_SEATS, (c) => {
+  const off = withHost(flagOff, () => addressed(c.order, c.label, { model: HAIKU, engineers: [] }));
+  const on = withHost(flagOn, () => addressed(c.order, c.label, { model: HAIKU, engineers: [] }));
   assert.equal(on, off);
   assert.ok(carriesNone(on));
 });

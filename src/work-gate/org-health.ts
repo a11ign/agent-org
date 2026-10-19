@@ -12,10 +12,10 @@
 // `redPrFacts` STAYED in `work-gate.ts`: it is the one place the gate asks `red-pr.ts`'s `isBrokenRed`, and
 // `org-health.test.ts`'s #2956 guard accepts a file that reads the rollup only if it imports that decider, so the
 // import and its one caller stay together. `work-gate.ts` re-exports every name this file exports that it exported before.
-import { REPO_CHECKOUT } from "./reads.ts";
+import { REPO_CHECKOUT, webhookMode } from "./reads.ts";
 import { HOUR_MS, MAX_ROW_ORDERS_PER_TICK, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR } from "./vocabulary.ts";
 import { fleetBatchRows } from "./causes/rows-fleet-batch.ts";
-import { defaultRun, repoNow } from "./reads/read-memo-and-exit.ts";
+import { defaultRun, repoNow, forgetReads, readWithFirstWaveTogether } from "./reads/read-memo-and-exit.ts";
 import { shouldBeMerging } from "./causes/pr-checks.ts";
 import { dispatchedLabJobsOrSay } from "./tick/blocker-cleared-reading.ts";
 import { redPrFacts } from "./tick.ts";
@@ -53,8 +53,6 @@ import { stallReasonOf, ownerOfPr, reviewGateOf } from "./pr-orders/red-only-by-
 import { reviewHeadsOf } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571
-import { forgetReads, readWithFirstWaveTogether } from "./reads/read-memo-and-exit.ts";
-import { webhookMode } from "./reads.ts";
 import { GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory } from "./pacing.ts"; // agent-org#1418: the sweep's promise and the memory of whole reads
 import { stateEntryPath } from "../host-config.ts"; // agent-org#1145: the child's write makes the memo's answers stale
 import { readFileSync } from "node:fs";
@@ -579,17 +577,17 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
     ...(milestoneClock !== undefined && { milestoneClock }), // #4231: the same rows and PRs, and no call of its own
     ...(pools !== undefined && { pools: pools.length > 0 ? pools : null }),
     ...toolAgreementFact(readToolAgreement()),
-    ...nodeStripsFact(readNodeStrips()), // #4390
-    ...releaseRunsFact(releaseRuns), // #4001
+    ...factOrNothing("nodeStrips", readNodeStrips()), // #4390
+    ...factOrNothing("releaseRuns", releaseRuns), // #4001
     ...(releaseFailures !== undefined && { releaseFailures }), // agent-org#887: one reading per released repository, which replaces the one above
-    ...fleetBuildIncidentFact(readFleetBuildIncident()), // #4405
-    ...releaseBehindFact(readReleaseBehind()), // #4128
-    ...classRepeatFact(readClassRepeat()), // #4126
-    ...teamAccessFact(teamAccess()),
-    ...flagSwitchesFact(readFlagSwitches()), // agent-org#1135
-    ...tickRecordFact(readTickRecord()), // agent-org#1208
-    ...sweepsFact(readSweeps()), // agent-org#1418
-    ...tickHealthFact(readTickHealth()),
+    ...factOrNothing("fleetBuildIncident", readFleetBuildIncident()), // #4405
+    ...factOrNothing("releaseBehind", readReleaseBehind()), // #4128
+    ...factOrNothing("classRepeat", readClassRepeat()), // #4126
+    ...factOrNothing("teamAccess", teamAccess()), // #3634
+    ...factOrNothing("flagSwitches", readFlagSwitches()), // agent-org#1135
+    ...factOrNothing("tickRecord", readTickRecord()), // agent-org#1208
+    ...factOrNothing("sweeps", readSweeps()), // agent-org#1418
+    ...factOrNothing("tickHealth", readTickHealth()), // agent-org#1135
     ...(readSessionPrOutside && { sessionPrOutside: readSessionPrOutside() }), // agent-org#1667
     ...boardTruthFact({ openRowsRead, claimedComments, waitFacts: waits?.facts ?? null, now }, readBoardTruth), // #4045
   };
@@ -1000,28 +998,9 @@ function withoutHeld(prs: any[], held: { subject: string; }[] | undefined) {
 /** #3533: THE FACT, OR NOTHING. `undefined` is a caller that does not ask (and a host that declares no tool): the key is then left out, and `orgHealthReadings` reads an omitted one as silent. */
 const toolAgreementFact = (read: ReturnType<typeof import("../org-health/board-truth-readings.ts").readToolAgreement>): { toolAgreement?: { now: number; result: any; } | null; } => (read === undefined ? {} : { toolAgreement: read });
 
-/** #4390: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused read, which the signal says is unknown. */
-const nodeStripsFact = (read: import("../node-strips-types.ts").NodeStripFact | null | undefined) => (read === undefined ? {} : { nodeStrips: read });
-
-/** #4001: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused read, which the signal says is unknown. */
-const releaseRunsFact = (read: import("../org-health/sweep-readings.ts").ReleaseRuns | null | undefined) => (read === undefined ? {} : { releaseRuns: read });
-
-/** #4405: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused list of the open incidents, which the signal says is unknown, never clear. */
-const fleetBuildIncidentFact = (read: import("../org-health/fleet-build-readings.ts").FleetBuildIncident[] | null | undefined) => (read === undefined ? {} : { fleetBuildIncident: read });
-
-/** #4128: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused listing of the repositories, which the signal says is unknown. */
-const releaseBehindFact = (read: import("../release-behind-main.ts").RepoFact[] | null | undefined) => (read === undefined ? {} : { releaseBehind: read });
-
-/** #4126: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` or `{ unreadable }` a refused read, which the signal says is unknown. */
-const classRepeatFact = (read: import("../class-repeat.ts").ClassRepeatFact | null | undefined) => (read === undefined ? {} : { classRepeat: read });
-
-/** #3634: THE FACT, OR NOTHING, as `toolAgreementFact`: `undefined` is a project that declares no `teamAccess`, so the reading is silent. */
-const teamAccessFact = (read: import("../org-health/board-truth-readings.ts").TeamAccessFact | undefined) => (read === undefined ? {} : { teamAccess: read });
-/** agent-org#1135: `undefined` is a caller that does not ask (silent), `null` a read that was refused (a stated unknown). */
-const tickHealthFact = (read: import("../work-tick-health.ts").TickHealth | null | undefined) => (read === undefined ? {} : { tickHealth: read });
-const tickRecordFact = (read: import("../work-tick-health.ts").TickRecordState | undefined) => (read === undefined ? {} : { tickRecord: read });
-const flagSwitchesFact = (read: import("../flag-switch-ledger.ts").FlagLedger | null | undefined) => (read === undefined ? {} : { flagSwitches: read });
-const sweepsFact = (read: SweepFact | undefined) => (read === undefined ? {} : { sweeps: read });
+/** THE FACT, OR NOTHING: `undefined` is a caller that does not ask (silent, the key left out), and `null` a refused read, which the signal says is unknown. */
+const factOrNothing = <K extends string, T>(key: K, read: T | undefined): Partial<Record<K, T>> =>
+  (read === undefined ? {} : ({ [key]: read } as Record<K, T>));
 
 /**
  * agent-org#1418: each declared repository's last WHOLE read, as the webhook gate stamps it in `other-scopes-memory.json`. A poll host stamps nothing, so

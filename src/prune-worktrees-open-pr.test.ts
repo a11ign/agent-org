@@ -14,6 +14,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { testEach } from "./lib/test-each.ts";
 
 const BASE = realpathSync(mkdtempSync(join(tmpdir(), "prune-open-pr-")));
 after(() => { rmSync(BASE, { recursive: true, force: true }); });
@@ -136,16 +137,37 @@ test("#1167 OFF: an explicit `holdOpenPr: false` is the same as omitting it -- r
   assert.deepEqual(report.held, []);
 });
 
-test("#1167: a listing that FAILS keeps every removable tree and says so -- nothing is removed on an unknown", () => {
+type Primary = ReturnType<typeof buildPrimary>;
+type Report = ReturnType<typeof pruneWorktrees>;
+
+/** Each case keeps its tree on disk when the open-PR listing cannot be used, and checks the reason the report gives for it. */
+testEach("#1167: an open-PR listing the hold cannot use keeps the tree, and says why", [
+  {
+    name: "#1167: a listing that FAILS keeps every removable tree and says so -- nothing is removed on an unknown",
+    arrange: (primary: Primary) => pushedTree(primary, "wt-1167-d").path,
+    openPulls: () => listOpenPulls({ gh: () => { throw new Error("HTTP 502: bad gateway"); } }),
+    check: (report: Report, path: string) => {
+      assert.match(report.held[0].reason, /could not be listed/);
+      assert.match(report.held[0].reason, /HTTP 502: bad gateway/);
+      assert.ok(existsSync(path), "a tree that could not be checked must stay on disk");
+    },
+  },
+  {
+    name: "#1167: a stamped tree whose session label is on an open PR is kept, though its own work is on main",
+    arrange: (primary: Primary) => deliveredStampedTree(primary, "wt-1167-f", "worker-1167-f").path,
+    openPulls: LISTING([{ number: 1202, url: "https://example.invalid/pull/1202", headRefName: "feature/other", labels: [{ name: "session:worker-1167-f" }] }]),
+    check: (report: Report) => {
+      assert.match(report.held[0].reason, /open pull request #1202/);
+      assert.match(report.held[0].reason, /carries session:worker-1167-f/);
+    },
+  },
+], (c) => {
   const primary = buildPrimary();
-  const { path } = pushedTree(primary, "wt-1167-d");
-  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true,
-    openPulls: () => listOpenPulls({ gh: () => { throw new Error("HTTP 502: bad gateway"); } }) });
+  const path = c.arrange(primary);
+  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true, openPulls: c.openPulls });
   assert.deepEqual(report.removed, []);
   assert.deepEqual(report.held.map((r) => r.path), [path]);
-  assert.match(report.held[0].reason, /could not be listed/);
-  assert.match(report.held[0].reason, /HTTP 502: bad gateway/);
-  assert.ok(existsSync(path), "a tree that could not be checked must stay on disk");
+  c.check(report, path);
 });
 
 test("#1167: a listing that returns something other than a list also keeps everything", () => {
@@ -156,17 +178,6 @@ test("#1167: a listing that returns something other than a list also keeps every
   assert.deepEqual(report.removed, []);
   assert.deepEqual(report.held.map((r) => r.path), [path]);
   assert.match(report.held[0].reason, /did not return a list/);
-});
-
-test("#1167: a stamped tree whose session label is on an open PR is kept, though its own work is on main", () => {
-  const primary = buildPrimary();
-  const { path } = deliveredStampedTree(primary, "wt-1167-f", "worker-1167-f");
-  const report = pruneWorktrees(primary.root, { now: IDLE_PAST_AGE(), claim: NOBODY_CLAIMS, holdOpenPr: true,
-    openPulls: LISTING([{ number: 1202, url: "https://example.invalid/pull/1202", headRefName: "feature/other", labels: [{ name: "session:worker-1167-f" }] }]) });
-  assert.deepEqual(report.removed, []);
-  assert.deepEqual(report.held.map((r) => r.path), [path]);
-  assert.match(report.held[0].reason, /open pull request #1202/);
-  assert.match(report.held[0].reason, /carries session:worker-1167-f/);
 });
 
 test("#1167 NEGATIVE: the flag ON with open PRs that name neither the branch nor the session removes the tree", () => {

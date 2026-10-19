@@ -108,11 +108,17 @@ function gateOver(host: ReturnType<typeof fakeHost>, written: string[]): Toolcha
   };
 }
 
-test("#1169 REFUSAL: a claimed tree whose node_modules resolves no typescript is not handed to its worker; the refusal names it, the claim is released, no pane opens", () => {
-  const host = fakeHost([`${ROW_DIR}/package.json`]);
+/** The claimed row spawned over a tree with a package.json, and a claim install line when `install` is given: the host, the herdr fake, what the row writer got, and the spawn's result. */
+function spawnOverClaim(install?: string) {
+  const host = fakeHost([`${ROW_DIR}/package.json`], install);
   const herdr = fakeHerdr();
   const written: string[] = [];
   const got = spawn(host, herdr, gateOver(host, written));
+  return { host, herdr, written, got };
+}
+
+test("#1169 REFUSAL: a claimed tree whose node_modules resolves no typescript is not handed to its worker; the refusal names it, the claim is released, no pane opens", () => {
+  const { host, herdr, written, got } = spawnOverClaim();
 
   assert.deepEqual(got.sent, [], JSON.stringify(got));
   assert.equal(got.refused.length, 1, JSON.stringify(got));
@@ -186,10 +192,7 @@ test("#1169 a real `node_modules` link that resolves nothing is named on disk; a
 
 test("#1169 (agent-org#1265) a refusal names the claim's install when it failed: `install failed: <first error line>` is in the reason and on the row", () => {
   const line = "install failed: ERR_PNPM_FETCH_404 GET https://registry.example/typescript: Not Found";
-  const host = fakeHost([`${ROW_DIR}/package.json`], line);
-  const herdr = fakeHerdr();
-  const written: string[] = [];
-  const got = spawn(host, herdr, gateOver(host, written));
+  const { host, written, got } = spawnOverClaim(line);
 
   assert.deepEqual(got.sent, [], JSON.stringify(got));
   assert.equal(got.refused.length, 1, JSON.stringify(got));
@@ -199,10 +202,7 @@ test("#1169 (agent-org#1265) a refusal names the claim's install when it failed:
 });
 
 test("#1169 (agent-org#1265) a refusal says `no install ran` when the claim's STARTED line carries no install outcome", () => {
-  const host = fakeHost([`${ROW_DIR}/package.json`]);
-  const herdr = fakeHerdr();
-  const written: string[] = [];
-  const got = spawn(host, herdr, gateOver(host, written));
+  const { written, got } = spawnOverClaim();
 
   assert.equal(got.refused.length, 1, JSON.stringify(got));
   assert.ok(got.refused[0].includes("the claim's install: no install ran"), `the refusal says no install ran: ${JSON.stringify(got)}`);

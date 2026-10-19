@@ -30,6 +30,7 @@ import { readFileSync, existsSync, readdirSync} from "node:fs";
 import { fileURLToPath } from "node:url";
 import { OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";
 import path from "node:path";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { REPO } from "./project-identity.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 // A LEAF module with no imports of its own (#804), so this cannot form a cycle -- the same property that

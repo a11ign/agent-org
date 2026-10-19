@@ -62,6 +62,7 @@ import { observeWatched } from "./sources/watched.ts";
 import { observeSummary } from "./sources/summary.ts";
 import { parseRequestKey, readRequests } from "./sources/requests.ts";
 import { createWatchReaders, hostFiles } from "./watch-list.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { walkPosition } from "./walk.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent } from "../failure-ledger.ts";
 import { readUnitsDeclaration, stateEntryPath } from "../host-config.ts";
