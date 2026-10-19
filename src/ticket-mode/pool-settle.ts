@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
 import { ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { batchPlanDone, finish, noteWorking, park, planDone, unpark } from "./queue/approve.ts";
+import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, unpark } from "./queue/approve.ts";
 import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
@@ -17,6 +17,7 @@ import { countTokens, findTranscript } from "./pool-transcripts.ts";
 import { isParked } from "./board-view/settled-by-pulls.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
 
 /**
  * A run's agent wrote `working`: its reason becomes the run's latest note, for every ticket in the run, and the run carries on. The file's own
@@ -281,9 +282,39 @@ export function end(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
   const record = id === undefined ? {} : { session: id };
   // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
   updateEach(ctx, runMembers(ctx, entry), (queue, key) => (parks ? park : finish)(queue, key, outcome, now(), key === entry.ticket.key ? { ...record, tokens } : record));
+  footprintAtEnd(ctx, entry.ticket.key, outcome);
   // A run that is not handed back gives its ticket back now. A parked one keeps it In Progress while a person may answer it.
   if (!HANDED_BACK.has(outcome.kind)) for (const member of runMembers(ctx, entry)) void restoreAndLog(ctx, member.ticket.key);
   forgetRun(ctx, name);
+}
+
+/**
+ * The files each open pull request changes, by URL, from the reads of them: a list GitHub cut short ends with an empty name, so only the files listed
+ * hold (`footprintOf`). The watch and the end of a run both record it this way, so a run holds the same files either way (A11-125).
+ */
+export function pullFilesOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, readonly string[]>> {
+  return Object.fromEntries(open.map(({ url, read }) => [url, read.filesComplete ? read.files : [...read.files, ""]]));
+}
+
+/**
+ * A run that ends with a pull request open is footprinted at once (A11-125): the files of its open pull requests are read as the watch reads them and
+ * recorded, so a queued run that shares one with it waits from now, not from the next watch. The read and the record are one synchronous block, so no
+ * start pass can fall between the run ending and its files being recorded. When a read fails, nothing is recorded: the run holds its repository until
+ * a watch records the files (`overlapWait`).
+ */
+function footprintAtEnd(ctx: PoolContext, key: string, outcome: Outcome): void {
+  if (outcome.kind !== "draft-pr" && outcome.kind !== "ready-pr") return;
+  const { feedbackGh, gh, ownLogin } = ctx;
+  ownLogin.value ??= readOwnLogin(gh);
+  const self = ownLogin.value;
+  if (self === null) return;
+  const reads = outcome.prs.map(({ url }) => ({ url, read: readPullFeedback(url, self, feedbackGh) }));
+  const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
+  if (readable.length < reads.length) {
+    log(`${key}: the files of its pull requests could not be read, so its repository is held until the next watch reads them`);
+    return;
+  }
+  update(ctx, (queue) => recordPullFiles(queue, key, pullFilesOf(readable.filter(({ read }) => read.state === "open"))));
 }
 
 /**

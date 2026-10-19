@@ -8,7 +8,7 @@ import { BRIEF_FILE, firstPrompt, PLANNING_DENY, PUBLISH_FILE, publishBriefText,
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
-import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordProjectRepos, recordStackBase, unreadBlockerKeys, unreadPaths } from "./queue/approve.ts";
+import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, unreadBlockerKeys, unreadPaths } from "./queue/approve.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { remoteHead, rebaseDue, rebaseOnto, afterRebase, roundHeldBy, stackBaseIn } from "./stack-rebase.ts";
@@ -222,18 +222,24 @@ async function rebaseBeforeRound(ctx: PoolContext, entry: Entry): Promise<string
 }
 
 /**
- * The repository-prefixed paths a ticket's plan declares: its `## Paths` sections, read from the plan files the tracker holds for it, each in a
- * folder of its own so a plan's name never reaches the ticket's brief. None when this machine names no plan. Throws when the tracker refuses.
+ * The plan files the tracker holds for a ticket, downloaded to a folder of their own so a plan's name never reaches the ticket's brief. None when this
+ * machine names no plan. Throws when the tracker refuses the download, which is the failure a run's plan reports as its own (A11-125).
  */
-async function declaredPaths(ctx: PoolContext, ticket: Ticket): Promise<readonly string[]> {
+async function planFiles(ctx: PoolContext, ticket: Ticket): Promise<readonly string[]> {
   const { settings, source } = ctx;
   if (settings.plan === null) return [];
   const dir = join(ticketDir(settings, ticket.key), "paths");
   mkdirSync(dir, { recursive: true });
-  const plan = new RegExp(settings.plan);
+  return source.download(ticket, dir);
+}
+
+/** The repository-prefixed paths a ticket's plan files declare in their `## Paths` sections, each once. A file that is not a plan, or is too large, declares none. */
+function pathsIn(files: readonly string[], plan: string | null): string[] {
+  if (plan === null) return [];
+  const pattern = new RegExp(plan);
   const paths: string[] = [];
-  for (const file of await source.download(ticket, dir)) {
-    if (!plan.test(basename(file)) || statSync(file).size > PLAN_FILE_BYTES) continue;
+  for (const file of files) {
+    if (!pattern.test(basename(file)) || statSync(file).size > PLAN_FILE_BYTES) continue;
     for (const path of parsePaths(readFileSync(file, "utf8"))) {
       if (!paths.includes(path)) paths.push(path);
     }
@@ -242,14 +248,25 @@ async function declaredPaths(ctx: PoolContext, ticket: Ticket): Promise<readonly
 }
 
 /**
- * Read the paths each queued run's plan declares, and record them on the runs. Throws when the tracker refuses a download, and nothing is recorded,
- * so the next pass asks again: a run is not started before its paths are known, as it is not before its blockers.
+ * Read the paths each queued run's plan declares, and record them on the runs. A plan the tracker refuses to give is recorded as that run's failure,
+ * and each other plan is read as it would be: one ticket's plan does not hold the others, since a run whose plan is unread is never started, so a
+ * failing one is not started beside a run it may overlap (A11-125). It is asked again on the next pass.
  */
 async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<void> {
   if (entries.length === 0) return;
   const found = new Map<string, readonly string[]>();
-  for (const { ticket } of entries) found.set(ticket.key, await declaredPaths(ctx, ticket));
-  update(ctx, (queue) => recordPaths(queue, found));
+  const failed = new Map<string, string>();
+  for (const { ticket } of entries) {
+    let files: readonly string[];
+    try {
+      files = await planFiles(ctx, ticket);
+    } catch (err) {
+      failed.set(ticket.key, messageOf(err).split("\n")[0]);
+      continue;
+    }
+    found.set(ticket.key, pathsIn(files, ctx.settings.plan));
+  }
+  update(ctx, (queue) => recordPathsFailure(recordPaths(queue, found), failed));
 }
 
 /**

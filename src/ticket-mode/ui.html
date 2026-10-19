@@ -249,7 +249,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
+  APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
   runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
@@ -555,8 +555,8 @@ const ICONS = {
   "cancelled": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 12L12 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
-const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review", dismiss: "Dismiss", "apply-edit": "Apply edit", "discard-edit": "Discard edit" };
-const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE, dismiss: DISMISS_TITLE, "apply-edit": APPLY_EDIT_TITLE, "discard-edit": DISCARD_EDIT_TITLE };
+const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review", "start-anyway": "Start anyway", dismiss: "Dismiss", "apply-edit": "Apply edit", "discard-edit": "Discard edit" };
+const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE, "start-anyway": START_ANYWAY_TITLE, dismiss: DISMISS_TITLE, "apply-edit": APPLY_EDIT_TITLE, "discard-edit": DISCARD_EDIT_TITLE };
 // Respond to review carries a reply arrow, in the reviewing colour, so it reads apart from Approve.
 const ACTION_ICON = { respond: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3.5L2.5 7.5l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 7.5H9a4.5 4.5 0 0 1 4.5 4.5v.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' };
 
@@ -594,9 +594,10 @@ function row(e) {
   const stacked = stackedOn(e, state.queue.entries);
   const mergeNote = waitNote(e, state.queue.entries);
   const cutNote = cutListNote(e, state.queue.entries);
+  const startedAnyway = overrideNote(e);
   const o = e.outcome;
   const actions = el("div", { className: "actions" });
-  for (const verb of runActions(e, state.queue.publish)) {
+  for (const verb of runActions(e, state.queue.publish, state.queue.entries)) {
     // Dismiss says the proposal goes with the run, when there is one (A11-91).
     const title = verb === "dismiss" && hasEdit(e) ? DISMISS_EDIT_TITLE : ACTION_TITLE[verb];
     const b = el("button", { className: `small action-${verb}`, ...(title ? { title } : {}) });
@@ -639,6 +640,7 @@ function row(e) {
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       rebaseNote(e) ? el("div", { className: "meta" }, rebaseNote(e)) : null,
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
+      startedAnyway ? el("div", { className: "meta" }, startedAnyway) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
       evidence,

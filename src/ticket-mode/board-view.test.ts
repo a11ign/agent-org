@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/settled-by-pulls.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
-import { rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
+import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
@@ -521,6 +521,35 @@ test("A11-116: a run's row names the repository it works in, from its worktrees,
   assert.equal(repoLabel({ ticket: { key: "A" }, phase: "queued", plannedRepo: null, projectRepo: "agent-org" }), "agent-org (from its project)", "a planner's null is the project's");
   assert.equal(repoLabel({ ticket: { key: "A" }, phase: "queued", projectRepo: null }), "the worker chooses the repo", "a project with no repository");
   assert.equal(repoLabel({ ticket: { key: "A" }, phase: "finished" }), "choosing a repo");
+});
+
+// A11-125: a queued run whose plan could not be downloaded is Blocked and says why, and is only removed, as any queued run is.
+test("A11-125: a queued run whose plan could not be downloaded is Blocked, says why, and offers only Remove", () => {
+  const stuck = run({ ticket: { key: "NBF-9" }, phase: "queued", pathsFailure: "the attachment link is gone" });
+  assert.equal(runStatus(stuck, [stuck]), "blocked");
+  assert.equal(waitNote(stuck, [stuck]), "Waits: its plan could not be downloaded (the attachment link is gone); the board asks again on every pass");
+  assert.deepEqual(runActions(stuck), ["remove"]);
+  const free = run({ ticket: { key: "NBF-8" }, phase: "queued" });
+  assert.equal(runStatus(free, [free]), "queued", "a run whose plan is not yet asked for is not blocked by it");
+  assert.equal(waitNote(free, [free]), null);
+});
+
+// A11-125: a queued run Blocked on an overlap, and on no ticket, is offered Start anyway; a run started past its overlap says so on its row.
+test("A11-125: a queued run Blocked on an overlap is offered Start anyway beside Remove, and says what it overlapped once started anyway", () => {
+  const holder = run({ ticket: { key: "NBF-1" }, phase: "running", paths: ["nbl-ui-netbox:src/pool.ts"] });
+  const waiting = run({ ticket: { key: "NBF-2" }, phase: "queued", paths: ["nbl-ui-netbox:src/"] });
+  assert.equal(runStatus(waiting, [holder, waiting]), "blocked");
+  assert.deepEqual(runActions(waiting, undefined, [holder, waiting]), ["start-anyway", "remove"]);
+  assert.match(START_ANYWAY_TITLE, /^Start this run now, beside the run that holds a path it shares/);
+  const onBlocker = run({ ticket: { key: "NBF-3" }, phase: "queued", paths: ["nbl-ui-netbox:src/"], blockers: [{ key: "NBF-1", state: "started", status: "In Progress", pulls: {} }] });
+  assert.deepEqual(runActions(onBlocker, undefined, [holder, onBlocker]), ["remove"], "a run blocked by a ticket is not offered it");
+  const unplanned = run({ ticket: { key: "NBF-4" }, phase: "queued", pathsFailure: "the link is gone" });
+  assert.deepEqual(runActions(unplanned, undefined, [unplanned]), ["remove"], "nor a run whose plan could not be read");
+  assert.equal(overrideNote(waiting), null, "a run not started anyway says nothing");
+  const started = run({ ticket: { key: "NBF-2" }, phase: "running", overlapOverride: { holder: "NBF-1", pull: "12", path: "src/pool.ts", at: 5 } });
+  assert.equal(overrideNote(started), "Started anyway: it overlapped NBF-1 #12 on src/pool.ts; a person overrode the wait");
+  const unread = run({ ticket: { key: "NBF-5" }, phase: "running", overlapOverride: { holder: "NBF-1", pull: null, path: null, at: 5 } });
+  assert.equal(overrideNote(unread), "Started anyway: it overlapped NBF-1 before its changed files were read; a person overrode the wait");
 });
 
 test("A11-116: a blocker whose branch is pushed stacks on it with no pull request, so the run starts before one exists", () => {

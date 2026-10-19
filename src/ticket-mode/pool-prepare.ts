@@ -82,7 +82,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
-      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, prReview: settings.prReview }));
+      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, conflict: entry.conflict, prReview: settings.prReview }));
     writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
     writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir: emptyPlanDir(dir), attachments, parent, clones: settings.clones, run: settings.planner.run,

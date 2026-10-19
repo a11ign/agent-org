@@ -1,6 +1,7 @@
 import { COMPLETING_KINDS, openPulls, type StackBaseRecord } from "../board-view/view-ticket.ts";
-import { isParked, isPublishing, isWatched, resumesOnConflict, runStatus, settledByPulls } from "../board-view/settled-by-pulls.ts";
+import { isParked, isPublishing, isWatched, overlapWait, resumesOnConflict, runActions, runStatus, settledByPulls } from "../board-view/settled-by-pulls.ts";
 import type { Blocker, PullState } from "../source.ts";
+import { conflictsIn } from "../worker-files.ts";
 import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type Queue, type WorkingNote, writerLive } from "./declared-remains.ts";
 
 /**
@@ -18,12 +19,28 @@ export function approve(queue: Queue, key: string, now: number): Queue {
 /**
  * A person asked the worker to answer the current feedback on pull requests that are ready already: a run Ready to merge, Published, or handed
  * back because it reached the cap on rounds the board starts on its own. The ticket goes back on the queue, at the end, as a review round that
- * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it.
+ * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it. A run handed back for a
+ * conflict carries the conflict lines, so its round merges the base in first (A11-125).
  */
 export function respond(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.outcome?.kind !== "reviewed" || !reviewable(entry)) return queue;
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, openPulls(entry), now), asked: true }] };
+  const conflict = conflictsIn(entry.handedBack ?? "");
+  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, openPulls(entry), now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
+}
+
+/**
+ * A person started a queued run anyway, past the overlap it is Blocked on (A11-125): it starts beside the run that holds a path it shares, as a live
+ * run would, and the overlap is recorded as overridden on the run. Refused, naming why, when the run is not queued or nothing overlaps it now, since it
+ * starts on its own; and when it waits on a ticket or its plan, which this does not pass.
+ */
+export function startAnyway(queue: Queue, key: string, now: number): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || entry.phase !== "queued") throw new Error(`${key} is not queued, so there is no overlap to start past`);
+  const wait = overlapWait(entry, queue.entries);
+  if (wait === null) throw new Error(`nothing overlaps ${key} now, so there is no overlap to start past`);
+  if (!runActions(entry, undefined, queue.entries).includes("start-anyway")) throw new Error(`${key} waits on a ticket or its plan, which Start anyway does not pass`);
+  return replace(queue, key, (e) => ({ ...e, overlapOverride: { holder: wait.key, pull: wait.pull, path: wait.path, at: now } }));
 }
 
 /** The most review rounds the board starts on its own, on new feedback, between two of a person's approvals. */
@@ -280,12 +297,26 @@ export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readon
 }
 
 /**
- * Record the paths each queued run's plan declares, for each run whose plan was read. A run that has started keeps what it started with.
+ * Record the paths each queued run's plan declares, for each run whose plan was read, and clear why it could not be (`pathsFailure`). A run that has
+ * started keeps what it started with.
  */
 export function recordPaths(queue: Queue, paths: ReadonlyMap<string, readonly string[]>): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
     const found = paths.get(entry.ticket.key);
-    return entry.phase === "queued" && found !== undefined ? { ...entry, paths: found } : entry;
+    if (entry.phase !== "queued" || found === undefined) return entry;
+    const { pathsFailure: _read, ...rest } = entry;
+    return { ...rest, paths: found };
+  }) };
+}
+
+/**
+ * Record why each queued run's plan could not be downloaded (A11-125), so the board says why it waits. A run whose plan is read keeps its paths, and
+ * is not held by this; the run is asked again on the next pass, as its paths are still unread.
+ */
+export function recordPathsFailure(queue: Queue, failures: ReadonlyMap<string, string>): Queue {
+  return { ...queue, entries: queue.entries.map((entry) => {
+    const reason = failures.get(entry.ticket.key);
+    return entry.phase === "queued" && reason !== undefined ? { ...entry, pathsFailure: reason } : entry;
   }) };
 }
 

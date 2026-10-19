@@ -4,9 +4,9 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { writeFileSync } from "node:fs";
-import { isParked, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
+import { isParked, runActions, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/declared-remains.ts";
-import { approve, conflictRound, respond, batchPlanDone, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths } from "./queue/approve.ts";
+import { approve, conflictRound, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths } from "./queue/approve.ts";
 import { emptyQueue, loadQueue, nextStarts, saveQueue, changeDraft, dismissWriter, draftOf, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerCreated, writerDrafted, writerFailed, writerOf, writerToStart } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
 import type { Draft } from "./writer.ts";
@@ -431,6 +431,20 @@ test("Respond to review queues a round now on a run Ready to merge or Published,
   ] as const) assert.deepEqual(respond(q, "A", 9), q, why);
 });
 
+test("A11-125: Respond to review on a run the board handed back at its cap for a conflict carries the conflict lines, and a retry keeps them while no other round does", () => {
+  const conflict = "https://github.com/x/app/pull/1 conflicts with its base branch main.";
+  const handed = feedbackRound(readyToMerge({ rounds: 3 }), "A", conflict, 9);
+  assert.match(a(handed).handedBack ?? "", /The latest: https:\/\/github\.com\/x\/app\/pull\/1 conflicts with its base branch main\./);
+  const asked = a(respond(handed, "A", 10));
+  assert.deepEqual([asked.asked, asked.conflict, asked.handedBack], [true, conflict, undefined], "the round names the conflict it answers");
+  const crashed = finish(markRunning(markStarting(respond(handed, "A", 10), "A", 10), "A", "w2", "w2:p1"), "A", { kind: "crashed", reason: "x" }, 11);
+  assert.equal(a(retry(crashed, "A", 12)).conflict, conflict, "a retried round keeps the conflict it answers");
+  const checked = a(respond(feedbackRound(readyToMerge({ rounds: 3 }), "A", "a failing check", 9), "A", 10));
+  assert.equal(checked.conflict, undefined, "a check that fails is no conflict, so the round has none");
+  assert.equal(a(feedbackRound(readyToMerge({ conflict }), "A", "a board round", 9)).conflict, undefined, "a board round drops it");
+  assert.equal(a(approve(endedWith({ kind: "draft-pr", prs: [pr] }, { pullStates: { [pr.url]: "open" }, conflict }), "A", 9)).conflict, undefined, "an approved round drops it");
+});
+
 test("a review round that failed is retried as the same round: its feedback, its asking and its count of the board's own rounds stay", () => {
   const round = feedbackRound(readyToMerge({ rounds: 1 }), "A", "f", 9);
   const crashed = finish(markRunning(markStarting(round, "A", 10), "A", "w2", "w2:p1"), "A", { kind: "crashed", reason: "x" }, 11);
@@ -598,10 +612,60 @@ test("A11-82: runs that share a path in one repository start in turn: the earlie
   assert.deepEqual(nextStarts(running, 0, 14).map((e) => e.ticket.key), ["C", "D"], "with A live, B is held, and the rest start");
   assert.equal(runStatus(running.entries.find((e) => e.ticket.key === "B")!, running.entries), "blocked", "B shows Blocked");
   const reviewed = finish(running, "A", { kind: "draft-pr", prs: [pr] }, 3);
-  const open = { ...reviewed, entries: reviewed.entries.map((e) => (e.ticket.key === "A" ? { ...e, pullStates: { [pr.url]: "open" as const } } : e)) };
+  const open = { ...reviewed, entries: reviewed.entries.map((e) => (e.ticket.key === "A" ? { ...e, pullStates: { [pr.url]: "open" as const }, pullFiles: { [pr.url]: ["src/pool.ts"] } } : e)) };
   assert.deepEqual(nextStarts(open, 0, 14).map((e) => e.ticket.key), ["C", "D"], "a finished run with a pull request open still holds its path");
   const merged = { ...open, entries: open.entries.map((e) => (e.ticket.key === "A" ? { ...e, pullStates: { [pr.url]: "merged" as const } } : e)) };
   assert.deepEqual(nextStarts(merged, 0, 14).map((e) => e.ticket.key), ["B", "C", "D"], "once its pull request merges, B starts");
+});
+
+// A11-125: a run that has just ended with a pull request open holds its files from that moment, and while they are unread it holds its repository.
+test("A11-125: a finished run with a pull request whose files are not read yet holds its repository, and holds only its files once they are read", () => {
+  const queued = resumeQueue(enqueue(emptyQueue(4), [ticket("A"), ticket("B"), ticket("C"), ticket("D")], choice, 1));
+  const queue = recordPaths(queued, new Map([["A", ["app:src/plan.ts"]], ["B", ["app:src/other.ts"]], ["C", ["lib:src/pool.ts"]], ["D", ["app:docs/"]]]));
+  const ended = finish(markRunning(markStarting(queue, "A", 2), "A", "w1", "w1:p1"), "A", { kind: "draft-pr", prs: [pr] }, 3);
+  const open = (fields: Record<string, unknown>) => ({ ...ended, entries: ended.entries.map((e) => (e.ticket.key === "A" ? { ...e, pullStates: { [pr.url]: "open" as const }, ...fields } : e)) });
+  assert.deepEqual(nextStarts(open({}), 0, 14).map((e) => e.ticket.key), ["C"], "unread: B and D share its repository, and wait for the watch");
+  assert.equal(runStatus(open({}).entries.find((e) => e.ticket.key === "D")!, open({}).entries), "blocked", "D shows Blocked");
+  assert.equal(waitNote(open({}).entries.find((e) => e.ticket.key === "B")!, open({}).entries), "Waits on A #1: its changed files are not read yet");
+  assert.deepEqual(nextStarts(open({ pullFiles: { [pr.url]: ["README.md"] } }), 0, 14).map((e) => e.ticket.key), ["B", "C", "D"], "read: only what it changes holds, and B and D start");
+});
+
+// A11-125: a run whose plan could not be downloaded takes no slot another run could use, and the read that finds its plan clears why it waits.
+test("A11-125: a run whose plan could not be downloaded takes no slot, and the read that finds its plan clears why it waits", () => {
+  const failing = recordPathsFailure(resumeQueue(enqueue(emptyQueue(1), [ticket("A"), ticket("B")], choice, 1)), new Map([["A", "the link is gone"]]));
+  const withB = recordPaths(failing, new Map([["B", ["app:src/b.ts"]]]));
+  assert.deepEqual(nextStarts(withB, 0, 14).map((e) => e.ticket.key), ["B"], "A is passed over, and B takes the one slot");
+  assert.equal(recordPaths(withB, new Map([["A", ["app:src/a.ts"]]])).entries[0].pathsFailure, undefined, "read, its failure is cleared");
+  assert.deepEqual(recordPaths(withB, new Map([["A", ["app:src/a.ts"]]])).entries[0].paths, ["app:src/a.ts"]);
+  assert.equal(recordPathsFailure(recordPaths(withB, new Map([["A", ["app:src/a.ts"]]])), new Map([["A", "again"]])).entries[0].pathsFailure, "again", "and a later failure is recorded");
+});
+
+// A11-125: Start anyway passes a queued run's overlap, records it, and keeps the record through a start, a finish, a retry and a review round.
+test("A11-125: Start anyway passes a run's overlap and the record survives a start, a finish, a retry and a review round", () => {
+  const queued = recordPaths(resumeQueue(enqueue(emptyQueue(3), [ticket("A"), ticket("B")], choice, 1)), new Map([["A", ["app:src/pool.ts"]], ["B", ["app:src/"]]]));
+  const running = markRunning(markStarting(queued, "A", 2), "A", "w1", "w1:p1");
+  const b = () => running.entries.find((e) => e.ticket.key === "B")!;
+  assert.deepEqual(runActions(b(), undefined, running.entries), ["start-anyway", "remove"], "Blocked on the overlap, it is offered Start anyway beside Remove");
+  assert.throws(() => startAnyway(running, "A", 5), /A is not queued/, "a run that is not queued has no overlap to start past");
+  const passed = startAnyway(running, "B", 5);
+  assert.deepEqual(passed.entries.find((e) => e.ticket.key === "B")?.overlapOverride, { holder: "A", pull: null, path: "src/", at: 5 }, "the overlap it passed is recorded");
+  assert.deepEqual(nextStarts(passed, 0, 14).map((e) => e.ticket.key), ["B"], "it starts now, beside A");
+  const started = markRunning(markStarting(passed, "B", 6), "B", "w2", "w2:p2");
+  assert.equal(started.entries.find((e) => e.ticket.key === "B")?.overlapOverride?.holder, "A", "a start keeps it");
+  const crashed = finish(started, "B", { kind: "crashed", reason: "x" }, 7);
+  const retried = retry(crashed, "B", 8);
+  assert.equal(retried.entries.find((e) => e.ticket.key === "B")?.overlapOverride?.holder, "A", "a retry keeps it");
+  assert.equal(feedbackRound(readyToMerge({ overlapOverride: { holder: "A", pull: null, path: "src/", at: 5 } }), "A", "f", 9).entries.find((e) => e.ticket.key === "A")?.overlapOverride?.holder,
+    "A", "a review round keeps it");
+});
+
+test("A11-125: Start anyway is refused for a run that is not queued, that overlaps nothing, or that waits on a ticket", () => {
+  const queued = recordPaths(resumeQueue(enqueue(emptyQueue(3), [ticket("A"), ticket("B"), ticket("C")], choice, 1)), new Map([["A", ["app:src/pool.ts"]], ["B", ["app:docs/"]], ["C", ["app:src/"]]]));
+  const running = markRunning(markStarting(queued, "A", 2), "A", "w1", "w1:p1");
+  assert.throws(() => startAnyway(running, "B", 5), /nothing overlaps B now, so there is no overlap to start past/, "B shares no path with A");
+  const blocked = recordBlockers(running, new Map([["C", [{ key: "Z", state: "started", status: "In Progress", pulls: {} }]]]));
+  assert.throws(() => startAnyway(blocked, "C", 5), /C waits on a ticket or its plan/, "C also waits on Z as a ticket, which Start anyway does not pass");
+  assert.deepEqual(runActions(blocked.entries.find((e) => e.ticket.key === "C")!, undefined, blocked.entries), ["remove"], "so it is not offered");
 });
 
 test("A11-117: two queued runs in one repository start together up to the queue's limit when their source files differ, and a run that shares eslint.config.ts waits", () => {

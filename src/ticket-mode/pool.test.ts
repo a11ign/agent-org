@@ -2052,9 +2052,23 @@ test("A11-82: a pull request that conflicts with its base names its base on ever
  * A tracker whose download writes each ticket's plan file, which declares the paths `paths` gives it as its `## Paths` section. `refuse` runs
  * before each download, so a test can make the tracker refuse one.
  */
-function planFiles(paths: Record<string, string[]>, refuse: () => void = () => {}): TicketSource {
+/** `max` workers, the tickets of `paths` queued, and one pass of the pool: `down` names the tickets whose plans cannot be downloaded (A11-125). */
+async function queuedWithPlans(max: number, paths: Record<string, string[]>, down: Set<string>) {
+  const ctx = setup(max, Object.keys(paths), { plan: "-plan-[^/]*\\.md$" }, { source: planFilesDown(paths, down) });
+  await ctx.pool.tick();
+  return ctx;
+}
+
+/** `planFiles`, whose download refuses the tickets in `down`, as a link that is gone does. */
+function planFilesDown(paths: Record<string, string[]>, down: Set<string>): TicketSource {
+  return planFiles(paths, (key) => {
+    if (down.has(key)) throw new Error("the attachment link is gone");
+  });
+}
+
+function planFiles(paths: Record<string, string[]>, refuse: (key: string) => void = () => {}): TicketSource {
   return { ...source, download: async (ticket, dir) => {
-    refuse();
+    refuse(ticket.key);
     const file = join(dir, `${ticket.key}-plan-x.md`);
     writeFileSync(file, `## Paths\n${(paths[ticket.key] ?? []).map((path) => `- \`${path}\``).join("\n")}\n`);
     return [file];
@@ -2099,7 +2113,7 @@ test("A11-82: a pull request that conflicts with its base resumes its worker onc
   assert.equal(starts.length, 1, "the same worker is started once, not once per watch");
   assert.deepEqual(starts[0].slice(starts[0].indexOf("--resume"), starts[0].indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
-  assert.match(brief, /^1\. The feedback above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin\/<base>`/m);
+  assert.match(brief, /^1\. The text above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin\/<base>`/m);
   assert.match(brief, /Never rebase, and never force-push\. Resolve each conflict keeping both changes' intent/, "never a rebase, and both changes kept");
   assert.match(brief, /^3\. Fix each finding that is right/m, "the feedback steps follow, renumbered after the merge");
 });
@@ -2162,7 +2176,7 @@ test("A11-89: a parked run whose pull request conflicts is resumed: its workspac
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.equal(starts.length, 1, "the same worker is started once, not once per watch");
   assert.deepEqual(starts[0].slice(starts[0].indexOf("--resume"), starts[0].indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
-  assert.match(brief, /^1\. The feedback above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else/m);
+  assert.match(brief, /^1\. The text above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else/m);
   assert.equal(existsSync(join(dir, "outcome.json")), false, "the needs-human it parked on is cleared, so it does not end this round");
 });
 
@@ -2261,6 +2275,44 @@ test("A11-82: a finished run's open pull request holds the files the watch read 
   assert.equal(entry("NBF-2").phase, "running", "a pull request closed unmerged frees the path too");
 });
 
+// A11-125: a run's pull request files are footprinted the moment its run ends, not at the next watch, so a run sharing one is held from then.
+test("A11-125: a run that has just finished with an open pull request holds that pull request's files before any watch, so a run sharing one waits from the moment it ends", async () => {
+  const gh = ghFor({ 1: feedbackPull({ files: ["src/ticket-mode/server.ts"] }) });
+  const { pool, entry, store, status, settings } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
+    "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/ticket-mode/server.ts"],
+  }) });
+  await pool.tick();
+  assert.equal(entry("NBF-2").phase, "queued", "one slot: NBF-2 waits for it");
+  // NBF-1 ends with its draft open, and the start pass after its end runs with no watch in between: NBF-2's own plan names none of its files.
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "finished", "NBF-1 ended");
+  assert.deepEqual(entry("NBF-1").pullFiles, { [approvedPr.url]: ["src/ticket-mode/server.ts"] }, "its files are recorded at once");
+  assert.equal(entry("NBF-2").phase, "queued", "NBF-2 shares one of them, so it waits from the moment NBF-1 ends");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch src/ticket-mode/server.ts");
+});
+
+// A11-125: when a finished run's pull request cannot be read at its end, it holds its repository until a watch reads its files.
+test("A11-125: when a run's pull request files cannot be read at its end, the run holds its repository until a watch reads them, and then only what it changes", async () => {
+  const pulls: Record<number, unknown> = {};
+  const { pool, entry, store, status, settings } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: ghFor(pulls).run, source: planFiles({
+    "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:docs/guide.md"],
+  }) });
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  await pool.tick();
+  assert.equal(entry("NBF-1").pullFiles, undefined, "its files could not be read at its end, so none are recorded");
+  assert.equal(entry("NBF-2").phase, "queued", "NBF-2 shares a repository with the unread pull request, so it waits");
+  assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: its changed files are not read yet");
+  pulls[1] = feedbackPull({ files: ["README.md"] });
+  pool.watchFeedback();
+  await pool.tick();
+  assert.deepEqual(entry("NBF-1").pullFiles, { [approvedPr.url]: ["README.md"] }, "the watch reads and records them");
+  assert.equal(entry("NBF-2").phase, "running", "what it changes does not touch docs/guide.md, so NBF-2 starts");
+});
+
 test("A11-82: a paused queue reads no plan, and reads each one once it is unpaused", async () => {
   let reads = 0;
   const tracker = planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"] }, () => { reads += 1; });
@@ -2326,17 +2378,30 @@ test("A11-117: two queued tickets in one repository whose plans list .acceptance
   assert.deepEqual([waitNote(entry("NBF-1"), store.get().entries), waitNote(entry("NBF-2"), store.get().entries)], [null, null], "neither waits");
 });
 
-test("A11-82: a plan the tracker cannot give starts nothing, so a run is not started beside a run its plan may overlap before that is known", async () => {
-  let down = true;
-  const tracker = planFiles({ "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"] }, () => {
-    if (down) throw new Error("the attachment link is gone");
-  });
-  const { pool, entry } = setup(2, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { source: tracker });
+// A11-125: a plan the tracker cannot give holds only its own run, which waits and says why, and the rest start. A run whose plan is unread takes no slot.
+test("A11-125: a plan that cannot be downloaded waits and says why, and the rest start, its run taking no slot", async () => {
+  const down = new Set(["NBF-1"]);
+  const { pool, entry, store } = await queuedWithPlans(2, { "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/b.ts"], "NBF-3": ["nbl-ui-netbox:src/c.ts"] }, down);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase, entry("NBF-3").phase], ["queued", "running", "running"], "the two slots go to the two whose plans are read");
+  assert.equal(entry("NBF-1").pathsFailure, "the attachment link is gone");
+  assert.equal(runStatus(entry("NBF-1"), store.get().entries), "blocked", "the run shows Blocked");
+  assert.equal(waitNote(entry("NBF-1"), store.get().entries), "Waits: its plan could not be downloaded (the attachment link is gone); the board asks again on every pass");
+  down.clear();
   await pool.tick();
-  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["queued", "queued"], "nothing starts while a plan cannot be read");
-  down = false;
+  assert.equal(entry("NBF-1").pathsFailure, undefined, "read on the next pass, the failure is cleared");
+  assert.equal(entry("NBF-1").phase, "queued", "it still waits for a slot: the other two hold both");
+});
+
+// A11-125: while one plan fails, runs that overlap in the same pass still never start together.
+test("A11-125: overlapping runs still never start in one pass while another ticket's plan fails", async () => {
+  const down = new Set(["NBF-1"]);
+  const { pool, entry, store } = await queuedWithPlans(3, { "NBF-1": ["nbl-ui-netbox:src/z.ts"], "NBF-2": ["nbl-ui-netbox:src/a.ts"], "NBF-3": ["nbl-ui-netbox:src/a.ts"] }, down);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase, entry("NBF-3").phase], ["queued", "running", "queued"], "NBF-3 shares src/a.ts with NBF-2, and waits for it");
+  assert.equal(waitNote(entry("NBF-3"), store.get().entries), "Waits on NBF-2: both touch src/a.ts");
+  down.clear();
   await pool.tick();
-  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"], "read, the second waits for the first");
+  assert.equal(entry("NBF-1").phase, "running", "read later, NBF-1 shares no path with NBF-2 and starts beside it");
+  assert.equal(entry("NBF-3").phase, "queued", "NBF-3 still waits for NBF-2");
 });
 
 const PUBLISH = { publish: { run: "Run the post-pr-to-slack skill on these pull requests, all in one go: {prs}. Then write {dir}/published.json",

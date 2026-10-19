@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { outcomeExamples } from "./outcome.ts";
 import type { WriterMode } from "./queue/declared-remains.ts";
-import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
+import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -277,13 +277,13 @@ test("a round a person asked for with Respond to review says so, answers the cur
   assert.equal(brief.includes("the board started this round"), false);
 });
 
-test("both planner briefs ask for a Region section that lists the paths the work will change, prefixed by repository when there is more than one", () => {
+// A11-125: the planner writes its paths once, in `## Paths`, which both the overlap wait and `pr:open` read, so no Region section is asked for.
+test("A11-125: both planner briefs ask for the ## Paths section alone, and name the repositories its prefix may be", () => {
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a", b: "/b" }, run: "plan {key} into {dir}" });
   const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a", b: "/b" }, run: "plan {keys} into {dir}" });
   for (const brief of [plan, batch]) {
-    assert.ok(brief.includes("End each plan with a `## Region` section listing every path the work will change, one per line, inside a fenced code block."), "the Region section is asked for, fenced");
-    assert.ok(brief.includes("prefix each path with `<repo>:`"), "a multi-repository plan prefixes each path");
-    assert.ok(brief.includes("(`a`, `b`)"), "the repositories a prefix may name are the host file's clones");
+    assert.equal(brief.includes("## Region"), false, "no Region section is asked for: the Paths section is the one");
+    assert.ok(brief.includes("`<repo>` is one of the repository names above"), "each path is prefixed with one of the repositories named above");
   }
 });
 
@@ -400,7 +400,7 @@ test("A11-82: a round whose feedback names a conflict merges the base in first, 
   assert.equal(conflictLine("https://github.com/x/nbl-ui-netbox/pull/806", null), "https://github.com/x/nbl-ui-netbox/pull/806 conflicts with its base branch unknown.");
   assert.equal(CONFLICT_LINE.test(conflictFeedback), true);
   const brief = review(conflictFeedback);
-  assert.match(brief, /^1\. The feedback above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin\/<base>`/m);
+  assert.match(brief, /^1\. The text above says a pull request conflicts with its base branch\. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin\/<base>`/m);
   assert.match(brief, /Never rebase, and never force-push\. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push\./);
   assert.match(brief, /Say in your reply on that pull request which files conflicted and how each was resolved\./);
   assert.match(brief, /^2\. Read that feedback/m);
@@ -412,11 +412,38 @@ test("A11-82: a conflict-free feedback round has no merge step, and a Respond to
   // A11-89: every round says how to merge a CONFLICTING base in, in its "When no check has started" section; what this test pins is the numbered
   // merge step the feedback names, which only a conflict in the feedback adds.
   const plain = review("New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice.");
-  assert.equal(/^1\. The feedback above says a pull request conflicts/m.test(plain), false, "nothing conflicts, so no merge step leads the feedback steps");
+  assert.equal(/^1\. The text above says a pull request conflicts/m.test(plain), false, "nothing conflicts, so no merge step leads the feedback steps");
   assert.match(plain, /^1\. Read that feedback/m);
   const asked = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true });
-  assert.equal(/^1\. The feedback above says a pull request conflicts/m.test(asked), false, "a Respond to review round keeps the brief it had: no merge step is named unless the feedback names a conflict");
+  assert.equal(/^1\. The text above says a pull request conflicts/m.test(asked), false, "a Respond to review round keeps the brief it had: no merge step is named unless the feedback names a conflict");
   assert.match(asked, /^1\. Read that feedback/m);
+});
+
+// A11-125: a Respond to review round on a run the board handed back at its cap for a conflict merges the base in first, as a feedback round does.
+const MERGE_STEP = "1. The text above says a pull request conflicts with its base branch. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin/<base>` in the worktree of each such pull request. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push. Say in your reply on that pull request which files conflicted and how each was resolved.";
+test("A11-125: a Respond to review round on a run handed back for a conflict names the conflict it answers, and merges the base in first", () => {
+  const handedBack = `The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped. Respond to review starts another. The latest: ${conflictFeedback}`;
+  const conflict = conflictsIn(handedBack);
+  assert.equal(conflict, conflictFeedback, "the conflict line is found in the handed-back text");
+  const brief = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true, conflict: conflict ?? undefined });
+  assert.ok(brief.includes(`The board handed this run back because:\n\n> ${conflictFeedback}`), "the round says why it was handed back, and quotes the conflict");
+  assert.ok(brief.includes(MERGE_STEP), "the round merges the base in first, as a feedback round does");
+  assert.match(brief, /^2\. Read that feedback/m);
+});
+
+test("A11-125: conflictsIn finds each conflict line a text names, keeps a base with dots, and is null for a text that names none", () => {
+  const first = conflictLine("https://github.com/x/a/pull/1", "release/1.2");
+  const second = conflictLine("https://github.com/x/b/pull/2", "main");
+  assert.equal(conflictsIn(`The latest: ${first}\n${second}`), `https://github.com/x/a/pull/1 conflicts with its base branch release/1.2.\nhttps://github.com/x/b/pull/2 conflicts with its base branch main.`);
+  assert.equal(conflictsIn("The latest: New review feedback on https://github.com/x/nbl-ui-netbox/pull/806, the newest from alice."), null);
+});
+
+test("A11-125: a Respond to review round on a pull request that does not conflict keeps the brief it has today", () => {
+  const today = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true });
+  const unnamed = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true, conflict: undefined });
+  assert.equal(unnamed, today, "no conflict is the same brief as none given");
+  assert.equal(today.includes("The board handed this run back because:"), false, "nothing is quoted");
+  assert.equal(/^1\. The text above says a pull request conflicts/m.test(today), false, "no merge step leads the round");
 });
 
 test("A11-89: every review round tells the worker, when no check has started, to read the merge state first and to merge a conflicting base in", () => {
@@ -513,7 +540,7 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
   for (const brief of [plan, batch]) {
     assert.ok(brief.includes("Each plan file ends with a `## Paths` section listing every file or directory its work will change"), "the section");
     assert.ok(brief.includes("`- \`<repo>:<path>\``"), "its bullet form");
-    assert.ok(brief.includes("The board holds back another ticket whose work touches the same paths"));
+    assert.ok(brief.includes("That one section is what the board's overlap wait and `pr:open` both read"));
   }
   assert.match(batch, /Tickets of one repository whose work touches the same area, directly or through a shared module, must be ordered in `order\.json` with `after`/);
   assert.equal(plan.includes("order.json"), false, "a ticket planned alone writes no order");

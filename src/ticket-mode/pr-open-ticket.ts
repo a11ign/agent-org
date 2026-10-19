@@ -15,6 +15,7 @@ import { CI_BODY_REPORTS, type BodyReport, type DiffReading } from "../acceptanc
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "../pr-open-region.ts";
 import { declaredRegionFiles, splitRegionEntry } from "../region-paths.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
+import { pathsAsRegion } from "./overlap.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Keywords, type TicketSource } from "./source.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
@@ -35,8 +36,13 @@ export type TicketContext = Readonly<{
   folder: string;
   /** The clone name of the repository this tree is, as its folder under `folder` names it, or null when the tree is not one of them. */
   treeKey: string | null;
-  /** The ticket's description, then the text of each plan file attached to it: where its Region is read. */
+  /**
+   * Where its Region is read: each plan's `## Paths` as a Region first (`pathsAsRegion`), then the ticket's description, then the text of each plan file
+   * attached to it. The first Region in it is the one read, so a plan's paths win over a Region the description names (A11-125).
+   */
   regionText: string;
+  /** Which section the Region in `regionText` came from, as the pass line says: a plan's `## Paths`, or a `## Region`. */
+  regionFrom: string;
   /** Whether the machine opens pull requests ready (`tickets.drafts: false`), which the pool marks beside the run's outcome file. */
   readyRun: boolean;
   /** The pre-PR review skill the machine names (`tickets.prReview`), which the body must say ran, or null for none. */
@@ -76,10 +82,14 @@ export async function readTicketContext(env: TicketEnv, { settings = () => hostS
   const plan = host.plan;
   const dir = mkdtempSync(join(tmpdir(), "pr-open-ticket-"));
   let regionText: string;
+  let regionFrom: string;
   try {
     const files = await tracker.download(ticket, dir);
     const plans = files.filter((file) => plan !== null && new RegExp(plan).test(titleOf(file)));
-    regionText = [ticket.description, ...plans.map((file) => readFileSync(file, "utf8"))].join("\n\n");
+    const texts = plans.map((file) => readFileSync(file, "utf8"));
+    const derived = texts.map(pathsAsRegion).filter((region) => region !== null);
+    regionText = [...derived, ticket.description, ...texts].join("\n\n");
+    regionFrom = derived.length > 0 ? "the plan's `## Paths`" : "the ticket's `## Region`";
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -90,6 +100,7 @@ export async function readTicketContext(env: TicketEnv, { settings = () => hostS
     folder: ticketFolder(host, key),
     treeKey: tree === null ? null : treeKeyUnder(ticketFolder(host, key), tree),
     regionText,
+    regionFrom,
     readyRun: exists(join(ticketDir(host, key), READY_FILE)),
     prReview: host.prReview,
     hasChangesets: tree !== null && exists(join(tree, ".changeset", "config.json")),
@@ -234,7 +245,7 @@ function regionCheck(body: string, ticket: TicketContext, { git, base, rootFiles
   if (outside.length > 0) {
     return { refusal: regionRefusalText({ rows: ticket.key, outside, region: declared, base, malformed: escapes.malformed }), note: null };
   }
-  return { refusal: null, note: regionPassLine({ rows: ticket.key, changed, standing, base }) };
+  return { refusal: null, note: `${regionPassLine({ rows: ticket.key, changed, standing, base })} The Region is read from ${ticket.regionFrom}.` };
 }
 
 /** A `no-release:` line, which names why a pull request carries no changeset. The brief's own `<reason>` placeholder is not a reason. */

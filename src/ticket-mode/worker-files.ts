@@ -272,6 +272,15 @@ export const conflictLine = (url: string, base: string | null): string => `${url
 
 export const CONFLICT_LINE = /conflicts with its base branch/;
 
+/** One conflict sentence, as `conflictLine` writes it: the pull request's address, then its base branch. */
+const CONFLICT_SENTENCE = /\S+ conflicts with its base branch \S+\./g;
+
+/** The conflict lines a text names, one per line, or null when it names none. PURE. */
+export function conflictsIn(text: string): string | null {
+  const found = text.match(CONFLICT_SENTENCE);
+  return found === null ? null : found.join("\n");
+}
+
 /** A description quoted, so its own headings cannot read as the brief's. */
 const quoted = (description: string): string => (description.trim() || "(no description)").split("\n").map((line) => `> ${line}`.trimEnd()).join("\n");
 
@@ -315,7 +324,7 @@ ${PARENT_ONLY_PLAN}
 
 ${MISSING_SKILL}
 
-The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them. ${regionInstruction(clones)}
+The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them.
 
 ${PATHS_RULE}
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
@@ -393,7 +402,7 @@ ${MISSING_SKILL}
 
 Write everything in \`${planDir}\`, and nowhere else:
 
-- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${regionInstruction(clones)} ${PATHS_RULE}
+- \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${PATHS_RULE}
 - \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. A ticket's \`repo\` is its project's repository, named with it above, unless its work belongs in another repository. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
 
 How \`wait\` says how a ticket waits on each ticket in its \`after\`:
@@ -416,10 +425,11 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 }
 
 /**
- * What every plan says of the paths its work touches, in a `## Paths` section the board reads (`overlap.ts`): the board holds back a ticket whose
- * paths overlap a run in progress, so the list must be complete.
+ * What every plan says of the paths its work touches, in its one `## Paths` section: the board's overlap wait reads it (`overlap.ts`), and `pr:open`
+ * reads it as the Region its pull request's diff is checked against (A11-125). The board holds back a ticket whose paths overlap a run in progress, so
+ * the list must be complete.
  */
-const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. The board holds back another ticket whose work touches the same paths, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says.";
+const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. That one section is what the board's overlap wait and `pr:open` both read, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says.";
 
 /**
  * Step 5 of the brief, the commit. With the machine's pre-PR review skill named, the review runs after the commit, on the whole diff, before a push or a
@@ -448,15 +458,7 @@ function readyPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: s
  */
 function openPullRequestStep(opening: string, ticket: Ticket, prReview: string | null, { closing, nonClosing }: Keywords): string {
   const reviewLine = prReview === null ? "" : `carries the line \`Pre-PR review: ${prReview} ran on the whole diff; it changed: <what, or nothing>\`, `;
-  return `6. Push the branch and open ${opening} The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Region\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
-}
-
-/**
- * The planner's instruction for the `## Region` section a plan ends with, which `pr:open` reads to check each pull request's diff (A11-74). A plan without
- * one is still accepted: `pr:open` says the Region was not checked.
- */
-function regionInstruction(clones: Readonly<Record<string, string>>): string {
-  return `End each plan with a \`## Region\` section listing every path the work will change, one per line, inside a fenced code block. When the work spans more than one repository, prefix each path with \`<repo>:\`, the repository's name among the host file's \`clones\` (${cloneNames(clones)}).`;
+  return `6. Push the branch and open ${opening} The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Paths\`, and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
 }
 
 /**
@@ -542,18 +544,19 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
  * find. `reviewNotes` is the host file's `tickets.review`, how this machine's pull requests are checked and reviewed, and `notes` its
  * `tickets.brief`. `resumed` is true when the worker is the one that wrote the code, resumed with its own conversation. `feedback` is set on a
  * round the board started on its own: the new feedback on the pull requests, which are ready already, that the round answers. `asked` is set
- * on a round a person asked for with Respond to review: it answers the ready pull requests' current feedback. `prReview` is the skill `tickets.prReview`
+ * on a round a person asked for with Respond to review: it answers the ready pull requests' current feedback, and `conflict` is the conflict lines the board
+ * handed the run back for at its round cap, when it was (`conflictsIn`). `prReview` is the skill `tickets.prReview`
  * names, which each round runs on its whole diff before it pushes, or null for none.
  */
-export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, prReview = null }: {
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, conflict, prReview = null }: {
   ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
-  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; prReview?: string | null;
+  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; conflict?: string; prReview?: string | null;
 }): string {
   const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
   const who = resumed
     ? "You wrote these pull requests earlier in this conversation."
     : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
-  const round = asked ? answerRound(who, "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.", null, prReview)
+  const round = asked ? askedRound(who, conflict, prReview)
     : feedback === undefined ? approvedRound(who, prReview)
     : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`,
       CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null, prReview);
@@ -619,7 +622,7 @@ function approvedRound(who: string, prReview: string | null): Round {
  * The step a round takes first when the feedback names a pull request that conflicts with its base: merge the base in, never rebase. A round the
  * feedback names no conflict in gets no such step, so its brief is what it was.
  */
-const MERGE_FIRST = "The feedback above says a pull request conflicts with its base branch. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin/<base>` in the worktree of each such pull request. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push. Say in your reply on that pull request which files conflicted and how each was resolved.";
+const MERGE_FIRST = "The text above says a pull request conflicts with its base branch. Merge the base branch into your branch before anything else: `git fetch`, then `git merge origin/<base>` in the worktree of each such pull request. Never rebase, and never force-push. Resolve each conflict keeping both changes' intent, run the repository's own tests, typecheck and lint, and push. Say in your reply on that pull request which files conflicted and how each was resolved.";
 
 /**
  * The commit-and-push step of a round. With the machine's pre-PR review skill named, the round reviews the whole diff after its last commit and before
@@ -651,6 +654,16 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
     steps: (merge === null ? items : [merge, ...items]).map((item, index) => `${index + 1}. ${item}`).join("\n"),
     reviewed: "Write `reviewed` only when every finding is answered and every check passed on the last commit you pushed.",
   };
+}
+
+/**
+ * A round a person asked for. When the board handed the run back at its round cap for a conflict (`conflict`), the round says so and merges the base
+ * in first, as a feedback round does; any other asked round keeps the brief it had, with no merge step.
+ */
+function askedRound(who: string, conflict: string | undefined, prReview: string | null): Round {
+  const asked = "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.";
+  if (conflict === undefined) return answerRound(who, asked, null, prReview);
+  return answerRound(who, `${asked}\n\nThe board handed this run back because:\n\n${quoted(conflict)}`, MERGE_FIRST, prReview);
 }
 
 /**
