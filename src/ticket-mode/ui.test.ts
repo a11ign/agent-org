@@ -585,6 +585,19 @@ test("a run stacked on its blocker's open pull request is Queued, and says what 
   assert.equal(row.text().includes("Waits on"), false);
 });
 
+test("A11-117: a queued run whose paths are known says which holder's file list is cut short, and says nothing when every file is listed", async () => {
+  const url = "https://github.com/x/nbl-ui-netbox/pull/5";
+  const holder = (files: string[]) => entry("APP-1", { phase: "finished", startedAt: 2, finishedAt: 3, outcome: { kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url }] }, pullFiles: { [url]: files } });
+  const queued = entry("APP-2", { phase: "queued", paths: ["nbl-ui-netbox:docs/unrelated.md"] });
+  const cut = await page(new Map(), { entries: [holder(["src/a.ts", ""]), queued] });
+  const cutRow = runRows(cut).find((r) => r.text().includes("APP-2"))!;
+  assert.match(cutRow.text(), /APP-1 #5 lists only part of its changed files, so a clash in the rest shows only as a conflict on the pull request\./);
+  assert.equal(cutRow.text().includes("Waits on"), false, "the note is not a wait: nothing the run touches is held");
+  const complete = await page(new Map(), { entries: [holder(["src/a.ts"]), queued] });
+  const completeRow = runRows(complete).find((r) => r.text().includes("APP-2"))!;
+  assert.equal(completeRow.text().includes("lists only part"), false, "a complete list has no note");
+});
+
 test("A11-77: a run its planner held until a blocker merges is Blocked, says it waits for that merge, and is not stacked on the open pull request", async () => {
   const pr = "https://github.com/x/libs/pull/3";
   const runs = [entry("APP-1", { phase: "queued", plannedRepo: "libs", waitMerged: ["LIB-1"], blockers: [{ key: "LIB-1", state: "started", status: "In Review", branch: "lib-1", pulls: { [pr]: "open" } }] })];

@@ -460,6 +460,36 @@ function primaryCheckout(hostPath: string): string {
   return checkout;
 }
 
+/** What `HOME_CHECKOUT` is for a ticket-only run (`isTicketOnlyRun`): there is no project checkout, so nothing may be read from one. */
+export const TICKET_ONLY_CHECKOUT = "";
+
+/**
+ * Is this a ticket-mode worker (`AGENT_ORG_TICKET`) on a host file that declares no `primary` project? A machine that runs only the ticket board
+ * keeps `clones` and `tickets` in its host file, with no project, board or tracker rows. Every other host file, and every run outside ticket mode,
+ * still resolves its primary checkout and refuses as before.
+ * @param {string} hostPath @param {Record<string, string | undefined>} env @returns {boolean}
+ */
+export function isTicketOnlyRun(hostPath: string, env: Record<string, string | undefined> = process.env): boolean {
+  if (!env.AGENT_ORG_TICKET) return false;
+  try {
+    const host: unknown = JSON.parse(readFileSync(hostPath, "utf8"));
+    return isObject(host) && !Object.hasOwn(host, "primary") && isObject(host.tickets);
+  } catch (error) {
+    void error; // an unreadable host file is `primaryCheckout`'s refusal to name
+    return false;
+  }
+}
+
+/**
+ * The declaration a ticket-only run reads: one blank tracker and one blank repository, and no leak patterns of its own. Modules the row path owns read
+ * `tracker[0]` and `code[0]` when they load, so an empty list would stop `pr:open` before it ran. Nothing a ticket worker does reads those blanks:
+ * the ticket checks name the ticket's own repository, and a row's reads are skipped (A11-74).
+ */
+const TICKET_ONLY_DECLARATION: Readonly<ProjectDeclaration> = Object.freeze({
+  schema: SUPPORTED_SCHEMA, tracker: [{ key: "", repo: "", board: { owner: "", number: 0 } }], code: [{ key: "", repo: "" }], leakPatterns: [], dora: [],
+  offerMilestones: [], routing: ABSENT_ROUTING, repo: "", boardOwner: "", boardNumber: 0,
+});
+
 /**
  * Is the tool running from a package manager's `node_modules`? That is the INSTALLED layout (`pnpm add -D github:a11ign/agent-org#...`), and the
  * only one whose directory says nothing about the project: pnpm links the package from a store path
@@ -559,6 +589,7 @@ export function resolveHomeCheckout({
   cwd = process.cwd(),
 }: { env?: Record<string, string | undefined>; toolDir?: string; beside?: string; cwd?: string; } = {}): string {
   const host = env[HOST_ENV];
+  if (host !== undefined && host !== "" && isTicketOnlyRun(host, env)) return TICKET_ONLY_CHECKOUT;
   if (host !== undefined && host !== "") return primaryCheckout(host);
   if (isInstalled(toolDir)) return installedProject(cwd);
   if (existsSync(join(beside, PROJECT_DECLARATION_PATH))) return beside;
@@ -579,6 +610,7 @@ let homeProject: Readonly<ProjectDeclaration> | undefined;
 
 /** The declaration of the project this tool is running in, read once. @returns {Readonly<ProjectDeclaration>} */
 export function homeProjectDeclaration(): Readonly<ProjectDeclaration> {
+  if (HOME_CHECKOUT === TICKET_ONLY_CHECKOUT) return TICKET_ONLY_DECLARATION;
   homeProject ??= readProjectDeclaration(HOME_CHECKOUT);
   return homeProject;
 }

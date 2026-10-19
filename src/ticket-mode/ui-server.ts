@@ -38,6 +38,8 @@ const PAGE = join(HERE, "ui.html");
 const PAIR_PAGE = join(HERE, "pair.html");
 /** The page's logic, written in TypeScript so its tests run it, and sent to the browser with the types stripped. */
 const VIEW = join(HERE, "board-view.ts");
+/** The scaffolding directories both the board and the Region read (`src/scaffold-dirs.ts`), joined to the board script so the names are in its scope. */
+const SCAFFOLD_DIRS_FILE = join(HERE, "..", "scaffold-dirs.ts");
 /** The Pick view's label filters, sent the same way. Each module the page imports is one the browser can run as it is: it imports nothing. */
 const LABEL_FILTERS = join(HERE, "label-filters.ts");
 /** The Pick view's Assignee filter, sent the same way: it imports nothing, so the browser runs it as it is. */
@@ -101,7 +103,7 @@ export function boardViewScript(read: (path: string) => string = (path) => readF
     ? readdirSync(dir).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts")).sort().map((name) => join(dir, name))
     : [];
   // An import statement ends at its `;`, so one match never runs past it: a multi-line import from a sibling file goes, a `node:` import stays.
-  const joined = [VIEW, ...parts].map((path) => read(path).replace(/^import\s+[^;]*?\bfrom\s+"\.[^"]*";[ \t]*$/gm, "")).join("\n");
+  const joined = [VIEW, SCAFFOLD_DIRS_FILE, ...parts].map((path) => read(path).replace(/^import\s+[^;]*?\bfrom\s+"\.[^"]*";[ \t]*$/gm, "")).join("\n");
   return stripTypeScriptTypes(joined);
 }
 

@@ -13,7 +13,7 @@
 // beside the rest of the vocabulary, so a caller who needs all of it can still get all of it from here.
 import { readFileSync } from "node:fs";
 import { CLAIM_LABEL, READY_LABEL, STARTED_LABEL, WAS_READY_LABEL } from "./claim-labels.ts";
-import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "./project-config.ts";
+import { HOME_CHECKOUT, ProjectDeclarationRefusal, TICKET_ONLY_CHECKOUT } from "./project-config.ts";
 
 export { CLAIM_LABEL, READY_LABEL, STARTED_LABEL, WAS_READY_LABEL };
 
@@ -117,10 +117,28 @@ export function parseVocabulary(parsed: unknown): Readonly<Vocabulary> {
   });
 }
 
+/**
+ * What a ticket-only run reads (`isTicketOnlyRun`): the project's GitHub labels and files, which a ticket worker never touches. Parsed through
+ * `parseVocabulary`, so its shape is checked like a declared one.
+ * @returns {Readonly<Vocabulary>}
+ */
+function ticketOnlyVocabulary(): Readonly<Vocabulary> {
+  return parseVocabulary({ vocabulary: {
+    labels: { backlog: "backlog", needsChairman: "needs:chairman", outOfRelease: "out-of-release", blocked: "blocked" },
+    prefixes: { lane: "lane:", session: "session:", answer: "answer:" },
+    milestones: { roadToVersionOne: "Road to version one", outOfRelease: "Out of release" },
+    lanesFile: "docs/lane-ownership.json",
+    templateFields: { acceptance: "Acceptance", closes: "Closes", fleet: "Fleet" },
+    fleetQuestion: "Does the acceptance need the fleet or the lab",
+    resources: [],
+  } });
+}
+
 let cached: Readonly<Vocabulary> | undefined;
 
 /** The a11ign vocabulary, read once from `.agent-org/project.json` at `HOME_CHECKOUT`. @returns {Readonly<Vocabulary>} */
 export function homeVocabulary(): Readonly<Vocabulary> {
+  if (HOME_CHECKOUT === TICKET_ONLY_CHECKOUT) return ticketOnlyVocabulary();
   if (cached === undefined) {
     const path = `${HOME_CHECKOUT}/${SOURCE}`;
     let text: string;

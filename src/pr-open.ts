@@ -60,7 +60,7 @@ import { extractAcceptanceSection, runAcceptanceCommand } from "./acceptance-com
 import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsTextOf, writeAcceptanceFile } from "./acceptance-file.ts";
 import { declaredRegionFiles, splitRegionEntry } from "./region-paths.ts";
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "./pr-open-region.ts";
-import { homeProjectDeclaration } from "./project-config.ts";
+import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 import { statedRepository } from "./row-file/body-from-argv.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
@@ -384,6 +384,23 @@ function namesRow(pull: OpenPull, rowKey: string, pullRepo: string): boolean {
 }
 
 /**
+ * The ref a pull request's diff is taken against: `--base`, else the branch `origin/HEAD` names, else `main`. A repository whose default branch is
+ * `develop` has no `origin/main`, so a diff against it read nothing and refused every create.
+ * @param {string[]} rest the args handed to `gh pr <mode>` @param {(args: string[]) => string} git @returns {string}
+ */
+export function diffBaseOf(rest: string[], git: (args: string[]) => string): string {
+  const named = flagAfter(rest, "--base");
+  if (named !== null) return `origin/${named}`;
+  try {
+    const head = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).trim();
+    if (/^origin\/[^\s]+$/.test(head)) return head;
+  } catch (error) {
+    void error; // no `origin/HEAD` to read is a clone that never set one: `main`, as before
+  }
+  return "origin/main";
+}
+
+/**
  * #3209: THE DIFF `mutationRecordReport` READS, taken from the local tree the way CI takes it from the merge commit:
  * the files the PR adds or changes (`ACMR`, a deletion leaves no test to owe a mutant; `--no-renames`, so a moved test
  * reads as delete + add and the add is kept, #939). Not the Region's read, which keeps deletions: a deleted file is
@@ -396,7 +413,7 @@ function namesRow(pull: OpenPull, rowKey: string, pullRepo: string): boolean {
  * @returns {import("./acceptance-commands.ts").DiffReading}
  */
 export function localDiffReading(rest: string[], git: (args: string[]) => string = defaultGit): import("./acceptance-commands/unmet-command-closure-requirements.ts").DiffReading {
-  const base = `origin/${flagAfter(rest, "--base") ?? "main"}`;
+  const base = diffBaseOf(rest, git);
   try {
     const files = git(["diff", "--name-only", "--no-renames", "--diff-filter=ACMR", "-z", `${base}...HEAD`]);
     const added = git(["diff", "--name-only", "--no-renames", "--diff-filter=A", "-z", `${base}...HEAD`]);
@@ -1058,7 +1075,7 @@ export function main(argv: string[] = process.argv.slice(2),
   if (beforeBody !== null) return beforeBody;
   const result = checkBody(body, { run: runAcceptance, diff: localDiffReading(rest, git), readFile,
     rowLabels: rowLabels && ((row) => rowLabels(row.number, row.repo ?? REPO)), // #4123: a bare `#N` is the tracker's, as in `rowsNamed`
-    reports: ticket === undefined ? undefined : ticketBodyReports(ticket.key, ticket.prReview, ticket.keywords) });
+    reports: ticket === undefined ? undefined : ticketBodyReports(ticket.key, ticket.prReview, ticket.keywords, { acceptance: HOME_CHECKOUT !== TICKET_ONLY_CHECKOUT }) });
   for (const line of result.lines) out(`${line}\n`);
   if (!result.ok) {
     err(`pr-open: REFUSED -- this body would fail CI's own acceptance job; fix it before `
@@ -1595,7 +1612,7 @@ function beforeBodyCheck(mode: string, rest: string[], body: string, { ticket, g
     return regionStep(body, rest, { git, rowBody, rootFiles, code, openPulls: mode === "create" ? openPulls : undefined, out, err })
       ?? claimedRowStep(body, rest, { git, code, claimedRows, out, err });
   }
-  const checked = ticketChecks(mode, rest, body, ticket, { git: git ?? defaultGit, base: `origin/${flagAfter(rest, "--base") ?? "main"}`,
+  const checked = ticketChecks(mode, rest, body, ticket, { git: git ?? defaultGit, base: diffBaseOf(rest, git ?? defaultGit),
     diff: localDiffReading(rest, git), rootFiles });
   for (const note of checked.notes) out(`${note}\n`);
   if (checked.refusal !== null) {
@@ -1626,7 +1643,9 @@ export async function runFromCli(env: NodeJS.ProcessEnv): Promise<number> {
       + "Nothing was sent to GitHub (A11-74).\n");
     return EXIT_NOTHING_SENT;
   }
-  return main(undefined, { ticket, verifyStamp: defaultVerifyStamp, branchHead: defaultBranchHead, write: writeAcceptanceFile });
+  // ADR 0044's `.acceptance/` file is a rule of the project whose CI reads it. A host with no project (`isTicketOnlyRun`) has no such CI, so its workers are not asked for one.
+  const write = HOME_CHECKOUT === TICKET_ONLY_CHECKOUT ? undefined : writeAcceptanceFile;
+  return main(undefined, { ticket, verifyStamp: defaultVerifyStamp, branchHead: defaultBranchHead, write });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {

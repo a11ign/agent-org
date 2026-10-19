@@ -2061,13 +2061,14 @@ test("A11-82: tickets queued and planned together whose plans share a path, with
   assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1: both touch src/a.ts");
 });
 
-test("A11-82: a pull request whose file list was cut short or never came holds its whole repository, so a run is not started beside it on a guess", async () => {
+test("A11-117: a pull request whose file list was cut short holds only the files listed, so a run whose own paths are not among them starts beside it", async () => {
   const listed = feedbackPull({ files: ["src/ticket-mode/server.ts"] });
   for (const [why, pull, phase] of [
     ["every file was listed and none is NBF-2's: it starts", listed, "running"],
-    ["the files run past the pages read: they are unknown, so NBF-2 waits", feedbackPull({ files: ["src/ticket-mode/server.ts"], more: true }), "queued"],
-    ["the page of files did not come back at all: they are unknown, so NBF-2 waits", { ...listed, files: undefined }, "queued"],
-    ["the page of files came back in another shape: they are unknown, so NBF-2 waits", { ...listed, files: { nodes: "all of them" } }, "queued"],
+    ["the files run past the pages read, and NBF-2's is not among those read: it starts", feedbackPull({ files: ["src/ticket-mode/server.ts"], more: true }), "running"],
+    ["the page of files did not come back at all, so none is listed: it starts", { ...listed, files: undefined }, "running"],
+    ["the page of files came back in another shape, so none is listed: it starts", { ...listed, files: { nodes: "all of them" } }, "running"],
+    ["a file among those read is NBF-2's: it waits on the listed file", feedbackPull({ files: ["docs/unrelated.md"], more: true }), "queued"],
   ] as const) {
     const gh = ghFor({ 1: pull });
     const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
@@ -2081,6 +2082,16 @@ test("A11-82: a pull request whose file list was cut short or never came holds i
     assert.equal(entry("NBF-2").phase, phase, why);
     if (phase === "queued") assert.equal(waitNote(entry("NBF-2"), store.get().entries), "Waits on NBF-1 #1: both touch docs/unrelated.md");
   }
+});
+
+test("A11-117: two queued tickets in one repository whose plans list .acceptance/ and .changeset/ and different source files both start at once, neither waiting", async () => {
+  const scaffold = ["nbl-ui-netbox:.acceptance/", "nbl-ui-netbox:.changeset/"];
+  const { pool, entry, store } = setup(2, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { source: planFiles({
+    "NBF-1": [...scaffold, "nbl-ui-netbox:src/a.ts"], "NBF-2": [...scaffold, "nbl-ui-netbox:src/b.ts"],
+  }) });
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "running"], "both start at once");
+  assert.deepEqual([waitNote(entry("NBF-1"), store.get().entries), waitNote(entry("NBF-2"), store.get().entries)], [null, null], "neither waits");
 });
 
 test("A11-82: a plan the tracker cannot give starts nothing, so a run is not started beside a run its plan may overlap before that is known", async () => {

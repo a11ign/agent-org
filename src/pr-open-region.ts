@@ -4,6 +4,7 @@
 // declared `Outside-Region:` escape. `pr-open.ts` and `ticket-mode/pr-open-ticket.ts` both import it. Nothing here reads a row, a ticket or a
 // git tree; the callers hand over every fact.
 import { ACCEPTANCE_DIR } from "./acceptance-file.ts";
+import { CHANGESET_SCAFFOLD } from "./scaffold-dirs.ts";
 import { regionCovers, regionCoversIn } from "./region-paths.ts";
 
 /**
@@ -22,7 +23,7 @@ export const REGION_EXEMPT = [
   { entry: ACCEPTANCE_DIR,
     reason: "each pull request adds its own acceptance file, named for its branch (ADR 0044), so a Region that listed it would be "
       + "padding and a refusal over it a false one" },
-  { entry: ".changeset/",
+  { entry: CHANGESET_SCAFFOLD,
     reason: "a PR that changes a package carries a changeset, which its row cannot declare before it is written" },
 ];
 

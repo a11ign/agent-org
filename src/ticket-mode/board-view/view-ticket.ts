@@ -27,7 +27,7 @@ export type ViewEntry = Readonly<{
   paths?: readonly string[];
   /**
    * The files each open pull request of the run changes, by URL, as the last watch read them, in the repository the pull request is in. An empty
-   * name in a list stands for files it did not read: the whole repository, see {@link pathsOverlap}.
+   * name in a list marks a list cut short: the files past the ones listed are unknown and hold nothing, see {@link footprintOf}.
    */
   pullFiles?: Readonly<Record<string, readonly string[]>>;
   /** The tickets of its batch its planner said it waits on to merge, rather than stacking on: the keys of its blockers that must merge first. */
