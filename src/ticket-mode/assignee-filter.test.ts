@@ -92,14 +92,10 @@ test("held counts: with none, the chips count the tickets the page holds, as bef
 });
 
 test("scopeToRead: the signed-in person's tickets are the first list, a scope is read once, and Anyone covers the rest", () => {
-  assert.equal(scopeToRead(YOU, new Set(), true), null);
-  assert.equal(scopeToRead("ana", new Set(), true), "ana");
-  assert.equal(scopeToRead(UNASSIGNED, new Set(), true), UNASSIGNED);
-  assert.equal(scopeToRead("ana", new Set(["ana"]), true), null, "a scope already read is not read again");
-  assert.equal(scopeToRead("ana", new Set([ANYONE]), true), null, "Anyone holds every person's tickets");
-  assert.equal(scopeToRead(ANYONE, new Set(["ana"]), true), ANYONE, "Anyone is more than the people read so far");
-});
-
-test("scopeToRead: an instance that lists everything at once reads no scope", () => {
-  for (const scope of [YOU, ANYONE, UNASSIGNED, "ana"]) assert.equal(scopeToRead(scope, new Set(), false), null, scope);
+  assert.equal(scopeToRead(YOU, new Set()), null);
+  assert.equal(scopeToRead("ana", new Set()), "ana");
+  assert.equal(scopeToRead(UNASSIGNED, new Set()), UNASSIGNED);
+  assert.equal(scopeToRead("ana", new Set(["ana"])), null, "a scope already read is not read again");
+  assert.equal(scopeToRead("ana", new Set([ANYONE])), null, "Anyone holds every person's tickets");
+  assert.equal(scopeToRead(ANYONE, new Set(["ana"])), ANYONE, "Anyone is more than the people read so far");
 });

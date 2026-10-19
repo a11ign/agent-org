@@ -987,7 +987,7 @@ async function load() {
  * joins the list as it arrives, so a scope of thousands fills in rather than waiting. Dropped when the instance is changed while it reads.
  */
 async function readScope(scope) {
-  const want = scopeToRead(scope, state.read, state.scopes);
+  const want = state.scopes ? scopeToRead(scope, state.read) : null;
   if (want === null || state.reading === want) return;
   const loads = state.loads;
   state.reading = want;

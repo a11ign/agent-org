@@ -37,12 +37,11 @@ export const UNASSIGNED = "unassigned";
 export type Held = Readonly<{ people: readonly Readonly<{ id: string; name: string; count: number }>[]; unassigned: number; total: number }>;
 
 /**
- * The scope to ask the instance for, or `null` when the page already holds it: the signed-in person's tickets are the first list, Anyone covers every scope,
- * and a scope read once is not read again. Only on an instance that reads scopes on demand (`onDemand`), since any other lists all it has at once.
+ * The scope to ask an instance that reads scopes on demand for, or `null` when the page already holds it: the signed-in person's tickets are the first
+ * list, Anyone covers every scope, and a scope read once is not read again. An instance that lists everything at once is never asked.
  */
-export function scopeToRead(scope: string, read: ReadonlySet<string>, onDemand: boolean): string | null {
-  if (!onDemand || scope === YOU || read.has(scope) || read.has(ANYONE)) return null;
-  return scope;
+export function scopeToRead(scope: string, read: ReadonlySet<string>): string | null {
+  return scope === YOU || read.has(scope) || read.has(ANYONE) ? null : scope;
 }
 
 /** One chip of the Assignee row: the scope it chooses, what it reads, how many listed tickets it matches, and whether it is chosen. */
