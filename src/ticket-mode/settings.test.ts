@@ -21,7 +21,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, workingState: null, connectors: [], publish: null, drafts: true, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
+  assert.deepEqual({ ...settings, clones: undefined }, { clones: undefined, max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -284,4 +284,25 @@ test("A11-84: the host's bin directory is read from `binDir`, and a host that na
   assert.equal(parseTicketSettings({ clones: { a: "/r/a" }, binDir: "/opt/bin" }).binDir, "/opt/bin");
   assert.equal(parseTicketSettings({ clones: { a: "/r/a" } }, "/home/me").binDir, join("/home/me", ".local", "bin"));
   assert.throws(() => parseTicketSettings({ clones: { a: "/r/a" }, binDir: "relative/bin" }), /binDir/);
+});
+
+test("tickets.preflight: absent is none, and each command carries its name, its shell command and a time limit that defaults to two minutes", () => {
+  const clones = { "nbl-ui-netbox": "/r/netbox" };
+  assert.deepEqual(parseTicketSettings({ clones }, "/home/me").preflight, []);
+  const parsed = parseTicketSettings({ clones, tickets: { preflight: [{ name: "login", run: "check-login" }, { name: "disk", run: "df -h /", timeoutSeconds: 15 }] } }, "/home/me").preflight;
+  assert.deepEqual(parsed, [{ name: "login", run: "check-login", timeoutSeconds: 120 }, { name: "disk", run: "df -h /", timeoutSeconds: 15 }]);
+});
+
+test("tickets.preflight: anything else is refused by name and place", () => {
+  const clones = { "nbl-ui-netbox": "/r/netbox" };
+  const refused = (preflight: unknown) => { try { parseTicketSettings({ clones, tickets: { preflight } }, "/home/me"); return null; } catch (err) { return (err as Error).message; } };
+  assert.match(refused("check-login") ?? "", /tickets\.preflight/);
+  assert.match(refused([{ run: "x" }]) ?? "", /tickets\.preflight\[0\]\.name/);
+  assert.match(refused([{ name: "x" }]) ?? "", /tickets\.preflight\[0\]\.run/);
+  assert.match(refused([{ name: "x", run: "  " }]) ?? "", /tickets\.preflight\[0\]\.run/);
+  assert.match(refused([{ name: "x", run: "y", timeoutSeconds: 0 }]) ?? "", /timeoutSeconds/);
+  assert.match(refused([{ name: "x", run: "y", timeoutSeconds: 601 }]) ?? "", /timeoutSeconds/);
+  assert.match(refused([{ name: "x", run: "y", timeoutSeconds: 1.5 }]) ?? "", /timeoutSeconds/);
+  assert.match(refused([{ name: "x", run: "a" }, { name: "x", run: "b" }]) ?? "", /tickets\.preflight\[1\]\.name.*twice/);
+  assert.match(refused(["just a string"]) ?? "", /tickets\.preflight\[0\]/);
 });

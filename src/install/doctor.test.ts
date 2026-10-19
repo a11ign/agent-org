@@ -424,3 +424,24 @@ test("A11-106: a host file with no GitHub clone adds no stacked pull requests ch
   await diagnose(deps({ readFile: () => WORKERS_HOST, originOf: () => GITHUB_ORIGIN, ghAs: () => ghFake("", () => { asked = true; return { status: 0, stdout: "[]", stderr: "" }; }) }));
   assert.equal(asked, false, "nothing is asked of GitHub without the extension");
 });
+
+// `tickets.preflight`: each command is run, as the pool runs it before a start, and a failure says what the command printed.
+const hostWithPreflight = (preflight: unknown) => JSON.stringify({ ...JSON.parse(HOST), tickets: { ...JSON.parse(HOST).tickets, preflight } });
+
+test("doctor runs each preflight command and reports a pass and a failure, naming the command and what it printed", async () => {
+  const checks = byName(await diagnose(deps({
+    readFile: () => hostWithPreflight([{ name: "fontawesome login", run: "login-ok" }, { name: "disk", run: "disk-full" }]),
+    preflight: async (command) => (command === "login-ok" ? { status: 0, timedOut: false, output: "" } : { status: 1, timedOut: false, output: "only 2 GB free\nmore" }),
+  })));
+  assert.equal(checks["preflight fontawesome login"].ok, true);
+  assert.equal(checks["preflight disk"].ok, false);
+  assert.equal(checks["preflight disk"].detail, "only 2 GB free");
+  assert.match(checks["preflight disk"].fix ?? "", /starts no run while it fails/);
+});
+
+test("doctor says nothing of preflight on a host that names none, and runs nothing", async () => {
+  let ran = false;
+  const checks = await diagnose(deps({ preflight: async () => { ran = true; return { status: 1, timedOut: false, output: "" }; } }));
+  assert.equal(checks.some((c) => c.name.startsWith("preflight")), false);
+  assert.equal(ran, false);
+});

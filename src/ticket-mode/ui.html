@@ -193,6 +193,7 @@
 <main>
   <div id="error" class="error" role="alert"></div>
   <div id="connections-note" class="notice" hidden></div>
+  <div id="held" class="notice" role="status" hidden></div>
   <section id="pick">
     <div class="bar">
       <input id="filter" type="search" placeholder="Filter by key, title or project">
@@ -728,7 +729,14 @@ function saveMax() {
   }).catch(report);
 }
 
-function render() { renderPick(); renderBoard(); renderFooter(); }
+/** Why this instance starts no run (its host's `tickets.preflight`): the check that failed and what it printed. Nothing is drawn while no run is held. */
+function renderHeld() {
+  const held = state.queue.held;
+  $("held").hidden = !held;
+  $("held").textContent = held ? `No run starts while ${held.name} fails: ${held.reason}` : "";
+}
+
+function render() { renderPick(); renderBoard(); renderFooter(); renderHeld(); }
 
 // NEW TICKETS (A11-94). A request's form, its runs, and each draft's review. The board creates a ticket only when a person approves a draft here.
 const writerForm = () => ({
@@ -1026,7 +1034,7 @@ try {
   await load();
 } catch (err) { report(err); }
 setInterval(() => {
-  call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); }, report);
+  call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); renderHeld(); }, report);
   refreshWriters().catch(report);
 }, 5000);
 </script>

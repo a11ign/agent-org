@@ -21,7 +21,9 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox", "platform-monorepo": "/r/pm" }, stateDir: dir, tickets: { port, ...ticketSettings } });
   const source: TicketSource = tracker ?? { assigned: async () => [ticket("NBF-1"), ticket("NBF-2")], read: async (key) => (key === "VE-9" ? ticket("VE-9") : null), download: async () => [] };
   const ticks: string[] = [];
+  const held: { now: { name: string; reason: string; since: number } | null } = { now: null };
   const pool = {
+    held: () => held.now,
     tick: async () => { ticks.push("tick"); }, stop: (key: string) => { ticks.push(`stop ${key}`); }, close: (key: string) => { ticks.push(`close ${key}`); },
     dismiss: async (key: string) => { ticks.push(`dismiss ${key}`); },
     applyEdit: async (key: string) => { ticks.push(`apply-edit ${key}`); },
@@ -32,7 +34,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {},
   };
   const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
-  return { ...made, ticks, dir };
+  return { ...made, ticks, dir, hold: (now: typeof held.now) => { held.now = now; } };
 }
 
 test("/api/parents reads the parents of the person's tickets that are not the person's own, and leaves out one it cannot read", async () => {
@@ -732,4 +734,43 @@ test("on demand: the parents of a scope's tickets are read, as those of the firs
   await b.api("GET", "/api/tickets", {}, new URLSearchParams("assignee=ana"));
   const [, parents] = await b.api("GET", "/api/parents", {}) as [number, any[]];
   assert.deepEqual([read, parents.map((t) => t.key)], [["NBF-8"], ["NBF-8"]]);
+});
+
+test("preflight: the queue the page reads says why runs are held, in every answer that carries the queue, and null while none is", async () => {
+  const b = board();
+  const [, calm] = await b.api("GET", "/api/queue", {}) as [number, any];
+  assert.equal(calm.held, null);
+  b.hold({ name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 5 });
+  const [, held] = await b.api("GET", "/api/queue", {}) as [number, any];
+  assert.deepEqual(held.held, { name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 5 });
+  assert.ok(Array.isArray(held.entries), "the queue itself is still there");
+  const [, queued] = await b.api("POST", "/api/queue", { keys: ["VE-9"], model: "opus", effort: "high" }) as [number, any];
+  assert.equal(queued.held?.name, "fontawesome login", "an answer to a queue change carries it too, so the banner does not flicker");
+});
+
+test("preflight: the answer to Queue its children carries why runs are held, as every other answer with the queue does", async () => {
+  const b = epicBoard(async () => new Map());
+  await b.api("GET", "/api/tickets", {});
+  const [, calm] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "opus", effort: "high" }) as [number, any];
+  assert.equal(calm.queue.held, null);
+  b.hold({ name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 5 });
+  const [, held] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(held.queue.held, { name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 5 });
+  assert.ok(Array.isArray(held.queue.entries), "the queue itself is still there");
+});
+
+test("preflight: every answer that carries the queue carries the held state, so the notice cannot flicker off after an action", async () => {
+  const b = epicBoard(async () => new Map());
+  b.hold({ name: "disk", reason: "only 2 GB free", since: 5 });
+  await b.api("GET", "/api/tickets", {});
+  const answers: [string, string, Record<string, unknown>][] = [
+    ["GET", "/api/queue", {}],
+    ["POST", "/api/paused", { paused: false }],
+    ["POST", "/api/max", { max: 2 }],
+    ["POST", "/api/queue", { keys: ["A11-25"], model: "opus", effort: "high" }],
+  ];
+  for (const [method, path, body] of answers) {
+    const [, answer] = await b.api(method, path, body) as [number, any];
+    assert.equal(answer.held?.name, "disk", `${method} ${path}`);
+  }
 });
