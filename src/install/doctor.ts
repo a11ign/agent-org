@@ -188,6 +188,20 @@ function ghWrapperChecks(report: GhWrapperReport): Check[] {
   return [wrapper, ...mints];
 }
 
+/**
+ * Does this host file declare no `primary` project? A machine that runs only the ticket board keeps `clones` and `tickets` and installs no `gh` wrapper, which is
+ * rendered from the project's `host.json`. A file that cannot be read or parsed is not that: its own check says why.
+ */
+function declaresNoProject(text: string | null): boolean {
+  if (text === null) return false;
+  try {
+    const host: unknown = JSON.parse(text);
+    return typeof host === "object" && host !== null && !Array.isArray(host) && !Object.hasOwn(host, "primary");
+  } catch {
+    return false;
+  }
+}
+
 /** The host file's text, or null when it cannot be read: the file a worker's `gh` account is named in. */
 function hostText(deps: DoctorDeps): string | null {
   try {
@@ -265,7 +279,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
       ? failed("launcher", "`agent-org` is not on PATH", `add its directory to PATH: export PATH="$HOME/.local/bin:$PATH" in your shell's rc file`)
       : ok("launcher", launcher),
     host,
-    ...ghWrapperChecks(await deps.ghWrapper()),
+    ...(declaresNoProject(hostText(deps)) ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper())),
     ...stackChecks(settings, deps),
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     keyCheck(settings, deps),

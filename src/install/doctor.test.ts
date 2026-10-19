@@ -8,6 +8,8 @@ const NOW = Date.parse("2026-10-18T10:00:00.000Z");
 const HOUR = 3600e3;
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 const HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
+/** The same host file with a `primary` project, which is the host that installs the `gh` wrapper. */
+const HOST_WITH_PROJECT = JSON.stringify({ ...JSON.parse(HOST), primary: "p", projects: [] });
 const MCP_LIST = "Checking MCP server health…\n\nbookctx: http://127.0.0.1:8421/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n";
 const KEY = "lin_api_SECRETSECRETSECRET";
 const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
@@ -306,7 +308,7 @@ test("doctor fails the tailnet serve check on a serve config it cannot read, and
 // A11-84: the installed `gh` wrapper and each declared role's mint are checked, and each failure names its fix.
 
 test("doctor fails a gh wrapper that diverges from host.json, naming the fix, and passes each role that mints", async () => {
-  const checks = await diagnose(deps({ ghWrapper: async () => ({ divergence: "/home/me/.local/bin/gh names no App role, but host.json declares scheduler",
+  const checks = await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ divergence: "/home/me/.local/bin/gh names no App role, but host.json declares scheduler",
     mints: [{ role: "scheduler", failure: null }, { role: "workers", failure: null }] }) }));
   const byCheck = byName(checks);
   assert.equal(byCheck["gh wrapper"].ok, false);
@@ -316,7 +318,7 @@ test("doctor fails a gh wrapper that diverges from host.json, naming the fix, an
 });
 
 test("doctor fails a role whose token mint fails, and says the reason the minter printed", async () => {
-  const checks = byName(await diagnose(deps({ ghWrapper: async () => ({ divergence: null,
+  const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ divergence: null,
     mints: [{ role: "reviewer", failure: "could not read the key /home/me/.config/agent-org/apps/a11ign-reviewer.pem (exit 2)" }] }) })));
   assert.equal(checks["gh wrapper"].ok, true);
   assert.equal(checks["app token reviewer"].ok, false);
@@ -324,8 +326,21 @@ test("doctor fails a role whose token mint fails, and says the reason the minter
   assert.match(checks["app token reviewer"].fix ?? "", /host:install/);
 });
 
+test("doctor passes the gh wrapper check as not applicable on a host that declares no project, and does not ask the wrapper", async () => {
+  let asked = false;
+  const checks = byName(await diagnose(deps({ ghWrapper: async () => { asked = true; return { unchecked: "field `primary` REFUSED: it is missing" }; } })));
+  assert.equal(checks["gh wrapper"].ok, true);
+  assert.match(checks["gh wrapper"].detail, /not applicable: host.json declares no project/);
+  assert.equal(asked, false);
+});
+
+test("doctor still checks the gh wrapper on a host that declares a primary project", async () => {
+  const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ unchecked: "ENOENT: host.json" }) })));
+  assert.equal(checks["gh wrapper"].ok, false);
+});
+
 test("doctor says a gh wrapper it could not check is not a pass", async () => {
-  const checks = byName(await diagnose(deps({ ghWrapper: async () => ({ unchecked: "ENOENT: host.json" }) })));
+  const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ unchecked: "ENOENT: host.json" }) })));
   assert.equal(checks["gh wrapper"].ok, false);
   assert.equal(checks["gh wrapper"].detail, "cannot be checked: ENOENT: host.json");
 });
