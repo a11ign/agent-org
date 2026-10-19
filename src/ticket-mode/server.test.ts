@@ -747,3 +747,30 @@ test("preflight: the queue the page reads says why runs are held, in every answe
   const [, queued] = await b.api("POST", "/api/queue", { keys: ["VE-9"], model: "opus", effort: "high" }) as [number, any];
   assert.equal(queued.held?.name, "fontawesome login", "an answer to a queue change carries it too, so the banner does not flicker");
 });
+
+test("preflight: the answer to Queue its children carries why runs are held, as every other answer with the queue does", async () => {
+  const b = epicBoard(async () => new Map());
+  await b.api("GET", "/api/tickets", {});
+  const [, calm] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "opus", effort: "high" }) as [number, any];
+  assert.equal(calm.queue.held, null);
+  b.hold({ name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 5 });
+  const [, held] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(held.queue.held, { name: "fontawesome login", reason: "EXPIRED: run assume repo-resources", since: 5 });
+  assert.ok(Array.isArray(held.queue.entries), "the queue itself is still there");
+});
+
+test("preflight: every answer that carries the queue carries the held state, so the notice cannot flicker off after an action", async () => {
+  const b = epicBoard(async () => new Map());
+  b.hold({ name: "disk", reason: "only 2 GB free", since: 5 });
+  await b.api("GET", "/api/tickets", {});
+  const answers: [string, string, Record<string, unknown>][] = [
+    ["GET", "/api/queue", {}],
+    ["POST", "/api/paused", { paused: false }],
+    ["POST", "/api/max", { max: 2 }],
+    ["POST", "/api/queue", { keys: ["A11-25"], model: "opus", effort: "high" }],
+  ];
+  for (const [method, path, body] of answers) {
+    const [, answer] = await b.api(method, path, body) as [number, any];
+    assert.equal(answer.held?.name, "disk", `${method} ${path}`);
+  }
+});

@@ -263,7 +263,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     queueTickets(tickets, choice, { plan: body.plan === true });
     const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
     const note = [order.note, left].filter((part) => part !== null).join("; ") || null;
-    return [200, { queue: store.get(), keys: tickets.map((ticket) => ticket.key), note }];
+    return [200, { queue: queueView(board), keys: tickets.map((ticket) => ticket.key), note }];
   }
   if (method === "POST" && path === "/api/choice") {
     // Only the part named is changed, so two pages open at once cannot undo each other's other half.
