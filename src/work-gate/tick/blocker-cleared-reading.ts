@@ -1003,7 +1003,8 @@ export function gateUnarmedOnAcceptance(unarmed: number[], { openPrs, scope, env
   const shadowGuards = !guardsOn && outsideGuardsOn(switches);
   const shadowAcceptance = !acceptanceOn && outsideAcceptanceOn(switches);
   const shadowOwned = outsideOwnedPathsOn(switches);
-  if (!acceptanceOn && !guardsOn && !shadowGuards && !shadowAcceptance && !shadowOwned) return { armable: unarmed, withheld: [] };
+  const isAllOff = !acceptanceOn && !guardsOn && !shadowGuards && !shadowAcceptance && !shadowOwned;
+  if (isAllOff) return { armable: unarmed, withheld: [] };
   const byDeclaredIdentity = (pr: any) => reviewTrustOf(pr, declared) === INSIDE;
   const file = join(stateDir, "acceptance-verdicts.json");
   const remembered: Record<string, OrgSideVerdict> = readJsonObject(file);
@@ -1089,7 +1090,8 @@ export function staleRefusalOf(pr: any): string | null {
   const head = String(pr?.headRefOid ?? "");
   if (head === "" || !Array.isArray(pr?.reviews)) return null;
   const refusals = pr.reviews.filter((r: any) => r?.state === "CHANGES_REQUESTED").map((r: any) => String(r?.commit?.oid ?? ""));
-  if (refusals.length === 0 || refusals.some((oid: string) => oid === "" || oid === head || patchUnchangedSince(pr, oid) === true)) return null;
+  const hasNoLiveRefusal = refusals.length === 0 || refusals.some((oid: string) => oid === "" || oid === head || patchUnchangedSince(pr, oid) === true);
+  if (hasNoLiveRefusal) return null;
   return refusalCommitOf(pr);
 }
 

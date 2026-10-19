@@ -213,7 +213,8 @@ export function parseCostLines(text: string): CostLine[] {
     if (raw.trim() === "") continue;
     try {
       const line = JSON.parse(raw);
-      if (Number.isFinite(line?.at) && Number.isFinite(line?.wallMs) && line.cpuMs && typeof line.phases === "object") lines.push(line);
+      const isTimedLine = Number.isFinite(line?.at) && Number.isFinite(line?.wallMs) && line.cpuMs && typeof line.phases === "object";
+      if (isTimedLine) lines.push(line);
     } catch {
       // not a cost line
     }
@@ -287,7 +288,8 @@ export function overranWakesOf(ledgerText: string, { now, windowMs = TICK_RECORD
   for (const raw of ledgerText.split("\n")) {
     const [stamp, key] = raw.split("\t");
     const at = Number(stamp);
-    if (!key || !Number.isFinite(at) || now - at > windowMs || at > now) continue;
+    const isOutsideWindow = !key || !Number.isFinite(at) || now - at > windowMs || at > now;
+    if (isOutsideWindow) continue;
     const [, cause, subject = ""] = key.split("/");
     if (cause !== TICK_OVERRAN) continue;
     if (subject.startsWith(TICK_KILLED)) wakes.killed += 1;

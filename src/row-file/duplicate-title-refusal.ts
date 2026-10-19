@@ -162,7 +162,8 @@ export function milestoneFromArgv(argv: string[]): string | null {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg.startsWith("--milestone=")) return arg.slice("--milestone=".length) || null;
-    if ((arg === "--milestone" || arg === "-m") && (argv[i + 1] ?? "").length > 0) return argv[i + 1];
+    const isMilestoneWithValue = (arg === "--milestone" || arg === "-m") && (argv[i + 1] ?? "").length > 0;
+    if (isMilestoneWithValue) return argv[i + 1];
   }
   return null;
 }
@@ -189,7 +190,8 @@ export function declaresRelease(argv: string[]): boolean {
     // `--milestone=X`, `--milestone X`, `-m X`: a flag with no value declares nothing, which is why the
     // VALUE is checked rather than the flag's presence. An empty `--milestone=` is the same as none.
     if (arg.startsWith("--milestone=") && arg.slice("--milestone=".length).length > 0) return true;
-    if ((arg === "--milestone" || arg === "-m") && (argv[i + 1] ?? "").length > 0) return true;
+    const isMilestoneWithValue = (arg === "--milestone" || arg === "-m") && (argv[i + 1] ?? "").length > 0;
+    if (isMilestoneWithValue) return true;
   }
   return false;
 }

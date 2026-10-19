@@ -158,7 +158,8 @@ export function withEndedLabels(prs: any[], { agents = liveWorkspaceLabels, ende
   }
   return prs.map((pr) => {
     const label = sessionOf(pr);
-    return label && label !== "engineers" && !live.includes(label) && gone.has(label) ? { ...pr, labelEnded: true } : pr;
+    const isEndedLabel = label && label !== "engineers" && !live.includes(label) && gone.has(label);
+    return isEndedLabel ? { ...pr, labelEnded: true } : pr;
   });
 }
 

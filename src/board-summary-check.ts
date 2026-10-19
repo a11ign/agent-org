@@ -332,8 +332,10 @@ const canonical = (value: unknown) => JSON.stringify(value, (_key, val) =>
 function indexEntries(section: string, items: unknown[]): Map<string, unknown> {
   const key = ARRAY_IDENTITY[section];
   /** @param {unknown} item */
-  const named = (item: unknown) => (key && item && typeof item === "object" && (item as any)[key] !== undefined
-    ? String((item as any)[key]) : canonical(item));
+  const named = (item: unknown) => {
+    const hasKey = key && item && typeof item === "object" && (item as any)[key] !== undefined;
+    return hasKey ? String((item as any)[key]) : canonical(item);
+  };
   return new Map(items.map((item) => [named(item), item]));
 }
 

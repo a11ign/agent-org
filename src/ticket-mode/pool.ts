@@ -1370,7 +1370,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     const entry = store.get().entries.find((e) => e.ticket.key === key);
     // A run that opened a pull request is never put back: the tracker's own integration takes its ticket from there. Nor is a review round, nor a
     // `done` run, whose ticket the board completed.
-    if (entry?.movedFrom === undefined || entry.review !== undefined || RESULT_KINDS.has(entry.outcome?.kind ?? "") || entry.outcome?.kind === "done") return;
+    const needsNoRecord = entry?.movedFrom === undefined || entry.review !== undefined || RESULT_KINDS.has(entry.outcome?.kind ?? "") || entry.outcome?.kind === "done";
+    if (needsNoRecord) return;
     const restore = source.restoreState?.bind(source);
     if (restore !== undefined) {
       let note: string | null;
@@ -1709,7 +1710,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
       if (!listed.has(runPlace(entry).name)) update((queue) => unpark(queue, entry.ticket.key));
     }
     const publish = store.get().publish;
-    if (publish !== undefined && (publish.phase === "starting" || (publish.phase === "running" && !listed.has(publishPlace(publish).name)))) {
+    const isUnlistedPublish = publish !== undefined && (publish.phase === "starting" || (publish.phase === "running" && !listed.has(publishPlace(publish).name)));
+    if (isUnlistedPublish) {
       update((queue) => publishFailed(queue, "the pool restarted while it was running", now()));
     }
     for (const run of store.get().writers ?? []) {

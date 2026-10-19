@@ -37,7 +37,8 @@ export function primaryStaleOrders(drift: import("../../update-primary.ts").Prim
     session: string; cause: string; subject: string; discriminator: string;
     prompt: string; causeKey: string;
 }[] {
-  if (!drift || (drift.behind === 0 && drift.ahead === 0 && drift.dirty.length === 0)) return [];
+  const hasNothingToReport = !drift || (drift.behind === 0 && drift.ahead === 0 && drift.dirty.length === 0);
+  if (hasNothingToReport) return [];
   const dirty = [...drift.dirty].sort();
   const key = `${drift.sha.slice(0, 9)}.${drift.originSha.slice(0, 9)}.${createHash("sha256").update(dirty.join("\n")).digest("hex").slice(0, 8)}`;
   return [{

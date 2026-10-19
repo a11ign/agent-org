@@ -146,7 +146,8 @@ function shapeOf(array: ts.ArrayLiteralExpression): string | null {
     return early.some((element) => isString(element) && element.text === "graphql") ? "api graphql" : "api rest";
   }
   const known = SUBCOMMANDS[first.text];
-  if (known === undefined || second === undefined || !isString(second) || !known.includes(second.text)) return null;
+  const isUnlistedCall = known === undefined || second === undefined || !isString(second) || !known.includes(second.text);
+  if (isUnlistedCall) return null;
   return `${first.text} ${second.text}`;
 }
 
@@ -163,7 +164,8 @@ function flaggedLabels(array: ts.ArrayLiteralExpression): string[] {
       return;
     }
     const value = elements[index + 1];
-    if (value !== undefined && isString(value) && value.text !== "" && !value.text.startsWith("-")) out.push(value.text);
+    const isPositional = value !== undefined && isString(value) && value.text !== "" && !value.text.startsWith("-");
+    if (isPositional) out.push(value.text);
   });
   return out;
 }
@@ -230,7 +232,8 @@ function declaredCauses(root: string): { cause: string; group: string }[] {
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "declareCause") {
       const [name, group] = node.arguments;
-      if (name !== undefined && isString(name) && group !== undefined && ts.isPropertyAccessExpression(group)) {
+      const isNamedAccess = name !== undefined && isString(name) && group !== undefined && ts.isPropertyAccessExpression(group);
+      if (isNamedAccess) {
         found.push({ cause: name.text, group: group.name.text });
       }
     }

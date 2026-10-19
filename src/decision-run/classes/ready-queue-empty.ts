@@ -124,7 +124,8 @@ export function tierQuestion(): BriefQuestion {
 
 /** The rows an answer names, as items read now and still shelved; `null` when any named row is unreadable, is no row, or has left the shelf. */
 function shelvedRows(rows: unknown, port: Port): { ref: ItemRef; item: TicketItem }[] | null {
-  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_ROWS || rows.some((r) => typeof r !== "string")) return null;
+  const isMalformedRows = !Array.isArray(rows) || rows.length === 0 || rows.length > MAX_ROWS || rows.some((r) => typeof r !== "string");
+  if (isMalformedRows) return null;
   const out: { ref: ItemRef; item: TicketItem }[] = [];
   for (const mention of rows as string[]) {
     const ref = refOf(mention);

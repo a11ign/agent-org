@@ -211,7 +211,8 @@ function installedName(deps: UpdateDeps, channel: Channel): string {
 
 /** When the first deferral for `latest` began, as the status file holds it: kept while that release is still the newest, and absent otherwise. */
 function deferredSinceOf(previous: UpdateStatus | null, latest: string, channel: Channel): number | undefined {
-  if (previous === null || previous.latest !== latest || previous.channel !== channel || previous.deferredSince === undefined) return undefined;
+  const isDifferentDeferral = previous === null || previous.latest !== latest || previous.channel !== channel || previous.deferredSince === undefined;
+  if (isDifferentDeferral) return undefined;
   return Date.parse(previous.deferredSince);
 }
 

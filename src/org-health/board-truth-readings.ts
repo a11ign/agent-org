@@ -59,7 +59,8 @@ export function boardTruthReading({ audit, day = "today" }: { audit: { findings:
  * `orgHealthOrders` makes one order per pair; a tick whose disagreeing pairs were all offered already reads CLEAR, because they were said and are not new.
  */
 export function boardTruthReadings({ audit, day = "today", offers }: { audit: Parameters<typeof boardTruthTable>[0] | null; day?: string; offers?: BoardTruthOffer[] | null; }): Reading[] {
-  if (offers === undefined || offers === null || audit === null || audit.findings.length === 0) return [boardTruthReading({ audit, day })];
+  const isWithoutFindings = offers === undefined || offers === null || audit === null || audit.findings.length === 0;
+  if (isWithoutFindings) return [boardTruthReading({ audit, day })];
   if (offers.length === 0) return [clear(SIGNALS.BOARD_TRUTH)];
   return offers.map((offer) => ({ signal: SIGNALS.BOARD_TRUTH, status: "tripped", firstTrippedAt: null,
     discriminator: offer.discriminator, detail: `\n${boardTruthTable(audit, day)}\n` }));

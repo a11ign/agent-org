@@ -852,7 +852,8 @@ export function conditionalOpenRows({ run, conditional }: { run: (args: string[]
   }
   const all = readKept(dir);
   const kept = all[repo]?.rows;
-  if (listing !== null && kept !== undefined && Array.isArray(kept.rows) && kept.signature === listing.signature && now - kept.readAt < KEPT_READ_MAX_AGE_MS) return kept.rows;
+  const isKeptForListing = listing !== null && kept !== undefined && Array.isArray(kept.rows) && kept.signature === listing.signature && now - kept.readAt < KEPT_READ_MAX_AGE_MS;
+  if (isKeptForListing) return kept.rows;
   const rows = readOpenRowsAsListed(run);
   if (listing !== null && rows !== null) {
     const named = new Set(rows.map((row) => row?.number));
@@ -872,7 +873,8 @@ export function keptClosedAnswers(signature: string, read: () => any[] | null, c
   if (conditional === null) return read();
   const { dir, now, repo } = conditional;
   const kept = readKept(dir)[repo]?.answers;
-  if (kept !== undefined && Array.isArray(kept.rows) && kept.signature === signature && now - kept.readAt >= 0 && now - kept.readAt < KEPT_ANSWERS_MAX_AGE_MS) return kept.rows;
+  const isKeptAnswers = kept !== undefined && Array.isArray(kept.rows) && kept.signature === signature && now - kept.readAt >= 0 && now - kept.readAt < KEPT_ANSWERS_MAX_AGE_MS;
+  if (isKeptAnswers) return kept.rows;
   const rows = read();
   if (rows !== null) {
     const all = readKept(dir);

@@ -62,7 +62,8 @@ export function withholdOutsideFollowUps(orders: any[], prs: any[], declared: De
     const ask = asks.get(order.subject);
     if (ask && order.cause === (CAUSE_OF_STALL as Record<string, string>)[ask.reason]) return [toOrchestrator(order, ask)];
     // agent-org#1667: a not-convinced verdict on a same-repository session pull request whose only finding is the missing CI Acceptance run (`wakes`) is kept
-    return !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause) || (order.cause === "verdict-not-convinced" && wakes.has(order.subject)) ? [order] : [];
+    const isOrderable = !withheld.has(order.subject) || REVIEW_CAUSES.includes(order.cause) || (order.cause === "verdict-not-convinced" && wakes.has(order.subject));
+    return isOrderable ? [order] : [];
   });
 }
 
@@ -630,7 +631,8 @@ function approvalNotCountedOrder(pr: any, discriminator: string) {
 }
 
 function isUnordered(pr: any, nowMs: number) {
-  if (!pr.headRefOid || pr.isDraft === true || awaitingEvidence(pr) || !armabilityOf({ labels: labelsOf(pr) }).arm) return false;
+  const isUnarmable = !pr.headRefOid || pr.isDraft === true || awaitingEvidence(pr) || !armabilityOf({ labels: labelsOf(pr) }).arm;
+  if (isUnarmable) return false;
   if (conflictStateOf(pr) === CONFLICT_STATE.CONFLICTING) return false;
   if (reviewStateOf(pr).code !== REVIEW_STATE.AWAITING_REVIEW) return false;
   const quietSince = lastActivityMs(pr);

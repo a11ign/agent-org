@@ -86,7 +86,8 @@ function recentComments(repo: string, issue: number, { gh, now }: Pick<Deps, "gh
   };
   const comments = commentsSince({ repo, since: now() - RECENT_MINUTES * 60_000, run: read });
   // A list of lists is the shape `commentsSince` checks; what is IN the lists is checked here, and a record that is not a comment makes the whole read not-known rather than a crash that posts nothing.
-  if (comments === null || !comments.every((comment) => typeof comment === "object" && comment !== null && typeof comment.issue_url === "string" && typeof comment.body === "string")) return null;
+  const isMalformedComments = comments === null || !comments.every((comment) => typeof comment === "object" && comment !== null && typeof comment.issue_url === "string" && typeof comment.body === "string");
+  if (isMalformedComments) return null;
   return comments.filter((comment) => comment.issue_url.endsWith(`/issues/${issue}`)).map((comment) => comment.body);
 }
 
@@ -152,7 +153,8 @@ function main() {
   const reportIssue = Number(flagValue(process.argv, "report-issue"));
   const names = (only ?? "").split(",").filter((name) => name !== "");
   const unknown = names.filter((name) => !Object.hasOwn(JOBS, name));
-  if (repo === undefined || !/^[^/\s]+\/[^/\s]+$/.test(repo) || names.length === 0 || unknown.length > 0 || !Number.isInteger(reportIssue) || reportIssue <= 0) {
+  const isMalformedRequest = repo === undefined || !/^[^/\s]+\/[^/\s]+$/.test(repo) || names.length === 0 || unknown.length > 0 || !Number.isInteger(reportIssue) || reportIssue <= 0;
+  if (isMalformedRequest) {
     console.error(`outside-nightly: needs --repo=<owner/name> --only=<${Object.keys(JOBS).join(",")}> --report-issue=<n>${unknown.length > 0 ? `; not jobs: ${unknown.join(", ")}` : ""}`);
     process.exitCode = 2;
     return;

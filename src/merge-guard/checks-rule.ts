@@ -67,7 +67,8 @@ export function newestPerName(runs: { id?: number; name: string; status: string;
   const byName: Map<string, { id?: number; name: string; status: string; conclusion: string | null; }> = new Map();
   for (const run of runs) {
     const seen = byName.get(run.name);
-    if (!seen || (run.id ?? 0) >= (seen.id ?? 0)) byName.set(run.name, run);
+    const isNewerRun = !seen || (run.id ?? 0) >= (seen.id ?? 0);
+    if (isNewerRun) byName.set(run.name, run);
   }
   return [...byName.values()];
 }

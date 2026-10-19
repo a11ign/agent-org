@@ -168,7 +168,8 @@ export function seatStage(line: Record<string, any> | null, taken: boolean | nul
 
 function backStage({ line, recorded }: Awaited<ReturnType<typeof sendSelftest>>): Stage {
   const heard = recorded.some((message) => message.text === ACKNOWLEDGEMENT);
-  if (line !== null && line.ackRef !== null && line.ackRef !== undefined && heard) return { name: "back", ok: true, note: `the acknowledgement came back through the recorder (${line.ackRef})` };
+  const isAcknowledged = line !== null && line.ackRef !== null && line.ackRef !== undefined && heard;
+  if (isAcknowledged) return { name: "back", ok: true, note: `the acknowledgement came back through the recorder (${line.ackRef})` };
   return { name: "back", ok: false, note: `the acknowledgement did not come back${line?.error ? `: ${line.error}` : ""}` };
 }
 

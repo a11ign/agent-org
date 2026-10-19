@@ -441,7 +441,8 @@ function releasePlan(request: ReleaseRequest, deps: ReleaseDeps, site: ReleaseSi
   const merged = request.why === "merged" && request.mergedPrRepoKey !== undefined
     ? { repoKey: request.mergedPrRepoKey, head: request.mergedPrHead, claimant: { row: request.row, branch: request.branch, session: request.session } } : undefined;
   const work = holderWorkAtRisk(deps.io, { worktree: request.worktree, branch: request.branch, repo, ...(merged === undefined ? {} : { merged }) });
-  if (request.why !== "stalled" && request.why !== "gone" && request.why !== "closed" && work.state !== "none") {
+  const isLiveRequest = request.why !== "stalled" && request.why !== "gone" && request.why !== "closed" && work.state !== "none";
+  if (isLiveRequest) {
     return { refusal: `the holder now holds work (${work.state}: ${work.dirty} dirty, ${work.unpushed} unpushed${work.why === undefined ? "" : `; ${work.why}`}) -- not released` };
   }
   const onOrigin = request.branch !== null
@@ -887,7 +888,8 @@ export function recoverInterruptedWork({ agents, ledgerPath, now = Date.now(), r
     const queuePath = handoffQueuePath(ledgerPath);
     const found = recoverableWork({ now, agents, actedRestart: state.restartAt ?? null, restartAt, moved, lastActive,
       paneText: paneReader(run), resentAt: state.resent ?? {}, deliveries: () => deliveriesOf(ledgerPath, queuePath) });
-    if (found.killed.length === 0 && found.interrupted.length === 0 && found.thrashed.length === 0 && found.restartActed === null) return [];
+    const hasNothingFound = found.killed.length === 0 && found.interrupted.length === 0 && found.thrashed.length === 0 && found.restartActed === null;
+    if (hasNothingFound) return [];
     const lines = actOnKilledWork({ found, now, ledgerPath, queuePath });
     writeJsonObject(statePath, { restartAt: found.restartActed ?? state.restartAt ?? null, resent: resentAfter(state.resent ?? {}, found, now) });
     for (const line of lines) log(`${line}\n`);

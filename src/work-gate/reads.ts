@@ -222,7 +222,8 @@ export function readOpenRows(run: (args: string[]) => string = defaultRun, condi
   const rows = conditional === null ? readOpenRowsAsListed(run) : conditionalOpenRows({ run, conditional });
   // a11ign/a11ign#5043: the rows are in hand, so the dated waits they carry are recorded where the tick reads them. NOT from an empty list (the first-wave
   // rehearsal answers `[]`, and recording it would forget every wait), and NOT from one at the cap, which may be cut.
-  if (webhook && rows !== null && rows.length > 0 && rows.length < OPEN_ROWS_LIMIT) {
+  const isWebhookRows = webhook && rows !== null && rows.length > 0 && rows.length < OPEN_ROWS_LIMIT;
+  if (isWebhookRows) {
     recordDueInstantsOrSay({ path: dueIndexPath ?? stateEntryPath(DUE_INDEX_ENTRY), repo: repoNow(), rows });
   }
   return rows;

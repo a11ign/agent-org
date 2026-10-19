@@ -223,7 +223,8 @@ export function compose(p: Readings, repeatAgeMinutes: number | null | undefined
   const guards = ["names-red-main", "names-chairman-direction"] as const;
   const guarded = whyNotDigest(p, guards);
   if (guarded !== null) return { route: "wake", reason: `${guarded}, so it is not held` };
-  if (typeof repeatAgeMinutes === "number" && repeatAgeMinutes < REPEAT_WINDOW_MINUTES && (p.repeat ?? 0) >= DIGEST_MIN_P_REPEAT) {
+  const isRepeatWithinWindow = typeof repeatAgeMinutes === "number" && repeatAgeMinutes < REPEAT_WINDOW_MINUTES && (p.repeat ?? 0) >= DIGEST_MIN_P_REPEAT;
+  if (isRepeatWithinWindow) {
     return { route: "digest", reason: `a repeat of one delivered ${repeatAgeMinutes} minute(s) ago` };
   }
   const why = whyNotDigest(p, ["informational-only", "asks-this-seat"]);

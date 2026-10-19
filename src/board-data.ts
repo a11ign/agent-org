@@ -162,8 +162,9 @@ function issuePage(run: (args: string[]) => string, after: string | null, repo: 
   const body = JSON.parse(run(args));
   const page = body?.data?.repository?.issues;
   // `pageInfo` is part of the shape: an absent one must not read as "this was the last page".
-  if (!page || !Array.isArray(page.nodes) || !Number.isInteger(page.totalCount)
-    || typeof page.pageInfo?.hasNextPage !== "boolean") {
+  const isMalformedPage = !page || !Array.isArray(page.nodes) || !Number.isInteger(page.totalCount)
+    || typeof page.pageInfo?.hasNextPage !== "boolean";
+  if (isMalformedPage) {
     throw new Error(`unexpected response shape: ${JSON.stringify(body).slice(0, 200)}`);
   }
   return page;
@@ -450,6 +451,9 @@ export function achievementsWhoseWorldMoved({ achievements, issueState, now = Da
     const claim = String(entry.boardClaim ?? entry.claim ?? "(no claim text)").slice(0, 90);
     const affirmed = typeof entry.affirmed === "string" && entry.affirmed.trim().length > 20;
     const state = issueState[String(entry.issue)];
+    // Evaluated only where the else-if reaches it, as the condition it names always was.
+    const isClosedAfterAffirmed = (): boolean => state?.state === "CLOSED" && !affirmed
+      && Date.parse(entry.at) < Date.parse(state.closedAt ?? "");
     // UNKNOWN IS NOT OPEN. An issue the listing did not carry is a question that could not be asked --
     // reporting it as fine is the "unchecked is not clean" defect, and reporting it as CLOSED would
     // refuse an edition over a paging limit. It gets its own sentence.
@@ -457,8 +461,7 @@ export function achievementsWhoseWorldMoved({ achievements, issueState, now = Da
       findings.push({ index, claim,
         why: `cites issue #${entry.issue}, which the issue listing did not carry -- so whether it is `
           + "still open COULD NOT BE ASKED. Widen the listing or check by hand; do not assume." });
-    } else if (state?.state === "CLOSED" && !affirmed
-      && Date.parse(entry.at) < Date.parse(state.closedAt ?? "")) {
+    } else if (isClosedAfterAffirmed()) {
       findings.push({ index, claim,
         why: `cites issue #${entry.issue}, which closed at ${state.closedAt} -- AFTER this entry was last `
           + `affirmed (${entry.at}). The claim may still be true, and a closed issue is the normal end of `

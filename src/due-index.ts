@@ -50,7 +50,8 @@ export const readDueIndex = (path: string): DueIndexRead => {
     return { status: "corrupt", index: null, reason: `not JSON: ${(error as Error).message}` };
   }
   const repos = (parsed as { version?: unknown, repos?: unknown } | null)?.repos;
-  if ((parsed as { version?: unknown } | null)?.version !== VERSION || typeof repos !== "object" || repos === null || Array.isArray(repos)) {
+  const isMalformedIndex = (parsed as { version?: unknown } | null)?.version !== VERSION || typeof repos !== "object" || repos === null || Array.isArray(repos);
+  if (isMalformedIndex) {
     return { status: "corrupt", index: null, reason: `not a version ${VERSION} due-index` };
   }
   const index: DueIndex = {};

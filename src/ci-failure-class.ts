@@ -706,7 +706,8 @@ export function sharedFailureTick<O extends OrderLike>(
     if (out.released.length > 0) log(`ci-shared-failure: released ${out.released.length} red order(s), their hold is over:${out.released.map((r) => ` ${r.subject} (${r.why})`).join("")}\n`);
     for (const key of new Set(out.held.map((h) => h.key))) { // #1557: one line per held incident that nobody has claimed past the bound; the holds themselves wait for it to close
       const row = rows.open.find((r) => r.body.includes(markerOf(key)));
-      if (row !== undefined && !(row.labels ?? []).includes(CLAIM_LABEL) && nowMs - Date.parse(String(row.createdAt)) >= HOLD_MAX_MS) {
+      const isOldUnclaimedRow = row !== undefined && !(row.labels ?? []).includes(CLAIM_LABEL) && nowMs - Date.parse(String(row.createdAt)) >= HOLD_MAX_MS;
+      if (isOldUnclaimedRow) {
         log(`ci-shared-failure: incident #${row.number} has been open ${HOLD_MAX_MS / 60_000} minutes with no claim; its held pull requests wait for it to close, and no worker is woken\n`);
       }
     }

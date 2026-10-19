@@ -102,7 +102,8 @@ export function main(argv: readonly string[] = process.argv.slice(2), { dir = RE
   const on = verb === "on";
   const [name] = rest.filter((arg) => !arg.startsWith("--"));
   const session = flagValue("session");
-  if ((!on && verb !== "off") || name === undefined || session === undefined || session === "") return refuse(`${USAGE}\n`, err);
+  const isUsageError = (!on && verb !== "off") || name === undefined || session === undefined || session === "";
+  if (isUsageError) return refuse(`${USAGE}\n`, err);
   const signalText = flagValue("signals");
   const signals = signalText === undefined ? undefined : signalText.split(",").filter(Boolean);
   if (signals !== undefined && signals.length === 0) return refuse(`REFUSED: --signals names no signal; a flag that watches nothing passes its hour by default\n`, err);

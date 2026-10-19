@@ -216,7 +216,8 @@ function parseStatus(value: unknown): UpdateStatus | null {
   const installed = text("installed");
   const latest = text("latest");
   const latestSince = text("latestSince");
-  if (checkedAt === undefined || installed === undefined || latest === undefined || latestSince === undefined) return null;
+  const isUnknownState = checkedAt === undefined || installed === undefined || latest === undefined || latestSince === undefined;
+  if (isUnknownState) return null;
   if (v.channel !== "release" && v.channel !== "main") return null;
   return { checkedAt, channel: v.channel, installed, latest, latestSince, deferredSince: text("deferredSince"), deferredReason: text("deferredReason") };
 }

@@ -727,7 +727,8 @@ function haikuDefaultVerdict(answer: Answer | null, routing: Pick<RoutingDeclara
   if (!routing.routes.includes("haiku/high")) return null;
   const pick = answer?.confidence === undefined ? null : String(answer.value) as Route;
   const p = pick === null || answer?.probabilities === undefined ? null : Number((answer.probabilities[pick] ?? 0).toFixed(PROBABILITY_PLACES));
-  if (pick !== null && p !== null && pick !== "haiku/high" && routing.routes.includes(pick) && p >= routing.sonnetVetoMinP) {
+  const isSonnetVetoed = pick !== null && p !== null && pick !== "haiku/high" && routing.routes.includes(pick) && p >= routing.sonnetVetoMinP;
+  if (isSonnetVetoed) {
     return { route: pick, via: "jev", because: "jev", why: `the provider vetoed Haiku: it picked ${pick} at P=${showP3(p)} (a veto needs P >= ${routing.sonnetVetoMinP})` };
   }
   const said = pick === null ? "the provider gave no usable pick" : `the provider picked ${pick}${p === null ? " with no probabilities" : ` at P=${showP3(p)}`}`;

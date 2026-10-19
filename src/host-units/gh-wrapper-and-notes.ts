@@ -139,7 +139,8 @@ export function writeGhWrapper({ target, mode, text, host, allowNoApps = false, 
     throw new HostConfigRefusal("gh", `${why}, so ${target} is not written`, target);
   };
   const inside = relative(resolve(realBin), resolve(target));
-  if (under && inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)) {
+  const isInside = under && inside !== "" && !inside.startsWith("..") && !isAbsolute(inside);
+  if (isInside) {
     refuse("a test run may not write the real home's bin directory: a test takes its bin directory from a fixture");
   }
   // Production only: a test run's fixtures are checkouts in the runner's own temporary directory, so under a test run the real-bin tripwire above is the guard,

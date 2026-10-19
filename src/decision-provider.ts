@@ -130,7 +130,8 @@ function readFloors(path: string, { diagnostic, state, read }: Env): Floors {
     warnFloorsOnce(path, diagnostic, state);
     return new Map();
   }
-  if (!isRecord(parsed) || Object.values(parsed).some((v) => typeof v !== "number" || !(v >= 0 && v <= 1))) {
+  const isMalformedProbabilities = !isRecord(parsed) || Object.values(parsed).some((v) => typeof v !== "number" || !(v >= 0 && v <= 1));
+  if (isMalformedProbabilities) {
     warnFloorsOnce(path, diagnostic, state);
     return new Map();
   }
@@ -190,7 +191,8 @@ function readProbabilities(question: Question, raw: unknown): Record<string, num
   const kept: Record<string, number> = {};
   for (const [key, p] of entries) {
     const at = probabilityKey(question, key);
-    if (at === undefined || typeof p !== "number" || !(p >= 0 && p <= 1)) return undefined;
+    const isUnusable = at === undefined || typeof p !== "number" || !(p >= 0 && p <= 1);
+    if (isUnusable) return undefined;
     kept[at] = p;
   }
   return Object.values(kept).reduce((sum, p) => sum + p, 0) > 1 + PROBABILITY_SLACK ? undefined : kept;

@@ -361,7 +361,8 @@ export function parseAutoOffMirror(text: string | null, path: string): AutoOffFa
   if (!isObject(mirror) || !isTime(mirror.readAt) || !isObject(mirror.record)) return { unreadable: `\`${path}\` is not \`{ readAt, record }\`` };
   const refusal = mirror.record.refusal ?? null;
   if (refusal === null) return { refusal: null, readAt: mirror.readAt };
-  if (typeof refusal.reason !== "string" || typeof refusal.detail !== "string" || !isTime(refusal.at) || !(refusal.since === undefined || isTime(refusal.since))) {
+  const isMalformedRefusal = typeof refusal.reason !== "string" || typeof refusal.detail !== "string" || !isTime(refusal.at) || !(refusal.since === undefined || isTime(refusal.since));
+  if (isMalformedRefusal) {
     return { unreadable: `\`${path}\` holds a refusal without a reason, a detail and a time` };
   }
   return { refusal: { reason: refusal.reason, detail: refusal.detail, at: refusal.at, since: refusal.since ?? null }, readAt: mirror.readAt };

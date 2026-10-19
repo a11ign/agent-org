@@ -71,7 +71,8 @@ function readFile(path: string): { repos: Stored; error?: undefined; } | { repos
     return { error: { reason: "unreadable", detail: `not JSON: ${(error as Error).message}` } };
   }
   const repos = parsed?.repos;
-  if (parsed?.version !== VERSION || typeof repos !== "object" || repos === null || Array.isArray(repos)) {
+  const isMalformedMemory = parsed?.version !== VERSION || typeof repos !== "object" || repos === null || Array.isArray(repos);
+  if (isMalformedMemory) {
     return { error: { reason: "unreadable", detail: `not a version ${VERSION} pr-list memory` } };
   }
   for (const [name, memory] of Object.entries<any>(repos)) {

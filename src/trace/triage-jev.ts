@@ -48,7 +48,8 @@ function questionFor(definitions: Sheet["definitions"]): ProviderQuestion {
 /** Jev's reading of one answer, or why it is not one: a label this sheet allows and a confidence from 0 to 1. */
 function readLabel(raw: unknown): { asked: Label; confidence: number } | undefined {
   const { choice, confidence } = (typeof raw === "object" && raw !== null ? raw : {}) as { choice?: unknown; confidence?: unknown };
-  if (!isLabel(choice) || typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1)) return undefined;
+  const isMalformedChoice = !isLabel(choice) || typeof confidence !== "number" || !(confidence >= 0 && confidence <= 1);
+  if (isMalformedChoice) return undefined;
   return { asked: choice, confidence };
 }
 

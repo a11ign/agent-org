@@ -99,7 +99,8 @@ function unreadReasons(repositories: ReturnType<typeof buildReport>["mergedRepos
  * @param {ReturnType<typeof buildReport>} report @returns {string[]}
  */
 function definitionLines({ mergedRepositories, merged, mergedPrimaryOnly, previous }: ReturnType<typeof buildReport>): string[] {
-  if (previous.status !== "read" || previous.mergedRepositories !== undefined || (mergedRepositories?.length ?? 0) < 2) return [];
+  const isUnusablePrevious = previous.status !== "read" || previous.mergedRepositories !== undefined || (mergedRepositories?.length ?? 0) < 2;
+  if (isUnusablePrevious) return [];
   return [`- PRs merged CHANGED DEFINITION: through ${previous.date} it counted ${mergedRepositories?.[0].repo} only (previous reading ${shown(previous.numbers.prsMerged ?? null)}); `
     + `this reading counts every declared repository (${shown(merged?.count ?? null)}); read the old way this window is ${shown(mergedPrimaryOnly?.count ?? null)}. `
     + "The \"PRs merged\" and \"Tokens per merged PR\" verdicts below compare across the change and are not a trend."];

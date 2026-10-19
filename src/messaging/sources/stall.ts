@@ -111,7 +111,8 @@ async function readFix(readers: Record<string, unknown>, key: string, log: (line
   try {
     const row = await readers.readFixRow(key);
     if (row === null) return { status: "none" };
-    if (row === undefined || typeof row !== "object" || !Number.isInteger(row.number) || row.number <= 0) throw new TypeError(`not a row: ${JSON.stringify(row)?.slice(0, 80)}`);
+    const isMalformedRow = row === undefined || typeof row !== "object" || !Number.isInteger(row.number) || row.number <= 0;
+    if (isMalformedRow) throw new TypeError(`not a row: ${JSON.stringify(row)?.slice(0, 80)}`);
     if (row.comment === undefined) return { status: "row", row: { number: row.number } };
     const { author, at, text } = row.comment;
     return { status: "row", row: { number: row.number, comment: { author: String(author), at: instant(at, "comment.at"), text: String(text) } } };
@@ -177,7 +178,8 @@ export type TickRecord = { at: number | string; seats: { session: string; state:
 
 function readTickRecord(record: unknown, index: number): { at: number; seats: { session: string; state: string; }[]; waiting: number; } {
   const tick = record as TickRecord;
-  if (tick === null || typeof tick !== "object" || !Array.isArray(tick.seats) || !Array.isArray(tick.orders)) {
+  const isMalformedTick = tick === null || typeof tick !== "object" || !Array.isArray(tick.seats) || !Array.isArray(tick.orders);
+  if (isMalformedTick) {
     throw new TypeError(`ticks[${index}]: a record needs \`at\`, \`seats\` and \`orders\``);
   }
   return { at: instant(tick.at, `ticks[${index}].at`), seats: tick.seats, waiting: tick.orders.length };

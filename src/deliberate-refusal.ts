@@ -94,7 +94,8 @@ export function deliberateRefusalVerdict({ number, repo, run, author: knownAutho
   const author: string | null = typeof pull?.user?.login === "string" ? pull.user.login : null;
   const headRepo = pull?.head?.repo?.full_name;
   const sameRepository = typeof headRepo === "string" && headRepo === pull?.base?.repo?.full_name;
-  if (pull?.state !== "open" || !sameRepository || author === null || !ORG_LOGINS.includes(author)) return { kind: "clear" };
+  const needsNoRefusal = pull?.state !== "open" || !sameRepository || author === null || !ORG_LOGINS.includes(author);
+  if (needsNoRefusal) return { kind: "clear" };
   const headSha = String(pull?.head?.sha ?? ""), headRef = String(pull?.head?.ref ?? "");
   if (headSha === "" || headRef === "") return { kind: "cannot-ask", why: `#${number} names no head commit or branch, so whether it may merge is unknown` };
   const names = Array.isArray(pull.labels) ? pull.labels.map((label: { name?: unknown; }) => label?.name) : null;

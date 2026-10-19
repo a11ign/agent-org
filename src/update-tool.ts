@@ -199,7 +199,8 @@ export function dependenciesAt(run: (args: string[]) => string, ref: string): Re
 export function satisfies(version: string, range: string): boolean | null {
   const spec = range.trim();
   const named = /^([\^~]?)(\d+\.\d+\.\d+)$/.exec(spec);
-  if (!isReleaseTag(`v${version}`) || (spec !== "*" && (named === null || !isReleaseTag(`v${named[2]}`)))) return null;
+  const isUnusableSpec = !isReleaseTag(`v${version}`) || (spec !== "*" && (named === null || !isReleaseTag(`v${named[2]}`)));
+  if (isUnusableSpec) return null;
   if (named === null) return true;
   const [operator, wanted] = [named[1], named[2]];
   const order = compareReleaseTags(`v${version}`, `v${wanted}`);

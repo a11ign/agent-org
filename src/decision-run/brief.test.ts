@@ -227,9 +227,11 @@ function importsOf(source: string): { specifier: string; typeOnly: boolean }[] {
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) out.push({ specifier: node.moduleSpecifier.text, typeOnly: node.importClause?.isTypeOnly === true });
     if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) out.push({ specifier: node.moduleSpecifier.text, typeOnly: node.isTypeOnly });
-    if (ts.isCallExpression(node) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])
-      && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
-      out.push({ specifier: node.arguments[0].text, typeOnly: false });
+    if (ts.isCallExpression(node) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
+      const isModuleLoad = node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require");
+      if (isModuleLoad) {
+        out.push({ specifier: node.arguments[0].text, typeOnly: false });
+      }
     }
     ts.forEachChild(node, visit);
   };

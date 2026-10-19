@@ -43,7 +43,8 @@ export type LabJobRecord = { schema: number, job: string, row: number, invocatio
  */
 export function recordOf(raw: any): LabJobRecord | null {
   if (raw?.schema !== 1 || typeof raw.job !== "string" || raw.job === "") return null;
-  if (!Number.isInteger(raw.row) || raw.row < 1 || typeof raw.invocation !== "string" || raw.invocation === "") return null;
+  const isMalformedOrder = !Number.isInteger(raw.row) || raw.row < 1 || typeof raw.invocation !== "string" || raw.invocation === "";
+  if (isMalformedOrder) return null;
   if (typeof raw.outcome !== "string" || !Number.isInteger(raw.exit) || !Number.isFinite(Date.parse(raw.finishedAt))) return null;
   return raw;
 }

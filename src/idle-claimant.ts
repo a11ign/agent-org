@@ -226,7 +226,9 @@ export function idleClaimantReading(facts: { session: string | null; waitKinds?:
   // (agent-org#743) A RED CHECK OF THE HOLDER'S OWN IS NOT EXCUSED BY WHAT IT DECLARED NOR BY A PENDING CHECK, A REVIEWER OR AN APPROVAL: those are inferences about a
   // wait, and the failure is not one. The FIELDS stay: a row's wait (`waitKinds`) and a pull request's own `awaiting-evidence` / `hold:` label are the holder saying so.
   const red = facts.built === true && redOwnPrs(facts.prs).length > 0;
-  if (regime && facts.declared?.kind === "excused" && !(red && RED_VOIDS.includes(facts.declared.state))) return { kind: "waiting", fields: [`declared:${facts.declared.state}`] };
+  if (regime && facts.declared?.kind === "excused") {
+    if (!(red && RED_VOIDS.includes(facts.declared.state))) return { kind: "waiting", fields: [`declared:${facts.declared.state}`] };
+  }
   const prKinds = (facts.prs ?? []).flatMap((pr) => prWaitKinds(pr, agents)).filter((kind) => !(regime || red) || !INFERRED_PR_KINDS.includes(kind));
   const fields = [...(facts.waitKinds ?? []), ...prKinds];
   if (fields.length > 0) return { kind: "waiting", fields: [...new Set(fields)] };
@@ -379,7 +381,8 @@ export type VerifiedCloseOrder = { kind: "close"; row: number; claimant: string;
  */
 export function verifiedCloseOrder(facts: { row: number; labels: string[]; claimant: string; claim: { at: number; author: string | null } | null; comments: { url?: string; id?: string; body: string; createdAt: string; author?: { login?: string } | null }[]; idleSince: number | null }, ctx: { now: number }): VerifiedCloseOrder | null {
   const { claim, idleSince } = facts;
-  if (!facts.labels.includes(CLAIM_LABEL) || claim === null || claim.author === null || idleSince === null) return null;
+  const isIncompleteClaim = !facts.labels.includes(CLAIM_LABEL) || claim === null || claim.author === null || idleSince === null;
+  if (isIncompleteClaim) return null;
   const notes = facts.comments.filter((c) => c.author?.login === claim.author && Date.parse(c.createdAt) >= claim.at && isVerifiedNoteOf(c.body, facts.claimant));
   const newest = notes.at(-1);
   if (newest === undefined) return null;

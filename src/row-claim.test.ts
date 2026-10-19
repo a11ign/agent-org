@@ -615,7 +615,8 @@ function withReferenced(state: "open" | "closed", seed: Parameters<typeof fakeGi
   const gh = fakeGithub(seed);
   const inner = gh.run;
   const run = (cmd: string, args: string[]): string => {
-    if (cmd === "gh" && args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/1055$/.test(args[1] ?? "")) {
+    const isIssueRead = cmd === "gh" && args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/1055$/.test(args[1] ?? "");
+    if (isIssueRead) {
       return JSON.stringify({ state, closed_at: state === "closed" ? "2026-10-09T00:00:00Z" : null, updated_at: "2026-10-09T00:00:00Z", merged_at: state === "closed" ? "2026-10-09T00:00:00Z" : null, labels: [] });
     }
     return inner(cmd, args);

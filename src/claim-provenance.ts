@@ -326,8 +326,9 @@ export function labelEventsByIssue(events: unknown[]): Map<number, LabelEvent[]>
   const byNumber: Map<number, LabelEvent[]> = new Map();
   for (const raw of events) {
     const e = (raw as any);
-    if (typeof e?.number !== "number" || typeof e?.label !== "string" || typeof e?.at !== "string"
-        || (e?.event !== "labeled" && e?.event !== "unlabeled")) {
+    const isMalformedEvent = typeof e?.number !== "number" || typeof e?.label !== "string" || typeof e?.at !== "string"
+      || (e?.event !== "labeled" && e?.event !== "unlabeled");
+    if (isMalformedEvent) {
       throw new Error(`claim-provenance: a label event is missing its issue, label, kind or time -- `
         + `refusing to guess. Got: ${JSON.stringify(e).slice(0, 200)}`);
     }

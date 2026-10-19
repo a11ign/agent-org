@@ -181,7 +181,8 @@ function twoRepos() {
       labels.set(`${repo}#481`, held);
     }
     if (args[0] === "issue" && args[1] === "comment") comments.set(`${repo}#481`, [...(comments.get(`${repo}#481`) ?? []), args[args.indexOf("--body") + 1]]);
-    if (isCreate(args) || isPut(args) || args[0] === "issue" || args[0] === "project") return "";
+    const isIgnoredCall = isCreate(args) || isPut(args) || args[0] === "issue" || args[0] === "project";
+    if (isIgnoredCall) return "";
     return "[]";
   };
   const run = (_cmd: string, args: string[]) => answer(args);

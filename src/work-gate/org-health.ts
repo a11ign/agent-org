@@ -90,8 +90,9 @@ export function readFleetCaptures({ now, path = join(REPO_CHECKOUT, FLEET_CAPTUR
   try {
     const ledger = JSON.parse(read(path, "utf8"));
     const workers = ledger?.workers;
-    if (!Number.isFinite(ledger?.since) || !workers || typeof workers !== "object" || Array.isArray(workers)
-      || !Object.values(workers).every(isLedgerWorker)) return null;
+    const isMalformedLedger = !Number.isFinite(ledger?.since) || !workers || typeof workers !== "object" || Array.isArray(workers)
+      || !Object.values(workers).every(isLedgerWorker);
+    if (isMalformedLedger) return null;
     const windowMs = FLEET_IDLE_HOURS * HOUR_MS;
     const all = Object.values(workers) as LedgerWorker[];
     const captures24h = all.flatMap((w) => w.rises).filter((rise) => now - rise.at < windowMs).reduce((sum, rise) => sum + rise.by, 0);
@@ -197,7 +198,8 @@ function untouchedMoves(number: number, holders: Holders): { moves: ClaimMoves; 
  */
 function idleReasonOf(row: any, { commit, push, comment, openPrs }: ClaimMoves): string {
   if (notBeforeDate(row.body) !== null) return IDLE_CLAIM_REASON.WAIT_PREMISE_GONE;
-  return commit === null && push === null && comment === null && openPrs.length === 0 ? IDLE_CLAIM_REASON.NEVER_STARTED : IDLE_CLAIM_REASON.NO_WAIT;
+  const neverStarted = commit === null && push === null && comment === null && openPrs.length === 0;
+  return neverStarted ? IDLE_CLAIM_REASON.NEVER_STARTED : IDLE_CLAIM_REASON.NO_WAIT;
 }
 
 /**
@@ -666,7 +668,8 @@ function exactMilestoneClock({ orders, fact, now, merge, readMoves, log = (line)
     }) {
   const signal = SIGNALS.MILESTONE_CLOCK;
   const proxied = orders.filter((order) => order.subject === signal);
-  if (readMoves === undefined || proxied.length === 0 || !fact || merge.lastMergedAt === null) return orders;
+  const hasNothingToRead = readMoves === undefined || proxied.length === 0 || !fact;
+  if (hasNothingToRead || merge.lastMergedAt === null) return orders;
   let moves = null;
   try {
     moves = readMoves({ primary: fact.primaries[0].number, openRows: fact.rows.map((r) => r.number), since: now - MILESTONE_CLOCK_MINUTES * MS_PER_MINUTE });

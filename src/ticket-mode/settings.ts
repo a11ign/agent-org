@@ -167,7 +167,9 @@ function positiveInteger(value: unknown, field: string, fallback: number): numbe
 
 function keySource(value: unknown): KeySource {
   if (value === undefined) return { keychain: "agent-org-linear" };
-  if (isObject(value) && typeof value.keychain === "string" && value.keychain !== "" && value.path === undefined) return { keychain: value.keychain };
+  const isKeychainKey = (candidate: unknown): candidate is { keychain: string } => isObject(candidate) && typeof candidate.keychain === "string"
+    && candidate.keychain !== "" && candidate.path === undefined;
+  if (isKeychainKey(value)) return { keychain: value.keychain };
   if (isObject(value) && value.keychain === undefined) return { path: absolutePath(value.path, "tickets.linearKey.path") };
   throw new TicketSettingsRefusal("tickets.linearKey", "must be { \"keychain\": \"<service>\" } or { \"path\": \"/abs/file\" }");
 }
@@ -215,7 +217,9 @@ export const plansInBatches = (planner: Planner | null): boolean => planner?.run
 /** A planner needs the plan pattern, which is how the board knows which tickets already have a plan. */
 function plannerOf(value: unknown, plan: string | null): Planner | null {
   if (value === undefined) return null;
-  if (!isObject(value) || typeof value.run !== "string" || !/\{keys?\}/.test(value.run) || !value.run.includes("{dir}")) {
+  const isKeysRun = (candidate: unknown): candidate is Record<string, unknown> & { run: string } => isObject(candidate) && typeof candidate.run === "string"
+    && /\{keys?\}/.test(candidate.run) && candidate.run.includes("{dir}");
+  if (!isKeysRun(value)) {
     throw new TicketSettingsRefusal("tickets.planner", PLANNER_SHAPE);
   }
   const state = stateName(value.state, "tickets.planner.state");
@@ -252,7 +256,9 @@ const WRITER_SHAPE = "must be { \"run\": \"<the ticket writer's instruction, nam
 /** `tickets.writer`: the ticket writer's instruction names both `{request}` and `{dir}`; its model and effort are one word each. Absent is null. */
 function writerOf(value: unknown): Writer | null {
   if (value === undefined) return null;
-  if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{request}") || !value.run.includes("{dir}")) {
+  const isRequestRun = (candidate: unknown): candidate is Record<string, unknown> & { run: string } => isObject(candidate) && typeof candidate.run === "string"
+    && candidate.run.includes("{request}") && candidate.run.includes("{dir}");
+  if (!isRequestRun(value)) {
     throw new TicketSettingsRefusal("tickets.writer", WRITER_SHAPE);
   }
   return Object.freeze({ run: value.run, model: word(value.model, "tickets.writer.model", "opus"), effort: word(value.effort, "tickets.writer.effort", "high") });
@@ -269,7 +275,9 @@ function word(value: unknown, field: string, fallback: string): string {
 
 function publisherOf(value: unknown): Publisher | null {
   if (value === undefined) return null;
-  if (!isObject(value) || typeof value.run !== "string" || !value.run.includes("{prs}") || !value.run.includes("{dir}")) {
+  const isPrsRun = (candidate: unknown): candidate is Record<string, unknown> & { run: string } => isObject(candidate) && typeof candidate.run === "string"
+    && candidate.run.includes("{prs}") && candidate.run.includes("{dir}");
+  if (!isPrsRun(value)) {
     throw new TicketSettingsRefusal("tickets.publish", PUBLISHER_SHAPE);
   }
   return Object.freeze({ run: value.run, model: word(value.model, "tickets.publish.model", "haiku"), effort: word(value.effort, "tickets.publish.effort", "low"),
@@ -281,7 +289,9 @@ function denyRules(value: unknown): readonly DenyRule[] {
   if (!Array.isArray(value)) throw new TicketSettingsRefusal("tickets.deny", `must be a list of ${DENY_RULE_SHAPE}`);
   return Object.freeze(value.map((rule: unknown, i) => {
     const field = `tickets.deny[${i}]`;
-    if (!isObject(rule) || typeof rule.pattern !== "string" || rule.pattern === "" || typeof rule.reason !== "string" || rule.reason === "") {
+    const isDenyRule = (candidate: unknown): candidate is { pattern: string; reason: string } => isObject(candidate) && typeof candidate.pattern === "string"
+      && candidate.pattern !== "" && typeof candidate.reason === "string" && candidate.reason !== "";
+    if (!isDenyRule(rule)) {
       throw new TicketSettingsRefusal(field, `must be ${DENY_RULE_SHAPE}`);
     }
     refuseUnlessRegularExpression(rule.pattern, `${field}.pattern`);
@@ -326,9 +336,12 @@ const TEAM_KEY = /^[A-Za-z][A-Za-z0-9]*$/;
  */
 function pickOf(value: unknown): PickScope {
   if (value === undefined || value === "assigned") return "assigned";
-  const named = isObject(value) ? Object.keys(value) : [];
-  if (isObject(value) && named.length === 1 && typeof value.team === "string" && TEAM_KEY.test(value.team)) return Object.freeze({ team: value.team.toUpperCase() });
-  if (isObject(value) && named.length === 1 && typeof value.project === "string" && value.project.trim() !== "") return Object.freeze({ project: value.project.trim() });
+  const isTeamPick = (candidate: unknown): candidate is { team: string } => isObject(candidate) && Object.keys(candidate).length === 1
+    && typeof candidate.team === "string" && TEAM_KEY.test(candidate.team);
+  const isProjectPick = (candidate: unknown): candidate is { project: string } => isObject(candidate) && Object.keys(candidate).length === 1
+    && typeof candidate.project === "string" && candidate.project.trim() !== "";
+  if (isTeamPick(value)) return Object.freeze({ team: value.team.toUpperCase() });
+  if (isProjectPick(value)) return Object.freeze({ project: value.project.trim() });
   throw new TicketSettingsRefusal("tickets.pick", `${PICK_SHAPE}, not ${JSON.stringify(value)}`);
 }
 

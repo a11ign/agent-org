@@ -569,7 +569,8 @@ export const emptyCanaryState = (): CanaryState => ({ flags: {}, samples: [], me
 export function parseCanaryState(text: string | null): CanaryState {
   if (text === null || text.trim() === "") return emptyCanaryState();
   const raw = JSON.parse(text) as Partial<CanaryState>;
-  if (typeof raw !== "object" || raw === null || typeof raw.flags !== "object" || !Array.isArray(raw.samples)) throw new Error(`${CANARY_STATE_FILE} is not { flags, samples, memo }`);
+  const isMalformedFlags = typeof raw !== "object" || raw === null || typeof raw.flags !== "object";
+  if (isMalformedFlags || !Array.isArray(raw.samples)) throw new Error(`${CANARY_STATE_FILE} is not { flags, samples, memo }`);
   return { flags: raw.flags ?? {}, samples: raw.samples, memo: raw.memo ?? {} };
 }
 

@@ -425,7 +425,8 @@ export function clearEdit(queue: Queue, key: string): Queue {
  */
 export function dismiss(queue: Queue, key: string): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || entry.phase !== "finished" || isParked(entry) || isBeingPublished(entry, queue.publish)) return queue;
+  const isUnsettledEntry = entry === undefined || entry.phase !== "finished" || isParked(entry) || isBeingPublished(entry, queue.publish);
+  if (isUnsettledEntry) return queue;
   return { ...queue, entries: queue.entries.filter((e) => e.ticket.key !== key) };
 }
 
@@ -435,7 +436,8 @@ export function dismiss(queue: Queue, key: string): Queue {
  */
 export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry)) return queue;
+  const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
+  if (isConcludedEntry) return queue;
   const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom, paths, plannedRepo, pullFiles, partial } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch

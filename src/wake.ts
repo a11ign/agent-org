@@ -76,7 +76,10 @@ export function escalationsNow(recordText: string, live: readonly string[], coun
     const read = counts(session);
     const verdict = shouldEscalate({ model: facts.model, ciFailures: facts.ciFailures, turns: read?.turns ?? null, compactions: read?.compactions ?? null, escalated: facts.escalated }, caps);
     if (verdict.action === "escalate") found.push({ row, session, reason: verdict.reason });
-    else if (haikuDefault.on === true && !facts.escalated && isHaiku(facts.model) && haikuDefault.refused?.(session) === true) found.push({ row, session, reason: "it was refused (its latest response ended in a refusal)" });
+    else {
+      const isRefusedHaiku = haikuDefault.on === true && !facts.escalated && isHaiku(facts.model) && haikuDefault.refused?.(session) === true;
+      if (isRefusedHaiku) found.push({ row, session, reason: "it was refused (its latest response ended in a refusal)" });
+    }
   }
   return found;
 }

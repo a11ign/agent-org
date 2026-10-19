@@ -98,7 +98,8 @@ export function lowResources(reading: FilesystemReading, minFraction: number = M
   for (const [resource, free, total] of ([
     ["bytes", reading.bytesFree, reading.bytesTotal],
     ["inodes", reading.inodesFree, reading.inodesTotal]] as [Resource, number, number | null][])) {
-    if (total === null || !Number.isFinite(free) || !Number.isFinite(total) || total <= 0) continue;
+    const isUnreadable = total === null || !Number.isFinite(free) || !Number.isFinite(total) || total <= 0;
+    if (isUnreadable) continue;
     const fraction = free / total;
     if (fraction < minFraction) found.push({ mounts: reading.mounts, resource, free, total, fraction });
   }

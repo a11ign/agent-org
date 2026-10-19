@@ -216,7 +216,8 @@ export function eventsOfDeferrals(spans: EndedDeferral[], rowRepo: string): Trac
     const [session = key, cause = null] = key.split("/");
     const subject = subjectOf(key);
     const several = subjectsOf(key);
-    const named = subject.row === null && subject.pr === null && !several.rows && !several.prs ? subjectOfSession(session, rowRepo) : { ...subject, ...several };
+    const isSessionOnly = subject.row === null && subject.pr === null && !several.rows && !several.prs;
+    const named = isSessionOnly ? subjectOfSession(session, rowRepo) : { ...subject, ...several };
     return { id: `deferral:${key}:${startMs}`, kind: "deferral", source: "deferral-log", at: endMs, session, ...named, cause, causeKey: key, wakeId: null, startedAt: startMs, completedAt: endMs, how };
   });
 }
@@ -331,7 +332,8 @@ export function eventsOfTranscript({ text, file, ledger, rowRepo, carry = null, 
     if (key) spent.push({ at: wake.typedAt, key });
     const subject = key ? subjectOf(key) : { row: null, pr: null, repo: null };
     const several = key ? subjectsOf(key) : {};
-    const named_ = subject.row === null && subject.pr === null && !several.rows && !several.prs ? { ...subjectOfSession(session, rowRepo) } : { ...subject, ...several };
+    const isSessionOnlyCopy = subject.row === null && subject.pr === null && !several.rows && !several.prs;
+    const named_ = isSessionOnlyCopy ? { ...subjectOfSession(session, rowRepo) } : { ...subject, ...several };
     const id = `wake:${session}:${wake.at}`;
     const cause = wake.cause === "unknown" ? null : wake.cause;
     placed.push({ at: wake.at, id, ...named_, cause, causeKey: key });

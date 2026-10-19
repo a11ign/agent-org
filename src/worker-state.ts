@@ -599,7 +599,8 @@ export function splitArgs(argv: string[]): { words: string[]; flags: Record<stri
       words.push(arg);
       continue;
     }
-    if (named[1] !== "session" && named[1] !== "to" && named[1] !== "on" && named[1] !== "met") {
+    const isUnknownKey = named[1] !== "session" && named[1] !== "to" && named[1] !== "on" && named[1] !== "met";
+    if (isUnknownKey) {
       unknown.push(arg);
       continue;
     }

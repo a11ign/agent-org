@@ -312,8 +312,9 @@ function touchedIssue(raw: string, issueNumber: number): any {
   const data = (parsed as any)?.data;
   const issue = data?.repository?.issue;
   const itemsNode = issue?.projectItems;
-  if (typeof data?.organization?.projectV2?.id !== "string" || issue?.number !== issueNumber
-    || !Array.isArray(itemsNode?.nodes) || typeof itemsNode.totalCount !== "number") {
+  const isUnexpectedShape = typeof data?.organization?.projectV2?.id !== "string" || issue?.number !== issueNumber
+    || !Array.isArray(itemsNode?.nodes) || typeof itemsNode.totalCount !== "number";
+  if (isUnexpectedShape) {
     throw new Error(`board-snapshot: gh's response for #${issueNumber} did not have the shape `
       + "data.organization.projectV2 + data.repository.issue.projectItems for that issue -- refusing to guess. "
       + `Got: ${JSON.stringify(parsed).slice(0, 300)}`);

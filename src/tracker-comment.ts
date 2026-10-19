@@ -60,8 +60,9 @@ export function bodyOfCommentResponse(raw: string, id: number): string {
     throw new Error(`tracker-comment: the response for comment ${id} was not JSON -- refusing to treat it `
       + `as a body. First 200 chars: ${raw.slice(0, 200)}`, { cause });
   }
-  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && "body" in parsed
-      && typeof parsed.body === "string") {
+  const isBodyRecord = parsed && typeof parsed === "object" && !Array.isArray(parsed) && "body" in parsed
+    && typeof parsed.body === "string";
+  if (isBodyRecord) {
     return parsed.body;
   }
   const looksLikeAnError = parsed && typeof parsed === "object" && typeof parsed.message === "string";

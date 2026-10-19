@@ -282,7 +282,8 @@ export function managerDirectionsAfter(comments: unknown[], since: number | null
     const at = Date.parse(String(createdAt ?? ""));
     const seat = decidedBy(body);
     const login = String(author?.login ?? "");
-    if (!(at > since) || seat === null || !MANAGER_SEATS.includes(seat) || !MANAGER_LOGINS.includes(login)) continue;
+    const isUnmanagedEntry = !(at > since) || seat === null || !MANAGER_SEATS.includes(seat) || !MANAGER_LOGINS.includes(login);
+    if (isUnmanagedEntry) continue;
     directions.push({ seat, author: login, body: String(body), at });
   }
   return directions.sort((a, b) => a.at - b.at);

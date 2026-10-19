@@ -1279,7 +1279,8 @@ export function remedy(drift: Finding[]): string {
   const removes = drift.filter((d) => d.removesUnit);
   const pending = drift.filter((d) => d.shippedOnRef);
   const emptied = drift.filter((d) => d.noProjectUnits);
-  if (reverts.length === 0 && removes.length === 0 && pending.length === 0 && emptied.length === 0) return line;
+  const isUnchanged = reverts.length === 0 && removes.length === 0 && pending.length === 0 && emptied.length === 0;
+  if (isUnchanged) return line;
   return "  !! DO NOT RUN THE REMEDY YET -- it would change this host in a way nothing here would\n"
     + "     report afterwards.\n"
     + reverts.map((d) => `     ${d.unit} is installed with a \`GH_CONFIG_DIR\` the repository does not `

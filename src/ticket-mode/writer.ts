@@ -134,7 +134,9 @@ export function draftFrom(file: string, value: unknown, repos: readonly string[]
     return entry;
   });
   const duplicates = listOf(value.duplicates, "duplicates", file, (entry) => {
-    if (!isObject(entry) || typeof entry.key !== "string" || !TICKET_KEY.test(entry.key) || !nonEmpty(entry.why)) {
+    const isDuplicateEntry = (candidate: unknown): candidate is { key: string; why: string } => isObject(candidate) && typeof candidate.key === "string"
+      && TICKET_KEY.test(candidate.key) && typeof candidate.why === "string" && nonEmpty(candidate.why);
+    if (!isDuplicateEntry(entry)) {
       throw new DraftRefusal(file, "duplicates", `must be a list of { "key": "<ticket key>", "why": "<why it is the same>" }, not ${JSON.stringify(entry)}`);
     }
     return { key: entry.key, why: entry.why };

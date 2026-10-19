@@ -143,7 +143,8 @@ const isCost = (argv: string[]) => commandWord(argv) === COST_WORD;
 function parseDuplicatesArgs(argv: string[]) {
   const [, ...given] = argv.filter((word) => word !== "--");
   const [flag, value, ...extra] = given;
-  if (given.length > 0 && (flag !== "--store" || !value || extra.length > 0)) throw new Error(`unknown argument ${given.join(" ")}: trace duplicates [--store <path>]`);
+  const isUnknownArgument = given.length > 0 && (flag !== "--store" || !value || extra.length > 0);
+  if (isUnknownArgument) throw new Error(`unknown argument ${given.join(" ")}: trace duplicates [--store <path>]`);
   return { store: value ?? defaultStore() };
 }
 
@@ -212,7 +213,8 @@ function parseCompactStoreArgs(argv: string[]) {
   const dryRun = rest.includes(DRY_RUN_FLAG);
   const given = rest.filter((word) => word !== DRY_RUN_FLAG);
   const [flag, value, ...extra] = given;
-  if (given.length > 0 && (flag !== "--store" || !value || extra.length > 0)) throw new Error(`unknown argument ${given.join(" ")}: trace compact-store [--store <path>] [--dry-run]`);
+  const isUnknownArgument = given.length > 0 && (flag !== "--store" || !value || extra.length > 0);
+  if (isUnknownArgument) throw new Error(`unknown argument ${given.join(" ")}: trace compact-store [--store <path>] [--dry-run]`);
   return { store: value ?? defaultStore(), dryRun };
 }
 

@@ -297,8 +297,9 @@ async function listen(deps: Parameters<typeof main>[0], config: { tokenFile: str
 
 /** The exit code: a refusal that restarting cannot mend is `refused`, anything else `failed`. */
 function exitCodeFor(error: unknown): number {
-  return error instanceof MessagingConfigRefusal || error instanceof SecretFileRefusal || error instanceof ListenerLockHeld || error instanceof PollConflictError
-    ? EXIT.refused : EXIT.failed;
+  const isRefusal = error instanceof MessagingConfigRefusal || error instanceof SecretFileRefusal || error instanceof ListenerLockHeld
+    || error instanceof PollConflictError;
+  return isRefusal ? EXIT.refused : EXIT.failed;
 }
 
 /** Returns the exit code. */

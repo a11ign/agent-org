@@ -191,7 +191,8 @@ export function refreshTickSnapshot({ repos, homeRepo, configDir, run = ghRun, n
     const namedSince = eventNamed || held.bumpedAt > readAt;
     const drift = viaEvents && due ? driftOf({ repo, probes, namedSince, windowStartS: readAt, nowS }) : null;
     // A tag that moved over the same content is counted, not filed: the health signal stays visible without an incident per repository per window.
-    const sameContent = viaEvents && due && drift === null && probes.some(noContentChange) ? 1 : 0;
+    const isUnchangedContent = viaEvents && due && drift === null && probes.some(noContentChange);
+    const sameContent = isUnchangedContent ? 1 : 0;
     const changed = (viaEvents && eventNamed) || probes.some((p) => p.changed);
     return { repo, held, before, due, probes, drift, sameContent, changed, eventNamed, readAt };
   });

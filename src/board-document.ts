@@ -1110,7 +1110,8 @@ function main() {
     process.stdout.write(`${published} (outside.board: already published; nothing written)\n`);
     return;
   }
-  const summary = argv.includes("--pdf") || argv.includes("--release") || discussion || late ? requirePublishedSummary() : previewSummary();
+  const wantsPublishedSummary = argv.includes("--pdf") || argv.includes("--release") || discussion || late;
+  const summary = wantsPublishedSummary ? requirePublishedSummary() : previewSummary();
   const lateAt = late ? requireLateEditionPermitted(summary) : undefined;
   const d = collect(flagOf("--since") ?? new Date(Date.now() - 24 * HOURS_MS).toISOString());
   // THE WORLD-MOVED CHECK RUNS FIRST, before the markdown is built: a stale claim should not be

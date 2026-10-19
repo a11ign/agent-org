@@ -63,7 +63,8 @@ function incidentOf(pr: Raw, { prs, facts, now, repo, openItems }: { prs: Raw[];
   try {
     const { reason, waits, since } = holdReasonOf(pr as Parameters<typeof holdReasonOf>[0]);
     const [wait] = waits;
-    if (reason !== "until" || waits.length !== 1 || !isItemWait(wait) || wait.state !== "closed") return [];
+    const isUnusableHold = reason !== "until" || waits.length !== 1 || !isItemWait(wait) || wait.state !== "closed";
+    if (isUnusableHold) return [];
     const targetRepo = wait.repo ?? repo;
     if (openItems.has(`${targetRepo}#${wait.number}`)) return [];
     if (!Object.hasOwn(facts.items, wait.key)) return [];

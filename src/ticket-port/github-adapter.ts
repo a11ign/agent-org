@@ -214,7 +214,8 @@ export function githubTicketAdapter(options: GithubAdapterOptions): GithubTicket
   function emit(event: PortEvent) {
     for (const { filter, handler } of subscribers) {
       if (filter.kinds !== undefined && !filter.kinds.includes(event.kind)) continue;
-      if (filter.ref !== undefined && (filter.ref.tracker !== event.ref.tracker || filter.ref.scope !== event.ref.scope || filter.ref.id !== event.ref.id)) continue;
+      const isOtherRef = filter.ref !== undefined && (filter.ref.tracker !== event.ref.tracker || filter.ref.scope !== event.ref.scope || filter.ref.id !== event.ref.id);
+      if (isOtherRef) continue;
       handler(event);
     }
   }

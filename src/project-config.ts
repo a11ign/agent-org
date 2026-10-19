@@ -219,7 +219,8 @@ function readDoraRelease(entry: Record<string, unknown>, at: string, source: str
 /** @param {Record<string, unknown>} entry @param {string} at @param {string} source @returns {string[]} */
 function readReleasablePaths(entry: Record<string, unknown>, at: string, source: string): string[] {
   const paths = requiredField(entry, "releasablePaths", `${at}.`, source);
-  if (!Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || path === "")) {
+  const isMalformedPaths = !Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || path === "");
+  if (isMalformedPaths) {
     throw new ProjectDeclarationRefusal(`${at}.releasablePaths`, "it must be a non-empty list of path prefixes (a pull request touching none of them is not a releasable change)", source);
   }
   return paths;
@@ -244,7 +245,8 @@ function readAdopterFacing(entry: Record<string, unknown>, at: string, source: s
 function readAdopterDocs(entry: Record<string, unknown>, at: string, source: string): { adopterDocs?: string[]; } {
   if (!Object.hasOwn(entry, "adopterDocs")) return {};
   const paths = entry.adopterDocs;
-  if (!Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || path === "")) {
+  const isMalformedPaths = !Array.isArray(paths) || paths.length === 0 || paths.some((path) => typeof path !== "string" || path === "");
+  if (isMalformedPaths) {
     throw new ProjectDeclarationRefusal(`${at}.adopterDocs`, "it must be a non-empty list of path prefixes an outside adopter reads", source);
   }
   if (entry.adopterFacing === false) {
@@ -300,7 +302,8 @@ const ROUTING_KEYS = ["question", "routes", "guidance", "cheaperMinP", "dearerMi
 const isRoute = (value: unknown): value is RouteName => typeof value === "string" && (ROUTES as readonly string[]).includes(value);
 /** A list of non-empty strings with at least one entry, or the refusal naming `field`. */
 function nonEmptyStrings(value: unknown, field: string, source: string): string[] {
-  if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string" || entry === "")) {
+  const isMalformedList = !Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string" || entry === "");
+  if (isMalformedList) {
     throw new ProjectDeclarationRefusal(field, "it must be a non-empty list of non-empty strings", source);
   }
   return value;

@@ -286,7 +286,8 @@ function readBuildStamp(root: string): { sha?: unknown; outputs?: unknown; } | n
  */
 function buildIsCurrent(root: string, sha: string) {
   const stamp = readBuildStamp(root);
-  if (stamp === null || stamp.sha !== sha || !Array.isArray(stamp.outputs) || stamp.outputs.length === 0) return false;
+  if (stamp === null || stamp.sha !== sha) return false;
+  if (!Array.isArray(stamp.outputs) || stamp.outputs.length === 0) return false;
   return stamp.outputs.every((dist) => typeof dist === "string" && existsSync(join(root, dist)) && readdirSync(join(root, dist)).length > 0);
 }
 

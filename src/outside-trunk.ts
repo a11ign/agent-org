@@ -89,7 +89,8 @@ export const commitChecks = (sha: string): Check[] => [
 export function outsideTrunk(deps: OutsideTrunkDeps): OutsideTrunkResult {
   if (!outsideTrunkOn(deps.switches)) return { ran: false, why: "off" };
   const state = deps.readState();
-  if (deps.force !== true && state !== null && deps.now - state.at >= 0 && deps.now - state.at < INTERVAL_MS) return { ran: false, why: "paced" };
+  const isPaced = deps.force !== true && state !== null && deps.now - state.at >= 0 && deps.now - state.at < INTERVAL_MS;
+  if (isPaced) return { ran: false, why: "paced" };
   const window = windowMinutes(state?.at ?? null, deps.now);
   const commits = deps.commits(window);
   if (commits === null) {

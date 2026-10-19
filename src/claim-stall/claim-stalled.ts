@@ -167,7 +167,8 @@ export function commentMove(comments: RowComment[], record: ClaimRecord, session
     if (!ownAccount && decidedBy(c.body) !== session) continue;
     if (String(c.body ?? "").includes(CLAIM_RECORD_MARKER)) continue;
     const at = Date.parse(String(c.createdAt ?? ""));
-    if (!Number.isNaN(at) && at > record.at && (newest === null || at > newest)) newest = at;
+    const isLaterRecord = !Number.isNaN(at) && at > record.at && (newest === null || at > newest);
+    if (isLaterRecord) newest = at;
   }
   return newest;
 }
@@ -595,7 +596,8 @@ function secondReading(facts: ClaimFacts, ctx: Parameters<typeof claimReading>[1
   const { nudgedAt, deliveredAt } = ctx.nudge;
   const idle = ctx.nudge.idle === true;
   const told = deliveredAt !== null && ctx.now - deliveredAt >= interval;
-  if (facts.openPrs === 0 && (told || (deliveredAt === null && ctx.now - nudgedAt >= STALL_UNTOLD_RELEASE_MS))) {
+  const isStalled = facts.openPrs === 0 && (told || (deliveredAt === null && ctx.now - nudgedAt >= STALL_UNTOLD_RELEASE_MS));
+  if (isStalled) {
     return { kind: "release", why: "stalled", lastMoveAt, idleMs: ctx.now - lastMoveAt, nudgedAt, ...(idle ? { idle } : {}) };
   }
   return { kind: "nudged", nudgedAt, deliveredAt, lastMoveAt, ...(idle ? { idle } : {}) };

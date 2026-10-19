@@ -102,7 +102,8 @@ export async function proxy(connections: Connections, name: string, request: For
   } catch {
     return [502, { error: `${name}'s instance answered with something that is not JSON` }];
   }
-  if (pathname === "/api/config" && answer.status === 200 && value !== null && typeof value === "object") {
+  const isConfigAnswer = pathname === "/api/config" && answer.status === 200 && value !== null && typeof value === "object";
+  if (isConfigAnswer) {
     const config = value as Record<string, unknown>;
     value = { ...config, terminal: target.terminal(typeof config.terminal === "string" ? config.terminal : null) };
   }

@@ -363,7 +363,8 @@ function changeOf({ wake, gapMs }: { wake: TraceEvent; gapMs: number; }, record:
   if (held.length === 0) return "unexplained";
   const head = HEAD_OF_KEY.exec(key.split(DEFERRED_MARK)[0])?.[1];
   const movedAway = (event: TraceEvent) => head !== undefined && event.kind === "head_moved" && typeof event.headSha === "string" && !event.headSha.startsWith(head);
-  return held.some((event) => event.at > wake.at - gapMs && event.at <= wake.at && (CHANGE_KINDS.has(event.kind) || movedAway(event))) ? "afterChange" : "unchanged";
+  const isAfterChange = held.some((event) => event.at > wake.at - gapMs && event.at <= wake.at && (CHANGE_KINDS.has(event.kind) || movedAway(event)));
+  return isAfterChange ? "afterChange" : "unchanged";
 }
 
 /**
@@ -558,7 +559,8 @@ function storeWakeCounts({ events, keys, pulls }: { events: TraceEvent[]; keys: 
   for (const wake of events.filter((event) => event.kind === "wake" && /^(worker|reviewer)-/.test(event.session))) {
     const target = reviewerTarget(wake.session, keys.rowRepo);
     const inside = target ? windows.get(`${target.repo}#${target.number}`) : undefined;
-    if (target && !(inside && wake.at >= inside.from && wake.at <= inside.to)) continue;
+    const isOutsideTarget = target && !(inside && wake.at >= inside.from && wake.at <= inside.to);
+    if (isOutsideTarget) continue;
     for (const row of subjectsOfEvent(wake, keys).rows) counts.set(row, (counts.get(row) ?? 0) + 1);
   }
   return counts;
@@ -607,7 +609,8 @@ export const MOVES = [
 function firstTurnWindows(turns: TraceEvent[]): Map<string, number> {
   const first: Map<string, TraceEvent> = new Map();
   for (const turn of turns) {
-    if (!turn.tokens || turn.sidechain === true || turn.harness === "codex" || !turn.transcript || first.has(turn.transcript)) continue;
+    const isSkippedTurn = !turn.tokens || turn.sidechain === true || turn.harness === "codex";
+    if (isSkippedTurn || !turn.transcript || first.has(turn.transcript)) continue;
     first.set(turn.transcript, turn);
   }
   return new Map([...first.values()].map((turn) => [turn.id, inputSide((turn.tokens as Tokens))]));

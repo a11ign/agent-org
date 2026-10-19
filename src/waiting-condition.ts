@@ -212,7 +212,8 @@ export function answersGiven(timeline: { event?: string; label?: { name?: string
     const reapplied = events.some((e) => e.event === "labeled" && e.label?.name === name && String(e.created_at) > removedAt);
     // A window the clock cannot be read against is NaN, which compares false: refused, never ordered.
     const inWindow = nowMs - Date.parse(removedAt) <= ANSWER_GIVEN_WINDOW_MS;
-    if (!answered || answered === claimant || reapplied || !inWindow || removedAt < claimedAt) continue;
+    const isIgnorable = !answered || answered === claimant || reapplied || !inWindow || removedAt < claimedAt;
+    if (isIgnorable) continue;
     const comment = events.filter((e) => e.event === "commented" && e.actor === removal.actor && String(e.created_at) <= removedAt).pop();
     given.push({ answered, removedAt, removedBy: removal.actor ?? null, commentId: comment?.id ?? null });
   }

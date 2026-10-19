@@ -27,7 +27,8 @@ export function codexFeatureDefaults(text: string): Map<string, boolean> {
   for (const line of text.split("\n")) {
     const tokens = line.trim().split(/\s+/);
     const value = tokens[tokens.length - 1];
-    if (tokens.length >= 2 && /^[A-Za-z0-9_.-]+$/.test(tokens[0]) && (value === "true" || value === "false")) {
+    const isBooleanSetting = tokens.length >= 2 && /^[A-Za-z0-9_.-]+$/.test(tokens[0]) && (value === "true" || value === "false");
+    if (isBooleanSetting) {
       defaults.set(tokens[0], value === "true");
     }
   }
