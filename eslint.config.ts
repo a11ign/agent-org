@@ -26,6 +26,7 @@ const adopted = {
   "clean-code/be-precise": "error", // a float compared with === or !== depends on exact rounding; parseInt without a radix guesses (G26)
   "clean-code/names-describe-side-effects": "error", // a function that mutates or does I/O must say so in its name; get/is/has/find must be pure (N7)
   "clean-code/limited-public-api": "error", // a module exports at most 50 members (G8); a bigger one carries a stated reason in its own file
+  "clean-code/prefer-exceptions-over-error-codes": "error", // flags only a `return -1;` statement (Ch3): throw instead; write a sort comparator as `(a, b) => (a < b ? -1 : 1)`, which is not flagged; a block-bodied `return -1` that is not an error code takes an eslint-disable-next-line with a `-- reason`
 };
 
 export default [
