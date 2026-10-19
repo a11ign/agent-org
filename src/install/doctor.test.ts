@@ -442,9 +442,10 @@ test("doctor runs each preflight command and reports a pass and a failure, namin
     preflight: async (command) => (command === "login-ok" ? { status: 0, timedOut: false, output: "" } : { status: 1, timedOut: false, output: "only 2 GB free\nmore" }),
   })));
   assert.equal(checks["preflight fontawesome login"].ok, true);
-  assert.equal(checks["preflight disk"].ok, false);
-  assert.equal(checks["preflight disk"].detail, "only 2 GB free");
-  assert.match(checks["preflight disk"].fix ?? "", /starts no run while it fails/);
+  const disk = checks["preflight disk"];
+  assert.equal(disk.ok, false);
+  assert.equal(disk.detail, "only 2 GB free");
+  assert.match(disk.fix ?? "", /starts no run while it fails/);
 });
 
 test("doctor says nothing of preflight on a host that names none, and runs nothing", async () => {

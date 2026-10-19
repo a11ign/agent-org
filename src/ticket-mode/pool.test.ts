@@ -1685,15 +1685,21 @@ const gitIn = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, 
 /** The committer the real-repository tests commit as. */
 const identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
 
-test("A11-116: a ticket in a project that names a repository is planned for it, and starts on its blocker's branch once that branch is pushed, with no pull request", async () => {
-  // The blocker's branch lives in a clone of this machine's `nbl-ui-netbox`, pushed to a bare origin, and is not pushed until the second pass.
-  const root = tmpDir("ticket-pool-stacked-branch-");
+/** A bare `origin` with `main` pushed, and a clone of it: the real repositories a stacked run is rebased in. */
+function originAndClone(prefix: string): { root: string; origin: string; clone: string } {
+  const root = tmpDir(prefix);
   const origin = join(root, "origin.git");
   const clone = join(root, "nbl-ui-netbox");
   gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
   gitIn(root, ["clone", "-q", origin, clone]);
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
   gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
+  return { root, origin, clone };
+}
+
+test("A11-116: a ticket in a project that names a repository is planned for it, and starts on its blocker's branch once that branch is pushed, with no pull request", async () => {
+  // The blocker's branch lives in a clone of this machine's `nbl-ui-netbox`, pushed to a bare origin, and is not pushed until the second pass.
+  const { clone } = originAndClone("ticket-pool-stacked-branch-");
   gitIn(clone, ["checkout", "-q", "-b", "nbf-1-fit"]);
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "blocker"]);
   const tracker: TicketSource = { ...source,
@@ -1716,13 +1722,7 @@ test("A11-116: a ticket in a project that names a repository is planned for it, 
 });
 
 test("A11-116: a stacked run is rebased onto its blocker's moved branch by agent-org once its worker has stopped, and only noted while it runs", async () => {
-  const root = tmpDir("ticket-pool-rebase-");
-  const origin = join(root, "origin.git");
-  const clone = join(root, "nbl-ui-netbox");
-  gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
-  gitIn(root, ["clone", "-q", origin, clone]);
-  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
-  gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
+  const { root, clone } = originAndClone("ticket-pool-rebase-");
   gitIn(clone, ["checkout", "-q", "-b", "nbf-1-fit"]);
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "blocker"]);
   gitIn(clone, ["push", "-q", "origin", "nbf-1-fit"]);
@@ -1777,13 +1777,7 @@ function fakeGitHub(pulls: Record<string, { head: string; base: string; state: s
 }
 
 test("A11-116: two tickets of one project run in order over real repositories: the second starts on the first's pushed branch before any pull request, and once the first merges its own is retargeted to the default branch, so both merge in order", async () => {
-  const root = tmpDir("ticket-pool-two-tickets-");
-  const origin = join(root, "origin.git");
-  const clone = join(root, "nbl-ui-netbox");
-  gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
-  gitIn(root, ["clone", "-q", origin, clone]);
-  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
-  gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
+  const { root, clone } = originAndClone("ticket-pool-two-tickets-");
   const pullOne = "https://github.com/x/nbl-ui-netbox/pull/1";
   const pullTwo = "https://github.com/x/nbl-ui-netbox/pull/2";
   // What the tracker says of NBF-1, the blocker of NBF-2: its branch, and its pull request's state once one is open.
@@ -1801,7 +1795,8 @@ test("A11-116: two tickets of one project run in order over real repositories: t
   gitIn(clone, ["push", "-q", "origin", "nbf-1"]);
   await pool.refreshTracker();
   await pool.tick();
-  assert.equal(entry("NBF-2").phase, "running", "the second starts on the pushed branch before any pull request exists");
+  const second = entry("NBF-2");
+  assert.equal(second.phase, "running", "the second starts on the pushed branch before any pull request exists");
   assert.ok(readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8").includes("- NBF-1: its branch `nbf-1` is pushed in `nbl-ui-netbox`; there is no pull request yet"));
   // The second's worker makes its worktree the way ticket:worktree does, from the first's branch, and pushes its own.
   const made = await worktreeMain(["nbl-ui-netbox", "--from", "nbf-1"], { [TICKET_ENV.key]: "NBF-2", [TICKET_ENV.branch]: "nbf-2" }, () => settings);

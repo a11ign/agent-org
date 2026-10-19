@@ -16,6 +16,7 @@ import { repoOf } from "./board-view/settled-by-pulls.ts";
 import { worktreePath } from "./worktree.ts";
 import { type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { ticketDir } from "./ticket-paths.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
