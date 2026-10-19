@@ -334,6 +334,15 @@ test("doctor passes the gh wrapper check as not applicable on a host that declar
   assert.equal(asked, false);
 });
 
+test("doctor does not skip the gh wrapper check on a host file that is not accepted, and says the host file is wrong", async () => {
+  for (const unaccepted of ["{}", "not json"]) {
+    let asked = false;
+    const checks = byName(await diagnose(deps({ readFile: () => unaccepted, ghWrapper: async () => { asked = true; return { unchecked: "x" }; } })));
+    assert.equal(checks["host file"].ok, false, unaccepted);
+    assert.equal(asked, true, `${unaccepted}: the wrapper is still asked`);
+  }
+});
+
 test("doctor still checks the gh wrapper on a host that declares a primary project", async () => {
   const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ unchecked: "ENOENT: host.json" }) })));
   assert.equal(checks["gh wrapper"].ok, false);
