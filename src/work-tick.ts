@@ -469,8 +469,7 @@ export function wholeOrderLines(printed: string): string[] {
 export function gateBudgetLine(censusPath: string, handed: number): string {
   let reads: string;
   try {
-    if (!existsSync(censusPath)) reads = "no census file";
-    else {
+    if (existsSync(censusPath)) {
       const gateReads = readCensus(censusPath).filter((record) => (record as { phase?: string }).phase === undefined);
       const inFlight = gateReads.filter((record) => record.ms === null);
       const finished = gateReads.length - inFlight.length;
@@ -478,6 +477,7 @@ export function gateBudgetLine(censusPath: string, handed: number): string {
         : `in ${inFlight.map((record) => record.line).join("; ")}`;
       reads = `${named}, ${finished} reads finished`;
     }
+    else reads = "no census file";
   } catch (error) {
     reads = `census unreadable (${(error as Error).message})`;
   }
@@ -770,7 +770,8 @@ export function eventsForTick({ host, repos, nowMs }: { host: HostConfig; repos:
   const waited = stamps.length === 0 ? "" : `, oldest event waited ${Math.max(0, Math.floor((nowMs - Math.min(...stamps)) / 1000))}s`;
   const count = read.events.length;
   const dueNote = due.length === 0 ? "" : `; due ${due.join(", ")}`;
-  const say = (!healthy ? unhealthy(heartbeat) : count === 0 ? "EVENTS no events" : `EVENTS ${count} event${count === 1 ? "" : "s"}${waited}`) + dueNote;
+  const eventsSay = count === 0 ? "EVENTS no events" : `EVENTS ${count} event${count === 1 ? "" : "s"}${waited}`;
+  const say = (healthy ? eventsSay : unhealthy(heartbeat)) + dueNote;
   const consumed = count + read.unreadable > 0;
   const ack = () => {
     if (!consumed) return null;

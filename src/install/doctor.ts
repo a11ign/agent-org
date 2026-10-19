@@ -364,7 +364,7 @@ async function tailnetChecks(settings: TicketSettings | null, deps: DoctorDeps):
   const self = status.status === 0 ? parseStatus(status.stdout) : null;
   if (self === null || !self.running || self.name === null) {
     if (status.status === null) return [failed("tailscale", "tailscale is not on PATH", "install Tailscale, then run `tailscale up`")];
-    const detail = self === null ? "`tailscale status --json` did not answer" : !self.running ? `Tailscale is ${self.state}, not Running` : "this machine has no DNS name";
+    const detail = self === null ? "`tailscale status --json` did not answer" : self.running ? "this machine has no DNS name" : `Tailscale is ${self.state}, not Running`;
     return [failed("tailscale", detail, "run `sudo tailscale up`, and turn MagicDNS on in the admin console")];
   }
   const serve = deps.tailscale(serveStatusArgv());

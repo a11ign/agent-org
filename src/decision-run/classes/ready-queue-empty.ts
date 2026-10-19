@@ -107,7 +107,9 @@ export function buildQuestion(order: DecisionOrder, port: Port, nowMs: number = 
     ...(anchored ? [] : ["This must be `escalate`: the record issue could not be read, so there is nothing to decide."]),
     ...(head === null ? ["`promote` is not available: the order names no head to re-read an Open-check at."] : []),
   ].join("\n");
-  const allowed: readonly string[] = !anchored ? [ESCALATE] : head === null ? [NONE_PROMOTABLE, ESCALATE] : ALLOWED;
+  const allowed: readonly string[] = anchored && head !== null ? ALLOWED
+    : anchored ? [NONE_PROMOTABLE, ESCALATE]
+    : [ESCALATE];
   return { text, default: NONE_PROMOTABLE, allowed };
 }
 

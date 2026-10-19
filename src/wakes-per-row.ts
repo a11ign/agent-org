@@ -226,8 +226,8 @@ export function mergedTrackerRows(pulls: PullRequest[], window: { from: number; 
       const ref = rowRef(key, row);
       const known = rows.get(ref);
       const keyed = key === "" ? {} : { key };
-      if (!known) rows.set(ref, { row, ...keyed, repo: pull.repo, pulls: [pull.number], firstOpenedAt: openedAt, lastOpenedAt: openedAt, mergedAt });
-      else rows.set(ref, laterMerge(known, { repo: pull.repo, number: pull.number, openedAt, mergedAt }));
+      if (known) rows.set(ref, laterMerge(known, { repo: pull.repo, number: pull.number, openedAt, mergedAt }));
+      else rows.set(ref, { row, ...keyed, repo: pull.repo, pulls: [pull.number], firstOpenedAt: openedAt, lastOpenedAt: openedAt, mergedAt });
     }
   }
   return [...rows.values()].filter((entry) => entry.mergedAt >= window.from && entry.mergedAt < window.to);

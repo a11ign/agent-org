@@ -806,13 +806,11 @@ function specFieldProblems(spec: SpecValue): string[] {
   const tests = root.tests;
   if (need("tests", tests)) {
     const map = asMap(tests);
-    if (!map) problems.push("tests: must be a map with `path` and `cases`");
-    else {
+    if (map) {
       if (need("tests.path", map.path) && typeof map.path !== "string") problems.push("tests.path: must be one path");
       if (need("tests.cases", map.cases)) {
         const cases = asList(map.cases);
-        if (!cases) problems.push("tests.cases: must be a list");
-        else cases.forEach((one, i) => {
+        if (cases) cases.forEach((one, i) => {
           const fields = asMap(one);
           if (!fields) { problems.push(`tests.cases[${i}]: must be a map with \`given\`, \`when\` and \`then\``); return; }
           for (const name of ["given", "when", "then"] as const) {
@@ -823,8 +821,10 @@ function specFieldProblems(spec: SpecValue): string[] {
             if (name === "then" && EMPTY_THENS.has(said)) problems.push(`${at}: \`${said}\` asserts nothing -- name the value, the output or the refusal that is observed`);
           }
         });
+        else problems.push("tests.cases: must be a list");
       }
     }
+    else problems.push("tests: must be a map with `path` and `cases`");
   }
   if (need("run", root.run) && (typeof root.run !== "string" || /\n/.test(root.run.trim()))) problems.push("run: must be ONE command on one line");
   if (need("out_of_scope", root.out_of_scope) && !(typeof root.out_of_scope === "string" || asList(root.out_of_scope))) problems.push("out_of_scope: must be a sentence or a list");

@@ -108,12 +108,12 @@ export function buildQuestion(order: DecisionOrder, port: Parameters<DecisionCla
   const open = item !== null && item.state === READY_LABEL && !decided;
   const checkable = open && acceptanceIsCommand(item.body);
   read.set(order.causeKey, { ref, open, checkable });
-  const allowed = !open ? [ESCALATE] : checkable ? [...ALLOWED] : [SONNET_LINE, ESCALATE];
+  const allowed = checkable ? [...ALLOWED] : open ? [SONNET_LINE, ESCALATE] : [ESCALATE];
   const text = [
     `A \`${READY_LABEL}\` row has made no tier decision. The order said: ${order.prompt ?? "(no text)"}`,
     "Decide the FIRST row listed only. Post `Tier: sonnet -- <reason>` (`sonnet-line`, the default; the reason, one clause, in `text`), or label it `tier:haiku` " +
       "(`haiku-label`, with the reason) when it is mechanical and its Acceptance is a command, or return it to the standing seat (`escalate`).",
-    ...(!open ? ["This item must be `escalate`: " + (item === null ? "the row could not be read." : `it is no longer \`${READY_LABEL}\` without a tier decision, so there is nothing to decide.`)] : []),
+    ...(open ? [] : ["This item must be `escalate`: " + (item === null ? "the row could not be read." : `it is no longer \`${READY_LABEL}\` without a tier decision, so there is nothing to decide.`)]),
     ...(open && !checkable ? ["`haiku-label` is not allowed: the row's Acceptance is not a command in a fenced block."] : []),
   ].join("\n");
   return { text, default: SONNET_LINE, allowed };

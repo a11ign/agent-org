@@ -1285,7 +1285,9 @@ function publishToDraftRelease(pdf: string) {
   if (!exists) {
     execFileSync("gh", ["release", "create", tag, pdf, "--repo", REPO, "--draft",
       "--title", title, "--notes", notes], { stdio: "pipe" });
-  } else if (!exists.isDraft) {
+  } else if (exists.isDraft) {
+    execFileSync("gh", ["release", "upload", tag, pdf, "--repo", REPO, "--clobber"], { stdio: "pipe" });
+  } else {
     // REFUSE rather than overwrite. A published release is visible to everyone with the repository; a
     // re-render replacing its asset would change what somebody has already been sent, silently.
     console.error(`REFUSING to replace assets on ${tag}: it is PUBLISHED, not a draft. A re-render would `
@@ -1293,8 +1295,6 @@ function publishToDraftRelease(pdf: string) {
       + "cut a new tag.");
     process.exitCode = 4;
     return;
-  } else {
-    execFileSync("gh", ["release", "upload", tag, pdf, "--repo", REPO, "--clobber"], { stdio: "pipe" });
   }
   process.stdout.write(`https://github.com/${REPO}/releases/tag/${encodeURIComponent(tag)} (draft)\n`);
 }

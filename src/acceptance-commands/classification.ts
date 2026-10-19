@@ -1269,11 +1269,13 @@ export function closureRequirementMessage(hit: ClosureHit): string {
   const suffix = malformedDeclaration
     ? ` -- ${fileLabel}:${line} is not a \`// no-token:\` declaration: the name must end the line, or be followed by `
       + "\" -- <reason>\"; refusing rather than ignoring it"
-    : !wrongDeclaration ? noParserNote(noParser) : requirement === "token"
+    : wrongDeclaration && requirement === "token"
     ? ` -- ${fileLabel} declares \`// no-token:\` a function its own code DOES call or spawn; refusing rather than `
       + "trusting an unverified claim"
-    : ` -- ${fileLabel} declares \`// writes:\` a path its own code does not bear out; refusing rather `
-      + "than trusting an unverified claim";
+    : wrongDeclaration
+    ? ` -- ${fileLabel} declares \`// writes:\` a path its own code does not bear out; refusing rather `
+      + "than trusting an unverified claim"
+    : noParserNote(noParser);
   if (chain.length <= 1) return `${entryLabel} requires ${requirement}, at ${fileLabel}:${line}${suffix}`;
   const hops = [];
   for (let i = 0; i < chain.length - 1; i++) {

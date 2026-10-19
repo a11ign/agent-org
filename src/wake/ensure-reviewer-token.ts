@@ -561,10 +561,10 @@ function removeStalePackageLinks(fs: LinkFs, to: string, wanted: Set<string>) {
   for (const entry of fs.readdirSync(to).filter((name) => !name.startsWith("."))) {
     if (!entry.startsWith("@")) {
       if (!wanted.has(entry)) drop(entry);
-    } else if (![...wanted].some((name) => name.startsWith(`${entry}/`))) {
-      drop(entry);
-    } else {
+    } else if ([...wanted].some((name) => name.startsWith(`${entry}/`))) {
       for (const child of fs.readdirSync(`${to}/${entry}`).filter((name) => !wanted.has(`${entry}/${name}`))) drop(`${entry}/${child}`);
+    } else {
+      drop(entry);
     }
   }
 }

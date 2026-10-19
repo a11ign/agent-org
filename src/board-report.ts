@@ -49,9 +49,7 @@ const flag: (name: string) => string | undefined = (name): string | undefined =>
 export function release(d: any, L: string[]) {
   const { ms } = d;
   L.push("## Release");
-  if (!ms) {
-    L.push(`No milestone titled \`${MILESTONE}\` exists. That is a tracker fault, not a schedule one.`);
-  } else {
+  if (ms) {
     const d = ms.due_on ? daysUntil(ms.due_on) : null;
     L.push(`**${ms.title}** — due ${ms.due_on ? ms.due_on.slice(0, 10) : "no date set"}`
       + `${d === null ? "" : ` (${d} day${d === 1 ? "" : "s"} out)`}, `
@@ -60,6 +58,8 @@ export function release(d: any, L: string[]) {
     L.push("Every move of that date is recorded on the milestone itself, naming what moved it and which "
       + "gate found it. If the date below has changed since the last report and the milestone carries no "
       + "reason, that is the defect — not the slip.");
+  } else {
+    L.push(`No milestone titled \`${MILESTONE}\` exists. That is a tracker fault, not a schedule one.`);
   }
   L.push("");
 }
@@ -151,12 +151,7 @@ export function lastGate(d: any, L: string[]) {
   const { latestGate, gateIsFresh } = d;
   // WHICH GATE, named (#429): `latestGate` is the newest CONFORMANCE result, not the newest entry of any kind.
   L.push("## Last conformance gate result (`rules-real-pages`)");
-  if (!latestGate) {
-    L.push("**Not reported.** No gate output has been recorded in `docs/board/reported/`. This report "
-      + "does not read gates itself and must not: a checkout's `runs/` is only as fresh as its last sync "
-      + "— one measured here was 89 hours old and answered cleanly having examined a corpus that no "
-      + "longer existed.");
-  } else {
+  if (latestGate) {
     L.push(`\`${latestGate.command}\` — run by **${latestGate.reportedBy}** at ${latestGate.at}`
       + `${gateIsFresh ? "" : " — **STALE**, older than this report's freshness window, so it describes an "
         + "earlier state of the corpus and not necessarily the current one"}.`);
@@ -164,6 +159,11 @@ export function lastGate(d: any, L: string[]) {
     L.push("```");
     L.push(String(latestGate.output).trimEnd());
     L.push("```");
+  } else {
+    L.push("**Not reported.** No gate output has been recorded in `docs/board/reported/`. This report "
+      + "does not read gates itself and must not: a checkout's `runs/` is only as fresh as its last sync "
+      + "— one measured here was 89 hours old and answered cleanly having examined a corpus that no "
+      + "longer existed.");
   }
   L.push("");
 }
@@ -185,9 +185,10 @@ export function fleetHoursSection(d: any, L: string[]) {
     // is visible. A total naming a run that has not FINISHED is a field that is filled and false — added
     // 2026-09-06 after a total named `a11y-job-capture.service` while it sat at 285 of 1,645, so the
     // number could not have come from the run it cited whatever else was true of it.
-    const missing = !fleetHours.run ? "does not name the run it was computed from"
-      : "names a run with no `runFinishedAt`, so that run had not finished and the total cannot have come "
-        + "from it";
+    const missing = fleetHours.run
+      ? "names a run with no `runFinishedAt`, so that run had not finished and the total cannot have come "
+        + "from it"
+      : "does not name the run it was computed from";
     L.push(`**REFUSED — a fleet-hours total was recorded that ${missing}.** The entry reads `
       + `\`${fleetHours.total}\`, measured by ${fleetHours.reportedBy ?? "nobody named"}`
       + `${fleetHours.run ? `, citing \`${fleetHours.run}\`` : ""}. A total whose run is unstated or `
@@ -702,9 +703,7 @@ function main() {
   const since = flag("--since") ?? new Date(Date.now() - 24 * HOURS_MS).toISOString();
   const body = render(facts(since, `commits and closures since ${since}`));
 
-  if (!post) {
-    process.stdout.write(body + "\n");
-  } else {
+  if (post) {
     const dirt = argv.includes("--allow-dirty-read-set") ? null : readSetIsNotMain();
     if (dirt) {
       console.error("REFUSING to post: the files this report reads out of the working tree are not "
@@ -727,6 +726,8 @@ function main() {
       : body;
     gh(["issue", "comment", issue, "--repo", REPO, "--body", published]);
     process.stdout.write(`posted to https://github.com/${REPO}/issues/${issue}\n`);
+  } else {
+    process.stdout.write(body + "\n");
   }
 }
 
