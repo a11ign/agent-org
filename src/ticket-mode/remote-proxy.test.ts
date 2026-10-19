@@ -77,8 +77,12 @@ test("only the routes the page calls are passed on, by the method it calls them 
   for (const path of ["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss", "/api/queue/NBF-1/apply-edit", "/api/queue/NBF-1/discard-edit"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
-  for (const path of ["/api/writer/w1/stop", "/api/writer/w1/dismiss", "/api/writer/w1/drafts/d1/approve", "/api/writer/w1/drafts/d1/discard"]) {
+  for (const path of ["/api/writer/w1/stop", "/api/writer/w1/dismiss"]) {
     assert.equal(passedOn("POST", path), true, path);
+  }
+  // A11-124: the board makes the tickets, so a draft's approve and discard are no route the page calls any more.
+  for (const path of ["/api/writer/w1/drafts/d1/approve", "/api/writer/w1/drafts/d1/discard"]) {
+    assert.equal(passedOn("POST", path), false, `${path} is no route`);
   }
   for (const [method, path] of [["POST", "/api/pair-code"], ["POST", "/api/pair-code/"], ["POST", "/api/queue/NBF-1/../../pair-code"], ["GET", "/api/profiles"],
     ["DELETE", "/api/queue"], ["GET", "/api/paused"], ["POST", "/api/queue/NBF-1/drop"], ["DELETE", "/api/writer"], ["POST", "/api/writer/w1/drafts/d1/create"],

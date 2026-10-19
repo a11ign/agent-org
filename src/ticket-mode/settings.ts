@@ -139,7 +139,7 @@ export type Planner = Readonly<{
 
 /** What a ticket-writing run is told: the ticket-writing skill, with `{request}` and `{dir}` filled in per run. */
 export type Writer = Readonly<{
-  /** The writer's instruction, naming {request}, the person's request, and {dir}, the folder its drafts go in. */
+  /** The writer's instruction, naming {request}, the person's request, and {dir}, the folder its drafts go in. `{mode}` is the board's mode, optional. */
   run: string;
   model: string;
   effort: string;

@@ -159,3 +159,15 @@ test("a writer run's outcome is drafted, or needs-human with its question; anyth
   assert.equal(parseWriterOutcome("{ nope"), "its outcome is not valid JSON");
   assert.equal(parseWriterOutcome("{}"), "its outcome names no kind");
 });
+
+test("a ticket's description names the duplicates the writer found, after the done-when list, with their title and address when the tracker has them", () => {
+  const draft = draftFrom("01-show.json", { title: "feat: show", why: "Why", doneWhen: ["It lists them"], repo: "nbl-ui-netbox", notes: "Notes here" }, repos);
+  const duplicates = [{ key: "NBF-9", why: "same request", title: "Show requests", url: "https://linear.app/x/NBF-9" }, { key: "NBF-404", why: "gone", title: null, url: null }];
+  assert.equal(descriptionOf(draft, duplicates), [
+    "**Why:** Why", "", "**Done when:**", "", "* It lists them", "",
+    "**Possible duplicates:**", "", "* NBF-9: Show requests https://linear.app/x/NBF-9 - same request", "* NBF-404 (not found in the tracker) - gone", "",
+    "**Repository:** nbl-ui-netbox", "", "Notes here", "",
+  ].join("\n"), "POSITIVE CONTROL: the duplicates are named in the text");
+  assert.equal(descriptionOf(draft), descriptionOf(draft, []), "a draft with no duplicates reads as it always did");
+  assert.doesNotMatch(descriptionOf(draft), /Possible duplicates/);
+});

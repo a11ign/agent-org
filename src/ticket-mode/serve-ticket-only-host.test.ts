@@ -243,11 +243,11 @@ test("ticket:serve with AGENT_ORG_HOST unset reads ~/.agent-org/host.json and st
 });
 
 /*
- * A NEW TICKET ON A TICKET-ONLY HOST (A11-94). A host file with only `clones` and `tickets`, naming `tickets.writer`, runs the whole path: a request, a
- * writer run that leaves a draft, the person's approval, and the queue. The tracker and herdr are fakes; the board and its pool are the real ones.
+ * A NEW TICKET ON A TICKET-ONLY HOST (A11-94, A11-124). A host file with only `clones` and `tickets`, naming `tickets.writer`, runs the whole path: a request, a
+ * writer run that leaves a draft, and the ticket the board makes when the run ends. The tracker and herdr are fakes; the board and its pool are the real ones.
  */
 
-const WRITER_HOST = { writer: { run: "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts." } };
+const WRITER_HOST = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." } };
 
 /** Resolves once `ready` holds, polling the pool's background work; fails the test when it does not hold in time. */
 async function waitFor(ready: () => boolean): Promise<void> {
@@ -312,14 +312,10 @@ test("on a ticket-only host, a new-ticket request runs the writer, its draft wai
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "drafted" }));
   status.set(label, "idle");
   await board.pool.tick();
+  // The run's outcome is read and its ticket is made: nothing is reviewed, approved or queued by a person.
   await waitFor(() => board.store.get().writers?.[0].phase === "finished");
+  assert.deepEqual(created, ["feat: show requests"], "the board made the ticket when the run ended");
+  assert.equal(board.store.get().entries.length, 0, "and queued nothing: the person queues it from Pick, if they want it queued");
   const [, ready] = await board.api("GET", "/api/writer", {}) as [number, any];
-  assert.deepEqual([ready.runs[0].status, ready.runs[0].drafts[0].status], ["to-review", "pending"]);
-  assert.equal(created.length, 0, "a draft a person has not approved creates nothing");
-  assert.equal(board.store.get().entries.length, 0, "and queues nothing");
-  const draftId = ready.runs[0].drafts[0].id as string;
-  const [, approved] = await board.api("POST", `/api/writer/${id}/drafts/${draftId}/approve`, { draft: { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"] }, queue: true }) as [number, any];
-  assert.deepEqual(created, ["feat: show requests"]);
-  assert.equal(approved.created.key, "NBF-101");
-  assert.deepEqual(board.store.get().entries.map((e) => e.ticket.key), ["NBF-101"], "approved and queued, on the ticket-only host");
+  assert.deepEqual([ready.runs[0].status, ready.runs[0].tickets.map(({ key }: { key: string }) => key)], ["done", ["NBF-101"]]);
 });

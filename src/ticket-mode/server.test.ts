@@ -530,7 +530,7 @@ test("the instance mints a worker terminal's code for its key only, and says why
  * New-ticket requests (A11-94): the routes queue a run of the writer, and only the approve route creates a ticket, in the tracker, with the person's approval.
  */
 
-const WRITER = { writer: { run: "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts." }, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" };
+const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." }, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" };
 
 /** A tracker that answers reads and records each create; a created ticket is NBF-101, NBF-102, and so on. */
 function creating() {
@@ -548,18 +548,18 @@ function creating() {
   return { tracker, created };
 }
 
-/** A writer run that left one valid draft, as the pool hands the board, with the board's store set to it. */
-/** The writer's board, whose tracker creates the tickets it approves, and the list of the tickets created. */
+/** The writer's board, whose tracker creates the tickets its runs' drafts describe, and the list of the tickets created. */
 function writerBoard() {
   const { tracker, created } = creating();
   return { b: board(4747, WRITER, {}, tracker), created };
 }
 
-function withDraft(b: ReturnType<typeof board>, id = "w7", duplicates: { key: string; why: string }[] = []) {
+/** A writer run whose drafts are being made, as the pool hands the board once the run's outcome is read: the board's store holds it. */
+function withDraft(b: ReturnType<typeof board>, id = "w7") {
   const draft = { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"], notes: null, team: null, project: null, repo: null, goal: null, labels: [], priority: "none",
-    parent: null, blocks: [], blockedBy: [], duplicates } as never;
+    parent: null, blocks: [], blockedBy: [], duplicates: [] } as never;
   b.store.set(writerDrafted(markWriterRunning(markWriterStarting(queueWriter(b.store.get(), { id, request: "Show requests", mode: "quick", form: {} }, 1), id, 2), id, "ws", "p"),
-    id, { drafts: [{ id: "d1", file: "01-show.json", draft, duplicates: [], status: "pending" }], rejected: [] }, 3));
+    id, { drafts: [{ id: "d1", file: "01-show.json", draft, duplicates: [], status: "creating" }], rejected: [] }, 3));
 }
 
 test("a new-ticket request is queued as a run of the writer and shown with its status, and is refused by name when it cannot be", async () => {
@@ -633,47 +633,36 @@ test("/api/config gives the ticket writer's host default, which is null on a mac
   assert.equal(none.choice.writerModel, undefined, "nothing chosen: the choice names no writer model");
 });
 
-test("only the approve route creates a ticket: it creates the one the person approved, and a discard, a stop or a dismiss creates none", async () => {
+
+
+
+test("the drafts are made by the board, so there is no approve or discard route: a draft's path is not a route, and a request's stop and dismiss create nothing", async () => {
   const { b, created } = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });
   withDraft(b);
-  await b.api("GET", "/api/writer", {});
-  const [, discarded] = await b.api("POST", "/api/writer/w7/drafts/d1/discard", {}) as [number, any];
-  assert.equal(discarded.runs[0].drafts[0].status, "discarded");
-  await assert.rejects(b.api("POST", "/api/writer/w7/drafts/d1/approve", {}), /was discarded, so it creates nothing/);
-  assert.equal(created.length, 0, "POSITIVE CONTROL: a discard and a refused approve create nothing");
-  await b.api("POST", "/api/writer/w7/dismiss", {});
-  assert.deepEqual((b.store.get().writers ?? []).length, 0);
-  await assert.rejects(b.api("POST", "/api/writer/w9/drafts/d1/approve", {}), /no new-ticket request w9/);
+  const [approve] = await b.api("POST", "/api/writer/w7/drafts/d1/approve", { draft: {} }) as [number, any];
+  const [discard] = await b.api("POST", "/api/writer/w7/drafts/d1/discard", {}) as [number, any];
+  assert.deepEqual([approve, discard], [404, 404], "POSITIVE CONTROL: the review's routes are gone");
+  await b.api("POST", "/api/writer/w7/stop", {});
+  await assert.rejects(b.api("POST", "/api/writer/w7/dismiss", {}), /stop the new-ticket request before you dismiss it/, "a run still under way is not dismissed");
+  assert.equal(created.length, 0, "a stop and a refused dismiss create nothing");
 });
 
-test("approve creates the ticket with the person's edited fields and answers it; approve and queue queues it with the saved choice and plan first when asked", async () => {
-  const { b, created } = writerBoard();
+test("a run's drafts that the board makes show as tickets on the run, with their key and address, and the page's view holds no draft to review", async () => {
+  const { b } = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });
   withDraft(b);
-  const [status, answer] = await b.api("POST", "/api/writer/w7/drafts/d1/approve", { draft: { title: "feat: an edited title", why: "A person asks", doneWhen: ["It lists them"] }, queue: true, plan: false }) as [number, any];
-  assert.equal(status, 200);
-  assert.deepEqual(created, ["feat: an edited title"]);
-  assert.equal(answer.created.key, "NBF-101");
-  assert.equal(answer.created.queued, true);
-  assert.equal(b.store.get().entries.length, 1, "queued as Queue does");
-  assert.deepEqual([b.store.get().entries[0].ticket.key, b.store.get().entries[0].model], ["NBF-101", "opus"]);
-  assert.equal(answer.runs[0].drafts[0].status, "created");
-  await b.api("POST", "/api/writer/w7/drafts/d1/approve", { draft: {}, queue: true });
-  assert.equal(created.length, 1, "a second approve makes no second ticket");
-});
-
-test("the approve route refuses a duplicate until it is acknowledged, and a parent it cannot queue is said, with the ticket kept", async () => {
-  const { b, created } = writerBoard();
-  await b.api("POST", "/api/writer", { request: "Show requests" });
-  // The duplicate is one the writer named in the draft: an edit cannot drop it, so the check is the draft's own.
-  withDraft(b, "w7", [{ key: "NBF-1", why: "same request" }]);
-  const fields = { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"] };
-  await assert.rejects(b.api("POST", "/api/writer/w7/drafts/d1/approve", { draft: fields }), /names NBF-1 as a duplicate/);
-  assert.equal(created.length, 0);
-  const [, answer] = await b.api("POST", "/api/writer/w7/drafts/d1/approve", { draft: fields, acknowledgeDuplicates: true, queue: true }) as [number, any];
-  assert.equal(created.length, 1);
-  assert.equal(answer.created.key, "NBF-101");
+  const [, made] = await b.api("GET", "/api/writer", {}) as [number, any];
+  assert.deepEqual(made.runs[0].tickets, [], "no ticket while the run is making its tickets");
+  assert.equal("drafts" in made.runs[0], false, "the page is not sent drafts to review");
+  const run = b.store.get().writers![0];
+  b.store.set({ ...b.store.get(), writers: [{ ...run, phase: "finished", finishedAt: 4, drafts: [{ ...run.drafts[0], status: "created", created: { key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true } }] }] });
+  const [, after] = await b.api("GET", "/api/writer", {}) as [number, any];
+  assert.deepEqual([after.runs[0].status, after.runs[0].tickets], ["done", [{ file: "01-show.json", key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true, warnings: [] }]]);
+  // A ticket an older board made did not record whether Pick lists it: the page must not say it is outside Pick.
+  b.store.set({ ...b.store.get(), writers: [{ ...run, phase: "finished", finishedAt: 4, drafts: [{ ...run.drafts[0], status: "created", created: { key: "NBF-102", url: "u" } }] }] });
+  const [, older] = await b.api("GET", "/api/writer", {}) as [number, any];
+  assert.equal(older.runs[0].tickets[0].inPick, true, "POSITIVE CONTROL: no note for a ticket whose Pick listing an older board did not record");
 });
 
 test("stopping a run keeps what it wrote, and a request whose run is not known is refused by name", async () => {

@@ -27,8 +27,8 @@ const ANSWER_BYTES = 8 * 1024 * 1024;
 const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer"]);
 const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/writer"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/;
-/** A new-ticket request's own actions, and a draft's approve or discard: `/api/writer/<run>/stop`, `/api/writer/<run>/drafts/<draft>/approve`. */
-const WRITER_ACTION = /^\/api\/writer\/[A-Za-z0-9_-]+(?:\/(?:stop|dismiss)|\/drafts\/[A-Za-z0-9_.-]+\/(?:approve|discard))$/;
+/** A new-ticket request's own actions: `/api/writer/<run>/stop` and `/api/writer/<run>/dismiss`. */
+const WRITER_ACTION = /^\/api\/writer\/[A-Za-z0-9_-]+\/(?:stop|dismiss)$/;
 
 /** Whether the page may make this call to an instance: one of the routes it calls there, by the method it calls it with. */
 export function passedOn(method: string, pathname: string): boolean {

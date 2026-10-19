@@ -444,6 +444,20 @@ function judgeOutcome(subject: StopSubject, io: StopIo): Judgment {
 }
 
 /**
+ * Whether a new-ticket run is grill: its mark names the mode, and the person answers its questions in its terminal, so it may end a turn with no
+ * outcome while it waits (A11-124). A mark that is not that mode's, or not read, is not grill.
+ */
+function interactiveWriter(ticketDir: string, io: StopIo): boolean {
+  const mark = join(ticketDir, WRITER_FILE);
+  if (!io.exists(mark)) return false;
+  try {
+    return (JSON.parse(io.read(mark)) as { mode?: unknown }).mode === "grill";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The Stop verdict: allowed once the outcome file is there and passes the contract, refused with what to fix otherwise, up to
  * {@link MAX_STOP_REFUSALS} in a row. A `working` outcome allows one stop, and only while the session has live background work to wake it
  * (`transcriptPath`); a later stop on the same file, by its time, is refused the same way, so a worker its background work woke says how the run stands now.
@@ -456,6 +470,10 @@ export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p:
   const outcome = join(ticketDir, OUTCOME_FILE);
   const counter = join(ticketDir, STOP_COUNT_FILE);
   const io: StopIo = { exists, read, write, mtime };
+  if (!exists(outcome) && interactiveWriter(ticketDir, io)) {
+    write(counter, "0");
+    return ALLOW;
+  }
   const judged: Judgment = exists(outcome)
     ? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath }, io)
     : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };

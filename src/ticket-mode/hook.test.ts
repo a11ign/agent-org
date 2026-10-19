@@ -133,6 +133,19 @@ test("a stop with no outcome is refused twice in a row, then allowed; an outcome
   assert.match(empty.say[0], /the file is not JSON/, "and the refusal says why");
 });
 
+test("A11-124: a grill writer may end its turn with no outcome while it waits on the person; a quick writer may not, and a mark that names no mode is not grill", () => {
+  const grill = tmpDir("ticket-hook-grill-");
+  writeFileSync(join(grill, "writer-run"), "{\"mode\":\"grill\"}\n");
+  assert.equal(stopVerdict(grill).code, 0, "POSITIVE CONTROL: the grill run's turn ends while it waits for an answer");
+  assert.equal(readFileSync(join(grill, "stop-refusals"), "utf8").trim(), "0", "and nothing is counted as a refusal");
+  const quick = tmpDir("ticket-hook-quick-");
+  writeFileSync(join(quick, "writer-run"), "{\"mode\":\"quick\"}\n");
+  assert.equal(stopVerdict(quick).code, 2, "a quick run with no outcome is refused, as before");
+  const unnamed = tmpDir("ticket-hook-unnamed-");
+  writeFileSync(join(unnamed, "writer-run"), "{}\n");
+  assert.equal(stopVerdict(unnamed).code, 2, "a mark that names no mode is not grill");
+});
+
 test("A11-118: a ready-pr with `pr` for `prs` is refused at the stop naming prs; the corrected file is allowed and the count is reset", () => {
   const dir = tmpDir("ticket-hook-shape-");
   const outcome = join(dir, "outcome.json");

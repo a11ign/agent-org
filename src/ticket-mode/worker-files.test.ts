@@ -2,7 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { outcomeExamples } from "./outcome.ts";
-import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText } from "./worker-files.ts";
+import type { WriterMode } from "./queue/declared-remains.ts";
+import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -524,7 +525,7 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
  * tracker, and what the run writes last. Quick and grill are told apart.
  */
 
-const WRITER = { run: "Run the a11ign:create-ticket skill, quick, for this request: {request}. Write each draft under {dir}/drafts.", clones: { "nbl-ui-netbox": "/r/netbox" } };
+const WRITER = { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts.", clones: { "nbl-ui-netbox": "/r/netbox" } };
 
 test("A11-94: a new-ticket brief fills in the instruction, quotes the request, states the choices as requirements, and gives the draft format and outcome the board reads", () => {
   const brief = writerBriefText({ ...WRITER, request: "Show the requests\nA person made", mode: "quick", form: { repo: "nbl-ui-netbox", priority: "high" }, dir: "/state/tickets/writer/w1" });
@@ -554,13 +555,38 @@ test("A11-94: a new-ticket brief reads the tracker with read-only tools only, an
   assert.match(brief, /None\. The request decides each of these\./, "no choices made: the request decides");
 });
 
-test("A11-94: quick runs unattended and decides; grill asks the person in the run's terminal first, and may write needs-human", () => {
-  const quick = writerBriefText({ ...WRITER, request: "x", mode: "quick", form: {}, dir: "/d" });
-  assert.match(quick, /You are unattended\. Nobody will answer a question: decide, and write one or more drafts\./);
-  assert.doesNotMatch(quick, /ask them your questions/);
-  const grill = writerBriefText({ ...WRITER, request: "x", mode: "grill", form: {}, dir: "/d" });
-  assert.match(grill, /You are interactive: the person is in this run's terminal\. Ask them your questions one at a time before you draft/);
-  assert.match(grill, /Write `needs-human` only in grill mode/);
+/** The brief a run of `mode` is given, for the request "x" with nothing else chosen. */
+const briefIn = (mode: WriterMode) => writerBriefText({ ...WRITER, request: "x", mode, form: {}, dir: "/d" });
+
+test("A11-124: the brief names the board's mode, and says it wins over the instruction, in each mode", () => {
+  for (const mode of ["quick", "grill"] as const) {
+    const brief = briefIn(mode);
+    assert.match(brief, /^## The mode$/m);
+    assert.match(brief, new RegExp(`whatever the instruction under "What to do" says: \`${mode}\`\.`));
+  }
+});
+
+test("A11-124: quick runs unattended and decides, and the board creates the ticket from each draft", () => {
+  const quick = briefIn("quick");
+  assert.match(quick, /You are unattended\. Nobody will answer a question: decide every question yourself, and write one or more drafts\./);
+  assert.match(quick, /the board creates the ticket from each draft/);
+});
+
+test("A11-124: grill asks the person one question at a time in the run's terminal before it drafts, and writes needs-human only when it cannot finish", () => {
+  const grill = briefIn("grill");
+  assert.match(grill, /You are interactive: the person is in this run's terminal\. Ask them your questions one at a time, and wait for each answer before the next\. Write no draft until the questions are done\./);
+  assert.doesNotMatch(grill, /Nobody will answer/);
+  assert.match(grill, /Write `needs-human` only when the run cannot finish at all\./);
+});
+
+test("A11-124: a {mode} placeholder in the instruction is filled with the board's mode, and the instruction names no mode of its own", () => {
+  const brief = writerBriefText({ run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.", request: "x", mode: "grill", form: {}, clones: {}, dir: "/d" });
+  assert.match(brief, /Run the a11ign:create-ticket skill, grill, for this request: x\. Write each draft under \/d\/drafts\./);
+});
+
+test("A11-124: the first prompt of a grill run asks its first question; a quick run's is the pointer to its brief alone", () => {
+  assert.equal(writerPrompt("/d", "quick"), "Read /d/brief.md and follow it.");
+  assert.equal(writerPrompt("/d", "grill"), "Read /d/brief.md and follow it. Your first message to me is your first question.");
 });
 
 test("A11-94: the writer's brief names the one repository list it may read, and no other repository", () => {
