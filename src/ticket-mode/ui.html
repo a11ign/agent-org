@@ -313,6 +313,12 @@ async function call(method, path, body) {
   return value;
 }
 function report(err) { if (err !== STALE) $("error").textContent = err ? String(err.message || err) : ""; }
+/** Scroll to the card a link names. A hash that is not a valid encoding names no card, and is not an error of the page (A11-129). */
+function scrollToNamedCard() {
+  let id;
+  try { id = decodeURIComponent(location.hash.slice(1)); } catch { return; }
+  document.getElementById(id)?.scrollIntoView();
+}
 const entryFor = (key) => state.queue.entries.find((e) => e.ticket.key === key);
 /** What Select all takes: every shown ticket a person can pick, so not a parent, as the parent's own checkbox picks the tickets under it. */
 const pickableShown = () => groupByStatus(shown(), contextParents()).flatMap(([, nodes]) => flatten(nodes)).filter((t) => selectable(t, state.queue.entries));
@@ -1058,7 +1064,7 @@ try {
   renderConnections(listed?.refusal);
   await load();
   // The card the link names is scrolled to, once the page has drawn it (A11-129).
-  if (location.hash) document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();
+  if (location.hash) scrollToNamedCard();
 } catch (err) { report(err); }
 setInterval(() => {
   call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); renderHeld(); }, report);

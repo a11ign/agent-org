@@ -1301,6 +1301,12 @@ test("A11-129: a board opened from a link to a run chooses that run's connection
   assert.equal(p.$("writer-w7").scrolled, true, "the card the link names is scrolled to");
 });
 
+test("A11-129: a board opened with a hash that is not a valid encoding loads without an error, as one opened with no hash does", async () => {
+  const p = await page(new Map(), { config: WRITER_CONFIG, connections: WORK_ALONE, writers: { runs: [RUN] }, hash: "#%E0%A4%A" });
+  assert.equal(p.$("error").textContent, "", "a malformed hash names no card, and is not shown as the page's error");
+  assert.equal(p.$("writers-list").children.length, 1, "the board still draws its runs");
+});
+
 test("a run that made its tickets shows each as a link by its key, and says so when Pick does not list it", async () => {
   const made = { ...RUN, tickets: [
     { file: "01-show.json", key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true, warnings: [] },
