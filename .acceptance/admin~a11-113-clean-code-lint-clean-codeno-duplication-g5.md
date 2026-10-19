@@ -9,7 +9,7 @@ npx eslint src scripts --format json | node -e 'let s="";process.stdin.on("data"
 grep -n 'no-duplication' eslint.config.ts
 test -f src/lib/test-each.ts
 P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture
-AGENT_ORG_HOST="$P/.agent-org/host.json" npx rstest run --config scripts/rstest/rstest.config.ts src/lib/test-each.test.ts $(git diff --name-only origin/main -- '*.test.ts')
+A11Y_PRIVATE_TMP_BASE="$(mktemp -d)" AGENT_ORG_HOST="$P/.agent-org/host.json" npx rstest run --config scripts/rstest/rstest.config.ts src/lib/test-each.test.ts $(git diff --name-only origin/main -- '*.test.ts')
 ```
 
 Consumer-declaration: none -- no exported name, signature or config outside the rule's own line changed; `project-vocabulary.ts` regroups its exports by destructuring, and every name and value stays.
