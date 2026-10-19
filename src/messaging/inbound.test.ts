@@ -60,6 +60,15 @@ function harness() {
   return { path, lines: () => readLedgerLines(path), raw: () => readFileSync(path, "utf8"), handle: (/** @type {unknown} */ u: unknown) => inbound.handle(u), restart() { inbound = createInbound({ ledger: ledger(), chairman: CHAIRMAN }); } };
 }
 
+/** The five cases of the done-when, each the clean update with one thing changed. */
+const FIVE = /** @type {[string, unknown, string][]} */ ([
+  ["another user id", update(10, { from: { id: STRANGER_ID }, chat: { id: STRANGER_ID, type: "private" } }), DROP_REASON.wrongUser],
+  ["the right user in a group", update(11, { chat: { id: GROUP_ID, type: "group" } }), DROP_REASON.notPrivateChat],
+  ["an edited message", { update_id: 12, edited_message: message({ text: "edited" }) }, DROP_REASON.edited],
+  ["a forward", update(13, { forward_origin: { type: "user", date: 1 } }), DROP_REASON.forwarded],
+  ["a channel post", { update_id: 14, channel_post: message({ from: undefined, chat: { id: CHANNEL_ID, type: "channel" } }) }, DROP_REASON.channelPost],
+]);
+
 describe("identity (done-when 1)", () => {
   test("the chairman's private message IS accepted, forwarded and recorded: the positive control for every drop below", () => {
     const result = acceptUpdate(update(1), { chairman: CHAIRMAN });
@@ -102,15 +111,6 @@ describe("identity (done-when 1)", () => {
     assert.equal(acceptUpdate(press(50), { chairman: CHAIRMAN }).ok, true, "control: the clean press is accepted");
   });
 
-  /** The five cases of the done-when, each the clean update with one thing changed. */
-  const FIVE = /** @type {[string, unknown, string][]} */ ([
-    ["another user id", update(10, { from: { id: STRANGER_ID }, chat: { id: STRANGER_ID, type: "private" } }), DROP_REASON.wrongUser],
-    ["the right user in a group", update(11, { chat: { id: GROUP_ID, type: "group" } }), DROP_REASON.notPrivateChat],
-    ["an edited message", { update_id: 12, edited_message: message({ text: "edited" }) }, DROP_REASON.edited],
-    ["a forward", update(13, { forward_origin: { type: "user", date: 1 } }), DROP_REASON.forwarded],
-    ["a channel post", { update_id: 14, channel_post: message({ from: undefined, chat: { id: CHANNEL_ID, type: "channel" } }) }, DROP_REASON.channelPost],
-  ]);
-
   test("the five cases each DROP, and each with a reason of its own", () => {
     const reasons = new Set();
     for (const [name, input, expected] of FIVE) {
@@ -121,7 +121,9 @@ describe("identity (done-when 1)", () => {
     }
     assert.equal(reasons.size, FIVE.length, "five distinct reasons");
   });
+});
 
+describe("identity (done-when 1)", () => {
   // A channel post is not here: through `handle` it is a chat notice, recorded and acted on never (the describe below, #4743), and `acceptUpdate`
   // above still refuses it as a message with its own reason.
   const DROPPED_THROUGH_HANDLE = FIVE.filter(([, , reason]) => reason !== DROP_REASON.channelPost);
@@ -181,32 +183,32 @@ describe("identity (done-when 1)", () => {
   });
 });
 
+// The wire name is spelled out, so a rename of the line's `direction` is a change to this test and not a silent one.
+const CHAT_SEEN = "chat-seen";
+const ANNOUNCEMENTS = "a11ign announcements";
+const OTHER_CHANNEL_ID = -1009999;
+const BOT = { id: 77, is_bot: true };
+
+/** @param {number} id @param {Record<string, any>} [more] the bot made an administrator of the chairman's channel, by the chairman */
+function addedToChannel(id: number, more: Record<string, any> = {}) {
+  return {
+    update_id: id,
+    my_chat_member: {
+      chat: { id: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS }, from: { id: CHAIRMAN.userId, is_bot: false }, date: 1,
+      old_chat_member: { status: "left", user: BOT }, new_chat_member: { status: "administrator", user: BOT }, ...more,
+    },
+  };
+}
+
+/** @param {number} id @param {Record<string, any>} [more] a post in that channel: no `from`, which is how Telegram sends one */
+function channelPost(id: number, more: Record<string, any> = {}) {
+  return { update_id: id, channel_post: { message_id: 3, chat: { id: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS }, date: 1, text: "done", ...more } };
+}
+
+/** @param {ReturnType<typeof harness>} run @returns {Record<string, any>[]} */
+const inboundLines = (run: ReturnType<typeof harness>): Record<string, any>[] => run.lines().filter((line) => line.direction === "in");
+
 describe("a chat notice is recorded once and never acted on (a11ign/a11ign#4743)", () => {
-  // The wire name is spelled out, so a rename of the line's `direction` is a change to this test and not a silent one.
-  const CHAT_SEEN = "chat-seen";
-  const ANNOUNCEMENTS = "a11ign announcements";
-  const OTHER_CHANNEL_ID = -1009999;
-  const BOT = { id: 77, is_bot: true };
-
-  /** @param {number} id @param {Record<string, any>} [more] the bot made an administrator of the chairman's channel, by the chairman */
-  function addedToChannel(id: number, more: Record<string, any> = {}) {
-    return {
-      update_id: id,
-      my_chat_member: {
-        chat: { id: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS }, from: { id: CHAIRMAN.userId, is_bot: false }, date: 1,
-        old_chat_member: { status: "left", user: BOT }, new_chat_member: { status: "administrator", user: BOT }, ...more,
-      },
-    };
-  }
-
-  /** @param {number} id @param {Record<string, any>} [more] a post in that channel: no `from`, which is how Telegram sends one */
-  function channelPost(id: number, more: Record<string, any> = {}) {
-    return { update_id: id, channel_post: { message_id: 3, chat: { id: CHANNEL_ID, type: "channel", title: ANNOUNCEMENTS }, date: 1, text: "done", ...more } };
-  }
-
-  /** @param {ReturnType<typeof harness>} run @returns {Record<string, any>[]} */
-  const inboundLines = (run: ReturnType<typeof harness>): Record<string, any>[] => run.lines().filter((line) => line.direction === "in");
-
   test("a my_chat_member for a channel writes one chat-seen line, and no inbound message", () => {
     const run = harness();
     const handled = run.handle(addedToChannel(100));
@@ -262,6 +264,9 @@ describe("a chat notice is recorded once and never acted on (a11ign/a11ign#4743)
     assert.equal("reason" in handled, false);
   });
 
+});
+
+describe("a chat notice is recorded once and never acted on (a11ign/a11ign#4743)", () => {
   test("what is not a chat the bot was put in is dropped with the reason it always had, and writes no chat-seen line", () => {
     const left = addedToChannel(150, { new_chat_member: { status: "left", user: BOT } });
     const kicked = addedToChannel(151, { new_chat_member: { status: "kicked", user: BOT } });
@@ -359,6 +364,9 @@ describe("secrets and refusals (done-whens 2 and 3), through `handle`", () => {
     assert.equal(line.sha256, null, "no hash of a secret: a bare password would be a dictionary away");
   });
 
+});
+
+describe("secrets and refusals (done-whens 2 and 3), through `handle`", () => {
   test("#3442: the real miss and a withheld token are deleted, replied to by reason alone, and leave a line with no hash and no word of the value", () => {
     const FAKE = "zq-fake-value-0";
     const MIXED = "Aq9Zx7Lm2Kp4Vb8Nc3Jd5Hs6";
@@ -460,11 +468,12 @@ describe("a replayed update id is acted on once (done-when 4)", () => {
   });
 });
 
-describe("no other module can produce the branded value (done-when 5)", () => {
-  const here = new URL(".", import.meta.url);
-  const modules = readdirSync(here).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"));
-  const accepted = /** @type {any} */ (harness().handle(update(130))).accepted;
+// The scan's population and the value it checks for, shared by both halves of the done-when 5 describe below.
+const here = new URL(".", import.meta.url);
+const modules = readdirSync(here).filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"));
+const accepted = /** @type {any} */ (harness().handle(update(130))).accepted;
 
+describe("no other module can produce the branded value (done-when 5)", () => {
   test("the population is real: this scan sees inbound.ts and the other modules", () => {
     assert.ok(modules.includes("inbound.ts"));
     assert.ok(modules.length >= 6, `only ${modules.length} modules found`);
@@ -491,6 +500,9 @@ describe("no other module can produce the branded value (done-when 5)", () => {
     assert.deepEqual(Object.keys(native).sort(), ["BUTTON_ACTIONS", "DROP_REASON", "acceptUpdate", "actionData", "chatsSeen", "createInbound", "isAccepted", "optionData", "parseButtonData"], "a new export of inbound.ts is a decision, and this list is where it is made");
   });
 
+});
+
+describe("no other module can produce the branded value (done-when 5)", () => {
   test("only inbound.ts names the brand: no other source can mint, or even spell, it", () => {
     const naming = modules.filter((name) => /chairman-accepted-update|\bMINTED\b/.test(readFileSync(new URL(name, here), "utf8")));
     assert.deepEqual(naming, ["inbound.ts"]);

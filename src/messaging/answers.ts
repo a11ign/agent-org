@@ -193,170 +193,179 @@ function progressOn(lines: Record<string, any>[], request: string, ref: string):
   return { done: new Set(mine.map((line) => line.step)), option: mine.find((line) => line.step === STEPS[0])?.option ?? null };
 }
 
+/** The ledger the presses read and write, as `createAnswers` is handed it. */
+type AnswerLedger = { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[]; };
+/** What the presses share with `createAnswers`: the ledger, GitHub, the clock, the liaison's port, and the walk reader when there is one. */
+type PressDeps = {
+  ledger: AnswerLedger; github: GithubWriter; answerLabel: string; now: () => number; orders: Orders | undefined;
+  walks: ReturnType<typeof createWalk> | undefined;
+};
+type Press = { accepted: Readonly<Record<string, any>>; request: string; ref: string; name: string; lines: Record<string, any>[]; sent: Record<string, any> };
+
+// `clearKeyboard` is the message to take the keyboard off.
+function reply(accepted: Readonly<Record<string, any>>, reason: string, request: string | null, text: string, clearKeyboard: string | null = null): Answered {
+  return { action: "reply", reason, request, text, chatId: accepted.chatId, callbackQueryId: accepted.kind === "button" ? accepted.callbackQueryId : null, clearKeyboard };
+}
+
+function stepLine(ledger: AnswerLedger, { request, ref, step, via, option }: { request: string; ref: string; step: string; via: string; option: string | null; }) {
+  ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step, via, option });
+}
+
+/** The row as it is NOW: the answer to "what is asking" is read, never remembered. */
+function stateText(name: string, read: { state: string; labels: string[]; }) {
+  const labels = read.labels.length === 0 ? "no labels" : read.labels.join(", ");
+  return `${name} is not asking you anything now (${read.state.toLowerCase()}; ${labels}). Nothing was written.`;
+}
+
+/**
+ * Does the steps `done` lacks, each recorded the moment it succeeds. A GitHub failure is recorded and returned, never thrown: the update
+ * is already in the ledger (at-most-once), so the chairman is told and the next press resumes from the last recorded step.
+ * Resolves to the step that failed, or null.
+ */
+async function carryOut({ ledger, github, answerLabel, now }: PressDeps, { row, request, ref, done, option, text }: { row: RowRef; request: string; ref: string; done: Set<string>; option: { id: string; label: string; } | null; text: string | null; }): Promise<string | null> {
+  const via = option ? "button" : "reply";
+  const writes = {
+    comment: () => github.comment(row, answerComment({ ref, at: new Date(now()).toISOString(), option, text })),
+    "remove-label": () => github.removeLabel(row, NEEDS_CHAIRMAN),
+    "set-answer": () => github.addLabel(row, answerLabel),
+  };
+  for (const step of STEPS.filter((candidate) => !done.has(candidate))) {
+    try {
+      await writes[step as keyof typeof writes]();
+    } catch (error) {
+      ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "failed", failedStep: step, via, error: describeError(error) });
+      return step;
+    }
+    stepLine(ledger, { request, ref, step, via, option: option?.id ?? null });
+  }
+  return null;
+}
+
+const refOf = (id: number | null): string | null => (Number.isSafeInteger(id) ? String(id) : null);
+
+/** `later`: one ledger line, and the row is untouched. */
+function snooze({ now, ledger }: PressDeps, { accepted, request, ref, name, lines }: Press): Answered {
+  const held = snoozedUntil(lines, request, now());
+  if (held !== null) return reply(accepted, "already-snoozed", request, `Already snoozed until ${new Date(held).toISOString()}. ${name} still needs you.`);
+  const until = new Date(now() + SNOOZE_MS).toISOString();
+  ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "snooze", via: "button", until });
+  return reply(accepted, "snoozed", request, `Snoozed: no reminders about ${name} until ${until}. It still needs you.`);
+}
+
+/**
+ * The order to the liaison, recorded when it is queued and a failure recorded as one: a press that failed is retried by the next, and one that
+ * succeeded is not repeated. A walk's step is `walkStep`: it is asked ONCE PER STEP, because a step that was not seen is sent again under a message of its own, and its order names the step.
+ */
+async function orderLiaison({ orders, ledger }: PressDeps, { accepted, request, ref, name, lines, sent, step, walkStep, stepCount }: Press & { step: "explain" | "stuck"; walkStep?: number; stepCount?: number; }): Promise<Answered> {
+  const again = lines.some((line) => line.direction === ANSWER_DIRECTION && line.request === request && line.step === step
+    && (walkStep === undefined ? line.messageRef === ref : line.walkStep === walkStep));
+  if (again) return reply(accepted, "already-asked", request, `The liaison already has that for ${name}. Nothing was sent again.`);
+  if (orders === undefined) return reply(accepted, "no-liaison", request, "I cannot reach the liaison from here. Nothing was sent.");
+  const where = walkStep === undefined ? name : `step ${walkStep} of ${stepCount} of ${name}`;
+  const lead = step === "explain" ? `the chairman asked for more on ${where}` : `the chairman is stuck at ${where}`;
+  let result: { queued: boolean; say: string; handoff: string | null; taker?: string | null; told?: string | null; };
+  try {
+    result = await orders.liaison({ text: `${lead}:\n\n${quoted(askOf(sent))}`, messageRef: ref });
+  } catch (error) {
+    result = { queued: false, say: describeError(error), handoff: null };
+  }
+  if (!result.queued) {
+    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "failed", failedStep: step, via: "button", error: result.say });
+    return reply(accepted, "order-refused", request, ORDER_LOST);
+  }
+  ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step, via: "button", handoff: result.handoff, taker: result.taker ?? RECIPIENT, ...(walkStep === undefined ? {} : { walkStep }) });
+  if (result.told) return reply(accepted, "asked-fallback", request, result.told);
+  return reply(accepted, "asked", request, step === "explain" ? `Asked the liaison for more on ${name}.` : `Told the liaison you are stuck at ${name}.`);
+}
+
+/**
+ * `forme`: one ledger line that `chairman:queue add` accepts as his OK for the message the press sat under; the row is untouched, because a press is a request and not an answer.
+ */
+function doItForMe({ ledger }: PressDeps, { accepted, request, ref, lines }: Press): Answered {
+  const again = lines.some((line) => line.direction === ANSWER_DIRECTION && line.step === FORME_STEP && line.messageRef === ref);
+  if (again) return reply(accepted, "already-queued", request, FORME_ALREADY);
+  ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: FORME_STEP, via: "button" });
+  return reply(accepted, "queued-for-session", request, FORME_QUEUED);
+}
+
+/** A press that leaves the request asking. `action` is one of SIDE_ACTIONS. */
+async function sideAction(deps: PressDeps, press: Press, action: string): Promise<Answered> {
+  if (action === "later") return snooze(deps, press);
+  if (action === "forme") return doItForMe(deps, press);
+  return orderLiaison(deps, { ...press, step: action as "explain" | "stuck" });
+}
+
+/** What the walk said, with the keyboard it asks for and the hook that records its message. */
+function walkReply(accepted: Readonly<Record<string, any>>, request: string, { reason, text, buttons, recordSent, clearKeyboard = null }: WalkReply): Answered {
+  return { ...reply(accepted, reason, request, text, clearKeyboard), ...(buttons === undefined ? {} : { actions: buttonsOf(buttons) }), ...(recordSent === undefined ? {} : { recordSent }) };
+}
+
+/**
+ * A press on a request whose brief is a procedure. Done is the walk's; Stuck is the liaison's, once per step; Later and Explain more are as they are everywhere; anything else is not a button of a walk.
+ */
+async function walkPress(deps: PressDeps, { accepted, request, ref, name, lines, sent, walk, row, done }: Press & { walk: Walk; row: RowRef; done: Set<string>; }): Promise<Answered> {
+  if (accepted.kind !== "button") return { action: "not-an-answer" };
+  const press = parseButtonData(accepted.data);
+  const { walks } = deps;
+  if (walks === undefined) return reply(accepted, "no-walk", request, "I cannot read a step back from here, so I cannot walk you through this. Nothing was written.");
+  const progress = walkProgress(lines, request);
+  const step = stepOf(lines, request, ref) ?? progress.position;
+  if (press?.kind === "action" && press.name === "done") {
+    const finish = () => carryOut(deps, { row, request, ref, done, option: { id: "done", label: ACTION_LABELS.done }, text: null });
+    return walkReply(accepted, request, await walks.done({ request, ref, walk, finish }));
+  }
+  if (press?.kind === "action" && press.name === "stuck") return orderLiaison(deps, { accepted, request, ref, name, lines, sent, step: "stuck", walkStep: step, stepCount: walk.steps.length });
+  if (press?.kind === "action" && SIDE_ACTIONS.has(press.name)) return sideAction(deps, { accepted, request, ref, name, lines, sent }, press.name);
+  return reply(accepted, "not-a-step-button", request, `That is not one of the buttons of this walk-through. Nothing was written.`);
+}
+
+async function resolve(deps: PressDeps, accepted: Readonly<Record<string, any>>): Promise<Answered> {
+  const { ledger, github } = deps;
+  const isButton = accepted.kind === "button";
+  const ref = refOf(isButton ? accepted.messageId : accepted.replyToMessageId);
+  const lines = ledger.read();
+  const sent = ref === null ? null : sentRequest(lines, ref) ?? stepMessageOf(lines, ref);
+  // A reply to something that is not a request is conversation (row 10); a button under something that is not one is the chairman's to be told.
+  if (sent === null || ref === null) {
+    return isButton ? reply(accepted, "unknown-message", null, "That message is not a request I can resolve. Nothing was written.") : { action: "not-an-answer" };
+  }
+  const request = sent.key;
+  const progress = progressOn(lines, request, ref);
+  const parsed = parseRequestKey(request) as RowRef;
+  const name = `${parsed.repo}#${parsed.number}`;
+  if (progress.done.size === STEPS.length) {
+    return reply(accepted, "already-answered", request, `${name} was already answered${progress.option ? ` (${progress.option})` : ""}. Nothing was written.`, ref);
+  }
+  const current = await github.readRow(parsed);
+  // A started answer is finished whether or not the label is still there: the label is what its second step removed.
+  const started = progress.done.size > 0;
+  if (!started && !current.labels.includes(NEEDS_CHAIRMAN)) return reply(accepted, "no-longer-asking", request, stateText(name, current), ref);
+  const { walk } = readWalk(latestBrief(current.comments)?.body ?? "");
+  if (walk !== null) return walkPress(deps, { accepted, request, ref, name, lines, sent, walk, row: parsed, done: progress.done });
+  const press = isButton ? parseButtonData(accepted.data) : null;
+  if (!started && press?.kind === "action" && SIDE_ACTIONS.has(press.name)) return sideAction(deps, { accepted, request, ref, name, lines, sent }, press.name);
+  const option = started ? recordedOption(progress) : isButton ? optionFor(press, current.comments) : null;
+  if (!started && isButton && option === null) return reply(accepted, "option-not-offered", request, `${name} does not offer that option any more. Nothing was written.`);
+  const failed = await carryOut(deps, { row: parsed, request, ref, done: progress.done, option, text: isButton ? null : accepted.text });
+  return failed === null
+    ? reply(accepted, "answered", request, `Recorded on ${name}: ceo has it.`, ref)
+    : reply(accepted, "write-failed", request, `Could not finish writing to ${name} (at ${failed}). Do it again to retry; nothing is written twice.`);
+}
+
 /**
  * `readers` are the checked-facts reads a walk's `Verify:` runs through; without them a procedure request is refused. `orders` is what `explain` and `stuck` ask the liaison through; without it those presses are told there is nobody to ask, and nothing is queued.
  *   `answerLabel` is the label that wakes `ceo` with the answer (the vocabulary's answer prefix + `ceo`). It is an INPUT, not a literal here,
  *   because the messaging modules are leaves that do not read the tool's vocabulary and `project-vocabulary.test.ts` refuses a copy in code.
  */
 export function createAnswers({ ledger, github, chairman, answerLabel, now, orders, readers }: {
-        ledger: { append: (entry: Record<string, unknown>) => Record<string, any>; read: () => Record<string, any>[]; };
-        github: GithubWriter; chairman: { userId: number; chatId: number; }; answerLabel: string; now: () => number; orders?: Orders;
+        ledger: AnswerLedger; github: GithubWriter; chairman: { userId: number; chatId: number; }; answerLabel: string; now: () => number; orders?: Orders;
         readers?: Readers;
     }) {
   // Refuses ids that are not integers now, rather than at the first answer: `isAccepted` throws for them.
   isAccepted(null, chairman);
   if (typeof answerLabel !== "string" || answerLabel === "") throw new TypeError("createAnswers needs the answerLabel to set (a non-empty string)");
   const walks = readers === undefined ? undefined : createWalk({ ledger, readers, now });
-
-  // `clearKeyboard` is the message to take the keyboard off.
-  function reply(accepted: Readonly<Record<string, any>>, reason: string, request: string | null, text: string, clearKeyboard: string | null = null): Answered {
-    return { action: "reply", reason, request, text, chatId: accepted.chatId, callbackQueryId: accepted.kind === "button" ? accepted.callbackQueryId : null, clearKeyboard };
-  }
-
-  function stepLine({ request, ref, step, via, option }: { request: string; ref: string; step: string; via: string; option: string | null; }) {
-    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step, via, option });
-  }
-
-  /** The row as it is NOW: the answer to "what is asking" is read, never remembered. */
-  function stateText(name: string, read: { state: string; labels: string[]; }) {
-    const labels = read.labels.length === 0 ? "no labels" : read.labels.join(", ");
-    return `${name} is not asking you anything now (${read.state.toLowerCase()}; ${labels}). Nothing was written.`;
-  }
-
-  /**
-   * Does the steps `done` lacks, each recorded the moment it succeeds. A GitHub failure is recorded and returned, never thrown: the update
-   * is already in the ledger (at-most-once), so the chairman is told and the next press resumes from the last recorded step.
-   * Resolves to the step that failed, or null.
-   */
-  async function carryOut({ row, request, ref, done, option, text }: { row: RowRef; request: string; ref: string; done: Set<string>; option: { id: string; label: string; } | null; text: string | null; }): Promise<string | null> {
-    const via = option ? "button" : "reply";
-    const writes = {
-      comment: () => github.comment(row, answerComment({ ref, at: new Date(now()).toISOString(), option, text })),
-      "remove-label": () => github.removeLabel(row, NEEDS_CHAIRMAN),
-      "set-answer": () => github.addLabel(row, answerLabel),
-    };
-    for (const step of STEPS.filter((candidate) => !done.has(candidate))) {
-      try {
-        await writes[step as keyof typeof writes]();
-      } catch (error) {
-        ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "failed", failedStep: step, via, error: describeError(error) });
-        return step;
-      }
-      stepLine({ request, ref, step, via, option: option?.id ?? null });
-    }
-    return null;
-  }
-
-  const refOf = (id: number | null): string | null => (Number.isSafeInteger(id) ? String(id) : null);
-
-  type Press = { accepted: Readonly<Record<string, any>>; request: string; ref: string; name: string; lines: Record<string, any>[]; sent: Record<string, any> };
-
-  /** `later`: one ledger line, and the row is untouched. */
-  function snooze({ accepted, request, ref, name, lines }: Press): Answered {
-    const held = snoozedUntil(lines, request, now());
-    if (held !== null) return reply(accepted, "already-snoozed", request, `Already snoozed until ${new Date(held).toISOString()}. ${name} still needs you.`);
-    const until = new Date(now() + SNOOZE_MS).toISOString();
-    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "snooze", via: "button", until });
-    return reply(accepted, "snoozed", request, `Snoozed: no reminders about ${name} until ${until}. It still needs you.`);
-  }
-
-  /**
-   * The order to the liaison, recorded when it is queued and a failure recorded as one: a press that failed is retried by the next, and one that
-   * succeeded is not repeated. A walk's step is `walkStep`: it is asked ONCE PER STEP, because a step that was not seen is sent again under a message of its own, and its order names the step.
-   */
-  async function orderLiaison({ accepted, request, ref, name, lines, sent, step, walkStep, stepCount }: Press & { step: "explain" | "stuck"; walkStep?: number; stepCount?: number; }): Promise<Answered> {
-    const again = lines.some((line) => line.direction === ANSWER_DIRECTION && line.request === request && line.step === step
-      && (walkStep === undefined ? line.messageRef === ref : line.walkStep === walkStep));
-    if (again) return reply(accepted, "already-asked", request, `The liaison already has that for ${name}. Nothing was sent again.`);
-    if (orders === undefined) return reply(accepted, "no-liaison", request, "I cannot reach the liaison from here. Nothing was sent.");
-    const where = walkStep === undefined ? name : `step ${walkStep} of ${stepCount} of ${name}`;
-    const lead = step === "explain" ? `the chairman asked for more on ${where}` : `the chairman is stuck at ${where}`;
-    let result: { queued: boolean; say: string; handoff: string | null; taker?: string | null; told?: string | null; };
-    try {
-      result = await orders.liaison({ text: `${lead}:\n\n${quoted(askOf(sent))}`, messageRef: ref });
-    } catch (error) {
-      result = { queued: false, say: describeError(error), handoff: null };
-    }
-    if (!result.queued) {
-      ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: "failed", failedStep: step, via: "button", error: result.say });
-      return reply(accepted, "order-refused", request, ORDER_LOST);
-    }
-    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step, via: "button", handoff: result.handoff, taker: result.taker ?? RECIPIENT, ...(walkStep === undefined ? {} : { walkStep }) });
-    if (result.told) return reply(accepted, "asked-fallback", request, result.told);
-    return reply(accepted, "asked", request, step === "explain" ? `Asked the liaison for more on ${name}.` : `Told the liaison you are stuck at ${name}.`);
-  }
-
-  /**
-   * `forme`: one ledger line that `chairman:queue add` accepts as his OK for the message the press sat under; the row is untouched, because a press is a request and not an answer.
-   */
-  function doItForMe({ accepted, request, ref, lines }: Press): Answered {
-    const again = lines.some((line) => line.direction === ANSWER_DIRECTION && line.step === FORME_STEP && line.messageRef === ref);
-    if (again) return reply(accepted, "already-queued", request, FORME_ALREADY);
-    ledger.append({ direction: ANSWER_DIRECTION, request, messageRef: ref, step: FORME_STEP, via: "button" });
-    return reply(accepted, "queued-for-session", request, FORME_QUEUED);
-  }
-
-  /** A press that leaves the request asking. `action` is one of SIDE_ACTIONS. */
-  async function sideAction(press: Press, action: string): Promise<Answered> {
-    if (action === "later") return snooze(press);
-    if (action === "forme") return doItForMe(press);
-    return orderLiaison({ ...press, step: action as "explain" | "stuck" });
-  }
-
-  /** What the walk said, with the keyboard it asks for and the hook that records its message. */
-  function walkReply(accepted: Readonly<Record<string, any>>, request: string, { reason, text, buttons, recordSent, clearKeyboard = null }: WalkReply): Answered {
-    return { ...reply(accepted, reason, request, text, clearKeyboard), ...(buttons === undefined ? {} : { actions: buttonsOf(buttons) }), ...(recordSent === undefined ? {} : { recordSent }) };
-  }
-
-  /**
-   * A press on a request whose brief is a procedure. Done is the walk's; Stuck is the liaison's, once per step; Later and Explain more are as they are everywhere; anything else is not a button of a walk.
-   */
-  async function walkPress({ accepted, request, ref, name, lines, sent, walk, row, done }: Press & { walk: Walk; row: RowRef; done: Set<string>; }): Promise<Answered> {
-    if (accepted.kind !== "button") return { action: "not-an-answer" };
-    const press = parseButtonData(accepted.data);
-    if (walks === undefined) return reply(accepted, "no-walk", request, "I cannot read a step back from here, so I cannot walk you through this. Nothing was written.");
-    const progress = walkProgress(lines, request);
-    const step = stepOf(lines, request, ref) ?? progress.position;
-    if (press?.kind === "action" && press.name === "done") {
-      const finish = () => carryOut({ row, request, ref, done, option: { id: "done", label: ACTION_LABELS.done }, text: null });
-      return walkReply(accepted, request, await walks.done({ request, ref, walk, finish }));
-    }
-    if (press?.kind === "action" && press.name === "stuck") return orderLiaison({ accepted, request, ref, name, lines, sent, step: "stuck", walkStep: step, stepCount: walk.steps.length });
-    if (press?.kind === "action" && SIDE_ACTIONS.has(press.name)) return sideAction({ accepted, request, ref, name, lines, sent }, press.name);
-    return reply(accepted, "not-a-step-button", request, `That is not one of the buttons of this walk-through. Nothing was written.`);
-  }
-
-  async function resolve(accepted: Readonly<Record<string, any>>): Promise<Answered> {
-    const isButton = accepted.kind === "button";
-    const ref = refOf(isButton ? accepted.messageId : accepted.replyToMessageId);
-    const lines = ledger.read();
-    const sent = ref === null ? null : sentRequest(lines, ref) ?? stepMessageOf(lines, ref);
-    // A reply to something that is not a request is conversation (row 10); a button under something that is not one is the chairman's to be told.
-    if (sent === null || ref === null) {
-      return isButton ? reply(accepted, "unknown-message", null, "That message is not a request I can resolve. Nothing was written.") : { action: "not-an-answer" };
-    }
-    const request = sent.key;
-    const progress = progressOn(lines, request, ref);
-    const parsed = parseRequestKey(request) as RowRef;
-    const name = `${parsed.repo}#${parsed.number}`;
-    if (progress.done.size === STEPS.length) {
-      return reply(accepted, "already-answered", request, `${name} was already answered${progress.option ? ` (${progress.option})` : ""}. Nothing was written.`, ref);
-    }
-    const current = await github.readRow(parsed);
-    // A started answer is finished whether or not the label is still there: the label is what its second step removed.
-    const started = progress.done.size > 0;
-    if (!started && !current.labels.includes(NEEDS_CHAIRMAN)) return reply(accepted, "no-longer-asking", request, stateText(name, current), ref);
-    const { walk } = readWalk(latestBrief(current.comments)?.body ?? "");
-    if (walk !== null) return walkPress({ accepted, request, ref, name, lines, sent, walk, row: parsed, done: progress.done });
-    const press = isButton ? parseButtonData(accepted.data) : null;
-    if (!started && press?.kind === "action" && SIDE_ACTIONS.has(press.name)) return sideAction({ accepted, request, ref, name, lines, sent }, press.name);
-    const option = started ? recordedOption(progress) : isButton ? optionFor(press, current.comments) : null;
-    if (!started && isButton && option === null) return reply(accepted, "option-not-offered", request, `${name} does not offer that option any more. Nothing was written.`);
-    const failed = await carryOut({ row: parsed, request, ref, done: progress.done, option, text: isButton ? null : accepted.text });
-    return failed === null
-      ? reply(accepted, "answered", request, `Recorded on ${name}: ceo has it.`, ref)
-      : reply(accepted, "write-failed", request, `Could not finish writing to ${name} (at ${failed}). Do it again to retry; nothing is written twice.`);
-  }
+  const deps: PressDeps = { ledger, github, answerLabel, now, orders, walks };
 
   let queue = Promise.resolve();
   return {
@@ -368,7 +377,7 @@ export function createAnswers({ ledger, github, chairman, answerLabel, now, orde
       if (!isAccepted(accepted, chairman)) throw new TypeError("only a value minted by createInbound for this chairman may write to a row");
       const value = accepted as Readonly<Record<string, any>>;
       // One at a time: two presses of one button must not both read "nothing done yet".
-      const run = queue.then(() => resolve(value));
+      const run = queue.then(() => resolve(deps, value));
       queue = run.then(() => undefined, () => undefined);
       return run;
     },

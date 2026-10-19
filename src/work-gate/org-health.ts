@@ -492,6 +492,34 @@ export function reviewGatedFacts(prs: any[], decided: { cause: string; subject: 
   });
 }
 
+/** `orgHealthNow`'s seams for a test or the gate: each read or write this tick makes, which a caller that does not ask leaves OMITTED or `undefined`. */
+type OrgHealthIo = {
+  now?: number; lastMergedAt?: () => number | { at: number; repo: string; } | null; readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>;
+  log?: (line: string) => void; readCopies?: () => null; readRefusals?: () => import("../org-health/claim-refusal.ts").ClaimRefusal[] | null; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
+  release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health/board-truth-readings.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
+  readMilestoneMoves?: typeof readMilestoneMoves;
+  /** a11ign#5681: the board offers this tick made, handed to the canary (`orgHealthTick`); OMITTED is "does not ask" */
+  onBoardTruthOffers?: (count: number | null) => void;
+  readReleaseRuns?: () => import("../org-health/sweep-readings.ts").ReleaseRuns | null | undefined;
+  readReleaseFailures?: () => import("../org-health/sweep-readings.ts").ReleaseFailureRead[] | null | undefined;
+  raiseReleaseIncidents?: (reads: import("../org-health/sweep-readings.ts").ReleaseFailureRead[]) => void;
+  readFleetBuildIncident?: () => import("../org-health/fleet-build-readings.ts").FleetBuildIncident[] | null | undefined;
+  readReleaseBehind?: () => import("../release-behind-main.ts").RepoFact[] | null | undefined;
+  readClassRepeat?: () => import("../class-repeat.ts").ClassRepeatFact | null | undefined;
+  teamAccess?: () => import("../org-health/board-truth-readings.ts").TeamAccessFact | undefined;
+  readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined;
+  /** agent-org#1135: the flags the code ships against the declarations; OMITTED is "does not ask", so only the live gate (`work-gate.ts`) reads the project's files */
+  readFlagSwitches?: () => import("../flag-switch-ledger.ts").FlagLedger | null | undefined;
+  /** agent-org#1208: the tick's own record state; OMITTED is "does not ask", so only the live gate (`work-gate.ts`) reads it */
+  readTickRecord?: () => import("../work-tick-health.ts").TickRecordState | undefined;
+  /** agent-org#1208: the tick wall p50/p95 and the `tick-overran` wakes per day; `null` is a refused read, OMITTED is "does not ask" */
+  readTickHealth?: () => import("../work-tick-health.ts").TickHealth | null | undefined;
+  /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) asks, on a webhook host */
+  readSweeps?: () => SweepFact | undefined;
+  /** agent-org#1667: the named classed-OUTSIDE pull requests for the `session-pr-classed-outside` reading; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) hands it over */
+  readSessionPrOutside?: () => import("../org-health/hold-count.ts").SessionPrOutsideFact | undefined;
+};
+
 /**
  * #2936: THE ORG-HEALTH TICK over what `main` already holds. Reads ONE new thing, the last merge (`GH_READS`); every other fact is a
  * value the tick computed for `decide`: the PRs with their owners, `required`, the offered rows, the #2845 streaks and the primary's
@@ -516,32 +544,7 @@ export function reviewGatedFacts(prs: any[], decided: { cause: string; subject: 
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.ts`
  */
 export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools }: { prsRead: any[] | null; keyedPrsRead?: any[]; readyRead: any[] | null; openRowsRead: any[] | null; claimedComments?: any[] | null; decideArgs: any; decided: any[]; held?: { subject: string; }[]; pools?: import("../org-health/claim-refusal.ts").PoolReading[]; },
-  io: {
-      now?: number; lastMergedAt?: () => number | { at: number; repo: string; } | null; readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>;
-      log?: (line: string) => void; readCopies?: () => null; readRefusals?: () => import("../org-health/claim-refusal.ts").ClaimRefusal[] | null; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
-      release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health/board-truth-readings.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
-      readMilestoneMoves?: typeof readMilestoneMoves;
-      /** a11ign#5681: the board offers this tick made, handed to the canary (`orgHealthTick`); OMITTED is "does not ask" */
-      onBoardTruthOffers?: (count: number | null) => void;
-      readReleaseRuns?: () => import("../org-health/sweep-readings.ts").ReleaseRuns | null | undefined;
-      readReleaseFailures?: () => import("../org-health/sweep-readings.ts").ReleaseFailureRead[] | null | undefined;
-      raiseReleaseIncidents?: (reads: import("../org-health/sweep-readings.ts").ReleaseFailureRead[]) => void;
-      readFleetBuildIncident?: () => import("../org-health/fleet-build-readings.ts").FleetBuildIncident[] | null | undefined;
-      readReleaseBehind?: () => import("../release-behind-main.ts").RepoFact[] | null | undefined;
-      readClassRepeat?: () => import("../class-repeat.ts").ClassRepeatFact | null | undefined;
-      teamAccess?: () => import("../org-health/board-truth-readings.ts").TeamAccessFact | undefined;
-      readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined;
-      /** agent-org#1135: the flags the code ships against the declarations; OMITTED is "does not ask", so only the live gate (`work-gate.ts`) reads the project's files */
-      readFlagSwitches?: () => import("../flag-switch-ledger.ts").FlagLedger | null | undefined;
-      /** agent-org#1208: the tick's own record state; OMITTED is "does not ask", so only the live gate (`work-gate.ts`) reads it */
-      readTickRecord?: () => import("../work-tick-health.ts").TickRecordState | undefined;
-      /** agent-org#1208: the tick wall p50/p95 and the `tick-overran` wakes per day; `null` is a refused read, OMITTED is "does not ask" */
-      readTickHealth?: () => import("../work-tick-health.ts").TickHealth | null | undefined;
-      /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) asks, on a webhook host */
-      readSweeps?: () => SweepFact | undefined;
-      /** agent-org#1667: the named classed-OUTSIDE pull requests for the `session-pr-classed-outside` reading; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) hands it over */
-      readSessionPrOutside?: () => import("../org-health/hold-count.ts").SessionPrOutsideFact | undefined;
-  } = {}) {
+  io: OrgHealthIo = {}) {
   const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies, readRefusals, onBoardTruthOffers,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readNodeStrips = () => undefined, readReleaseRuns = () => undefined, readReleaseFailures = () => undefined, raiseReleaseIncidents = () => {}, readFleetBuildIncident = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
     teamAccess = () => readTeamAccess(defaultRun), readBoardTruth = () => undefined, readFlagSwitches = () => undefined, readTickRecord = () => undefined, readTickHealth = () => undefined, readSweeps = () => undefined, readSessionPrOutside,

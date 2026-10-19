@@ -36,7 +36,11 @@ export default [
     files: ["**/*.ts"],
     languageOptions: { parser: tseslint.parser },
     plugins: { "clean-code": cleanCode },
-    rules: { ...recommended, ...adopted },
+    rules: {
+      ...recommended,
+      ...adopted,
+      "max-lines-per-function": ["error", { max: 70, skipComments: true, skipBlankLines: true }], // A11-115: a function over 70 code lines does more than one thing; comments and blank lines are not counted, because the policy is comment-dense
+    },
   },
   // A test helper's boolean is the fixture's variant, which the rule cannot tell from a mode switch, and splitting it would double each fixture.
   { files: ["**/*.test.ts"], rules: { "clean-code/no-flag-arguments": "off" } },

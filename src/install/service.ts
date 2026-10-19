@@ -133,6 +133,9 @@ type Program = Readonly<{
   everySeconds: number | null;
 }>;
 
+/** What a unit file is written from: the program, and the log file its output is appended to. */
+type UnitSource = Program & { log: string };
+
 /**
  * The host file's JSON, which names the terminal's session and port. REFUSES, naming the file, one that cannot be read or is not a JSON object:
  * a terminal started on the defaults would serve another herdr session and port than the host file means, and say nothing.
@@ -208,13 +211,19 @@ export function unitFor(name: ServiceName, deps: ServiceDeps): Unit {
   if ([...argv, ...Object.values(environment), workingDirectory, log].some((value) => /[\n\r]/.test(value))) {
     throw new ServiceRefusal("a path holds a line break, which no unit file can carry");
   }
-  if (deps.platform === "darwin") {
-    const id = `io.github.agent-org.${name}`;
-    const strings = (values: string[]) => values.map((value) => `    <string>${escapeXml(value)}</string>`).join("\n");
-    const env = Object.entries(environment).map(([key, value]) => `    <key>${key}</key>\n    <string>${escapeXml(value)}</string>`).join("\n");
-    // A daemon starts at load and again after a crash; an interval job runs every `everySeconds`, and not at load, so a login is not an update.
-    const schedule = everySeconds === null
-      ? `  <key>RunAtLoad</key>
+  const source: UnitSource = { description, argv, environment, workingDirectory, tool, everySeconds, log };
+  if (deps.platform === "darwin") return launchdUnit(name, deps, source);
+  return systemdUnit(name, deps, source);
+}
+
+/** The launchd plist for `name`. PURE over `deps`. */
+function launchdUnit(name: ServiceName, deps: ServiceDeps, { argv, environment, workingDirectory, everySeconds, log }: UnitSource): Unit {
+  const id = `io.github.agent-org.${name}`;
+  const strings = (values: string[]) => values.map((value) => `    <string>${escapeXml(value)}</string>`).join("\n");
+  const env = Object.entries(environment).map(([key, value]) => `    <key>${key}</key>\n    <string>${escapeXml(value)}</string>`).join("\n");
+  // A daemon starts at load and again after a crash; an interval job runs every `everySeconds`, and not at load, so a login is not an update.
+  const schedule = everySeconds === null
+    ? `  <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <dict>
@@ -223,11 +232,11 @@ export function unitFor(name: ServiceName, deps: ServiceDeps): Unit {
   </dict>
   <key>ThrottleInterval</key>
   <integer>10</integer>`
-      : `  <key>StartInterval</key>
+    : `  <key>StartInterval</key>
   <integer>${everySeconds}</integer>
   <key>RunAtLoad</key>
   <false/>`;
-    const text = `<?xml version="1.0" encoding="UTF-8"?>
+  const text = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -251,8 +260,11 @@ ${schedule}
 </dict>
 </plist>
 `;
-    return { manager: "launchd", id, path: join(deps.home, "Library", "LaunchAgents", `${id}.plist`), text, log, companion: null, interval: everySeconds !== null };
-  }
+  return { manager: "launchd", id, path: join(deps.home, "Library", "LaunchAgents", `${id}.plist`), text, log, companion: null, interval: everySeconds !== null };
+}
+
+/** The systemd units for `name`: a service that restarts on failure, or a oneshot service with the timer that starts it. PURE over `deps`. */
+function systemdUnit(name: ServiceName, deps: ServiceDeps, { description, argv, environment, workingDirectory, tool, everySeconds }: UnitSource): Unit {
   const dir = join(deps.home, ".config", "systemd", "user");
   const service = `agent-org-${name}.service`;
   const body = `WorkingDirectory=${systemdPath(workingDirectory)}

@@ -684,12 +684,17 @@ function readSpecScalar(rest: string): SpecValue {
   return text;
 }
 
-/** The block's value, or a thrown `SpecUnreadable`. Exported for `spec-block-refusal.test.ts`, which compares it with `yaml`'s on the forms a spec uses. */
-export function parseSpecYaml(source: string): SpecValue {
-  const lines: SpecLine[] = source.split("\n").map((raw) => {
+/** The block's lines, each with its indent, trimmed text and raw text, or a thrown `SpecUnreadable` for a tab-indented one. */
+function specLinesOf(source: string): SpecLine[] {
+  return source.split("\n").map((raw) => {
     if (/^\s*\t/.test(raw)) throw new SpecUnreadable("a line is indented with a tab, which YAML does not allow");
     return { indent: raw.length - raw.trimStart().length, text: raw.trim(), raw };
   });
+}
+
+/** The block's value, or a thrown `SpecUnreadable`. Exported for `spec-block-refusal.test.ts`, which compares it with `yaml`'s on the forms a spec uses. */
+export function parseSpecYaml(source: string): SpecValue {
+  const lines: SpecLine[] = specLinesOf(source);
   let at = 0;
   const skipBlank = (): void => { while (at < lines.length && (lines[at]!.text === "" || lines[at]!.text.startsWith("#"))) at += 1; };
   const nextDeeper = (than: number): SpecLine | null => { skipBlank(); const line = lines[at]; return line && line.indent > than ? line : null; };

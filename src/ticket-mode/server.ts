@@ -143,6 +143,206 @@ function writerForm(body: Json, settings: TicketSettings): Readonly<Record<strin
   return Object.fromEntries(Object.entries({ project: text("project"), repo, goal: text("goal"), priority, parent }).filter(([, value]) => value !== undefined));
 }
 
+/** What the routes act on: the settings and seams, the queue's store, the pool, the tickets the page last read, and the functions that make a queue change. */
+type Board = Readonly<{
+  deps: BoardDeps;
+  settings: TicketSettings;
+  source: TicketSource;
+  store: { get: () => Queue; set: (next: Queue) => void };
+  pool: NonNullable<BoardDeps["pool"]>;
+  now: () => number;
+  known: { tickets: Map<string, Ticket> };
+  plans: boolean;
+  wake: () => void;
+  savedRun: () => RunChoice;
+  queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
+  whoAmI: () => Promise<Assignee | null>;
+  terminalAddress: () => Promise<string | null>;
+}>;
+
+/** The new-ticket requests, each with its status, as the page shows them. */
+function writersViewOf(queue: Queue) {
+  return { runs: (queue.writers ?? []).map((run) => ({ ...run, status: writerStatus(run) })) };
+}
+
+/** The GET routes: the board's config, the Pick lists, the queue and the new-ticket requests. `undefined` when no route here names the request. */
+async function readRoute(board: Board, method: string, path: string): Promise<[number, unknown] | undefined> {
+  const { deps, settings, source, store, known, plans } = board;
+  if (method === "GET" && path === "/api/config") {
+    // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
+    // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
+    return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
+      publish: settings.publish !== null, pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone",
+      pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
+      writer: settings.writer !== null, writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
+  }
+  if (method === "GET" && path === "/api/pick") {
+    // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
+    // say whose key it is, or cannot be asked, leaves the text saying "you": the empty list still names its setting.
+    const user = settings.pick === "assigned" && source.viewer ? await source.viewer().catch(() => null) : null;
+    return [200, { empty: pickEmptyText(settings.pick, user) }];
+  }
+  if (method === "GET" && path === "/api/tickets") {
+    const tickets = await source.assigned();
+    known.tickets = new Map(tickets.map((ticket) => [ticket.key, ticket]));
+    return [200, tickets];
+  }
+  if (method === "GET" && path === "/api/parents") {
+    // The parents of the listed tickets that are not listed themselves, so the Pick list can nest under them whatever scope it shows. One the
+    // tracker cannot read is left out, and its children stand on their own.
+    const missing = [...new Set([...known.tickets.values()].flatMap((t) => (t.parent && !known.tickets.has(t.parent) ? [t.parent] : [])))];
+    const read = await Promise.allSettled(missing.map((key) => source.read(key)));
+    return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];
+  }
+  if (method === "GET" && path === "/api/queue") return [200, store.get()];
+  if (method === "GET" && path === "/api/writer") return [200, writersViewOf(store.get())];
+  return undefined;
+}
+
+/** The POST routes that queue tickets, save the choice and settings, change the queue's pause and cap, and mint the terminal's pairing code. */
+async function postRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
+  const { deps, settings, source, store, known, now, wake, queueTickets } = board;
+  if (method === "POST" && path === "/api/terminal-pair") {
+    // Minted here, on the terminal's own machine, and handed to the page's service only for a paired browser that follows a worker link (A11-93).
+    if (deps.mintTerminal !== undefined) return [200, await deps.mintTerminal()];
+    const tailnetName = settings.serve === null || deps.tailnet === undefined ? null : await deps.tailnet();
+    return [200, await mintTerminalCode(settings, localTerminalPort(settings.terminal, tailnetName), { home: homedir(), read: readOrNull, request: fetch, timeoutMs: TERMINAL_PAIR_MS })];
+  }
+  if (method === "POST" && path === "/api/queue") {
+    const choice = validRunChoice(body);
+    const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
+    const tickets: Ticket[] = [];
+    for (const key of keys) {
+      const ticket = known.tickets.get(key) ?? await source.read(key);
+      if (ticket === null) throw new Error(`no ticket ${key}`);
+      tickets.push(ticket);
+    }
+    queueTickets(tickets, choice, { plan: body.plan === true });
+    return [200, store.get()];
+  }
+  if (method === "POST" && path === "/api/queue-children") {
+    // A parent is never queued itself (`queue.ts`'s `refuseParents`): this queues its open sub-issues in its place (A11-76). The parent is
+    // read afresh, so a sub-issue finished since the list was read is not queued; one the list holds is not read again. The order is the
+    // tracker's blocking relations among them where it can say, or identifier order, which the answer's note then names. A sub-issue that
+    // is itself a parent is left out, and named: its own row offers its children. One already on the queue keeps its place.
+    const choice = validRunChoice(body);
+    const key = String(body.key ?? "");
+    const parent = await source.read(key);
+    if (parent === null) throw new Error(`no ticket ${key}`);
+    const children = parent.children ?? [];
+    if (children.length === 0) throw new Error(`${key} has no open sub-issues: queue it as it is`);
+    const order = childOrder(children, source.blockers ? await source.blockers(children) : null);
+    const read: Ticket[] = [];
+    for (const child of order.keys) {
+      const ticket = known.tickets.get(child) ?? await source.read(child);
+      if (ticket === null) throw new Error(`no ticket ${child}, a sub-issue of ${key}`);
+      read.push(ticket);
+    }
+    const nested = read.filter((ticket) => (ticket.children?.length ?? 0) > 0).map((ticket) => ticket.key);
+    const tickets = read.filter((ticket) => !nested.includes(ticket.key));
+    queueTickets(tickets, choice, { plan: body.plan === true });
+    const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
+    const note = [order.note, left].filter((part) => part !== null).join("; ") || null;
+    return [200, { queue: store.get(), keys: tickets.map((ticket) => ticket.key), note }];
+  }
+  if (method === "POST" && path === "/api/choice") {
+    // Only the part named is changed, so two pages open at once cannot undo each other's other half.
+    const change = validChange(body, ["model", "effort", "planModel", "planEffort"]);
+    if (Object.keys(change).length === 0) throw new Error("name a model or an effort to change");
+    const choice = { ...readChoice(deps.choicePath), ...change };
+    writeChoice(deps.choicePath, choice);
+    return [200, { choice }];
+  }
+  if (method === "POST" && path === "/api/publish") {
+    if (settings.publish === null) throw new Error("this machine names no tickets.publish, so it publishes nothing");
+    store.set(queuePublish(store.get(), Array.isArray(body.keys) ? body.keys.map(String) : [], now()));
+    wake();
+    return [200, store.get()];
+  }
+  if (method === "POST" && path === "/api/paused") {
+    if (typeof body.paused !== "boolean") throw new Error("paused must be true or false");
+    store.set(body.paused ? pauseQueue(store.get()) : resumeQueue(store.get()));
+    wake();
+    return [200, store.get()];
+  }
+  if (method === "POST" && path === "/api/max") {
+    store.set(setMax(store.get(), Number(body.max)));
+    wake();
+    return [200, store.get()];
+  }
+  return undefined;
+}
+
+/** The new-ticket request routes: a request is queued, a run is stopped or dismissed, and a draft is approved or discarded. */
+async function writerRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
+  const { settings, source, store, pool, now, wake, queueTickets, savedRun } = board;
+  if (method === "POST" && path === "/api/writer") {
+    // A new-ticket request: a run of the ticket writer, which leaves drafts for the person to approve. It creates no ticket itself.
+    if (settings.writer === null) throw new Error("this machine names no tickets.writer, so it writes no tickets: name one in the host file");
+    const request = typeof body.request === "string" ? body.request.trim() : "";
+    if (request === "" || request.length > WRITER_REQUEST_CHARS) throw new Error(`a request is 1 to ${WRITER_REQUEST_CHARS} characters`);
+    const mode = body.mode === undefined ? "quick" : body.mode;
+    if (mode !== "quick" && mode !== "grill") throw new Error("mode must be \"quick\" or \"grill\"");
+    if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or ask quick");
+    const form = writerForm(body, settings);
+    if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
+    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, form }, now()));
+    wake();
+    return [200, writersViewOf(store.get())];
+  }
+  const writer = /^\/api\/writer\/([A-Za-z0-9_-]+)(?:\/(stop|dismiss)|\/drafts\/([A-Za-z0-9_.-]+)\/(approve|discard))$/.exec(path);
+  if (method === "POST" && writer) {
+    const [, run, verb, draft, action] = writer;
+    if (writerOf(store.get(), run) === undefined) throw new Error(`no new-ticket request ${run}`);
+    if (verb === "stop") pool.stopWriterRun(run);
+    if (verb === "dismiss") store.set(dismissWriter(store.get(), run));
+    if (action === "discard") discardDraft({ store }, { run, draft });
+    if (action === "approve") {
+      const { model, effort } = savedRun();
+      const created = await approveDraft({ settings, source, store, queueTicket: (ticket, plan) => queueTickets([ticket], { model, effort }, { plan }) },
+        { run, draft, fields: body.draft, acknowledgeDuplicates: body.acknowledgeDuplicates === true, queue: body.queue === true, plan: body.plan === true });
+      return [200, { ...writersViewOf(store.get()), created }];
+    }
+    wake();
+    return [200, writersViewOf(store.get())];
+  }
+  return undefined;
+}
+
+/** The routes that act on one queued run: amend, remove, retry, approve, respond, stop, close, dismiss, and apply or discard its edit. */
+async function queueActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
+  const { store, pool, now, wake } = board;
+  const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
+  if (method === "POST" && action) {
+    const [, key, verb] = action;
+    if (verb === "amend") store.set(amend(store.get(), key, validChange(body, ["model", "effort"])));
+    // The pool's, like Dismiss: a queued run's ticket is put back before the run leaves the queue.
+    if (verb === "remove") await pool.remove(key);
+    if (verb === "retry") store.set(retry(store.get(), key, now()));
+    if (verb === "approve") store.set(approve(store.get(), key, now()));
+    if (verb === "respond") store.set(respond(store.get(), key, now()));
+    if (verb === "stop") pool.stop(key);
+    if (verb === "close") pool.close(key);
+    // The pool's, like Close: a parked run's workspace is closed before the run leaves the board.
+    if (verb === "dismiss") await pool.dismiss(key);
+    // The pool's: Apply re-reads the ticket before it writes, and Discard drops the proposal the queue holds (A11-91). Only a person's request does either.
+    if (verb === "apply-edit") await pool.applyEdit(key);
+    if (verb === "discard-edit") pool.discardEdit(key);
+    wake();
+    return [200, store.get()];
+  }
+  return undefined;
+}
+
+/** The route table: each request is answered by the first group that names its method and path, and a path none names is a 404. */
+async function routeApi(board: Board, method: string, path: string, body: Json): Promise<[number, unknown]> {
+  return (await readRoute(board, method, path))
+    ?? (await postRoute(board, method, path, body))
+    ?? (await writerRoute(board, method, path, body))
+    ?? (await queueActionRoute(board, method, path, body))
+    ?? [404, { error: `no route ${method} ${path}` }];
+}
+
 /** The request handler, with every dependency named, so a test drives it without a socket. */
 export function createBoard(deps: BoardDeps) {
   const { settings, source, key } = deps;
@@ -150,7 +350,7 @@ export function createBoard(deps: BoardDeps) {
   let queue: Queue = loadQueue(deps.queuePath, settings.max);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); } };
   const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, hook: { node: process.execPath, bin: BIN } });
-  let known = new Map<string, Ticket>();
+  const known = { tickets: new Map<string, Ticket>() };
   let warnedNoName = false;
   let viewer: Assignee | null = null;
 
@@ -188,8 +388,6 @@ export function createBoard(deps: BoardDeps) {
     store.set(enqueue(queue, tickets, choice, now(), plan ? planFirst(tickets) : null));
     wake();
   }
-  /** The new-ticket requests, each with its status, as the page shows them. */
-  const writersView = () => ({ runs: (queue.writers ?? []).map((run) => ({ ...run, status: writerStatus(run) })) });
   /** Whether this board plans a ticket first: the machine names a planner, and the tracker can take the plan it writes. */
   const plans = settings.planner !== null && settings.plan !== null && source.attachPlan !== undefined;
 
@@ -205,153 +403,10 @@ export function createBoard(deps: BoardDeps) {
       batch: plansInBatches(settings.planner) };
   }
 
+  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, savedRun, queueTickets, whoAmI, terminalAddress };
+
   async function api(method: string, path: string, body: Json): Promise<[number, unknown]> {
-    if (method === "GET" && path === "/api/config") {
-      // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
-      // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
-      return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: queue.max, terminal: await terminalAddress(), plan: settings.plan, planner: plans,
-        publish: settings.publish !== null, pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone",
-        pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await whoAmI(),
-        writer: settings.writer !== null, writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
-    }
-    if (method === "GET" && path === "/api/pick") {
-      // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
-      // say whose key it is, or cannot be asked, leaves the text saying "you": the empty list still names its setting.
-      const user = settings.pick === "assigned" && source.viewer ? await source.viewer().catch(() => null) : null;
-      return [200, { empty: pickEmptyText(settings.pick, user) }];
-    }
-    if (method === "GET" && path === "/api/tickets") {
-      const tickets = await source.assigned();
-      known = new Map(tickets.map((ticket) => [ticket.key, ticket]));
-      return [200, tickets];
-    }
-    if (method === "GET" && path === "/api/parents") {
-      // The parents of the listed tickets that are not listed themselves, so the Pick list can nest under them whatever scope it shows. One the
-      // tracker cannot read is left out, and its children stand on their own.
-      const missing = [...new Set([...known.values()].flatMap((t) => (t.parent && !known.has(t.parent) ? [t.parent] : [])))];
-      const read = await Promise.allSettled(missing.map((key) => source.read(key)));
-      return [200, read.flatMap((r) => (r.status === "fulfilled" && r.value !== null ? [r.value] : []))];
-    }
-    if (method === "GET" && path === "/api/queue") return [200, queue];
-    if (method === "POST" && path === "/api/terminal-pair") {
-      // Minted here, on the terminal's own machine, and handed to the page's service only for a paired browser that follows a worker link (A11-93).
-      if (deps.mintTerminal !== undefined) return [200, await deps.mintTerminal()];
-      const tailnetName = settings.serve === null || deps.tailnet === undefined ? null : await deps.tailnet();
-      return [200, await mintTerminalCode(settings, localTerminalPort(settings.terminal, tailnetName), { home: homedir(), read: readOrNull, request: fetch, timeoutMs: TERMINAL_PAIR_MS })];
-    }
-    if (method === "POST" && path === "/api/queue") {
-      const choice = validRunChoice(body);
-      const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
-      const tickets: Ticket[] = [];
-      for (const key of keys) {
-        const ticket = known.get(key) ?? await source.read(key);
-        if (ticket === null) throw new Error(`no ticket ${key}`);
-        tickets.push(ticket);
-      }
-      queueTickets(tickets, choice, { plan: body.plan === true });
-      return [200, queue];
-    }
-    if (method === "POST" && path === "/api/queue-children") {
-      // A parent is never queued itself (`queue.ts`'s `refuseParents`): this queues its open sub-issues in its place (A11-76). The parent is
-      // read afresh, so a sub-issue finished since the list was read is not queued; one the list holds is not read again. The order is the
-      // tracker's blocking relations among them where it can say, or identifier order, which the answer's note then names. A sub-issue that
-      // is itself a parent is left out, and named: its own row offers its children. One already on the queue keeps its place.
-      const choice = validRunChoice(body);
-      const key = String(body.key ?? "");
-      const parent = await source.read(key);
-      if (parent === null) throw new Error(`no ticket ${key}`);
-      const children = parent.children ?? [];
-      if (children.length === 0) throw new Error(`${key} has no open sub-issues: queue it as it is`);
-      const order = childOrder(children, source.blockers ? await source.blockers(children) : null);
-      const read: Ticket[] = [];
-      for (const child of order.keys) {
-        const ticket = known.get(child) ?? await source.read(child);
-        if (ticket === null) throw new Error(`no ticket ${child}, a sub-issue of ${key}`);
-        read.push(ticket);
-      }
-      const nested = read.filter((ticket) => (ticket.children?.length ?? 0) > 0).map((ticket) => ticket.key);
-      const tickets = read.filter((ticket) => !nested.includes(ticket.key));
-      queueTickets(tickets, choice, { plan: body.plan === true });
-      const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
-      const note = [order.note, left].filter((part) => part !== null).join("; ") || null;
-      return [200, { queue, keys: tickets.map((ticket) => ticket.key), note }];
-    }
-    if (method === "POST" && path === "/api/choice") {
-      // Only the part named is changed, so two pages open at once cannot undo each other's other half.
-      const change = validChange(body, ["model", "effort", "planModel", "planEffort"]);
-      if (Object.keys(change).length === 0) throw new Error("name a model or an effort to change");
-      const choice = { ...readChoice(deps.choicePath), ...change };
-      writeChoice(deps.choicePath, choice);
-      return [200, { choice }];
-    }
-    if (method === "GET" && path === "/api/writer") return [200, writersView()];
-    if (method === "POST" && path === "/api/writer") {
-      // A new-ticket request: a run of the ticket writer, which leaves drafts for the person to approve. It creates no ticket itself.
-      if (settings.writer === null) throw new Error("this machine names no tickets.writer, so it writes no tickets: name one in the host file");
-      const request = typeof body.request === "string" ? body.request.trim() : "";
-      if (request === "" || request.length > WRITER_REQUEST_CHARS) throw new Error(`a request is 1 to ${WRITER_REQUEST_CHARS} characters`);
-      const mode = body.mode === undefined ? "quick" : body.mode;
-      if (mode !== "quick" && mode !== "grill") throw new Error("mode must be \"quick\" or \"grill\"");
-      if (mode === "grill" && settings.terminal === null) throw new Error("grill needs tickets.terminal, where the run's terminal opens: name it in the host file, or ask quick");
-      const form = writerForm(body, settings);
-      if (form.parent !== undefined && (await source.read(form.parent)) === null) throw new Error(`no ticket ${form.parent}`);
-      store.set(queueWriter(queue, { id: `w${now().toString(36)}`, request, mode, form }, now()));
-      wake();
-      return [200, writersView()];
-    }
-    const writer = /^\/api\/writer\/([A-Za-z0-9_-]+)(?:\/(stop|dismiss)|\/drafts\/([A-Za-z0-9_.-]+)\/(approve|discard))$/.exec(path);
-    if (method === "POST" && writer) {
-      const [, run, verb, draft, action] = writer;
-      if (writerOf(queue, run) === undefined) throw new Error(`no new-ticket request ${run}`);
-      if (verb === "stop") pool.stopWriterRun(run);
-      if (verb === "dismiss") store.set(dismissWriter(queue, run));
-      if (action === "discard") discardDraft({ store }, { run, draft });
-      if (action === "approve") {
-        const { model, effort } = savedRun();
-        const created = await approveDraft({ settings, source, store, queueTicket: (ticket, plan) => queueTickets([ticket], { model, effort }, { plan }) },
-          { run, draft, fields: body.draft, acknowledgeDuplicates: body.acknowledgeDuplicates === true, queue: body.queue === true, plan: body.plan === true });
-        return [200, { ...writersView(), created }];
-      }
-      wake();
-      return [200, writersView()];
-    }
-    if (method === "POST" && path === "/api/publish") {
-      if (settings.publish === null) throw new Error("this machine names no tickets.publish, so it publishes nothing");
-      store.set(queuePublish(queue, Array.isArray(body.keys) ? body.keys.map(String) : [], now()));
-      wake();
-      return [200, queue];
-    }
-    if (method === "POST" && path === "/api/paused") {
-      if (typeof body.paused !== "boolean") throw new Error("paused must be true or false");
-      store.set(body.paused ? pauseQueue(queue) : resumeQueue(queue));
-      wake();
-      return [200, queue];
-    }
-    if (method === "POST" && path === "/api/max") {
-      store.set(setMax(queue, Number(body.max)));
-      wake();
-      return [200, queue];
-    }
-    const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
-    if (method === "POST" && action) {
-      const [, key, verb] = action;
-      if (verb === "amend") store.set(amend(queue, key, validChange(body, ["model", "effort"])));
-      // The pool's, like Dismiss: a queued run's ticket is put back before the run leaves the queue.
-      if (verb === "remove") await pool.remove(key);
-      if (verb === "retry") store.set(retry(queue, key, now()));
-      if (verb === "approve") store.set(approve(queue, key, now()));
-      if (verb === "respond") store.set(respond(queue, key, now()));
-      if (verb === "stop") pool.stop(key);
-      if (verb === "close") pool.close(key);
-      // The pool's, like Close: a parked run's workspace is closed before the run leaves the board.
-      if (verb === "dismiss") await pool.dismiss(key);
-      // The pool's: Apply re-reads the ticket before it writes, and Discard drops the proposal the queue holds (A11-91). Only a person's request does either.
-      if (verb === "apply-edit") await pool.applyEdit(key);
-      if (verb === "discard-edit") pool.discardEdit(key);
-      wake();
-      return [200, queue];
-    }
-    return [404, { error: `no route ${method} ${path}` }];
+    return routeApi(board, method, path, body);
   }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {

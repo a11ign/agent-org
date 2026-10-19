@@ -119,124 +119,186 @@ export type GithubAdapterOptions = {
 
 export type GithubTicketAdapter = TicketPort & OpenItemsReader & BlockerWriter & { publish(event: PortEvent): void };
 
+/** What the adapter's functions read a repository through: the `gh` seam, the repository's owner and name, and the Status write. */
+type Repo = Readonly<{
+  run: (args: string[]) => string;
+  scope: string;
+  owner: string;
+  name: string;
+  chairmanLogins: readonly string[];
+  moveStatus: (id: number, statusName: string) => void;
+}>;
+
+type Subscriber = { filter: EventFilter; handler: (event: PortEvent) => void };
+
+/** The raw issue node, or `null` when the read was refused, carried errors or named no such issue. */
+function readNode(repo: Repo, id: number): any | null {
+  try {
+    const parsed = JSON.parse(repo.run(["api", "graphql", "-f", `query=${ITEM_QUERY}`, "-F", `owner=${repo.owner}`, "-F", `name=${repo.name}`, "-F", `number=${id}`]));
+    const issue = parsed?.errors ? null : parsed?.data?.repository?.issue;
+    return issue !== null && typeof issue === "object" && issue.number === id ? issue : null;
+  } catch {
+    return null;
+  }
+}
+
+const refOf = (repo: Repo, node: any): ItemRef => ({ tracker: TRACKER, scope: String(node?.repository?.nameWithOwner ?? repo.scope), id: Number(node?.number) });
+const labelsOf = (node: any): string[] => (node?.labels?.nodes ?? []).map((l: any) => String(l?.name));
+const statusOf = (node: any): string | null => {
+  const item = (node?.projectItems?.nodes ?? []).find((n: any) => n?.project?.number === PROJECT_NUMBER);
+  return typeof item?.fieldValueByName?.name === "string" ? item.fieldValueByName.name : null;
+};
+
+/** LABELS DECIDE, the board Status fills in: the labels are what the gate has always claimed on, so a disagreement reads as they say. */
+function stateOf(node: any): TicketState | null {
+  if (node.state === "CLOSED") return "done";
+  for (const label of labelsOf(node)) {
+    const state = STATE_OF_LABEL.get(label);
+    if (state !== undefined) return state;
+  }
+  return STATE_OF_STATUS.get(statusOf(node) ?? "") ?? null;
+}
+
+/** The newest event adding `label`, whose actor decides `chairman-priority`; `null` when no timeline event shows who added it. */
+const newestAdder = (events: any[], label: string): string | null =>
+  events.filter((e) => e.__typename === "LabeledEvent" && e.label?.name === label).at(-1)?.actor?.login ?? null;
+
+function flagsOf(repo: Repo, node: any, events: any[]): TicketFlag[] {
+  const flags = new Set<TicketFlag>();
+  for (const label of labelsOf(node)) {
+    if (label === CHAIRMAN_PRIORITY_LABEL) {
+      const adder = newestAdder(events, label);
+      if (adder !== null && repo.chairmanLogins.includes(adder)) flags.add("chairman-priority");
+      continue;
+    }
+    const flag = flagOfLabel(label);
+    if (flag !== null) flags.add(flag);
+  }
+  return [...flags];
+}
+
+function eventsOf(node: any, items: any[]): ItemEvent[] {
+  const out: ItemEvent[] = [{ at: String(node.createdAt), actor: node.author?.login ?? null, kind: "item-opened" }];
+  for (const e of items) {
+    const at = String(e.createdAt);
+    if (e.__typename === "IssueComment") {
+      if (DECIDED_BY.test(String(e.body ?? ""))) out.push({ at, actor: e.author?.login ?? null, kind: "decision-posted" });
+      continue;
+    }
+    const label = String(e.label?.name ?? "");
+    const added = e.__typename === "LabeledEvent";
+    if (STATE_OF_LABEL.has(label)) out.push({ at, actor: e.actor?.login ?? null, kind: "state-changed", detail: `${STATE_OF_LABEL.get(label)}${added ? "" : " removed"}` });
+    else if (label === CHAIRMAN_PRIORITY_LABEL || flagOfLabel(label) !== null) {
+      const flag = label === CHAIRMAN_PRIORITY_LABEL ? "chairman-priority" : flagOfLabel(label);
+      out.push({ at, actor: e.actor?.login ?? null, kind: added ? "flag-added" : "flag-removed", detail: String(flag) });
+    }
+  }
+  return out;
+}
+
+function relationsOf(repo: Repo, node: any): ItemRelations {
+  const body = String(node.body ?? "");
+  const linked: ChangeRef[] = (node.closedByPullRequestsReferences?.nodes ?? [])
+    .map((pr: any) => ({ host: TRACKER, id: `${String(pr?.repository?.nameWithOwner ?? repo.scope)}#${pr?.number}` }));
+  return {
+    blockedBy: (node.blockedBy?.nodes ?? []).filter((b: any) => b?.state !== "CLOSED").map((b: any) => refOf(repo, b)),
+    parent: node.parent ? refOf(repo, node.parent) : null,
+    children: (node.subIssues?.nodes ?? []).map((child: any) => refOf(repo, child)),
+    linkedChanges: linked,
+    notBefore: notBeforeDate(body),
+    waitingFor: parseWaits(body).map((wait) => wait.text),
+  };
+}
+
+function emit(subscribers: Set<Subscriber>, event: PortEvent): void {
+  for (const { filter, handler } of subscribers) {
+    if (filter.kinds !== undefined && !filter.kinds.includes(event.kind)) continue;
+    const isOtherRef = filter.ref !== undefined && (filter.ref.tracker !== event.ref.tracker || filter.ref.scope !== event.ref.scope || filter.ref.id !== event.ref.id);
+    if (isOtherRef) continue;
+    handler(event);
+  }
+}
+
+/** One open issue's board facts, from its `repository.issues` node. `onBoard` is `null` for a row with more items than the page returned and none of them on the board. */
+function openItemOf(repo: Repo, node: any): OpenItemSummary {
+  const items = node?.projectItems;
+  const found = Array.isArray(items?.nodes) && items.nodes.some((n: any) => n?.project?.number === PROJECT_NUMBER);
+  const complete = Array.isArray(items?.nodes) && items.nodes.length >= items.totalCount;
+  return { ref: { tracker: TRACKER, scope: repo.scope, id: node.number }, title: String(node.title ?? ""), openedAtMs: Date.parse(node.createdAt), onBoard: found ? true : complete ? false : null };
+}
+
+function changeStateOf(repo: Repo, target: ItemRef, change: StateChange): boolean {
+  const node = readNode(repo, target.id);
+  if (node === null) throw new Error(`changeState: could not read ${target.scope}#${target.id}, so nothing was written`);
+  const have = new Set(labelsOf(node));
+  const add = new Set<string>();
+  const remove = new Set<string>();
+  let status: string | null = null;
+  if (change.state !== undefined) {
+    const want = STATE_LABEL[change.state];
+    for (const label of STATE_OF_LABEL.keys()) if (label !== want && have.has(label)) remove.add(label);
+    if (want !== undefined && !have.has(want)) add.add(want);
+    const named = STATUS_OF[change.state];
+    if (named !== null && statusOf(node) !== named) status = named;
+  }
+  for (const flag of change.addFlags ?? []) if (!have.has(labelOfFlag(flag))) add.add(labelOfFlag(flag));
+  for (const flag of change.removeFlags ?? []) if (have.has(labelOfFlag(flag)) && !add.has(labelOfFlag(flag))) remove.add(labelOfFlag(flag));
+  if (add.size === 0 && remove.size === 0 && status === null) return false;
+  // ONE EDIT FOR THE LABELS, THEN THE BOARD STATUS (decision 1): the labels are what the gate claims on, so they land first.
+  if (add.size > 0 || remove.size > 0) {
+    const args = ["issue", "edit", String(target.id), "--repo", target.scope];
+    if (add.size > 0) args.push("--add-label", [...add].join(","));
+    if (remove.size > 0) args.push("--remove-label", [...remove].join(","));
+    repo.run(args);
+  }
+  if (status !== null) repo.moveStatus(target.id, status);
+  return true;
+}
+
+function readOpenItemsOf(repo: Repo, onBudget: ((budget: ApiBudget) => void) | undefined): OpenItemSummary[] | null {
+  const items: OpenItemSummary[] = [];
+  try {
+    let after: string | null = null;
+    for (let page = 0; page < OPEN_ITEMS_MAX_PAGES; page++) {
+      const args = ["api", "graphql", "-f", `query=${OPEN_ITEMS_QUERY}`, "-F", `owner=${repo.owner}`, "-F", `name=${repo.name}`];
+      if (after !== null) args.push("-f", `after=${after}`);
+      const parsed = JSON.parse(repo.run(args));
+      const issues = parsed?.errors ? null : parsed?.data?.repository?.issues;
+      if (!Array.isArray(issues?.nodes)) return null;
+      const budget: ApiBudget | null = page === 0 ? poolFromRateLimitField(parsed.data) : null;
+      if (budget !== null) onBudget?.(budget);
+      items.push(...issues.nodes.map((node: any) => openItemOf(repo, node)));
+      if (issues.pageInfo?.hasNextPage !== true) return items;
+      after = issues.pageInfo.endCursor;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The adapter. `TicketPort` is the four operations ADR 0046 rules; `OpenItemsReader` is the bulk read `port.ts` explains and keeps apart.
  */
 export function githubTicketAdapter(options: GithubAdapterOptions): GithubTicketAdapter {
   const { run, scope, chairmanLogins = [] } = options;
   const [owner, name] = scope.split("/");
-  const ref = (id: number): ItemRef => ({ tracker: TRACKER, scope, id });
   const moveStatus = options.moveStatus ?? ((id: number, statusName: string) => {
     run(["project", "item-edit", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER,
       "--url", `https://github.com/${scope}/issues/${id}`, "--field", "Status", "--value", statusName]);
   });
-  const subscribers = new Set<{ filter: EventFilter; handler: (event: PortEvent) => void }>();
-
-  /** The raw issue node, or `null` when the read was refused, carried errors or named no such issue. */
-  function readNode(id: number): any | null {
-    try {
-      const parsed = JSON.parse(run(["api", "graphql", "-f", `query=${ITEM_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${id}`]));
-      const issue = parsed?.errors ? null : parsed?.data?.repository?.issue;
-      return issue !== null && typeof issue === "object" && issue.number === id ? issue : null;
-    } catch {
-      return null;
-    }
-  }
-
-  const refOf = (node: any): ItemRef => ({ tracker: TRACKER, scope: String(node?.repository?.nameWithOwner ?? scope), id: Number(node?.number) });
-  const labelsOf = (node: any): string[] => (node?.labels?.nodes ?? []).map((l: any) => String(l?.name));
-  const statusOf = (node: any): string | null => {
-    const item = (node?.projectItems?.nodes ?? []).find((n: any) => n?.project?.number === PROJECT_NUMBER);
-    return typeof item?.fieldValueByName?.name === "string" ? item.fieldValueByName.name : null;
-  };
-
-  /** LABELS DECIDE, the board Status fills in: the labels are what the gate has always claimed on, so a disagreement reads as they say. */
-  function stateOf(node: any): TicketState | null {
-    if (node.state === "CLOSED") return "done";
-    for (const label of labelsOf(node)) {
-      const state = STATE_OF_LABEL.get(label);
-      if (state !== undefined) return state;
-    }
-    return STATE_OF_STATUS.get(statusOf(node) ?? "") ?? null;
-  }
-
-  /** The newest event adding `label`, whose actor decides `chairman-priority`; `null` when no timeline event shows who added it. */
-  const newestAdder = (events: any[], label: string): string | null =>
-    events.filter((e) => e.__typename === "LabeledEvent" && e.label?.name === label).at(-1)?.actor?.login ?? null;
-
-  function flagsOf(node: any, events: any[]): TicketFlag[] {
-    const flags = new Set<TicketFlag>();
-    for (const label of labelsOf(node)) {
-      if (label === CHAIRMAN_PRIORITY_LABEL) {
-        const adder = newestAdder(events, label);
-        if (adder !== null && chairmanLogins.includes(adder)) flags.add("chairman-priority");
-        continue;
-      }
-      const flag = flagOfLabel(label);
-      if (flag !== null) flags.add(flag);
-    }
-    return [...flags];
-  }
-
-  function eventsOf(node: any, items: any[]): ItemEvent[] {
-    const out: ItemEvent[] = [{ at: String(node.createdAt), actor: node.author?.login ?? null, kind: "item-opened" }];
-    for (const e of items) {
-      const at = String(e.createdAt);
-      if (e.__typename === "IssueComment") {
-        if (DECIDED_BY.test(String(e.body ?? ""))) out.push({ at, actor: e.author?.login ?? null, kind: "decision-posted" });
-        continue;
-      }
-      const label = String(e.label?.name ?? "");
-      const added = e.__typename === "LabeledEvent";
-      if (STATE_OF_LABEL.has(label)) out.push({ at, actor: e.actor?.login ?? null, kind: "state-changed", detail: `${STATE_OF_LABEL.get(label)}${added ? "" : " removed"}` });
-      else if (label === CHAIRMAN_PRIORITY_LABEL || flagOfLabel(label) !== null) {
-        const flag = label === CHAIRMAN_PRIORITY_LABEL ? "chairman-priority" : flagOfLabel(label);
-        out.push({ at, actor: e.actor?.login ?? null, kind: added ? "flag-added" : "flag-removed", detail: String(flag) });
-      }
-    }
-    return out;
-  }
-
-  function relationsOf(node: any): ItemRelations {
-    const body = String(node.body ?? "");
-    const linked: ChangeRef[] = (node.closedByPullRequestsReferences?.nodes ?? [])
-      .map((pr: any) => ({ host: TRACKER, id: `${String(pr?.repository?.nameWithOwner ?? scope)}#${pr?.number}` }));
-    return {
-      blockedBy: (node.blockedBy?.nodes ?? []).filter((b: any) => b?.state !== "CLOSED").map(refOf),
-      parent: node.parent ? refOf(node.parent) : null,
-      children: (node.subIssues?.nodes ?? []).map(refOf),
-      linkedChanges: linked,
-      notBefore: notBeforeDate(body),
-      waitingFor: parseWaits(body).map((wait) => wait.text),
-    };
-  }
-
-  function emit(event: PortEvent) {
-    for (const { filter, handler } of subscribers) {
-      if (filter.kinds !== undefined && !filter.kinds.includes(event.kind)) continue;
-      const isOtherRef = filter.ref !== undefined && (filter.ref.tracker !== event.ref.tracker || filter.ref.scope !== event.ref.scope || filter.ref.id !== event.ref.id);
-      if (isOtherRef) continue;
-      handler(event);
-    }
-  }
-
-  /** One open issue's board facts, from its `repository.issues` node. `onBoard` is `null` for a row with more items than the page returned and none of them on the board. */
-  function openItemOf(node: any): OpenItemSummary {
-    const items = node?.projectItems;
-    const found = Array.isArray(items?.nodes) && items.nodes.some((n: any) => n?.project?.number === PROJECT_NUMBER);
-    const complete = Array.isArray(items?.nodes) && items.nodes.length >= items.totalCount;
-    return { ref: ref(node.number), title: String(node.title ?? ""), openedAtMs: Date.parse(node.createdAt), onBoard: found ? true : complete ? false : null };
-  }
+  const subscribers = new Set<Subscriber>();
+  const repo: Repo = { run, scope, owner, name, chairmanLogins, moveStatus };
 
   return {
     readItem(target) {
       if (target.tracker !== TRACKER || target.scope !== scope) return null;
-      const node = readNode(target.id);
+      const node = readNode(repo, target.id);
       if (node === null) return null;
       const timeline: any[] = node.timelineItems?.nodes ?? [];
       return {
-        ref: target, title: String(node.title ?? ""), body: String(node.body ?? ""), state: stateOf(node), flags: flagsOf(node, timeline),
-        relations: relationsOf(node), events: eventsOf(node, timeline),
+        ref: target, title: String(node.title ?? ""), body: String(node.body ?? ""), state: stateOf(node), flags: flagsOf(repo, node, timeline),
+        relations: relationsOf(repo, node), events: eventsOf(node, timeline),
       } satisfies TicketItem;
     },
 
@@ -251,31 +313,7 @@ export function githubTicketAdapter(options: GithubAdapterOptions): GithubTicket
     },
 
     changeState(target, change: StateChange) {
-      const node = readNode(target.id);
-      if (node === null) throw new Error(`changeState: could not read ${target.scope}#${target.id}, so nothing was written`);
-      const have = new Set(labelsOf(node));
-      const add = new Set<string>();
-      const remove = new Set<string>();
-      let status: string | null = null;
-      if (change.state !== undefined) {
-        const want = STATE_LABEL[change.state];
-        for (const label of STATE_OF_LABEL.keys()) if (label !== want && have.has(label)) remove.add(label);
-        if (want !== undefined && !have.has(want)) add.add(want);
-        const named = STATUS_OF[change.state];
-        if (named !== null && statusOf(node) !== named) status = named;
-      }
-      for (const flag of change.addFlags ?? []) if (!have.has(labelOfFlag(flag))) add.add(labelOfFlag(flag));
-      for (const flag of change.removeFlags ?? []) if (have.has(labelOfFlag(flag)) && !add.has(labelOfFlag(flag))) remove.add(labelOfFlag(flag));
-      if (add.size === 0 && remove.size === 0 && status === null) return false;
-      // ONE EDIT FOR THE LABELS, THEN THE BOARD STATUS (decision 1): the labels are what the gate claims on, so they land first.
-      if (add.size > 0 || remove.size > 0) {
-        const args = ["issue", "edit", String(target.id), "--repo", target.scope];
-        if (add.size > 0) args.push("--add-label", [...add].join(","));
-        if (remove.size > 0) args.push("--remove-label", [...remove].join(","));
-        run(args);
-      }
-      if (status !== null) moveStatus(target.id, status);
-      return true;
+      return changeStateOf(repo, target, change);
     },
 
     addBlocker(target, blocker) {
@@ -296,27 +334,9 @@ export function githubTicketAdapter(options: GithubAdapterOptions): GithubTicket
     },
 
     readOpenItems({ onBudget } = {}) {
-      const items: OpenItemSummary[] = [];
-      try {
-        let after: string | null = null;
-        for (let page = 0; page < OPEN_ITEMS_MAX_PAGES; page++) {
-          const args = ["api", "graphql", "-f", `query=${OPEN_ITEMS_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`];
-          if (after !== null) args.push("-f", `after=${after}`);
-          const parsed = JSON.parse(run(args));
-          const issues = parsed?.errors ? null : parsed?.data?.repository?.issues;
-          if (!Array.isArray(issues?.nodes)) return null;
-          const budget: ApiBudget | null = page === 0 ? poolFromRateLimitField(parsed.data) : null;
-          if (budget !== null) onBudget?.(budget);
-          items.push(...issues.nodes.map(openItemOf));
-          if (issues.pageInfo?.hasNextPage !== true) return items;
-          after = issues.pageInfo.endCursor;
-        }
-        return null;
-      } catch {
-        return null;
-      }
+      return readOpenItemsOf(repo, onBudget);
     },
     // `publish` is the adapter's, not the port's: it is how what a tick read becomes a hint to subscribers.
-    publish: emit,
+    publish: (event) => emit(subscribers, event),
   };
 }

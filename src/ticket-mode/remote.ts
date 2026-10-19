@@ -142,6 +142,35 @@ type State =
   | { kind: "up"; link: Link; tunnel: Tunnel }
   | { kind: "down"; reason: string; cancel: () => void };
 
+/** Read `connection`'s info, then open its tunnel and wait for the socket to listen. `live` holds every tunnel still running, and `closing` tells whether `close` has run. */
+async function open(connection: SshConnection, { runner, upMs, live, closing }: Readonly<{ runner: Runner; upMs: number; live: Set<Tunnel>; closing: () => boolean }>): Promise<{ link: Link; tunnel: Tunnel }> {
+  const read = await runner.run(infoArgv(connection), INFO_MS);
+  if (read.code !== 0) throw new Unreachable(infoFailure(read));
+  const info = parseRemoteInfo(read.stdout);
+  const remoteTerminal = terminalPort(info.terminal);
+  const terminalLocal = remoteTerminal === null ? null : await runner.freePort();
+  const socket = runner.privateSocket();
+  const tunnel = runner.start(tunnelArgv(connection, socket.path, info.port, remoteTerminal === null || terminalLocal === null ? null : { local: terminalLocal, remote: remoteTerminal }));
+  live.add(tunnel);
+  const ended: { exit: Exit | null } = { exit: null };
+  void tunnel.exited.then((exit) => {
+    ended.exit = exit;
+    live.delete(tunnel);
+    socket.remove();
+  });
+  if (closing()) tunnel.stop();
+  for (const deadline = Date.now() + upMs; ; await new Promise((done) => setTimeout(done, PROBE_MS))) {
+    // Listening is read before the exit, so a listener that answered from a tunnel that has since ended is not taken as open.
+    const listening = await runner.listening(socket.path);
+    if (ended.exit !== null) throw new Unreachable(redact(ended.exit.stderr) || `ssh exited ${ended.exit.code}`);
+    if (listening) return { link: { ...info, socket: socket.path, terminalLocal }, tunnel };
+    if (Date.now() > deadline) {
+      tunnel.stop();
+      throw new Unreachable(`the tunnel did not open within ${Math.round(upMs / 1000)} seconds`);
+    }
+  }
+}
+
 /** The tunnels to `connections`, each opened the first time it is reached and held open until `close`. */
 export function createRemotes(connections: readonly SshConnection[], options: Options = {}) {
   const runner = options.runner ?? processRunner();
@@ -155,34 +184,6 @@ export function createRemotes(connections: readonly SshConnection[], options: Op
   const live = new Set<Tunnel>();
   let closed = false;
 
-  async function open(connection: SshConnection): Promise<{ link: Link; tunnel: Tunnel }> {
-    const read = await runner.run(infoArgv(connection), INFO_MS);
-    if (read.code !== 0) throw new Unreachable(infoFailure(read));
-    const info = parseRemoteInfo(read.stdout);
-    const remoteTerminal = terminalPort(info.terminal);
-    const terminalLocal = remoteTerminal === null ? null : await runner.freePort();
-    const socket = runner.privateSocket();
-    const tunnel = runner.start(tunnelArgv(connection, socket.path, info.port, remoteTerminal === null || terminalLocal === null ? null : { local: terminalLocal, remote: remoteTerminal }));
-    live.add(tunnel);
-    const ended: { exit: Exit | null } = { exit: null };
-    void tunnel.exited.then((exit) => {
-      ended.exit = exit;
-      live.delete(tunnel);
-      socket.remove();
-    });
-    if (closed) tunnel.stop();
-    for (const deadline = Date.now() + upMs; ; await new Promise((done) => setTimeout(done, PROBE_MS))) {
-      // Listening is read before the exit, so a listener that answered from a tunnel that has since ended is not taken as open.
-      const listening = await runner.listening(socket.path);
-      if (ended.exit !== null) throw new Unreachable(redact(ended.exit.stderr) || `ssh exited ${ended.exit.code}`);
-      if (listening) return { link: { ...info, socket: socket.path, terminalLocal }, tunnel };
-      if (Date.now() > deadline) {
-        tunnel.stop();
-        throw new Unreachable(`the tunnel did not open within ${Math.round(upMs / 1000)} seconds`);
-      }
-    }
-  }
-
   /** Mark `connection` down for `reason`, and try again later, later each time it fails in a row. The log says so once per run of failures. */
   function down(connection: SshConnection, reason: string): void {
     const count = (failures.get(connection.name) ?? 0) + 1;
@@ -194,7 +195,7 @@ export function createRemotes(connections: readonly SshConnection[], options: Op
   }
 
   function connect(connection: SshConnection): Promise<Link> {
-    const pending = open(connection).then(({ link, tunnel }) => {
+    const pending = open(connection, { runner, upMs, live, closing: () => closed }).then(({ link, tunnel }) => {
       if (closed) {
         tunnel.stop();
         throw new Unreachable("the service is closing");

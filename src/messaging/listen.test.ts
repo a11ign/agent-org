@@ -176,44 +176,44 @@ describe("a queue that cannot load is told, not dropped (done-when 2)", () => {
   });
 });
 
+/** A project root and home with messaging on, and the two secret files `listen` reads. */
+function installation() {
+  nextDir += 1;
+  const home = join(scratch, `home-${nextDir}`);
+  const root = join(scratch, `root-${nextDir}`);
+  const secrets = join(home, ".config", "agent-org");
+  mkdirSync(secrets, { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, ".agent-org"), { recursive: true });
+  writeFileSync(join(secrets, "telegram-token"), "123456:fixture-token\n", { mode: 0o600 });
+  writeFileSync(join(secrets, "chairman.json"), JSON.stringify(CHAIRMAN), { mode: 0o600 });
+  const messaging = { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/chairman.json" };
+  writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ schema: 1, messaging }));
+  return { home, root };
+}
+
+/** A fetch that serves `updates` to the first getUpdates, stops the listener on the second, and records each sendMessage's text. */
+function telegram(/** @type {unknown[]} */ updates: unknown[]) {
+  const controller = new AbortController();
+  /** @type {string[]} */ const said: string[] = [];
+  let polls = 0;
+  const reply = (/** @type {unknown} */ result: unknown) => ({ ok: true, json: async () => ({ ok: true, result }) });
+  const fetch = async (/** @type {string} */ url: string, /** @type {{ body: string }} */ init: { body: string; }) => {
+    if (url.endsWith("/getUpdates")) {
+      polls += 1;
+      if (polls > 1) controller.abort();
+      return reply(polls === 1 ? updates : []);
+    }
+    if (url.endsWith("/sendMessage")) said.push(JSON.parse(init.body).text);
+    return reply(url.endsWith("/sendMessage") ? { message_id: 700 + said.length } : true);
+  };
+  return { fetch: /** @type {typeof globalThis.fetch} */ (/** @type {unknown} */ (fetch)), signal: controller.signal, said };
+}
+
+/** A GitHub that has no request the chairman's updates could answer, so `answers` calls a plain message not-an-answer and a press unresolvable. */
+const github = /** @type {any} */ ({ readRow: async () => { throw new Error("no row is read for an update that answers nothing"); } });
+const env = { GH_CONFIG_DIR: "/nowhere" };
+
 describe("the default onForward, through main() (done-when 1 and 2, running)", () => {
-  /** A project root and home with messaging on, and the two secret files `listen` reads. */
-  function installation() {
-    nextDir += 1;
-    const home = join(scratch, `home-${nextDir}`);
-    const root = join(scratch, `root-${nextDir}`);
-    const secrets = join(home, ".config", "agent-org");
-    mkdirSync(secrets, { recursive: true, mode: 0o700 });
-    mkdirSync(join(root, ".agent-org"), { recursive: true });
-    writeFileSync(join(secrets, "telegram-token"), "123456:fixture-token\n", { mode: 0o600 });
-    writeFileSync(join(secrets, "chairman.json"), JSON.stringify(CHAIRMAN), { mode: 0o600 });
-    const messaging = { provider: "telegram", tokenFile: "~/.config/agent-org/telegram-token", chairmanFile: "~/.config/agent-org/chairman.json" };
-    writeFileSync(join(root, ".agent-org", "project.json"), JSON.stringify({ schema: 1, messaging }));
-    return { home, root };
-  }
-
-  /** A fetch that serves `updates` to the first getUpdates, stops the listener on the second, and records each sendMessage's text. */
-  function telegram(/** @type {unknown[]} */ updates: unknown[]) {
-    const controller = new AbortController();
-    /** @type {string[]} */ const said: string[] = [];
-    let polls = 0;
-    const reply = (/** @type {unknown} */ result: unknown) => ({ ok: true, json: async () => ({ ok: true, result }) });
-    const fetch = async (/** @type {string} */ url: string, /** @type {{ body: string }} */ init: { body: string; }) => {
-      if (url.endsWith("/getUpdates")) {
-        polls += 1;
-        if (polls > 1) controller.abort();
-        return reply(polls === 1 ? updates : []);
-      }
-      if (url.endsWith("/sendMessage")) said.push(JSON.parse(init.body).text);
-      return reply(url.endsWith("/sendMessage") ? { message_id: 700 + said.length } : true);
-    };
-    return { fetch: /** @type {typeof globalThis.fetch} */ (/** @type {unknown} */ (fetch)), signal: controller.signal, said };
-  }
-
-  /** A GitHub that has no request the chairman's updates could answer, so `answers` calls a plain message not-an-answer and a press unresolvable. */
-  const github = /** @type {any} */ ({ readRow: async () => { throw new Error("no row is read for an update that answers nothing"); } });
-  const env = { GH_CONFIG_DIR: "/nowhere" };
-
   test("an accepted message reaches converse, and a press reaches answers (which says so to the chairman) and not converse", async () => {
     const { home, root } = installation();
     /** @type {string[]} */ const toConverse: string[] = [];
@@ -267,6 +267,9 @@ describe("the default onForward, through main() (done-when 1 and 2, running)", (
     }
   });
 
+});
+
+describe("the default onForward, through main() (done-when 1 and 2, running)", () => {
   test("a queue that will not load is told to the chairman through the running listener, and the next update is still handled", async () => {
     const { home, root } = installation();
     const wire = telegram([messageUpdate(20, "first"), pressUpdate(21)]);
@@ -279,56 +282,56 @@ describe("the default onForward, through main() (done-when 1 and 2, running)", (
   });
 });
 
+const X = "zq-fake-value-0";
+const MIXED = "Aq9Zx7Lm2Kp4Vb8Nc3Jd5Hs6";
+const GITHUB = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join("");
+/** Each of these holds a credential of the row's classes 1 to 3, and each needs the real classifier to refuse it. */
+const CREDENTIAL_MESSAGES = [
+  `My password is: ${X}`, `password is ${X}`, `password: ${X}`, `password = ${X}`, `pw: ${X}`, `pwd=${X}`, `here's my password ${X}`, `my password ${X}`,
+  `${X} is my password`, GITHUB, ["xox", "b-1234567890-abcdefghijkl"].join(""), ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""), MIXED, `look: ${MIXED} thanks`,
+];
+/** What of the value must appear nowhere afterwards: the whole, and a piece too long to be a coincidence. */
+const FRAGMENTS = [X, "zq-fake", "fake-value", GITHUB.slice(0, 20), MIXED, MIXED.slice(4, 14), "abcdefghijkl", "ABCDEFGHIJKLMNOP"];
+
+/** The queue port as a recorder: every call is kept, and it says QUEUED as the real one does. */
+function recordingQueue() {
+  /** @type {Record<string, any>[]} */ const calls: Record<string, any>[] = [];
+  return {
+    calls,
+    port: {
+      EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order" }), attributed: (/** @type {string} */ text: string) => text,
+      handoffId: () => "handoff/liaison/recorded", readHandoffs: () => [{ id: "handoff/liaison/recorded", session: "liaison", prompt: "" }],
+      run: () => "", NOT_QUEUED_PREFIX: "NOT PROMPTED, AND NOT QUEUED: ",
+      promptOrQueue(/** @type {Record<string, any>} */ order: Record<string, any>) { calls.push(order); return 2; },
+    },
+  };
+}
+
+/** The running loop over real `createInbound`, the real forwarder and the real `converse`, with a recorder at every port that leaves the process. */
+async function run(/** @type {string[]} */ texts: string[]) {
+  const { ledger, inbound, path } = core();
+  const queue = recordingQueue();
+  const toAnswers: Record<string,any>[] = /** @type {Record<string, any>[]} */ ([]);
+  const controller = new AbortController();
+  const wire = /** @type {{ sent: Record<string, any>[], deleted: Record<string, any>[] }} */ ({ sent: [], deleted: [] });
+  const provider = {
+    poll: async () => { controller.abort(); return { updates: texts.map((text, index) => messageUpdate(300 + index, text)), cursor: 400 }; },
+    send: async (/** @type {Record<string, any>} */ message: Record<string, any>) => { wire.sent.push(message); return { messageRef: `ref-${wire.sent.length}` }; },
+    deleteMessage: async (/** @type {Record<string, any>} */ target: Record<string, any>) => { wire.deleted.push(target); },
+    answerCallbackQuery: async () => {}, leaveChat: async () => {},
+  };
+  const send = (/** @type {{ text: string, replyTo?: string }} */ message: { text: string; replyTo?: string; }) => provider.send(message);
+  const conversation = createConverse({ chairman: CHAIRMAN, ledger, send, queue: queue.port, queuePath: "/nowhere/queue.jsonl", agents: () => [{ label: "liaison", status: "idle" }] });
+  const answers = { answer: /** @param {Record<string, any>} accepted @returns {Promise<any>} a deliberately partial `Answered` */ async (accepted: Record<string, any>): Promise<any> => { toAnswers.push(accepted); return { action: "not-an-answer" }; } };
+  const offsets = { path: "/nowhere/offset", read: () => undefined, write: () => {} };
+  await runListener({
+    provider: /** @type {any} */ (provider), inbound, offsets, chairman: CHAIRMAN, sleep: async () => {}, signal: controller.signal,
+    onForward: createForwarder({ answers, send, converse: async (accepted) => { await conversation.forward(accepted); }, log: () => {} }),
+  });
+  return { queue: queue.calls, toAnswers, wire, ledgerText: readFileSync(path, "utf8") };
+}
+
 describe("#3442: a credential reaches neither the queue, the answers path, the ledger nor a quote, read end to end over recording ports", () => {
-  const X = "zq-fake-value-0";
-  const MIXED = "Aq9Zx7Lm2Kp4Vb8Nc3Jd5Hs6";
-  const GITHUB = ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join("");
-  /** Each of these holds a credential of the row's classes 1 to 3, and each needs the real classifier to refuse it. */
-  const CREDENTIAL_MESSAGES = [
-    `My password is: ${X}`, `password is ${X}`, `password: ${X}`, `password = ${X}`, `pw: ${X}`, `pwd=${X}`, `here's my password ${X}`, `my password ${X}`,
-    `${X} is my password`, GITHUB, ["xox", "b-1234567890-abcdefghijkl"].join(""), ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""), MIXED, `look: ${MIXED} thanks`,
-  ];
-  /** What of the value must appear nowhere afterwards: the whole, and a piece too long to be a coincidence. */
-  const FRAGMENTS = [X, "zq-fake", "fake-value", GITHUB.slice(0, 20), MIXED, MIXED.slice(4, 14), "abcdefghijkl", "ABCDEFGHIJKLMNOP"];
-
-  /** The queue port as a recorder: every call is kept, and it says QUEUED as the real one does. */
-  function recordingQueue() {
-    /** @type {Record<string, any>[]} */ const calls: Record<string, any>[] = [];
-    return {
-      calls,
-      port: {
-        EXIT: { OK: 0, REFUSED: 1, QUEUED: 2 }, STANCE: /** @type {const} */ ({ DECISION: "decision", FYI: "fyi", UNDECLARED: "undeclared", ORDER: "order" }), attributed: (/** @type {string} */ text: string) => text,
-        handoffId: () => "handoff/liaison/recorded", readHandoffs: () => [{ id: "handoff/liaison/recorded", session: "liaison", prompt: "" }],
-        run: () => "", NOT_QUEUED_PREFIX: "NOT PROMPTED, AND NOT QUEUED: ",
-        promptOrQueue(/** @type {Record<string, any>} */ order: Record<string, any>) { calls.push(order); return 2; },
-      },
-    };
-  }
-
-  /** The running loop over real `createInbound`, the real forwarder and the real `converse`, with a recorder at every port that leaves the process. */
-  async function run(/** @type {string[]} */ texts: string[]) {
-    const { ledger, inbound, path } = core();
-    const queue = recordingQueue();
-    const toAnswers: Record<string,any>[] = /** @type {Record<string, any>[]} */ ([]);
-    const controller = new AbortController();
-    const wire = /** @type {{ sent: Record<string, any>[], deleted: Record<string, any>[] }} */ ({ sent: [], deleted: [] });
-    const provider = {
-      poll: async () => { controller.abort(); return { updates: texts.map((text, index) => messageUpdate(300 + index, text)), cursor: 400 }; },
-      send: async (/** @type {Record<string, any>} */ message: Record<string, any>) => { wire.sent.push(message); return { messageRef: `ref-${wire.sent.length}` }; },
-      deleteMessage: async (/** @type {Record<string, any>} */ target: Record<string, any>) => { wire.deleted.push(target); },
-      answerCallbackQuery: async () => {}, leaveChat: async () => {},
-    };
-    const send = (/** @type {{ text: string, replyTo?: string }} */ message: { text: string; replyTo?: string; }) => provider.send(message);
-    const conversation = createConverse({ chairman: CHAIRMAN, ledger, send, queue: queue.port, queuePath: "/nowhere/queue.jsonl", agents: () => [{ label: "liaison", status: "idle" }] });
-    const answers = { answer: /** @param {Record<string, any>} accepted @returns {Promise<any>} a deliberately partial `Answered` */ async (accepted: Record<string, any>): Promise<any> => { toAnswers.push(accepted); return { action: "not-an-answer" }; } };
-    const offsets = { path: "/nowhere/offset", read: () => undefined, write: () => {} };
-    await runListener({
-      provider: /** @type {any} */ (provider), inbound, offsets, chairman: CHAIRMAN, sleep: async () => {}, signal: controller.signal,
-      onForward: createForwarder({ answers, send, converse: async (accepted) => { await conversation.forward(accepted); }, log: () => {} }),
-    });
-    return { queue: queue.calls, toAnswers, wire, ledgerText: readFileSync(path, "utf8") };
-  }
-
   test("POSITIVE CONTROL: a benign message IS queued once and answered once, so the empty readings below are not an inert harness", async () => {
     const result = await run(["why did the merge queue stall?"]);
     assert.equal(result.queue.length, 1, "the queue port was called once for the clean message");

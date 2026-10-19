@@ -63,6 +63,97 @@ export type OneShotLane = {
   briefRole: string;
 };
 
+/** The seams {@link createOneShot} takes: the row's reader, and where the records live, the clock and the writer, which a test passes in. */
+type CreateOptions = {
+  readRow: (row: number, key?: string) => { body: string; };
+  path?: string; now?: () => number; write?: typeof writeStandIn;
+};
+
+/** The seams {@link oneShotClaimer} takes: the row an order is about, and the labels present now. */
+type ClaimerOptions = { rowOf: (order: { causeKey: string; }) => OneShotRow | null; live: readonly { label: string; }[]; };
+
+/**
+ * The lane's hold, stand and forget (#914, #947), for one lane: {@link OneShot.hold} asks the row and the live seats, and {@link OneShot.stand} and {@link OneShot.forget} write and take
+ * back the record a one-shot seat stands on.
+ *
+ * @param lane the lane whose records these are: its `owner` writes them and its `briefRole` is checked before the claim
+ * @param readRow the row's body, one read; THROWS when it cannot (the order is then held: whether its Acceptance reaches the hardware is not known)
+ * @param path where the records live; the host's by default, a parameter so a test hands it a temp file
+ * @param write the writer of #947 (`lane-stand-in.ts`); a parameter so a test can count its calls
+ */
+function createOneShot(lane: OneShotLane, { readRow, path = standInPath(), now = Date.now, write = writeStandIn }: CreateOptions): OneShot {
+  const { owner, briefRole } = lane;
+  const mention = (row: OneShotRow) => `${row.key === "" ? "" : row.key}#${row.number}`;
+  return {
+    hold(row, seat, live) {
+      // THE BRIEF IS CHECKED BEFORE THE CLAIM: `addressed` throws naming a missing brief, and by then the row is claimed and a pane sits idle on it.
+      try {
+        briefRoleSentence(briefRole);
+      } catch (err) {
+        return `the ${briefRole} brief cannot be named (${String((err as Error).message).split("\n")[0]})`;
+      }
+      let body: string;
+      try {
+        body = readRow(row.number, row.key).body;
+      } catch (err) {
+        return `${mention(row)} could not be read (${String((err as Error).message ?? err).split("\n")[0].slice(0, 160)}), so whether its Acceptance reaches the fleet or the lab is not known and it is held, not guessed`;
+      }
+      const until = fleetHoldUntil(body);
+      if (until !== null && Date.parse(until) > now()) return `${mention(row)} carries \`Fleet-hold-until: ${until}\``;
+      if (fleetOrLabAcceptance(body) === null) return null;
+      const present = new Set(live.map((agent) => agent.label));
+      const running = readStandIns(path).filter((r) => r.owner === owner && r.seat !== seat && present.has(r.seat)
+        && now() - r.writtenAt >= 0 && now() - r.writtenAt <= STAND_IN_MAX_AGE_MS);
+      if (running.length === 0) return null;
+      return `${mention(row)}'s Acceptance names a fleet or lab command and one ${owner} run is live (${running.map((r) => `${r.seat} for #${r.row}`).join(", ")}): `
+        + "the hardware is single-operator, so this order is held until that run ends";
+    },
+    stand(row, seat) {
+      write({ seat, row: row.number, owner }, { path, now: now() });
+    },
+    forget(row, seat) {
+      const all = readStandIns(path);
+      const kept = all.filter((r: LaneStandIn) => !(r.seat === seat && r.row === row.number && r.owner === owner));
+      if (kept.length === all.length) return;
+      const tmp = `${path}.${process.pid}.tmp`;
+      writeFileSync(tmp, `${JSON.stringify(kept, null, 2)}\n`);
+      renameSync(tmp, path);
+    },
+  };
+}
+
+/**
+ * THE CLAIMER A ONE-SHOT RUN'S SPAWN USES: `inner`'s, preceded by {@link OneShot.hold} and {@link OneShot.stand}, and followed by {@link OneShot.forget} when the claim is refused or
+ * the spawn is undone after it (`release`). `spawnWorker` asks its host, brief and claimability checks BEFORE `claim`, so a record is only ever written for a seat about to claim.
+ *
+ * A REFUSAL, NOT A THROW, FOR A MISSING PIECE: with no `oneShot` or no `inner` the order is not spawned, because the one-at-a-time rule and the claim are what this run exists behind.
+ *
+ * @param owner the lane's owner, named in the refusals and as the records' owner
+ * @param opts `inner` and `oneShot` are the spawn path's own claimer and the lane's hold and stand; {@link ClaimerOptions} the rest
+ */
+function oneShotClaimer(owner: string, { inner, oneShot, rowOf, live }: ClaimerOptions & { inner: SpawnClaimer | undefined; oneShot: OneShot | undefined; }): SpawnClaimer | { refusal: string } {
+  if (inner === undefined || oneShot === undefined) {
+    return { refusal: `a one-shot ${owner} run needs the claim and the one-at-a-time guard, and was handed ${inner === undefined ? "no claimer" : "no guard"}` };
+  }
+  return {
+    claim(order, role, env) {
+      const row = rowOf(order);
+      if (row === null) return { refusal: `a one-shot ${owner} run names no row ("${order.causeKey}"), so there is no row to hold or claim` };
+      const held = oneShot.hold(row, role, live);
+      if (held !== null) return { refusal: `held: ${held}` };
+      oneShot.stand(row, role);
+      const claimed = inner.claim(order, role, env);
+      if ("refusal" in claimed) oneShot.forget(row, role);
+      return claimed;
+    },
+    release(claimed, role, env) {
+      oneShot.forget({ key: claimed.key ?? "", number: claimed.row }, role);
+      return inner.release(claimed, role, env);
+    },
+    ...(inner.tier === undefined ? {} : { tier: inner.tier }),
+  };
+}
+
 /**
  * THE ONE FACTORY BOTH ONE-SHOT LANES BUILD FROM (#914 Change 2): the ceo's here and the orchestrator's in `orchestrator-one-shot.ts`. Each lane is its {@link OneShotLane}; the
  * flag reader, the order filter, the spawn-path guard and the claimer are the same code with that lane's names, so a change to one lane cannot drift from the other.
@@ -125,88 +216,16 @@ export function oneShotFactory(lane: OneShotLane) {
   }
 
   /**
-   * @param readRow the row's body, one read; THROWS when it cannot (the order is then held: whether its Acceptance reaches the hardware is not known)
-   * @param path where the records live; the host's by default, a parameter so a test hands it a temp file
-   * @param write the writer of #947 (`lane-stand-in.ts`); a parameter so a test can count its calls
-   */
-  function create({ readRow, path = standInPath(), now = Date.now, write = writeStandIn }: {
-    readRow: (row: number, key?: string) => { body: string; };
-    path?: string; now?: () => number; write?: typeof writeStandIn;
-  }): OneShot {
-    const mention = (row: OneShotRow) => `${row.key === "" ? "" : row.key}#${row.number}`;
-    return {
-      hold(row, seat, live) {
-        // THE BRIEF IS CHECKED BEFORE THE CLAIM: `addressed` throws naming a missing brief, and by then the row is claimed and a pane sits idle on it.
-        try {
-          briefRoleSentence(briefRole);
-        } catch (err) {
-          return `the ${briefRole} brief cannot be named (${String((err as Error).message).split("\n")[0]})`;
-        }
-        let body: string;
-        try {
-          body = readRow(row.number, row.key).body;
-        } catch (err) {
-          return `${mention(row)} could not be read (${String((err as Error).message ?? err).split("\n")[0].slice(0, 160)}), so whether its Acceptance reaches the fleet or the lab is not known and it is held, not guessed`;
-        }
-        const until = fleetHoldUntil(body);
-        if (until !== null && Date.parse(until) > now()) return `${mention(row)} carries \`Fleet-hold-until: ${until}\``;
-        if (fleetOrLabAcceptance(body) === null) return null;
-        const present = new Set(live.map((agent) => agent.label));
-        const running = readStandIns(path).filter((r) => r.owner === owner && r.seat !== seat && present.has(r.seat)
-          && now() - r.writtenAt >= 0 && now() - r.writtenAt <= STAND_IN_MAX_AGE_MS);
-        if (running.length === 0) return null;
-        return `${mention(row)}'s Acceptance names a fleet or lab command and one ${owner} run is live (${running.map((r) => `${r.seat} for #${r.row}`).join(", ")}): `
-          + "the hardware is single-operator, so this order is held until that run ends";
-      },
-      stand(row, seat) {
-        write({ seat, row: row.number, owner }, { path, now: now() });
-      },
-      forget(row, seat) {
-        const all = readStandIns(path);
-        const kept = all.filter((r: LaneStandIn) => !(r.seat === seat && r.row === row.number && r.owner === owner));
-        if (kept.length === all.length) return;
-        const tmp = `${path}.${process.pid}.tmp`;
-        writeFileSync(tmp, `${JSON.stringify(kept, null, 2)}\n`);
-        renameSync(tmp, path);
-      },
-    };
-  }
-
-  /**
-   * THE CLAIMER A ONE-SHOT RUN'S SPAWN USES: `inner`'s, preceded by {@link OneShot.hold} and {@link OneShot.stand}, and followed by {@link OneShot.forget} when the claim is refused or
-   * the spawn is undone after it (`release`). `spawnWorker` asks its host, brief and claimability checks BEFORE `claim`, so a record is only ever written for a seat about to claim.
-   *
-   * A REFUSAL, NOT A THROW, FOR A MISSING PIECE: with no `oneShot` or no `inner` the order is not spawned, because the one-at-a-time rule and the claim are what this run exists behind.
+   * THE CLAIMER A ONE-SHOT RUN'S SPAWN USES: {@link oneShotClaimer} for this lane's owner, with `inner`'s claim and release.
    *
    * @param rowOf the row an order is about (`wake.ts`'s `rowRefOfOrder`); a parameter, so this module does not import the file that imports it
    * @param live the labels present now, which {@link OneShot.hold} reads for a run that is live
    */
-  function claimer(inner: SpawnClaimer | undefined, oneShot: OneShot | undefined, { rowOf, live }: {
-    rowOf: (order: { causeKey: string; }) => OneShotRow | null; live: readonly { label: string; }[];
-  }): SpawnClaimer | { refusal: string } {
-    if (inner === undefined || oneShot === undefined) {
-      return { refusal: `a one-shot ${owner} run needs the claim and the one-at-a-time guard, and was handed ${inner === undefined ? "no claimer" : "no guard"}` };
-    }
-    return {
-      claim(order, role, env) {
-        const row = rowOf(order);
-        if (row === null) return { refusal: `a one-shot ${owner} run names no row ("${order.causeKey}"), so there is no row to hold or claim` };
-        const held = oneShot.hold(row, role, live);
-        if (held !== null) return { refusal: `held: ${held}` };
-        oneShot.stand(row, role);
-        const claimed = inner.claim(order, role, env);
-        if ("refusal" in claimed) oneShot.forget(row, role);
-        return claimed;
-      },
-      release(claimed, role, env) {
-        oneShot.forget({ key: claimed.key ?? "", number: claimed.row }, role);
-        return inner.release(claimed, role, env);
-      },
-      ...(inner.tier === undefined ? {} : { tier: inner.tier }),
-    };
+  function claimer(inner: SpawnClaimer | undefined, oneShot: OneShot | undefined, opts: ClaimerOptions): SpawnClaimer | { refusal: string } {
+    return oneShotClaimer(owner, { inner, oneShot, ...opts });
   }
 
-  return { causes, enabled, isOrder, withOneShot, create, claimer };
+  return { causes, enabled, isOrder, withOneShot, create: (opts: CreateOptions) => createOneShot(lane, opts), claimer };
 }
 
 const ceo = oneShotFactory({

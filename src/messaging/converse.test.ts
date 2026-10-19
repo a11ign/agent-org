@@ -179,15 +179,26 @@ function harness({ queue, roster = ROSTER, send } = /** @type {Record<string, an
   return { queuePath, provider, clock, converse, accept, events, said: said.words, ledgerLines: () => readLedgerLines(ledgerPath), queued: () => entries(queuePath), delivered: () => [...delivered] };
 }
 
-/**
- * `skip` is the reason the real queue cannot load here, or false. It is on each test and not on the `describe()` that holds them, because rstest's shim refuses a `describe()`
- * option by name (a dropped `{ skip }` would RUN what node:test skips).
- * @param {Record<string, any>} queue @param {string} label @param {string | false} skip
- */
-function cases(queue: Record<string, any>, label: string, skip: string | false) {
-  const test = (/** @type {string} */ name: string, /** @type {() => void | Promise<void>} */ body: () => void | Promise<void>) => skippableTest(name, { skip }, body);
-  const ready = (/** @type {Record<string, any>} */ more: Record<string, any> = {}) => harness({ queue, ...more });
+/** What a chairman must never read in what he is told: the queue's vocabulary, a handoff, a path, an error class, or a session he does not know by name. */
+const INTERNAL = /NOT PROMPTED|NOT QUEUED|queue|handoff|\.ts|[/\\]|Error|\b(worker|reviewer)-\d+|\bwork:tick\b|prompt:session/i;
+/** @param {string} text */
+const plain = (text: string) => {
+  assert.ok(!INTERNAL.test(text), `plain words, no internal text: ${JSON.stringify(text)}`);
+  const names = text.match(/\b(liaison|ceo|orchestrator|product-manager|engineer|worker|reviewer)\b/g) ?? [];
+  assert.ok(names.every((name) => name === RECIPIENT || name === FALLBACK_RECIPIENT), `only the two sessions he knows by name: ${names}`);
+};
+const WITHOUT_LIAISON = ROSTER.filter((agent) => agent.label !== RECIPIENT);
 
+/** What the case groups share: the test registrar that honours the suite's `skip`, the harness over this queue, the queue and the label. */
+type CaseKit = {
+  test: (name: string, body: () => void | Promise<void>) => void;
+  ready: (more?: Record<string, any>) => ReturnType<typeof harness>;
+  queue: Record<string, any>;
+  label: string;
+};
+
+/** A chairman's message is queued once for the liaison, acknowledged in order, and never echoed. */
+function forwardedOnce({ test, ready }: CaseKit): void {
   test("done-when 1, and the POSITIVE CONTROL: the chairman's message IS queued, once, for the liaison and nobody else, with its provenance, and acknowledged once in plain words", async () => {
     const run = ready();
     const result = await run.converse.forward(run.accept(chairmanUpdate(1)));
@@ -241,17 +252,10 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.equal(new Set(run.queued().map((entry) => entry.id)).size, 2);
     assert.equal(run.provider.sent.length, 2);
   });
+}
 
-  /** What a chairman must never read in what he is told: the queue's vocabulary, a handoff, a path, an error class, or a session he does not know by name. */
-  const INTERNAL = /NOT PROMPTED|NOT QUEUED|queue|handoff|\.ts|[/\\]|Error|\b(worker|reviewer)-\d+|\bwork:tick\b|prompt:session/i;
-  /** @param {string} text */
-  const plain = (text: string) => {
-    assert.ok(!INTERNAL.test(text), `plain words, no internal text: ${JSON.stringify(text)}`);
-    const names = text.match(/\b(liaison|ceo|orchestrator|product-manager|engineer|worker|reviewer)\b/g) ?? [];
-    assert.ok(names.every((name) => name === RECIPIENT || name === FALLBACK_RECIPIENT), `only the two sessions he knows by name: ${names}`);
-  };
-  const WITHOUT_LIAISON = ROSTER.filter((agent) => agent.label !== RECIPIENT);
-
+/** The liaison's queue refuses (seat absent, inbox full, or a queue that says QUEUED and holds nothing): the message goes to ceo, with the reason. */
+function liaisonRefused({ test, ready, queue }: CaseKit): void {
   test("done-when 1: the liaison seat ABSENT from the roster -- the message is queued for ceo, with its provenance and a line saying why, and the ledger says so", async () => {
     const run = ready({ roster: WITHOUT_LIAISON });
     const result = await run.converse.forward(run.accept(chairmanUpdate(5)));
@@ -302,7 +306,10 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.ok(line, "the ledger holds the converse line");
     assert.match(line.refusals[0], /not in the queue file/);
   });
+}
 
+/** What the chairman is told after a reroute, a double refusal, or the liaison taking it. */
+function reportedToChairman({ test, ready }: CaseKit): void {
   test("done-when 2: what he is told after \"Got it\" for a rerouted message holds none of the queue's words, a handoff, a path, an error class or a session he does not know", async () => {
     for (const setup of [() => ready({ roster: WITHOUT_LIAISON }), () => { const run = ready(); fillQueue(run.queuePath, DEEP); return run; }]) {
       const run = setup();
@@ -345,7 +352,10 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.deepEqual([line.verdict, line.taker, line.refusals], ["queued", RECIPIENT, []]);
     assert.ok(!run.queued()[0].prompt.includes("came to you"), "no reroute line when the liaison took it");
   });
+}
 
+/** What is not conversation, what is not accepted, and a button's order for the liaison. */
+function inboundAndPresses({ test, ready, queue }: CaseKit): void {
   test("a value `createInbound` did not mint for THIS chairman queues nothing and sends nothing", async () => {
     const run = ready();
     const minted = run.accept(chairmanUpdate(8));
@@ -398,7 +408,10 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.equal(run.provider.sent.length, 0, "telling the chairman is the caller's");
     assert.ok(buttonOrderText({ text: "t", messageRef: "7" }, START).endsWith("\nt"), "the words are last");
   });
+}
 
+/** A button's order to the liaison when its queue refuses, and the unverified cases. */
+function buttonOrders({ test, ready, queue }: CaseKit): void {
   test("done-when 3: a button's order the liaison's queue refuses (seat absent, or inbox full) is queued for ceo with the reason, and the chairman's line is plain; the control above queues for the liaison", async () => {
     const absent = ready({ roster: WITHOUT_LIAISON });
     const rerouted = await absent.converse.orderLiaison({ text: "x", messageRef: "501" });
@@ -443,7 +456,10 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.deepEqual(run.provider.sent.map((message) => message.text), [ACKNOWLEDGEMENT, notReached()]);
     assert.equal(run.ledgerLines().find((line) => line.origin === "converse")?.handoff, null);
   });
+}
 
+/** An idle seat is prompted at once; only a busy one waits for the tick (done-when 7). */
+function promptingSeats({ test, ready }: CaseKit): void {
   // ---- DONE-WHEN 7 (a11ign/a11ign#3536): an idle seat is prompted at once; only a busy one waits for the tick ----------------------------------------------------------------
 
   test("done-when 7, the CONTROL: a BUSY liaison is queued for the tick, nothing is typed into it, and the ledger says `queued`", async () => {
@@ -494,7 +510,10 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.equal(run.queued().length, DEEP);
     assert.deepEqual(run.delivered().map((sent) => sent.label), [FALLBACK_RECIPIENT]);
   });
+}
 
+/** Orders that went with a caution, a dispatch that throws, and a button's order to an idle seat. */
+function promptingEdgeCases({ test, queue }: CaseKit): void {
   test("done-when 7: an order that WENT and came back with a caution (a refused /clear: REFUSED, and no queue prefix) is delivered, and is NOT sent again to ceo", async () => {
     const cautious = { ...queue, promptOrQueue: (/** @type {Record<string, any>} */ order: Record<string, any>) => { delivered.push({ label: order.label, text: order.text }); process.stderr.write("`/clear` was refused; the order went on a full context\n"); return queue.EXIT.REFUSED; } };
     const run = harness({ queue: cautious, roster: IDLE_ROSTER });
@@ -524,7 +543,10 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.deepEqual([held.queued, held.taker, busy.delivered().length, busy.queued().length], [true, RECIPIENT, 0, 1]);
     assert.match(held.say, /^queued for liaison, handoff /);
   });
+}
 
+/** The provenance line the chairman's message is queued with. */
+function provenanceCases({ test, label }: CaseKit): void {
   test(`${label}: provenanceText no longer tells the reader to avoid prompt:session (that is the liaison's brief, B3, and ceo is reached through it)`, () => {
     assert.ok(!/prompt:session/.test(provenanceText({ messageId: 7, updateId: 3, text: "the words" }, START)));
   });
@@ -534,6 +556,25 @@ function cases(queue: Record<string, any>, label: string, skip: string | false) 
     assert.deepEqual(text.split("\n").slice(1, 4), [SOURCE_LINE, "Telegram message: 7 (update 3)", "Received: 2026-10-02T10:00:00.000Z"]);
     assert.ok(text.endsWith("\nthe words"));
   });
+}
+
+/**
+ * `skip` is the reason the real queue cannot load here, or false. It is on each test and not on the `describe()` that holds them, because rstest's shim refuses a `describe()`
+ * option by name (a dropped `{ skip }` would RUN what node:test skips).
+ * @param {Record<string, any>} queue @param {string} label @param {string | false} skip
+ */
+function cases(queue: Record<string, any>, label: string, skip: string | false) {
+  const test = (/** @type {string} */ name: string, /** @type {() => void | Promise<void>} */ body: () => void | Promise<void>) => skippableTest(name, { skip }, body);
+  const ready = (/** @type {Record<string, any>} */ more: Record<string, any> = {}) => harness({ queue, ...more });
+  const kit: CaseKit = { test, ready, queue, label };
+  forwardedOnce(kit);
+  liaisonRefused(kit);
+  reportedToChairman(kit);
+  inboundAndPresses(kit);
+  buttonOrders(kit);
+  promptingSeats(kit);
+  promptingEdgeCases(kit);
+  provenanceCases(kit);
 }
 
 describe("fake queue port", () => cases(fakeQueue, "fake", false));

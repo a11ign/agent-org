@@ -391,23 +391,23 @@ describe("the free-text rules, each side of each pattern", () => {
   });
 });
 
-describe("createGhReaders: the real reads, over a fake gh and a fake systemctl", () => {
-  const API = (/** @type {string} */ path: string) => `api ${path}`;
-  /** @param {Record<string, unknown>} routes `gh`'s argv joined by a space -> the JSON it prints; an unrouted command throws, so an extra call is a failure */
-  function ghFor(routes: Record<string, unknown>) {
-    /** @type {string[]} */
-    const asked: string[] = [];
-    const gh = async (/** @type {string[]} */ argv: string[]) => {
-      asked.push(argv.join(" "));
-      const answer = routes[argv.join(" ")];
-      if (answer === undefined) throw new Error(`no route for: gh ${argv.join(" ")}`);
-      return JSON.stringify(answer);
-    };
-    return { gh, asked };
-  }
-  const systemctlOf = (/** @type {string} */ output: string) => async () => output;
-  const noSystemctl = systemctlOf("");
+const API = (/** @type {string} */ path: string) => `api ${path}`;
+/** @param {Record<string, unknown>} routes `gh`'s argv joined by a space -> the JSON it prints; an unrouted command throws, so an extra call is a failure */
+function ghFor(routes: Record<string, unknown>) {
+  /** @type {string[]} */
+  const asked: string[] = [];
+  const gh = async (/** @type {string[]} */ argv: string[]) => {
+    asked.push(argv.join(" "));
+    const answer = routes[argv.join(" ")];
+    if (answer === undefined) throw new Error(`no route for: gh ${argv.join(" ")}`);
+    return JSON.stringify(answer);
+  };
+  return { gh, asked };
+}
+const systemctlOf = (/** @type {string} */ output: string) => async () => output;
+const noSystemctl = systemctlOf("");
 
+describe("createGhReaders: the real reads, over a fake gh and a fake systemctl", () => {
   test("issue: its state and label names; a PULL REQUEST number is refused with the remedy (the issues endpoint answers for both)", async () => {
     const { gh } = ghFor({
       [API(`repos/${REPO}/issues/10`)]: { number: 10, state: "open", labels: [{ name: "ready" }, { name: "lane:any" }] },
@@ -440,6 +440,9 @@ describe("createGhReaders: the real reads, over a fake gh and a fake systemctl",
     assert.deepEqual(await readers.run(6), { status: "in_progress", conclusion: null });
   });
 
+});
+
+describe("createGhReaders: the real reads, over a fake gh and a fake systemctl", () => {
   test("ready counts the rows the watcher counts as waiting, and the last merge is the newest merged_at", async () => {
     const { gh } = ghFor({
       [API(`repos/${REPO}/issues?labels=ready&state=open&per_page=100`)]: [
@@ -485,13 +488,13 @@ describe("createGhReaders: the real reads, over a fake gh and a fake systemctl",
   });
 });
 
-describe("#3565: a refusal reads the row itself and names the fix with its values in, and the corrected text then sends", () => {
-  /** The row #3542 as GitHub has it: closed, and not a pull request (the pull request read throws, as the real one does for an issue). */
-  const closedRow = {
-    issue: async (/** @type {number} */ number: number) => ({ number, state: "closed", labels: [] }),
-    pr: async (/** @type {number} */ number: number) => { throw new Error(`no pull request ${number}`); },
-  };
+/** The row #3542 as GitHub has it: closed, and not a pull request (the pull request read throws, as the real one does for an issue). */
+const closedRow = {
+  issue: async (/** @type {number} */ number: number) => ({ number, state: "closed", labels: [] }),
+  pr: async (/** @type {number} */ number: number) => { throw new Error(`no pull request ${number}`); },
+};
 
+describe("#3565: a refusal reads the row itself and names the fix with its values in, and the corrected text then sends", () => {
   test("(a) '#3542 is closed' is refused with the corrected text, and that text SENDS and says '#3542 is closed'", async () => {
     const { reply, provider } = harness(closedRow);
     const refused = /** @type {any} */ (await reply.send("#3542 is closed"));
@@ -530,6 +533,9 @@ describe("#3565: a refusal reads the row itself and names the fix with its value
     assert.equal(provider.sent[0].text, `#2881 is merged\n\n${STAMP}`);
   });
 
+});
+
+describe("#3565: a refusal reads the row itself and names the fix with its values in, and the corrected text then sends", () => {
   test("a number neither reader can return is refused with why, and offers nothing to send", async () => {
     const nothing = async () => { throw new Error("HTTP 404"); };
     const { reply, provider } = harness({ issue: nothing, pr: nothing });

@@ -485,6 +485,23 @@ export const outsideArmListArgs = (repo: string): string[] => portListArgs(repo,
 export type OutsideArmResult = { armed: number[]; readied: number[]; left: Array<{ number: number; why: string; }>; failed: number[]; cannotAsk: boolean; };
 
 /**
+ * The two reads a pass decides on: the policy fields of each open pull request (`prs`, when the caller holds them) and the armed state of each.
+ * @returns both, or `null` when either read failed, which is logged: nothing is armed by a pass that cannot ask.
+ */
+function readOutsideArmLists({ repo, prs, run, log }: { repo: string; prs: OutsideArmPr[] | undefined; run: (ghArgs: string[]) => string; log: (line: string) => void; }): { listed: OutsideArmPr[]; armedBy: Map<number, boolean>; } | null {
+  try {
+    const listed: OutsideArmPr[] = prs ?? JSON.parse(run(outsideArmListArgs(repo)));
+    const nodes = JSON.parse(run(openPullRequestsQueryArgs(repo)));
+    if (!Array.isArray(listed) || !Array.isArray(nodes)) throw new Error("a read did not return a list");
+    const armedBy = new Map(nodes.map((node: { number: number | string; }) => [Number(node?.number), armedFromApi(node as Parameters<typeof armedFromApi>[0])]));
+    return { listed, armedBy };
+  } catch (cause) {
+    log(`OUTSIDE-ARM: COULD NOT ASK -- ${cause instanceof Error ? cause.message : cause}. Nothing was armed this pass.`);
+    return null;
+  }
+}
+
+/**
  * agent-org#1573: ONE PASS OF THE OUTSIDE HOME OVER THE OPEN PULL REQUESTS OF `repo`, behind the flag. OFF OR UNREADABLE READS NOTHING AND WRITES NOTHING.
  * `prs` may be handed in by a caller that already holds the policy fields (the gate does); `armed` is read once, with the sweep's own query. A pull request the armed read did not
  * return is `null`, which {@link outsideArmVerdict} refuses. Each pull request is armed through `arm-pr`'s own command (`runArmPr`: the hold, authorship, ejection, blocker and
@@ -499,18 +516,12 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
 }): OutsideArmResult {
   const result: OutsideArmResult = { armed: [], readied: [], left: [], failed: [], cannotAsk: false };
   if (!on) return result;
-  let listed: OutsideArmPr[];
-  let armedBy: Map<number, boolean>;
-  try {
-    listed = prs ?? JSON.parse(run(outsideArmListArgs(repo)));
-    const nodes = JSON.parse(run(openPullRequestsQueryArgs(repo)));
-    if (!Array.isArray(listed) || !Array.isArray(nodes)) throw new Error("a read did not return a list");
-    armedBy = new Map(nodes.map((node: { number: number | string; }) => [Number(node?.number), armedFromApi(node as Parameters<typeof armedFromApi>[0])]));
-  } catch (cause) {
-    log(`OUTSIDE-ARM: COULD NOT ASK -- ${cause instanceof Error ? cause.message : cause}. Nothing was armed this pass.`);
+  const lists = readOutsideArmLists({ repo, prs, run, log });
+  if (lists === null) {
     result.cannotAsk = true;
     return result;
   }
+  const { listed, armedBy } = lists;
   for (const pr of listed) {
     const verdict = outsideArmVerdict(pr, armedBy.get(Number(pr.number)) ?? null);
     if (verdict.act === "leave") { result.left.push({ number: pr.number, why: verdict.why }); continue; }
@@ -581,6 +592,63 @@ function sleepSync(ms: number) {
 /** @param {string[]} args */
 const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
+/**
+ * One candidate of the sweep: ask about it, skip it when a refusal or the outside switch holds it, and arm it, reading the arm back.
+ * A pull request the sweep could not ask about or could not arm is pushed into `failed`, which is named, never counted as a skip.
+ */
+function sweepCandidate(number: string, { repo, outside, failed }: { repo: string; outside: boolean; failed: string[]; }): void {
+  let labels, head, checkRunCount, author, prBody;
+  try {
+    labels = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels", "-q", "[.labels[].name]"]));
+    author = gh(["pr", "view", number, "--repo", repo, "--json", "author", "-q", ".author.login"]);
+    prBody = gh(["pr", "view", number, "--repo", repo, "--json", "body", "-q", ".body"]);
+    head = gh(["pr", "view", number, "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]);
+    checkRunCount = Number(gh(["api", `repos/${repo}/commits/${head}/check-runs`, "--jq", ".total_count"]));
+  } catch (cause) {
+    // A PR we could not ASK about is not a PR we may arm, and it is not a clean skip either.
+    console.log(`SWEEP: #${number} COULD NOT ASK -- ${cause instanceof Error ? cause.message : cause}`);
+    failed.push(number);
+    return;
+  }
+
+  if (outside && pullRequestFieldsOf({ repo, number: Number(number), fields: "isCrossRepository", run: gh })?.isCrossRepository !== false) {
+    console.log(`SWEEP: #${number} SKIPPED -- its head is in a fork, or whether it is was not read`);
+    return;
+  }
+  const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
+  // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
+  const refusal = arm ? refusalBeforeArming({ number, repo, author, prBody, run: gh }) : ({ kind: "clear" } as { kind: "clear" });
+  if (refusal.kind !== "clear") {
+    console.log(`SWEEP: #${number} SKIPPED -- ${refusal.why}`);
+    if (refusal.kind === "open-blocker" || refusal.kind === "cross-repo-red") announceBlocked({ number, repo, verdict: refusal, run: gh, error: console.error });
+    else if (refusal.kind === "deliberate") announceBlocked({ number, repo, verdict: { why: refusal.why, deliberate: true }, run: gh, error: console.error });
+    if (refusal.kind === "cannot-ask") failed.push(number);
+    return;
+  }
+  if (!arm) {
+    console.log(`SWEEP: #${number} SKIPPED -- ${reason}`);
+    return;
+  }
+
+  try {
+    gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo]);
+    // NOT THROWING IS NOT ARMED (#1729). `gh` can print "already queued to merge" to stderr and still
+    // exit 0 without the mutation landing -- read `autoMergeRequest` back before believing it.
+    if (confirmArmed(number, repo)) {
+      console.log(`SWEEP: #${number} ARMED -- ${reason}`);
+    } else {
+      console.log(`SWEEP: #${number} ARM CLAIMED BUT NOT CONFIRMED -- gh pr merge --auto did not throw, `
+        + `but autoMergeRequest is still null and the PR is not merged after ${CONFIRM_ARMED_READS} reads`);
+      failed.push(number);
+    }
+  } catch (cause) {
+    // WHY IT THREW IS ASKED OF THE API, never inferred from the exit code -- see `armFailureVerdict`.
+    const verdict = armFailureVerdict({ number, repo, cause });
+    console.log(verdict.line);
+    if (verdict.failed) failed.push(number);
+  }
+}
+
 function main() {
   refuseUnknownFlags(["--outside-switches="], { entry: import.meta.url, command: "node packages/agent-org/src/auto-arm-sweep.ts" });
 
@@ -612,58 +680,9 @@ function main() {
   }
   console.log(`SWEEP: ${candidates.length} unarmed: ${candidates.join(" ")}`);
 
-  const failed = [];
+  const failed: string[] = [];
   for (const number of candidates) {
-    let labels, head, checkRunCount, author, prBody;
-    try {
-      labels = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels", "-q", "[.labels[].name]"]));
-      author = gh(["pr", "view", number, "--repo", repo, "--json", "author", "-q", ".author.login"]);
-      prBody = gh(["pr", "view", number, "--repo", repo, "--json", "body", "-q", ".body"]);
-      head = gh(["pr", "view", number, "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]);
-      checkRunCount = Number(gh(["api", `repos/${repo}/commits/${head}/check-runs`, "--jq", ".total_count"]));
-    } catch (cause) {
-      // A PR we could not ASK about is not a PR we may arm, and it is not a clean skip either.
-      console.log(`SWEEP: #${number} COULD NOT ASK -- ${cause instanceof Error ? cause.message : cause}`);
-      failed.push(number);
-      continue;
-    }
-
-    if (outside && pullRequestFieldsOf({ repo, number: Number(number), fields: "isCrossRepository", run: gh })?.isCrossRepository !== false) {
-      console.log(`SWEEP: #${number} SKIPPED -- its head is in a fork, or whether it is was not read`);
-      continue;
-    }
-    const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
-    // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
-    const refusal = arm ? refusalBeforeArming({ number, repo, author, prBody, run: gh }) : ({ kind: "clear" } as { kind: "clear" });
-    if (refusal.kind !== "clear") {
-      console.log(`SWEEP: #${number} SKIPPED -- ${refusal.why}`);
-      if (refusal.kind === "open-blocker" || refusal.kind === "cross-repo-red") announceBlocked({ number, repo, verdict: refusal, run: gh, error: console.error });
-      else if (refusal.kind === "deliberate") announceBlocked({ number, repo, verdict: { why: refusal.why, deliberate: true }, run: gh, error: console.error });
-      if (refusal.kind === "cannot-ask") failed.push(number);
-      continue;
-    }
-    if (!arm) {
-      console.log(`SWEEP: #${number} SKIPPED -- ${reason}`);
-      continue;
-    }
-
-    try {
-      gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo]);
-      // NOT THROWING IS NOT ARMED (#1729). `gh` can print "already queued to merge" to stderr and still
-      // exit 0 without the mutation landing -- read `autoMergeRequest` back before believing it.
-      if (confirmArmed(number, repo)) {
-        console.log(`SWEEP: #${number} ARMED -- ${reason}`);
-      } else {
-        console.log(`SWEEP: #${number} ARM CLAIMED BUT NOT CONFIRMED -- gh pr merge --auto did not throw, `
-          + `but autoMergeRequest is still null and the PR is not merged after ${CONFIRM_ARMED_READS} reads`);
-        failed.push(number);
-      }
-    } catch (cause) {
-      // WHY IT THREW IS ASKED OF THE API, never inferred from the exit code -- see `armFailureVerdict`.
-      const verdict = armFailureVerdict({ number, repo, cause });
-      console.log(verdict.line);
-      if (verdict.failed) failed.push(number);
-    }
+    sweepCandidate(number, { repo, outside, failed });
   }
 
   if (failed.length > 0) {

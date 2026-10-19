@@ -133,64 +133,64 @@ describe("the writer over `gh` (done-when 2)", () => {
   });
 });
 
-describe("a stream of updates through the listener's wiring (done-when 3)", () => {
-  const ASK_A = { message: 501, row: 2885 };
-  const ASK_B = { message: 601, row: 2886 };
+const ASK_A = { message: 501, row: 2885 };
+const ASK_B = { message: 601, row: 2886 };
 
-  /** The chairman's press under bot message 501, a reply to bot message 601, and a message that replies to nothing. */
-  /** @type {any[]} */
-  const updates: any[] = [
-    { update_id: 1, callback_query: { id: "cbq-1", from: { id: CHAIRMAN.userId }, data: buttonData("A"), message: { message_id: ASK_A.message, chat: { id: CHAIRMAN.chatId, type: "private" } } } },
-    { update_id: 2, message: { message_id: 902, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text: "hold it until Monday", reply_to_message: { message_id: ASK_B.message } } },
-    { update_id: 3, message: { message_id: 903, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text: "how is the queue today?" } },
-  ];
+/** The chairman's press under bot message 501, a reply to bot message 601, and a message that replies to nothing. */
+/** @type {any[]} */
+const updates: any[] = [
+  { update_id: 1, callback_query: { id: "cbq-1", from: { id: CHAIRMAN.userId }, data: buttonData("A"), message: { message_id: ASK_A.message, chat: { id: CHAIRMAN.chatId, type: "private" } } } },
+  { update_id: 2, message: { message_id: 902, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text: "hold it until Monday", reply_to_message: { message_id: ASK_B.message } } },
+  { update_id: 3, message: { message_id: 903, from: { id: CHAIRMAN.userId }, chat: { id: CHAIRMAN.chatId, type: "private" }, text: "how is the queue today?" } },
+];
 
-  /**
-   * @param {any[]} stream
-   * @param {(parts: {ledger: any, say: (text: string) => void}) => (accepted: Readonly<Record<string, any>>) => Promise<unknown> | void} [consumer] what takes what is not an answer: a recorder unless a test passes the real one
-   * @returns {Promise<{events: string[], rows: Map<number, any>}>} what happened, in order
-   */
-  async function listen(stream: any[], consumer: (parts: { ledger: any; say: (text: string) => void; }) => (accepted: Readonly<Record<string, any>>) => Promise<unknown> | void = ({ say }) => (accepted) => say(`converse ${accepted.text}`)): Promise<{ events: string[]; rows: Map<number, any>; }> {
-    const rows = new Map([ASK_A, ASK_B].map(({ row }) => [row, { state: "open", labels: ["ready", NEEDS_CHAIRMAN], comments: [{ ...manyComments(1)[0], body: brief(`Ask ${row}`) }] }]));
-    /** @type {string[]} */
-    const events: string[] = [];
-    const gh = fixtureGh(rows);
-    const writer = createGithubWriter({
-      // Only the writes are events: the reads are the answer's own business and the order of the WRITES is the design.
-      run: async (argv) => {
-        if (argv.includes("--method")) events.push(`gh ${argv[2]} ${argv[3].replace(/^repos\/[^/]+\/[^/]+\/issues\//, "")}`);
-        return gh.run(argv);
-      },
-    });
-    let at = Date.parse("2026-10-02T10:00:00Z");
-    const now = () => at += 1000;
-    const ledger = createLedger({ path: join(scratch, `ledger-${Math.random().toString(36).slice(2)}.jsonl`), now });
-    for (const { message, row } of [ASK_A, ASK_B]) {
-      ledger.append(deliveryLine({ key: `request:${REPO}#${row}`, provider: "fake", status: STATUS.sent, providerMessageId: String(message), kind: "request", stateHash: "h" }));
-    }
-    const answers = createAnswers({ ledger, github: writer, chairman: CHAIRMAN, answerLabel: ANSWER_LABEL, now });
-    const send = async (/** @type {{text: string}} */ { text }: { text: string; }) => { events.push(`send ${text}`); return { messageRef: "1" }; };
-    const consume = consumer({ ledger, say: (text) => events.push(text) });
-    // The forwarder's converse port reports nothing, and the real `converse` reports an outcome: the wrapper drops it, as the forwarder does.
-    const onForward = createForwarder({ answers, send, converse: async (accepted) => { await consume(accepted); }, log: (line) => events.push(`log ${line}`) });
-    const stop = new AbortController();
-    let served = false;
-    const provider = {
-      /** @param {number | undefined} cursor */
-      async poll(cursor: number | undefined) {
-        if (served) { stop.abort(); return { updates: [], cursor }; }
-        served = true;
-        return { updates: stream, cursor: 4 };
-      },
-      async answerCallbackQuery() {}, async leaveChat() {}, async deleteMessage() {}, async send() {},
-    };
-    await runListener({
-      provider: /** @type {any} */ (provider), inbound: createInbound({ ledger, chairman: CHAIRMAN }), offsets: { path: "", read: () => undefined, write: () => {} },
-      chairman: CHAIRMAN, onForward, sleep: async () => {}, signal: stop.signal,
-    });
-    return { events, rows };
+/**
+ * @param {any[]} stream
+ * @param {(parts: {ledger: any, say: (text: string) => void}) => (accepted: Readonly<Record<string, any>>) => Promise<unknown> | void} [consumer] what takes what is not an answer: a recorder unless a test passes the real one
+ * @returns {Promise<{events: string[], rows: Map<number, any>}>} what happened, in order
+ */
+async function listen(stream: any[], consumer: (parts: { ledger: any; say: (text: string) => void; }) => (accepted: Readonly<Record<string, any>>) => Promise<unknown> | void = ({ say }) => (accepted) => say(`converse ${accepted.text}`)): Promise<{ events: string[]; rows: Map<number, any>; }> {
+  const rows = new Map([ASK_A, ASK_B].map(({ row }) => [row, { state: "open", labels: ["ready", NEEDS_CHAIRMAN], comments: [{ ...manyComments(1)[0], body: brief(`Ask ${row}`) }] }]));
+  /** @type {string[]} */
+  const events: string[] = [];
+  const gh = fixtureGh(rows);
+  const writer = createGithubWriter({
+    // Only the writes are events: the reads are the answer's own business and the order of the WRITES is the design.
+    run: async (argv) => {
+      if (argv.includes("--method")) events.push(`gh ${argv[2]} ${argv[3].replace(/^repos\/[^/]+\/[^/]+\/issues\//, "")}`);
+      return gh.run(argv);
+    },
+  });
+  let at = Date.parse("2026-10-02T10:00:00Z");
+  const now = () => at += 1000;
+  const ledger = createLedger({ path: join(scratch, `ledger-${Math.random().toString(36).slice(2)}.jsonl`), now });
+  for (const { message, row } of [ASK_A, ASK_B]) {
+    ledger.append(deliveryLine({ key: `request:${REPO}#${row}`, provider: "fake", status: STATUS.sent, providerMessageId: String(message), kind: "request", stateHash: "h" }));
   }
+  const answers = createAnswers({ ledger, github: writer, chairman: CHAIRMAN, answerLabel: ANSWER_LABEL, now });
+  const send = async (/** @type {{text: string}} */ { text }: { text: string; }) => { events.push(`send ${text}`); return { messageRef: "1" }; };
+  const consume = consumer({ ledger, say: (text) => events.push(text) });
+  // The forwarder's converse port reports nothing, and the real `converse` reports an outcome: the wrapper drops it, as the forwarder does.
+  const onForward = createForwarder({ answers, send, converse: async (accepted) => { await consume(accepted); }, log: (line) => events.push(`log ${line}`) });
+  const stop = new AbortController();
+  let served = false;
+  const provider = {
+    /** @param {number | undefined} cursor */
+    async poll(cursor: number | undefined) {
+      if (served) { stop.abort(); return { updates: [], cursor }; }
+      served = true;
+      return { updates: stream, cursor: 4 };
+    },
+    async answerCallbackQuery() {}, async leaveChat() {}, async deleteMessage() {}, async send() {},
+  };
+  await runListener({
+    provider: /** @type {any} */ (provider), inbound: createInbound({ ledger, chairman: CHAIRMAN }), offsets: { path: "", read: () => undefined, write: () => {} },
+    chairman: CHAIRMAN, onForward, sleep: async () => {}, signal: stop.signal,
+  });
+  return { events, rows };
+}
 
+describe("a stream of updates through the listener's wiring (done-when 3)", () => {
   test("a press, a reply and a plain message produce the row writes, the two replies and one pass-through, in that order", async () => {
     const { events, rows } = await listen(updates);
     assert.deepEqual(events, [
@@ -220,7 +220,9 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
     assert.match(queued[0].prompt, /how is the queue today\?/);
     assert.doesNotMatch(queued[0].prompt, /hold it until Monday/);
   });
+});
 
+describe("a stream of updates through the listener's wiring (done-when 3)", () => {
   test("the control: the same stream with the reply's target removed writes nothing for it and passes it through, so a value without the target fails above", async () => {
     const { events } = await listen([updates[0], { update_id: 2, message: { ...updates[1].message, reply_to_message: undefined } }, updates[2]]);
     assert.deepEqual(events.filter((event) => event.startsWith("converse")), ["converse hold it until Monday", "converse how is the queue today?"]);

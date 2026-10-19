@@ -148,7 +148,9 @@ describe("chairman:correct", () => {
     control.row.comments.push({ body: lacking, createdAt: new Date(NOW + 5).toISOString(), authorAssociation: "MEMBER" });
     assert.equal(latestBrief(control.row.comments)?.body, lacking, "it WOULD have been the newest, which is why it is checked first");
   });
+});
 
+describe("chairman:correct", () => {
   test("a verb outside the three is refused, and so is no verb; nothing is written for either", async () => {
     assert.deepEqual(VERBS, ["withdraw", "reroute", "re-ask"]);
     for (const as of ["close", "approve", "answer", "relabel", "edit", "", "undefined", "WITHDRAW", "__proto__", "toString"]) {

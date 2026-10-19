@@ -157,7 +157,9 @@ describe("a button press (done-whens 1 and 4)", () => {
     assert.deepEqual(results.map((result) => /** @type {any} */ (result).reason).sort(), ["already-answered", "answered"]);
     assert.deepEqual(concurrent.github.writes(), ["comment", "remove-label", "set-answer"]);
   });
+});
 
+describe("a button press (done-whens 1 and 4)", () => {
   test("a failure between the steps is RESUMED by the next press, without a second comment", async () => {
     const h = harness();
     h.github.failOnce.add("set-answer");
@@ -456,7 +458,9 @@ describe("explain and stuck queue ONE order for the liaison and nobody else (don
     assert.equal(/** @type {any} */ (await h.hear(press(2, { data: actionData("explain") }))).reason, "already-asked");
     assert.equal(orders.calls.length, 1);
   });
+});
 
+describe("explain and stuck queue ONE order for the liaison and nobody else (done-when 5)", () => {
   test("forme (#3581): a press writes ONE line chairman:queue accepts as his OK, leaves the row asking, and tells him in plain words", async () => {
     const orders = fixtureOrders();
     const h = harness(openRow(), { orders });

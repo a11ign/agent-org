@@ -183,6 +183,130 @@ function overflowLine(count: number): string {
  */
 type Decision = { key: string; action: string; };
 
+/** What the messenger's effects close over, handed to the functions that make them: the provider, the ledger writer and its fold, the asks, the rate limiter and the config. */
+type Effects = {
+  provider: any; limiter: ReturnType<typeof createRateLimiter>; record: (fields: Record<string, unknown>) => Record<string, any>;
+  state: ReturnType<typeof foldLedger>; asks: ReturnType<typeof createAsks>; config: Config; now: () => number; maxText: number;
+  refusedBefore: Set<string>; refusesAskingAnnouncements: boolean; onMisuse: (event: FailureEvent) => void;
+};
+
+/** Asks the rate limiter, then the provider. */
+async function attemptSend(ctx: Effects, key: string, message: Record<string, any>, extra: Record<string, unknown>): Promise<{ status: string; line: Record<string, any>; }> {
+  const { limiter, record, provider } = ctx;
+  const gate = limiter.tryAcquire();
+  if (!gate.ok) {
+    const status = gate.reason === "hourly-cap" ? STATUS.digested : STATUS.deferred;
+    return { status, line: record({ key, status, reason: gate.reason, ...extra }) };
+  }
+  try {
+    const result = await provider.send(message);
+    if (typeof result?.messageRef !== "string" || result.messageRef === "") throw new Error("provider returned no messageRef");
+    limiter.noteDelivered();
+    // `silent` is what the provider says it APPLIED, not what was asked: a bot cannot read `disable_notification` back, so this line is
+    // the only evidence "was it silent" will ever have. A provider that returns none is `null` (unknown), never `false` (loud).
+    const silent = typeof result.silent === "boolean" ? result.silent : null;
+    return { status: STATUS.sent, line: record({ key, status: STATUS.sent, providerMessageId: result.messageRef, silent, ...extra }) };
+  } catch (error) {
+    return { status: STATUS.failed, line: record({ key, status: STATUS.failed, error: describeError(error), ...extra }) };
+  }
+}
+
+/** Refused BEFORE the rate limiter is asked: a kind that cannot be routed spends none of the hour's allowance. */
+function refuse({ record }: Effects, event: MessagingEvent, error: string): Decision {
+  record({ key: event.key, status: STATUS.invalid, error });
+  return { key: event.key, action: "invalid" };
+}
+
+function refuseUndeclared(ctx: Effects, event: MessagingEvent): Decision {
+  return refuse(ctx, event, `alert not sent: kind ${JSON.stringify(event.kind)} declares no audience (ask or announcement), and the sender never defaults one`);
+}
+
+/**
+ * An announcement that asks is refused with the flag on (agent-org#1222), and the refusal names the remedy: an ask has a row and a record, an announcement has
+ * neither. Written ONCE per held text and counted once in the failure ledger, under the kind the audit uses.
+ */
+function refuseAsking({ refusedBefore, record, onMisuse }: Effects, event: MessagingEvent): Decision {
+  const stateHash = stateFingerprint({ state: event.text });
+  if (refusedBefore.has(`${event.key}\t${stateHash}`)) return { key: event.key, action: "duplicate" };
+  refusedBefore.add(`${event.key}\t${stateHash}`);
+  record({
+    key: event.key, status: STATUS.invalid, misuse: HALF.question, stateHash, held: excerptOf(event.text),
+    error: `announcement not sent: ${JSON.stringify(event.key)} asks the chairman something, and an announcement asks nothing. Put the ask on a row with needs:chairman and a BRIEF (#3409), so it has a row and a record to be ticked against.`,
+  });
+  onMisuse(refusalEventOf(event.key, event.text));
+  return { key: event.key, action: "invalid" };
+}
+
+/**
+ * A resolved ask is TICKED where it stands and sends nothing (#4745). When it cannot be (no provider edit, no message the ledger knows, or the edit
+ * failed and said so on a line), the old "cleared" message is the answer, so a resolved ask is never left unticked AND unannounced.
+ */
+async function tickInPlace({ asks }: Effects, event: MessagingEvent): Promise<Decision | null> {
+  const outcome = firstLineOf(event.text);
+  return (await asks.tickResolved({ key: event.key, outcome })) ? { key: event.key, action: "cleared" } : null;
+}
+
+async function deliver(ctx: Effects, event: MessagingEvent, plan: Extract<Plan, { action: "send"; }>): Promise<Decision> {
+  const { audience } = plan;
+  const { config, state, maxText, provider, asks, refusesAskingAnnouncements } = ctx;
+  if (audience === undefined || !AUDIENCES.includes(audience)) return refuseUndeclared(ctx, event);
+  if (refusesAskingAnnouncements && audience === AUDIENCE.announcement && announcementAsks(event.key, event.text)) return refuseAsking(ctx, event);
+  const policy = config.kinds[event.kind];
+  const asked = audience === AUDIENCE.ask;
+  const refusal = asked ? refusalFor({ key: event.key, rowLess: policy.rowLess }) : null;
+  if (refusal !== null) return refuse(ctx, event, refusal);
+  if (asked && plan.kind === "cleared") {
+    const ticked = await tickInPlace(ctx, event);
+    if (ticked !== null) return ticked;
+  }
+  const known = state.get(event.key);
+  const text = composeText(event, plan, maxText, config.reminders.max);
+  // A "cleared" notice replies under the message it clears, EXCEPT in the one-way channel (an announcement with a destination of its own):
+  // there the "Cleared: ..." stands alone and carries the text that says what it clears. With one destination the announcement is in the
+  // chairman's chat, as it always was, and threads as it always did.
+  const toChannel = audience === AUDIENCE.announcement && (provider.capabilities.destinations ?? 1) >= AUDIENCES.length;
+  const repliesUnderOriginal = !toChannel && plan.kind === "cleared" && provider.capabilities.replies && known?.messageRef;
+  const message = {
+    text,
+    silent: policy.silent,
+    audience,
+    replyTo: repliesUnderOriginal ? known.messageRef : undefined,
+    ...buttonsFor(event, plan, provider.capabilities),
+  };
+  // The ledger keeps the text AS SENT, link and all: what the chairman was shown is the one thing a later reading must not have to rebuild.
+  // An ask also keeps its record (`asks.ts`): which ask, which row, and for a clearing the outcome it ended with.
+  const askRecord = asked ? askFields(asks.state, { key: event.key, kind: plan.kind, rowLess: policy.rowLess }) : {};
+  const outcome = plan.kind === "cleared" ? { outcome: firstLineOf(event.text) } : {};
+  const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text, audience, ...askRecord, ...outcome };
+  const { status } = await attemptSend(ctx, event.key, message, extra);
+  const spoken = { first: "sent", update: "updated", reminder: "reminded", cleared: "cleared" }[plan.kind];
+  return { key: event.key, action: status === STATUS.sent ? spoken : status };
+}
+
+async function observeOne(ctx: Effects, event: MessagingEvent): Promise<Decision> {
+  const { state, now, config, record } = ctx;
+  const plan = planNotification(event, state.get(event.key), now(), config);
+  if (plan.action === "none") return { key: event.key, action: plan.why };
+  if (plan.action === "withdraw") {
+    record({ key: event.key, status: STATUS.withdrawn, kind: "withdrawn" });
+    return { key: event.key, action: "withdrawn" };
+  }
+  return deliver(ctx, event, plan);
+}
+
+/** Returns the ONE digest line, once the hour has room for it. */
+async function flushDigest(ctx: Effects): Promise<Decision[]> {
+  const { state, limiter, now, maxText } = ctx;
+  const held = [...state.entries()].filter(([, entry]) => entry.pending).map(([key, entry]) => ({ key, ...entry.pending }));
+  if (held.length === 0 || !limiter.hasHourlyRoom()) return [];
+  const key = `${DIGEST_KEY_PREFIX}${new Date(now()).toISOString()}`;
+  // The digest is ONE message over both audiences (the ledger's `pending` does not hold which each entry was for), so it goes where
+  // every message could always go: the chairman's chat. Splitting it by audience is a ledger change, which this row's Region excludes.
+  const message = { text: composeDigest(held as Parameters<typeof composeDigest>[0], maxText), silent: false, audience: AUDIENCE.ask };
+  const { status } = await attemptSend(ctx, key, message, { kind: "digest", covers: held.map((entry) => entry.key), audience: AUDIENCE.ask });
+  return [{ key, action: status === STATUS.sent ? "digest-sent" : `digest-${status}` }];
+}
+
 /**
  * `now` returns epoch milliseconds. Nothing else in the core reads the clock, the filesystem path or the network.
  */
@@ -214,126 +338,14 @@ export function createMessenger({ provider, ledger, now, config: overrides, refu
     asks.apply(line);
     return line;
   };
-
-  /** Asks the rate limiter, then the provider. */
-  async function attemptSend(key: string, message: Record<string, any>, extra: Record<string, unknown>): Promise<{ status: string; line: Record<string, any>; }> {
-    const gate = limiter.tryAcquire();
-    if (!gate.ok) {
-      const status = gate.reason === "hourly-cap" ? STATUS.digested : STATUS.deferred;
-      return { status, line: record({ key, status, reason: gate.reason, ...extra }) };
-    }
-    try {
-      const result = await provider.send(message);
-      if (typeof result?.messageRef !== "string" || result.messageRef === "") throw new Error("provider returned no messageRef");
-      limiter.noteDelivered();
-      // `silent` is what the provider says it APPLIED, not what was asked: a bot cannot read `disable_notification` back, so this line is
-      // the only evidence "was it silent" will ever have. A provider that returns none is `null` (unknown), never `false` (loud).
-      const silent = typeof result.silent === "boolean" ? result.silent : null;
-      return { status: STATUS.sent, line: record({ key, status: STATUS.sent, providerMessageId: result.messageRef, silent, ...extra }) };
-    } catch (error) {
-      return { status: STATUS.failed, line: record({ key, status: STATUS.failed, error: describeError(error), ...extra }) };
-    }
-  }
-
-  /** Refused BEFORE the rate limiter is asked: a kind that cannot be routed spends none of the hour's allowance. */
-  function refuse(event: MessagingEvent, error: string): Decision {
-    record({ key: event.key, status: STATUS.invalid, error });
-    return { key: event.key, action: "invalid" };
-  }
-
-  function refuseUndeclared(event: MessagingEvent): Decision {
-    return refuse(event, `alert not sent: kind ${JSON.stringify(event.kind)} declares no audience (ask or announcement), and the sender never defaults one`);
-  }
-
-  /**
-   * An announcement that asks is refused with the flag on (agent-org#1222), and the refusal names the remedy: an ask has a row and a record, an announcement has
-   * neither. Written ONCE per held text and counted once in the failure ledger, under the kind the audit uses.
-   */
-  function refuseAsking(event: MessagingEvent): Decision {
-    const stateHash = stateFingerprint({ state: event.text });
-    if (refusedBefore.has(`${event.key}\t${stateHash}`)) return { key: event.key, action: "duplicate" };
-    refusedBefore.add(`${event.key}\t${stateHash}`);
-    record({
-      key: event.key, status: STATUS.invalid, misuse: HALF.question, stateHash, held: excerptOf(event.text),
-      error: `announcement not sent: ${JSON.stringify(event.key)} asks the chairman something, and an announcement asks nothing. Put the ask on a row with needs:chairman and a BRIEF (#3409), so it has a row and a record to be ticked against.`,
-    });
-    onMisuse(refusalEventOf(event.key, event.text));
-    return { key: event.key, action: "invalid" };
-  }
-
-  /**
-   * A resolved ask is TICKED where it stands and sends nothing (#4745). When it cannot be (no provider edit, no message the ledger knows, or the edit
-   * failed and said so on a line), the old "cleared" message is the answer, so a resolved ask is never left unticked AND unannounced.
-   */
-  async function tickInPlace(event: MessagingEvent): Promise<Decision | null> {
-    const outcome = firstLineOf(event.text);
-    return (await asks.tickResolved({ key: event.key, outcome })) ? { key: event.key, action: "cleared" } : null;
-  }
-
-  async function deliver(event: MessagingEvent, plan: Extract<Plan, { action: "send"; }>): Promise<Decision> {
-    const { audience } = plan;
-    if (audience === undefined || !AUDIENCES.includes(audience)) return refuseUndeclared(event);
-    if (refusesAskingAnnouncements && audience === AUDIENCE.announcement && announcementAsks(event.key, event.text)) return refuseAsking(event);
-    const policy = config.kinds[event.kind];
-    const asked = audience === AUDIENCE.ask;
-    const refusal = asked ? refusalFor({ key: event.key, rowLess: policy.rowLess }) : null;
-    if (refusal !== null) return refuse(event, refusal);
-    if (asked && plan.kind === "cleared") {
-      const ticked = await tickInPlace(event);
-      if (ticked !== null) return ticked;
-    }
-    const known = state.get(event.key);
-    const text = composeText(event, plan, maxText, config.reminders.max);
-    // A "cleared" notice replies under the message it clears, EXCEPT in the one-way channel (an announcement with a destination of its own):
-    // there the "Cleared: ..." stands alone and carries the text that says what it clears. With one destination the announcement is in the
-    // chairman's chat, as it always was, and threads as it always did.
-    const toChannel = audience === AUDIENCE.announcement && (provider.capabilities.destinations ?? 1) >= AUDIENCES.length;
-    const repliesUnderOriginal = !toChannel && plan.kind === "cleared" && provider.capabilities.replies && known?.messageRef;
-    const message = {
-      text,
-      silent: policy.silent,
-      audience,
-      replyTo: repliesUnderOriginal ? known.messageRef : undefined,
-      ...buttonsFor(event, plan, provider.capabilities),
-    };
-    // The ledger keeps the text AS SENT, link and all: what the chairman was shown is the one thing a later reading must not have to rebuild.
-    // An ask also keeps its record (`asks.ts`): which ask, which row, and for a clearing the outcome it ended with.
-    const askRecord = asked ? askFields(asks.state, { key: event.key, kind: plan.kind, rowLess: policy.rowLess }) : {};
-    const outcome = plan.kind === "cleared" ? { outcome: firstLineOf(event.text) } : {};
-    const extra = { kind: plan.kind, stateHash: stateFingerprint(event), reminder: plan.reminder ?? null, text, audience, ...askRecord, ...outcome };
-    const { status } = await attemptSend(event.key, message, extra);
-    const spoken = { first: "sent", update: "updated", reminder: "reminded", cleared: "cleared" }[plan.kind];
-    return { key: event.key, action: status === STATUS.sent ? spoken : status };
-  }
-
-  async function observeOne(event: MessagingEvent): Promise<Decision> {
-    const plan = planNotification(event, state.get(event.key), now(), config);
-    if (plan.action === "none") return { key: event.key, action: plan.why };
-    if (plan.action === "withdraw") {
-      record({ key: event.key, status: STATUS.withdrawn, kind: "withdrawn" });
-      return { key: event.key, action: "withdrawn" };
-    }
-    return deliver(event, plan);
-  }
-
-  /** Returns the ONE digest line, once the hour has room for it. */
-  async function flushDigest(): Promise<Decision[]> {
-    const held = [...state.entries()].filter(([, entry]) => entry.pending).map(([key, entry]) => ({ key, ...entry.pending }));
-    if (held.length === 0 || !limiter.hasHourlyRoom()) return [];
-    const key = `${DIGEST_KEY_PREFIX}${new Date(now()).toISOString()}`;
-    // The digest is ONE message over both audiences (the ledger's `pending` does not hold which each entry was for), so it goes where
-    // every message could always go: the chairman's chat. Splitting it by audience is a ledger change, which this row's Region excludes.
-    const message = { text: composeDigest(held as Parameters<typeof composeDigest>[0], maxText), silent: false, audience: AUDIENCE.ask };
-    const { status } = await attemptSend(key, message, { kind: "digest", covers: held.map((entry) => entry.key), audience: AUDIENCE.ask });
-    return [{ key, action: status === STATUS.sent ? "digest-sent" : `digest-${status}` }];
-  }
+  const ctx: Effects = { provider, limiter, record, state, asks, config, now, maxText, refusedBefore, refusesAskingAnnouncements, onMisuse };
 
   return {
     /**
      * One observation pass: everything the watcher currently sees, in one call. Safe to call every tick, and from a fresh process.
      */
     async tick(events: unknown[]): Promise<Decision[]> {
-      const decisions = await flushDigest();
+      const decisions = await flushDigest(ctx);
       for (const raw of events) {
         let event;
         try {
@@ -346,7 +358,7 @@ export function createMessenger({ provider, ledger, now, config: overrides, refu
           decisions.push({ key: key ?? "", action: "invalid" });
           continue;
         }
-        decisions.push(await observeOne(event));
+        decisions.push(await observeOne(ctx, event));
       }
       // After every event, so the list is written ONCE for the pass and from the set the pass left (#4745).
       decisions.push(...await asks.syncList());

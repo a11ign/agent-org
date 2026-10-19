@@ -353,19 +353,8 @@ export function createIssue(argv: string[], deps: {
     loadLanesConfig?: typeof loadLanes; declaration?: Parameters<typeof rowTracker>[1] & { tracker: Tracker[]; };
     roadmapItems?: typeof roadmapItemsOf; roadmapField?: typeof roadmapFieldOf; // #516
 } = {}): number {
-  // A single spread merge, not seven per-property default values -- each `x = defaultX` in a destructured
-  // parameter is its own branch for this repo's complexity gate, and `createIssue` already carries the
-  // real decision points (session/template/lane refusals, the `gh` try/catch, the two post-file checks).
-  // Injectable so a test can prove every step -- the label composed into argv, the lane derivation, the
-  // board-add call, the Status move, and the read-back -- without spawning a real `gh`, reaching GitHub,
-  // or reading a real `docs/lane-ownership.json`.
-  const { spawnGh, run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels, loadLanesConfig,
-    milestones, primaryMilestones, declaration, roadmapItems, roadmapField } = {
-    spawnGh: spawnGhIssueCreate, run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus,
-    fetchLabels: fetchIssueLabels, moveStatus: moveTrackerStatus, ensureLabels: ensureLabelsOn,
-    loadLanesConfig: loadLanes, milestones: openMilestones, primaryMilestones: primaryMilestoneTitles, declaration: homeProjectDeclaration(),
-    roadmapItems: roadmapItemsOf, roadmapField: roadmapFieldOf, ...deps,
-  };
+  const ctx = mergeIssueDeps(deps);
+  const { declaration } = ctx;
   const session = sessionFromArgv(argv);
   const unknownKind = kindRefusal(argv);
   if (unknownKind) {
@@ -400,6 +389,31 @@ export function createIssue(argv: string[], deps: {
   }
   const { tracker } = chosen;
   if (chosen.note !== null) process.stderr.write(`${chosen.note}\n`);
+  const planned = planIssue(argv, ctx, { body: body as string, session, tracker });
+  if (typeof planned === "number") return planned;
+  return fileIssue(planned, ctx);
+}
+
+/** The seams `createIssue` takes, each defaulted to its real one: a test replaces any of them, and nothing else reads them. */
+function mergeIssueDeps(deps: NonNullable<Parameters<typeof createIssue>[1]>) {
+  // A single spread merge, not seven per-property default values -- each `x = defaultX` in a destructured
+  // parameter is its own branch for this repo's complexity gate, and `createIssue` already carries the
+  // real decision points (session/template/lane refusals, the `gh` try/catch, the two post-file checks).
+  // Injectable so a test can prove every step -- the label composed into argv, the lane derivation, the
+  // board-add call, the Status move, and the read-back -- without spawning a real `gh`, reaching GitHub,
+  // or reading a real `docs/lane-ownership.json`.
+  return {
+    spawnGh: spawnGhIssueCreate, run: defaultRun, fetchBoardStatus: fetchIssueBoardStatus,
+    fetchLabels: fetchIssueLabels, moveStatus: moveTrackerStatus, ensureLabels: ensureLabelsOn,
+    loadLanesConfig: loadLanes, milestones: openMilestones, primaryMilestones: primaryMilestoneTitles, declaration: homeProjectDeclaration(),
+    roadmapItems: roadmapItemsOf, roadmapField: roadmapFieldOf, ...deps,
+  };
+}
+
+/** The refusals after the tracker is chosen, and the plan the filing is made from. Nothing is filed here, so a refusal leaves nothing behind. */
+function planIssue(argv: string[], ctx: ReturnType<typeof mergeIssueDeps>, filing: { body: string; session: string; tracker: Tracker; }) {
+  const { run, milestones, primaryMilestones, loadLanesConfig, roadmapItems, roadmapField, declaration } = ctx;
+  const { body, session, tracker } = filing;
   // #1158: AFTER the refusals and BEFORE anything is filed. None of these stops the filing -- see
   // `unrecognisedRegionWarning` for why a warning rather than a refusal -- but the author sees them while they
   // still have the body in front of them, which is the only moment each line is cheap to act on. They answer
@@ -464,7 +478,13 @@ export function createIssue(argv: string[], deps: {
   // dropped from the create call rather than landing at creation beside them -- a `ready` there is #867's refusal.
   const filedArgv = filedInTracker(withFiledBy(withoutLabels(releaseArgvFor(withKindLabel(argv), tracker, declaration), [...BOARD_LABELS, ...laneLabels]), session,
     appendDistinctFrom((body as string), argv)), tracker, declaration);
+  return { session, tracker, declaration, blast, laneLabels, roadmap, boarding, filedArgv };
+}
 
+/** Files the planned row: the create call, then the read-back that confirms the board, the labels and the roadmap value landed. */
+function fileIssue({ session, tracker, declaration, blast, laneLabels, roadmap, boarding, filedArgv }: Exclude<ReturnType<typeof planIssue>, number>,
+  ctx: ReturnType<typeof mergeIssueDeps>): number {
+  const { spawnGh, run, fetchBoardStatus, fetchLabels, moveStatus, ensureLabels, roadmapItems } = ctx;
   let url: string;
   try {
     ensureReleaseLabel(filedArgv, tracker, declaration, { run, ensureLabels });

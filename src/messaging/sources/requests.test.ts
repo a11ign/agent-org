@@ -353,11 +353,11 @@ describe("what is quoted from the row", () => {
   });
 });
 
-describe("a request alert is a brief: it opens with what is happening, carries every line, and ends with the link (a11ign/a11ign#3335, #3412)", () => {
-  const LABELS = ["What is happening", "Ask", "Only you because", "Checked", "How long", "Unblocks", "Not the chairman's Claude session because"];
-  const without = (/** @type {string} */ label: string, /** @type {string} */ lines: string = LINES) => lines.split("\n").filter((line) => !line.startsWith(`${label}:`)).join("\n");
-  const OPTIONS = "\n<!-- chairman-options: A=switch it on; B=leave it off -->";
+const LABELS = ["What is happening", "Ask", "Only you because", "Checked", "How long", "Unblocks", "Not the chairman's Claude session because"];
+const without = (/** @type {string} */ label: string, /** @type {string} */ lines: string = LINES) => lines.split("\n").filter((line) => !line.startsWith(`${label}:`)).join("\n");
+const OPTIONS = "\n<!-- chairman-options: A=switch it on; B=leave it off -->";
 
+describe("a request alert is a brief: it opens with what is happening, carries every line, and ends with the link (a11ign/a11ign#3335, #3412)", () => {
   test("POSITIVE CONTROL (1): a complete brief sends ONE message that opens with what is happening, ends with the link, and holds neither the row's number nor its title", async () => {
     const w = world();
     const { observed } = await w.tick([row(3228)]);
@@ -423,6 +423,9 @@ describe("a request alert is a brief: it opens with what is happening, carries e
     assert.ok(observeOne({ comments: [] }).problems[0].reason.startsWith("alert not sent:"));
   });
 
+});
+
+describe("a request alert is a brief: it opens with what is happening, carries every line, and ends with the link (a11ign/a11ign#3335, #3412)", () => {
   test("a labelled row with NO brief sends nothing, and the source says why", async () => {
     const w = world();
     const { observed } = await w.tick([row(3228, { comments: [] })]);
@@ -533,6 +536,14 @@ function watched({ github, startIso = "2026-10-02T09:00:00Z" }: { github: any; s
   return { provider, logged, path, pass, advance: (/** @type {number} */ ms: number) => { now += ms; } };
 }
 
+/** A `run` for the real reader: a connection read gets an empty connection, any other list `[]`; every argv is kept. */
+function recordingRun(commands: string[][]) {
+  return async (argv: readonly string[]): Promise<string> => {
+    commands.push([...argv]);
+    return readsRowsSince(argv) === null ? "[]" : sinceAnswer(argv, []);
+  };
+}
+
 describe("chairman-watch makes only read calls (done-when 5)", () => {
   test("POSITIVE CONTROL: the fixture reader does throw on a write, so a clean run below means something", () => {
     const { github } = readOnlyFixture(goodReads());
@@ -549,14 +560,6 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
     assert.deepEqual([...new Set(fixture.touched)].sort(), READ_METHODS.filter((name) => name !== "issueComments").sort(), "the three list reads were used, and no row was near the comment window");
     assert.equal(w.provider.sent.length, 2, "one request and one summary");
   });
-
-  /** A `run` for the real reader: a connection read gets an empty connection, any other list `[]`; every argv is kept. */
-  function recordingRun(commands: string[][]) {
-    return async (argv: readonly string[]): Promise<string> => {
-      commands.push([...argv]);
-      return readsRowsSince(argv) === null ? "[]" : sinceAnswer(argv, []);
-    };
-  }
 
   test("the real reader: every command it builds is a list and passes the read-only check, and none is a search (#5076)", async () => {
     const commands: string[][] = [];
@@ -606,6 +609,9 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
     assert.equal(commands[0][commands[0].indexOf("label=--web") - 1], "-F");
   });
 
+});
+
+describe("chairman-watch makes only read calls (done-when 5)", () => {
   test("the VERB is refused on its own, with every flag allowed (the flag check must not be what catches a write)", () => {
     for (const verb of [["issue", "comment"], ["issue", "edit"], ["issue", "close"], ["issue", "create"], ["pr", "merge"], ["pr", "comment"], ["pr", "view"]]) {
       assert.throws(() => assertReadOnlyGh([...verb, "1", "-R", REPO, "--state", "open", "--limit", "5"]), /is not an allowed command/, verb.join(" "));
