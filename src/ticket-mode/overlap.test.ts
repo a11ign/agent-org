@@ -51,7 +51,7 @@ const REGION_ONLY = "# Plan\n\n## Region\n\n```\nagent-org:src/ticket-mode/pool.
 test("A11-125: a plan with only a Paths section is read by the overlap wait, and pr:open reads the same paths as its Region", () => {
   const paths = ["agent-org:src/ticket-mode/pool.ts", "agent-org:src/ticket-mode/", "agent-org:README.md"];
   assert.deepEqual(parsePaths(PATHS_ONLY), paths);
-  assert.equal(pathsAsRegion(PATHS_ONLY), "## Region\n\n```\nagent-org:src/ticket-mode/pool.ts\nagent-org:src/ticket-mode/\nagent-org:README.md\n```");
+  assert.equal(pathsAsRegion(PATHS_ONLY), "## Region\n\n```\nagent-org:src/ticket-mode/pool.ts\nagent-org:src/ticket-mode/\nagent-org:README.md\n```\n\n## Plan paths, end of the Region\n", "the Region ends at a heading, so prose after it is not read as part of it");
   assert.deepEqual([...(declaredRegionFiles(pathsAsRegion(PATHS_ONLY) ?? "", { rootFiles: new Set() }) ?? [])].sort(), [...paths].sort(),
     "pr:open's Region reader finds the same files the overlap wait holds on");
 });

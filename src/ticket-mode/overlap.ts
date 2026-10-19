@@ -27,7 +27,7 @@ export function parsePaths(markdown: string): string[] {
  */
 export function pathsAsRegion(markdown: string): string | null {
   const paths = bulletPaths(sectionLines(markdown.split(/\r?\n/), "Paths") ?? []);
-  return paths.length === 0 ? null : `## Region\n\n\`\`\`\n${paths.join("\n")}\n\`\`\``;
+  return paths.length === 0 ? null : `## Region\n\n\`\`\`\n${paths.join("\n")}\n\`\`\`\n\n## Plan paths, end of the Region\n`;
 }
 
 /** The lines under a `## <name>` heading, up to the next heading, or null when the text has no such heading. */

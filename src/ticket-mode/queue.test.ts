@@ -654,9 +654,13 @@ test("A11-125: Start anyway passes a run's overlap and the record survives a sta
   assert.equal(started.entries.find((e) => e.ticket.key === "B")?.overlapOverride?.holder, "A", "a start keeps it");
   const crashed = finish(started, "B", { kind: "crashed", reason: "x" }, 7);
   const retried = retry(crashed, "B", 8);
-  assert.equal(retried.entries.find((e) => e.ticket.key === "B")?.overlapOverride?.holder, "A", "a retry keeps it");
+  assert.equal(retried.entries.find((e) => e.ticket.key === "B")?.overlapOverride, undefined, "a retry starts over: an overlap is checked again, and not passed silently");
   assert.equal(feedbackRound(readyToMerge({ overlapOverride: { holder: "A", pull: null, path: "src/", at: 5 } }), "A", "f", 9).entries.find((e) => e.ticket.key === "A")?.overlapOverride?.holder,
     "A", "a review round keeps it");
+  const reviewing = feedbackRound(readyToMerge(), "A", "f", 9);
+  assert.equal(reviewing.entries.find((e) => e.ticket.key === "A")?.pullFiles, undefined, "a review round whose files are not read yet");
+  const withB = recordPaths(reviewing, new Map([["B", ["app:src/b.ts"]]]));
+  assert.ok(nextStarts(resumeQueue(withB), 0, 14).some((e) => e.ticket.key === "B"), "a review round holds no repository until its parent is read: B starts");
 });
 
 test("A11-125: Start anyway is refused for a run that is not queued, that overlaps nothing, or that waits on a ticket", () => {

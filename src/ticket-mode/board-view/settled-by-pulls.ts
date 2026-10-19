@@ -240,7 +240,7 @@ export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): Ov
 function unreadWait(entry: ViewEntry, entries: readonly ViewEntry[], mine: readonly string[]): OverlapWait | null {
   const repos = new Set(mine.map((path) => repoPath(path)[0]));
   for (const other of entries) {
-    if (!competes(entry, other) || other.pullFiles !== undefined) continue;
+    if (!competes(entry, other) || other.phase !== "finished" || other.pullFiles !== undefined) continue;
     const pull = openPulls(other).find(({ repo }) => repo !== undefined && repos.has(repo));
     if (pull !== undefined) return { key: other.ticket.key, pull: parsePull(pull.url)?.number ?? null, path: null };
   }
