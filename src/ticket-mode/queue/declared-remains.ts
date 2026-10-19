@@ -154,7 +154,7 @@ export type Entry = Readonly<{
   paths?: readonly string[];
   /**
    * The files each of its open pull requests changes, by URL, as the last watch read them: the footprint of a run with a pull request open. An
-   * empty name in a list stands for files the watch could not read, which holds the whole repository (`board-view.ts`'s `pathsOverlap`).
+   * empty name in a list marks a list cut short: the files past those listed are unknown and hold nothing (`footprintOf`).
    */
   pullFiles?: Readonly<Record<string, readonly string[]>>;
   /**

@@ -471,6 +471,14 @@ test("A11-86: every review round runs the skill on the whole diff before its pus
   }
 });
 
+test("A11-117: both planner briefs tell the planner not to list the scaffolding, which the board ignores and a pull request needs whatever the plan says", () => {
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.ok(brief.includes("Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says."));
+  }
+});
+
 test("A11-82: both planner briefs tell the planner the ## Paths section, and a batch's brief also tells it to order tickets that touch one area in order.json", () => {
   const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
   const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });

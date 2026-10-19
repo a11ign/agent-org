@@ -392,7 +392,7 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
  * What every plan says of the paths its work touches, in a `## Paths` section the board reads (`overlap.ts`): the board holds back a ticket whose
  * paths overlap a run in progress, so the list must be complete.
  */
-const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. The board holds back another ticket whose work touches the same paths, so list every path the work changes, and no more.";
+const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. The board holds back another ticket whose work touches the same paths, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says.";
 
 /**
  * Step 5 of the brief, the commit. With the machine's pre-PR review skill named, the review runs after the commit, on the whole diff, before a push or a

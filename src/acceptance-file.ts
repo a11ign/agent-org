@@ -22,9 +22,10 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ACCEPTANCE_SCAFFOLD } from "./scaffold-dirs.ts";
 
 /** The directory every pull request's acceptance file lives in. A trailing `/` is a directory, as `region-paths.ts` reads an entry. */
-export const ACCEPTANCE_DIR = ".acceptance/";
+export const ACCEPTANCE_DIR = ACCEPTANCE_SCAFFOLD;
 
 /** Printed on every report that read the Acceptance, so a reader of a CI log can tell which source ran. */
 export const SOURCE_LABEL = "ACCEPTANCE-SOURCE";
