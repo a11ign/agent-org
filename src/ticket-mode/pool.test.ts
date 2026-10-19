@@ -9,6 +9,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { rebaseNote, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
+import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
 import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
@@ -1673,6 +1674,8 @@ test("a run whose blocker has an open pull request in its planned repository sta
 
 /** Real git with every `GIT_*` scrubbed, for the pool's own reads of a clone's remote in these tests. */
 const gitIn = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+/** The committer the real-repository tests commit as. */
+const identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
 
 test("A11-116: a ticket in a project that names a repository is planned for it, and starts on its blocker's branch once that branch is pushed, with no pull request", async () => {
   // The blocker's branch lives in a clone of this machine's `nbl-ui-netbox`, pushed to a bare origin, and is not pushed until the second pass.
@@ -1681,7 +1684,6 @@ test("A11-116: a ticket in a project that names a repository is planned for it, 
   const clone = join(root, "nbl-ui-netbox");
   gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
   gitIn(root, ["clone", "-q", origin, clone]);
-  const identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
   gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
   gitIn(clone, ["checkout", "-q", "-b", "nbf-1-fit"]);
@@ -1709,7 +1711,6 @@ test("A11-116: a stacked run is rebased onto its blocker's moved branch by agent
   const root = tmpDir("ticket-pool-rebase-");
   const origin = join(root, "origin.git");
   const clone = join(root, "nbl-ui-netbox");
-  const identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
   gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
   gitIn(root, ["clone", "-q", origin, clone]);
   gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
@@ -1744,6 +1745,87 @@ test("A11-116: a stacked run is rebased onto its blocker's moved branch by agent
   assert.equal(gitIn(clone, ["rev-parse", "origin/nbf-2"]), gitIn(worktree, ["rev-parse", "HEAD"]), "its own branch is pushed");
   assert.deepEqual(entry("NBF-2").stackBase, { key: "NBF-1", repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: moved, rebased: { from: branchedAt, to: moved, at: 100 } });
   assert.equal(rebaseNote(entry("NBF-2")), `Rebased onto NBF-1 by agent-org (${branchedAt.slice(0, 7)} → ${moved.slice(0, 7)})`);
+});
+
+/**
+ * GitHub, as far as the pool's sweeps ask it: each pull request's head, base and state, the states of the pull requests on a head, and a base edit that
+ * moves a pull request. `edits` is every edit asked, in order. Any other call is answered by the feedback fake, so an unexpected one fails the test.
+ */
+function fakeGitHub(pulls: Record<string, { head: string; base: string; state: string }>) {
+  const edits: string[][] = [];
+  const answers = ghFor({});
+  const gh = (args: string[]) => {
+    if (args[0] === "repo") return "main\n";
+    if (args[0] === "pr" && args[1] === "view" && args[2] in pulls) return JSON.stringify({ baseRefName: pulls[args[2]].base, state: pulls[args[2]].state });
+    if (args[0] === "pr" && args[1] === "list") return JSON.stringify(Object.values(pulls).filter(({ head }) => head === args[args.indexOf("--head") + 1]).map(({ state }) => ({ state })));
+    if (args[0] === "pr" && args[1] === "edit") {
+      edits.push(args);
+      pulls[args[2]].base = args[4];
+      return "";
+    }
+    return answers.run(args);
+  };
+  return { gh, pulls, edits };
+}
+
+test("A11-116: two tickets of one project run in order over real repositories: the second starts on the first's pushed branch before any pull request, and once the first merges its own is retargeted to the default branch, so both merge in order", async () => {
+  const root = tmpDir("ticket-pool-two-tickets-");
+  const origin = join(root, "origin.git");
+  const clone = join(root, "nbl-ui-netbox");
+  gitIn(root, ["init", "-q", "--bare", "-b", "main", origin]);
+  gitIn(root, ["clone", "-q", origin, clone]);
+  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "main"]);
+  gitIn(clone, ["push", "-q", "origin", "HEAD:main"]);
+  const pullOne = "https://github.com/x/nbl-ui-netbox/pull/1";
+  const pullTwo = "https://github.com/x/nbl-ui-netbox/pull/2";
+  // What the tracker says of NBF-1, the blocker of NBF-2: its branch, and its pull request's state once one is open.
+  const blockerPulls: Record<string, PullState> = {};
+  const tracker: TicketSource = { ...source,
+    blockers: async (keys) => new Map(keys.map((key) => [key, key === "NBF-2" ? [{ key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1", pulls: { ...blockerPulls } }] : []])),
+    projectSummaries: async (keys) => new Map(keys.map((key) => [key, "github.com/a11ign/nbl-ui-netbox"])) };
+  const { gh, pulls, edits } = fakeGitHub({ [pullOne]: { head: "nbf-1", base: "main", state: "OPEN" }, [pullTwo]: { head: "nbf-2", base: "nbf-1", state: "OPEN" } });
+  const { pool, entry, settings, status } = setup(2, ["NBF-1", "NBF-2"], { drafts: false, worktreeRoot: join(root, "tickets") }, { source: tracker, gh, clones: { "nbl-ui-netbox": clone } });
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"], "the first starts; the second waits for its branch to be pushed");
+  // The first's worker pushes its branch, with no pull request yet.
+  gitIn(clone, ["checkout", "-q", "-b", "nbf-1"]);
+  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "NBF-1: its work"]);
+  gitIn(clone, ["push", "-q", "origin", "nbf-1"]);
+  await pool.refreshTracker();
+  await pool.tick();
+  assert.equal(entry("NBF-2").phase, "running", "the second starts on the pushed branch before any pull request exists");
+  assert.ok(readFileSync(join(ticketDir(settings, "NBF-2"), "brief.md"), "utf8").includes("- NBF-1: its branch `nbf-1` is pushed in `nbl-ui-netbox`; there is no pull request yet"));
+  // The second's worker makes its worktree the way ticket:worktree does, from the first's branch, and pushes its own.
+  const made = await worktreeMain(["nbl-ui-netbox", "--from", "nbf-1"], { [TICKET_ENV.key]: "NBF-2", [TICKET_ENV.branch]: "nbf-2" }, () => settings);
+  assert.equal(made.code, 0, made.out);
+  const worktree = worktreePath(settings.worktreeRoot, "NBF-2", "nbl-ui-netbox");
+  gitIn(worktree, [...identity, "commit", "-q", "--allow-empty", "-m", "NBF-2: its work"]);
+  gitIn(worktree, ["push", "-q", "origin", "HEAD:nbf-2"]);
+  assert.equal(gitIn(worktree, ["rev-parse", "HEAD~1"]), gitIn(clone, ["rev-parse", "origin/nbf-1"]), "its worktree sits on the first's pushed branch");
+  // Both open their pull requests, the second based on the first's branch, and both finish.
+  status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: pullOne }] }));
+  status.set(herdrName("NBF-2"), "idle");
+  writeFileSync(join(ticketDir(settings, "NBF-2"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: pullTwo }] }));
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["finished", "finished"]);
+  pool.retargetStacked();
+  assert.deepEqual(edits, [], "the first's pull request is still open: the second's base is current, so nothing moves");
+  // The first merges: its branch lands on the default branch, the tracker says so, and the second's pull request is moved to the default branch.
+  gitIn(clone, ["checkout", "-q", "main"]);
+  gitIn(clone, [...identity, "merge", "-q", "--no-ff", "-m", "merge NBF-1", "nbf-1"]);
+  gitIn(clone, ["push", "-q", "origin", "main"]);
+  pulls[pullOne].state = "MERGED";
+  blockerPulls[pullOne] = "merged";
+  await pool.refreshTracker();
+  pool.retargetStacked();
+  assert.deepEqual(edits, [["pr", "edit", pullTwo, "--base", "main"]], "once the first merged, the second's pull request moves to the default branch, and nothing else moves");
+  assert.equal(pulls[pullTwo].base, "main");
+  // The second merges after it, into the default branch that already holds the first's commits: no conflict, no hand edit.
+  gitIn(clone, [...identity, "merge", "-q", "--no-ff", "-m", "merge NBF-2", "nbf-2"]);
+  gitIn(clone, ["push", "-q", "origin", "main"]);
+  pulls[pullTwo].state = "MERGED";
+  assert.deepEqual(gitIn(clone, ["log", "--format=%s", "origin/main"]).split("\n").filter((line) => line.startsWith("NBF-")), ["NBF-2: its work", "NBF-1: its work"], "both are on the default branch, the second's after the first's");
 });
 
 /** A review run, NBF-1, that ended with no outcome after it was seen working, and parked: its worker waited by ending its turn (NBF-1463). */
