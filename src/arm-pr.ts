@@ -21,7 +21,7 @@ import { armabilityOf } from "./pr-hold-state.ts";
 import { authorshipVerdict } from "./lane-ownership.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { roleBriefPath } from "./project-roles.ts";
-import { homeProjectDeclaration } from "./project-config.ts";
+import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.ts`
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
 // `pr-armed-state.ts` imports nothing at all, so the `actions/checkout`-only property holds.
@@ -415,8 +415,8 @@ export function sessionLabelsOf(rowLabels: string[]): string[] {
  * The pane a session currently holds is herdr's answer at runtime (`wake.ts` asks for the workspace list and matches
  * by LABEL), never this file's to remember -- which is why the type below names `name` and nothing else.
  */
-const SESSIONS = (
-  JSON.parse(readFileSync(roleBriefPath("sessions.json").absolute, "utf8")) as { live: { name: string, family?: SpareFamily }[], retired: { name: string }[] });
+const SESSIONS = (HOME_CHECKOUT === TICKET_ONLY_CHECKOUT ? { live: [], retired: [] }
+  : JSON.parse(readFileSync(roleBriefPath("sessions.json").absolute, "utf8"))) as { live: { name: string, family?: SpareFamily }[], retired: { name: string }[] };
 /** The `live` entries that are ONE ADDRESS each -- a family entry (#2403) is a rule for many, listed in {@link SPARE_FAMILIES}. */
 export const LIVE_SESSIONS = SESSIONS.live.filter((s) => s.family === undefined).map((s) => s.name);
 
