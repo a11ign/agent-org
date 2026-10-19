@@ -60,6 +60,16 @@ export const PUBLISH_FILE = "publish-run";
  */
 export const WRITER_FILE = "writer-run";
 /**
+ * Present beside the outcome file of a grill run that is waiting for the person (A11-129), written by the board: the question its agent asked, as
+ * `{ "question": "...", "at": <ms> }`. The stop hook writes it when the agent ends its turn with no outcome, and the board shows it on the run's card.
+ */
+export const WAITING_FILE = "waiting.json";
+/**
+ * Where a grill run's outcome file is moved once it is a question, so the board does not read the same outcome again after the person answers
+ * (A11-129). Only the board writes it.
+ */
+export const ASKED_FILE = "asked.json";
+/**
  * Present beside the outcome file of a run on a machine with `tickets.drafts: false`, written by the pool before the worker starts. It lets the
  * PreToolUse hook allow `gh pr create` without `--draft`: a worker on such a machine opens its pull request ready for review, and no other run may.
  */
@@ -765,7 +775,7 @@ const requestQuoted = (request: string): string => request.split("\n").map((line
 /** What each mode asks of the run, which the brief's `## The mode` section says. */
 const MODE_TEXT: Readonly<Record<WriterMode, string>> = {
   quick: "You are unattended. Nobody will answer a question: decide every question yourself, and write one or more drafts.",
-  grill: "You are interactive: the person is in this run's terminal. Ask them your questions one at a time, and wait for each answer before the next. Write no draft until the questions are done. Your first message to them is your first question. You may end your turn while you wait for an answer: the board keeps the run until you write the outcome.",
+  grill: "You are interactive: the person is in this run's terminal. Ask them your questions one at a time, and wait for each answer before the next. Write no draft until the questions are done. Your first message to them is your first question. To ask a question, end your turn with it: the board shows the question to the person and keeps this run, in its terminal, until they answer. Do not write an outcome to ask a question. Write `drafted` only when the questions are done and every draft is written.",
 };
 
 /** The form's choices as the brief's requirements: each one the person made, or none. PURE. */

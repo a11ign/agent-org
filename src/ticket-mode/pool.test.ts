@@ -3577,18 +3577,95 @@ test("a grill run idle between its questions stays running and holds its slot; i
   assert.equal(made.length, 1);
 });
 
-test("a grill run that goes done with no outcome has stopped, and a needs-human outcome ends a run failed, saying why, in either mode", async () => {
-  const grill = await workingRun({ mode: "grill" });
-  await agentIs(grill, grill.name, "done");
+test("a Grill turn that ends in a question and no outcome file is Waiting: its pane and slot stay, and the answer resumes it, and its ticket is made when it drafts", async () => {
+  const { tracker, made } = creating();
+  const fixture = writing({ mode: "grill" }, WRITER, tracker);
+  const { pool, name, dir, run, store, h } = fixture;
+  await pool.tick();
+  await agentIs(fixture, name, "working");
+  // The stop hook records the question the agent ended its turn with, beside the outcome file the agent did not write (A11-129).
+  writeFileSync(join(dir, "waiting.json"), JSON.stringify({ question: "Q1: editable or read-only?", at: 100 }));
+  await agentIs(fixture, name, "done");
   await writerSettled();
-  assert.equal(grill.run().failure, "it stopped without writing an outcome");
-  const asks = writing({ id: "w2", mode: "grill" });
-  await asks.pool.tick();
+  assert.deepEqual([writerStatus(run()), run().waiting?.question, run().phase, run().failure], ["waiting", "Q1: editable or read-only?", "running", undefined],
+    "POSITIVE: a turn that ends in a question is Waiting, not failed");
+  assert.equal(run().workspace, "w1", "its workspace stays on the record");
+  assert.equal(h.calls.some((args) => args.includes("close")), false, "its pane is not closed");
+  assert.equal(liveRunCount(store.get()), 1, "it holds its slot while the person answers");
+  await agentIs(fixture, name, "idle");
+  assert.equal(run().waiting?.question, "Q1: editable or read-only?", "a later idle pass keeps the same question");
+  await agentIs(fixture, name, "working");
+  assert.deepEqual([writerStatus(run()), run().waiting], ["writing", undefined], "the answer resumes it: the wait is cleared");
+  writeFileSync(join(dir, "waiting.json"), JSON.stringify({ question: "Q2: which goal?", at: 200 }));
+  await agentIs(fixture, name, "done");
+  assert.equal(run().waiting?.question, "Q2: which goal?", "a new question is shown in place of the last");
+  await agentIs(fixture, name, "working");
+  leaveDrafts(dir, { "01-show.json": goodDraft });
+  await agentIs(fixture, name, "idle");
+  await writerSettled();
+  assert.deepEqual([run().phase, run().failure, writerStatus(run())], ["finished", undefined, "done"]);
+  assert.equal(made.length, 1, "the ticket is made when the grill ends");
+});
+
+test("a Grill run whose stop hook wrote no question shows the fixed line, and a Grill needs-human outcome is its question, not a failure", async () => {
+  const quiet = await workingRun({ mode: "grill" });
+  await agentIs(quiet, quiet.name, "done");
+  await writerSettled();
+  assert.equal(quiet.run().waiting?.question, "Its agent is waiting for you in its terminal.", "no question on file: the fixed line");
+
+  const asks = await workingRun({ id: "w2", mode: "grill" });
   leaveDrafts(asks.dir, {}, { kind: "needs-human", reason: "Which goal does it serve?" });
   await agentIs(asks, asks.name, "idle");
   await writerSettled();
-  assert.deepEqual([asks.run().phase, asks.run().failure], ["finished", "Which goal does it serve?"]);
+  assert.deepEqual([writerStatus(asks.run()), asks.run().waiting?.question, asks.run().phase, asks.run().failure], ["waiting", "Which goal does it serve?", "running", undefined]);
+  assert.equal(existsSync(join(asks.dir, "outcome.json")), false, "the outcome is moved aside, so it is not read again");
+  assert.equal(existsSync(join(asks.dir, "asked.json")), true, "and kept beside it");
+  assert.equal(readFileSync(join(asks.dir, "waiting.json"), "utf8").includes("Which goal does it serve?"), true, "its question is on file for the board");
+  await agentIs(asks, asks.name, "working");
+  assert.equal(asks.run().waiting, undefined, "the person answered: the run is no longer waiting");
 });
+
+test("a Quick needs-human outcome still ends the run failed, saying why, and a Quick run that goes done with no outcome has stopped", async () => {
+  const quick = await workingRun({ id: "w3" });
+  leaveDrafts(quick.dir, {}, { kind: "needs-human", reason: "Which goal does it serve?" });
+  await agentIs(quick, quick.name, "idle");
+  await writerSettled();
+  assert.deepEqual([quick.run().phase, quick.run().failure], ["finished", "Which goal does it serve?"]);
+  const stopped = await workingRun({ id: "w4" });
+  await agentIs(stopped, stopped.name, "done");
+  await writerSettled();
+  assert.equal(stopped.run().failure, "it stopped without writing an outcome");
+});
+
+test("a Grill run that is Waiting fails only when its agent exits, or when nobody answers for 4 hours; a Waiting run is never timed out by its work's limit", async () => {
+  const waiting = await workingRun({ id: "w5", mode: "grill" });
+  await agentIs(waiting, waiting.name, "done");
+  const waitedSince = (since: number) => waiting.store.set({ ...waiting.store.get(), writers: waiting.store.get().writers!.map((r) => (r.id === "w5" ? { ...r, waiting: { ...r.waiting!, since } } : r)) });
+  waitedSince(100 - 4 * 60 * 60_000 + 1);
+  await waiting.pool.tick();
+  assert.equal(waiting.run().phase, "running", "just inside the answer limit it still waits");
+  waitedSince(100 - 4 * 60 * 60_000 - 1);
+  await waiting.pool.tick();
+  assert.deepEqual([waiting.run().phase, waiting.run().failure], ["finished", "nobody answered its question for 4 hours"]);
+
+  const exited = await workingRun({ id: "w6", mode: "grill" });
+  await agentIs(exited, exited.name, "done");
+  exited.status.delete(exited.name);
+  await exited.pool.tick();
+  await exited.pool.tick();
+  assert.deepEqual([exited.run().phase, exited.run().failure], ["finished", "its agent exited: its herdr workspace is gone"], "an agent that vanishes fails the run, saying so");
+
+  const answered = await workingRun({ id: "w7", mode: "grill" });
+  await agentIs(answered, answered.name, "done");
+  setStartedAt(answered, 100 - 5 * 60 * 60_000);
+  await agentIs(answered, answered.name, "working");
+  assert.deepEqual([answered.run().phase, answered.run().startedAt], ["running", 100], "a run its answer resumes has its working clock from the answer, not from its start");
+});
+
+/** Move a writer run's start to `startedAt`, as a test of the limit that counts from it. */
+function setStartedAt(fixture: ReturnType<typeof writing>, startedAt: number): void {
+  fixture.store.set({ ...fixture.store.get(), writers: fixture.store.get().writers!.map((r) => (r.id === fixture.run().id ? { ...r, startedAt } : r)) });
+}
 
 test("a ticket is created in each mode from a stubbed writer and tracker: the run's drafts are made as tickets, with the choices they name, and the run ends done", async () => {
   for (const mode of ["quick", "grill"] as const) {
@@ -3633,7 +3710,7 @@ test("a new-ticket run that never ends is failed after 30 minutes of running, an
 
   const grill = writing({ id: "w4", mode: "grill" });
   await grill.pool.tick();
-  grill.status.set(grill.name, "idle");
+  grill.status.set(grill.name, "working");
   grill.store.set({ ...grill.store.get(), writers: grill.store.get().writers!.map((r) => (r.id === "w4" ? { ...r, startedAt: 100 - 30 * 60_000 - 1 } : r)) });
   await grill.pool.tick();
   assert.equal(grill.run().phase, "running", "a grill run has longer than the quick limit");

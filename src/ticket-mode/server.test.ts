@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { markPublishRunning, markPublishStarting } from "./queue/approve.ts";
-import { markWriterRunning, markWriterStarting, queueWriter, writerDrafted } from "./queue.ts";
+import { markWriterRunning, markWriterStarting, queueWriter, writerDrafted, writerFailed } from "./queue.ts";
 import { remove as removeQueued } from "./queue/declared-remains.ts";
 import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
@@ -539,6 +539,20 @@ test("the instance mints a worker terminal's code for its key only, and says why
   }
   const unset = board();
   assert.deepEqual(await unset.api("POST", "/api/terminal-pair", {}), [200, { code: null, note: "tickets.terminal is not set" }]);
+});
+
+test("A11-129: /api/terminal-run says whether a worker link's terminal is a run's now, a run that has ended, or none the board holds", async () => {
+  const b = board(4747, WRITER);
+  b.store.set(queueWriter(b.store.get(), { id: "w1", request: "Show the requests", mode: "grill", form: {} }, 1));
+  b.store.set(markWriterRunning(markWriterStarting(b.store.get(), "w1", 2), "w1", "w1", "w1:p1"));
+  const link = "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal";
+  assert.deepEqual(await b.api("POST", "/api/terminal-run", { link }), [200, { state: "live" }], "a waiting or working run's terminal is live");
+  b.store.set(writerFailed(b.store.get(), "w1", "its agent exited: its herdr workspace is gone", 3));
+  assert.deepEqual(await b.api("POST", "/api/terminal-run", { link }), [200, { state: "ended", outcome: "failed", run: "w1", kind: "writer", reason: "its agent exited: its herdr workspace is gone" }]);
+  assert.deepEqual(await b.api("POST", "/api/terminal-run", { link: "http://127.0.0.1:7318/?ws=w9&pane=w9%3Ap1&view=terminal" }), [200, { state: "unknown" }], "a terminal no run holds");
+  assert.deepEqual(await b.api("POST", "/api/terminal-run", {}), [200, { state: "unknown" }], "a request that names no link holds none");
+  const unset = board();
+  assert.deepEqual(await unset.api("POST", "/api/terminal-run", { link }), [200, { state: "unknown" }], "a board with no terminal names none");
 });
 
 /*

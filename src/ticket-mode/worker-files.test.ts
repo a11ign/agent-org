@@ -606,6 +606,16 @@ test("A11-124: grill asks the person one question at a time in the run's termina
   assert.match(grill, /Write `needs-human` only when the run cannot finish at all\./);
 });
 
+test("A11-129: grill asks by ending its turn with the question, and no outcome is written to ask; needs-human is for a run that cannot finish, and the quick brief is unchanged", () => {
+  const grill = briefIn("grill");
+  assert.match(grill, /To ask a question, end your turn with it: the board shows the question to the person and keeps this run, in its terminal, until they answer\. Do not write an outcome to ask a question\./);
+  assert.doesNotMatch(grill, /the board keeps the run until you write the outcome/, "the old contract, which made a question a missing outcome, is gone");
+  assert.match(grill, /Write `drafted` only when the questions are done and every draft is written\./);
+  const quick = briefIn("quick");
+  assert.match(quick, /You are unattended\. Nobody will answer a question: decide every question yourself, and write one or more drafts\./);
+  assert.doesNotMatch(quick, /end your turn with it/, "a quick run asks nothing");
+});
+
 test("A11-124: a {mode} placeholder in the instruction is filled with the board's mode, and the instruction names no mode of its own", () => {
   const brief = writerBriefText({ run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.", request: "x", mode: "grill", form: {}, clones: {}, dir: "/d" });
   assert.match(brief, /Run the a11ign:create-ticket skill, grill, for this request: x\. Write each draft under \/d\/drafts\./);

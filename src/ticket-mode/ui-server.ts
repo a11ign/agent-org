@@ -15,6 +15,8 @@
 // A WORKER LINK IS A REDIRECT FOR A PAIRED BROWSER (A11-93). `/c/<connection>/terminal?link=` asks the connection's instance for a terminal
 // pairing code, and answers with the link carrying it, so the person never types a second code. The link is taken only when it is that
 // connection's own terminal address (`sameTerminal`), so the redirect cannot carry a code to another site. A failed mint sends the plain link.
+// A LINK WHOSE RUN HAS ENDED says so instead (A11-129): herdr web ui's page spins for a terminal that is gone, so the board answers a page of its own,
+// with a link to the run, and no code is minted. A failed lookup of the run redirects as it always has.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -31,6 +33,7 @@ import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, type Tailnet } from "./tailnet.ts";
+import type { TerminalRun } from "./terminal-pair.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PAGE = join(HERE, "ui.html");
@@ -75,6 +78,68 @@ export function sameTerminal(link: string, template: string): string | null {
     if (placeholder ? given.searchParams.get(name) === "" : given.searchParams.get(name) !== value) return null;
   }
   return given.href;
+}
+
+/** A run that has ended, as the instance answers a worker link's terminal (`terminal-pair.ts` `terminalRunOf`). */
+type EndedRun = Extract<TerminalRun, { state: "ended" }>;
+
+/** Whether an instance's answer is a run that has ended: the one answer a worker link does not redirect past. PURE. */
+export function isEnded(answer: unknown): answer is EndedRun {
+  if (typeof answer !== "object" || answer === null) return false;
+  const { state, outcome, run } = answer as Record<string, unknown>;
+  return state === "ended" && (outcome === "failed" || outcome === "finished") && typeof run === "string";
+}
+
+/** Where the board shows a run's card, by the id the page gives it; empty for a run with no card of its own. */
+const cardId = ({ kind, run }: EndedRun): string => (kind === "writer" ? `writer-${run}` : kind === "ticket" ? `run-${run}` : "");
+
+/** The text with each character that could open markup written as its numeric reference, so a value is shown and never read as HTML. PURE. */
+const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+
+/**
+ * The page a worker link answers with when its run has ended: what ended, why if it says, and a link to the run on the board. The board opens with the
+ * connection selected and scrolled to the run's card (A11-129). Every value is escaped.
+ */
+export function endedPage(connection: string, ended: EndedRun): string {
+  const heading = escapeHtml(`This run ended: ${ended.outcome}`);
+  const anchor = cardId(ended);
+  const href = escapeHtml(`/?connection=${encodeURIComponent(connection)}${anchor === "" ? "" : `#${encodeURIComponent(anchor)}`}`);
+  const reason = ended.reason === undefined || ended.reason === "" ? "" : `<p>${escapeHtml(ended.reason)}</p>`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${heading}</title>
+<style>body { font-family: system-ui, sans-serif; margin: 16px; line-height: 1.5; } a { color: #0969da; }</style>
+</head>
+<body>
+<h1>${heading}</h1>
+${reason}
+<p><a href="${href}">Open the run on the board</a></p>
+</body>
+</html>
+`;
+}
+
+/**
+ * The run that holds a worker link's terminal, as its instance knows it (A11-129). A lookup that fails, or answers anything but an ended run, is `live`:
+ * a failed lookup must never block a good link, so the redirect goes out as it always has.
+ */
+async function terminalRunAt(connections: Connections, forward: Forward | undefined, name: string, link: string): Promise<TerminalRun> {
+  try {
+    const [status, answer] = await proxy(connections, name, { method: "POST", path: "/api/terminal-run", body: JSON.stringify({ link }) }, forward);
+    return status === 200 && isEnded(answer) ? answer : { state: "live" };
+  } catch {
+    return { state: "live" };
+  }
+}
+
+/** The ended page, sent in place of a redirect. Nothing is paired and no code is minted for a run that is over. */
+function sendEnded(response: ServerResponse, connection: string, ended: EndedRun): void {
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'" });
+  response.end(endedPage(connection, ended));
 }
 
 export type UiDeps = Readonly<{
@@ -189,6 +254,8 @@ export function createUi(deps: UiDeps) {
     const template = (config as { terminal?: unknown }).terminal;
     const target = typeof template === "string" ? sameTerminal(link, template) : null;
     if (target === null) return sendJson(response, 400, { error: `that address is not ${name}'s worker terminal` });
+    const run = await terminalRunAt(connections, deps.forward, name, link);
+    if (run.state === "ended") return sendEnded(response, name, run);
     const [minted, answer] = await proxy(connections, name, { method: "POST", path: "/api/terminal-pair", body: "{}" }, deps.forward);
     const code = minted === 200 && typeof answer === "object" && answer !== null ? (answer as { code?: unknown }).code : undefined;
     const location = typeof code === "string" ? `${target}${target.includes("?") ? "&" : "?"}pair=${code}` : target;

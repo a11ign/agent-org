@@ -996,8 +996,8 @@ test("a run offers Stop while it is not finished, Dismiss once it is finished, a
   assert.deepEqual(boardView_0.writerRunActions({ phase: "finished", workspace: "w1" }), { stop: false, dismiss: true, terminal: false });
 });
 
-test("a run shows its status in four words, and the request's model and effort", () => {
-  assert.deepEqual(Object.values(boardView_0.WRITER_STATUS_LABEL), ["Queued", "Writing", "Done", "Failed"]);
+test("a run shows its status in the words the board uses, and the request's model and effort", () => {
+  assert.deepEqual(Object.values(boardView_0.WRITER_STATUS_LABEL), ["Queued", "Writing", "Waiting for you", "Done", "Failed"]);
   assert.equal(boardView_0.writerChoiceLabel({ model: "opus", effort: "high" }), "opus/high");
   assert.equal(boardView_0.writerChoiceLabel({}), "", "a run queued before the choice was stamped names none");
 });

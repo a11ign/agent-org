@@ -21,7 +21,7 @@ import { boardKey, boardKeyPath } from "./board-key.ts";
 import { hasPlan } from "./board-view/view-ticket.ts";
 import { readOrNull } from "../install/paths.ts";
 import { effectiveTerminal, localTerminalPort } from "../install/terminal.ts";
-import { mintTerminalCode, type TerminalMint } from "./terminal-pair.ts";
+import { mintTerminalCode, type TerminalMint, type TerminalRun, terminalRunOf } from "./terminal-pair.ts";
 import { linearSource, readLinearKey } from "./linear.ts";
 import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
@@ -245,6 +245,16 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
   return undefined;
 }
 
+/**
+ * Whether the run that holds the terminal a worker link names has ended, as the board holds it (A11-129). The page's service asks this before it sends
+ * a paired browser on, and a board with no terminal names none.
+ */
+async function terminalRunFor(board: Board, body: Json): Promise<TerminalRun> {
+  const template = await board.terminalAddress();
+  const link = typeof body.link === "string" ? body.link : "";
+  return template === null ? { state: "unknown" } : terminalRunOf(board.store.get(), template, link);
+}
+
 /** The POST routes that queue tickets, save the choice and settings, change the queue's pause and cap, and mint the terminal's pairing code. */
 async function postRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { deps, settings, source, store, known, now, wake, queueTickets } = board;
@@ -254,6 +264,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     const tailnetName = settings.serve === null || deps.tailnet === undefined ? null : await deps.tailnet();
     return [200, await mintTerminalCode(settings, localTerminalPort(settings.terminal, tailnetName), { home: homedir(), read: readOrNull, request: fetch, timeoutMs: TERMINAL_PAIR_MS })];
   }
+  if (method === "POST" && path === "/api/terminal-run") return [200, await terminalRunFor(board, body)];
   if (method === "POST" && path === "/api/queue") {
     const choice = validRunChoice(body);
     const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];

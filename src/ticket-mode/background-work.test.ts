@@ -1,7 +1,7 @@
 // no-token: gh -- the transcript and pane text are fixtures; nothing is read from the machine
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { liveBackgroundWork, paneBackgroundWork } from "./background-work.ts";
+import { lastAssistantText, liveBackgroundWork, paneBackgroundWork } from "./background-work.ts";
 
 /** A transcript line for an assistant's tool call, as Claude Code writes it. */
 const call = (id: string, name: string, input: Record<string, unknown>) =>
@@ -79,4 +79,17 @@ test("the pane's status line counts shells and monitors: `· 1 shell, 1 monitor`
   assert.deepEqual(paneBackgroundWork("  ⏵⏵ bypass permissions on · 1 monitor"), { shells: 0, monitors: 1 }, "a monitor only");
   assert.deepEqual(paneBackgroundWork("  ⏵⏵ bypass permissions on (shift+tab to cycle)"), { shells: 0, monitors: 0 }, "CONTROL: none");
   assert.deepEqual(paneBackgroundWork(""), { shells: 0, monitors: 0 }, "an empty pane counts none");
+});
+
+test("A11-129: the question a grill run asked is the last text its assistant wrote, and a turn of tool calls only keeps the text before it", () => {
+  const transcript = [
+    JSON.stringify({ type: "user", message: { content: "Read the brief" } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Q1: editable or read-only?" }] } }),
+    JSON.stringify({ type: "user", message: { content: "read-only" } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } }),
+    "not json",
+  ].join("\n");
+  assert.equal(lastAssistantText(transcript), "Q1: editable or read-only?", "the tool call after it says no text, so the question stands");
+  assert.equal(lastAssistantText(JSON.stringify({ type: "assistant", message: { content: "Q2: which goal?" } })), "Q2: which goal?", "a message that is one string");
+  assert.equal(lastAssistantText(""), "", "a transcript with no assistant text says none");
 });

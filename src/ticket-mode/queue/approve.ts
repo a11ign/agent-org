@@ -125,16 +125,23 @@ export function publishDone(queue: Queue, links: readonly string[], now: number)
   const { publish } = queue;
   if (publish === undefined) return queue;
   const published = { link: links[0] ?? null, at: now };
-  const ended: PublishRun = { ...withoutWorkspace(publish), phase: "finished", finishedAt: now };
+  const ended: PublishRun = { ...withoutWorkspace(publish), ...lastTerminalOf(publish), phase: "finished", finishedAt: now };
   return { ...queue, publish: ended, entries: queue.entries.map((e) => (publish.keys.includes(e.ticket.key) ? { ...e, published } : e)) };
 }
 
 /** The publish run failed: its runs stay as they were, and the board says why. */
 export const publishFailed = (queue: Queue, failure: string, now: number): Queue =>
-  replacePublish(queue, (p) => ({ ...withoutWorkspace(p), phase: "finished", finishedAt: now, failure }));
+  replacePublish(queue, (p) => ({ ...withoutWorkspace(p), ...lastTerminalOf(p), phase: "finished", finishedAt: now, failure }));
 
 /** A publish run that has ended holds no workspace: it is closed. */
 const withoutWorkspace = ({ workspace: _closed, pane: _gone, ...publish }: PublishRun): PublishRun => publish;
+
+/**
+ * The terminal a run's agent was in, once the run has ended and its workspace and pane are cleared: a link to it then says the run ended, rather than
+ * spinning (A11-129). Empty when the run held no terminal.
+ */
+export const lastTerminalOf = ({ workspace, pane }: Readonly<{ workspace?: string; pane?: string }>): Readonly<{ lastTerminal?: { workspace: string; pane: string } }> =>
+  workspace === undefined || pane === undefined ? {} : { lastTerminal: { workspace, pane } };
 
 /** Whether the queued publish run starts now: it has a slot of its own free. It does not wait on Pause, because a person just asked for it. */
 export function publishStarts(queue: Queue): boolean {
@@ -244,7 +251,7 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
 
 /** The run has ended and its workspace is gone. */
 export function finish(queue: Queue, key: string, outcome: Outcome, now: number, record: RunRecord = {}): Queue {
-  return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), workspace: undefined, pane: undefined }));
+  return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), ...lastTerminalOf(entry), workspace: undefined, pane: undefined }));
 }
 
 /** The run has ended and keeps its workspace and pane, where a person can answer its agent. */
@@ -279,7 +286,7 @@ export function markResumed(queue: Queue, key: string): Queue {
 
 /** A parked run's workspace is closed: the run keeps its outcome and holds no workspace. */
 export function unpark(queue: Queue, key: string): Queue {
-  return replace(queue, key, (entry) => (isParked(entry) ? { ...entry, workspace: undefined, pane: undefined } : entry));
+  return replace(queue, key, (entry) => (isParked(entry) ? { ...entry, ...lastTerminalOf(entry), workspace: undefined, pane: undefined } : entry));
 }
 
 /** The keys of finished runs that neither the tracker nor their pull requests have settled yet: the ones worth asking about again. */

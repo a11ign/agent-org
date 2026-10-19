@@ -50,7 +50,7 @@ export const connectionLabel = (connection: ViewConnection): string => (connecti
  */
 
 /** A new-ticket request's runs, as the board words each status. */
-export const WRITER_STATUS_LABEL: Readonly<Record<string, string>> = Object.freeze({ queued: "Queued", writing: "Writing", done: "Done", failed: "Failed" });
+export const WRITER_STATUS_LABEL: Readonly<Record<string, string>> = Object.freeze({ queued: "Queued", writing: "Writing", waiting: "Waiting for you", done: "Done", failed: "Failed" });
 
 /** A priority, as the New ticket form names it. */
 export const WRITER_PRIORITY_LABEL: Readonly<Record<string, string>> = Object.freeze({ urgent: "Urgent", high: "High", medium: "Medium", low: "Low", none: "No priority" });

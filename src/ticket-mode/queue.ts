@@ -73,6 +73,9 @@ const replaceWriter = (queue: Queue, id: string, change: (run: WriterRun) => Wri
 
 const findWriter = (queue: Queue, id: string): WriterRun | undefined => (queue.writers ?? []).find((run) => run.id === id);
 
+/** The run without its wait: the agent it waited on has ended, or has its answer (A11-129). PURE. */
+const notWaiting = ({ waiting: _answered, ...run }: WriterRun): WriterRun => run;
+
 /** The failure an older board's review left, which this board no longer offers: the request is failed, and nothing is created from its drafts. */
 export const LEGACY_REVIEW_FAILURE = "this request was left for review by an older board, and the review screen is gone: dismiss it and ask again";
 
@@ -130,6 +133,20 @@ export const observeWriter = (queue: Queue, id: string): Queue =>
   replaceWriter(queue, id, (run) => (run.seenWorking === true ? run : { ...run, seenWorking: true }));
 
 /**
+ * A grill run's agent has ended its turn with no outcome, so it waits for the person to answer in its terminal, with `question` as the question. A
+ * run already waiting keeps its question and its time: the same question is no change, so the file is not rewritten each pass. PURE.
+ */
+export const writerWaiting = (queue: Queue, id: string, question: string, now: number): Queue =>
+  replaceWriter(queue, id, (run) => (run.waiting?.question === question ? run : { ...run, waiting: { question, since: now } }));
+
+/**
+ * The person answered a grill run's question and its agent works again: the run is no longer waiting, and its working clock starts again, so the grill
+ * limit counts from the answer. A run that is not waiting is unchanged. PURE.
+ */
+export const writerResumed = (queue: Queue, id: string, now: number): Queue =>
+  replaceWriter(queue, id, (run) => (run.waiting === undefined ? run : { ...notWaiting(run), startedAt: now }));
+
+/**
  * The writer run's outcome was read: its valid drafts are kept, each waiting to be made, with its duplicates, and each refused file is kept by name. The
  * run is then `creating` (`writerCreated` ends it). A run with no valid draft ends failed, saying what each refused file got wrong. PURE.
  */
@@ -137,9 +154,9 @@ export function writerDrafted(queue: Queue, id: string, written: Readonly<{ draf
   if (written.drafts.length === 0) {
     const reasons = written.rejected.map(({ reason }) => reason).join("; ");
     const failure = written.rejected.length === 0 ? "it wrote no draft" : `none of its drafts is valid: ${reasons}`;
-    return replaceWriter(queue, id, (run) => ({ ...run, phase: "finished", finishedAt: now, failure, rejected: written.rejected }));
+    return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, failure, rejected: written.rejected }));
   }
-  return replaceWriter(queue, id, (run) => ({ ...run, phase: "creating", drafts: written.drafts, rejected: written.rejected }));
+  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "creating", drafts: written.drafts, rejected: written.rejected }));
 }
 
 /**
@@ -164,7 +181,7 @@ export const changeDraft = (queue: Queue, id: string, draftId: string, change: (
 
 /** The writer run failed: it holds no slot, and the drafts it had are kept as they are. */
 export function writerFailed(queue: Queue, id: string, failure: string, now: number): Queue {
-  return replaceWriter(queue, id, (run) => ({ ...run, phase: "finished", finishedAt: now, failure }));
+  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, failure }));
 }
 
 /**
@@ -173,7 +190,7 @@ export function writerFailed(queue: Queue, id: string, failure: string, now: num
  */
 export const stopWriter = (queue: Queue, id: string, now: number): Queue =>
   replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : {
-    ...run, phase: "finished", finishedAt: now, failure: "stopped on the board",
+    ...notWaiting(run), phase: "finished", finishedAt: now, failure: "stopped on the board",
     drafts: run.drafts.map((draft) => (draft.status === "creating" ? { ...draft, status: "failed", failure: "stopped on the board" } : draft)),
   }));
 

@@ -8,14 +8,14 @@ import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordPullFiles, recordRepos, roundsLeft, unpark, watchWorking } from "./queue/approve.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
 import { join } from "node:path";
-import { OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE } from "./worker-files.ts";
+import { OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { conflictLines, feedbackSince, parseOutcome, publishResult } from "./pool-outcome.ts";
+import { conflictLines, feedbackSince, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, resumesOnConflict } from "./board-view/settled-by-pulls.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, type WriterRun, type WrittenOutcome } from "./queue/declared-remains.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
-import { observeWriter, writerFailed } from "./queue.ts";
+import { observeWriter, writerFailed, writerResumed, writerWaiting } from "./queue.ts";
 import { createDrafts } from "./writer-create.ts";
 import { openPulls } from "./board-view/view-ticket.ts";
 import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
@@ -25,10 +25,21 @@ import { type PoolContext } from "./pool-context.ts";
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
 
+const HOUR_MS = 60 * 60_000;
 /** The longest a quick new-ticket run may take, from its start. */
 const WRITER_LIMIT_MS = 30 * 60_000;
-/** The longest a grill new-ticket run may take, from its start: it waits on the person between its questions, so it has longer. The person can stop it. */
+/**
+ * The longest a grill new-ticket run may work, from its start or from the person's last answer: it waits on the person between its questions, so it
+ * has longer. The person can stop it.
+ */
 const WRITER_GRILL_LIMIT_MS = 4 * 60 * 60_000;
+/**
+ * The longest a grill new-ticket run waits for the person to answer its question, from when its agent ended its turn with it. A run nobody answers
+ * is failed, saying so (A11-129).
+ */
+const WRITER_ANSWER_WAIT_MS = 4 * 60 * 60_000;
+/** What a grill run's card says its agent waits on, when no question can be read from the stop hook's file. */
+const WAITING_LINE = "Its agent is waiting for you in its terminal.";
 
 /** What the board tells a worker whose run is idle with no background work to wake it, once (A11-85). */
 const BACKGROUND_GONE_PROMPT = "your background work is gone; check it and carry on";
@@ -225,44 +236,75 @@ function promptBackgroundGone(ctx: PoolContext, entry: Entry): void {
 /**
  * Each new-ticket run's status, from the same listing as the ticket runs'. A running one ends once its outcome file is there and its agent is idle or
  * done, when its drafts are read and made into tickets (`finishWriter`). A quick run ends failed when its agent stops without one. A grill run is
- * different: its agent goes idle between its questions, which the person answers in its terminal, so it ends only when its agent is done without an outcome.
+ * different: when its agent ends its turn with no outcome, the run is Waiting for the person, who answers in its terminal. It keeps its workspace, its
+ * pane and its slot, and resumes when its agent works again. It fails only when its agent exits, or when nobody answers for too long (A11-129).
  */
 function watchWriters(ctx: PoolContext, status: ReadonlyMap<string, string>): void {
   const { finishing, misses, now, startedHere, store } = ctx;
   for (const run of store.get().writers ?? []) {
     if (run.phase !== "running") continue;
     const place = writerPlace(ctx, run);
-    const limit = run.mode === "grill" ? WRITER_GRILL_LIMIT_MS : WRITER_LIMIT_MS;
-    if (now() - (run.startedAt ?? now()) > limit) {
-      endWriter(ctx, run, `it did not finish within ${limit / 60_000} minutes`);
+    const overdue = writerOverdue(run, now());
+    if (overdue !== null) {
+      endWriter(ctx, run, overdue);
       continue;
     }
     const seen = status.get(place.name);
     if (seen === undefined || seen === "unknown") {
-      if (missedAgain(ctx, place.name)) endWriter(ctx, run, seen === undefined ? "its herdr workspace is gone" : "herdr finds no agent in its workspace");
+      if (missedAgain(ctx, place.name)) endWriter(ctx, run, `its agent exited: ${seen === undefined ? "its herdr workspace is gone" : "herdr finds no agent in its workspace"}`);
       continue;
     }
     misses.delete(place.name);
     if (["working", "idle", "done"].includes(seen)) startedHere.delete(place.name);
     if (!["working", "idle", "done"].includes(seen) && answerStartDialog(ctx, place)) continue;
     if (seen === "working") {
-      update(ctx, (queue) => observeWriter(queue, run.id));
+      update(ctx, (queue) => writerResumed(observeWriter(queue, run.id), run.id, now()));
       continue;
     }
     const outcomePath = join(place.dir, OUTCOME_FILE);
     if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) {
       if (!finishing.has(run.id)) void finishWriter(ctx, run, place, readFileSync(outcomePath, "utf8"));
+    } else if (run.mode === "grill" && (seen === "idle" || seen === "done")) {
+      update(ctx, (queue) => writerWaiting(queue, run.id, questionOnFile(place.dir), now()));
     } else if (stoppedWithoutOutcome(run, seen)) endWriter(ctx, run, "it stopped without writing an outcome");
   }
 }
 
 /**
- * Whether a new-ticket run's agent has stopped with no outcome: it is done, or a quick run went idle after it was seen working. A grill run goes idle
- * between its questions, so going idle is not stopping for it.
+ * Why a new-ticket run is over its time, or null while it may run on. A quick run has {@link WRITER_LIMIT_MS} from its start. A grill run waiting for
+ * the person has {@link WRITER_ANSWER_WAIT_MS} from when it began to wait; a grill run working has {@link WRITER_GRILL_LIMIT_MS} from its start or its
+ * last answer. PURE.
+ */
+function writerOverdue(run: WriterRun, now: number): string | null {
+  if (run.mode === "quick") {
+    return now - (run.startedAt ?? now) > WRITER_LIMIT_MS ? `it did not finish within ${WRITER_LIMIT_MS / 60_000} minutes` : null;
+  }
+  if (run.waiting !== undefined) {
+    return now - run.waiting.since > WRITER_ANSWER_WAIT_MS ? `nobody answered its question for ${WRITER_ANSWER_WAIT_MS / HOUR_MS} hours` : null;
+  }
+  return now - (run.startedAt ?? now) > WRITER_GRILL_LIMIT_MS ? `it did not finish within ${WRITER_GRILL_LIMIT_MS / 60_000} minutes` : null;
+}
+
+/**
+ * The question a grill run's agent asked, from the file the stop hook writes beside its outcome, or the fixed line when the file says none it can read
+ * (A11-129). Cut to the length a needs-human reason is, so the card shows what the agent wrote and no more.
+ */
+function questionOnFile(dir: string): string {
+  try {
+    const { question } = JSON.parse(readFileSync(join(dir, WAITING_FILE), "utf8")) as { question?: unknown };
+    return typeof question === "string" && question.trim() !== "" ? question.trim().slice(0, QUESTION_CHARS) : WAITING_LINE;
+  } catch {
+    return WAITING_LINE;
+  }
+}
+
+/**
+ * Whether a quick run's agent has stopped with no outcome: it is done, or it went idle after it was seen working. A grill run never stops this way:
+ * its agent ending its turn with no outcome is a question it waits on (A11-129).
  */
 function stoppedWithoutOutcome(run: WriterRun, seen: string): boolean {
-  if (seen === "done") return true;
-  return seen === "idle" && run.seenWorking === true && run.mode === "quick";
+  if (run.mode === "grill") return false;
+  return seen === "done" || (seen === "idle" && run.seenWorking === true);
 }
 
 /** The publish run's status, from the same listing as the ticket runs': it ends once its outcome file is there and its agent is idle or done. */

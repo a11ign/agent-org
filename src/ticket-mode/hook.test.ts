@@ -146,6 +146,37 @@ test("A11-124: a grill writer may end its turn with no outcome while it waits on
   assert.equal(stopVerdict(unnamed).code, 2, "a mark that names no mode is not grill");
 });
 
+test("A11-129: a grill turn that ends with no outcome records its question beside the outcome file: the payload's last message, else the transcript's last assistant text, else an empty one", () => {
+  const dir = tmpDir("ticket-hook-question-");
+  writeFileSync(join(dir, "writer-run"), "{\"mode\":\"grill\"}\n");
+  const transcript = join(dir, "transcript.jsonl");
+  writeFileSync(transcript, [
+    JSON.stringify({ type: "user", message: { content: "Read the brief" } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Q1: editable or read-only?" }] } }),
+  ].join("\n"));
+  const recorded = () => JSON.parse(readFileSync(join(dir, "waiting.json"), "utf8")) as { question: string; at: number };
+  assert.equal(main(JSON.stringify({ hook_event_name: "Stop", last_assistant_message: "Q1: editable or read-only?" }), ["stop", dir]).code, 0);
+  assert.equal(recorded().question, "Q1: editable or read-only?", "the payload's last message is the question");
+  assert.equal(typeof recorded().at, "number", "and when it was recorded");
+  assert.equal(main(JSON.stringify({ transcript_path: transcript }), ["stop", dir]).code, 0);
+  assert.equal(recorded().question, "Q1: editable or read-only?", "with no message in the payload, the transcript's last assistant text is the question");
+  assert.equal(main(JSON.stringify({ transcript_path: join(dir, "no-such.jsonl") }), ["stop", dir]).code, 0);
+  assert.equal(recorded().question, "", "with neither, the question is empty, and the board shows its fixed line");
+  const quick = tmpDir("ticket-hook-question-quick-");
+  writeFileSync(join(quick, "writer-run"), "{\"mode\":\"quick\"}\n");
+  assert.equal(main(JSON.stringify({ last_assistant_message: "a question" }), ["stop", quick]).code, 2, "a quick run is refused, as before");
+  assert.equal(existsSync(join(quick, "waiting.json")), false, "and no question is recorded for it");
+});
+
+test("A11-129: no worker may write a grill run's question or its moved outcome, by a file tool or a command", () => {
+  for (const file of ["waiting.json", "asked.json"]) {
+    const path = join(tmpDir("ticket-hook-board-file-"), file);
+    assert.equal(toolVerdict("Write", { file_path: path }).code, 2, `${file}: a file tool may not write it`);
+    assert.equal(toolVerdict("Bash", { command: `echo '{}' > ${path}` }).code, 2, `${file}: a command may not write it`);
+  }
+  assert.equal(toolVerdict("Write", { file_path: join(tmpDir("ticket-hook-agent-"), "outcome.json") }).code, 0, "CONTROL: the outcome file is the worker's to write");
+});
+
 test("A11-118: a ready-pr with `pr` for `prs` is refused at the stop naming prs; the corrected file is allowed and the count is reset", () => {
   const dir = tmpDir("ticket-hook-shape-");
   const outcome = join(dir, "outcome.json");
