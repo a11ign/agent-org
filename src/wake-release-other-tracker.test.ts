@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { performRelease } from "./wake/with-ci-failure-class.ts";
+import { performRelease } from "./wake/ci-class-and-spares.ts";
 import { REPO } from "./project-identity.ts";
 
 type Request = Parameters<typeof performRelease>[0];

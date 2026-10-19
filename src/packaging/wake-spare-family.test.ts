@@ -18,13 +18,13 @@ import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
-import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
-import { spawnableRole, spareLabelForRow, engineerRoles } from "../wake/is-pull-request-spawn-order.ts";
-import { withSpareInstances, route } from "../wake/exit.ts";
-import { spareInstances } from "../wake/merge-queue-wait-limit-ms.ts";
-import { endFinishedSpares } from "../wake/with-ci-failure-class.ts";
+import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
+import { spawnableRole, spareLabelForRow, engineerRoles } from "../wake/pull-request-spawn-orders.ts";
+import { withSpareInstances, route } from "../wake/exit-and-limits.ts";
+import { spareInstances } from "../wake/merge-queue-wait.ts";
+import { endFinishedSpares } from "../wake/ci-class-and-spares.ts";
 import { readSpareCycles } from "../wake/ended-sessions.ts";
-import { consecutiveClean } from "../wake/is-release-line.ts";
+import { consecutiveClean } from "../wake/release-line-and-seats.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_SESSIONS, SPARE_FAMILIES }
   from "../arm-pr.ts";
 import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";

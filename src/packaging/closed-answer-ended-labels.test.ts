@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readClosedAnswerRows, withoutEndedAnswerSessions } from "../work-gate/causes/rows-answers.ts";
 import { readOpenRowFollowUps } from "../work-gate.ts";
-import { KEPT_ANSWERS_MAX_AGE_MS, type ConditionalReads } from "../work-gate/reads/exit.ts";
+import { KEPT_ANSWERS_MAX_AGE_MS, type ConditionalReads } from "../work-gate/reads/read-memo-and-exit.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { closedAnswerConnection, readsClosedAnswerRows } from "./rows-by-label-fixtures.ts";
 

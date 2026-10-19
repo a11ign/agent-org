@@ -19,15 +19,15 @@ import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { claimStallTick, claimStallsNow } from "./work-gate/claim-stall-tick.ts";
 import { readElsewherePrs } from "./work-gate/reads.ts";
 import { CAUSES, START_CAUSES, JUDGMENT_CAUSES } from "./cause-declaration.ts";
-import { GH_READS } from "./work-gate/reads/exit.ts";
+import { GH_READS } from "./work-gate/reads/read-memo-and-exit.ts";
 import { profileFor } from "./worker-profile.ts";
 import { WAKE_TTL_MS, readLedger, handoffBatches, ledgerLine } from "./wake/ended-sessions.ts";
 import { MAX_DELIVERIES } from "./wake/holds-as-fyi.ts";
-import { performRelease, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork, sessionMoved, keptClaimsPath, thrashEscalationPrompt, pruneGoneKeptClaims, readKeptClaims, writeKeptClaims } from "./wake/with-ci-failure-class.ts";
-import { spawnClaimer, consecutiveClean, drainInForce, isReleaseLine, cyclesReport } from "./wake/is-release-line.ts";
-import { spawnedPrompt, deliver, PRIMARY_CHECKOUT } from "./wake/clear-settle-ms.ts";
-import { deliveryCounts, queueHandoff, readHandoffs, VOIDED } from "./wake/reset.ts";
-import { readLedgerDeliveries } from "./wake/merge-queue-wait-limit-ms.ts";
+import { performRelease, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork, sessionMoved, keptClaimsPath, thrashEscalationPrompt, pruneGoneKeptClaims, readKeptClaims, writeKeptClaims } from "./wake/ci-class-and-spares.ts";
+import { spawnClaimer, consecutiveClean, drainInForce, isReleaseLine, cyclesReport } from "./wake/release-line-and-seats.ts";
+import { spawnedPrompt, deliver, PRIMARY_CHECKOUT } from "./wake/fyi-queue.ts";
+import { deliveryCounts, queueHandoff, readHandoffs, VOIDED } from "./wake/seat-reset.ts";
+import { readLedgerDeliveries } from "./wake/merge-queue-wait.ts";
 import { recentlyVoidedKeys } from "./wake.ts";
 import {
   claimRecordComment, claimRow, declineRow, claimWithWorktree, worktreeTargetReason, worktreeFlagsReason,

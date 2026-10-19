@@ -12,8 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { haikuTierProfile, readHaikuSwitch, agentArgs, AUTO_COMPACT_TRIGGER_MARGIN_TOKENS, HAIKU_AUTOCOMPACT_WINDOW_TOKENS,
   HAIKU_PROMPT_CEILING_TOKENS, HAIKU_MODEL_ID, HAIKU_TIER_LABEL, DECLARED_CLAUDE_MODELS, profileFor, HAIKU_TIER_SWITCH_PATH, AUTOCOMPACT_WINDOW_TOKENS, type TierProfile } from "../worker-profile.ts";
-import { spawnInvocation } from "../wake/is-pull-request-spawn-order.ts";
-import { spawnClaimer } from "../wake/is-release-line.ts";
+import { spawnInvocation } from "../wake/pull-request-spawn-orders.ts";
+import { spawnClaimer } from "../wake/release-line-and-seats.ts";
 import { repriceEvents, type TraceEvent } from "../trace/store.ts";
 import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
 import { REPO as REPO_OF_TRACKER } from "../project-identity.ts";

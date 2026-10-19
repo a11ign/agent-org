@@ -20,7 +20,7 @@ import { REPO } from "../project-identity.ts";
 import { gh, lookup } from "../merge-guard/lookups.ts";
 import { ROW_READ_FIELDS } from "./file-overlap-rule.ts";
 import { declaredRegionFiles, hasTemplateField, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
-import { extractAcceptanceSection, runsTheWholeSuite } from "../acceptance-commands/suite-scripts-for.ts";
+import { extractAcceptanceSection, runsTheWholeSuite } from "../acceptance-commands/suite-and-checkout-commands.ts";
 
 /** The three fields the issue template requires, in the order they appear in the form. */
 export const REQUIRED_FIELDS = ["Region", "Acceptance", "Open-check"];

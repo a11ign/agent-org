@@ -11,7 +11,7 @@ import { declaredRegionFiles, regionPathTokens, splitRegionEntry } from "../regi
 import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { rowTracker, trackerNamed } from "../row-tracker.ts";
 import { adopterFacingDeclared, adopterRowKind } from "../work-gate/org-health.ts";
-import { PRIMARY_MILESTONE_LINE } from "../org-health/no-merge-hours.ts";
+import { PRIMARY_MILESTONE_LINE } from "../org-health/thresholds.ts";
 import { chairmanAskRefusal } from "../work-gate/chairman-ask-orders.ts";
 import { unsplitDoneWhenRefusal } from "../unsplit-done-when.ts";
 import { loadLanes } from "../lane-ownership.ts";

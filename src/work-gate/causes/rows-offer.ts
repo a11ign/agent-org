@@ -5,14 +5,14 @@ import { decidedBy } from "../../decided-by.ts";
 import { subjectMention, subjectRef } from "../../review-attribution.ts";
 import { declaredRegionFiles, regionCovers, splitRegionEntry } from "../../region-paths.ts";
 import { hostConfigPath } from "../../host-config.ts";
-import { SIGNALS as ORG_HEALTH_SIGNALS } from "../../org-health/no-merge-hours.ts";
+import { SIGNALS as ORG_HEALTH_SIGNALS } from "../../org-health/thresholds.ts";
 import { REPO } from "../../project-identity.ts";
 import { homeProjectDeclaration } from "../../project-config.ts";
 import { SESSION_PREFIX } from "../../project-vocabulary.ts";
 import { recordEmergencyPriority } from "../../failure-recorders.ts";
 import { readJsonObject } from "../../claim-stall/claim-stalled.ts";
 import { writeJsonObject } from "../../claim-stall.ts";
-import { defaultRun, repoNow } from "../reads/exit.ts";
+import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
 import { commentsSince } from "../../ticket-port/comments-since.ts";
 import { CHAIRMAN_LOGINS, CHAIRMAN_PRIORITY_LABEL, LAUNCH_PLACEHOLDER, MAX_ROW_ORDERS_PER_TICK, PRIORITY_LABEL, REVIEWER_STATE_DIR, type Yielding,
   digestOf, isChairmanRow, labelsOf, laneOwnerOf, sessionOf } from "../vocabulary.ts";

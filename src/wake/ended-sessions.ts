@@ -8,10 +8,10 @@ import { roleBriefPath } from "../project-roles.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { firstLine } from "../herdr-agents.ts";
 import { reviewerPathsFrom, type CheckoutDeps } from "./ensure-reviewer-token.ts";
-import { CONTEXT_PLACEHOLDER, YOU_PLACEHOLDER_BYTES, authorOf, deliver, fitBatch, isAbsent, orderHeading, readReviewerEndings, waitedFor } from "./clear-settle-ms.ts";
+import { CONTEXT_PLACEHOLDER, YOU_PLACEHOLDER_BYTES, authorOf, deliver, fitBatch, isAbsent, orderHeading, readReviewerEndings, waitedFor } from "./fyi-queue.ts";
 import { readSpareRegistry, type OrderClock, type SpareCycle } from "./holds-as-fyi.ts";
-import { ESCALATED, HANDOFF_STALE_MS, JUDGMENT_TTL_MS, RESET, VOIDED, declaresDecision, dropHandoffs, ledgerKeyOf, queueHandoff } from "./reset.ts";
-import { defaultGh, defaultRun } from "./exit.ts";
+import { ESCALATED, HANDOFF_STALE_MS, JUDGMENT_TTL_MS, RESET, VOIDED, declaresDecision, dropHandoffs, ledgerKeyOf, queueHandoff } from "./seat-reset.ts";
+import { defaultGh, defaultRun } from "./exit-and-limits.ts";
 
 /**
  * WHICH LABELS ARE KNOWN TO HAVE ENDED, and when -- the signal this row names: a TORN-DOWN INSTANCE'S RECORD.

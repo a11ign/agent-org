@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readPrs, withPagedFiles } from "./work-gate/reads/exit.ts";
+import { readPrs, withPagedFiles } from "./work-gate/reads/read-memo-and-exit.ts";
 import { comparablePrFiles } from "./work-gate/vocabulary.ts";
 import { partitionUnclaimed } from "./work-gate/causes/rows-claims.ts";
 

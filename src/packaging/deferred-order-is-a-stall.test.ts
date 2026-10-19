@@ -13,12 +13,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ORDER_STALL_MINUTES, SIGNALS } from "../org-health/no-merge-hours.ts";
-import { orderStallReading } from "../org-health/review-gated-minutes.ts";
-import { BUSY_SEAT_DEFERRAL_MS } from "../wake/exit.ts";
+import { ORDER_STALL_MINUTES, SIGNALS } from "../org-health/thresholds.ts";
+import { orderStallReading } from "../org-health/overdue-readings.ts";
+import { BUSY_SEAT_DEFERRAL_MS } from "../wake/exit-and-limits.ts";
 import { CAPACITY_WAIT_LIMIT_MS } from "../wake/ended-sessions.ts";
-import { refusalReport, deferralAges, stalledOrdersOf } from "../wake/merge-queue-wait-limit-ms.ts";
-import { handoffBacklog } from "../wake/clear-settle-ms.ts";
+import { refusalReport, deferralAges, stalledOrdersOf } from "../wake/merge-queue-wait.ts";
+import { handoffBacklog } from "../wake/fyi-queue.ts";
 import { orderStallOrdersNow } from "../wake.ts";
 
 const MINUTE = 60_000;

@@ -19,7 +19,7 @@ import { parseLine } from "../gh-ledger.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
 import { machineryValues } from "../org-health.ts";
 import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
-import { STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-incident.ts";
+import { STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-readings.ts";
 import { parseHostConfig, renderTemplate, templateValues } from "../host-config.ts";
 import { authorFallbackTimes } from "../work-gate/causes/org-health-github-incident.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";

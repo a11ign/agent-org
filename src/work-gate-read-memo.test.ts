@@ -18,7 +18,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { capturingStderr, defaultRun, holdReadMemo, releaseReadMemo, inRepo, readMemoReading, readOnlyGh, runBatch } from "./work-gate/reads/exit.ts";
+import { capturingStderr, defaultRun, holdReadMemo, releaseReadMemo, inRepo, readMemoReading, readOnlyGh, runBatch } from "./work-gate/reads/read-memo-and-exit.ts";
 
 let dir: string;
 let log: string;
@@ -161,9 +161,9 @@ function importedAs(entry: string): { asked: number; said: string } {
     const reads = await import("file://" + exitPath);
     reads.defaultRun(["pr", "list", "--state", "merged", "--limit", "100"]);
     reads.defaultRun(["pr", "list", "--state", "merged", "--limit", "100"]);`;
-  // The reads module holds the memo when it is imported (`reads.ts`, the gate's entry-side import), and `defaultRun` is in `reads/exit.ts`.
+  // The reads module holds the memo when it is imported (`reads.ts`, the gate's entry-side import), and `defaultRun` is in `reads/read-memo-and-exit.ts`.
   const reads = fileURLToPath(new URL("./work-gate/reads.ts", import.meta.url));
-  const exit = fileURLToPath(new URL("./work-gate/reads/exit.ts", import.meta.url));
+  const exit = fileURLToPath(new URL("./work-gate/reads/read-memo-and-exit.ts", import.meta.url));
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", code, entry, reads, exit], { encoding: "utf8", env: process.env });
   assert.equal(result.status, 0, result.stderr);
   return { asked: calls().length, said: result.stderr };

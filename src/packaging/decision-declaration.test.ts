@@ -15,9 +15,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { queueOrLose, deepQueueRefusal, DEEP_QUEUE, DECISION_FLAG, FYI_FLAG, NEEDS_DECISION_FLAG, STANCE,
   parseStance, stanceNote, EXIT, attributed } from "../prompt-session.ts";
-import { handoffId, readHandoffs, queueHandoff, declaresDecision } from "../wake/reset.ts";
+import { handoffId, readHandoffs, queueHandoff, declaresDecision } from "../wake/seat-reset.ts";
 import { handoffOrder, handoffBatches, decisionHeader, MAX_LISTED_DECISIONS, PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES } from "../wake/ended-sessions.ts";
-import { handoffBacklog, backlogReport, addressed } from "../wake/clear-settle-ms.ts";
+import { handoffBacklog, backlogReport, addressed } from "../wake/fyi-queue.ts";
 
 const HANDOFF = { id: handoffId("reviewer", "Draft #1963"), session: "reviewer",
   prompt: "Draft #1963", queuedAt: 1_000 };

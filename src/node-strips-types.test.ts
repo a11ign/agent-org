@@ -26,9 +26,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { readNodeStrips, renderedUnits, unitNodeBinaries, nodeOnPath, SESSION_PATH_CALLER } = await import("./node-strips-types.ts");
-const { SIGNALS } = await import("./org-health/no-merge-hours.ts");
-const { nodeCannotStripReading } = await import("./org-health/state-label-reading.ts");
-const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-incident.ts");
+const { SIGNALS } = await import("./org-health/thresholds.ts");
+const { nodeCannotStripReading } = await import("./org-health/board-truth-readings.ts");
+const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-readings.ts");
 const { orgHealthNow } = await import("./work-gate/org-health.ts");
 
 const SIGNAL = "node-cannot-strip";

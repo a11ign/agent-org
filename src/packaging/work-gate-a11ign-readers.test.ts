@@ -29,7 +29,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { shippedUnits } from "../host-units/shipped-dir.ts";
+import { shippedUnits } from "../host-units/shipped-units.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import { type Declaration } from "../lib/pin-ratchet.ts";
@@ -64,8 +64,8 @@ const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.ts` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { addressed, deliver } from "../wake/clear-settle-ms.ts";
-import { escalateStuck } from "../wake/merge-queue-wait-limit-ms.ts";
+import { addressed, deliver } from "../wake/fyi-queue.ts";
+import { escalateStuck } from "../wake/merge-queue-wait.ts";
 import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.

@@ -36,9 +36,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { AUTO_OFF_MIRROR_PATH, AUTO_OFF_MIRROR_STALE_MINUTES, AUTO_OFF_RECORD_STALE_MINUTES, AUTO_OFF_REFUSAL_MINUTES, ORDER_STALL_MINUTES, SIGNALS } = await import("./org-health/no-merge-hours.ts");
-const { autoOffRefusalReading, parseAutoOffMirror, readAutoOffRefusal } = await import("./org-health/review-gated-minutes.ts");
-const { orgHealthOrders, orgHealthReadings, orgHealthTick } = await import("./org-health/fleet-build-incident.ts");
+const { AUTO_OFF_MIRROR_PATH, AUTO_OFF_MIRROR_STALE_MINUTES, AUTO_OFF_RECORD_STALE_MINUTES, AUTO_OFF_REFUSAL_MINUTES, ORDER_STALL_MINUTES, SIGNALS } = await import("./org-health/thresholds.ts");
+const { autoOffRefusalReading, parseAutoOffMirror, readAutoOffRefusal } = await import("./org-health/overdue-readings.ts");
+const { orgHealthOrders, orgHealthReadings, orgHealthTick } = await import("./org-health/fleet-build-readings.ts");
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-06T17:00:00Z");

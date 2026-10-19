@@ -18,7 +18,7 @@ import type { DoorRun, ReviewTrust } from "../review-trust.ts";
 
 /** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
 type GateModules = {
-  wake: typeof import("../wake/ensure-reviewer-token.ts") & typeof import("../wake/with-ci-failure-class.ts") & typeof import("../wake/is-pull-request-spawn-order.ts") & typeof import("../wake/reset.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
+  wake: typeof import("../wake/ensure-reviewer-token.ts") & typeof import("../wake/ci-class-and-spares.ts") & typeof import("../wake/pull-request-spawn-orders.ts") & typeof import("../wake/seat-reset.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
   identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts"); doorPath: typeof import("../reviewer-door-path.ts");
 };
 
@@ -32,7 +32,7 @@ let gate: { ok: true; modules: GateModules } | { ok: false; refusal: unknown } |
  */
 export async function loadReviewerGate(): Promise<void> {
   if (gate !== null) return;
-  gate = await Promise.all([import("../wake/ensure-reviewer-token.ts"), import("../wake/with-ci-failure-class.ts"), import("../wake/is-pull-request-spawn-order.ts"), import("../wake/reset.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
+  gate = await Promise.all([import("../wake/ensure-reviewer-token.ts"), import("../wake/ci-class-and-spares.ts"), import("../wake/pull-request-spawn-orders.ts"), import("../wake/seat-reset.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
     ([tokens, withCiFailure, spawnOrder, reset, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake: { ...tokens, ...withCiFailure, ...spawnOrder, ...reset }, trust, config, identity, orders, doorPath } }),
     (refusal: unknown) => ({ ok: false as const, refusal }),
   );

@@ -12,7 +12,7 @@
 import { labelsOf, REVIEWER_STATE_DIR } from "./vocabulary.ts";
 import { REPO_CHECKOUT, systemctlRun, readMergedPrs, readElsewherePrs } from "./reads.ts";
 import { openBlockers } from "./causes/rows-amended.ts";
-import { withChecksPending } from "./reads/exit.ts";
+import { withChecksPending } from "./reads/read-memo-and-exit.ts";
 import { familyNumber } from "../arm-pr.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { gitRun, readJsonObject, STALL_STATE_FILE, claimFactsFrom, readClaim, readLabelEvents, Unreadable, withRedChecks } from "../claim-stall/claim-stalled.ts";
@@ -29,7 +29,7 @@ import { WORKER_STATE_DIR, readDeclarations, lastDeliveredTo, declarationReading
 import { homeProjectDeclaration } from "../project-config.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
 import { DEFAULT_CANARY_OPTIONS } from "../org-health.ts";
-import { machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health/fleet-build-incident.ts";
+import { machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health/fleet-build-readings.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 /**

@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnableReviewer, reviewerPathsFrom, REVIEWER_DEAD_AFTER_TICKS } from "./wake/ensure-reviewer-token.ts";
-import { endFinishedReviewers, observeOpenReviewer } from "./wake/reset.ts";
+import { endFinishedReviewers, observeOpenReviewer } from "./wake/seat-reset.ts";
 import { listingIsComplete } from "./herdr-agents.ts";
 import { SETTLE_TEST_CLOCK_ENV } from "./wake/holds-as-fyi.ts";
 import { readReviewerRegistry } from "./work-gate/causes/org-health-reviewer-auth.ts";

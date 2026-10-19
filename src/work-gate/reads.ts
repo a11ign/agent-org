@@ -12,7 +12,7 @@ import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../project-vocabulary.ts";
 import { recordDueInstants } from "./due-index-write.ts";
 import { NOT_STARTABLE, PARKED_LABEL, ROW_BLOCKED_BY, ROW_LABELS, type Scope, type ScopeRepository, labelledRows, labelsOf, scopesOf, sessionOf, tagged } from "./vocabulary.ts";
-import { OPEN_ROWS_LIMIT, TICK_SCOPES_VARIABLE, conditionalFor, conditionalOpenRows, defaultRun, defaultSpawn, holdReadMemo, isAmbientRun, isGateProcess, isGhRun, readMemo, readMemoReading, readOpenRowsAsListed, readPrs, readWithFirstWaveTogether, releaseReadMemo, repoNow, runBatch, type ConditionalReads } from "./reads/exit.ts";
+import { OPEN_ROWS_LIMIT, TICK_SCOPES_VARIABLE, conditionalFor, conditionalOpenRows, defaultRun, defaultSpawn, holdReadMemo, isAmbientRun, isGateProcess, isGhRun, readMemo, readMemoReading, readOpenRowsAsListed, readPrs, readWithFirstWaveTogether, releaseReadMemo, repoNow, runBatch, type ConditionalReads } from "./reads/read-memo-and-exit.ts";
 
 if (isGateProcess()) holdReadMemo();
 else releaseReadMemo();

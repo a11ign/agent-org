@@ -11,7 +11,7 @@ import { failingAssertionLines, type CiFailure, type Gh } from "../ci-failure-cl
 import { CI_RERUN_LEDGER_FILE, rerunLedgerLine, rerunRedOn5xx } from "../ci-rerun-on-5xx.ts";
 import { redRunOfHead, rerunFailedJobsOf } from "../ticket-port/ci-reads.ts";
 import { haikuTierProfile, type TierProfile } from "../worker-profile.ts";
-import { readWithFirstWaveTogether, runBatch } from "../work-gate/reads/exit.ts";
+import { readWithFirstWaveTogether, runBatch } from "../work-gate/reads/read-memo-and-exit.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { REPO } from "../project-identity.ts";
 import { withOrchestratorOneShot } from "../orchestrator-one-shot.ts";
@@ -25,12 +25,12 @@ import { persistentEntries, type PersistentEntry } from "../project-roles.ts";
 import { liveToolVersion } from "../lib/tool-version.ts";
 import { readState as readSelftestState, selftestPaths, worthAChild } from "../messaging/selftest.ts";
 import type { SpareCycle } from "./holds-as-fyi.ts";
-import { SESSIONS_FILE, handoffQueuePath, ledgerPathFrom, queueHandoff } from "./reset.ts";
-import { EXIT, defaultGh, defaultRun, guardedGh, route, rowMention, type RowRef } from "./exit.ts";
-import { START_BUDGET_MS, rowRefOfOrder, spawnEnvironment, startBudgetOf, type ClaimRefused, type ClaimedRow, type SpawnClaimer, type ToolchainGate } from "./is-pull-request-spawn-order.ts";
+import { SESSIONS_FILE, handoffQueuePath, ledgerPathFrom, queueHandoff } from "./seat-reset.ts";
+import { EXIT, defaultGh, defaultRun, guardedGh, route, rowMention, type RowRef } from "./exit-and-limits.ts";
+import { START_BUDGET_MS, rowRefOfOrder, spawnEnvironment, startBudgetOf, type ClaimRefused, type ClaimedRow, type SpawnClaimer, type ToolchainGate } from "./pull-request-spawn-orders.ts";
 import { MERGE_QUEUE_WAIT_PHRASE, readSpareCycles, settle } from "./ended-sessions.ts";
-import { HOST_REPOS, PRIMARY_CHECKOUT, trackerRepositoryOf } from "./clear-settle-ms.ts";
-import { rowComments } from "./merge-queue-wait-limit-ms.ts";
+import { HOST_REPOS, PRIMARY_CHECKOUT, trackerRepositoryOf } from "./fyi-queue.ts";
+import { rowComments } from "./merge-queue-wait.ts";
 import { reviewCloneOf } from "./ensure-reviewer-token.ts";
 
 /**

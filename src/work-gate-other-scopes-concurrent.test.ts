@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV, stateEntryPath } from "./host-config.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
-import { BATCH_MAX_CALLS, readWithFirstWaveTogether, runBatch } from "./work-gate/reads/exit.ts";
+import { BATCH_MAX_CALLS, readWithFirstWaveTogether, runBatch } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readElsewherePrs } from "./work-gate/reads.ts";
 import { readOtherScopes } from "./work-gate.ts";
 import { readScopeTrunkRed } from "./work-gate/tick/blocker-cleared-reading.ts";

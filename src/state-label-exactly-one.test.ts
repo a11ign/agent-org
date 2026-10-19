@@ -34,9 +34,9 @@ const { declineRow, claimRecordComment } = await import("./row-claim.ts");
 const { BACKLOG_LABEL, BLOCKED_LABEL } = await import("./project-vocabulary.ts");
 const { PARKED_LABEL } = await import("./work-gate/vocabulary.ts");
 const { reportStateLabels, CHECKS, invisibleRows } = await import("./ready-label-audit.ts");
-const { SIGNALS } = await import("./org-health/no-merge-hours.ts");
-const { stateLabelReading } = await import("./org-health/state-label-reading.ts");
-const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-incident.ts");
+const { SIGNALS } = await import("./org-health/thresholds.ts");
+const { stateLabelReading } = await import("./org-health/board-truth-readings.ts");
+const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-readings.ts");
 const { labelRefusal, boardingFor } = await import("./row-file/duplicate-title-refusal.ts");
 
 const row = (number: number, labels: string[], state?: string) => ({ number, labels, ...(state ? { state } : {}) });

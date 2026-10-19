@@ -9,7 +9,7 @@ import { HOLD_RED_JOBS, reviewGateOf } from "../pr-orders/red-only-by-superseded
 import { checkMarkersOf } from "../review-gate.ts";
 import { BLOCKING_REVIEW_STATES, REVIEW_STATE, blockingChecks, checksSettledGreen, draftCandidates, mergeCandidates, reviewStateOf } from "../pr-state.ts";
 import { PROJECT_GIT } from "../reads.ts";
-import { capturingStderr, defaultRun, defaultSpawn, repoNow } from "../reads/exit.ts";
+import { capturingStderr, defaultRun, defaultSpawn, repoNow } from "../reads/read-memo-and-exit.ts";
 import { HOUR_MS, labelsOf, sessionOf } from "../vocabulary.ts";
 
 /**

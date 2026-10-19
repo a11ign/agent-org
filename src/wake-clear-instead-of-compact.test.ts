@@ -13,9 +13,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareContext } from "./wake/clear-settle-ms.ts";
+import { prepareContext } from "./wake/fyi-queue.ts";
 import { stateFileVerdict, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, STATE_FILE_MAX_BYTES } from "./wake/holds-as-fyi.ts";
-import { orderClockIn } from "./wake/merge-queue-wait-limit-ms.ts";
+import { orderClockIn } from "./wake/merge-queue-wait.ts";
 
 const MINUTE = 60_000;
 const NOW = 20 * 60 * 60 * 1000;

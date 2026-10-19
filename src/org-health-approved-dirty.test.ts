@@ -14,8 +14,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { APPROVED_DIRTY_FLAG, APPROVED_DIRTY_MINUTES, APPROVED_DIRTY_SIGNAL, HOLDS_PER_PR, HOLDS_PER_PR_SIGNAL, SAME_WAY_RERUN_SIGNAL, type DirtyPr } from "./org-health/claim-refusal.ts";
 import { approvedDirtyReading, approvedDirtyReadings, holdsPerPrReading, sameWayRerunReading } from "./org-health/hold-count.ts";
-import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-incident.ts";
-import { type Reading } from "./org-health/no-merge-hours.ts";
+import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
+import { type Reading } from "./org-health/thresholds.ts";
 
 const MINUTE = 60_000;
 const NOW = Date.UTC(2026, 9, 12, 12, 0);

@@ -15,14 +15,14 @@
 import { REPO_CHECKOUT } from "./reads.ts";
 import { HOUR_MS, MAX_ROW_ORDERS_PER_TICK, scopesOf, labelsOf, sessionOf, REVIEWER_STATE_DIR } from "./vocabulary.ts";
 import { fleetBatchRows } from "./causes/rows-fleet-batch.ts";
-import { defaultRun, repoNow } from "./reads/exit.ts";
+import { defaultRun, repoNow } from "./reads/read-memo-and-exit.ts";
 import { shouldBeMerging } from "./causes/pr-checks.ts";
 import { dispatchedLabJobsOrSay } from "./tick/blocker-cleared-reading.ts";
 import { redPrFacts } from "./tick.ts";
 import { partitionUnclaimed } from "./causes/rows-claims.ts";
 import { openBlockers } from "./causes/rows-amended.ts";
 import { rowKind, productRegionsOf } from "./causes/rows-offer.ts";
-import { redSinceOf } from "../org-health/review-gated-minutes.ts";
+import { redSinceOf } from "../org-health/overdue-readings.ts";
 import { declaredRegionFiles, regionCovers, splitRegionEntry } from "../region-paths.ts";
 import { ORG_TRACKER_REPO } from "../row-tracker.ts";
 import { READY_LABEL, CLAIM_LABEL } from "../claim-labels.ts";
@@ -37,10 +37,10 @@ import { idleWithOpenRowsReading, IDLE_REASONS } from "../idle-with-open-rows.ts
 import { roleBriefPath } from "../project-roles.ts";
 import { waitingOn, fleetWaitingOn, notBeforeDate, todayIso } from "../waiting-condition.ts";
 import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from "../project-vocabulary.ts";
-import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, SIGNALS, MILESTONE_CLOCK_MINUTES } from "../org-health/no-merge-hours.ts";
-import { readLatestMerge, primaryStandingSince, readTeamAccess, readReleaseRuns, readReleaseFailures, type SweepFact } from "../org-health/sweep-fact.ts";
-import { orgHealthTick, readFleetBuildIncidents, milestoneClockReading, orgHealthOrders } from "../org-health/fleet-build-incident.ts";
-import { shelvedCircles } from "../org-health/state-label-reading.ts";
+import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, SIGNALS, MILESTONE_CLOCK_MINUTES } from "../org-health/thresholds.ts";
+import { readLatestMerge, primaryStandingSince, readTeamAccess, readReleaseRuns, readReleaseFailures, type SweepFact } from "../org-health/sweep-readings.ts";
+import { orgHealthTick, readFleetBuildIncidents, milestoneClockReading, orgHealthOrders } from "../org-health/fleet-build-readings.ts";
+import { shelvedCircles } from "../org-health/board-truth-readings.ts";
 import { declaredClosedRows } from "../row-claim/file-overlap-rule.ts";
 import { holdersOf, holdExcused } from "../pr-hold-state.ts";
 import { withoutHold } from "../red-pr.ts";
@@ -53,7 +53,7 @@ import { stallReasonOf, ownerOfPr, reviewGateOf } from "./pr-orders/red-only-by-
 import { reviewHeadsOf } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571
-import { forgetReads, readWithFirstWaveTogether } from "./reads/exit.ts";
+import { forgetReads, readWithFirstWaveTogether } from "./reads/read-memo-and-exit.ts";
 import { webhookMode } from "./reads.ts";
 import { GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory } from "./pacing.ts"; // agent-org#1418: the sweep's promise and the memory of whole reads
 import { stateEntryPath } from "../host-config.ts"; // agent-org#1145: the child's write makes the memo's answers stale
@@ -126,7 +126,7 @@ export function fleetWaitingFacts(openRows: any[] | null, labJobs: string[] | nu
  * `pr list` already carries it, where the quiet-time version it replaced asked one `gh api` call per quiet PR for the head commit's date. A PR with
  * no `createdAt` is `since: null`, an unknown and not an age.
  */
-export function stalledPrFacts(prs: any[], required: string[] | null, { now }: { now: number; }): import("../org-health/review-gated-minutes.ts").OverdueCandidate[] {
+export function stalledPrFacts(prs: any[], required: string[] | null, { now }: { now: number; }): import("../org-health/overdue-readings.ts").OverdueCandidate[] {
   return prs.map((pr) => {
     const owner = ownerOfPr(pr);
     return { kind: "pr", number: pr.number, reason: stallReasonOf(pr, required, now), owner: owner.source === "ceo" ? null : owner.session,
@@ -226,7 +226,7 @@ function idleShapeOf(row: any, holders: Holders): { reason: string; } | { unknow
  * and, when `holders` is given (slice 2b), the idle shape the row is in (`idleShapeOf`), which also gives the row ITS OWN bound, `OVERDUE_IDLE_CLAIM_MINUTES`
  * (#3569). `unknown` is why a shape could not be told, for `unread`.
  */
-function claimedRowReadings(openRows: any[], claimedComments: any[], holders?: Holders): { items: import("../org-health/review-gated-minutes.ts").OverdueCandidate[]; unknown: string[]; } {
+function claimedRowReadings(openRows: any[], claimedComments: any[], holders?: Holders): { items: import("../org-health/overdue-readings.ts").OverdueCandidate[]; unknown: string[]; } {
   const commentsOf = new Map(claimedComments.map((row) => [Number(row.number), row.comments ?? []]));
   const unknown: string[] = [];
   const items = openRows.filter((row) => labelsOf(row).includes(CLAIM_LABEL)).map((row) => {
@@ -239,7 +239,7 @@ function claimedRowReadings(openRows: any[], claimedComments: any[], holders?: H
   return { items, unknown };
 }
 
-export function claimedRowFacts(openRows: any[], claimedComments: any[], holders?: Holders): import("../org-health/review-gated-minutes.ts").OverdueCandidate[] {
+export function claimedRowFacts(openRows: any[], claimedComments: any[], holders?: Holders): import("../org-health/overdue-readings.ts").OverdueCandidate[] {
   return claimedRowReadings(openRows, claimedComments, holders).items;
 }
 
@@ -257,7 +257,7 @@ export function needsHolderAgents(openRows: any[], moves: Map<number, ClaimMoves
  * nothing and says so; a refused PR list is `items: null`. `holders` (slice 2b) is whom the rows are held by: omitted, the rows are named `claimed`/`held`
  * only; `moves: null` is a claim-stall tick that read no claim, and a listing herdr could not give is `unread` -- said when some row needed it.
  */
-export function overdueFacts({ prsRead, openRowsRead, claimedComments, required, now, holders }: { prsRead: any[] | null; openRowsRead: any[] | null; claimedComments?: any[] | null; required: string[] | null; now: number; holders?: Holders; }): { items: import("../org-health/review-gated-minutes.ts").OverdueCandidate[] | null; unread: string[]; } {
+export function overdueFacts({ prsRead, openRowsRead, claimedComments, required, now, holders }: { prsRead: any[] | null; openRowsRead: any[] | null; claimedComments?: any[] | null; required: string[] | null; now: number; holders?: Holders; }): { items: import("../org-health/overdue-readings.ts").OverdueCandidate[] | null; unread: string[]; } {
   if (prsRead === null) return { items: null, unread: [] };
   const prs = stalledPrFacts(prsRead, required, { now });
   if (claimedComments === undefined) return { items: prs, unread: [] };
@@ -517,17 +517,17 @@ export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRe
   io: {
       now?: number; lastMergedAt?: () => number | { at: number; repo: string; } | null; readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>;
       log?: (line: string) => void; readCopies?: () => null; readRefusals?: () => import("../org-health/claim-refusal.ts").ClaimRefusal[] | null; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
-      release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health/state-label-reading.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
+      release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health/board-truth-readings.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
       readMilestoneMoves?: typeof readMilestoneMoves;
       /** a11ign#5681: the board offers this tick made, handed to the canary (`orgHealthTick`); OMITTED is "does not ask" */
       onBoardTruthOffers?: (count: number | null) => void;
-      readReleaseRuns?: () => import("../org-health/sweep-fact.ts").ReleaseRuns | null | undefined;
-      readReleaseFailures?: () => import("../org-health/sweep-fact.ts").ReleaseFailureRead[] | null | undefined;
-      raiseReleaseIncidents?: (reads: import("../org-health/sweep-fact.ts").ReleaseFailureRead[]) => void;
-      readFleetBuildIncident?: () => import("../org-health/fleet-build-incident.ts").FleetBuildIncident[] | null | undefined;
+      readReleaseRuns?: () => import("../org-health/sweep-readings.ts").ReleaseRuns | null | undefined;
+      readReleaseFailures?: () => import("../org-health/sweep-readings.ts").ReleaseFailureRead[] | null | undefined;
+      raiseReleaseIncidents?: (reads: import("../org-health/sweep-readings.ts").ReleaseFailureRead[]) => void;
+      readFleetBuildIncident?: () => import("../org-health/fleet-build-readings.ts").FleetBuildIncident[] | null | undefined;
       readReleaseBehind?: () => import("../release-behind-main.ts").RepoFact[] | null | undefined;
       readClassRepeat?: () => import("../class-repeat.ts").ClassRepeatFact | null | undefined;
-      teamAccess?: () => import("../org-health/state-label-reading.ts").TeamAccessFact | undefined;
+      teamAccess?: () => import("../org-health/board-truth-readings.ts").TeamAccessFact | undefined;
       readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined;
       /** agent-org#1135: the flags the code ships against the declarations; OMITTED is "does not ask", so only the live gate (`work-gate.ts`) reads the project's files */
       readFlagSwitches?: () => import("../flag-switch-ledger.ts").FlagLedger | null | undefined;
@@ -818,7 +818,7 @@ export function boardTruthEffect(gh: ReturnType<typeof readBoardGh>, { now, wait
  * post. Class repeat is an effect (it files rows), so it stays out of the wave. `releaseFailures` takes the project's runs the wave just read (`known`), as it always did.
  * `onReleaseRuns` hands the project's runs to the canary, which costs no second call.
  */
-export function orgHealthTogether(args: Parameters<typeof orgHealthNow>[0], io: Parameters<typeof orgHealthNow>[1], gh: { repo: string; openRowsRead: any[] | null | undefined; claimedComments?: any[] | null; now: number; onReleaseRuns?: (runs: import("../org-health/sweep-fact.ts").ReleaseRuns | null) => void; onBoardTruthOffers?: (count: number | null) => void; }) {
+export function orgHealthTogether(args: Parameters<typeof orgHealthNow>[0], io: Parameters<typeof orgHealthNow>[1], gh: { repo: string; openRowsRead: any[] | null | undefined; claimedComments?: any[] | null; now: number; onReleaseRuns?: (runs: import("../org-health/sweep-readings.ts").ReleaseRuns | null) => void; onBoardTruthOffers?: (count: number | null) => void; }) {
   const herdr = gh.openRowsRead == null ? null : readAgents(); // ONCE, outside the rehearsal: `readBoardFacts` would list the herdr agents again inside it
   const reads = readWithFirstWaveTogether((run) => {
     const releaseRuns = readReleaseRuns(run, gh.repo);
@@ -892,11 +892,11 @@ const CLOCK_OWES: Readonly<Record<string, (suffix: string) => string>> = Object.
  * #4231: ONE OPEN ROW OF THE PRIMARY MILESTONE AS THE CLOCK READS IT. Claimed is `session:*` OR a bare `in-progress`: an unnamed holder is not proof of an idle milestone (`idle-with-open-rows` reads
  * it the same way). The state is `idleWithOpenRowsReading`'s own, asked of this one row with no engineer roster: a row's reason for not being built is decided once, there.
  */
-function clockRowOf(row: any, now: number): import("../org-health/fleet-build-incident.ts").ClockRow {
+function clockRowOf(row: any, now: number): import("../org-health/fleet-build-readings.ts").ClockRow {
   return { ...clockRowState(row, now), epic: labelsOf(row).includes("epic") }; // the epic flag is for the NAMING (`milestoneClockReading` skips epics), not for the state
 }
 
-function clockRowState(row: any, now: number): Omit<import("../org-health/fleet-build-incident.ts").ClockRow, "epic"> {
+function clockRowState(row: any, now: number): Omit<import("../org-health/fleet-build-readings.ts").ClockRow, "epic"> {
   const labels = labelsOf(row);
   const createdAt = epochOrNull(row.createdAt);
   const claimed = labels.some((l) => l.startsWith(SESSION_PREFIX)) || labels.includes(CLAIM_LABEL);
@@ -958,7 +958,7 @@ export function adopterRowKind(entries: string[] | null, declaration: { code: { 
  * whose Region cannot be read a row with NO creation time, which is how `milestoneClockReading` already says unknown: it is never counted as product. An `epic` is the milestone's own container and carries no Region, so
  * it is not classified. Dormant (`declaration` omitted, or no `adopterFacing` declared) it is the row as before.
  */
-function countedClockRows(row: any, now: number, declaration: Parameters<typeof adopterRowKind>[1] | undefined): import("../org-health/fleet-build-incident.ts").ClockRow[] {
+function countedClockRows(row: any, now: number, declaration: Parameters<typeof adopterRowKind>[1] | undefined): import("../org-health/fleet-build-readings.ts").ClockRow[] {
   const counted = clockRowOf(row, now);
   if (declaration === undefined || !adopterFacingDeclared(declaration) || counted.epic) return [counted];
   const { kind, unreadable } = adopterRowKind(declaredRegionFiles(String(row.body ?? "")), declaration);
@@ -975,7 +975,7 @@ function countedClockRows(row: any, now: number, declaration: Parameters<typeof 
  * milestone's last claim or pull request ending whenever anything else merged since, so it errs SILENT, never loud. It stays out of this call so the tick's merge read keeps ONE caller (#4047).
  * #4378: ONLY ADOPTER-FACING ROWS ARE COUNTED when `declaration` says which repositories are (`countedClockRows`); omitted, or declaring none, every open row of the milestone is counted as before.
  */
-export function milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead = [], now, declaration }: { openRowsRead: any[] | null; prsRead: any[] | null; keyedPrsRead?: any[]; now: number; declaration?: Parameters<typeof adopterRowKind>[1]; }): Omit<import("../org-health/fleet-build-incident.ts").MilestoneClockFact, "endedAt"> | null {
+export function milestoneClockFact({ openRowsRead, prsRead, keyedPrsRead = [], now, declaration }: { openRowsRead: any[] | null; prsRead: any[] | null; keyedPrsRead?: any[]; now: number; declaration?: Parameters<typeof adopterRowKind>[1]; }): Omit<import("../org-health/fleet-build-readings.ts").MilestoneClockFact, "endedAt"> | null {
   if (openRowsRead === null) return null;
   const marked = new Map(openRowsRead.map((row) => row.milestone).filter((m) => m && PRIMARY_MILESTONE_LINE.test(String(m.description ?? ""))).map((m) => [Number(m.number), String(m.title ?? "")]));
   const primaries = [...marked].map(([number, title]) => ({ number, title }));
@@ -992,16 +992,16 @@ function withoutHeld(prs: any[], held: { subject: string; }[] | undefined) {
 }
 
 /** #3533: THE FACT, OR NOTHING. `undefined` is a caller that does not ask (and a host that declares no tool): the key is then left out, and `orgHealthReadings` reads an omitted one as silent. */
-const toolAgreementFact = (read: ReturnType<typeof import("../org-health/state-label-reading.ts").readToolAgreement>): { toolAgreement?: { now: number; result: any; } | null; } => (read === undefined ? {} : { toolAgreement: read });
+const toolAgreementFact = (read: ReturnType<typeof import("../org-health/board-truth-readings.ts").readToolAgreement>): { toolAgreement?: { now: number; result: any; } | null; } => (read === undefined ? {} : { toolAgreement: read });
 
 /** #4390: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused read, which the signal says is unknown. */
 const nodeStripsFact = (read: import("../node-strips-types.ts").NodeStripFact | null | undefined) => (read === undefined ? {} : { nodeStrips: read });
 
 /** #4001: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused read, which the signal says is unknown. */
-const releaseRunsFact = (read: import("../org-health/sweep-fact.ts").ReleaseRuns | null | undefined) => (read === undefined ? {} : { releaseRuns: read });
+const releaseRunsFact = (read: import("../org-health/sweep-readings.ts").ReleaseRuns | null | undefined) => (read === undefined ? {} : { releaseRuns: read });
 
 /** #4405: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused list of the open incidents, which the signal says is unknown, never clear. */
-const fleetBuildIncidentFact = (read: import("../org-health/fleet-build-incident.ts").FleetBuildIncident[] | null | undefined) => (read === undefined ? {} : { fleetBuildIncident: read });
+const fleetBuildIncidentFact = (read: import("../org-health/fleet-build-readings.ts").FleetBuildIncident[] | null | undefined) => (read === undefined ? {} : { fleetBuildIncident: read });
 
 /** #4128: THE FACT, OR NOTHING: `undefined` is a caller that does not ask, silent, and `null` a refused listing of the repositories, which the signal says is unknown. */
 const releaseBehindFact = (read: import("../release-behind-main.ts").RepoFact[] | null | undefined) => (read === undefined ? {} : { releaseBehind: read });
@@ -1010,7 +1010,7 @@ const releaseBehindFact = (read: import("../release-behind-main.ts").RepoFact[] 
 const classRepeatFact = (read: import("../class-repeat.ts").ClassRepeatFact | null | undefined) => (read === undefined ? {} : { classRepeat: read });
 
 /** #3634: THE FACT, OR NOTHING, as `toolAgreementFact`: `undefined` is a project that declares no `teamAccess`, so the reading is silent. */
-const teamAccessFact = (read: import("../org-health/state-label-reading.ts").TeamAccessFact | undefined) => (read === undefined ? {} : { teamAccess: read });
+const teamAccessFact = (read: import("../org-health/board-truth-readings.ts").TeamAccessFact | undefined) => (read === undefined ? {} : { teamAccess: read });
 /** agent-org#1135: `undefined` is a caller that does not ask (silent), `null` a read that was refused (a stated unknown). */
 const tickHealthFact = (read: import("../work-tick-health.ts").TickHealth | null | undefined) => (read === undefined ? {} : { tickHealth: read });
 const tickRecordFact = (read: import("../work-tick-health.ts").TickRecordState | undefined) => (read === undefined ? {} : { tickRecord: read });

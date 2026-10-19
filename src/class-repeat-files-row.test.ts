@@ -14,7 +14,7 @@ import {
   CLASS_REPEAT_WINDOW_MS, CLASS_ROW_MILESTONE, FAILURE_CLASSES_PATH, classRowArgv, groupByClass, guardChangedCommand, liveClassRepeatIo, readClassRepeat,
   type ClassRepeatFact,
 } from "./class-repeat.ts";
-import { orgHealthOrders, classRepeatReadings } from "./org-health/fleet-build-incident.ts";
+import { orgHealthOrders, classRepeatReadings } from "./org-health/fleet-build-readings.ts";
 import { bodyFromArgv, fileRefusalReason } from "./row-file/body-from-argv.ts";
 import { kindRefusal } from "./row-file/duplicate-title-refusal.ts";
 

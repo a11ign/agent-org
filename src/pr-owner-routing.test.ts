@@ -19,7 +19,7 @@ import { withholdOutsideFollowUps } from "./work-gate/pr-orders.ts";
 import { prOwnerRoutingFlagOn } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { OUTSIDE, INSIDE, reviewTrustOf, type DeclaredIdentities } from "./review-trust.ts";
 import { CHAIRMAN_LOGINS } from "./work-gate/vocabulary.ts";
-import { emptyCanaryState, STANDARD_MACHINERY_SIGNALS } from "./org-health/fleet-build-incident.ts";
+import { emptyCanaryState, STANDARD_MACHINERY_SIGNALS } from "./org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "./org-health.ts";
 
 type Order = { session: string; cause: string; subject?: string; causeKey: string; };

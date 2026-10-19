@@ -32,7 +32,7 @@ import { attributionOf, failingTestsFromJobLog, newestVerdictRun, readTrunkRed, 
   from "../trunk-red.ts";
 import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
-import { routeWithFallback } from "../wake/exit.ts";
+import { routeWithFallback } from "../wake/exit-and-limits.ts";
 
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
 

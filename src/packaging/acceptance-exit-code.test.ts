@@ -32,7 +32,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { extractAcceptanceSection } from "../acceptance-commands/suite-scripts-for.ts";
+import { extractAcceptanceSection } from "../acceptance-commands/suite-and-checkout-commands.ts";
 import { extractRefutationSection, acceptanceReport, classifyCommand } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 import { RESOURCES } from "../project-vocabulary.ts";
 

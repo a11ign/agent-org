@@ -9,11 +9,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
-import { parseOrders } from "./wake/reset.ts";
-import { refusalReport } from "./wake/merge-queue-wait-limit-ms.ts";
-import { sayClaimRefusal, spawnClaimability } from "./wake/is-release-line.ts";
-import { startsFresh, type SpawnClaimer } from "./wake/is-pull-request-spawn-order.ts";
+import { deliver as settlingDeliver } from "./wake/fyi-queue.ts";
+import { parseOrders } from "./wake/seat-reset.ts";
+import { refusalReport } from "./wake/merge-queue-wait.ts";
+import { sayClaimRefusal, spawnClaimability } from "./wake/release-line-and-seats.ts";
+import { startsFresh, type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: () => {} });

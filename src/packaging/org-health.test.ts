@@ -41,12 +41,12 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading } = await import("../org-health/no-merge-hours.ts");
-const { redPrReading, refusedRowReading, primaryReading } = await import("../org-health/review-gated-minutes.ts");
-const { primaryStandingSince, readLastMergedAt, readLatestMerge } = await import("../org-health/sweep-fact.ts");
-const { orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("../org-health/fleet-build-incident.ts");
+const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading } = await import("../org-health/thresholds.ts");
+const { redPrReading, refusedRowReading, primaryReading } = await import("../org-health/overdue-readings.ts");
+const { primaryStandingSince, readLastMergedAt, readLatestMerge } = await import("../org-health/sweep-readings.ts");
+const { orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("../org-health/fleet-build-readings.ts");
 const { CAUSES, JUDGMENT_CAUSES, START_CAUSES } = await import("../cause-declaration.ts");
-const { GH_READS } = await import("../work-gate/reads/exit.ts");
+const { GH_READS } = await import("../work-gate/reads/read-memo-and-exit.ts");
 const { UNCLAIMABLE_AFTER_TICKS } = await import("../work-gate/causes/rows-claims.ts");
 const { decide } = await import("../work-gate/tick/blocker-cleared-reading.ts");
 const { withPrOwners } = await import("../work-gate/pr-owners.ts");
@@ -438,12 +438,12 @@ const EXEMPT: Record<string, string> = {
   "merge-queue.ts": "decides whether ONE queued PR may merge from its required checks; counts and ages nothing",
   "queue-stalled.ts": "reads the gate verdict of an ARMED PR to tell a stalled queue from a slow one",
   "work-gate/pr-state.ts": "the gate's own settled-green / still-running reading of a rollup (`checksSettledGreen`, `blockingChecks`): it asks whether checks have SETTLED, and counts and ages no red PR (a11ign#5152: it was one file with `redPrFacts`, which imports the decider)",
-  "work-gate/reads/exit.ts": "names `statusCheckRollup` in the `gh pr list --json` field list and marks `checksPending` from it; reads no verdict (a11ign#5152)",
+  "work-gate/reads/read-memo-and-exit.ts": "names `statusCheckRollup` in the `gh pr list --json` field list and marks `checksPending` from it; reads no verdict (a11ign#5152)",
   "work-gate/causes/pr-reviews.ts": "narrows a rollup to the newest run per name to tell a PR that is still RUNNING from one that is settled, for the review-blocked order; counts no red (a11ign#5152)",
   "work-gate/causes/org-health-github-incident.ts": "reads a FAILED job's own conclusion to tell a runner that never started from a red check; it names one job's failure, not how many PRs are red (a11ign#5152)",
   "work-gate/pr-orders.ts": "the order assembly that calls the red-only logic: who is asked, not how many are red (`HOLD_RED_JOBS` is pinned equal to red-pr.ts's in org-retro.test.ts)",
   "work-gate/pr-orders/red-only-by-superseded-run.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
-  "org-health/state-label-reading.ts": "its `CirclePr` type names the rollup field so the circle reader can carry it; it reads no verdict and counts no red PR",
+  "org-health/board-truth-readings.ts": "its `CirclePr` type names the rollup field so the circle reader can carry it; it reads no verdict and counts no red PR",
   "org-retro/retro-cause.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
   "work-gate/tick/blocker-cleared-reading.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",
 };

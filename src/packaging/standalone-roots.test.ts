@@ -175,7 +175,7 @@ const MODULES: Module[] = [
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "board-snapshot-scope SNAPSHOT_DIR", file: "board-snapshot-scope.ts", answer: "m.SNAPSHOT_DIR",
     expectedInFixture: (checkout) => join(checkout, "runs", "board-snapshots"), expectedInTree: snapshotDirFor(REPO) },
-  { name: "host-units REPO_ROOT", file: "host-units/shipped-dir.ts", answer: "m.REPO_ROOT",
+  { name: "host-units REPO_ROOT", file: "host-units/shipped-units.ts", answer: "m.REPO_ROOT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "update-primary PRIMARY_CHECKOUT", file: "update-primary.ts", answer: "m.PRIMARY_CHECKOUT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },

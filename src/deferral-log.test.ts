@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DEFERRAL_LOG_FILE, deferralLogText, endedDeferrals, parseDeferralLog, recordEndedDeferrals } from "./deferral-log.ts";
-import { deferralAges } from "./wake/merge-queue-wait-limit-ms.ts";
+import { deferralAges } from "./wake/merge-queue-wait.ts";
 import { ledgerLine } from "./wake/ended-sessions.ts";
 
 const T0 = 1_000_000_000_000;

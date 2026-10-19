@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { orgHealthNow } from "../work-gate/org-health.ts";
-import * as health_0 from "../org-health/fleet-build-incident.ts";
+import * as health_0 from "../org-health/fleet-build-readings.ts";
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T22:00:00Z");

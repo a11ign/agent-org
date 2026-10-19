@@ -14,9 +14,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { main, FLAG_REGISTRY } from "../machinery-flag.ts";
-import { BOARD_TRUTH_PAIR_FLAG } from "../org-health/state-label-reading.ts";
+import { BOARD_TRUTH_PAIR_FLAG } from "../org-health/board-truth-readings.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
-import { emptyCanaryState, machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health/fleet-build-incident.ts";
+import { emptyCanaryState, machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts"; // agent-org#1670
 import { readReenqueueState, REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG } from "../work-gate/causes/pr-ejected.ts";
 import { CHAIN_WAIT_FLAG } from "../work-gate/causes/org-health-chain-wait.ts";

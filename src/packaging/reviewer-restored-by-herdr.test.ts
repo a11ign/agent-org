@@ -17,11 +17,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { endFinishedReviewers, restoredReviewers, tearDownReviewers } from "../wake/reset.ts";
+import { endFinishedReviewers, restoredReviewers, tearDownReviewers } from "../wake/seat-reset.ts";
 import { reviewerPathsFrom } from "../wake/ensure-reviewer-token.ts";
 import { promptOnScreen, readPromptPanes, panePromptOrdersNow, PROMPT_SCREENS } from "../wake.ts";
-import { panePromptReading } from "../org-health/review-gated-minutes.ts";
-import { PANE_PROMPT_MINUTES, SIGNALS } from "../org-health/no-merge-hours.ts";
+import { panePromptReading } from "../org-health/overdue-readings.ts";
+import { PANE_PROMPT_MINUTES, SIGNALS } from "../org-health/thresholds.ts";
 import { REPO } from "../project-identity.ts";
 
 const T0 = 1_791_000_000_000;

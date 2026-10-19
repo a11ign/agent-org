@@ -2,9 +2,9 @@
 // agent-org#1218 (follow-up to #1180): org health counts the 5xx reruns, `required-red-on-5xx` and `manual-reruns`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SIGNALS } from "./org-health/no-merge-hours.ts";
+import { SIGNALS } from "./org-health/thresholds.ts";
 import { manualRerunsReading, readRerunsOn5xx, requiredRedOn5xxReading, rerunsPerDay } from "./org-health/claim-refusal.ts";
-import { orgHealthReadings } from "./org-health/fleet-build-incident.ts";
+import { orgHealthReadings } from "./org-health/fleet-build-readings.ts";
 import { CI_RERUN_LEDGER_FILE, rerunLedgerLine } from "./ci-rerun-on-5xx.ts";
 
 const NOON = Date.parse("2026-10-15T12:00:00Z");

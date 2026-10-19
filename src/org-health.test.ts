@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
 import { DEFAULT_CANARY_OPTIONS, evaluateFlag, machineryCanaryTick, machineryValues, signalReading, withMachineryFlag, type CanaryFacts, type CanaryIo } from "./org-health.ts";
 import { MACHINERY_SIGNALS } from "./org-health/hold-count.ts";
-import { machineryFlagOn, orgHealthTick, parseCanaryState, type CanarySample } from "./org-health/fleet-build-incident.ts";
+import { machineryFlagOn, orgHealthTick, parseCanaryState, type CanarySample } from "./org-health/fleet-build-readings.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

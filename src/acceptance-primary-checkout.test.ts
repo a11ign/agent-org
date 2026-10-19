@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { acceptancePathsReason, cdIntoCheckout, primaryCheckoutCdReason } from "./acceptance-commands/suite-scripts-for.ts";
+import { acceptancePathsReason, cdIntoCheckout, primaryCheckoutCdReason } from "./acceptance-commands/suite-and-checkout-commands.ts";
 
 const PRIMARY = "/home/agent/repos/a11y-witness";
 const OTHER_REPO = "/home/agent/repos/agent-org";
@@ -149,7 +149,7 @@ function underHost(script: (checkout: string) => string): { status: number | nul
 }
 
 test("the path is read from the host's declaration: a project checked out ELSEWHERE is protected, and a11y-witness's path is then just a path", () => {
-  const result = underHost((checkout) => `import { primaryCheckoutCdReason as r } from "./acceptance-commands/suite-scripts-for.ts";
+  const result = underHost((checkout) => `import { primaryCheckoutCdReason as r } from "./acceptance-commands/suite-and-checkout-commands.ts";
     const own = ${JSON.stringify(rowBody(["cd CHECKOUT && ls"]))}.replace("CHECKOUT", ${JSON.stringify(checkout)});
     const other = ${JSON.stringify(rowBody([FOUND_ON_4220[0]]))};
     console.log(JSON.stringify([r(own, "t") !== null, r(other, "t") !== null]));`);

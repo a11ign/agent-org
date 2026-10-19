@@ -28,7 +28,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { orgHealthNow } = await import("./org-health.ts");
-const { GH_READS } = await import("./reads/exit.ts");
+const { GH_READS } = await import("./reads/read-memo-and-exit.ts");
 
 const SIGNAL = "fleet-build-mixed-over-4h";
 const NOW = Date.parse("2026-10-11T12:00:00Z");

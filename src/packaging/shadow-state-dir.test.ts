@@ -40,10 +40,10 @@ const STDERR_EXCERPT = 400;
 const PRIMARY_CHECKOUT = HOME_CHECKOUT;
 
 const READER = `
-  const gate = await import(${JSON.stringify(`${SRC}work-gate/reads/exit.ts`)});
+  const gate = await import(${JSON.stringify(`${SRC}work-gate/reads/read-memo-and-exit.ts`)});
   const vocabulary = await import(${JSON.stringify(`${SRC}work-gate/vocabulary.ts`)});
   const shadow = await import(${JSON.stringify(`${SRC}shadow-gate.ts`)});
-  const wake = await import(${JSON.stringify(`${SRC}wake/reset.ts`)});
+  const wake = await import(${JSON.stringify(`${SRC}wake/seat-reset.ts`)});
   process.stdout.write(JSON.stringify({ DRAIN_MARKER: gate.DRAIN_MARKER, REVIEWER_STATE_DIR: vocabulary.REVIEWER_STATE_DIR,
     LIVE_STATE_DIR: shadow.LIVE_STATE_DIR, ledger: wake.ledgerPathFrom([]) }));`;
 
@@ -139,7 +139,7 @@ test("end to end: the runner hands the REAL gate's state paths its copy, and the
     const candidate = join(root, "candidate.mjs");
     writeFileSync(candidate, `import { decide as real } from ${JSON.stringify(`${SRC}work-gate/tick/blocker-cleared-reading.ts`)};
 import { REVIEWER_STATE_DIR } from ${JSON.stringify(`${SRC}work-gate/vocabulary.ts`)};
-import { DRAIN_MARKER } from ${JSON.stringify(`${SRC}work-gate/reads/exit.ts`)};
+import { DRAIN_MARKER } from ${JSON.stringify(`${SRC}work-gate/reads/read-memo-and-exit.ts`)};
 export function decide(args) {
   return [...real(args), { causeKey: "paths", cause: "paths", session: "s", subject: REVIEWER_STATE_DIR, discriminator: DRAIN_MARKER, prompt: "p" }];
 }`);

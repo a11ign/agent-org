@@ -4,7 +4,7 @@ import { subjectMention, subjectRef } from "../../review-attribution.ts";
 import { holdersOf } from "../../pr-hold-state.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../../project-vocabulary.ts";
 import { readUnlessRefused } from "../../ticket-port/rows-by-label.ts";
-import { defaultRun } from "../reads/exit.ts";
+import { defaultRun } from "../reads/read-memo-and-exit.ts";
 import { HOUR_MS, MAX_ROW_ORDERS_PER_TICK, NOT_PICKABLE, PARKED_LABEL, PROMOTION_ASK_WINDOW_MS, declaredBlockers, labelsOf } from "../vocabulary.ts";
 
 /**

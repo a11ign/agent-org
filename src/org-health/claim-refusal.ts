@@ -5,8 +5,8 @@ import { CI_RERUN_LEDGER_FILE, rerunOn5xx } from "../ci-rerun-on-5xx.ts";
 import { CLAIM_GUARD_HELD_KIND, CLAIM_REFUSED_KIND, FAILURE_LEDGER_FILE, parseFailureLedger } from "../failure-ledger.ts";
 import type { FlagLedger } from "../flag-switch-ledger.ts";
 import { tickHealthLine, tickRecordUnwrittenLine, tickWallIsHigh, type TickHealth, type TickRecordState } from "../work-tick-health.ts";
-import { MAX_REASON_CHARS, MS_PER_MINUTE, SIGNALS, clear, isoOf, type Reading, unknown } from "./no-merge-hours.ts";
-import { CLAIM_REFUSAL_STORM_MINUTES, CLAIM_REFUSAL_STORM_REFUSALS } from "./review-gated-minutes.ts";
+import { MAX_REASON_CHARS, MS_PER_MINUTE, SIGNALS, clear, isoOf, type Reading, unknown } from "./thresholds.ts";
+import { CLAIM_REFUSAL_STORM_MINUTES, CLAIM_REFUSAL_STORM_REFUSALS } from "./overdue-readings.ts";
 
 /** One refused claim, as the failure ledger holds it: when, and the claim's own words for why (a line, never a path through a stack). */
 export type ClaimRefusal = { at: number; reason: string };

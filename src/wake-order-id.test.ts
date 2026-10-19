@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addressed, deliver, wakeIdOf } from "./wake/clear-settle-ms.ts";
+import { addressed, deliver, wakeIdOf } from "./wake/fyi-queue.ts";
 import { ledgerLine } from "./wake/ended-sessions.ts";
 import { CONTEXT_ACTION } from "./wake/holds-as-fyi.ts";
 import { sessionOf } from "./token-audit.ts";

@@ -17,7 +17,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SHIPPED_DIR, TOOL_UPDATE_EXEC, programCandidates, toolForm } from "../host-units/shipped-dir.ts";
+import { SHIPPED_DIR, TOOL_UPDATE_EXEC, programCandidates, toolForm } from "../host-units/shipped-units.ts";
 import { renderTemplate, templateValues, parseHostConfig } from "../host-config.ts";
 import { EXIT, GATE, afterGate } from "../work-tick.ts";
 

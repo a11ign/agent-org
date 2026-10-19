@@ -11,9 +11,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
-import { refusalReport, startBudgetDeferrals } from "../wake/merge-queue-wait-limit-ms.ts";
-import { START_BUDGET_MS } from "../wake/is-pull-request-spawn-order.ts";
+import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
+import { refusalReport, startBudgetDeferrals } from "../wake/merge-queue-wait.ts";
+import { START_BUDGET_MS } from "../wake/pull-request-spawn-orders.ts";
 import { describeSpawn, summariseCensus } from "../lib/spawn-census.ts";
 import { startedPanes } from "./started-pane.ts";
 import { INSIDE } from "../review-trust.ts";

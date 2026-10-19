@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { acceptancePathsReason, extractAcceptanceSection, handRunAcceptanceReason, labFetchPathReason } from "../acceptance-commands/suite-scripts-for.ts";
+import { acceptancePathsReason, extractAcceptanceSection, handRunAcceptanceReason, labFetchPathReason } from "../acceptance-commands/suite-and-checkout-commands.ts";
 import { classifyCommand } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 import { jobCapabilities, unmetClosureRequirements } from "../acceptance-commands/classification.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";

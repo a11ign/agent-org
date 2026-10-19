@@ -15,7 +15,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { classifyCommand, acceptanceReport, testFileArgumentsResolve, unmetCommandClosureRequirements, testFilesAmong, mutationRecordReport, changedFilesOfThisPullRequest, measuredSectionReport } from "../acceptance-commands/unmet-command-closure-requirements.ts";
-import { extractAcceptanceSection, unmetCommandRequirements, singleNodeInvocation, runsTheWholeSuite, suiteTestFiles, suiteScriptsFor, endsInsideQuote, endsInOperator, handRunAcceptanceReason, acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths } from "../acceptance-commands/suite-scripts-for.ts";
+import { extractAcceptanceSection, unmetCommandRequirements, singleNodeInvocation, runsTheWholeSuite, suiteTestFiles, suiteScriptsFor, endsInsideQuote, endsInOperator, handRunAcceptanceReason, acceptancePathsReason, declaredNewFiles, unresolvedAcceptancePaths } from "../acceptance-commands/suite-and-checkout-commands.ts";
 import { testFileRequirements, unmetRequirements, hasFullHistoryDeclaration, jobCapabilities, deriveClosureRequirements, closureRequirementMessage, unmetClosureRequirements, createClosureMemo, SUITE_SCRIPTS, SPAWNS_GH, handRunDeclaration, handRunEvidence, declaredFleetAnswer } from "../acceptance-commands/classification.ts";
 import { withGitSandbox, sandboxGitEnv } from "@a11ign/toolchain/lib/git-sandbox";
 import { trackedTopLevelDirs } from "../region-paths.ts";

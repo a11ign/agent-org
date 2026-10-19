@@ -8,7 +8,7 @@
 // cannot write. Each case that stays parked differs from that control by ONE fact.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { emptyCanaryState } from "../org-health/fleet-build-incident.ts";
+import { emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts";
 import { AUTO_UNPARK_FLAG, COMMENT_MARKER, PARKED, githubIo, readSatisfaction, unparkOtherTrackers, unparkSatisfied, withTrackerRows, type UnparkIo } from "../unpark-satisfied.ts";
 import { waitTickFacts } from "../work-gate/org-health.ts";

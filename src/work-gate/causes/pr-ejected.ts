@@ -2,12 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { READS_OUTSIDE, touchesDiff } from "../../ci-failure-class.ts";
 import { CANARY_STATE_FILE } from "../../org-health/claim-refusal.ts";
 import { UNQUEUED_MINUTES } from "../../org-health.ts";
-import { parseCanaryState, machineryFlagOn, emptyCanaryState, type CanaryState } from "../../org-health/fleet-build-incident.ts";
+import { parseCanaryState, machineryFlagOn, emptyCanaryState, type CanaryState } from "../../org-health/fleet-build-readings.ts";
 import { ejectionQueryArgs, queueEjectionOf } from "../../pr-armed-state.ts";
 import { summarizeTestLog, testIdentity } from "../../parent-recheck-summary.ts";
 import { TRACKER } from "../../ticket-port/github-adapter.ts";
 import { armedAlready, blockerVerdict } from "../../arm-pr.ts";
-import { defaultRun, repoNow } from "../reads/exit.ts";
+import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
 import { type ArmingPort, MS_PER_MINUTE, REVIEWER_STATE_DIR } from "../vocabulary.ts";
 
 /** What the gate knows of one ejection: when, which run, which subtests. */

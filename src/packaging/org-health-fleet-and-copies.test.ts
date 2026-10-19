@@ -19,10 +19,10 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FLEET_IDLE_HOURS, SIGNALS } from "../org-health/no-merge-hours.ts";
-import { fleetIdleReading } from "../org-health/review-gated-minutes.ts";
-import { copyDriftReading, readDeclaredCopies } from "../org-health/sweep-fact.ts";
-import { orgHealthReadings, orgHealthOrders, orgHealthTick } from "../org-health/fleet-build-incident.ts";
+import { FLEET_IDLE_HOURS, SIGNALS } from "../org-health/thresholds.ts";
+import { fleetIdleReading } from "../org-health/overdue-readings.ts";
+import { copyDriftReading, readDeclaredCopies } from "../org-health/sweep-readings.ts";
+import { orgHealthReadings, orgHealthOrders, orgHealthTick } from "../org-health/fleet-build-readings.ts";
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T12:00:00Z");

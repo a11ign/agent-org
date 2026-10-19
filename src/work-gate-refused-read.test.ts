@@ -18,11 +18,11 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inRepo } from "./work-gate/reads/exit.ts";
+import { inRepo } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readCommitShas, readFailingChecks, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
 
 const PR_REVIEWS = fileURLToPath(new URL("./work-gate/causes/pr-reviews.ts", import.meta.url));
-const READS = fileURLToPath(new URL("./work-gate/reads/exit.ts", import.meta.url));
+const READS = fileURLToPath(new URL("./work-gate/reads/read-memo-and-exit.ts", import.meta.url));
 const HEAD = "a".repeat(40);
 const STALE = "c8fe8f58";
 const ALSO_STALE = "b".repeat(8);

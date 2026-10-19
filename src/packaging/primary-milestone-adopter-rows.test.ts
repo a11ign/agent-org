@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { appendFiledBy } from "../row-file/body-from-argv.ts";
 import { createIssue, primaryMilestoneRefusal, primaryMilestoneTitles } from "../row-file/roadmap-without-parent-refusal.ts";
 import { adopterRowKind, adopterFacingDeclared, milestoneClockFact } from "../work-gate/org-health.ts";
-import { milestoneClockReading } from "../org-health/fleet-build-incident.ts";
+import { milestoneClockReading } from "../org-health/fleet-build-readings.ts";
 import { parseProjectDeclaration } from "../project-config.ts";
 import { declaredRegionFiles } from "../region-paths.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";

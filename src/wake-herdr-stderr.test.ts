@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERDR_AGENTS = pathToFileURL(fileURLToPath(new URL("./herdr-agents.ts", import.meta.url))).href;
-const HOST_UNITS = pathToFileURL(fileURLToPath(new URL("./host-units/tool-version-notes.ts", import.meta.url))).href;
+const HOST_UNITS = pathToFileURL(fileURLToPath(new URL("./host-units/gh-wrapper-and-notes.ts", import.meta.url))).href;
 const PROMPT_SESSION = pathToFileURL(fileURLToPath(new URL("./prompt-session.ts", import.meta.url))).href;
 
 /** The child: `readAgents()` through its default runner, or `herdrRun` with its thrown error printed, so the test can read what rode on it. */

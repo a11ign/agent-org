@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claimRecordComment } from "./row-claim.ts";
-import { performRelease } from "./wake/with-ci-failure-class.ts";
+import { performRelease } from "./wake/ci-class-and-spares.ts";
 import { claimFactsFrom, readClaim, holderWorkAtRisk, workAtRiskInPrRepo, cloneOfKey } from "./claim-stall/claim-stalled.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
 

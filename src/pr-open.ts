@@ -56,7 +56,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { acceptanceSourceOf, closesReferences, extractClosesDeclaration, extractMutationSection, runCiBodyReports } from "./acceptance-commands/unmet-command-closure-requirements.ts";
-import { extractAcceptanceSection, runAcceptanceCommand } from "./acceptance-commands/suite-scripts-for.ts";
+import { extractAcceptanceSection, runAcceptanceCommand } from "./acceptance-commands/suite-and-checkout-commands.ts";
 import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsTextOf, writeAcceptanceFile } from "./acceptance-file.ts";
 import { declaredRegionFiles, splitRegionEntry } from "./region-paths.ts";
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "./pr-open-region.ts";
@@ -77,7 +77,7 @@ import { gh as ghRead } from "./board-data.ts";
 import { VERIFY_STATE, readVerifyStamp, verifyRefusalLine } from "./verify-stamp.ts";
 import { QUEUED_EXIT, attachFollowUps } from "./gh-ledger.ts";
 import { claimedBranchReport, lookupClaimedRowsOfTrackers, trackerReposFor, type ClaimedRow, type ClaimedRows } from "./closes-mismatch-check.ts";
-import { STANDARD_MACHINERY_SIGNALS } from "./org-health/fleet-build-incident.ts"; // a11ign#5100: the signals a `Health-signals:` line may name
+import { STANDARD_MACHINERY_SIGNALS } from "./org-health/fleet-build-readings.ts"; // a11ign#5100: the signals a `Health-signals:` line may name
 import { readTicketContext, ticketBodyReports, ticketChecks, type TicketContext } from "./ticket-mode/pr-open-ticket.ts";
 import { TICKET_ENV } from "./ticket-mode/worktree-command.ts";
 

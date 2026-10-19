@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPEAT_TICKS, normaliseLine, parseTicks, parseAllowlist, loadAllowlist, repeatingLines, repeatingLineOrders,
   repeatingLinesTick } from "../repeating-lines.ts";
-import { refusalReport } from "../wake/merge-queue-wait-limit-ms.ts";
+import { refusalReport } from "../wake/merge-queue-wait.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { AGED_BACKLOG_MS, agedBacklogOrders } from "../work-gate/causes/rows-backlog.ts";
 import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";

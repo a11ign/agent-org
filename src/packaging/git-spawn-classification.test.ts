@@ -124,6 +124,13 @@ function trackedSourceFiles(): ToolFile[] {
 const SPAWNS_GIT_DIRECTLY = /\b\w+\(\s*["']git["']/;
 
 /**
+ * A spawn whose FIRST ARGUMENT is an expression that can still name git: `spawnSync(process.env.GIT ?? "git", ...)`, a ternary, a concatenation. The
+ * literal-argument form above cannot see these, and the call is a git spawn with the same scrubbing duty. Only the first argument is read (up to
+ * its comma), so a later `"git"` in the same call -- an argument, a log line -- does not classify it.
+ */
+const SPAWNS_GIT_THROUGH_EXPRESSION = /\b(?:execFileSync|execFile|execSync|spawnSync|spawn)\(\s*[^,;]*?(?:["'`]git["'`]|\bGIT(?:_\w+)?\b)/;
+
+/**
  * FILES WHERE THE LITERAL `"git"` IS DATA, NOT A SPAWN -- classified, never silently skipped.
  *
  * `SPAWNS_GIT_DIRECTLY` is deliberately broad: `<identifier>("git", ...)`, so an indirected call site
@@ -167,11 +174,11 @@ const GIT_IS_DATA_NOT_A_SPAWN: Record<string, string> = {
  * none of them spawns `git` directly.
  */
 const GIT_IS_INJECTED_SEAM: Record<string, string> = {
-  "src/wake/with-ci-failure-class.ts":
-    '`git` is passed to an injected `run` (`parseWorktreeList(run("git", ...))`, `git("git", ...)`); the scrubbed default is `defaultSpawn` in `../work-gate/reads/exit.ts`, '
+  "src/wake/ci-class-and-spares.ts":
+    '`git` is passed to an injected `run` (`parseWorktreeList(run("git", ...))`, `git("git", ...)`); the scrubbed default is `defaultSpawn` in `../work-gate/reads/read-memo-and-exit.ts`, '
     + "which spawns with `sandboxGitEnv()`. The file's own child_process use is `systemctl` (the herdr restart time), which is not git (a11ign#5152 split of wake.ts)",
   "src/work-gate/reads.ts":
-    '`git` is passed to an injected `run` (`run("git", [...PROJECT_GIT, ...LS_REMOTE_ARGS])`); the scrubbed default is `defaultSpawn` in `./reads/exit.ts`, which spawns '
+    '`git` is passed to an injected `run` (`run("git", [...PROJECT_GIT, ...LS_REMOTE_ARGS])`); the scrubbed default is `defaultSpawn` in `./reads/read-memo-and-exit.ts`, which spawns '
     + "with `sandboxGitEnv()`. The file's own child_process use is `systemctl` (`systemctlRun`), which is not git (a11ign#5152 split of work-gate/reads.ts)",
 };
 
@@ -209,7 +216,7 @@ const CAN_SPAWN = /from\s+["']node:child_process["']|require\(\s*["']node:child_
  * conversion: 79 files spawn git and 79 scrub, so neither has a finding to make today.
  */
 function spawnsGit(executable: string): boolean {
-  return SPAWNS_GIT_DIRECTLY.test(executable) || /\bwithGitSandbox\(/.test(executable);
+  return SPAWNS_GIT_DIRECTLY.test(executable) || SPAWNS_GIT_THROUGH_EXPRESSION.test(executable) || /\bwithGitSandbox\(/.test(executable);
 }
 
 /** Imports one of the canonical helpers (by the specifier's last segment, so the package's and a relative one both count) AND actually calls it. */
@@ -317,6 +324,20 @@ test("MUTATION: an indirected call through an injected seam is still discovered"
     + 'run("git", ["config", "core.hooksPath", "x"], { cwd: "/repo" });\n';
   assert.ok(spawnsGit(stripComments(fixture)),
     "the discovery must see through a one-level indirection to the literal git call");
+});
+
+test("MUTATION: a git spawn whose first argument is an expression naming git is discovered (the env-var fallback a literal cannot see)", () => {
+  const fixture = 'import { spawnSync } from "node:child_process";\n'
+    + 'spawnSync(process.env.GIT ?? "git", ["status"], { cwd: "/tmp" });\n';
+  assert.ok(spawnsGit(stripComments(fixture)), "a first argument that can still be git must be discovered");
+  assert.ok(!usesCanonicalHelper(stripComments(fixture)), "and an unscrubbed one is not classified SAFE");
+});
+
+test("NEGATIVE: a spawn of another program with a later \"git\" argument is not discovered as a git spawn", () => {
+  const fixture = 'import { spawnSync } from "node:child_process";\n'
+    + 'spawnSync(process.execPath, ["-e", "console.log(\\"git\\")"], { cwd: "/tmp" });\n';
+  assert.ok(!SPAWNS_GIT_THROUGH_EXPRESSION.test(stripComments(fixture)),
+    "only the first argument decides; the `git` in the script's text is not a git spawn");
 });
 
 test("CONTROL: a correctly classified file passes", () => {

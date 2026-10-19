@@ -14,8 +14,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { splitRefusals, refusalReport, deferralAges } from "../wake/merge-queue-wait-limit-ms.ts";
-import { BUSY_SEAT_DEFERRAL_MS } from "../wake/exit.ts";
+import { splitRefusals, refusalReport, deferralAges } from "../wake/merge-queue-wait.ts";
+import { BUSY_SEAT_DEFERRAL_MS } from "../wake/exit-and-limits.ts";
 
 const MINUTE = 60_000;
 const WAKE = fileURLToPath(new URL("../wake.ts", import.meta.url));

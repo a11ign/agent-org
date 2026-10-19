@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decide as decideOnHost } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
-import { GH_READS } from "../work-gate/reads/exit.ts";
+import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { withPatchIds, reviewBlocked, readEvidenceLabelledAt, withEvidenceLabelAges, AWAITING_EVIDENCE_LABEL, AWAITING_EVIDENCE_QUIET_MS } from "../work-gate/causes/pr-reviews.ts";
 import { awaitingEvidenceStaleOrders } from "../work-gate/pr-orders.ts";
 import { PROFILES } from "../worker-profile.ts";

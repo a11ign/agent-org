@@ -501,7 +501,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     tailnetAnswers,
     ghWrapper: async () => {
       try {
-        const { ghWrapperReport } = await import("../host-units/tool-version-notes.ts");
+        const { ghWrapperReport } = await import("../host-units/gh-wrapper-and-notes.ts");
         return ghWrapperReport();
       } catch (cause) {
         return { unchecked: String((cause as Error)?.message ?? cause).split("\n")[0] };

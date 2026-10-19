@@ -22,9 +22,9 @@ import {
   manualWaits, setterOf,
 } from "../wait-condition.ts";
 import { holdReasonOf, holdExcused } from "../pr-hold-state.ts";
-import { SIGNALS } from "../org-health/no-merge-hours.ts";
-import { redPrReading, staleWaitReading, waitWithoutReasonReading } from "../org-health/review-gated-minutes.ts";
-import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-incident.ts";
+import { SIGNALS } from "../org-health/thresholds.ts";
+import { redPrReading, staleWaitReading, waitWithoutReasonReading } from "../org-health/overdue-readings.ts";
+import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-readings.ts";
 import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { redPrFacts } from "../work-gate/tick.ts";

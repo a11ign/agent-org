@@ -130,7 +130,7 @@ test("the production launch wiring takes the host path from host-config.ts, so a
   mkdirSync(join(tool, "src"), { recursive: true });
   writeFileSync(join(tool, "src/wake.ts"), "export {};\n");
   mkdirSync(join(tool, "src/wake"));
-  writeFileSync(join(tool, "src/wake/is-release-line.ts"), "export {};\n");
+  writeFileSync(join(tool, "src/wake/release-line-and-seats.ts"), "export {};\n");
   writeFileSync(join(tool, "src/worker-profile.ts"), "export {};\n");
   writeFileSync(join(tool, "src/host-config.ts"), "export function hostConfigPath() { return \"/fixture/tool/host.json\"; }\n");
   const wired = withLaunchFlags(ports({ checkouts: [tool] }).p, tool);

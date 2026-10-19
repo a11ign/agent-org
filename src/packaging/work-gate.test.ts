@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { shippedUnits } from "../host-units/shipped-dir.ts";
+import { shippedUnits } from "../host-units/shipped-units.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
@@ -38,7 +38,7 @@ import { MAX_ROW_ORDERS_PER_TICK, comparablePrFiles, ownerOf, NOT_PICKABLE, NOT_
 import { readCommitShas, readPatchId, withPatchIds, readWorktreeStamps, reviewBlocked, reviewableHead, pipelineCodeownerReviewMissing } from "../work-gate/causes/pr-reviews.ts";
 import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { checksSettledGreen, blockingChecks, anyChecksRed, conflictedPrs, conflictStateOf, reviewStateOf, REVIEW_STATE } from "../work-gate/pr-state.ts";
-import { readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, EXIT, draining, DRAIN_MARKER, GH_READS, GIT_READS } from "../work-gate/reads/exit.ts";
+import { readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, EXIT, draining, DRAIN_MARKER, GH_READS, GIT_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { readReadyRows, readPromotableRows, readClaimedRowComments, readOpenRows, readRowBranches } from "../work-gate/reads.ts";
 import { CAUSES, START_CAUSES, JUDGMENT_CAUSES } from "../cause-declaration.ts";
 import { stalledOrder, performActions, openRowState, waitingBreakdown } from "../work-gate/orders.ts";
@@ -66,9 +66,9 @@ beforeEach(() => forgetRefusedReads());
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
 import { readLedger, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
-import { undelivered, JUDGMENT_TTL_MS, deliveryCounts } from "../wake/reset.ts";
-import { addressed, deliver } from "../wake/clear-settle-ms.ts";
-import { escalateStuck } from "../wake/merge-queue-wait-limit-ms.ts";
+import { undelivered, JUDGMENT_TTL_MS, deliveryCounts } from "../wake/seat-reset.ts";
+import { addressed, deliver } from "../wake/fyi-queue.ts";
+import { escalateStuck } from "../wake/merge-queue-wait.ts";
 import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
@@ -4504,7 +4504,7 @@ test("#2174: no test file joins the history-requirement population without a dec
   const memo = createClosureMemo();
   const current = historyChargedTests(liveDir, { memo });
   // Positive control: the scan keeps the tests that really are charged, so an emptied population cannot pass for "none joined".
-  // host-units.test.ts imports the host-units module whose closure reaches the history code (`host-units/gh-spawn-reached-from.ts`); work-gate.test.ts no longer does.
+  // host-units.test.ts imports the host-units module whose closure reaches the history code (`host-units/host-identity-drift.ts`); work-gate.test.ts no longer does.
   assert.ok(current.includes("host-units.test.ts"), "a test that imports host-units is in the population, and the scan dropped it");
   const { undeclared, judged } = judgePin({
     repo: TOOL_ROOT, paths: ["src"], current, declared: DECLARED_HISTORY_POPULATION,
