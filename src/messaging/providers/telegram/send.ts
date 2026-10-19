@@ -142,6 +142,75 @@ function knownAudience(audience: string | undefined): string {
   return named;
 }
 
+/** What the HTTP calls of one provider share: the token, the fetch, the endpoint, the deadline, the pause between retries and the log. */
+type Wire = {
+  token: import("../../secret.ts").Secret; guardedFetch: ReturnType<typeof redactingFetch>; apiBase: string;
+  deadline: (ms: number) => AbortSignal; sleep: (ms: number) => Promise<void>; note: (line: string) => void;
+};
+
+/**
+ * One HTTP attempt.
+ * `method`: the Bot API method
+ */
+async function attempt({ token, guardedFetch, apiBase, deadline }: Wire, method: string, payload: Record<string, unknown>): Promise<{ ok: true; result: Record<string, any>; } | { ok: false; error: TelegramSendError; }> {
+  let response;
+  try {
+    response = await guardedFetch(`${apiBase}/bot${token.reveal()}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: deadline(REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // A request that never got an answer is a send failure like any other, so it is logged (`refused`) and annotated (`partial`).
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: new TelegramSendError(token.scrub(`telegram ${method} failed: no response: ${reason}`)) };
+  }
+  const body = await readBody(response);
+  if (response.ok && body.ok === true) return { ok: true, result: body.result ?? {} };
+  const status = Number(body.error_code ?? response.status);
+  const description = typeof body.description === "string" ? body.description : "no description";
+  const error = new TelegramSendError(token.scrub(`telegram ${method} failed: ${status} ${description}`), { status, retryAfter: retryAfterOf(body, response) });
+  return { ok: false, error };
+}
+
+/**
+ * One call, retried ONCE and only when Telegram says 429 and says when.
+ * Returns Telegram's `result`
+ */
+async function callOnce(wire: Wire, method: string, payload: Record<string, unknown>): Promise<Record<string, any>> {
+  const { note, sleep } = wire;
+  const first = await attempt(wire, method, payload);
+  if (first.ok) return first.result;
+  // Not a failure, so not logged as one: an edit that changes nothing is routine, and a "refused by Telegram" line for it would be a lie.
+  if (isNotModified(first.error)) throw first.error;
+  const { status, retryAfter } = first.error;
+  if (status !== TOO_MANY_REQUESTS || retryAfter === undefined || retryAfter > MAX_RETRY_WAIT_SECONDS) throw refused(wire, first.error, { retried: false });
+  note(`telegram: 429, waiting ${retryAfter}s as Telegram asked, then sending once more`);
+  await sleep(retryAfter * MS_PER_SECOND);
+  const second = await attempt(wire, method, payload);
+  if (second.ok) return second.result;
+  throw refused(wire, second.error, { retried: true });
+}
+
+/**
+ * One part of a message.
+ * Returns the messageRef
+ */
+async function sendPart(wire: Wire, payload: Record<string, unknown>): Promise<string> {
+  const result = await callOnce(wire, "sendMessage", payload);
+  if (!Number.isSafeInteger(result.message_id)) throw refused(wire, new TelegramSendError("telegram sendMessage failed: no message_id in the reply"), { retried: false });
+  return String(result.message_id);
+}
+
+/** Logs a failure, with whether the one retry was spent, and hands the error back to throw. */
+function refused({ note }: Wire, error: TelegramSendError, { retried }: { retried: boolean; }) {
+  const status = error.status ?? 0;
+  const kind = status >= CLIENT_ERROR_FLOOR && status < SERVER_ERROR_FLOOR ? "refused by Telegram" : "failed";
+  note(`telegram: ${kind}, ${retried ? "still failing after the one retry" : "not retried"}: ${error.message}`);
+  return error;
+}
+
 /** `deadline` is the request's clock, injected like `sleep` */
 export function createTelegramProvider({ token, chatId, announcementsChatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout }: {
         token: import("../../secret.ts").Secret; chatId: number | string; announcementsChatId?: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
@@ -156,66 +225,13 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
   const guardedFetch = redactingFetch(fetchImpl, token);
   // Every string that reaches `log` is either a number-only line or a `TelegramSendError` message, scrubbed where it is built (`attempt`).
   const note = log;
-
-  /**
-   * One HTTP attempt.
-   * `method`: the Bot API method
-   */
-  async function attempt(method: string, payload: Record<string, unknown>): Promise<{ ok: true; result: Record<string, any>; } | { ok: false; error: TelegramSendError; }> {
-    let response;
-    try {
-      response = await guardedFetch(`${apiBase}/bot${token.reveal()}/${method}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: deadline(REQUEST_TIMEOUT_MS),
-      });
-    } catch (error) {
-      // A request that never got an answer is a send failure like any other, so it is logged (`refused`) and annotated (`partial`).
-      const reason = error instanceof Error ? error.message : String(error);
-      return { ok: false, error: new TelegramSendError(token.scrub(`telegram ${method} failed: no response: ${reason}`)) };
-    }
-    const body = await readBody(response);
-    if (response.ok && body.ok === true) return { ok: true, result: body.result ?? {} };
-    const status = Number(body.error_code ?? response.status);
-    const description = typeof body.description === "string" ? body.description : "no description";
-    const error = new TelegramSendError(token.scrub(`telegram ${method} failed: ${status} ${description}`), { status, retryAfter: retryAfterOf(body, response) });
-    return { ok: false, error };
-  }
-
-  /**
-   * One call, retried ONCE and only when Telegram says 429 and says when.
-   * Returns Telegram's `result`
-   */
-  async function callOnce(method: string, payload: Record<string, unknown>): Promise<Record<string, any>> {
-    const first = await attempt(method, payload);
-    if (first.ok) return first.result;
-    // Not a failure, so not logged as one: an edit that changes nothing is routine, and a "refused by Telegram" line for it would be a lie.
-    if (isNotModified(first.error)) throw first.error;
-    const { status, retryAfter } = first.error;
-    if (status !== TOO_MANY_REQUESTS || retryAfter === undefined || retryAfter > MAX_RETRY_WAIT_SECONDS) throw refused(first.error, { retried: false });
-    note(`telegram: 429, waiting ${retryAfter}s as Telegram asked, then sending once more`);
-    await sleep(retryAfter * MS_PER_SECOND);
-    const second = await attempt(method, payload);
-    if (second.ok) return second.result;
-    throw refused(second.error, { retried: true });
-  }
-
-  /**
-   * One part of a message.
-   * Returns the messageRef
-   */
-  async function sendPart(payload: Record<string, unknown>): Promise<string> {
-    const result = await callOnce("sendMessage", payload);
-    if (!Number.isSafeInteger(result.message_id)) throw refused(new TelegramSendError("telegram sendMessage failed: no message_id in the reply"), { retried: false });
-    return String(result.message_id);
-  }
+  const wire: Wire = { token, guardedFetch, apiBase, deadline, sleep, note };
 
   /** Takes the keyboard off a message; one that has none is already what was asked for */
   async function clearKeyboard(messageRef: string): Promise<void> {
     const messageId = messageIdOf(messageRef);
     try {
-      await callOnce("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
+      await callOnce(wire, "editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
     } catch (error) {
       if (!isNotModified(error)) throw error;
     }
@@ -232,7 +248,7 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
     if (typeof text !== "string" || text === "") throw new RangeError("telegram: text is empty");
     if (text.length > TELEGRAM_MAX_MESSAGE) throw new RangeError(`telegram: an edit is one message and ${text.length} characters exceeds ${TELEGRAM_MAX_MESSAGE}`);
     try {
-      await callOnce("editMessageText", { chat_id: chat, message_id: messageId, text });
+      await callOnce(wire, "editMessageText", { chat_id: chat, message_id: messageId, text });
       return { messageRef, unchanged: false };
     } catch (error) {
       if (isNotModified(error)) return { messageRef, unchanged: true };
@@ -243,16 +259,8 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
   /** Pins a message without notifying anybody. Returns the same `messageRef` */
   async function pin({ messageRef, audience }: { messageRef: string; audience?: string; }): Promise<{ messageRef: string; }> {
     const chat = chatFor[knownAudience(audience)];
-    await callOnce("pinChatMessage", { chat_id: chat, message_id: messageIdOf(messageRef), disable_notification: true });
+    await callOnce(wire, "pinChatMessage", { chat_id: chat, message_id: messageIdOf(messageRef), disable_notification: true });
     return { messageRef };
-  }
-
-  /** Logs a failure, with whether the one retry was spent, and hands the error back to throw. */
-  function refused(error: TelegramSendError, { retried }: { retried: boolean; }) {
-    const status = error.status ?? 0;
-    const kind = status >= CLIENT_ERROR_FLOOR && status < SERVER_ERROR_FLOOR ? "refused by Telegram" : "failed";
-    note(`telegram: ${kind}, ${retried ? "still failing after the one retry" : "not retried"}: ${error.message}`);
-    return error;
   }
 
   return {
@@ -274,7 +282,7 @@ export function createTelegramProvider({ token, chatId, announcementsChatId, fet
       for (const [index, part] of parts.entries()) {
         if (index > 0) await sleep(PART_SPACING_MS);
         try {
-          messageRefs.push(await sendPart(payloadFor({ chatId: chat, text: part, silent, replyTo: index === 0 ? message.replyTo : undefined, keyboard: index === 0 ? keyboard : undefined })));
+          messageRefs.push(await sendPart(wire, payloadFor({ chatId: chat, text: part, silent, replyTo: index === 0 ? message.replyTo : undefined, keyboard: index === 0 ? keyboard : undefined })));
         } catch (error) {
           throw partial(error, { index, total: parts.length });
         }

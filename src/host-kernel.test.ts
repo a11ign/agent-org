@@ -180,6 +180,9 @@ describe("the drained reboot: defer when busy, reboot once when idle", () => {
     assert.equal(sudoCalls(h.calls).length, 0);
   });
 
+});
+
+describe("the drained reboot: defer when busy, reboot once when idle", () => {
   test("a busy seat that goes idle inside the bound lets the reboot through (the wait waits)", async () => {
     let polls = 0;
     const h = host({ agents: () => [{ label: "worker-9", status: ++polls < 3 ? "working" : "idle" }] });

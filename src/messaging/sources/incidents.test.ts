@@ -99,11 +99,11 @@ describe("trunk red, held down for 30 minutes (done-when 1)", () => {
   });
 });
 
-describe("the gate crashing (done-when 5)", () => {
-  const config = DEFAULT_INCIDENT_CONFIG;
-  const fresh = NOW - MINUTE;
-  const reading = (/** @type {Record<string, unknown>} */ more: Record<string, unknown>) => /** @type {any} */ ({ failed: false, lastRunAt: fresh, lastRecordAt: fresh, ...more });
+const config = DEFAULT_INCIDENT_CONFIG;
+const fresh = NOW - MINUTE;
+const reading = (/** @type {Record<string, unknown>} */ more: Record<string, unknown>) => /** @type {any} */ ({ failed: false, lastRunAt: fresh, lastRecordAt: fresh, ...more });
 
+describe("the gate crashing (done-when 5)", () => {
   test("a failed unit produces the event, dated from its failure", () => {
     const [event] = gateCrashEvents(reading({ failed: true, failedAt: NOW - 45 * MINUTE }), NOW, config);
     assert.equal(event.key, "incident:gate-crash");
@@ -131,6 +131,9 @@ describe("the gate crashing (done-when 5)", () => {
     assert.throws(() => gateCrashEvents(/** @type {any} */ ({ lastRunAt: fresh, lastRecordAt: fresh }), NOW, config), /failed/);
   });
 
+});
+
+describe("the gate crashing (done-when 5)", () => {
   // THE 2026-10-02 OUTAGE (#3040): 63 ticks, each started and each died at import. The unit's own timestamp advanced on every one, so `lastRunAt` is
   // always fresh, and nothing ever wrote a completion record, so `lastRecordAt` stays at the last good tick.
   const TICKS = 63;
@@ -196,8 +199,6 @@ describe("the gate crashing (done-when 5)", () => {
 });
 
 describe("the fleet down, from the state fleet-watch writes (done-when 5)", () => {
-  const config = DEFAULT_INCIDENT_CONFIG;
-
   test("workers non-ready past fleet-watch's threshold produce the event, naming them, oldest first", () => {
     const [event] = fleetDownEvents({ state: { "worker-b": NOW - 15 * MINUTE, "worker-a": NOW - 40 * MINUTE } }, NOW, config);
     assert.equal(event.key, "incident:fleet-down");
@@ -320,25 +321,25 @@ describe("a reader that cannot read yields cannot-ask and NO event (done-when 4)
   });
 });
 
-describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11ign#3424, #3419)", () => {
-  const unresolved = {
-    readTrunkRuns: () => [trunkRun("failure", NOW - HOUR)],
-    readGateUnit: () => ({ failed: true, failedAt: NOW - HOUR, lastRunAt: NOW - MINUTE, lastRecordAt: NOW - MINUTE }),
-    readFleetState: () => ({ state: { "worker-a": NOW - HOUR } }),
-    readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW - HOUR), updated_at: iso(NOW - HOUR), annotations: [{ message: "Resource not accessible by integration" }] }],
-  };
-  const green = { readTrunkRuns: () => [trunkRun("success", NOW)], readGateUnit: () => ({ failed: false, lastRunAt: NOW, lastRecordAt: NOW }),
-    readFleetState: () => ({ state: {} }), readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW), updated_at: iso(NOW), annotations: [] }] };
-  const IMPACTS = {
-    "incident:trunk-red": "Impact: Nothing can merge.",
-    "incident:gate-crash": "Impact: No worker can be woken.",
-    "incident:fleet-down": "Impact: Captures are paused.",
-    "incident:ci-permission": "Impact: Pull requests waiting on the named workflows cannot get a passing check.",
-  };
-  const comment = (/** @type {string} */ text: string, /** @type {number} */ at: number = NOW - 25 * MINUTE) => ({ author: "a11ign-ai-workers", at, text });
-  const observeWith = (/** @type {Record<string, unknown>} */ more: Record<string, unknown>) => observeIncidents({ now: () => NOW, log: () => {}, readers: { ...unresolved, ...more } });
-  const lineOf = (/** @type {Record<string, unknown>} */ event: Record<string, unknown>, /** @type {string} */ name: string) => String(event.text).split("\n").find((line) => line.startsWith(`${name}:`));
+const unresolved = {
+  readTrunkRuns: () => [trunkRun("failure", NOW - HOUR)],
+  readGateUnit: () => ({ failed: true, failedAt: NOW - HOUR, lastRunAt: NOW - MINUTE, lastRecordAt: NOW - MINUTE }),
+  readFleetState: () => ({ state: { "worker-a": NOW - HOUR } }),
+  readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW - HOUR), updated_at: iso(NOW - HOUR), annotations: [{ message: "Resource not accessible by integration" }] }],
+};
+const green = { readTrunkRuns: () => [trunkRun("success", NOW)], readGateUnit: () => ({ failed: false, lastRunAt: NOW, lastRecordAt: NOW }),
+  readFleetState: () => ({ state: {} }), readCiRuns: () => [{ name: "pr-labels", status: "completed", created_at: iso(NOW), updated_at: iso(NOW), annotations: [] }] };
+const IMPACTS = {
+  "incident:trunk-red": "Impact: Nothing can merge.",
+  "incident:gate-crash": "Impact: No worker can be woken.",
+  "incident:fleet-down": "Impact: Captures are paused.",
+  "incident:ci-permission": "Impact: Pull requests waiting on the named workflows cannot get a passing check.",
+};
+const comment = (/** @type {string} */ text: string, /** @type {number} */ at: number = NOW - 25 * MINUTE) => ({ author: "a11ign-ai-workers", at, text });
+const observeWith = (/** @type {Record<string, unknown>} */ more: Record<string, unknown>) => observeIncidents({ now: () => NOW, log: () => {}, readers: { ...unresolved, ...more } });
+const lineOf = (/** @type {Record<string, unknown>} */ event: Record<string, unknown>, /** @type {string} */ name: string) => String(event.text).split("\n").find((line) => line.startsWith(`${name}:`));
 
+describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11ign#3424, #3419)", () => {
   test("(1) each of the four kinds carries its Impact line from the table", async () => {
     const { events } = await observeWith({ readFixRow: () => null });
     assert.equal(events.length, 4);
@@ -379,6 +380,9 @@ describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11i
     assert.deepEqual(asked.sort(), Object.keys(IMPACTS).sort());
   });
 
+});
+
+describe("a sent incident says what it MEANS and what is being DONE (a11ign/a11ign#3424, #3419)", () => {
   test("(4) a cleared message through the core says `Cleared:`, what cleared, and the duration; a started one has no Lasted line", async () => {
     const run = messenger();
     run.set(NOW + 31 * MINUTE);

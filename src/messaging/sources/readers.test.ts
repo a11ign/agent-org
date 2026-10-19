@@ -292,9 +292,9 @@ const fixRowIssue = (/** @type {number} */ number: number, /** @type {string | n
 const LISTING = /\/issues\?labels=incident&state=open/;
 const commentOf = (/** @type {string} */ login: string, /** @type {string} */ at: string, /** @type {string} */ body: string) => ({ user: { login }, created_at: at, body });
 
-describe("readFixRow", () => {
-  const KEY = "incident:trunk-red";
+const KEY = "incident:trunk-red";
 
+describe("readFixRow", () => {
   test("an open `incident` row whose body names the key, with no comment yet, is just its number", async () => {
     const github = fakeGithub([[LISTING, [fixRowIssue(3500, KEY)]]]);
     assert.deepEqual(await readFixRow({ github, repo: REPO, key: KEY }), { number: 3500 });
@@ -345,6 +345,9 @@ describe("readFixRow", () => {
     assert.equal(await readFixRow({ github: fakeGithub([[LISTING, others]]), repo: REPO, key: KEY }), null, "a row for another key, with no marker, or naming a longer key, is not this one's");
   });
 
+});
+
+describe("readFixRow", () => {
   test("GitHub failing THROWS, which is not null (the positive control for the empty list above)", async () => {
     await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, DOWN]]), repo: REPO, key: KEY }), /HTTP 502/);
     await assert.rejects(readFixRow({ github: fakeGithub([[LISTING, { message: "Bad credentials" }]]), repo: REPO, key: KEY }), /an array was expected/);
@@ -396,7 +399,6 @@ describe("readFixRow", () => {
 // ---- readEpisodeStart --------------------------------------------------------------------------------------------------------------------
 
 describe("readEpisodeStart", () => {
-  const KEY = "incident:trunk-red";
   const ledgerOf = (/** @type {Record<string, unknown>[]} */ ...lines: Record<string, unknown>[]) => {
     const path = join(freshDirectory(), "ledger.jsonl");
     writeFileSync(path, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));

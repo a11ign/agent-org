@@ -161,6 +161,9 @@ describe("observeReleases", () => {
     assert.equal(control.events.length, 5, "the control: the same five, once the repository has been read, are five events");
   });
 
+});
+
+describe("observeReleases", () => {
   test("(4) through the real core: nothing is sent, the ledger holds five records and the marker, and the log says so ONCE", async () => {
     const five = ["v0.7.5", "v0.7.4", "v0.7.3", "v0.7.2", "v0.7.1"].map((tag) => release(tag));
     const run = watcher({ [REPO]: five });

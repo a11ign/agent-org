@@ -202,6 +202,28 @@ type Provider = {
   pin?: (message: { messageRef: string; audience?: string }) => Promise<any>;
 };
 type Decision = { key: string; action: string };
+/** The state and ports the effects of `createAsks` close over, handed to the effects that need them. */
+type AsksEffects = {
+  provider: Provider; state: AsksState; kept: boolean; maxText: number; append: (fields: Record<string, unknown>) => Line;
+};
+
+async function tickResolved({ provider, state, kept, maxText, append }: AsksEffects, { key, outcome }: { key: string; outcome: string; }): Promise<boolean> {
+  const ask = state.asks.get(key);
+  const isUnusableAsk = !kept || ask === undefined || ask.state !== "open" || ask.messages.length === 0;
+  if (isUnusableAsk) return false;
+  const shown = (message: Message) => tickedText({ outcome, firstLine: message.firstLine, maxText });
+  const record = { key, kind: "cleared", edited: true, audience: AUDIENCE.ask, askId: ask.askId, row: ask.row, outcome };
+  try {
+    // Every message, in order; an edit to what already reads so is a success (`unchanged`), so a retry after a partial failure is safe.
+    for (const message of ask.messages) await provider.edit?.({ messageRef: message.ref, text: shown(message), audience: AUDIENCE.ask });
+  } catch (error) {
+    append({ ...record, status: STATUS.failed, error: describeError(error) });
+    return false;
+  }
+  // `sent` with `edited`, not a status of its own: what reads "this key was cleared" (`readEpisodeStart`, the snooze, `measure`) looks for exactly that.
+  append({ ...record, status: STATUS.sent, providerMessageId: ask.messages[0].ref, editedRefs: ask.messages.map((message) => message.ref), text: shown(ask.messages[0]) });
+  return true;
+}
 
 /**
  * The effects, over an injected provider. `append` is the messenger's ledger writer (it applies the line to the messenger's own fold and to
@@ -214,24 +236,7 @@ export function createAsks({ provider, history, now, append, noteDelivered, audi
   const state = foldAsks(history, audienceOf);
   const maxText = provider.capabilities.maxText;
   const kept = provider.capabilities.edit === true && provider.capabilities.pin === true;
-
-  async function tickResolved({ key, outcome }: { key: string; outcome: string; }): Promise<boolean> {
-    const ask = state.asks.get(key);
-    const isUnusableAsk = !kept || ask === undefined || ask.state !== "open" || ask.messages.length === 0;
-    if (isUnusableAsk) return false;
-    const shown = (message: Message) => tickedText({ outcome, firstLine: message.firstLine, maxText });
-    const record = { key, kind: "cleared", edited: true, audience: AUDIENCE.ask, askId: ask.askId, row: ask.row, outcome };
-    try {
-      // Every message, in order; an edit to what already reads so is a success (`unchanged`), so a retry after a partial failure is safe.
-      for (const message of ask.messages) await provider.edit?.({ messageRef: message.ref, text: shown(message), audience: AUDIENCE.ask });
-    } catch (error) {
-      append({ ...record, status: STATUS.failed, error: describeError(error) });
-      return false;
-    }
-    // `sent` with `edited`, not a status of its own: what reads "this key was cleared" (`readEpisodeStart`, the snooze, `measure`) looks for exactly that.
-    append({ ...record, status: STATUS.sent, providerMessageId: ask.messages[0].ref, editedRefs: ask.messages.map((message) => message.ref), text: shown(ask.messages[0]) });
-    return true;
-  }
+  const effects: AsksEffects = { provider, state, kept, maxText, append };
 
   async function sendList({ text, fingerprint }: { text: string; fingerprint: string; }): Promise<Decision> {
     const base = { key: LIST_KEY, kind: ASKS_LIST_KIND, audience: AUDIENCE.ask, text, fingerprint };
@@ -296,7 +301,7 @@ export function createAsks({ provider, history, now, append, noteDelivered, audi
     kept,
     state,
     apply: (line: Line) => applyAskLine(state, line, audienceOf),
-    tickResolved,
+    tickResolved: (call: { key: string; outcome: string; }) => tickResolved(effects, call),
     syncList,
   };
 }

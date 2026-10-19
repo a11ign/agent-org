@@ -130,6 +130,9 @@ describe("chairman:record", () => {
     }
   });
 
+});
+
+describe("chairman:record", () => {
   test("words that are not the ones the ledger hashed, or a message whose hash was withheld, are refused", async () => {
     const [ledger, github] = [freshLedger(), fakeGithub()];
     takeIn(ledger);

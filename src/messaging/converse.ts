@@ -153,6 +153,57 @@ function withinLimit(text: string, limit: number): string {
   return `${text.slice(0, limit - note.length)}${note}`;
 }
 
+/** Where the queue file is, and herdr's roster: what every attempt at a recipient reads. */
+type Route = { queuePath: string | undefined; agents: () => { label: string; status: string; }[] | null; };
+
+function pathOf(q: QueuePort, { queuePath }: Route): string {
+  const path = queuePath ?? q.defaultQueuePath?.();
+  if (path === undefined) throw new Error("converse: no queue path was given and the queue port names none");
+  return path;
+}
+
+/** What `promptOrQueue` decided, and what it said: it delivers to an idle seat and queues for a busy one */
+function dispatch(q: QueuePort, recipient: string, text: string, route: Route): { code: number; stderr: string; } {
+  // The path and the roster are read OUTSIDE the try, as they always were: a queue path that cannot be had and a roster that cannot be read are the listener's to report, and only the call that touches herdr is a refusal.
+  const path = pathOf(q, route);
+  const roster = route.agents();
+  const { value, stderr } = capturingStderr(() => {
+    try {
+      // A REAL ORDER, NOT THE CLI DEFAULT (#3562): an undeclared order to a lead seat reads as an FYI and is HELD for the seat's next real order, and the chairman's message is the one order that must wake it. `ORDER` and not `DECISION`, because a decision is exempt from the deep-queue refusal this module's reroute depends on.
+      return q.promptOrQueue({ run: q.run, label: recipient, text, agents: roster, path, stance: q.STANCE.ORDER, sender: CHAIRMAN_SENDER, ...q.delivery });
+    } catch (error) {
+      // herdr missing or hung is a refusal like any other, and the next recipient is tried: this must not end the listener's turn with the message unrecorded.
+      process.stderr.write(`${q.NOT_QUEUED_PREFIX}${describeError(error)}\n`);
+      return q.EXIT.REFUSED;
+    }
+  });
+  return { code: value, stderr };
+}
+
+/** The id of the entry, read back from the queue file; null when it is not there */
+function verifiedEntry(q: QueuePort, recipient: string, text: string, route: Route): string | null {
+  const id = q.handoffId(recipient, q.attributed(text, CHAIRMAN_SENDER));
+  return q.readHandoffs(pathOf(q, route)).some((entry) => entry.id === id && entry.session === recipient) ? id : null;
+}
+
+/**
+ * One recipient, asked once. `reason` is null when the message was taken, and otherwise the queue's own words for why it was not: they go to the ledger and to the
+ * fallback's reader, and never to the chairman. `delivered` is an order typed into an idle seat (nothing to read back: `promptOrQueue` returned having sent it, and a second send
+ * to `ceo` on a doubt would be the duplicate its own rule forbids), `queued` is an entry read back from the queue file.
+ *
+ * A REFUSED code with no queue prefix on its words is the order that WENT and came back with a caution (`prompt:session`: the text landed, a `/clear` was refused), so it is delivered.
+ */
+function attempt(q: QueuePort, recipient: string, text: string, route: Route): { verdict: "delivered" | "queued" | "refused" | "unverified"; reason: string | null; handoff: string | null; } {
+  const { code, stderr } = dispatch(q, recipient, text, route);
+  const wentAnyway = code === q.EXIT.REFUSED && !stderr.includes(q.NOT_QUEUED_PREFIX);
+  if (code === q.EXIT.OK || wentAnyway) return { verdict: "delivered", reason: null, handoff: null };
+  if (code !== q.EXIT.QUEUED) return { verdict: "refused", reason: stderr.trim() || "the queue refused the message and said nothing", handoff: null };
+  const handoff = verifiedEntry(q, recipient, text, route);
+  return handoff === null
+    ? { verdict: "unverified", reason: "the queue said it held the message, but its entry is not in the queue file", handoff }
+    : { verdict: "queued", reason: null, handoff };
+}
+
 /**
  * `queuePath` is left out by the listener, so the port names it (the real queue's own file); a test gives one. `send` is the provider's; `agents` is herdr's roster (the queue refuses a session herdr does not know); `queue` is the port, real by default.
  */
@@ -164,54 +215,7 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
     }) {
   let loaded: Promise<QueuePort> | undefined;
   const port = () => (queue ? Promise.resolve(queue) : (loaded ??= realQueue()));
-
-  function pathOf(q: QueuePort): string {
-    const path = queuePath ?? q.defaultQueuePath?.();
-    if (path === undefined) throw new Error("converse: no queue path was given and the queue port names none");
-    return path;
-  }
-
-  /** What `promptOrQueue` decided, and what it said: it delivers to an idle seat and queues for a busy one */
-  function dispatch(q: QueuePort, recipient: string, text: string): { code: number; stderr: string; } {
-    // The path and the roster are read OUTSIDE the try, as they always were: a queue path that cannot be had and a roster that cannot be read are the listener's to report, and only the call that touches herdr is a refusal.
-    const path = pathOf(q);
-    const roster = agents();
-    const { value, stderr } = capturingStderr(() => {
-      try {
-        // A REAL ORDER, NOT THE CLI DEFAULT (#3562): an undeclared order to a lead seat reads as an FYI and is HELD for the seat's next real order, and the chairman's message is the one order that must wake it. `ORDER` and not `DECISION`, because a decision is exempt from the deep-queue refusal this module's reroute depends on.
-        return q.promptOrQueue({ run: q.run, label: recipient, text, agents: roster, path, stance: q.STANCE.ORDER, sender: CHAIRMAN_SENDER, ...q.delivery });
-      } catch (error) {
-        // herdr missing or hung is a refusal like any other, and the next recipient is tried: this must not end the listener's turn with the message unrecorded.
-        process.stderr.write(`${q.NOT_QUEUED_PREFIX}${describeError(error)}\n`);
-        return q.EXIT.REFUSED;
-      }
-    });
-    return { code: value, stderr };
-  }
-
-  /** The id of the entry, read back from the queue file; null when it is not there */
-  function verifiedEntry(q: QueuePort, recipient: string, text: string): string | null {
-    const id = q.handoffId(recipient, q.attributed(text, CHAIRMAN_SENDER));
-    return q.readHandoffs(pathOf(q)).some((entry) => entry.id === id && entry.session === recipient) ? id : null;
-  }
-
-  /**
-   * One recipient, asked once. `reason` is null when the message was taken, and otherwise the queue's own words for why it was not: they go to the ledger and to the
-   * fallback's reader, and never to the chairman. `delivered` is an order typed into an idle seat (nothing to read back: `promptOrQueue` returned having sent it, and a second send
-   * to `ceo` on a doubt would be the duplicate its own rule forbids), `queued` is an entry read back from the queue file.
-   *
-   * A REFUSED code with no queue prefix on its words is the order that WENT and came back with a caution (`prompt:session`: the text landed, a `/clear` was refused), so it is delivered.
-   */
-  function attempt(q: QueuePort, recipient: string, text: string): { verdict: "delivered" | "queued" | "refused" | "unverified"; reason: string | null; handoff: string | null; } {
-    const { code, stderr } = dispatch(q, recipient, text);
-    const wentAnyway = code === q.EXIT.REFUSED && !stderr.includes(q.NOT_QUEUED_PREFIX);
-    if (code === q.EXIT.OK || wentAnyway) return { verdict: "delivered", reason: null, handoff: null };
-    if (code !== q.EXIT.QUEUED) return { verdict: "refused", reason: stderr.trim() || "the queue refused the message and said nothing", handoff: null };
-    const handoff = verifiedEntry(q, recipient, text);
-    return handoff === null
-      ? { verdict: "unverified", reason: "the queue said it held the message, but its entry is not in the queue file", handoff }
-      : { verdict: "queued", reason: null, handoff };
-  }
+  const route: Route = { queuePath, agents };
 
   /**
    * The liaison first; `ceo` only when the liaison's seat did not take it, for any reason, and told why. A message is lost only when both refuse.
@@ -219,10 +223,10 @@ export function createConverse({ chairman, queuePath, ledger, send, maxText = 40
    * `words` is the order's text, with the note saying why it came to the fallback when it did.
    */
   function submit(q: QueuePort, words: (note: string | null) => string): { verdict: "delivered" | "queued" | typeof REROUTED | "refused" | "unverified"; delivery: "delivered" | "queued" | null; taker: string | null; handoff: string | null; refusals: string[]; } {
-    const first = attempt(q, RECIPIENT, words(null));
+    const first = attempt(q, RECIPIENT, words(null), route);
     if (first.reason === null) return { verdict: first.verdict as "delivered" | "queued", delivery: first.verdict as "delivered" | "queued", taker: RECIPIENT, handoff: first.handoff, refusals: [] };
     const refusal = firstLine(first.reason);
-    const second = attempt(q, FALLBACK_RECIPIENT, words(reroutedNote(refusal)));
+    const second = attempt(q, FALLBACK_RECIPIENT, words(reroutedNote(refusal)), route);
     if (second.reason === null) return { verdict: REROUTED, delivery: second.verdict as "delivered" | "queued", taker: FALLBACK_RECIPIENT, handoff: second.handoff, refusals: [refusal] };
     return { verdict: second.verdict, delivery: null, taker: null, handoff: null, refusals: [refusal, firstLine(second.reason)] };
   }

@@ -442,6 +442,11 @@ export function cannotAskExit({ prs, readyRows, identity, run = defaultRun, now,
 
 function main() {
   refuseUnknownFlags([], { entry: import.meta.url, command: "node packages/agent-org/src/work-gate.ts" });
+  emitTick(readGateTick());
+}
+
+/** The tick's reads and every decision made from them: `emitTick` turns the result into the orders the tick emits. */
+function readGateTick() {
   const githubStatus = endGateSpan("startup", startGithubStatus()); // #3723: FIRST, so its wall overlaps the reads below and never adds to them
   // READ BEFORE ANY GITHUB CALL (#2163), because it is the one reading a `CANNOT_ASK` exit must not hide: a tick
   // that cannot reach GitHub delivers nothing, so on that path the stderr line is the only thing that says the
@@ -532,6 +537,15 @@ function main() {
   const outageNow = outageThisTick({ prs, readyRows, promotableRows, chairmanBlocked, openRows: openRowsRead, claimedComments, offBoard, others, primaryRead });
   const incident = endGateSpan("incident", holdForIncidentNow(githubStatus, [...decided, ...others.flatMap((tick) => tick.orders)], { prs: [...openPrs, ...pullRequestsOfOthers(otherScopes)], required }));
   const { delivered: orders, performed: performedOnPrs } = endGateSpan("performActions", performActions(markOutageReads(incident.orders, { outage: outageNow })));
+  return { armingSplit, branchPrs, decideArgs, decided, diskOrders, drain, herdrListing, incident, offerHierarchy, orders, pacedSkips, pacing, pools, prFiles,
+    prs, primaryRead, promotableRows, readyRows, reenqueueState, required, rowBranches, rows, strippedClosedClaims, waitReads, chairmanBlocked,
+    claimedComments, allOpen, openPrs, openRowsRead, otherScopes, others, performedOnPrs };
+}
+
+/** The tick's orders: the ones it has, the org-health and reenqueue checks it runs, and the exit code for what it did. */
+function emitTick({ armingSplit, branchPrs, decideArgs, decided, diskOrders, drain, herdrListing, incident, offerHierarchy, orders, pacedSkips, pacing, pools, prFiles,
+  prs, primaryRead, promotableRows, readyRows, reenqueueState, required, rowBranches, rows, strippedClosedClaims, waitReads, chairmanBlocked,
+  claimedComments, allOpen, openPrs, openRowsRead, otherScopes, others, performedOnPrs }: ReturnType<typeof readGateTick>) {
   const performed = performedOnPrs + strippedClosedClaims; // #3883: a tick that took labels off a closed row did something, and must not read as an idle org
   orders.push(...incident.signal);
   // #4602: THE SAME `blocked` THE TICK REPORTS AS WITHHELD (below), counted per holder and over time -- computed once, so the count and the report cannot disagree.

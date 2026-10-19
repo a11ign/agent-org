@@ -138,18 +138,18 @@ describe("a malformed key is a NAMED refusal, never a silent off", () => {
   test("a document that is not an object is refused", () => refusedAt([], /^\(file\)$/));
 });
 
-describe("reading the file, and messaging:check", () => {
-  /** A project root holding `document`. */
-  function projectRoot(name: string, document: unknown): string {
-    const root = join(scratch, name);
-    mkdirSync(join(root, ".agent-org"), { recursive: true });
-    writeFileSync(join(root, ".agent-org/project.json"), typeof document === "string" ? document : JSON.stringify(document));
-    return root;
-  }
-  const tokenPath = join(SECRETS, "telegram-token");
-  const chairmanPath = join(SECRETS, "chairman.json");
-  const owner = process.getuid?.() ?? 0;
+/** A project root holding `document`. */
+function projectRoot(name: string, document: unknown): string {
+  const root = join(scratch, name);
+  mkdirSync(join(root, ".agent-org"), { recursive: true });
+  writeFileSync(join(root, ".agent-org/project.json"), typeof document === "string" ? document : JSON.stringify(document));
+  return root;
+}
+const tokenPath = join(SECRETS, "telegram-token");
+const chairmanPath = join(SECRETS, "chairman.json");
+const owner = process.getuid?.() ?? 0;
 
+describe("reading the file, and messaging:check", () => {
   test("readMessagingConfig reads a project root, off and on", () => {
     assert.deepEqual(readMessagingConfig(projectRoot("off", { schema: 1 }), { home: HOME }), { enabled: false });
     assert.equal(readMessagingConfig(projectRoot("on", documentWith(VALID)), { home: HOME }).enabled, true);
@@ -198,7 +198,9 @@ describe("reading the file, and messaging:check", () => {
     assert.doesNotMatch(text, /SECRET-TOKEN-VALUE|123456/);
     chmodSync(tokenPath, 0o600);
   });
+});
 
+describe("reading the file, and messaging:check", () => {
   test("check, token file missing: exit 1", () => {
     const verdict = runMessagingCheck({ root: projectRoot("check-missing", documentWith({ ...VALID, tokenFile: "~/.config/agent-org/absent" })), home: HOME });
     assert.equal(verdict.exitCode, 1);

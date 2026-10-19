@@ -140,6 +140,122 @@ const failed = (smoke: SmokeResult): boolean => smoke.status === "dialog" || smo
 const describe = (cause: unknown): string => String((cause as Error)?.message ?? cause).split("\n")[0].slice(0, 160);
 const pairs = (tools: readonly Tool[], from: Versions, to: Versions): string => tools.map((t) => `${t} ${from[t]}->${to[t]}`).join(", ");
 
+/** What a run moves: each tool's version now (`before`), the version it should read (`target`), and the tools that differ (`toMove`). */
+type Plan = { toMove: readonly Tool[], before: Versions, target: Versions };
+
+/**
+ * A MID-TURN SEAT THAT RUNS A TOOL TO BE MOVED HOLDS THE MOVE (#665): unnamed refuses at once, named is waited for (bounded). A seat outside `toMove`'s products is neither
+ * named in the refusal nor waited for.
+ * @returns the refusal's words when the move must not run, or `null` when every seat it would disturb is idle or was let finish.
+ */
+function awaitIdleSeats(deps: Deps, toMove: readonly Tool[], wait: { session: string | null, letFinish: string[], waitMs: number, pollMs: number }): string | null {
+  const { session, letFinish, waitMs, pollMs } = wait;
+  const holds = (name: string): string => {
+    const tools = toolsHeldBy(name, toMove).join(", ");
+    const product = productOfSeat(name);
+    return product === null ? `${name} (product unknown, so held for ${tools})` : `${name} (runs ${product}, held for ${tools})`;
+  };
+  const deadline = deps.now() + waitMs;
+  for (;;) {
+    const seen = deps.working();
+    if (seen === null) return "NOT READ: herdr's seat listing, so whether a reviewer or worker is mid-turn is unknown and nothing was moved.";
+    const mid = seen.filter((name) => name !== session && toolsHeldBy(name, toMove).length > 0);
+    const unnamed = mid.filter((name) => !letFinish.includes(name));
+    if (unnamed.length > 0) {
+      return `REFUSED: ${unnamed.map(holds).join(", ")} ${unnamed.length === 1 ? "is" : "are"} mid-turn and ${unnamed.length === 1 ? "was" : "were"} not named in --let-finish; nothing was moved. `
+        + "Name a seat to let it finish first, or run again when it is idle.";
+    }
+    if (mid.length === 0) return null;
+    if (deps.now() >= deadline) {
+      return `REFUSED: ${mid.join(", ")} still mid-turn after ${Math.round(waitMs / 60_000)} min of letting ${mid.length === 1 ? "it" : "them"} finish; nothing was moved.`;
+    }
+    deps.sleep(pollMs);
+  }
+}
+
+/**
+ * MOVE, tool by tool, then READ BACK. The tools that were TOUCHED are the ones a revert undoes, a failed install included: a half-written install is not the version it was.
+ * `touched` collects them as the move goes.
+ * @returns what went wrong, or `null` when every moved tool reads its target back, and the tools that were touched.
+ */
+function moveAndReadBack(deps: Deps, plan: Plan): { moveError: string | null, touched: Tool[] } {
+  const { toMove, before, target } = plan;
+  const touched: Tool[] = [];
+  let moveError: string | null = null;
+  for (const tool of toMove) {
+    touched.push(tool);
+    try {
+      deps.move(tool, target[tool], before[tool]);
+    } catch (cause) {
+      moveError = `${tool} did not install ${target[tool]} (${describe(cause)})`;
+      break;
+    }
+  }
+  if (moveError === null) {
+    try {
+      const now = deps.installed();
+      const wrong = toMove.filter((t) => now[t] !== target[t]);
+      if (wrong.length > 0) moveError = `${wrong.map((t) => `${t} reads ${now[t]}, not ${target[t]}`).join("; ")} after the installer said it was done`;
+    } catch (cause) {
+      moveError = `the versions could not be read back (${describe(cause)})`;
+    }
+  }
+  return { moveError, touched };
+}
+
+/** Smoke-starts each kind in {@link SMOKES}, in order, and judges what each one saw. */
+function smokeEachKind(deps: Deps): SmokeResult[] {
+  const smokes: SmokeResult[] = [];
+  for (const { kind } of SMOKES) {
+    let raw: SmokeRaw;
+    try {
+      raw = deps.smoke(kind);
+    } catch (cause) {
+      raw = { opened: false, why: describe(cause) };
+    }
+    smokes.push(judgeSmoke(kind, raw, deps.dialogOf));
+  }
+  return smokes;
+}
+
+/**
+ * REVERT every touched tool, newest first, then READ BACK.
+ * @returns the reverts the installer refused, and the tools that still do not read their old version.
+ */
+function revertAndReadBack(deps: Deps, touched: readonly Tool[], before: Versions): { refused: string[], still: string[] } {
+  const refused: string[] = [];
+  for (const tool of [...touched].reverse()) {
+    try {
+      deps.revert(tool, before[tool]);
+    } catch (cause) {
+      refused.push(`${tool} (${describe(cause)})`);
+    }
+  }
+  let still: string[] = [];
+  try {
+    const after = deps.installed();
+    still = touched.filter((t) => after[t] !== before[t] && !refused.some((r) => r.startsWith(t))).map((t) => `${t} reads ${after[t]}, not ${before[t]}`);
+  } catch (cause) {
+    still = [`the versions could not be read back after the revert (${describe(cause)})`];
+  }
+  return { refused, still };
+}
+
+/**
+ * THE INCIDENTS: one per failed smoke, naming the tools, both versions and the pane text. A failed install is not a prompt drift and records none.
+ * @returns the sentence the run's line carries about the ledger, or `""` when nothing was recorded or refused.
+ */
+function recordIncidents(deps: Deps, bad: SmokeResult[], plan: Plan): string {
+  const { before, target } = plan;
+  const day = new Date(deps.now()).toISOString().slice(0, 10);
+  const events: FailureEvent[] = bad.map((s) => {
+    const entry = SMOKES.find((x) => x.kind === s.kind)!;
+    return { classKey: TOOL_DRIFT_KIND, ref: `${day} ${s.kind} smoke ${s.status}: ${pairs(entry.tools, before, target)} | pane: ${s.pane || s.detail}`.replace(/[\t\r\n]+/g, " ") };
+  });
+  const recorded = events.length === 0 ? null : deps.record(events);
+  return recorded === null ? "" : recorded.refused === null ? ` ${events.length} ${TOOL_DRIFT_KIND} incident${events.length === 1 ? "" : "s"} recorded.` : ` INCIDENT NOT RECORDED (${recorded.refused}).`;
+}
+
 /**
  * THE RUN. Never throws: every road ends in a {@link Result} whose `line` is what the command prints and whose `exitCode` is what it exits with.
  * @param {Deps} deps @param {Options} [options]
@@ -180,64 +296,11 @@ export function updateAgentTools(deps: Deps, options: Options = {}): Result {
     return out("at-target", `already at target, nothing moved: ${TOOLS.map((t) => `${t} ${before[t]}`).join(", ")}. Daemon update loop: ${pinned}.`, pinned.startsWith("NOT SWITCHED OFF") ? 1 : 0);
   }
 
-  // A MID-TURN SEAT THAT RUNS A TOOL TO BE MOVED HOLDS THE MOVE (#665): unnamed refuses at once, named is waited for (bounded). A seat outside `toMove`'s products is neither
-  // named in the refusal nor waited for.
-  const holds = (name: string): string => {
-    const tools = toolsHeldBy(name, toMove).join(", ");
-    const product = productOfSeat(name);
-    return product === null ? `${name} (product unknown, so held for ${tools})` : `${name} (runs ${product}, held for ${tools})`;
-  };
-  const deadline = deps.now() + waitMs;
-  for (;;) {
-    const seen = deps.working();
-    if (seen === null) return out("busy", "NOT READ: herdr's seat listing, so whether a reviewer or worker is mid-turn is unknown and nothing was moved.", 1);
-    const mid = seen.filter((name) => name !== session && toolsHeldBy(name, toMove).length > 0);
-    const unnamed = mid.filter((name) => !letFinish.includes(name));
-    if (unnamed.length > 0) {
-      return out("busy", `REFUSED: ${unnamed.map(holds).join(", ")} ${unnamed.length === 1 ? "is" : "are"} mid-turn and ${unnamed.length === 1 ? "was" : "were"} not named in --let-finish; nothing was moved. `
-        + "Name a seat to let it finish first, or run again when it is idle.", 1);
-    }
-    if (mid.length === 0) break;
-    if (deps.now() >= deadline) {
-      return out("busy", `REFUSED: ${mid.join(", ")} still mid-turn after ${Math.round(waitMs / 60_000)} min of letting ${mid.length === 1 ? "it" : "them"} finish; nothing was moved.`, 1);
-    }
-    deps.sleep(pollMs);
-  }
+  const refusal = awaitIdleSeats(deps, toMove, { session, letFinish, waitMs, pollMs });
+  if (refusal !== null) return out("busy", refusal, 1);
 
-  // MOVE. The tools that were TOUCHED are the ones a revert undoes, a failed install included: a half-written install is not the version it was.
-  const touched: Tool[] = [];
-  let moveError: string | null = null;
-  for (const tool of toMove) {
-    touched.push(tool);
-    try {
-      deps.move(tool, target[tool], before[tool]);
-    } catch (cause) {
-      moveError = `${tool} did not install ${target[tool]} (${describe(cause)})`;
-      break;
-    }
-  }
-  if (moveError === null) {
-    try {
-      const now = deps.installed();
-      const wrong = toMove.filter((t) => now[t] !== target[t]);
-      if (wrong.length > 0) moveError = `${wrong.map((t) => `${t} reads ${now[t]}, not ${target[t]}`).join("; ")} after the installer said it was done`;
-    } catch (cause) {
-      moveError = `the versions could not be read back (${describe(cause)})`;
-    }
-  }
-
-  const smokes: SmokeResult[] = [];
-  if (moveError === null) {
-    for (const { kind } of SMOKES) {
-      let raw: SmokeRaw;
-      try {
-        raw = deps.smoke(kind);
-      } catch (cause) {
-        raw = { opened: false, why: describe(cause) };
-      }
-      smokes.push(judgeSmoke(kind, raw, deps.dialogOf));
-    }
-  }
+  const { moveError, touched } = moveAndReadBack(deps, { toMove, before, target });
+  const smokes = moveError === null ? smokeEachKind(deps) : [];
   const smokeText = smokes.map((s) => `${s.kind} ${s.status === "prompt" ? "ok" : s.status.toUpperCase()}${s.status === "prompt" ? "" : ` (${s.detail}${s.pane ? `: ${s.pane}` : ""})`}`).join(", ");
   const bad = smokes.filter(failed);
   const unproven = smokes.filter((s) => !failed(s) && s.status !== "prompt");
@@ -250,31 +313,8 @@ export function updateAgentTools(deps: Deps, options: Options = {}): Result {
     return out("kept", `moved ${moved}; smoke start ok (${smokeText}), kept. Daemon update loop: ${pinned}.`, 0, smokes);
   }
 
-  // REVERT every touched tool, newest first, then READ BACK.
-  const refused: string[] = [];
-  for (const tool of [...touched].reverse()) {
-    try {
-      deps.revert(tool, before[tool]);
-    } catch (cause) {
-      refused.push(`${tool} (${describe(cause)})`);
-    }
-  }
-  let still: string[] = [];
-  try {
-    const after = deps.installed();
-    still = touched.filter((t) => after[t] !== before[t] && !refused.some((r) => r.startsWith(t))).map((t) => `${t} reads ${after[t]}, not ${before[t]}`);
-  } catch (cause) {
-    still = [`the versions could not be read back after the revert (${describe(cause)})`];
-  }
-
-  // THE INCIDENTS: one per failed smoke, naming the tools, both versions and the pane text. A failed install is not a prompt drift and records none.
-  const day = new Date(deps.now()).toISOString().slice(0, 10);
-  const events: FailureEvent[] = bad.map((s) => {
-    const entry = SMOKES.find((x) => x.kind === s.kind)!;
-    return { classKey: TOOL_DRIFT_KIND, ref: `${day} ${s.kind} smoke ${s.status}: ${pairs(entry.tools, before, target)} | pane: ${s.pane || s.detail}`.replace(/[\t\r\n]+/g, " ") };
-  });
-  const recorded = events.length === 0 ? null : deps.record(events);
-  const ledger = recorded === null ? "" : recorded.refused === null ? ` ${events.length} ${TOOL_DRIFT_KIND} incident${events.length === 1 ? "" : "s"} recorded.` : ` INCIDENT NOT RECORDED (${recorded.refused}).`;
+  const { refused, still } = revertAndReadBack(deps, touched, before);
+  const ledger = recordIncidents(deps, bad, { toMove, before, target });
   const why = moveError !== null ? moveError : `smoke start failed: ${smokeText}`;
   const back = pairs(touched, target, before).split(", ").reverse().join(", ");
   if (refused.length > 0 || still.length > 0) {
@@ -310,12 +350,9 @@ function readDaemonSettings(file: string): Record<string, any> {
   return parsed;
 }
 
-/**
- * The host's real seams, for `home`. Exported with every external call behind an argument so a test can drive each one against a scratch home.
- * @param {{ home?: string, runProgram?: typeof run, herdr?: (args: string[]) => string, env?: NodeJS.ProcessEnv }} [io]
- */
-export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) => run("herdr", args, 120_000) }: { home?: string, runProgram?: typeof run, herdr?: (args: string[]) => string } = {}) {
-  const codex = (args: string[], timeout?: number) => {
+/** The `codex` seam for `home`: the CLI on PATH, or the one the standalone installer leaves in `~/.local/bin`. */
+function codexCaller(home: string, runProgram: typeof run): (args: string[], timeout?: number) => string {
+  return (args: string[], timeout?: number) => {
     for (const candidate of ["codex", join(home, ".local", "bin", "codex")]) {
       try {
         return runProgram(candidate, args, timeout);
@@ -325,42 +362,89 @@ export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) =
     }
     throw new Error("no `codex` on PATH or in ~/.local/bin");
   };
+}
+
+/** Point `link` at `to`, atomically: a symlink made beside it and renamed over it, so there is never an instant with no link. */
+function flip(link: string, to: string): void {
+  const next = `${link}.agent-tool-update`;
+  try { renameSync(next, `${next}.old`); } catch { /* none left behind */ }
+  symlinkSync(to, next);
+  renameSync(next, link);
+}
+
+/** The release directory of `version` under a package's `releases`, named by its version. Throws when there is none. */
+function releaseDir(packages: string, version: string): string {
+  const name = readdirSync(join(packages, "releases")).find((entry) => versionOfRelease(entry) === version);
+  if (name === undefined) throw new Error(`no release directory for ${version} under ${join(packages, "releases")}`);
+  return join(packages, "releases", name);
+}
+
+/** The version a target file names, or `undefined` when the file is missing or empty. */
+function readTarget(file: string): string | undefined {
+  try { return versionOfRelease(readFileSync(file, "utf8").trim()) || undefined; } catch { return undefined; }
+}
+
+/** The three installed versions, read from the three programs. Throws, naming the tool, when one cannot be read. */
+function readInstalledVersions(codex: (args: string[], timeout?: number) => string, runProgram: typeof run): Versions {
+  const read = (tool: Tool, fn: () => string): string => {
+    try { return fn(); } catch (cause) { throw new Error(`${tool}: ${causeOf(cause)}`); }
+  };
+  return {
+    "codex-cli": read("codex-cli", () => /codex-cli (\S+)/.exec(codex(["--version"]))?.[1] ?? (() => { throw new Error("no version in `codex --version`"); })()),
+    "codex-daemon": read("codex-daemon", () => {
+      const reported = JSON.parse(codex(["app-server", "daemon", "version"])).appServerVersion;
+      if (typeof reported !== "string") throw new Error("`codex app-server daemon version` names no appServerVersion (is the daemon running?)");
+      return reported;
+    }),
+    "claude-code": read("claude-code", () => /^(\S+) \(Claude Code\)/.exec(runProgram("claude", ["--version"]).trim())?.[1] ?? (() => { throw new Error("no version in `claude --version`"); })()),
+  };
+}
+
+/** One scratch workspace in herdr's `org` session, started the way the org starts a seat, read, and CLOSED on every road. */
+function smokeScratchPane(herdr: (args: string[]) => string, kind: SmokeKind, startArgs: string[]): SmokeRaw {
+  const product = SMOKES.find((s) => s.kind === kind)!.product;
+  const name = `smoke-${kind}-${Date.now().toString(36)}`;
+  let workspace: string | undefined;
+  try {
+    const created = JSON.parse(herdr(["--session", "org", "workspace", "create", "--label", name, "--no-focus"]));
+    workspace = created?.result?.workspace?.workspace_id;
+    const pane = created?.result?.root_pane?.pane_id;
+    if (typeof workspace !== "string" || typeof pane !== "string") return { opened: false, why: "herdr's workspace answer names no pane" };
+    let started = true;
+    let why: string | undefined;
+    try {
+      herdr(["--session", "org", "agent", "start", name, "--kind", product, "--pane", pane, "--timeout", "90000", "--", ...startArgs]);
+    } catch (cause) {
+      started = false;
+      why = causeOf(cause);
+    }
+    let screen: string | null;
+    try { screen = herdr(["--session", "org", "agent", "read", name, "--source", "recent", "--lines", "40"]); } catch { screen = null; }
+    return { opened: true, started, pane: screen, ...(why === undefined ? {} : { why }) };
+  } catch (cause) {
+    return { opened: false, why: causeOf(cause) };
+  } finally {
+    if (workspace !== undefined) {
+      try { herdr(["--session", "org", "workspace", "close", workspace]); } catch { /* reported by the next run's `unknown` seat; nothing to add here */ }
+    }
+  }
+}
+
+/**
+ * The host's real seams, for `home`. Exported with every external call behind an argument so a test can drive each one against a scratch home.
+ * @param {{ home?: string, runProgram?: typeof run, herdr?: (args: string[]) => string, env?: NodeJS.ProcessEnv }} [io]
+ */
+export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) => run("herdr", args, 120_000) }: { home?: string, runProgram?: typeof run, herdr?: (args: string[]) => string } = {}) {
+  const codex = codexCaller(home, runProgram);
   const standalone = join(home, ".codex", "packages", "standalone");
   const daemonPackages = join(home, ".codex", "packages", "app-server-daemon");
   const daemonState = join(home, ".codex", "app-server-daemon");
   const claudeLink = join(home, ".local", "bin", "claude");
   const claudeVersions = join(home, ".local", "share", "claude", "versions");
 
-  /** Point `link` at `to`, atomically: a symlink made beside it and renamed over it, so there is never an instant with no link. */
-  const flip = (link: string, to: string): void => {
-    const next = `${link}.agent-tool-update`;
-    try { renameSync(next, `${next}.old`); } catch { /* none left behind */ }
-    symlinkSync(to, next);
-    renameSync(next, link);
-  };
-  const releaseDir = (packages: string, version: string): string => {
-    const name = readdirSync(join(packages, "releases")).find((entry) => versionOfRelease(entry) === version);
-    if (name === undefined) throw new Error(`no release directory for ${version} under ${join(packages, "releases")}`);
-    return join(packages, "releases", name);
-  };
-  const readTarget = (file: string): string | undefined => {
-    try { return versionOfRelease(readFileSync(file, "utf8").trim()) || undefined; } catch { return undefined; }
-  };
-
   return {
     installed(): Versions {
-      const read = (tool: Tool, fn: () => string): string => {
-        try { return fn(); } catch (cause) { throw new Error(`${tool}: ${causeOf(cause)}`); }
-      };
-      return {
-        "codex-cli": read("codex-cli", () => /codex-cli (\S+)/.exec(codex(["--version"]))?.[1] ?? (() => { throw new Error("no version in `codex --version`"); })()),
-        "codex-daemon": read("codex-daemon", () => {
-          const reported = JSON.parse(codex(["app-server", "daemon", "version"])).appServerVersion;
-          if (typeof reported !== "string") throw new Error("`codex app-server daemon version` names no appServerVersion (is the daemon running?)");
-          return reported;
-        }),
-        "claude-code": read("claude-code", () => /^(\S+) \(Claude Code\)/.exec(runProgram("claude", ["--version"]).trim())?.[1] ?? (() => { throw new Error("no version in `claude --version`"); })()),
-      };
+      return readInstalledVersions(codex, runProgram);
     },
     /** Codex's latest is what its own updater selected (`auto-update-version`), the newer of the two files; Claude's is the package registry's `latest` (read with `curl`: this tool spawns no npm, `no-npm-spawn.test.ts`), or the flag. */
     targets(claudePin?: string): Partial<Record<Tool, string>> {
@@ -410,34 +494,8 @@ export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) =
         else runProgram("claude", ["install", to], 300_000);
       }
     },
-    /** One scratch workspace in herdr's `org` session, started the way the org starts a seat, read, and CLOSED on every road. */
     smoke(kind: SmokeKind, startArgs: string[]): SmokeRaw {
-      const product = SMOKES.find((s) => s.kind === kind)!.product;
-      const name = `smoke-${kind}-${Date.now().toString(36)}`;
-      let workspace: string | undefined;
-      try {
-        const created = JSON.parse(herdr(["--session", "org", "workspace", "create", "--label", name, "--no-focus"]));
-        workspace = created?.result?.workspace?.workspace_id;
-        const pane = created?.result?.root_pane?.pane_id;
-        if (typeof workspace !== "string" || typeof pane !== "string") return { opened: false, why: "herdr's workspace answer names no pane" };
-        let started = true;
-        let why: string | undefined;
-        try {
-          herdr(["--session", "org", "agent", "start", name, "--kind", product, "--pane", pane, "--timeout", "90000", "--", ...startArgs]);
-        } catch (cause) {
-          started = false;
-          why = causeOf(cause);
-        }
-        let screen: string | null;
-        try { screen = herdr(["--session", "org", "agent", "read", name, "--source", "recent", "--lines", "40"]); } catch { screen = null; }
-        return { opened: true, started, pane: screen, ...(why === undefined ? {} : { why }) };
-      } catch (cause) {
-        return { opened: false, why: causeOf(cause) };
-      } finally {
-        if (workspace !== undefined) {
-          try { herdr(["--session", "org", "workspace", "close", workspace]); } catch { /* reported by the next run's `unknown` seat; nothing to add here */ }
-        }
-      }
+      return smokeScratchPane(herdr, kind, startArgs);
     },
   };
 }

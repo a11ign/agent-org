@@ -111,6 +111,9 @@ describe("a declared moment whose condition holds is told once, with its sentenc
     assert.equal(provider.sent[0].silent, false, "it is news, not a quiet line");
   });
 
+});
+
+describe("a declared moment whose condition holds is told once, with its sentence (done-when 1, acceptance 1 to 3)", () => {
   test("a send that FAILED is offered again on the next tick: only a told moment counts as seen", async () => {
     const provider = createFakeProvider();
     const ledger = createLedger({ path: join(scratch, "failed.jsonl"), now: () => Date.now() });

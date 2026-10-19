@@ -373,151 +373,178 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
   /** Runs the verdict door with the reviewer's environment: throws on a non-zero exit, with the door's stderr. */
   door?: DoorRun;
 }): ReviewerPort {
-  const herdr = (args: string[]) => run(args[0] === "--session" && args[1] === ORG_SESSION ? ["--session", session, ...args.slice(2)] : args);
-  const listed = (): ListedAgent[] | null => readAgents(run, { session });
-
-  /** The gate's own verdict prompt, for a seat's repository, sent to the seat's agent: the same words the gate sends a reviewer for a ready pull request. */
-  const sendPrompt = (seat: { label: string; key: string }, state: ReviewState, head: string): { sent: true } | { refusal: string } => {
-    const words = reviewerGate().orders.awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, reviewerGate().orders.reviewHeadsOf(state.view, head, "settled"));
-    try {
-      run(["--session", session, "agent", "prompt", seat.label, words]);
-      return { sent: true };
-    } catch (err) {
-      return { refusal: err instanceof Error ? err.message.split("\n")[0] : String(err) };
-    }
-  };
-
-  /** Closes every workspace under a seat's label, as the gate's teardown does; a refusal names what would not close. */
-  const closeAll = (pr: string, label: string): Readonly<{ state: "closed" }> | Readonly<{ refusal: string }> => {
-    const problems: string[] = [];
-    const closed = reviewerGate().wake.closeReviewer(label, { run: herdr, warn: (line) => problems.push(line) });
-    return closed ? { state: "closed" } : { refusal: `no close for ${pr}: ${problems.join(" ") || `${label} would not close`}` };
-  };
-
-  /**
-   * The uncommitted paths in a checkout, none when it is gone. A `status` that fails is a refusal: a tree that could not be read is kept, never removed.
-   */
-  const uncommittedOf = (path: string): { paths: string[] } | { refusal: string } => {
-    if (!exists(path)) return { paths: [] };
-    try {
-      return { paths: uncommittedPaths(path) };
-    } catch (err) {
-      return { refusal: `the changes in ${path} could not be read, so it is kept (${firstLine(err)})` };
-    }
-  };
-
+  const seams: AtomicSeams = { session, run, gh, declared, spawn, checkout, heads, removeCheckout, uncommittedPaths, exists, checkoutOf, mint, door };
   return {
-    live({ pr, head }) {
-      const seat = seatOf(pr);
-      return !("refusal" in seat) && heads.get(seat.label) === head && (listed()?.some((agent) => agent.label === seat.label) ?? false);
-    },
-    start({ pr, head }) {
-      const seat = seatOf(pr);
-      if ("refusal" in seat) return seat;
-      const { trust } = reviewerGate();
-      const state = readReviewState(pr, gh, declared);
-      if (state === null) return { refusal: `no reviewer for ${pr}: the pull request could not be read` };
-      if (state.trust !== trust.INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
-      if (state.head !== head) return { refusal: `no reviewer for ${pr}: its head moved to ${state.head}, so ${head} is no longer to be reviewed` };
-      if (!state.settled) return { refusal: `no reviewer for ${pr}: its checks at ${head} have not settled green` };
-      const agents = listed();
-      if (agents === null) return { refusal: `no reviewer for ${pr}: herdr did not list the ${session} session` };
-      // A reviewer still holding the label is one for an earlier head: its workspace is closed before the next one starts under the same label.
-      const stale = agents.some((agent) => agent.label === seat.label);
-      if (stale) closeWorkspace(run, session, seat.label);
-      const tree = checkout({ pr: seat.number, session: seat.label, trust: trust.INSIDE });
-      if ("refusal" in tree) return tree;
-      const started = spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
-        agents.filter((agent) => agent.label !== seat.label), { run: herdr, cwd: tree.path });
-      if ("refusal" in started) return started;
-      const prompted = sendPrompt(seat, state, head);
-      if ("refusal" in prompted) return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
-      heads.set(seat.label, head);
-      return { label: seat.label };
-    },
-    settled({ pr, head }) {
-      const seat = seatOf(pr);
-      if ("refusal" in seat || heads.get(seat.label) !== head) return "gone";
-      const agents = listed();
-      // herdr did not say what is running, so the reviewer is working as far as anyone can tell: nothing is said of it on a guess.
-      if (agents === null) return "working";
-      const holders = agents.filter((agent) => agent.label === seat.label);
-      if (holders.length === 0) return "gone";
-      return holders.every((agent) => ENDED_STATUSES.includes(agent.status)) ? "ended" : "working";
-    },
-    verdictFileOf({ pr, head }) {
+    live: (ref) => liveReviewer(seams, ref),
+    start: (ref) => startReviewer(seams, ref),
+    settled: (ref) => settledReviewer(seams, ref),
+    verdictFileOf: ({ pr, head }) => {
       const seat = seatOf(pr);
       return "refusal" in seat ? null : verdictFileIn(checkoutOf(seat.label), seat.number, head);
     },
-    repostVerdict({ pr, head }, file) {
-      const seat = seatOf(pr);
-      if ("refusal" in seat) return { refusal: seat.refusal, final: true };
-      const word = verdictWordOf(file, head);
-      if (word === null) return { refusal: `the verdict file ${file} does not open with a verdict for ${head.slice(0, 8)}`, final: true };
-      const tree = checkoutOf(seat.label);
-      // The token first: the door posts as the reviewer App, and a token that is stale or missing is the failure this repost is for.
-      const minted = mint(tree);
-      if (minted !== null) return { refusal: minted, final: false };
-      try {
-        door(reviewerGate().doorPath.reviewerDoorPath(), [String(seat.number), word, file], reviewerGate().wake.reviewerEnvironment(seat.label, {}, tree));
-        return { posted: true };
-      } catch (err) {
-        const status = (err as { status?: number | null }).status ?? null;
-        return { refusal: doorReason(err, status), final: status !== null && FINAL_DOOR_EXITS.includes(status) };
-      }
-    },
-    reprompt({ pr, head }) {
-      const seat = seatOf(pr);
-      if ("refusal" in seat) return seat;
-      const state = readReviewState(pr, gh, declared);
-      if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
-      const sent = sendPrompt(seat, state, head);
-      return "refusal" in sent ? { refusal: `no reprompt for ${pr}: ${sent.refusal}` } : { prompted: true };
-    },
-    close({ pr, head }) {
-      const seat = seatOf(pr);
-      if ("refusal" in seat) return seat;
-      if (heads.get(seat.label) !== head) return { refusal: `no close for ${pr}: ${seat.label} was not started for ${head}` };
-      const agents = listed();
-      if (agents === null) return { refusal: `no close for ${pr}: herdr did not list the ${session} session` };
-      const holders = agents.filter((agent) => agent.label === seat.label);
-      if (holders.length === 0) return { state: "gone" };
-      // A reviewer posts its verdict and then finishes its turn: closing it mid-turn would cut that turn off, so it waits for the next look.
-      if (holders.some((agent) => agent.status === "working")) return { state: "busy" };
-      // The checkout is kept: a head that moves re-points it, and the next reviewer for this seat uses it.
-      return closeAll(pr, seat.label);
-    },
-    retire(pr) {
-      const seat = seatOf(pr);
-      if ("refusal" in seat) return seat;
-      const { wake } = reviewerGate();
-      const agents = listed();
-      if (agents === null) return { refusal: `no retire for ${pr}: herdr did not list the ${session} session` };
-      const holders = agents.filter((agent) => agent.label === seat.label);
-      if (holders.some((agent) => agent.status === "working")) return { refusal: `no retire for ${pr}: ${seat.label} is still working, and is retired once it is not` };
-      // The workspaces first, since nothing may be reading the tree when it goes; the checkout only once every workspace under the label has closed.
-      if (holders.length > 0) {
-        const closed = closeAll(pr, seat.label);
-        if ("refusal" in closed) return closed;
-      }
-      const path = wake.reviewCheckoutPath(seat.label);
-      const uncommitted = uncommittedOf(path);
-      if ("refusal" in uncommitted) return { refusal: `no retire for ${pr}: ${uncommitted.refusal}` };
-      const head = heads.get(seat.label) ?? "an unrecorded head";
-      const left = removeCheckout({ pr: seat.number, session: seat.label, key: seat.key });
-      if (left !== null) return { refusal: `no retire for ${pr}: ${left}` };
-      heads.delete(seat.label);
-      // The discard is reported only once it has happened: a removal that fails keeps the tree and says nothing was discarded.
-      return { retired: true, report: discardReport({ label: seat.label, pr, head, path, paths: uncommitted.paths }) };
-    },
-    listedPulls() {
-      return (listed() ?? []).flatMap((agent) => {
-        const instance = reviewerInstance(agent.label);
-        const repository = instance === null ? null : repositoryOfKey(instance.key);
-        return instance === null || repository === null ? [] : [`https://github.com/${repository}/pull/${instance.number}`];
-      });
-    },
+    repostVerdict: (ref, file) => repostReviewerVerdict(seams, ref, file),
+    reprompt: (ref) => repromptReviewer(seams, ref),
+    close: (ref) => closeReviewer(seams, ref),
+    retire: (pr) => retireReviewer(seams, pr),
+    listedPulls: () => listedPullUrls(seams),
   };
+}
+
+/** The seams `atomicReviewerPort` runs through, each as the factory resolved it, defaults included. */
+type AtomicSeams = Required<Parameters<typeof atomicReviewerPort>[0]>;
+
+/** The herdr call the gate's functions make: the org's session is retargeted to the tickets' session here, and nothing else about the call changes. */
+function herdrOf(seams: AtomicSeams): (args: string[]) => string {
+  return (args) => seams.run(args[0] === "--session" && args[1] === ORG_SESSION ? ["--session", seams.session, ...args.slice(2)] : args);
+}
+
+/** The agents herdr lists in the tickets' session, or null when it lists none it can read. */
+function listedOf(seams: AtomicSeams): ListedAgent[] | null {
+  return readAgents(seams.run, { session: seams.session });
+}
+
+/** The gate's own verdict prompt, for a seat's repository, sent to the seat's agent: the same words the gate sends a reviewer for a ready pull request. */
+function sendPrompt(seams: AtomicSeams, seat: { label: string; key: string }, state: ReviewState, head: string): { sent: true } | { refusal: string } {
+  const words = reviewerGate().orders.awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, reviewerGate().orders.reviewHeadsOf(state.view, head, "settled"));
+  try {
+    seams.run(["--session", seams.session, "agent", "prompt", seat.label, words]);
+    return { sent: true };
+  } catch (err) {
+    return { refusal: err instanceof Error ? err.message.split("\n")[0] : String(err) };
+  }
+}
+
+/** Closes every workspace under a seat's label, as the gate's teardown does; a refusal names what would not close. */
+function closeAll(seams: AtomicSeams, pr: string, label: string): Readonly<{ state: "closed" }> | Readonly<{ refusal: string }> {
+  const problems: string[] = [];
+  const closed = reviewerGate().wake.closeReviewer(label, { run: herdrOf(seams), warn: (line) => problems.push(line) });
+  return closed ? { state: "closed" } : { refusal: `no close for ${pr}: ${problems.join(" ") || `${label} would not close`}` };
+}
+
+/**
+ * The uncommitted paths in a checkout, none when it is gone. A `status` that fails is a refusal: a tree that could not be read is kept, never removed.
+ */
+function uncommittedOf(seams: AtomicSeams, path: string): { paths: string[] } | { refusal: string } {
+  if (!seams.exists(path)) return { paths: [] };
+  try {
+    return { paths: seams.uncommittedPaths(path) };
+  } catch (err) {
+    return { refusal: `the changes in ${path} could not be read, so it is kept (${firstLine(err)})` };
+  }
+}
+
+function liveReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): boolean {
+  const seat = seatOf(pr);
+  return !("refusal" in seat) && seams.heads.get(seat.label) === head && (listedOf(seams)?.some((agent) => agent.label === seat.label) ?? false);
+}
+
+function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<{ label: string }> | Readonly<{ refusal: string }> {
+  const seat = seatOf(pr);
+  if ("refusal" in seat) return seat;
+  const { trust } = reviewerGate();
+  const state = readReviewState(pr, seams.gh, seams.declared);
+  if (state === null) return { refusal: `no reviewer for ${pr}: the pull request could not be read` };
+  if (state.trust !== trust.INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
+  if (state.head !== head) return { refusal: `no reviewer for ${pr}: its head moved to ${state.head}, so ${head} is no longer to be reviewed` };
+  if (!state.settled) return { refusal: `no reviewer for ${pr}: its checks at ${head} have not settled green` };
+  const agents = listedOf(seams);
+  if (agents === null) return { refusal: `no reviewer for ${pr}: herdr did not list the ${seams.session} session` };
+  // A reviewer still holding the label is one for an earlier head: its workspace is closed before the next one starts under the same label.
+  const stale = agents.some((agent) => agent.label === seat.label);
+  if (stale) closeWorkspace(seams.run, seams.session, seat.label);
+  const tree = seams.checkout({ pr: seat.number, session: seat.label, trust: trust.INSIDE });
+  if ("refusal" in tree) return tree;
+  const started = seams.spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
+    agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(seams), cwd: tree.path });
+  if ("refusal" in started) return started;
+  const prompted = sendPrompt(seams, seat, state, head);
+  if ("refusal" in prompted) return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
+  seams.heads.set(seat.label, head);
+  return { label: seat.label };
+}
+
+function settledReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): ReviewerSettled {
+  const seat = seatOf(pr);
+  if ("refusal" in seat || seams.heads.get(seat.label) !== head) return "gone";
+  const agents = listedOf(seams);
+  // herdr did not say what is running, so the reviewer is working as far as anyone can tell: nothing is said of it on a guess.
+  if (agents === null) return "working";
+  const holders = agents.filter((agent) => agent.label === seat.label);
+  if (holders.length === 0) return "gone";
+  return holders.every((agent) => ENDED_STATUSES.includes(agent.status)) ? "ended" : "working";
+}
+
+function repostReviewerVerdict(seams: AtomicSeams, { pr, head }: ReviewerRef, file: string): RepostAnswer {
+  const seat = seatOf(pr);
+  if ("refusal" in seat) return { refusal: seat.refusal, final: true };
+  const word = verdictWordOf(file, head);
+  if (word === null) return { refusal: `the verdict file ${file} does not open with a verdict for ${head.slice(0, 8)}`, final: true };
+  const tree = seams.checkoutOf(seat.label);
+  // The token first: the door posts as the reviewer App, and a token that is stale or missing is the failure this repost is for.
+  const minted = seams.mint(tree);
+  if (minted !== null) return { refusal: minted, final: false };
+  try {
+    seams.door(reviewerGate().doorPath.reviewerDoorPath(), [String(seat.number), word, file], reviewerGate().wake.reviewerEnvironment(seat.label, {}, tree));
+    return { posted: true };
+  } catch (err) {
+    const status = (err as { status?: number | null }).status ?? null;
+    return { refusal: doorReason(err, status), final: status !== null && FINAL_DOOR_EXITS.includes(status) };
+  }
+}
+
+function repromptReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): PromptAnswer {
+  const seat = seatOf(pr);
+  if ("refusal" in seat) return seat;
+  const state = readReviewState(pr, seams.gh, seams.declared);
+  if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
+  const sent = sendPrompt(seams, seat, state, head);
+  return "refusal" in sent ? { refusal: `no reprompt for ${pr}: ${sent.refusal}` } : { prompted: true };
+}
+
+function closeReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): CloseAnswer {
+  const seat = seatOf(pr);
+  if ("refusal" in seat) return seat;
+  if (seams.heads.get(seat.label) !== head) return { refusal: `no close for ${pr}: ${seat.label} was not started for ${head}` };
+  const agents = listedOf(seams);
+  if (agents === null) return { refusal: `no close for ${pr}: herdr did not list the ${seams.session} session` };
+  const holders = agents.filter((agent) => agent.label === seat.label);
+  if (holders.length === 0) return { state: "gone" };
+  // A reviewer posts its verdict and then finishes its turn: closing it mid-turn would cut that turn off, so it waits for the next look.
+  if (holders.some((agent) => agent.status === "working")) return { state: "busy" };
+  // The checkout is kept: a head that moves re-points it, and the next reviewer for this seat uses it.
+  return closeAll(seams, pr, seat.label);
+}
+
+function retireReviewer(seams: AtomicSeams, pr: string): RetireAnswer {
+  const seat = seatOf(pr);
+  if ("refusal" in seat) return seat;
+  const { wake } = reviewerGate();
+  const agents = listedOf(seams);
+  if (agents === null) return { refusal: `no retire for ${pr}: herdr did not list the ${seams.session} session` };
+  const holders = agents.filter((agent) => agent.label === seat.label);
+  if (holders.some((agent) => agent.status === "working")) return { refusal: `no retire for ${pr}: ${seat.label} is still working, and is retired once it is not` };
+  // The workspaces first, since nothing may be reading the tree when it goes; the checkout only once every workspace under the label has closed.
+  if (holders.length > 0) {
+    const closed = closeAll(seams, pr, seat.label);
+    if ("refusal" in closed) return closed;
+  }
+  const path = wake.reviewCheckoutPath(seat.label);
+  const uncommitted = uncommittedOf(seams, path);
+  if ("refusal" in uncommitted) return { refusal: `no retire for ${pr}: ${uncommitted.refusal}` };
+  const head = seams.heads.get(seat.label) ?? "an unrecorded head";
+  const left = seams.removeCheckout({ pr: seat.number, session: seat.label, key: seat.key });
+  if (left !== null) return { refusal: `no retire for ${pr}: ${left}` };
+  seams.heads.delete(seat.label);
+  // The discard is reported only once it has happened: a removal that fails keeps the tree and says nothing was discarded.
+  return { retired: true, report: discardReport({ label: seat.label, pr, head, path, paths: uncommitted.paths }) };
+}
+
+function listedPullUrls(seams: AtomicSeams): string[] {
+  return (listedOf(seams) ?? []).flatMap((agent) => {
+    const instance = reviewerInstance(agent.label);
+    const repository = instance === null ? null : repositoryOfKey(instance.key);
+    return instance === null || repository === null ? [] : [`https://github.com/${repository}/pull/${instance.number}`];
+  });
 }
 
 /** The reviewer's token mint in a checkout, as the gate's own refresh makes it (A11-83): the reason it cannot, or null when the reviewer has a token. */

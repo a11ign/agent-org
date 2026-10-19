@@ -138,27 +138,27 @@ function sendHtml(response: ServerResponse, path: string): void {
   response.end(readFileSync(path, "utf8"));
 }
 
+/** What a request that has not paired may do: see the pairing page, and trade a live code at `POST /pair` for a session of its own. */
+async function pairBrowser(request: IncomingMessage, response: ServerResponse, path: string, { port, pairing, sessions }: Readonly<{ port: number; pairing: Pairing; sessions: BrowserSessions }>): Promise<void> {
+  if (request.method === "GET" && path === "/") return sendHtml(response, PAIR_PAGE);
+  if (request.method !== "POST" || path !== "/pair") {
+    return sendJson(response, 401, { error: `this browser is not paired: open http://127.0.0.1:${port}/ and type the code agent-org ticket:pair prints` });
+  }
+  let body: Json;
+  try {
+    body = await readJson(request, PAIR_BODY_BYTES);
+  } catch (err) {
+    // Not a pairing request at all, so it spends none of the live code's tries.
+    return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
+  }
+  if (!pairing.redeem(body.code)) return sendJson(response, 401, { error: "That code is wrong, used or out of date. Run agent-org ticket:pair for a new one." });
+  sendJson(response, 200, { paired: true }, { "Set-Cookie": `${COOKIE}=${sessions.open()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}` });
+}
+
 /** The request handler, with every dependency named, so a test drives it without a socket. */
 export function createUi(deps: UiDeps) {
   const { port, key, sessions, read, connections } = deps;
   const pairing = deps.pairing ?? createPairing();
-
-  /** What a request that has not paired may do: see the pairing page, and trade a live code at `POST /pair` for a session of its own. */
-  async function pairBrowser(request: IncomingMessage, response: ServerResponse, path: string): Promise<void> {
-    if (request.method === "GET" && path === "/") return sendHtml(response, PAIR_PAGE);
-    if (request.method !== "POST" || path !== "/pair") {
-      return sendJson(response, 401, { error: `this browser is not paired: open http://127.0.0.1:${port}/ and type the code agent-org ticket:pair prints` });
-    }
-    let body: Json;
-    try {
-      body = await readJson(request, PAIR_BODY_BYTES);
-    } catch (err) {
-      // Not a pairing request at all, so it spends none of the live code's tries.
-      return sendJson(response, 400, { error: String((err as Error)?.message ?? err) });
-    }
-    if (!pairing.redeem(body.code)) return sendJson(response, 401, { error: "That code is wrong, used or out of date. Run agent-org ticket:pair for a new one." });
-    sendJson(response, 200, { paired: true }, { "Set-Cookie": `${COOKIE}=${sessions.open()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}` });
-  }
 
   /** A paired browser's call to a connection's instance. A script holding the board key is not passed on. */
   async function proxyConnection(request: IncomingMessage, response: ServerResponse, by: "key" | "browser", name: string, path: string): Promise<void> {
@@ -210,7 +210,7 @@ export function createUi(deps: UiDeps) {
     if (refused !== null) return sendJson(response, 403, { error: refused });
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     const by = pairedBy(request, key, sessions);
-    if (by === null) return pairBrowser(request, response, url.pathname);
+    if (by === null) return pairBrowser(request, response, url.pathname, { port, pairing, sessions });
     // A code pairs a new browser, so only the key makes one. A browser's session, which can reach another port's server, cannot.
     if (request.method === "POST" && url.pathname === "/api/pair-code") {
       if (by !== "key") return sendJson(response, 403, { error: "a pairing code is made with the board key: run agent-org ticket:pair" });

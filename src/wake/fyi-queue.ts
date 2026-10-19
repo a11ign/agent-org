@@ -973,6 +973,25 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
   }
 }
 
+/** `deliver`'s options: the seams a caller may replace, on top of the reviewer's own (`Partial<ReviewerDeps>`). */
+type DeliverDeps = {
+  run?: (args: string[]) => string; record?: (key: string, recipient?: string, options?: { noClear?: boolean; }, at?: number) => void;
+  /** agent-org#1392: writes the RESET that ends a capped cause's run when its absent seat is started again (see `isAbsentReviewerSeat`). */
+  endRun?: (causeKey: string, at: number) => void;
+  /** agent-org#1307: the account's pause for this tick; while it holds, no Claude seat is started, claimed for or prompted, and no `claude -p` run is served. */
+  accountPause?: AccountLimit | null;
+  serve?: (order: { causeKey: string; }) => ServedRecord | null;
+  counts?: Map<string, number>; ineligibleReason?: (label: string) => string | null;
+  env?: Record<string, string>; registerSpawn?: (role: string) => void; drained?: readonly string[];
+  claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer; claimRefused?: ClaimRefused; oneShot?: OrchestratorOneShot; ceoOneShot?: CeoOneShot;
+  memory?: () => string | null; hostLoad?: () => HostLoad; launch?: LaunchFacts; unavailable?: (label: string) => string | null;
+  sleep?: (ms: number) => void; contextRoot?: string; clock?: OrderClock;
+  relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>; now?: () => number;
+  claimOrders?: ClaimOrders; toolchain?: ToolchainGate;
+  /** agent-org#1348: keeps each live reviewer's token past its margin, every tick; returns the reason each refresh failed, labelled. */
+  reviewerRefresh?: (live: { label: string; status: string; }[]) => string[];
+} & Partial<ReviewerDeps>;
+
 /**
  * Deliver each order, and say what happened to every one of them.
  *
@@ -1012,23 +1031,7 @@ function noteClaimOrders(claimOrders: ClaimOrders | undefined, { gateOrder, targ
 export function deliver(orders: readonly { session: string; causeKey: string; prompt: string; cause?: string; title?: string; replaces?: { branch: string; }[]; resume?: boolean; outageNow?: boolean; startFresh?: boolean; briefRole?: string; trust?: ReviewTrust; }[], agents: { label: string; status: string; }[], roster: string[],
   { run = defaultRun, record, counts, ineligibleReason, env, registerSpawn, drained, claimable, claimer, memory, hostLoad, claimRefused, oneShot, ceoOneShot,
     launch, reviewerEnv, reviewerToken, registerReviewer, checkout, registry, unavailable, sleep, contextRoot, codexConfig, clock, relane, goneSeats, claimOrders, toolchain,
-    reviewerRefresh, now = Date.now, serve, accountPause, endRun }: {
-          run?: (args: string[]) => string; record?: (key: string, recipient?: string, options?: { noClear?: boolean; }, at?: number) => void;
-          /** agent-org#1392: writes the RESET that ends a capped cause's run when its absent seat is started again (see `isAbsentReviewerSeat`). */
-          endRun?: (causeKey: string, at: number) => void;
-          /** agent-org#1307: the account's pause for this tick; while it holds, no Claude seat is started, claimed for or prompted, and no `claude -p` run is served. */
-          accountPause?: AccountLimit | null;
-          serve?: (order: { causeKey: string; }) => ServedRecord | null;
-          counts?: Map<string, number>; ineligibleReason?: (label: string) => string | null;
-          env?: Record<string, string>; registerSpawn?: (role: string) => void; drained?: readonly string[];
-          claimable?: (order: { causeKey: string; startFresh?: boolean; }) => string | null; claimer?: SpawnClaimer; claimRefused?: ClaimRefused; oneShot?: OrchestratorOneShot; ceoOneShot?: CeoOneShot;
-          memory?: () => string | null; hostLoad?: () => HostLoad; launch?: LaunchFacts; unavailable?: (label: string) => string | null;
-          sleep?: (ms: number) => void; contextRoot?: string; clock?: OrderClock;
-          relane?: { deferredSince: Map<string, number>; now: number; }; goneSeats?: ReadonlyMap<string, string>; now?: () => number;
-          claimOrders?: ClaimOrders; toolchain?: ToolchainGate;
-          /** agent-org#1348: keeps each live reviewer's token past its margin, every tick; returns the reason each refresh failed, labelled. */
-          reviewerRefresh?: (live: { label: string; status: string; }[]) => string[];
-      } & Partial<ReviewerDeps> = {}): { sent: string[]; refused: string[]; stuck: string[]; outaged: string[]; settled: string[]; goneSeats: Map<string, string>; tokenFailures: string[]; } {
+    reviewerRefresh, now = Date.now, serve, accountPause, endRun }: DeliverDeps = {}): { sent: string[]; refused: string[]; stuck: string[]; outaged: string[]; settled: string[]; goneSeats: Map<string, string>; tokenFailures: string[]; } {
   const sent = [];
   const refused = [];
   const settled: string[] = [];
@@ -1047,11 +1050,7 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
   const spawnRun = starts.timed(run);
   // #1311: THE OUTSIDE VERDICTS ARE POSTED FIRST, from the panes their reviewers wrote, so a verdict is not held behind this tick's other orders. A
   // failure to read them is one line, not a stopped tick: the verdict is posted on a later tick, since the block stays in the pane.
-  try {
-    settled.push(...postOutsideVerdictsOf(registry?.() ?? {}, run));
-  } catch (err) {
-    settled.push(`outside verdicts not read this tick: ${firstLine(err)}`);
-  }
+  settled.push(...outsideVerdictLines(registry, run));
   for (const gateOrder of orders) {
     // A REPEAT ORDER TO A LIVE WORKER'S CLAIM IS NUMBERED BEFORE IT IS ROUTED (#4070), and the cap's order is the one that is routed, so everything below reads `order`.
     const continuation = continuationOf(gateOrder, live, roster, claimOrders);
@@ -1124,9 +1123,7 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
     // session this tick STARTED is not in `live` at all, so it is added rather than updated -- without
     // this, the next refused order in the same tick would find that role absent and start a second
     // process under a label herdr has just taken.
-    const entry = live.find((a) => a.label === target.label);
-    if (entry) entry.status = "working";
-    else live.push({ label: target.label, status: "working" });
+    markWorking(live, target.label);
     // THE TIME THIS ORDER LANDED IS WHAT THE NEXT ONE'S KEEP-OR-CLEAR READS (#3440), so it is written only after the prompt did.
     if (!target.profile) clock?.recordOrder(target.label);
     // A POOL ORDER'S RECIPIENT IS RECORDED (#2226): its causeKey names `engineers`, so the ledger alone could
@@ -1144,6 +1141,24 @@ export function deliver(orders: readonly { session: string; causeKey: string; pr
       : `${target.label} <- ${order.causeKey}${noClear ? NO_CLEAR_NOTE : ""}${note === null ? "" : ` [${note}]`}${continuationNote(continuation)}`);
   }
   return { sent, refused, stuck, outaged, settled, goneSeats: gone, tokenFailures };
+}
+
+/**
+ * #1311: THE OUTSIDE VERDICTS THIS TICK POSTS, or the one line that says they could not be read. The read is `registry`'s, so a throw from it is caught here too.
+ */
+function outsideVerdictLines(registry: ReviewerDeps["registry"], run: (args: string[]) => string): string[] {
+  try {
+    return postOutsideVerdictsOf(registry?.() ?? {}, run);
+  } catch (err) {
+    return [`outside verdicts not read this tick: ${firstLine(err)}`];
+  }
+}
+
+/** A seat this tick woke is working NOW: it is set to `working` in `live`, or added to it when this tick started it. */
+function markWorking(live: { label: string; status: string; }[], label: string) {
+  const entry = live.find((a) => a.label === label);
+  if (entry) entry.status = "working";
+  else live.push({ label, status: "working" });
 }
 
 /**

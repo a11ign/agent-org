@@ -403,6 +403,73 @@ export function finishTick({ handed, sent, gateRefused, stuck, outaged, ledgerPa
   process.exit(EXIT.QUIET);
 }
 
+/** A session's role brief, or `null` when it has none on disk. */
+function readRoleBrief(session: string): string | null {
+  try {
+    return readFileSync(roleBriefPath(`${session}.md`).absolute, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Each run that ended is marked as a reset in the ledger, before the counts are read (see the caller). */
+function markEndedRuns(causeKeys: string[], emittedPath: string, ledgerPath: string) {
+  for (const key of endedRuns(causeKeys, emittedPath)) {
+    writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
+  }
+}
+
+/** A quiet tick ends here, with nothing to deliver and no digest item an hour old; otherwise this returns. */
+function exitIfNothingToDeliver(gateOrders: ReturnType<typeof parseOrders>, early: ReturnType<typeof foldFyis>, { ledgerPath, digestFile }: { ledgerPath: string; digestFile: string; }) {
+  // #3510: THE QUIET TICK IS WHERE A DEFERRAL THAT WENT AWAY ENDS (the order stopped being true, so the gate emits nothing), and `finishTick` is never reached from here: without this the span is
+  // logged by whichever later tick has orders, with ITS clock, and `wake-deferred` keeps a key nobody defers, which would give a re-deferral months on the old start. Nothing is deferred when nothing is offered.
+  if (nothingToDeliver(gateOrders, [...early.deliver, ...early.expired]) && !digestDue(readDigest(digestFile), Date.now())) {
+    deferralAges(`${dirname(ledgerPath)}/wake-deferred`, [], Date.now(), { ledgerPath });
+    process.exit(EXIT.QUIET);
+  }
+}
+
+/**
+ * The handoffs still waiting to be delivered: the ones for a seat that has ended or is unknown are settled and dropped first, and the FYIs held
+ * or expired are sorted out. The backlog is said here, before this tick delivers anything.
+ */
+function queuedWorkOf(handoffs: ReturnType<typeof readHandoffs>, agents: NonNullable<ReturnType<typeof readAgents>>,
+  { roster, ledgerPath, queuePath, accountPause }: { roster: string[]; ledgerPath: string; queuePath: string; accountPause: AccountLimit | null; }) {
+  // agent-org#1416: AN ORDER FOR A SESSION THE ORG HAS NOT KNOWN FOR A BOUND IS DROPPED HERE, before it reaches the backlog, the stale report or the delivery,
+  // which is where it was named `UNDELIVERED` on every tick. Never while the account is paused (`accountPause`): a paused seat is waiting, not unknown.
+  const endedSettled = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
+  const unknownDropped = dropUnknownHandoffs(endedSettled, { agents, roster, isLead: isLeadSeat, holder: holderOf, post: guardedGh, queuePath, paused: accountPause !== null });
+  for (const line of unknownDropped.lines) process.stderr.write(line);
+  const queued = unknownDropped.kept;
+  // #3562: AN FYI NEVER WAKES A LEAD SEAT. It is held until the seat's next real order and rides in it, and one past the bound is dropped here, before it
+  // can reach the backlog the tick reports to `ceo`: an order that waits BY DESIGN is not a stalled one.
+  const fyis = foldFyis(queued);
+  dropExpiredFyis(fyis.expired, queuePath);
+  const waiting = fyis.deliver;
+  const backlog = handoffBacklog(waiting);
+  for (const line of backlogReport(backlog, agents)) process.stderr.write(line);
+  return { waiting, fyis, backlog };
+}
+
+/**
+ * The `record` a delivery writes through: its ledger line, the FYIs it rides retired, and a held digest item settled when the order carrying it is
+ * delivered to the seat it was held for.
+ */
+function deliveryRecorder({ ledgerPath, queuePath, digestFile, rides, digestRides }: {
+  ledgerPath: string; queuePath: string; digestFile: string;
+  rides: Awaited<ReturnType<typeof routedTodo>>["rides"]; digestRides: Awaited<ReturnType<typeof routedTodo>>["digestRides"];
+}) {
+  /** @param [at] the instant `deliver` named in the order's header (#4068) */
+  return (key: string, recipient?: string, { noClear = false }: { noClear?: boolean; } = {}, at: number = Date.now()) => {
+    writeFileSync(ledgerPath, ledgerLine(at, key, recipient, { noClear }), { flag: "a" });
+    retireRiddenFyis(rides.get(key), recipient, queuePath);
+    // A held order is delivered only when the order that carried it is, and only to the seat it was held for (a re-route carries nothing away).
+    if (recipient === undefined) {
+      settleRidden(key, digestRides.get(key), { digestPath: digestFile, ledgerAppend: (causeKey) => writeFileSync(ledgerPath, ledgerLine(at, causeKey), { flag: "a" }) });
+    }
+  };
+}
+
 async function main() {
   refuseUnknownFlags(["--ledger", "--roster", "--cycles", "--worktrees-dir"], {
     entry: import.meta.url, command: "node packages/agent-org/src/wake.ts",
@@ -431,12 +498,7 @@ async function main() {
   const early = foldFyis(handoffs);
   // #4385: A HELD DIGEST ITEM A HOUR OLD IS WORK EVEN ON A QUIET TICK -- the gate's tick is what flushes it, and there is no other timer.
   const digestFile = digestPathFrom(ledgerPath);
-  if (nothingToDeliver(gateOrders, [...early.deliver, ...early.expired]) && !digestDue(readDigest(digestFile), Date.now())) {
-    // #3510: THE QUIET TICK IS WHERE A DEFERRAL THAT WENT AWAY ENDS (the order stopped being true, so the gate emits nothing), and `finishTick` is never reached from here: without this the span is
-    // logged by whichever later tick has orders, with ITS clock, and `wake-deferred` keeps a key nobody defers, which would give a re-deferral months on the old start. Nothing is deferred when nothing is offered.
-    deferralAges(`${dirname(ledgerPath)}/wake-deferred`, [], Date.now(), { ledgerPath });
-    process.exit(EXIT.QUIET);
-  }
+  exitIfNothingToDeliver(gateOrders, early, { ledgerPath, digestFile });
 
   // WHAT WAS ALREADY WAITING, BEFORE THIS TICK DELIVERS ANYTHING (#2102). Reported first and reported whatever
   // happens next, because the backlog is a fact about the org that every session running a tick should
@@ -458,19 +520,7 @@ async function main() {
     haikuDefault: { on: haikuDefaultOn({ switchesPath: decisionSwitchesPath(PRIMARY_CHECKOUT) }), refused: (label) => instanceRefused(label) }, accountPause });
   for (const line of escalated.lines) process.stdout.write(`${line}\n`);
 
-  // agent-org#1416: AN ORDER FOR A SESSION THE ORG HAS NOT KNOWN FOR A BOUND IS DROPPED HERE, before it reaches the backlog, the stale report or the delivery,
-  // which is where it was named `UNDELIVERED` on every tick. Never while the account is paused (`accountPause`): a paused seat is waiting, not unknown.
-  const endedSettled = settleEndedOrders(handoffs, agents, { queuePath, ledgerPath });
-  const unknownDropped = dropUnknownHandoffs(endedSettled, { agents, roster, isLead: isLeadSeat, holder: holderOf, post: guardedGh, queuePath, paused: accountPause !== null });
-  for (const line of unknownDropped.lines) process.stderr.write(line);
-  const queued = unknownDropped.kept;
-  // #3562: AN FYI NEVER WAKES A LEAD SEAT. It is held until the seat's next real order and rides in it, and one past the bound is dropped here, before it
-  // can reach the backlog the tick reports to `ceo`: an order that waits BY DESIGN is not a stalled one.
-  const fyis = foldFyis(queued);
-  dropExpiredFyis(fyis.expired, queuePath);
-  const waiting = fyis.deliver;
-  const backlog = handoffBacklog(waiting);
-  for (const line of backlogReport(backlog, agents)) process.stderr.write(line);
+  const { waiting, fyis, backlog } = queuedWorkOf(handoffs, agents, { roster, ledgerPath, queuePath, accountPause });
   // #3448: AN ORDER THAT HAS WAITED ON A BUSY SESSION PAST THE BOUND IS TOLD TO `ceo`, and it is told before this tick delivers: it rides `orders` like any gate order.
   const withStalls = [...orders, ...orderStallOrdersNow({ ledgerPath, emitted: new Set(orders.map((o) => o.causeKey)), backlog }), ...panePromptOrdersNow({ ledgerPath })];
 
@@ -495,21 +545,11 @@ async function main() {
     // #4631: WHAT THE PROVIDER IS TOLD ABOUT AN ORDER BESIDE ITS CAUSE. Asked of every gate order and not of the candidates, so a red main whose order went out minutes ago still reads red.
     facts: { mainRed: withStalls.some(namesRedMain), deliveries: readLedgerDeliveries(ledgerPath) },
   });
-  /** @param [at] the instant `deliver` named in the order's header (#4068) */
-  const record = (key: string, recipient?: string, { noClear = false }: { noClear?: boolean; } = {}, at: number = Date.now()) => {
-    writeFileSync(ledgerPath, ledgerLine(at, key, recipient, { noClear }), { flag: "a" });
-    retireRiddenFyis(rides.get(key), recipient, queuePath);
-    // A held order is delivered only when the order that carried it is, and only to the seat it was held for (a re-route carries nothing away).
-    if (recipient === undefined) {
-      settleRidden(key, digestRides.get(key), { digestPath: digestFile, ledgerAppend: (causeKey) => writeFileSync(ledgerPath, ledgerLine(at, causeKey), { flag: "a" }) });
-    }
-  };
+  const record = deliveryRecorder({ ledgerPath, queuePath, digestFile, rides, digestRides });
 
   // A RUN THAT ENDED IS MARKED BEFORE THE COUNTS ARE READ, so a cause that went away and came back is
   // offered again rather than being held at a cap it earned under conditions that no longer hold.
-  for (const key of endedRuns(withStalls.map((o) => o.causeKey), emittedPath)) {
-    writeFileSync(ledgerPath, `${Date.now()}\t${RESET}\t${key}\n`, { flag: "a" });
-  }
+  markEndedRuns(withStalls.map((o) => o.causeKey), emittedPath, ledgerPath);
 
   const spares = sparePathsFrom(ledgerPath);
   const drained = drainNow(spares.cycles);
@@ -523,13 +563,7 @@ async function main() {
   const served = await serveOrdersByRun(ready, {
     ledgerPath, projectDir: PRIMARY_CHECKOUT, gh: guardedGh,
     scopeOf: (key) => (key === "" ? REPO : trackerRepositoryOf(key)),
-    roleBrief: (session) => {
-      try {
-        return readFileSync(roleBriefPath(`${session}.md`).absolute, "utf8");
-      } catch {
-        return null;
-      }
-    },
+    roleBrief: readRoleBrief,
     decisionDeps: { host, switchesPath: decisionSwitchesPath(PRIMARY_CHECKOUT), logPath: decisionLogPathFrom(ledgerPath) }, accountPause,
   });
   // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.

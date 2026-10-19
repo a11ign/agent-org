@@ -220,6 +220,26 @@ export function claimStallTick({ io = LIVE_HOST_READS, repo = REPO_CHECKOUT, now
   }
 }
 
+/** Each tracker with its claimed rows, or the reason its rows were not read; an unread tracker is said here, once per tick. */
+function trackerUnits(trackers: TrackerClaims[], log: (line: string) => void) {
+  return trackers.map((tracker) => {
+    const heldRows = tracker.rows === null ? [] : tracker.rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
+    const unread = tracker.rows === null ? "its open rows could not be read"
+      : heldRows.length > 0 && tracker.claimedComments === null ? "the comments on its claimed rows could not be read" : null;
+    if (unread !== null) log(`claim-stall: tracker \`${tracker.key}\` (${tracker.repo}): ${unread} -- its claimed rows were NOT evaluated this tick (UNREAD, which is not "no claim"; its nudge memory is kept).\n`);
+    return { tracker, held: heldRows, unread };
+  });
+}
+
+/** `evaluateClaims`'s inputs: the rows and their comments, the reads and seams, and the home tracker's facts. */
+type EvaluateClaimsInputs = {
+  rows: any[]; claimedComments: any[] | null; openPrs: any[]; mergedPrs: any[] | null; restartAt?: number | null;
+  elsewhere?: import("../claim-stall/claim-stalled.ts").ElsewherePrs; agents?: { label: string; status: string; }[] | null; agentSessions?: Map<string, string> | null;
+  ledger?: () => string; io: import("../claim-stall/claim-stalled.ts").HostReads; repo: string; now: number; stateDir: string;
+  log: (line: string) => void; read: typeof readStallState; write: typeof writeStallState; onFacts?: OnClaimFacts; record?: typeof recordStalledNudges;
+  trackers?: TrackerClaims[]; labelEventsOf?: LabelEventsOf; waitFacts?: WaitFacts | null;
+};
+
 /**
  * `claimStallTick`'s body, with every default resolved by its caller. NEVER CALLED WITHOUT THE CATCH ABOVE: a throw here is the tick's to report.
  *
@@ -230,13 +250,7 @@ export function claimStallTick({ io = LIVE_HOST_READS, repo = REPO_CHECKOUT, now
  * which is how `wake.ts` reads the holder's `session:` label, comments and declines in THAT tracker's repository and not the home one's.
  * `onFacts` stays the home tracker's: `blockerClearedOrders` keys those facts by bare row number.
  */
-function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, agentSessions, ledger, io, repo, now, stateDir, log, read, write, onFacts, record = recordStalledNudges, trackers = [], labelEventsOf, waitFacts = null }: {
-        rows: any[]; claimedComments: any[] | null; openPrs: any[]; mergedPrs: any[] | null; restartAt?: number | null;
-        elsewhere?: import("../claim-stall/claim-stalled.ts").ElsewherePrs; agents?: { label: string; status: string; }[] | null; agentSessions?: Map<string, string> | null;
-        ledger?: () => string; io: import("../claim-stall/claim-stalled.ts").HostReads; repo: string; now: number; stateDir: string;
-        log: (line: string) => void; read: typeof readStallState; write: typeof writeStallState; onFacts?: OnClaimFacts; record?: typeof recordStalledNudges;
-        trackers?: TrackerClaims[]; labelEventsOf?: LabelEventsOf; waitFacts?: WaitFacts | null;
-    }) {
+function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, restartAt, agents, agentSessions, ledger, io, repo, now, stateDir, log, read, write, onFacts, record = recordStalledNudges, trackers = [], labelEventsOf, waitFacts = null }: EvaluateClaimsInputs) {
   const held = rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
   const homeUnread = held.length > 0 && claimedComments === null;
   if (homeUnread) {
@@ -244,13 +258,7 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
     onFacts?.(null);
   }
   // each other tracker: its claimed rows, or why it was not read (said, once per tick, and its memory is kept below)
-  const units = trackers.map((tracker) => {
-    const heldRows = tracker.rows === null ? [] : tracker.rows.filter((r) => labelsOf(r).includes(CLAIM_LABEL));
-    const unread = tracker.rows === null ? "its open rows could not be read"
-      : heldRows.length > 0 && tracker.claimedComments === null ? "the comments on its claimed rows could not be read" : null;
-    if (unread !== null) log(`claim-stall: tracker \`${tracker.key}\` (${tracker.repo}): ${unread} -- its claimed rows were NOT evaluated this tick (UNREAD, which is not "no claim"; its nudge memory is kept).\n`);
-    return { tracker, held: heldRows, unread };
-  });
+  const units = trackerUnits(trackers, log);
   const readable = units.filter((unit) => unit.unread === null);
   if (homeUnread && readable.length === 0) return [];
   const everyHeld = [...(homeUnread ? [] : held), ...readable.flatMap((unit) => unit.held)];

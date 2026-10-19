@@ -178,7 +178,9 @@ describe("the message is ticked in place when the row's state changes, and nothi
     assert.deepEqual(run.provider.edits, []);
     assert.equal(openAsks(run.asks()).length, 1);
   });
+});
 
+describe("the message is ticked in place when the row's state changes, and nothing is sent", () => {
   test("the tick line is `sent` + `edited`, so what reads 'this key was cleared' still does, and the hourly cap does not count it", async () => {
     const run = world();
     await run.tick([3]);

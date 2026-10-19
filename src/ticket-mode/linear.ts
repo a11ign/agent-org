@@ -189,350 +189,405 @@ export function scopedQuery(scope: string): { text: string; variables: Record<st
   };
 }
 
-export function linearSource({ key, fetch: request = fetch, pick = "assigned" }: { key: string; fetch?: Fetch; pick?: PickScope }): TicketSource {
-  async function query<T>(text: string, variables: Record<string, unknown>): Promise<T> {
-    const response = await request(LINEAR_API, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: key },
-      body: JSON.stringify({ query: text, variables }),
+/** The seams every call to Linear goes through: the key, which goes only to Linear, and the `fetch` that sends it. */
+type Client = Readonly<{ key: string; request: Fetch }>;
+
+async function query<T>(client: Client, text: string, variables: Record<string, unknown>): Promise<T> {
+  const { key, request } = client;
+  const response = await request(LINEAR_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: key },
+    body: JSON.stringify({ query: text, variables }),
+  });
+  const body = await response.json().catch(() => null) as { data?: T; errors?: { message: string }[] } | null;
+  if (!response.ok || body === null || body.errors?.length) {
+    throw new Error(`Linear answered ${response.status}: ${body?.errors?.map((e) => e.message).join("; ") ?? "no JSON"}`);
+  }
+  return body.data as T;
+}
+
+/**
+ * One ticket's `fields`, or `null` for a string that is no key or a key Linear has no ticket for. It reads by team and number, so a missing
+ * ticket is an empty list: nothing hangs on the wording of an error.
+ */
+async function issue<T>(client: Client, identifier: string, fields: string): Promise<T | null> {
+  const parts = TICKET_KEY.exec(identifier);
+  if (parts === null) return null;
+  const data: { issues: { nodes: T[] } } = await query(client,
+    `query($team: String!, $number: Float!) { issues(first: 1, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${fields} } } }`,
+    { team: parts[1].toUpperCase(), number: Number(parts[2]) });
+  return data.issues.nodes[0] ?? null;
+}
+
+/** `fields` of each ticket `keys` names, by key, in one request per batch, each key an aliased read by team and number as `issue` does it. */
+async function eachIssue<T>(client: Client, keys: readonly string[], fields: string): Promise<Map<string, T>> {
+  const found = new Map<string, T>();
+  const parsed = keys.map((key) => [key, TICKET_KEY.exec(key)] as const).filter((pair): pair is readonly [string, RegExpExecArray] => pair[1] !== null);
+  for (let start = 0; start < parsed.length; start += STATE_BATCH) {
+    const batch = parsed.slice(start, start + STATE_BATCH);
+    const params = batch.map((_, i) => `$t${i}: String!, $n${i}: Float!`).join(", ");
+    const reads = batch.map((_, i) => `k${i}: issues(first: 1, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { ${fields} } }`).join(" ");
+    const variables = Object.fromEntries(batch.flatMap(([, parts], i) => [[`t${i}`, parts[1].toUpperCase()], [`n${i}`, Number(parts[2])]]));
+    const data: Record<string, { nodes: T[] }> = await query(client, `query(${params}) { ${reads} }`, variables);
+    batch.forEach(([key], i) => {
+      const [node] = data[`k${i}`]?.nodes ?? [];
+      if (node !== undefined) found.set(key, node);
     });
-    const body = await response.json().catch(() => null) as { data?: T; errors?: { message: string }[] } | null;
-    if (!response.ok || body === null || body.errors?.length) {
-      throw new Error(`Linear answered ${response.status}: ${body?.errors?.map((e) => e.message).join("; ") ?? "no JSON"}`);
+  }
+  return found;
+}
+
+/**
+ * Move the ticket to its team's state named `state`, when its state's type is one of `from`. Teams name their states differently, so a team
+ * without one of that name keeps the ticket's current state, and the returned note says so. `moved` is the state it moved from, and null when
+ * it did not move.
+ */
+async function moveTo(client: Client, identifier: string, found: Stateful, state: string, from: ReadonlySet<string>): Promise<Readonly<{ moved: StateMove | null; note: string | null }>> {
+  if (!from.has(found.state.type)) return { moved: null, note: null };
+  const target = found.team.states.nodes.find(({ name }) => name === state);
+  if (target === undefined) return { moved: null, note: `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}` };
+  await setState(client, identifier, found.id, target.id, state);
+  return { moved: { from: found.state.name, to: state }, note: null };
+}
+
+/** Set the ticket `id` to the state `stateId`, which is named `state` for the error that says so. */
+async function setState(client: Client, identifier: string, id: string, stateId: string, state: string): Promise<void> {
+  const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(client,
+    "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id, stateId });
+  // Linear can answer a mutation it did not carry out with success false and no error, so the answer is read, not assumed.
+  if (!issueUpdate.success) throw new Error(`Linear did not move ${identifier} to ${state}`);
+}
+
+/** Post `body` as a comment on the ticket `id`, which is named `identifier` for the error that says so. */
+async function postComment(client: Client, identifier: string, id: string, body: string): Promise<void> {
+  const { commentCreate }: { commentCreate: { success: boolean } } = await query(client,
+    "mutation($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success } }", { issueId: id, body });
+  if (!commentCreate.success) throw new Error(`Linear did not post a comment on ${identifier}`);
+}
+
+/**
+ * The team a new ticket goes in, by its key: the one named, else the team of the project named when that project is in exactly one team, else the
+ * only team the key's user is on. Null when none of those says, so the board refuses and names the team it needs.
+ */
+async function newTicketTeam(client: Client, named: string | null, project: string | null, mine: readonly { key: string }[]): Promise<string | null> {
+  if (named !== null) return named;
+  if (project !== null) {
+    const { projects }: { projects: { nodes: { teams: { nodes: { key: string }[] } }[] } } = await query(client,
+      "query($name: String!) { projects(filter: { name: { eq: $name } }) { nodes { teams { nodes { key } } } } }", { name: project });
+    const keys = new Set(projects.nodes.flatMap(({ teams }) => teams.nodes.map(({ key: teamKey }) => teamKey)));
+    if (keys.size === 1) return [...keys][0];
+  }
+  return mine.length === 1 ? mine[0].key : null;
+}
+
+/** The id of a label `name` that the team `team` may use: its own label, else the workspace's. Null when there is none of that name. */
+const labelIdIn = (labels: readonly { id: string; name: string; team: { key: string } | null }[], name: string, team: string): string | null => {
+  const named = labels.filter((label) => label.name === name);
+  return (named.find((label) => label.team?.key === team) ?? named.find((label) => label.team === null))?.id ?? null;
+};
+
+/**
+ * Create the ticket: `issueCreate` with the draft's own id, so a creation the tracker already made (answered "already exists") is read back as made, and
+ * never made twice. Anything else the tracker refuses is thrown.
+ */
+async function createIssue(client: Client, input: Record<string, unknown>): Promise<CreatedIssue> {
+  try {
+    const { issueCreate } = await query<{ issueCreate: { success: boolean; issue: CreatedIssue | null } }>(client,
+      `mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id ${ISSUE_FIELDS} } } }`, { input });
+    if (!issueCreate.success || issueCreate.issue === null) throw new Error(`Linear did not create ${String(input.title)}`);
+    return issueCreate.issue;
+  } catch (err) {
+    const { issue } = await query<{ issue: CreatedIssue | null }>(client, `query($id: String!) { issue(id: $id) { id ${ISSUE_FIELDS} } }`, { id: input.id }).catch(() => ({ issue: null }));
+    if (issue !== null) return issue;
+    throw err;
+  }
+}
+
+/** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
+async function attachFile(client: Client, issueId: string, path: string, title: string): Promise<void> {
+  const { request } = client;
+  const body = readFileSync(path);
+  const { fileUpload }: Upload = await query(client,
+    "mutation($contentType: String!, $filename: String!, $size: Int!) { fileUpload(contentType: $contentType, filename: $filename, size: $size) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
+    { contentType: "text/markdown", filename: title, size: body.length });
+  if (!fileUpload.success || fileUpload.uploadFile === null) throw new Error(`Linear would not take the upload of ${title}`);
+  const { uploadUrl, assetUrl, headers } = fileUpload.uploadFile;
+  // The file goes to the storage address Linear signed, without the key: the signature is the permission.
+  const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
+    ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
+  if (!put.ok) throw new Error(`the upload of ${title} was refused (${put.status})`);
+  const { attachmentCreate }: { attachmentCreate: { success: boolean } } = await query(client,
+    "mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
+    { issueId, url: assetUrl, title });
+  if (!attachmentCreate.success) throw new Error(`Linear did not attach ${title}`);
+}
+
+/** The uploads attached to a ticket. */
+async function attachedUploads(client: Client, identifier: string): Promise<{ url: string; title: string }[]> {
+  const found = await issue<Attachments>(client, identifier, ATTACHMENTS);
+  return found === null ? [] : uploadsIn(found);
+}
+
+/** The key's person: their id, and the name Linear has for them, or their email when it has none. */
+async function me(client: Client): Promise<Assignee> {
+  const { viewer }: { viewer: { id: string; name: string | null; email: string | null } } = await query(client, "query { viewer { id name email } }", {});
+  return { id: viewer.id, name: viewer.name || viewer.email || "the key's user" };
+}
+
+async function assignedTickets(client: Client, pick: PickScope): Promise<Ticket[]> {
+  const list = pickQuery(pick);
+  const tickets: Ticket[] = [];
+  let after: string | null = null;
+  do {
+    const page = list.page(await query<unknown>(client, list.text, { ...list.variables, after }));
+    tickets.push(...page.nodes.map(toTicket));
+    after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (after !== null);
+  return tickets;
+}
+
+async function addBlockersTo(client: Client, identifier: string, blockerKeys: readonly string[]): Promise<void> {
+  type Blocked = { id: string; inverseRelations: { nodes: { type: string; issue: { identifier: string } }[] } };
+  const found = await issue<Blocked>(client, identifier, "id inverseRelations { nodes { type issue { identifier } } }");
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  const already = new Set(found.inverseRelations.nodes.filter(({ type }) => type === "blocks").map(({ issue: blocker }) => blocker.identifier));
+  const missing = [...new Set(blockerKeys)].filter((key) => !already.has(key));
+  if (missing.length === 0) return;
+  const ids = await eachIssue<{ id: string }>(client, missing, "id");
+  for (const key of missing) {
+    const blocker = ids.get(key);
+    if (blocker === undefined) throw new Error(`Linear has no ticket ${key}`);
+    // "A blocks B" is stored on A, with B as the related issue: the same relation `blockers` reads back from B.
+    const { issueRelationCreate }: { issueRelationCreate: { success: boolean } } = await query(client,
+      "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
+      { issueId: blocker.id, relatedIssueId: found.id });
+    if (!issueRelationCreate.success) throw new Error(`Linear did not record that ${key} blocks ${identifier}`);
+  }
+}
+
+async function blockersOf(client: Client, keys: readonly string[]): Promise<ReadonlyMap<string, readonly Blocker[]>> {
+  // Linear stores "A blocks B" once, on A: B reads its blockers as the inverse relations of type `blocks`.
+  type Related = { inverseRelations: { nodes: { type: string; issue: { identifier: string; branchName: string; state: { type: string; name: string } } & Attached }[] } };
+  const found = await eachIssue<Related>(client, keys, `inverseRelations { nodes { type issue { identifier branchName state { type name } ${ATTACHED_PULLS} } } }`);
+  return new Map([...found].map(([key, node]) => [key, node.inverseRelations.nodes.filter(({ type }) => type === "blocks")
+    .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, branch: issue.branchName, pulls: linkedPulls(issue) }))]));
+}
+
+async function attachPlanTo(client: Client, identifier: string, files: readonly string[], state: string | null): Promise<string | null> {
+  const found = await issue<Planning>(client, identifier, `${STATEFUL} ${ATTACHMENTS}`);
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  const attached = new Set(uploadsIn(found).map(({ title }) => title));
+  for (const path of files) {
+    const title = basename(path);
+    if (!attached.has(title)) await attachFile(client, found.id, path, title);
+  }
+  return state === null ? null : (await moveTo(client, identifier, found, state, BEFORE_PLANNING)).note;
+}
+
+async function moveWorking(client: Client, identifier: string, state: string): Promise<Readonly<{ moved: StateMove | null; note: string | null }>> {
+  const found = await issue<Stateful>(client, identifier, STATEFUL);
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  return moveTo(client, identifier, found, state, BEFORE_WORK);
+}
+
+async function restoreStateOf(client: Client, identifier: string, move: StateMove): Promise<string | null> {
+  const found = await issue<Stateful>(client, identifier, STATEFUL);
+  // A ticket Linear no longer has has nothing to put back, and must not hold its run on the board for ever.
+  if (found === null) return `Linear has no ticket ${identifier}, so nothing was put back to ${move.from}`;
+  // Only while the ticket is still where the board put it: a person who has moved it since has moved it on, and that is theirs to keep.
+  if (found.state.name !== move.to) return null;
+  const target = found.team.states.nodes.find(({ name }) => name === move.from);
+  if (target === undefined) return `${identifier}'s team has no state named ${move.from}, so it stays in ${found.state.name}`;
+  await setState(client, identifier, found.id, target.id, move.from);
+  return null;
+}
+
+async function updateTicketTextOf(client: Client, identifier: string, text: Readonly<{ title?: string; description?: string }>): Promise<void> {
+  const found = await issue<{ id: string }>(client, identifier, "id");
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(client,
+    "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }", { id: found.id, input: text });
+  if (!issueUpdate.success) throw new Error(`Linear did not update the text of ${identifier}`);
+}
+
+async function completeTicket(client: Client, identifier: string, comment: string): Promise<string | null> {
+  const found = await issue<Stateful>(client, identifier, STATEFUL);
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  // A ticket already finished is left as it is, and gets no comment: whoever finished it has said what they meant.
+  if (FINISHED_TYPES.has(found.state.type)) return null;
+  // The completed state Linear lists first by position, when a team has more than one.
+  const [target] = found.team.states.nodes.filter(({ type }) => type === "completed").sort((a, b) => a.position - b.position);
+  if (target === undefined) return `${identifier}'s team has no completed state, so it stays in ${found.state.name}`;
+  // The move comes first: if the comment then fails, the next refresh finds the ticket completed and does nothing, rather than posting the comment twice.
+  await setState(client, identifier, found.id, target.id, target.name);
+  await postComment(client, identifier, found.id, comment);
+  return null;
+}
+
+async function createTicketIn(client: Client, input: NewTicket): Promise<Readonly<{ ticket: Ticket; warnings: readonly string[] }>> {
+  const { viewer } = await query<{ viewer: { id: string; teams: { nodes: { key: string }[] } } }>(client, "query { viewer { id teams { nodes { key } } } }", {});
+  const teamKey = await newTicketTeam(client, input.team, input.project, viewer.teams.nodes);
+  if (teamKey === null) throw new Error("name a team: none of the draft, its parent, tickets.pick, its project or your own teams names exactly one");
+  // Everything a ticket names is resolved first, so a name that does not resolve creates nothing.
+  const names = [...new Set([...(input.goal === null ? [] : [input.goal]), ...input.labels])];
+  const { teams }: { teams: { nodes: { id: string; key: string; named: { nodes: { id: string }[] }; known: { nodes: { name: string }[] } }[] } } = await query(client,
+    `query($key: String!, $project: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key named: projects(filter: { name: { eq: $project } }) { nodes { id } } known: projects(first: 8) { nodes { name } } } } }`,
+    { key: teamKey, project: input.project ?? "" });
+  const [team] = teams.nodes;
+  if (team === undefined) throw new Error(`Linear has no team ${teamKey}`);
+  let projectId: string | undefined;
+  if (input.project !== null) {
+    projectId = team.named.nodes[0]?.id;
+    if (projectId === undefined) throw new Error(`${teamKey} has no project named ${input.project}; its projects are ${team.known.nodes.map(({ name }) => name).join(", ") || "none"}`);
+  }
+  const { issueLabels }: { issueLabels: { nodes: { id: string; name: string; team: { key: string } | null; parent: { name: string } | null }[] } } = await query(client,
+    "query($names: [String!]!) { issueLabels(first: 250, filter: { name: { in: $names } }) { nodes { id name team { key } parent { name } } } }", { names });
+  const labelIds = input.labels.map((name) => {
+    const id = labelIdIn(issueLabels.nodes, name, teamKey);
+    if (id === null) throw new Error(`${teamKey} has no label named ${name}`);
+    return id;
+  });
+  if (input.goal !== null) {
+    const goal = issueLabels.nodes.find((label) => label.name === input.goal && label.parent?.name === "Goal");
+    if (goal === undefined) throw new Error(`${input.goal} is not a label in the group Goal`);
+    labelIds.push(goal.id);
+  }
+  const parent = input.parent === null ? null : await issue<{ id: string }>(client, input.parent, "id");
+  if (input.parent !== null && parent === null) throw new Error(`Linear has no ticket ${input.parent}`);
+  const relations = [...input.blocks.map((key) => ({ key, blocked: true })), ...input.blockedBy.map((key) => ({ key, blocked: false }))];
+  const related = await eachIssue<{ id: string }>(client, relations.map(({ key }) => key), "id");
+  const missing = relations.find(({ key }) => !related.has(key));
+  if (missing !== undefined) throw new Error(`Linear has no ticket ${missing.key}`);
+  const created = await createIssue(client, {
+    id: input.id, teamId: team.id, title: input.title, description: input.description, priority: input.priority, assigneeId: viewer.id,
+    ...(projectId === undefined ? {} : { projectId }), ...(parent === null ? {} : { parentId: parent.id }), ...(labelIds.length === 0 ? {} : { labelIds }),
+  });
+  // A relation that fails after the ticket exists is a warning, shown on the board: the ticket is not made again to retry it.
+  const warnings: string[] = [];
+  for (const { key, blocked } of relations) {
+    const other = related.get(key)?.id ?? "";
+    const [issueId, relatedIssueId] = blocked ? [created.id, other] : [other, created.id];
+    const { issueRelationCreate } = await query<{ issueRelationCreate: { success: boolean } }>(client,
+      "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
+      { issueId, relatedIssueId }).catch(() => ({ issueRelationCreate: { success: false } }));
+    if (!issueRelationCreate.success) warnings.push(blocked ? `${created.identifier} was created, but it did not block ${key}` : `${created.identifier} was created, but ${key} did not block it`);
+  }
+  return { ticket: toTicket(created), warnings };
+}
+
+async function downloadTicket(client: Client, ticket: Ticket, dir: string): Promise<string[]> {
+  const { key, request } = client;
+  const linked = uploadLinks(ticket.description);
+  const attached = (await attachedUploads(client, ticket.key)).filter(({ url }) => !linked.includes(url));
+  const files = [...linked.map((url) => ({ url, title: null })), ...attached];
+  const paths: string[] = [];
+  for (const [index, { url, title }] of files.entries()) {
+    const response = await request(url, { headers: { Authorization: key } });
+    if (!response.ok) continue;
+    const path = join(dir, downloadName(index + 1, url, title, response.headers.get("content-type") ?? ""));
+    writeFileSync(path, Buffer.from(await response.arrayBuffer()));
+    paths.push(path);
+  }
+  return paths;
+}
+
+/**
+ * Who holds the open tickets: each assignee with the count of their open tickets, and how many have none. Read a page at a time.
+ */
+async function peopleOf(client: Client): Promise<People> {
+  const text = `query($after: String) { issues(first: ${PEOPLE_PAGE}, after: $after, filter: { ${OPEN} }) { nodes { assignee { id name } } pageInfo { hasNextPage endCursor } } }`;
+  const held = new Map<string, { id: string; name: string; count: number }>();
+  let unassigned = 0;
+  let total = 0;
+  let after: string | null = null;
+  do {
+    const answer: { issues: { nodes: { assignee: Assignee | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } = await query(client, text, { after });
+    const { issues } = answer;
+    for (const { assignee } of issues.nodes) {
+      total += 1;
+      if (assignee === null) unassigned += 1;
+      else held.set(assignee.id, { id: assignee.id, name: assignee.name, count: (held.get(assignee.id)?.count ?? 0) + 1 });
     }
-    return body.data as T;
-  }
+    after = issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null;
+  } while (after !== null);
+  return { people: [...held.values()], unassigned, total };
+}
 
-  /**
-   * One ticket's `fields`, or `null` for a string that is no key or a key Linear has no ticket for. It reads by team and number, so a missing
-   * ticket is an empty list: nothing hangs on the wording of an error.
-   */
-  async function issue<T>(identifier: string, fields: string): Promise<T | null> {
-    const parts = TICKET_KEY.exec(identifier);
-    if (parts === null) return null;
-    const data: { issues: { nodes: T[] } } = await query(
-      `query($team: String!, $number: Float!) { issues(first: 1, filter: { team: { key: { eq: $team } }, number: { eq: $number } }) { nodes { ${fields} } } }`,
-      { team: parts[1].toUpperCase(), number: Number(parts[2]) });
-    return data.issues.nodes[0] ?? null;
-  }
+/** One page of a scope's tickets, with the cursor of the next. */
+async function scopedPage(client: Client, scope: string, after: string | null): Promise<ScopePage> {
+  const list = scopedQuery(scope);
+  const { issues } = await query<{ issues: Connection }>(client, list.text, { ...list.variables, after });
+  return { tickets: issues.nodes.map(toTicket), next: issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null };
+}
 
-  /** `fields` of each ticket `keys` names, by key, in one request per batch, each key an aliased read by team and number as `issue` does it. */
-  async function eachIssue<T>(keys: readonly string[], fields: string): Promise<Map<string, T>> {
-    const found = new Map<string, T>();
-    const parsed = keys.map((key) => [key, TICKET_KEY.exec(key)] as const).filter((pair): pair is readonly [string, RegExpExecArray] => pair[1] !== null);
-    for (let start = 0; start < parsed.length; start += STATE_BATCH) {
-      const batch = parsed.slice(start, start + STATE_BATCH);
-      const params = batch.map((_, i) => `$t${i}: String!, $n${i}: Float!`).join(", ");
-      const reads = batch.map((_, i) => `k${i}: issues(first: 1, filter: { team: { key: { eq: $t${i} } }, number: { eq: $n${i} } }) { nodes { ${fields} } }`).join(" ");
-      const variables = Object.fromEntries(batch.flatMap(([, parts], i) => [[`t${i}`, parts[1].toUpperCase()], [`n${i}`, Number(parts[2])]]));
-      const data: Record<string, { nodes: T[] }> = await query(`query(${params}) { ${reads} }`, variables);
-      batch.forEach(([key], i) => {
-        const [node] = data[`k${i}`]?.nodes ?? [];
-        if (node !== undefined) found.set(key, node);
-      });
-    }
-    return found;
-  }
-
-  /**
-   * Move the ticket to its team's state named `state`, when its state's type is one of `from`. Teams name their states differently, so a team
-   * without one of that name keeps the ticket's current state, and the returned note says so. `moved` is the state it moved from, and null when
-   * it did not move.
-   */
-  async function moveTo(identifier: string, found: Stateful, state: string, from: ReadonlySet<string>): Promise<Readonly<{ moved: StateMove | null; note: string | null }>> {
-    if (!from.has(found.state.type)) return { moved: null, note: null };
-    const target = found.team.states.nodes.find(({ name }) => name === state);
-    if (target === undefined) return { moved: null, note: `${identifier}'s team has no state named ${state}, so it stays in ${found.state.name}` };
-    await setState(identifier, found.id, target.id, state);
-    return { moved: { from: found.state.name, to: state }, note: null };
-  }
-
-  /** Set the ticket `id` to the state `stateId`, which is named `state` for the error that says so. */
-  async function setState(identifier: string, id: string, stateId: string, state: string): Promise<void> {
-    const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(
-      "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id, stateId });
-    // Linear can answer a mutation it did not carry out with success false and no error, so the answer is read, not assumed.
-    if (!issueUpdate.success) throw new Error(`Linear did not move ${identifier} to ${state}`);
-  }
-
-  /** Post `body` as a comment on the ticket `id`, which is named `identifier` for the error that says so. */
-  async function postComment(identifier: string, id: string, body: string): Promise<void> {
-    const { commentCreate }: { commentCreate: { success: boolean } } = await query(
-      "mutation($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success } }", { issueId: id, body });
-    if (!commentCreate.success) throw new Error(`Linear did not post a comment on ${identifier}`);
-  }
-
-  /**
-   * The team a new ticket goes in, by its key: the one named, else the team of the project named when that project is in exactly one team, else the
-   * only team the key's user is on. Null when none of those says, so the board refuses and names the team it needs.
-   */
-  async function newTicketTeam(named: string | null, project: string | null, mine: readonly { key: string }[]): Promise<string | null> {
-    if (named !== null) return named;
-    if (project !== null) {
-      const { projects }: { projects: { nodes: { teams: { nodes: { key: string }[] } }[] } } = await query(
-        "query($name: String!) { projects(filter: { name: { eq: $name } }) { nodes { teams { nodes { key } } } } }", { name: project });
-      const keys = new Set(projects.nodes.flatMap(({ teams }) => teams.nodes.map(({ key: teamKey }) => teamKey)));
-      if (keys.size === 1) return [...keys][0];
-    }
-    return mine.length === 1 ? mine[0].key : null;
-  }
-
-  /** The id of a label `name` that the team `team` may use: its own label, else the workspace's. Null when there is none of that name. */
-  const labelIdIn = (labels: readonly { id: string; name: string; team: { key: string } | null }[], name: string, team: string): string | null => {
-    const named = labels.filter((label) => label.name === name);
-    return (named.find((label) => label.team?.key === team) ?? named.find((label) => label.team === null))?.id ?? null;
-  };
-
-  /**
-   * Create the ticket: `issueCreate` with the draft's own id, so a creation the tracker already made (answered "already exists") is read back as made, and
-   * never made twice. Anything else the tracker refuses is thrown.
-   */
-  async function createIssue(input: Record<string, unknown>): Promise<CreatedIssue> {
-    try {
-      const { issueCreate } = await query<{ issueCreate: { success: boolean; issue: CreatedIssue | null } }>(
-        `mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id ${ISSUE_FIELDS} } } }`, { input });
-      if (!issueCreate.success || issueCreate.issue === null) throw new Error(`Linear did not create ${String(input.title)}`);
-      return issueCreate.issue;
-    } catch (err) {
-      const { issue } = await query<{ issue: CreatedIssue | null }>(`query($id: String!) { issue(id: $id) { id ${ISSUE_FIELDS} } }`, { id: input.id }).catch(() => ({ issue: null }));
-      if (issue !== null) return issue;
-      throw err;
-    }
-  }
-
-  /** Upload the markdown file at `path` and attach it to the ticket `issueId` under `title`. */
-  async function attachFile(issueId: string, path: string, title: string): Promise<void> {
-    const body = readFileSync(path);
-    const { fileUpload }: Upload = await query(
-      "mutation($contentType: String!, $filename: String!, $size: Int!) { fileUpload(contentType: $contentType, filename: $filename, size: $size) { success uploadFile { uploadUrl assetUrl headers { key value } } } }",
-      { contentType: "text/markdown", filename: title, size: body.length });
-    if (!fileUpload.success || fileUpload.uploadFile === null) throw new Error(`Linear would not take the upload of ${title}`);
-    const { uploadUrl, assetUrl, headers } = fileUpload.uploadFile;
-    // The file goes to the storage address Linear signed, without the key: the signature is the permission.
-    const put = await request(uploadUrl, { method: "PUT", body, headers: { "Content-Type": "text/markdown", "Cache-Control": "public, max-age=31536000",
-      ...Object.fromEntries(headers.map(({ key: name, value }) => [name, value])) } });
-    if (!put.ok) throw new Error(`the upload of ${title} was refused (${put.status})`);
-    const { attachmentCreate }: { attachmentCreate: { success: boolean } } = await query(
-      "mutation($issueId: String!, $url: String!, $title: String!) { attachmentCreate(input: { issueId: $issueId, url: $url, title: $title }) { success } }",
-      { issueId, url: assetUrl, title });
-    if (!attachmentCreate.success) throw new Error(`Linear did not attach ${title}`);
-  }
-
-  /** The uploads attached to a ticket. */
-  async function attachedUploads(identifier: string): Promise<{ url: string; title: string }[]> {
-    const found = await issue<Attachments>(identifier, ATTACHMENTS);
-    return found === null ? [] : uploadsIn(found);
-  }
-
-  /** The key's person: their id, and the name Linear has for them, or their email when it has none. */
-  async function me(): Promise<Assignee> {
-    const { viewer }: { viewer: { id: string; name: string | null; email: string | null } } = await query("query { viewer { id name email } }", {});
-    return { id: viewer.id, name: viewer.name || viewer.email || "the key's user" };
-  }
-
+export function linearSource({ key, fetch: request = fetch, pick = "assigned" }: { key: string; fetch?: Fetch; pick?: PickScope }): TicketSource {
+  const client: Client = { key, request };
   return {
     keywords: KEYWORDS,
 
     async assigned() {
-      const list = pickQuery(pick);
-      const tickets: Ticket[] = [];
-      let after: string | null = null;
-      do {
-        const page = list.page(await query<unknown>(list.text, { ...list.variables, after }));
-        tickets.push(...page.nodes.map(toTicket));
-        after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
-      } while (after !== null);
-      return tickets;
+      return assignedTickets(client, pick);
     },
 
-    async people(): Promise<People> {
-      const text = `query($after: String) { issues(first: ${PEOPLE_PAGE}, after: $after, filter: { ${OPEN} }) { nodes { assignee { id name } } pageInfo { hasNextPage endCursor } } }`;
-      const held = new Map<string, { id: string; name: string; count: number }>();
-      let unassigned = 0;
-      let total = 0;
-      let after: string | null = null;
-      do {
-        const answer: { issues: { nodes: { assignee: Assignee | null }[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } } } = await query(text, { after });
-        const { issues } = answer;
-        for (const { assignee } of issues.nodes) {
-          total += 1;
-          if (assignee === null) unassigned += 1;
-          else held.set(assignee.id, { id: assignee.id, name: assignee.name, count: (held.get(assignee.id)?.count ?? 0) + 1 });
-        }
-        after = issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null;
-      } while (after !== null);
-      return { people: [...held.values()], unassigned, total };
-    },
+    people: () => peopleOf(client),
 
-    async scoped(scope, after): Promise<ScopePage> {
-      const list = scopedQuery(scope);
-      const { issues } = await query<{ issues: Connection }>(list.text, { ...list.variables, after });
-      return { tickets: issues.nodes.map(toTicket), next: issues.pageInfo.hasNextPage ? issues.pageInfo.endCursor : null };
-    },
+    scoped: (scope, after) => scopedPage(client, scope, after),
 
     async viewer() {
-      return (await me()).name;
+      return (await me(client)).name;
     },
 
-    me,
+    me: () => me(client),
 
     async read(identifier) {
-      const found = await issue<IssueNode>(identifier, ISSUE_FIELDS);
+      const found = await issue<IssueNode>(client, identifier, ISSUE_FIELDS);
       return found === null ? null : toTicket(found);
     },
 
     async stateTypes(keys) {
-      const found = await eachIssue<{ state: { type: string } }>(keys, "state { type }");
+      const found = await eachIssue<{ state: { type: string } }>(client, keys, "state { type }");
       return new Map([...found].map(([key, node]) => [key, node.state.type]));
     },
 
     async pullStates(keys) {
-      const found = await eachIssue<Attached>(keys, ATTACHED_PULLS);
+      const found = await eachIssue<Attached>(client, keys, ATTACHED_PULLS);
       return new Map([...found].map(([key, node]) => [key, linkedPulls(node)]));
     },
 
     async addBlockers(identifier, blockerKeys) {
-      type Blocked = { id: string; inverseRelations: { nodes: { type: string; issue: { identifier: string } }[] } };
-      const found = await issue<Blocked>(identifier, "id inverseRelations { nodes { type issue { identifier } } }");
-      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
-      const already = new Set(found.inverseRelations.nodes.filter(({ type }) => type === "blocks").map(({ issue: blocker }) => blocker.identifier));
-      const missing = [...new Set(blockerKeys)].filter((key) => !already.has(key));
-      if (missing.length === 0) return;
-      const ids = await eachIssue<{ id: string }>(missing, "id");
-      for (const key of missing) {
-        const blocker = ids.get(key);
-        if (blocker === undefined) throw new Error(`Linear has no ticket ${key}`);
-        // "A blocks B" is stored on A, with B as the related issue: the same relation `blockers` reads back from B.
-        const { issueRelationCreate }: { issueRelationCreate: { success: boolean } } = await query(
-          "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
-          { issueId: blocker.id, relatedIssueId: found.id });
-        if (!issueRelationCreate.success) throw new Error(`Linear did not record that ${key} blocks ${identifier}`);
-      }
+      return addBlockersTo(client, identifier, blockerKeys);
     },
 
     async blockers(keys) {
-      // Linear stores "A blocks B" once, on A: B reads its blockers as the inverse relations of type `blocks`.
-      type Related = { inverseRelations: { nodes: { type: string; issue: { identifier: string; branchName: string; state: { type: string; name: string } } & Attached }[] } };
-      const found = await eachIssue<Related>(keys, `inverseRelations { nodes { type issue { identifier branchName state { type name } ${ATTACHED_PULLS} } } }`);
-      return new Map([...found].map(([key, node]) => [key, node.inverseRelations.nodes.filter(({ type }) => type === "blocks")
-        .map(({ issue }): Blocker => ({ key: issue.identifier, state: issue.state.type, status: issue.state.name, branch: issue.branchName, pulls: linkedPulls(issue) }))]));
+      return blockersOf(client, keys);
     },
 
     async attachPlan(identifier, files, state) {
-      const found = await issue<Planning>(identifier, `${STATEFUL} ${ATTACHMENTS}`);
-      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
-      const attached = new Set(uploadsIn(found).map(({ title }) => title));
-      for (const path of files) {
-        const title = basename(path);
-        if (!attached.has(title)) await attachFile(found.id, path, title);
-      }
-      return state === null ? null : (await moveTo(identifier, found, state, BEFORE_PLANNING)).note;
+      return attachPlanTo(client, identifier, files, state);
     },
 
     async moveToWorkingState(identifier, state) {
-      const found = await issue<Stateful>(identifier, STATEFUL);
-      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
-      return moveTo(identifier, found, state, BEFORE_WORK);
+      return moveWorking(client, identifier, state);
     },
 
     async restoreState(identifier, move) {
-      const found = await issue<Stateful>(identifier, STATEFUL);
-      // A ticket Linear no longer has has nothing to put back, and must not hold its run on the board for ever.
-      if (found === null) return `Linear has no ticket ${identifier}, so nothing was put back to ${move.from}`;
-      // Only while the ticket is still where the board put it: a person who has moved it since has moved it on, and that is theirs to keep.
-      if (found.state.name !== move.to) return null;
-      const target = found.team.states.nodes.find(({ name }) => name === move.from);
-      if (target === undefined) return `${identifier}'s team has no state named ${move.from}, so it stays in ${found.state.name}`;
-      await setState(identifier, found.id, target.id, move.from);
-      return null;
+      return restoreStateOf(client, identifier, move);
     },
 
     async updateTicketText(identifier, text) {
-      const found = await issue<{ id: string }>(identifier, "id");
-      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
-      const { issueUpdate }: { issueUpdate: { success: boolean } } = await query(
-        "mutation($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }", { id: found.id, input: text });
-      if (!issueUpdate.success) throw new Error(`Linear did not update the text of ${identifier}`);
+      return updateTicketTextOf(client, identifier, text);
     },
 
     async complete(identifier, comment) {
-      const found = await issue<Stateful>(identifier, STATEFUL);
-      if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
-      // A ticket already finished is left as it is, and gets no comment: whoever finished it has said what they meant.
-      if (FINISHED_TYPES.has(found.state.type)) return null;
-      // The completed state Linear lists first by position, when a team has more than one.
-      const [target] = found.team.states.nodes.filter(({ type }) => type === "completed").sort((a, b) => a.position - b.position);
-      if (target === undefined) return `${identifier}'s team has no completed state, so it stays in ${found.state.name}`;
-      // The move comes first: if the comment then fails, the next refresh finds the ticket completed and does nothing, rather than posting the comment twice.
-      await setState(identifier, found.id, target.id, target.name);
-      await postComment(identifier, found.id, comment);
-      return null;
+      return completeTicket(client, identifier, comment);
     },
 
     async createTicket(input: NewTicket) {
-      const { viewer } = await query<{ viewer: { id: string; teams: { nodes: { key: string }[] } } }>("query { viewer { id teams { nodes { key } } } }", {});
-      const teamKey = await newTicketTeam(input.team, input.project, viewer.teams.nodes);
-      if (teamKey === null) throw new Error("name a team: none of the draft, its parent, tickets.pick, its project or your own teams names exactly one");
-      // Everything a ticket names is resolved first, so a name that does not resolve creates nothing.
-      const names = [...new Set([...(input.goal === null ? [] : [input.goal]), ...input.labels])];
-      const { teams }: { teams: { nodes: { id: string; key: string; named: { nodes: { id: string }[] }; known: { nodes: { name: string }[] } }[] } } = await query(
-        `query($key: String!, $project: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key named: projects(filter: { name: { eq: $project } }) { nodes { id } } known: projects(first: 8) { nodes { name } } } } }`,
-        { key: teamKey, project: input.project ?? "" });
-      const [team] = teams.nodes;
-      if (team === undefined) throw new Error(`Linear has no team ${teamKey}`);
-      let projectId: string | undefined;
-      if (input.project !== null) {
-        projectId = team.named.nodes[0]?.id;
-        if (projectId === undefined) throw new Error(`${teamKey} has no project named ${input.project}; its projects are ${team.known.nodes.map(({ name }) => name).join(", ") || "none"}`);
-      }
-      const { issueLabels }: { issueLabels: { nodes: { id: string; name: string; team: { key: string } | null; parent: { name: string } | null }[] } } = await query(
-        "query($names: [String!]!) { issueLabels(first: 250, filter: { name: { in: $names } }) { nodes { id name team { key } parent { name } } } }", { names });
-      const labelIds = input.labels.map((name) => {
-        const id = labelIdIn(issueLabels.nodes, name, teamKey);
-        if (id === null) throw new Error(`${teamKey} has no label named ${name}`);
-        return id;
-      });
-      if (input.goal !== null) {
-        const goal = issueLabels.nodes.find((label) => label.name === input.goal && label.parent?.name === "Goal");
-        if (goal === undefined) throw new Error(`${input.goal} is not a label in the group Goal`);
-        labelIds.push(goal.id);
-      }
-      const parent = input.parent === null ? null : await issue<{ id: string }>(input.parent, "id");
-      if (input.parent !== null && parent === null) throw new Error(`Linear has no ticket ${input.parent}`);
-      const relations = [...input.blocks.map((key) => ({ key, blocked: true })), ...input.blockedBy.map((key) => ({ key, blocked: false }))];
-      const related = await eachIssue<{ id: string }>(relations.map(({ key }) => key), "id");
-      const missing = relations.find(({ key }) => !related.has(key));
-      if (missing !== undefined) throw new Error(`Linear has no ticket ${missing.key}`);
-      const created = await createIssue({
-        id: input.id, teamId: team.id, title: input.title, description: input.description, priority: input.priority, assigneeId: viewer.id,
-        ...(projectId === undefined ? {} : { projectId }), ...(parent === null ? {} : { parentId: parent.id }), ...(labelIds.length === 0 ? {} : { labelIds }),
-      });
-      // A relation that fails after the ticket exists is a warning, shown on the board: the ticket is not made again to retry it.
-      const warnings: string[] = [];
-      for (const { key, blocked } of relations) {
-        const other = related.get(key)?.id ?? "";
-        const [issueId, relatedIssueId] = blocked ? [created.id, other] : [other, created.id];
-        const { issueRelationCreate } = await query<{ issueRelationCreate: { success: boolean } }>(
-          "mutation($issueId: String!, $relatedIssueId: String!) { issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks }) { success } }",
-          { issueId, relatedIssueId }).catch(() => ({ issueRelationCreate: { success: false } }));
-        if (!issueRelationCreate.success) warnings.push(blocked ? `${created.identifier} was created, but it did not block ${key}` : `${created.identifier} was created, but ${key} did not block it`);
-      }
-      return { ticket: toTicket(created), warnings };
+      return createTicketIn(client, input);
     },
 
     async download(ticket, dir) {
-      const linked = uploadLinks(ticket.description);
-      const attached = (await attachedUploads(ticket.key)).filter(({ url }) => !linked.includes(url));
-      const files = [...linked.map((url) => ({ url, title: null })), ...attached];
-      const paths: string[] = [];
-      for (const [index, { url, title }] of files.entries()) {
-        const response = await request(url, { headers: { Authorization: key } });
-        if (!response.ok) continue;
-        const path = join(dir, downloadName(index + 1, url, title, response.headers.get("content-type") ?? ""));
-        writeFileSync(path, Buffer.from(await response.arrayBuffer()));
-        paths.push(path);
-      }
-      return paths;
+      return downloadTicket(client, ticket, dir);
     },
   };
 }

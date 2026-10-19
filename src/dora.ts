@@ -210,6 +210,34 @@ function gitHolds(clone: string, args: string[]): boolean {
   }
 }
 
+/** What one repository's clone has been asked this run: whether its tags were fetched, why that fetch failed (`failure`, which is named with the answer that needed it), and the tags it lists once listed. */
+type CloneFetch = { fetched: boolean; failure: string; tags: Map<string, string> | null };
+
+/** Fetches the clone's tags, ONCE per run: a failed fetch is kept in `state.failure` and not retried. */
+function fetchTagsOnce(clone: string, state: CloneFetch): void {
+  if (state.fetched) return;
+  state.fetched = true;
+  try {
+    runGit(clone, ["fetch", "--quiet", "--tags", "origin"]);
+  } catch (err: any) {
+    state.failure = ` and the fetch of its tags failed (${String(err?.message ?? err).split("\n")[0]})`;
+  }
+}
+
+/** Every tag the clone holds and the commit it names, from ONE `for-each-ref`: `%(*objectname)` is the commit an annotated tag points at, empty for a lightweight one, whose `%(objectname)` is it. Listed once and kept in `state.tags`. */
+function readCloneTags(clone: string, state: CloneFetch): Map<string, string> {
+  state.tags ??= new Map(runGit(clone, ["for-each-ref", "--format=%(refname) %(*objectname) %(objectname)", "refs/tags"]).split("\n").filter((line) => line !== "")
+    .map((line) => { const [name, peeled, object] = line.split(" "); return [name.slice(TAG_REF_PREFIX.length), peeled === "" ? object : peeled] as [string, string]; }));
+  return state.tags;
+}
+
+/** What answered a range read: `clone`, or `github compare` with the reason the clone did not (and how many of the ranges it did answer). */
+function describeCloneSource(tally: { clone: number; github: number; why: string | null; }): string {
+  if (tally.github === 0 && tally.clone > 0) return "clone";
+  if (tally.github === 0) return "none read";
+  return `github compare (${tally.why ?? "the clone was not asked"}${tally.clone > 0 ? `; the clone answered ${tally.clone} range${tally.clone === 1 ? "" : "s"}` : ""})`;
+}
+
 /**
  * Ancestry from ONE repository's declared clone, with the fallback NAMED. `range` answers `null` when the clone cannot answer (no clone declared, or it lacks `base` or `head` even after
  * one `git fetch --tags origin`, bounded by the repository's read limits), and `fellBack` runs the GitHub read in its place and counts it, so `source` can say which answered.
@@ -219,25 +247,10 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
   const name = repository.repo.split("/").pop() ?? repository.repo;
   const path = clones.clones[name] ?? null;
   const tally = { clone: 0, github: 0, why: path === null ? (clones.unreadable ?? `no clone is declared for ${name}`) : null as string | null };
-  let fetched = false;
-  let fetchFailure = "";
+  const cloneFetch: CloneFetch = { fetched: false, failure: "", tags: null };
   const has = (commit: string) => gitHolds(path as string, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]);
-  /** Every tag the clone holds and the commit it names, from ONE `for-each-ref`: `%(*objectname)` is the commit an annotated tag points at, empty for a lightweight one, whose `%(objectname)` is it. @type {Map<string, string> | null} */
-  let tags: Map<string, string> | null = null;
-  const readTags = (): Map<string, string> => {
-    tags ??= new Map(runGit(path as string, ["for-each-ref", "--format=%(refname) %(*objectname) %(objectname)", "refs/tags"]).split("\n").filter((line) => line !== "")
-      .map((line) => { const [name, peeled, object] = line.split(" "); return [name.slice(TAG_REF_PREFIX.length), peeled === "" ? object : peeled] as [string, string]; }));
-    return tags;
-  };
-  const fetchOnce = () => {
-    if (fetched) return;
-    fetched = true;
-    try {
-      runGit(path as string, ["fetch", "--quiet", "--tags", "origin"]);
-    } catch (err: any) {
-      fetchFailure = ` and the fetch of its tags failed (${String(err?.message ?? err).split("\n")[0]})`;
-    }
-  };
+  const readTags = (): Map<string, string> => readCloneTags(path as string, cloneFetch);
+  const fetchOnce = () => fetchTagsOnce(path as string, cloneFetch);
   /** @returns {string | null} the first of the commits the clone does not hold, after one fetch */
   const lacking = (commits: string[]): string | null => {
     if (path === null) return null;
@@ -249,7 +262,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
   const answers = (commits: string[]): boolean => {
     if (path === null) return false;
     const absent = lacking(commits);
-    if (absent !== null) tally.why ??= `the clone of ${name} lacks ${absent.slice(0, SHORT_SHA)}${fetchFailure}`;
+    if (absent !== null) tally.why ??= `the clone of ${name} lacks ${absent.slice(0, SHORT_SHA)}${cloneFetch.failure}`;
     return absent === null;
   };
   const fromClone = ({ base, head }: { base: string; head: string }): Range | null => {
@@ -274,9 +287,9 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
       if (path === null) return null;
       try {
         const held = readTags().get(tag);
-        if (held !== undefined || fetched) return held ?? null;
+        if (held !== undefined || cloneFetch.fetched) return held ?? null;
         fetchOnce();
-        tags = null;
+        cloneFetch.tags = null;
         return readTags().get(tag) ?? null;
       } catch {
         return null; // a clone that cannot be listed answers no tag, and each is asked of GitHub as it always was
@@ -292,11 +305,7 @@ function cloneReader({ repository, clones }: { repository: Repository; clones: D
       return read();
     },
     /** What answered: `clone`, or `github compare` with the reason the clone did not (and how many of the ranges it did answer). */
-    source: (): string => {
-      if (tally.github === 0 && tally.clone > 0) return "clone";
-      if (tally.github === 0) return "none read";
-      return `github compare (${tally.why ?? "the clone was not asked"}${tally.clone > 0 ? `; the clone answered ${tally.clone} range${tally.clone === 1 ? "" : "s"}` : ""})`;
-    },
+    source: (): string => describeCloneSource(tally),
   };
 }
 

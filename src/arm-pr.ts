@@ -1139,6 +1139,56 @@ export function labelsWanted({ repo, prBody, run }: { repo: string; prBody: stri
 }
 
 /**
+ * The refusals after authorship and before any write: a PR that the ejection, blocker, cross-repo-red or deliberate-refusal gate holds is not armed.
+ * @returns the exit code the refusal ends the run with, or `null` when every gate is clear and the run goes on to arm.
+ */
+function refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error }: {
+  number: string; repo: string; author: string | null | undefined; prBody: string | null; run: typeof defaultRun;
+  log: (line: string) => void; error: (line: string) => void;
+}): number | null {
+  // #3487: AFTER the authorship exit and before any write. A refusal is a DONE, as a hold is: the PR is waiting for a push, not failing.
+  const ejection = ejectionVerdict({ number, repo, run: (args) => gh(args, run) });
+  if (ejection.kind !== "clear") {
+    const cannotAsk = ejection.kind === "cannot-ask";
+    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${ejection.why}`);
+    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
+  }
+  // #3544: AFTER the ejection exit and before any write. A block is a DONE, as a hold is: the PR waits on a row, it is not failing.
+  const blocker = blockerVerdict({ repo, prBody, run: (args) => gh(args, run) });
+  if (blocker.kind !== "clear") {
+    const cannotAsk = blocker.kind === "cannot-ask";
+    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${blocker.why}`);
+    if (blocker.kind === "open-blocker") announceBlocked({ number, repo, verdict: blocker, run: (args) => gh(args, run), error });
+    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
+  }
+  // agent-org#992: AFTER the blocker exit and before any write, the same shape. A red leg the declaration has not answered is a DONE, as a block is.
+  const crossRed = crossRepoRedVerdict({ number, repo, prBody, run: (args) => gh(args, run) });
+  if (crossRed.kind !== "clear") {
+    const cannotAsk = crossRed.kind === "cannot-ask";
+    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${crossRed.why}`);
+    if (crossRed.kind === "cross-repo-red") {
+      // agent-org#1278: THE REFUSAL DISARMS, then says so. The disarm runs BEFORE the comment, because the comment's first line is its outcome.
+      const disarm = disarmRedLeg({ number, repo, run });
+      (disarm.disarmed ? log : error)(`arm-pr: ${disarm.disarmed ? "disarmed" : "NOT disarmed"} #${number} -- ${disarm.outcome}`);
+      announceBlocked({ number, repo, verdict: crossRed, run: (args) => gh(args, run), error,
+        lead: `**Disarmed: ${disarm.disarmed ? "yes" : "no"} (${disarm.outcome}).**` });
+      if (disarm.stuck) return EXIT.CANNOT_ASK;
+    }
+    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
+  }
+  // agent-org#1501: AFTER the red-leg exit and before any write, the same shape. What a11ign's `deliberateRefusals` job refused is a DONE, as a hold is: the PR
+  // waits for a push or an edit. `cannot-ask` is a refusal to arm and exits CANNOT_ASK, never "fine".
+  const deliberate = deliberateRefusalVerdict({ number, repo, author, run: (args) => gh(args, run) });
+  if (deliberate.kind !== "clear") {
+    const cannotAsk = deliberate.kind === "cannot-ask";
+    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${deliberate.why}`);
+    if (!cannotAsk) announceBlocked({ number, repo, verdict: { why: deliberate.why, deliberate: true }, run: (args) => gh(args, run), error });
+    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
+  }
+  return null;
+}
+
+/**
  * #1478: THE ENTRY POINT WITH ITS SEAMS INJECTED. `main` is this plus the unknown-flag refusal and `process.exitCode`,
  * so a test drives the path the workflow runs -- the order of the writes and the code the process exits with --
  * rather than the functions it happens to call.
@@ -1187,45 +1237,8 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
     error(`arm-pr: NOT arming #${number} -- ${authorship.why}`);
     return authorship.kind === "refused" ? EXIT.REFUSED : EXIT.CANNOT_ASK;
   }
-  // #3487: AFTER the authorship exit and before any write. A refusal is a DONE, as a hold is: the PR is waiting for a push, not failing.
-  const ejection = ejectionVerdict({ number, repo, run: (args) => gh(args, run) });
-  if (ejection.kind !== "clear") {
-    const cannotAsk = ejection.kind === "cannot-ask";
-    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${ejection.why}`);
-    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
-  }
-  // #3544: AFTER the ejection exit and before any write. A block is a DONE, as a hold is: the PR waits on a row, it is not failing.
-  const blocker = blockerVerdict({ repo, prBody, run: (args) => gh(args, run) });
-  if (blocker.kind !== "clear") {
-    const cannotAsk = blocker.kind === "cannot-ask";
-    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${blocker.why}`);
-    if (blocker.kind === "open-blocker") announceBlocked({ number, repo, verdict: blocker, run: (args) => gh(args, run), error });
-    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
-  }
-  // agent-org#992: AFTER the blocker exit and before any write, the same shape. A red leg the declaration has not answered is a DONE, as a block is.
-  const crossRed = crossRepoRedVerdict({ number, repo, prBody, run: (args) => gh(args, run) });
-  if (crossRed.kind !== "clear") {
-    const cannotAsk = crossRed.kind === "cannot-ask";
-    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${crossRed.why}`);
-    if (crossRed.kind === "cross-repo-red") {
-      // agent-org#1278: THE REFUSAL DISARMS, then says so. The disarm runs BEFORE the comment, because the comment's first line is its outcome.
-      const disarm = disarmRedLeg({ number, repo, run });
-      (disarm.disarmed ? log : error)(`arm-pr: ${disarm.disarmed ? "disarmed" : "NOT disarmed"} #${number} -- ${disarm.outcome}`);
-      announceBlocked({ number, repo, verdict: crossRed, run: (args) => gh(args, run), error,
-        lead: `**Disarmed: ${disarm.disarmed ? "yes" : "no"} (${disarm.outcome}).**` });
-      if (disarm.stuck) return EXIT.CANNOT_ASK;
-    }
-    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
-  }
-  // agent-org#1501: AFTER the red-leg exit and before any write, the same shape. What a11ign's `deliberateRefusals` job refused is a DONE, as a hold is: the PR
-  // waits for a push or an edit. `cannot-ask` is a refusal to arm and exits CANNOT_ASK, never "fine".
-  const deliberate = deliberateRefusalVerdict({ number, repo, author, run: (args) => gh(args, run) });
-  if (deliberate.kind !== "clear") {
-    const cannotAsk = deliberate.kind === "cannot-ask";
-    (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${deliberate.why}`);
-    if (!cannotAsk) announceBlocked({ number, repo, verdict: { why: deliberate.why, deliberate: true }, run: (args) => gh(args, run), error });
-    return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
-  }
+  const refused = refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error });
+  if (refused !== null) return refused;
   const { outcome, jumpFailure } = armOrJump({ number, repo, prBody }, { run, sleep, log, error });
   // #1478: WHAT LANDED IS SAID BEFORE THE NEXT STEP RUNS, so a failure in labelling cannot hide it.
   log(outcome.armed

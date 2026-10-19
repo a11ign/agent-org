@@ -896,27 +896,12 @@ function exitAfterSweep(code: number): never {
   process.exit(code);
 }
 
-function main() {
-  refuseUnknownFlags([], {
-    entry: import.meta.url,
-    command: "node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
-  });
-
-  const repo = process.env.GITHUB_REPOSITORY;
-  const number = process.argv.slice(2).find((a) => /^\d+$/.test(a));
-  if (!repo || !number) {
-    console.error("CANNOT ASK: need GITHUB_REPOSITORY and a PR number.\n"
-      + "  node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
-    process.exit(EXIT.CANNOT_ASK);
-  }
-
-  // #1443: bracketing the whole dispatch, not just the closing calls -- #1360's saving is a property of
-  // this row's TOTAL cost, and a reading taken only around part of it would miss whatever the excluded
-  // part spent.
-  logRateLimit("before sweep (dispatch)");
-
+/**
+ * The merge facts of pull request `number` and the rows its closing references name, read in one GraphQL lookup. Exits CANNOT_ASK when the pull request is not merged into `main`,
+ * or when the lookup fails.
+ */
+function readClosingReferences(repo: string, number: string) {
   const [owner, name] = repo.split("/");
-  let issues, sha, prMergedAt, headRefName, prBody;
   try {
     // `labels(first:20){nodes{name}}` added for #754 -- the same lookup that already resolves WHICH rows
     // to close also carries WHAT each one is still labelled, so stripping the claim needs no second
@@ -951,19 +936,44 @@ function main() {
         timelineItems: { nodes: { createdAt: string; }[]; };
     }[] = pr.closingIssuesReferences.nodes;
     // #2995: only the tracker's rows are ours to close; a pull request of another repository names one in the full form.
-    issues = nodes.filter((i) => (i.repository?.nameWithOwner ?? repo) === REPO).map((i) => ({
+    const issues = nodes.filter((i) => (i.repository?.nameWithOwner ?? repo) === REPO).map((i) => ({
       number: i.number, state: i.state, labels: (i.labels?.nodes ?? []).map((l) => l.name),
       reopenedAt: i.timelineItems?.nodes?.[0]?.createdAt ?? null,
     }));
-    sha = pr.mergeCommit?.oid ?? "unknown";
-    prMergedAt = pr.mergedAt ?? null;
-    headRefName = pr.headRefName ?? null;
-    prBody = pr.body ?? "";
+    return {
+      issues,
+      sha: pr.mergeCommit?.oid ?? "unknown",
+      prMergedAt: pr.mergedAt ?? null,
+      headRefName: pr.headRefName ?? null,
+      prBody: pr.body ?? "",
+    };
   } catch (cause) {
     console.error(`CANNOT ASK: resolving #${number}'s closing references failed -- `
       + `${cause instanceof Error ? cause.message : cause}`);
     exitAfterSweep(EXIT.CANNOT_ASK);
   }
+}
+
+function main() {
+  refuseUnknownFlags([], {
+    entry: import.meta.url,
+    command: "node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>",
+  });
+
+  const repo = process.env.GITHUB_REPOSITORY;
+  const number = process.argv.slice(2).find((a) => /^\d+$/.test(a));
+  if (!repo || !number) {
+    console.error("CANNOT ASK: need GITHUB_REPOSITORY and a PR number.\n"
+      + "  node packages/agent-org/src/close-rows-for-merged-pr.ts <pr-number>");
+    process.exit(EXIT.CANNOT_ASK);
+  }
+
+  // #1443: bracketing the whole dispatch, not just the closing calls -- #1360's saving is a property of
+  // this row's TOTAL cost, and a reading taken only around part of it would miss whatever the excluded
+  // part spent.
+  logRateLimit("before sweep (dispatch)");
+
+  const { issues, sha, prMergedAt, headRefName, prBody } = readClosingReferences(repo, number);
 
   // #2995: from another repository a bare `Closes #N` is not a tracker row, so the body fallback is not asked.
   const prRef = repo === REPO ? number : `${repo}#${number}`;

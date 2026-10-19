@@ -255,7 +255,9 @@ describe("thirteen events in an hour send 12 messages and ONE digest naming the 
     }
     assert.equal(run.provider.sent.filter((message) => /held back/.test(message.text)).length, 1);
   });
+});
 
+describe("thirteen events in an hour send 12 messages and ONE digest naming the 13th (done-when 3)", () => {
   test("overflow of several events is still ONE digest line naming every one", async () => {
     const run = harness({ config: { rate: { hourlyCap: 2 } } });
     const events = [1, 2, 3, 4, 5].map((number) => request(200 + number));
@@ -339,7 +341,9 @@ describe("every attempt is one ledger line (done-when 4)", () => {
     assert.equal((await run.tick([request(701)]))[0].action, "sent");
     assert.equal(run.provider.sent.length, 1);
   });
+});
 
+describe("every attempt is one ledger line (done-when 4)", () => {
   test("a provider that returns no messageRef is a failure the core records, not a send", async () => {
     const run = harness();
     // deliberately breaks the port's contract (no `messageRef`): the point of the test is that the core notices
@@ -576,7 +580,9 @@ describe("the audience guard refuses an announcement that asks, before any send 
     assert.deepEqual(on.provider.sent, off.provider.sent);
     assert.deepEqual(on.misuses, []);
   });
+});
 
+describe("the audience guard refuses an announcement that asks, before any send (agent-org#1222, a11ign#5112)", () => {
   test("with the guard OFF (the default), 'Can you power it on?' is sent as it always was", async () => {
     const run = harness();
     const [decision] = await run.tick([announcement({ key: "incident:power", text: "Can you power it on?" })]);

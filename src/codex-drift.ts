@@ -95,17 +95,7 @@ export function codexClientDaemonDrift({ home, run = runProgram, readCodexConfig
 }): Finding[] {
   const config = join(home, ".codex", "config.toml");
   const unit = "codex";
-  const asked = (program: string, args: string[]): { text: string } | { absent: true } | { failure: string } => {
-    for (const candidate of program === "codex" ? ["codex", join(home, ".local", "bin", "codex")] : [program]) {
-      try {
-        return { text: run(candidate, args) };
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
-        return { failure: causeOf(cause) };
-      }
-    }
-    return { absent: true };
-  };
+  const asked = askerFor(home, run);
 
   const version = asked("codex", ["app-server", "daemon", "version"]);
   if ("absent" in version) {
@@ -145,16 +135,7 @@ export function codexClientDaemonDrift({ home, run = runProgram, readCodexConfig
   const unreadable = [client, daemon].filter((one): one is Finding => !(one instanceof Map));
   findings.push(...unreadable);
 
-  let declared: Set<string> = new Set();
-  let configNote = "";
-  let configFinding: Finding | null = null;
-  try {
-    declared = codexDeclaredFeatures(readCodexConfig(config));
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") configNote = ` (\`${config}\` does not exist, so nothing is declared)`;
-    else configFinding = { unit: config, problem: "CODEX CONFIG UNREADABLE", manualFix: true,
-      detail: `\`${config}\` could not be read (${causeOf(cause)}), so which feature defaults it declares is UNKNOWN rather than all of them.` };
-  }
+  const { declared, configNote, configFinding } = readDeclaredFeatures(config, readCodexConfig);
 
   const differing: { flag: string, client: boolean, daemon: boolean }[] = [];
   if (client instanceof Map && daemon instanceof Map) {
@@ -167,21 +148,64 @@ export function codexClientDaemonDrift({ home, run = runProgram, readCodexConfig
   const skew = cliVersion !== appServerVersion;
   if (configFinding !== null) findings.push(configFinding);
   if (skew || (configFinding === null && undeclared.length > 0)) {
-    const parts: string[] = [];
-    if (skew) parts.push(`the CLI is ${cliVersion} and the daemon it talks to is ${appServerVersion}`);
-    if (configFinding === null && undeclared.length > 0) {
-      parts.push(`${undeclared.length} feature${undeclared.length === 1 ? "" : "s"} default${undeclared.length === 1 ? "s" : ""} differently and `
-        + `${undeclared.length === 1 ? "is" : "are"} not declared in \`[features]\`${configNote}: `
-        + undeclared.map(({ flag, client: c, daemon: d }) => `\`${flag}\` (CLI ${c}, daemon ${d})`).join(", "));
-    }
-    const lines = undeclared.map(({ flag, client: c }) => `\`${flag} = ${c}\``);
-    findings.unshift({ unit, problem: CLIENT_DAEMON_DISAGREE, manualFix: true,
-      detail: `${parts.join("; ")}. A session that meets a default the other build does not has stopped on a dialog before (#4437). `
-        + `This check edits nothing: declaring a flag is a ruling. ${lines.length === 0 ? "Update the CLI to the daemon's release (or the daemon to the CLI's)."
-          : `Once ruled, add ${lines.join(", ")} under \`[features]\` in \`${config}\`, the value the client already runs with.`} `
-        + `${CODEX_UPDATE_OWNER} is the one owner of a version move (a daemon updating itself outside it is this drift), and it moves both.` });
+    findings.unshift(disagreementFinding({ unit, config, configNote, skew, cliVersion, appServerVersion, undeclared, configReadable: configFinding === null }));
   }
   return findings;
+}
+
+/** The reader of a program's output for `home`: `codex` is tried on the PATH and then in `<home>/.local/bin`, and a program that is not there is `absent`, not a failure. */
+function askerFor(home: string, run: (program: string, args: string[]) => string) {
+  return (program: string, args: string[]): { text: string } | { absent: true } | { failure: string } => {
+    for (const candidate of program === "codex" ? ["codex", join(home, ".local", "bin", "codex")] : [program]) {
+      try {
+        return { text: run(candidate, args) };
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") continue;
+        return { failure: causeOf(cause) };
+      }
+    }
+    return { absent: true };
+  };
+}
+
+/**
+ * The features the config declares, with what the read said when it did not succeed: a missing file declares nothing (`configNote` says so), and an unreadable one is a finding.
+ */
+function readDeclaredFeatures(config: string, readCodexConfig: (path: string) => string): { declared: Set<string>, configNote: string, configFinding: Finding | null } {
+  let declared: Set<string> = new Set();
+  let configNote = "";
+  let configFinding: Finding | null = null;
+  try {
+    declared = codexDeclaredFeatures(readCodexConfig(config));
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") configNote = ` (\`${config}\` does not exist, so nothing is declared)`;
+    else configFinding = { unit: config, problem: "CODEX CONFIG UNREADABLE", manualFix: true,
+      detail: `\`${config}\` could not be read (${causeOf(cause)}), so which feature defaults it declares is UNKNOWN rather than all of them.` };
+  }
+  return { declared, configNote, configFinding };
+}
+
+/**
+ * The one finding that the client and the daemon disagree: their versions when they differ, and the feature defaults that differ and the config does not declare. Its remedy is
+ * words only: it names the line to add, and the value the client already runs with.
+ */
+function disagreementFinding({ unit, config, configNote, skew, cliVersion, appServerVersion, undeclared, configReadable }: {
+  unit: string; config: string; configNote: string; skew: boolean; cliVersion: string; appServerVersion: string;
+  undeclared: { flag: string, client: boolean, daemon: boolean }[]; configReadable: boolean;
+}): Finding {
+  const parts: string[] = [];
+  if (skew) parts.push(`the CLI is ${cliVersion} and the daemon it talks to is ${appServerVersion}`);
+  if (configReadable && undeclared.length > 0) {
+    parts.push(`${undeclared.length} feature${undeclared.length === 1 ? "" : "s"} default${undeclared.length === 1 ? "s" : ""} differently and `
+      + `${undeclared.length === 1 ? "is" : "are"} not declared in \`[features]\`${configNote}: `
+      + undeclared.map(({ flag, client: c, daemon: d }) => `\`${flag}\` (CLI ${c}, daemon ${d})`).join(", "));
+  }
+  const lines = undeclared.map(({ flag, client: c }) => `\`${flag} = ${c}\``);
+  return { unit, problem: CLIENT_DAEMON_DISAGREE, manualFix: true,
+    detail: `${parts.join("; ")}. A session that meets a default the other build does not has stopped on a dialog before (#4437). `
+      + `This check edits nothing: declaring a flag is a ruling. ${lines.length === 0 ? "Update the CLI to the daemon's release (or the daemon to the CLI's)."
+        : `Once ruled, add ${lines.join(", ")} under \`[features]\` in \`${config}\`, the value the client already runs with.`} `
+      + `${CODEX_UPDATE_OWNER} is the one owner of a version move (a daemon updating itself outside it is this drift), and it moves both.` };
 }
 
 /** @param {string} program @param {string[]} args @returns {string} */
