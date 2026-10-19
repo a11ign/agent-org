@@ -902,6 +902,24 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
   assert.ok(p.posts.some((x) => x.path === "/api/queue/P-1/respond"));
 });
 
+test("A11-125: a queued run Blocked on an overlap offers Start anyway beside Remove, and a run started anyway says what it overlapped", async () => {
+  const runs = [
+    entry("H-1", { phase: "running", startedAt: 2, paths: ["nbl-ui-netbox:src/pool.ts"] }),
+    entry("Q-2", { phase: "queued", paths: ["nbl-ui-netbox:src/"] }),
+    entry("Q-3", { phase: "queued", paths: ["nbl-ui-netbox:docs/"] }),
+    entry("S-4", { phase: "running", startedAt: 3, overlapOverride: { holder: "H-1", pull: "12", path: "src/pool.ts", at: 4 } }),
+  ];
+  const p = await page(new Map(), { entries: runs });
+  const actions = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
+  assert.deepEqual(actions("Q-2").map((b) => b.text()), ["Start anyway", "Remove"]);
+  assert.match(actions("Q-2")[0].title ?? "", /^Start this run now, beside the run that holds a path it shares/);
+  assert.deepEqual(actions("Q-3").map((b) => b.text()), ["Remove"], "a run that overlaps nothing is started on its own");
+  assert.match(runRows(p).find((r) => r.text().includes("S-4"))!.text(), /Started anyway: it overlapped H-1 #12 on src\/pool\.ts; a person overrode the wait/);
+  actions("Q-2")[0].fire("click");
+  await settle();
+  assert.ok(p.posts.some((x) => x.path === "/api/queue/Q-2/start-anyway"));
+});
+
 const WORK_AND_PERSONAL = { connections: [{ name: "work", kind: "local" }, { name: "personal", kind: "ssh" }], refusal: null };
 /** This machine's instance alone, which the service shows when no connections file names others. */
 const WORK_ALONE = { connections: [{ name: "work", kind: "local" }], refusal: null };

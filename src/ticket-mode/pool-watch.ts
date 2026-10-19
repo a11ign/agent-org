@@ -3,7 +3,7 @@
 
 import { herdrReason, readAgents } from "../herdr-agents.ts";
 import { log, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
-import { close, end, settle } from "./pool-settle.ts";
+import { close, end, pullFilesOf, settle } from "./pool-settle.ts";
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordPullFiles, recordRepos, roundsLeft, unpark, watchWorking } from "./queue/approve.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
@@ -365,8 +365,7 @@ export function watchFeedback(ctx: PoolContext): void {
     const open = readable.filter(({ read }) => read.state === "open");
     const partial = open.filter(({ read }) => !read.filesComplete).map(({ url }) => url);
     if (partial.length > 0) log(`${entry.ticket.key}: ${partial.join(", ")} changes more than the 100 files read, so the files past those read are unknown and hold nothing`);
-    // The files GitHub did not give are unknown, not untouched: the empty name marks the list as cut short, and only the files listed hold (`footprintOf`).
-    const files = Object.fromEntries(open.map(({ url, read }) => [url, read.filesComplete ? read.files : [...read.files, ""]]));
+    const files = pullFilesOf(open);
     // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
     if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
     if (!resumesOnConflict(entry)) continue;

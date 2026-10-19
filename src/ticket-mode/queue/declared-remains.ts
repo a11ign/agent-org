@@ -162,6 +162,11 @@ export type Entry = Readonly<{
    */
   paths?: readonly string[];
   /**
+   * Why its plan could not be downloaded on the last pass (A11-125): the run is held, and the board asks again on every pass. Set by
+   * `recordPathsFailure`, and cleared once the plan is read.
+   */
+  pathsFailure?: string;
+  /**
    * The files each of its open pull requests changes, by URL, as the last watch read them: the footprint of a run with a pull request open. An
    * empty name in a list marks a list cut short: the files past those listed are unknown and hold nothing (`footprintOf`).
    */
@@ -189,6 +194,14 @@ export type Entry = Readonly<{
   feedback?: string;
   /** Set on a review round a person asked for with Respond to review: it answers the pull requests' current feedback. See {@link respond}. */
   asked?: boolean;
+  /** Set on an asked round for a run the board handed back at its cap for a conflict: the conflict lines, which the round merges the base in for. */
+  conflict?: string;
+  /**
+   * Set when a person started the run anyway, past the overlap it was Blocked on (A11-125): the run it overlapped, its first open pull request's number,
+   * and the path both touch (null while that run's files are not read yet). The run no longer waits on that overlap, and the board says so for as
+   * long as the run is on the board. Kept through a start, a finish and a retry, and carried by a review round.
+   */
+  overlapOverride?: Readonly<{ holder: string; pull: string | null; path: string | null; at: number }>;
   /** How many rounds the board has started on its own since a person last approved: at most {@link MAX_FEEDBACK_ROUNDS}. */
   rounds?: number;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. A person's Approve clears it. */
@@ -456,12 +469,12 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, stackBase } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, stackBase, overlapOverride } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, stackBase }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, stackBase }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again.
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
@@ -480,9 +493,9 @@ export const reviewable = (entry: Entry): boolean =>
  * run keeps its footprint: its paths and the files of its pull requests, so it still holds them while it is live.
  */
 export function reviewRound(entry: Entry, prs: readonly PullRequest[], now: number): Entry {
-  const { ticket, repos, model, effort, planned, session, published } = entry;
+  const { ticket, repos, model, effort, planned, session, published, overlapOverride } = entry;
   return { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(session ? { session } : {}), ...(published ? { published } : {}),
-    ...carriedFields(entry), review: prs, phase: "queued", queuedAt: now };
+    ...(overlapOverride ? { overlapOverride } : {}), ...carriedFields(entry), review: prs, phase: "queued", queuedAt: now };
 }
 
 /**

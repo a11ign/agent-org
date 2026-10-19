@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { acceptanceFileForBranch } from "../acceptance-file.ts";
 import { QUEUED_EXIT as EXIT_QUEUED } from "../gh-ledger.ts";
 import { REPO } from "../project-identity.ts";
+import { declaredRegionFiles } from "../region-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
@@ -33,8 +34,8 @@ const BODY = `Closes ${KEY}\n\nMutation: none -- these tests drive the ticket ch
 
 /** The run a test starts from: a ready machine (`tickets.drafts: false`), so a create needs no `--draft`, and a test of drafts says otherwise. */
 const ticket = (over: Partial<TicketContext> = {}): TicketContext => ({
-  key: KEY, branch: BRANCH, folder: FOLDER, treeKey: "agent-org", regionText: REGION, readyRun: true, prReview: null, hasChangesets: false,
-  keywords: DEFAULT_KEYWORDS, ...over,
+  key: KEY, branch: BRANCH, folder: FOLDER, treeKey: "agent-org", regionText: REGION, regionFrom: "the ticket's `## Region`", readyRun: true, prReview: null,
+  hasChangesets: false, keywords: DEFAULT_KEYWORDS, ...over,
 });
 
 /** `git` in a ticket's tree: the diff's files and the added ones, the tree's root, and its checked-out branch. */
@@ -246,6 +247,14 @@ test("A11-74: a repository with changesets needs a changeset in the diff or a no
   assert.match(unconfigured.said, /CHANGESET: not checked -- this repository has no \.changeset\/config\.json/);
 });
 
+/** A host file in `dir` that names the plan files of a ticket, and the settings it reads from it (A11-125). */
+function planHost(dir: string): () => ReturnType<typeof parseTicketSettings> {
+  const host = join(dir, "host.json");
+  writeFileSync(host, JSON.stringify({ clones: { "agent-org": TREE }, stateDir: join(dir, "state"), tickets: { worktreeRoot: "/work/.tickets", linearKey: { path: "/keys/linear" },
+    plan: "-plan-[^/]*\\.md$" } }));
+  return () => parseTicketSettings(JSON.parse(readFileSync(host, "utf8")));
+}
+
 test("A11-74: a ticket that cannot be read refuses the create, and its Region is the description with the plan files attached to it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pr-open-ticket-test-"));
   try {
@@ -278,6 +287,44 @@ test("A11-74: a ticket that cannot be read refuses the create, and its Region is
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A11-125: a plan's `## Paths` is the Region `pr:open` checks its diff against, and the pass line says so.
+test("A11-125: a plan with only a Paths section is the Region pr:open checks, read before the ticket's own, and a plan with both sections is read from Paths alone", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pr-open-ticket-paths-"));
+  try {
+    const settings = planHost(dir);
+    const description: Ticket = { key: KEY, title: "t", description: "Fix the thing.\n\n## Region\n\n```\nagent-org:src/from-description.ts\n```", url: "https://linear.app/x", branch: BRANCH,
+      status: "Todo", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null };
+    const planned = (files: Record<string, string>): TicketSource => ({
+      assigned: async () => [],
+      read: async () => description,
+      download: async (_ticket, to) => Object.entries(files).map(([name, text]) => { const path = join(to, name); writeFileSync(path, text); return path; }),
+    });
+    const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH };
+    const pathsPlan = "## Paths\n\n- `agent-org:src/from-paths.ts`\n";
+    const both = `${pathsPlan}\n## Region\n\n\`\`\`\nagent-org:src/from-region.ts\n\`\`\`\n`;
+
+    const paths = await readTicketContext(env, { settings, git: gitFor(), exists: () => false, source: () => planned({ [`attachment-1-${KEY}-0001-plan-x.md`]: pathsPlan }) });
+    assert.equal(declaredRegionFiles(paths.regionText, { rootFiles: new Set() })?.includes("agent-org:src/from-paths.ts"), true, "the plan's Paths is the Region");
+    assert.equal(paths.regionFrom, "the plan's `## Paths`");
+    assert.equal(declaredRegionFiles(paths.regionText, { rootFiles: new Set() })?.includes("agent-org:src/from-description.ts"), false, "the description's Region is not the one read");
+
+    const bothRead = await readTicketContext(env, { settings, git: gitFor(), exists: () => false, source: () => planned({ [`attachment-1-${KEY}-0001-plan-x.md`]: both }) });
+    assert.deepEqual(declaredRegionFiles(bothRead.regionText, { rootFiles: new Set() }), ["agent-org:src/from-paths.ts"], "a plan with both sections is read from Paths alone");
+
+    const noPaths = await readTicketContext(env, { settings, git: gitFor(), exists: () => false, source: () => planned({}) });
+    assert.deepEqual(declaredRegionFiles(noPaths.regionText, { rootFiles: new Set() }), ["agent-org:src/from-description.ts"], "a ticket with no Paths anywhere is read as before");
+    assert.equal(noPaths.regionFrom, "the ticket's `## Region`");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("A11-125: pr:open's pass line says which section the Region came from", () => {
+  const r = open(["--body", BODY, "--title", "fix: the thing"], { ticket: ticket({ regionText: "## Region\n\n```\nagent-org:src/x.ts\n```\n", regionFrom: "the plan's `## Paths`" }) });
+  assert.equal(r.code, 0, r.refused);
+  assert.match(r.said, /REGION: 1 changed path\(s\) against A11-74's Region .* 1 inside.* The Region is read from the plan's `## Paths`\./);
 });
 
 test("A11-74: the run's folder and drafts setting come from the host file named by AGENT_ORG_TICKET_HOST, and the ready mark beside its outcome", async () => {

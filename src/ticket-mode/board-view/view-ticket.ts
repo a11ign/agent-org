@@ -15,6 +15,10 @@ export type ViewEntry = Readonly<{
   ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
+  /** Why the plan of a queued run could not be downloaded, which holds it back (A11-125). */
+  pathsFailure?: string;
+  /** Set when a person started the run past the overlap it was Blocked on: the run it overlapped, and where (A11-125). */
+  overlapOverride?: Readonly<{ holder: string; pull: string | null; path: string | null; at: number }>;
   /** The repositories the run has made worktrees in, once it has made any. */
   repos?: readonly string[];
   /** Set while the ticket still needs its plan: the model and effort its planning run uses. */

@@ -28,7 +28,7 @@ import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } fr
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/declared-remains.ts";
-import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue } from "./queue/approve.ts";
+import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/approve.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
@@ -352,10 +352,10 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
   return undefined;
 }
 
-/** The routes that act on one queued run: amend, remove, retry, approve, respond, stop, close, dismiss, and apply or discard its edit. */
+/** The routes that act on one queued run: amend, remove, retry, approve, respond, start anyway, stop, close, dismiss, and apply or discard its edit. */
 async function queueActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { store, pool, now, wake } = board;
-  const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
+  const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|start-anyway|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
   if (method === "POST" && action) {
     const [, key, verb] = action;
     if (verb === "amend") store.set(amend(store.get(), key, validChange(body, ["model", "effort"])));
@@ -364,6 +364,11 @@ async function queueActionRoute(board: Board, method: string, path: string, body
     if (verb === "retry") store.set(retry(store.get(), key, now()));
     if (verb === "approve") store.set(approve(store.get(), key, now()));
     if (verb === "respond") store.set(respond(store.get(), key, now()));
+    // A person's override of the overlap wait, which the board records on the run and logs (A11-125).
+    if (verb === "start-anyway") {
+      store.set(startAnyway(store.get(), key, now()));
+      process.stderr.write(`ticket:serve: ${key} starts anyway: a person overrode its overlap with ${store.get().entries.find((e) => e.ticket.key === key)?.overlapOverride?.holder ?? "a run"}\n`);
+    }
     if (verb === "stop") pool.stop(key);
     if (verb === "close") pool.close(key);
     // The pool's, like Close: a parked run's workspace is closed before the run leaves the board.

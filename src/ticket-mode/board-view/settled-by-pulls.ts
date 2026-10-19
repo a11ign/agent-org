@@ -112,13 +112,20 @@ function blockerWait(entry: ViewEntry, blocker: ViewBlocker): string {
  * cannot stack on one, such as "Waits for NBF-1 to push its branch"; or for a path another run holds, such as "Waits on NBF-1 #12: both touch pool.ts".
  */
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
+  const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again on every pass`];
   const waits = waitsOn(entry, entries);
   const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map(({ key }) => key);
-  if (merging.length > 0) return `Waits for ${merging.join(", ")} to merge`;
-  const reasons = waits.map((blocker) => blockerWait(entry, blocker));
+  if (merging.length > 0) return [...plan, `Waits for ${merging.join(", ")} to merge`].join("; ");
+  const reasons = [...plan, ...waits.map((blocker) => blockerWait(entry, blocker))];
   const overlap = overlapWait(entry, entries);
-  if (overlap !== null) reasons.push(`Waits on ${overlap.key}${overlap.pull === null ? "" : ` #${overlap.pull}`}: both touch ${overlap.path}`);
+  if (overlap !== null) reasons.push(overlapNote(overlap));
   return reasons.length === 0 ? null : reasons.join("; ");
+}
+
+/** Why a queued run waits for an overlap, such as "Waits on NBF-1 #12: both touch pool.ts", or while the run's files are not read yet. PURE. */
+function overlapNote(overlap: OverlapWait): string {
+  const pull = overlap.pull === null ? "" : ` #${overlap.pull}`;
+  return `Waits on ${overlap.key}${pull}${overlap.path === null ? ": its changed files are not read yet" : `: both touch ${overlap.path}`}`;
 }
 
 /**
@@ -188,22 +195,31 @@ const holds = (entry: ViewEntry): boolean => {
 const exempt = (entry: ViewEntry, other: ViewEntry): boolean =>
   (entry.blockers ?? []).some(({ key }) => key === other.ticket.key) || (other.blockers ?? []).some(({ key }) => key === entry.ticket.key);
 
-/** The counted paths a queued run contests: none for a run that is not queued, is planning or is a review round, since no path holds those. PURE. */
-const contested = (entry: ViewEntry): string[] =>
-  entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined ? [] : (entry.paths ?? []).filter(countsForOverlap);
+/**
+ * The counted paths a queued run contests: none for a run that holds no path (see {@link pathless}), or was started anyway past its overlap
+ * (`overlapOverride`). PURE.
+ */
+const contested = (entry: ViewEntry): string[] => pathless(entry) || entry.overlapOverride !== undefined ? [] : (entry.paths ?? []).filter(countsForOverlap);
+
+/** Whether a run holds no path in the queue: it is not queued, it is planning, or it is a review round, since no path holds those. PURE. */
+const pathless = (entry: ViewEntry): boolean => entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined;
 
 /** Whether `other` is a run a queued run contests paths with: a run that holds its footprint, other than its own and not sequenced with it. PURE. */
 const competes = (entry: ViewEntry, other: ViewEntry): boolean => other.ticket.key !== entry.ticket.key && holds(other) && !exempt(entry, other);
 
-/** The run a queued run waits on for a shared path: its key, the number of its first open pull request when it has one, and the path both touch. */
-export type OverlapWait = Readonly<{ key: string; pull: string | null; path: string }>;
+/**
+ * The run a queued run waits on: its key, the number of its first open pull request when it has one, and the path both touch, or null for a run whose
+ * pull request's files are not read yet, so that the run is held by its repository alone (A11-125).
+ */
+type OverlapWait = Readonly<{ key: string; pull: string | null; path: string | null }>;
 
 /**
  * Why a queued run waits, for a path it shares with a run already held in its repository (see {@link holds}), or null when it waits on none. A
  * run is not held by one of whose blockers it is or that is one of its blockers, since those are sequenced on purpose (`waitsOn`, `stackedOn`).
  * Tickets planned together are worked as separate runs, and are held against each other like any others. A review round, a conflict round and a
  * planning run are never held, and nor is a run with no paths declared, or one whose paths are only scaffolding (see {@link footprintOf}).
- * `entries` is the whole queue, or the queue with the runs a pass has just chosen counted as starting, so a batch of starts keeps to one another. PURE.
+ * A held run whose open pull request's files are not read yet holds its repository's paths, since they may share one: it waits until a watch reads
+ * them (A11-125). `entries` is the whole queue, or the queue with the runs a pass has just chosen counted as starting, so a batch of starts keeps to one another. PURE.
  */
 export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): OverlapWait | null {
   const mine = contested(entry);
@@ -213,6 +229,20 @@ export function overlapWait(entry: ViewEntry, entries: readonly ViewEntry[]): Ov
     const held = footprintOf(other);
     const path = mine.find((own) => held.some((theirs) => pathsOverlap(own, theirs)));
     if (path !== undefined) return { key: other.ticket.key, pull: parsePull(openPulls(other)[0]?.url ?? "")?.number ?? null, path: repoPath(path)[1] };
+  }
+  return unreadWait(entry, entries, mine);
+}
+
+/**
+ * The run a queued run waits on because a held run's pull request has no files read yet (`pullFiles` unset) and lies in a repository one of the queued
+ * run's paths names: the files it may change are unknown, so they may share one. Null when no such run holds it. PURE.
+ */
+function unreadWait(entry: ViewEntry, entries: readonly ViewEntry[], mine: readonly string[]): OverlapWait | null {
+  const repos = new Set(mine.map((path) => repoPath(path)[0]));
+  for (const other of entries) {
+    if (!competes(entry, other) || other.phase !== "finished" || other.pullFiles !== undefined) continue;
+    const pull = openPulls(other).find(({ repo }) => repo !== undefined && repos.has(repo));
+    if (pull !== undefined) return { key: other.ticket.key, pull: parsePull(pull.url)?.number ?? null, path: null };
   }
   return null;
 }
@@ -234,13 +264,13 @@ export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): st
 
 /**
  * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}),
- * or while it waits on a path another run holds ({@link overlapWait}). The
+ * or while it waits on a path another run holds ({@link overlapWait}), or while its plan cannot be downloaded (`pathsFailure`). The
  * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
  * its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests merged is done
  * even while its ticket is still in progress. Before either, the outcome decides. It never answers Publishing: that is {@link shownStatus}'s.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
-  if (entry.phase === "queued") return waitsOn(entry, entries).length > 0 || overlapWait(entry, entries) !== null ? "blocked" : "queued";
+  if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
@@ -327,7 +357,36 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
 export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
 
 /** What a person can do to a run from the board. */
-export type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "dismiss" | "apply-edit" | "discard-edit";
+type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "dismiss" | "apply-edit" | "discard-edit" | "start-anyway";
+
+/** Why a person presses Start anyway, shown as its tooltip: the run starts beside the run that holds a path it shares, and the two may conflict on it. */
+export const START_ANYWAY_TITLE = "Start this run now, beside the run that holds a path it shares: the two may conflict on that path";
+
+/**
+ * Whether a queued run may be started anyway: it is Blocked on an overlap with a run that holds a path it shares, and on no ticket that blocks it, nor
+ * on its plan's download (a plan that could not be read). PURE.
+ */
+const startAnywayOffered = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>
+  entry.phase === "queued" && unblockedByTicket(entry, entries) && overlapWait(entry, entries) !== null;
+
+/** Whether a queued run waits on no ticket that blocks it, and its plan could be read, so an overlap alone may hold it. PURE. */
+const unblockedByTicket = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean => entry.pathsFailure === undefined && waitsOn(entry, entries).length === 0;
+
+/** Whether a queued run is held back: by a ticket that blocks it, by a path another run holds, or by a plan that could not be downloaded. PURE. */
+const queuedHeld = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>
+  !unblockedByTicket(entry, entries) || overlapWait(entry, entries) !== null;
+
+/**
+ * The note a run started past its overlap keeps on its row, for as long as it is on the board (A11-125): which run it overlapped, and where, such as
+ * "Started anyway: it overlapped A11-98 #12 on src/pool.ts; a person overrode the wait". Null for a run started any other way. PURE.
+ */
+export function overrideNote(entry: ViewEntry): string | null {
+  const override = entry.overlapOverride;
+  if (override === undefined) return null;
+  const pull = override.pull === null ? "" : ` #${override.pull}`;
+  const where = override.path === null ? "before its changed files were read" : `on ${override.path}`;
+  return `Started anyway: it overlapped ${override.holder}${pull} ${where}; a person overrode the wait`;
+}
 
 /** Why a person presses Approve, shown as its tooltip: the drafts are reviewed. */
 export const APPROVE_TITLE = "Drafts reviewed and approved: mark the pull requests ready, then see them through their checks and review";
@@ -351,15 +410,15 @@ export const DISCARD_EDIT_TITLE = "Drop the worker's proposed edit. The ticket i
 export const hasEdit = (entry: ViewEntry): boolean => entry.outcome?.edit !== undefined;
 
 /**
- * The actions a run offers. A queued run can be removed and a live one stopped. A finished run that kept its workspace (parked) can be closed,
+ * The actions a run offers. A queued run can be removed, or started anyway when it is Blocked on an overlap ({@link startAnywayOffered}), and a live one stopped. A finished run that kept its workspace (parked) can be closed,
  * and only once it is closed can it be retried. Pull requests are results, and are not retried, and nor is a run that concluded with nothing more
  * to do ({@link CONCLUDED}). Drafts awaiting review offer Approve, which marks them ready. Ready ones (Ready to merge, Published, or handed back
  * after the board's own rounds) offer Respond to review, which answers their feedback now. EVERY FINISHED RUN OFFERS DISMISS, last, a parked one
  * too, so no run stays on the board for ever: it takes the run off the board and closes its workspace if one is open. A run the publish run under
  * way is posting is the exception: `queue.ts`'s `dismiss` keeps it until it has posted, so it is not offered there either.
  */
-export function runActions(entry: ViewEntry, publish?: ViewPublish): RunAction[] {
-  if (entry.phase === "queued") return ["remove"];
+export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: readonly ViewEntry[] = []): RunAction[] {
+  if (entry.phase === "queued") return startAnywayOffered(entry, entries) ? ["start-anyway", "remove"] : ["remove"];
   if (entry.phase !== "finished") return ["stop"];
   const dismiss: RunAction[] = isBeingPublished(entry, publish) ? [] : ["dismiss"];
   const edit: RunAction[] = hasEdit(entry) ? ["apply-edit", "discard-edit"] : [];

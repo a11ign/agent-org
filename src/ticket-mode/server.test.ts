@@ -221,6 +221,21 @@ test("Respond to review queues a review round of a run whose pull requests are r
   assert.ok(b.ticks.includes("tick"), "responding wakes the pool");
 });
 
+// A11-125: Start anyway, through the board, passes a queued run's overlap, records it, logs it and wakes the pool; a refusal is named.
+test("A11-125: Start anyway, through the board, records the overlap it passes and wakes the pool, and refuses a run that overlaps nothing", async () => {
+  const b = board();
+  const holder = { ticket: { key: "NBF-1", title: "t", url: "" }, repos: [], model: "opus", effort: "high", queuedAt: 1, phase: "running", paths: ["nbl-ui-netbox:src/pool.ts"] };
+  const waiting = { ...holder, ticket: { key: "NBF-2", title: "t", url: "" }, phase: "queued", paths: ["nbl-ui-netbox:src/"] };
+  const free = { ...holder, ticket: { key: "NBF-3", title: "t", url: "" }, phase: "queued", paths: ["nbl-ui-netbox:docs/"] };
+  b.store.set({ ...b.store.get(), entries: [holder, waiting, free] as never });
+  await assert.rejects(b.api("POST", "/api/queue/NBF-3/start-anyway", {}), /nothing overlaps NBF-3 now, so there is no overlap to start past/);
+  assert.equal(b.ticks.length, 0, "a refusal wakes nothing");
+  await b.api("POST", "/api/queue/NBF-2/start-anyway", {});
+  const [, passed] = b.store.get().entries;
+  assert.deepEqual([passed.overlapOverride?.holder, passed.overlapOverride?.path], ["NBF-1", "src/"], "the overlap it passed is recorded on the run");
+  assert.ok(b.ticks.includes("tick"), "starting anyway wakes the pool");
+});
+
 test("Publish queues one publish run for the ticked runs Ready to merge on a machine that publishes, and is refused on one that does not", async () => {
   const run = "Post {prs}, then write {dir}/published.json";
   for (const [publish, expected] of [[{ run }, true], [undefined, false]] as const) {

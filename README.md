@@ -248,6 +248,8 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
 - **Respond to review, for pull requests that are ready already.** A run Ready to merge, Published, or handed back after the board's 3 rounds,
   offers Respond to review. It queues a review round straight away, resuming the same worker, told that you asked it to answer the current
   feedback: reviews, comments and failing checks. It starts the count of the board's own rounds again, so watching carries on after it.
+  A run the board handed back at its cap because its pull request conflicts with its base merges that base in first, keeping both
+  changes, and never rebases or force-pushes (A11-125).
 - **Publish, once a run is Ready to merge.** On a machine that sets `tickets.publish`, each run Ready to merge has a Publish tick, and
   "Publish selected (N)" publishes every ticked run in one press. Nothing else can be ticked: nothing reaches a channel before you approved it
   and it passed its review and checks, and a Published run is never posted twice. The press starts one publish run, in its own folder
@@ -275,7 +277,15 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   completes it, or, when it is on the queue itself, once its run is Completed, which its pull requests merging is enough for. A canceled or
   duplicate blocker never lets go, so a person decides. The blockers are read before a run first starts, and nothing starts while the tracker
   cannot say; they are read again every two minutes, so a relation changed in the tracker counts. A run that waited names its blockers and
-  their pull requests in its brief, and checks that any release it depends on is out before relying on it.
+  their pull requests in its brief, and checks that any release it depends on is out before relying on it. A run whose plan cannot be
+  downloaded waits, saying why, and the board asks again on every pass; the other runs start, and it takes no slot (A11-125).
+- **Held back by an overlap.** A queued run whose plan declares a path another run holds waits, as Blocked, saying which run it waits on
+  and the path both touch. A run holds the paths its plan declares, and the files its open pull requests change, from the moment it ends.
+  Its plan's `## Paths` section lists those paths, `<repo>:<path>` bullets; `pr:open` reads the same section as the Region its pull
+  request is checked against. A pull request whose files are not read yet holds its whole repository until a watch reads them.
+- **Start anyway, for an overlap.** A run Blocked only on such an overlap, and on no ticket that blocks it, offers Start anyway. It
+  starts beside the run it overlapped, the board says so on its row ("Started anyway: it overlapped NBF-1 #12 on src/pool.ts; a person
+  overrode the wait") and the log records it. It does not pass a blocker, nor a plan that could not be downloaded (A11-125).
 - **Stacked on its blocker when both land in one repository.** A queued run whose planner recorded its repository (a ticket planned in a
   batch) does not wait for a blocker that has an open pull request, a draft included, in that same repository. It starts on top of it
   instead, and the board says "Stacked on NBF-1 #12". The brief names each such blocker's pull request and branch. The worker makes its
@@ -323,8 +333,9 @@ refused as `needs-human`.
 
 **Opening a pull request in ticket mode.** A worker opens each pull request with `pr:open`, which checks it before `gh pr create` sends it. A
 ticket has no GitHub row, so `pr:open` reads the ticket through the tracker instead, and makes the checks a row's pull request gets: the Region,
-read from the ticket's description and its plan files (a `## Region` section listing each path the work changes, one per line, prefixed
-`<repo>:` where the ticket spans repositories); the body's keyword for the ticket, which is `Closes <KEY>` when the pull request completes it
+read from the plan's `## Paths` section, the list of paths the work changes that the overlap wait reads too, and failing that from the
+ticket's description and its plan files (a `## Region` section listing each path the work changes, one per line, prefixed `<repo>:` where
+the ticket spans repositories); the body's keyword for the ticket, which is `Closes <KEY>` when the pull request completes it
 (its done-when is fully met) and `Refs <KEY>` with a `Partial: <what remains>` line when it is partial, leaving the ticket open, in place of
 `Closes #N`; a `Refs`-only body with no `Partial:` line is refused, and so are `Closes` of any other ticket, `Closes: none`, and a `Partial:`
 line beside a `Closes` (the words are the tracker's, `Closes` and `Refs` for Linear); the owner, which is the run and must sit in its own worktree on its
