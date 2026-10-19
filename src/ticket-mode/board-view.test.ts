@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/settled-by-pulls.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
-import { hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, SCAFFOLD_DIRS, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
+import { hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
 import { terminalOpenHref, runChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
+import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
+import { CHANGESET_SCAFFOLD, SCAFFOLD_DIRS } from "../scaffold-dirs.ts";
 
 const t = (key: string, status: string, statusOrder: number, priority: number, project: string | null, title = key): ViewTicket =>
   ({ key, title, status, statusOrder, priority, project });
@@ -757,9 +759,9 @@ test("A11-117: a run's footprint and its hold leave out the scaffolding of .acce
   assert.equal(overlapWait(waitingOn(["agent-org:src/b.ts"]), [run])?.path, "src/b.ts", "a source file a pull request changes holds the run that touches it");
 });
 
-test("A11-117: the scaffolding directories are the two the Region exempts, so the two lists cannot drift", () => {
-  assert.deepEqual(SCAFFOLD_DIRS, [".acceptance/", ".changeset/"]);
-  assert.deepEqual(SCAFFOLD_DIRS.map((dir) => REGION_EXEMPT.some(({ entry }) => entry === dir)), [true, true]);
+test("A11-117: the board and the Region read one list of scaffolding directories, and the Region still exempts each of them", () => {
+  assert.deepEqual(SCAFFOLD_DIRS, [ACCEPTANCE_DIR, CHANGESET_SCAFFOLD], "the acceptance directory is the one the acceptance file lives in");
+  assert.deepEqual(SCAFFOLD_DIRS.map((dir) => REGION_EXEMPT.some(({ entry }) => entry === dir)), [true, true], "dropping either from REGION_EXEMPT fails here");
 });
 
 test("A11-117: a shared file a run lists still holds the run beside it, and the note names that file", () => {

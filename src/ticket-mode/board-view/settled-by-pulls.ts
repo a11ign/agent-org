@@ -1,4 +1,5 @@
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-ticket.ts";
+import { SCAFFOLD_DIRS } from "../../scaffold-dirs.ts";
 
 /**
  * A finished run's status from its pull requests alone, once each has merged or closed: completed when any merged, cancelled when every one
@@ -99,13 +100,6 @@ export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): strin
   const overlap = overlapWait(entry, entries);
   return overlap === null ? null : `Waits on ${overlap.key}${overlap.pull === null ? "" : ` #${overlap.pull}`}: both touch ${overlap.path}`;
 }
-
-/**
- * The directories each ticket writes into under a name of its own: `.acceptance/<branch>.md` (ADR 0044) and a changeset with a generated name. No
- * two tickets write the same file there, so they never hold each other (A11-117). `REGION_EXEMPT` in `pr-open-region.ts` names the same two, and a
- * test keeps the two lists equal, since this file cannot import it.
- */
-export const SCAFFOLD_DIRS: readonly string[] = [".acceptance/", ".changeset/"];
 
 /** Split a repository-prefixed path, `<repo>:<path>`, into its repository and its path within it. PURE. */
 const repoPath = (path: string): [string, string] => {
