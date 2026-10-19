@@ -77,7 +77,7 @@ export type ViewBlocker = Readonly<{ key: string; state: string; status: string;
 /** Where a browser keeps the view's settings between visits; `localStorage` in the page. */
 export type Storage = Readonly<{ getItem(name: string): string | null; setItem(name: string, value: string): void }>;
 
-/** The project chip a ticket with no project falls under. */
+/** The project a ticket with no project falls under. */
 export const NO_PROJECT = "(no project)";
 
 export const projectOf = (ticket: ViewTicket): string => ticket.project ?? NO_PROJECT;
@@ -161,10 +161,13 @@ const PRIORITIES: readonly (readonly [number, string])[] = [[1, "Urgent"], [2, "
 export const PRIORITY_NAMES: Readonly<Record<number, string>> = Object.fromEntries(PRIORITIES);
 const PRIORITY_ORDER = PRIORITIES.map(([priority]) => priority);
 
-/** Each priority that a ticket a worker can be given has, most urgent first and none last, with how many have it. */
-export function priorityCounts(tickets: readonly ViewTicket[]): [number, number][] {
+/**
+ * Each priority that a ticket a worker can be given has, most urgent first and none last, with how many have it. A chosen priority is kept, at 0,
+ * when none of these tickets has it, so a choice made in one project still reads on the next.
+ */
+export function priorityCounts(tickets: readonly ViewTicket[], chosen: ReadonlySet<number> = new Set()): [number, number][] {
   const work = workItems(tickets);
-  return PRIORITY_ORDER.map((p): [number, number] => [p, work.filter((t) => t.priority === p).length]).filter(([, n]) => n > 0);
+  return PRIORITY_ORDER.map((p): [number, number] => [p, work.filter((t) => t.priority === p).length]).filter(([p, n]) => n > 0 || chosen.has(p));
 }
 
 /** The priority filter remembered in the browser, as numbers, dropping anything that is not a priority. */
@@ -195,6 +198,19 @@ export function projectCounts(tickets: readonly ViewTicket[]): [string, number][
   for (const t of tickets) counts.set(projectOf(t), (counts.get(projectOf(t)) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
+
+/**
+ * The project the Pick list shows: the remembered one while `counts` (the projects the list holds, as `projectCounts` gives them) names it, else the
+ * first of them, or null when it holds none. The fallback is not a choice to remember: only a click on a project saves one.
+ */
+export function chosenProject(counts: readonly (readonly [string, number])[], remembered: string | null): string | null {
+  if (remembered !== null && counts.some(([name]) => name === remembered)) return remembered;
+  return counts[0]?.[0] ?? null;
+}
+
+/** The tickets of one project, by {@link projectOf}: none when no project is chosen. */
+export const inProject = <T extends ViewTicket>(tickets: readonly T[], project: string | null): T[] =>
+  tickets.filter((t) => project !== null && projectOf(t) === project);
 
 /** The Pick list's order: the workflow's, then by priority (urgent first, none last). */
 const pickOrder = (a: ViewTicket, b: ViewTicket): number => {

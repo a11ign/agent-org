@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/settled-by-pulls.ts";
-import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
+import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
 import { rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
@@ -128,6 +128,26 @@ test("a ticket with no plan says so, and says when its parent's plan is what a w
 
 test("project chips count their tickets, most first, then by name", () => {
   assert.deepEqual(projectCounts(TICKETS), [["Billing", 2], ["Visual Explorer - GA", 2], [NO_PROJECT, 1]]);
+});
+
+test("A11-123: the project shown is the remembered one while the list holds it, else the first project of the sidebar, else none", () => {
+  const counts = projectCounts(TICKETS);
+  assert.equal(chosenProject(counts, "Billing"), "Billing", "remembered and listed");
+  assert.equal(chosenProject(counts, "Gone"), "Billing", "remembered but no open ticket is left in it: the first project");
+  assert.equal(chosenProject(counts, null), "Billing", "nothing remembered: the first project, most tickets first");
+  assert.equal(chosenProject([], "Billing"), null, "nothing listed: no project");
+  assert.equal(chosenProject([], null), null);
+});
+
+test("A11-123: a project's tickets are those of its name, and none when no project is chosen", () => {
+  assert.deepEqual(inProject(TICKETS, "Billing").map((x) => x.key), TICKETS.filter((x) => x.project === "Billing").map((x) => x.key));
+  assert.deepEqual(inProject(TICKETS, NO_PROJECT).map((x) => x.key), TICKETS.filter((x) => x.project === null).map((x) => x.key), "a ticket with no project is in (no project)");
+  assert.deepEqual(inProject(TICKETS, null), []);
+});
+
+test("A11-123: a priority chosen keeps its chip at 0 when no ticket a worker can be given has it, and the others stay as they were", () => {
+  assert.deepEqual(priorityCounts(TICKETS, new Set([4])), [[1, 1], [2, 1], [3, 1], [4, 0], [0, 2]], "no ticket is Low, but the chosen Low reads 0 in its place");
+  assert.deepEqual(priorityCounts(TICKETS, new Set([1])), priorityCounts(TICKETS), "a chosen priority that has tickets is as it was");
 });
 
 test("groups follow the workflow's order, and within a group urgent comes first and no priority last", () => {

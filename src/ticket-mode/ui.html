@@ -62,6 +62,7 @@
   .filter:hover { background: var(--panel); }
   .filter[aria-pressed="true"] { background: var(--panel); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
   .filter .n { margin-left: auto; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .pick-main { min-width: 0; }
   .run-list { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
   .run { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); align-items: start; }
   .run:first-child { border-top: 0; }
@@ -208,19 +209,23 @@
       <span id="loaded" class="pill"></span>
       <button class="small" id="new-ticket" type="button" hidden>New ticket</button>
     </div>
-    <div class="chips" id="projects"></div>
-    <div class="chips" id="assignees" hidden></div>
-    <div class="chips" id="priorities"></div>
-    <div class="chips" id="plans" hidden></div>
-    <div id="label-rows"></div>
-    <div id="children-note" class="notice" role="status" hidden></div>
-    <section id="writers" class="writers" aria-label="New tickets" hidden>
-      <h2>New tickets</h2>
-      <p id="writers-note" class="hint" role="status"></p>
-      <div id="writers-list"></div>
-    </section>
-    <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
-    <div id="groups"></div>
+    <div class="runs">
+      <nav class="filters" id="projects" aria-label="Projects"></nav>
+      <div class="pick-main">
+        <div class="chips" id="assignees" hidden></div>
+        <div class="chips" id="priorities"></div>
+        <div class="chips" id="plans" hidden></div>
+        <div id="label-rows"></div>
+        <div id="children-note" class="notice" role="status" hidden></div>
+        <section id="writers" class="writers" aria-label="New tickets" hidden>
+          <h2>New tickets</h2>
+          <p id="writers-note" class="hint" role="status"></p>
+          <div id="writers-list"></div>
+        </section>
+        <div id="paused-note" class="notice" hidden>Workers are paused. Tickets you queue wait on the Board until you start workers there.</div>
+        <div id="groups"></div>
+      </div>
+    </div>
   </section>
   <section id="board" hidden>
     <div class="bar">
@@ -250,7 +255,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
+  APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel, draftControls, draftStatusText, duplicateLines, draftForm, draftFields,
   runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
@@ -285,12 +290,14 @@ const state = {
   // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
   plan: null, planChoice: planChoiceOf(recall(storage, "ticket-mode.plan")),
   // Sections start collapsed, so a first visit sees every status and its count before any list.
-  open: recall(storage, "ticket-mode.open"), projects: recall(storage, "ticket-mode.projects"), priorities: prioritiesOf(recall(storage, "ticket-mode.priorities")),
+  open: recall(storage, "ticket-mode.open"), priorities: prioritiesOf(recall(storage, "ticket-mode.priorities")),
   // The label chips chosen, across every row, each as its group and label (label-filters.ts's labelChoice).
   labels: recall(storage, "ticket-mode.labels"),
   // Parents start folded too, so an epic reads as one row until it is opened.
   openParents: recall(storage, "ticket-mode.open-parents"),
   runFilter: [...recall(storage, "ticket-mode.run-filter")][0] ?? null,
+  // The project the Pick list shows, by name: one, remembered, or null for the first project in the sidebar's order (`chosenProject`, which decides it afresh each time).
+  project: [...recall(storage, "ticket-mode.project")][0] ?? null,
   // The instances the connections file lists, and the one shown. With no connections file there is one, this machine's.
   connections: [], connection: null,
   // Whether this machine writes tickets from a request (the host file's `tickets.writer`), whether Grill is on (`tickets.terminal`), the repositories
@@ -324,8 +331,14 @@ const inView = () => (state.assigneeRow ? state.tickets.filter((t) => inScope(t,
 const contextParents = () => [...(state.assigneeRow ? state.tickets.filter((t) => !inScope(t, state.assignee, state.viewer)) : []), ...state.parents];
 /** Whether each row names its owner: only on an instance that names assignees, and when the list is not the signed-in person's own. */
 const ownerShown = () => state.assigneeRow && showsOwner(state.assignee);
-const shown = () => withLabels(visibleTickets(inView(), { projects: state.projects, search: $("filter").value, plan: planFilter(), priorities: state.priorities }),
-  state.labels, inView());
+/** The project the Pick list shows, worked out afresh from the list: the remembered one while the list holds it, else the first in the sidebar. */
+const chosenName = () => chosenProject(projectCounts(inView()), state.project);
+/** The tickets of the chosen project in the assignee scope: what the filters, the search, Select all and the counter read. */
+const inChosenProject = () => inProject(inView(), chosenName());
+const shown = () => {
+  const projectTickets = inChosenProject();
+  return withLabels(visibleTickets(projectTickets, { search: $("filter").value, plan: planFilter(), priorities: state.priorities }), state.labels, projectTickets, inView());
+};
 
 function chip(label, pressed, onClick, n) {
   const b = el("button", { className: "chip", type: "button" }, label, n === undefined ? null : el("span", { className: "n" }, String(n)));
@@ -334,33 +347,43 @@ function chip(label, pressed, onClick, n) {
   return b;
 }
 
+/**
+ * The project sidebar: each project the list holds, with its open-ticket count, most first, and the one the list shows pressed. Only a click
+ * remembers a choice; the project shown when none is chosen, or the one remembered is gone, is the first here.
+ */
 function renderProjects() {
-  const counts = projectCounts(inView());
-  const choose = (next) => { state.projects = next; remember(storage, "ticket-mode.projects", next); render(); };
-  $("projects").replaceChildren(el("span", { className: "label" }, "Projects"),
-    chip("All projects", state.projects.size === 0, () => choose(new Set())),
-    ...counts.map(([name, n]) => chip(name, state.projects.has(name), () => choose(toggled(state.projects, name)), n)));
+  const current = chosenName();
+  const choose = (name) => { state.project = name; remember(storage, "ticket-mode.project", new Set([name])); render(); };
+  $("projects").replaceChildren(...projectCounts(inView()).map(([name, n]) => {
+    const b = el("button", { className: "filter", type: "button" }, el("span", {}, name), el("span", { className: "n" }, String(n)));
+    b.setAttribute("aria-pressed", String(name === current));
+    b.addEventListener("click", () => choose(name));
+    return b;
+  }));
 }
 
-/** The Assignee row: the signed-in person, Anyone, Unassigned, then each other person with an open ticket, each with its count. Drawn only on an instance that names assignees. */
-function renderAssignees(chips) {
+/**
+ * The Assignee row: the signed-in person, Anyone, Unassigned, then each other person with an open ticket, each with its count. Drawn only on an instance
+ * that names assignees. `projectTickets` is the chosen project's tickets: a chip counts the ones it holds.
+ */
+function renderAssignees(chips, projectTickets) {
   $("assignees").hidden = !state.assigneeRow;
   if (!state.assigneeRow) return;
   const choose = (scope) => { state.assignee = scope; render(); readScope(scope).catch(report); };
-  // Until the instance has said who holds the tickets, only the signed-in person's count is known: the others would read as what the page happens to hold.
-  const counted = (c) => (state.scopes && state.held === null && c.scope !== "you" ? undefined : c.count);
+  // On an instance that reads scopes on demand, a scope the page has not read yet shows no count: the page does not hold its tickets to count.
+  const counted = (c) => (state.scopes && scopeToRead(c.scope, state.read) !== null ? undefined : projectTickets.filter((t) => inScope(t, c.scope, state.viewer)).length);
   $("assignees").replaceChildren(el("span", { className: "label", title: state.viewer ? "" : NO_VIEWER }, "Assignee"),
     ...chips.map((c) => chip(c.text, c.pressed, () => choose(c.scope), counted(c))),
     ...(state.reading === null ? [] : [el("span", { className: "label" }, "Loading…")]));
 }
 
 /**
- * A row of chips for each label group among the listed tickets, named after it, then one for the labels in no group when there are any. Each
- * works as the Projects row does: All clears that row, its chips choose several at once, and the rows combine with every other filter.
+ * A row of chips for each label group among the chosen project's tickets, named after it, then one for the labels in no group when there are any.
+ * All clears that row, its chips choose several at once, and the rows combine with every other filter.
  */
 function renderLabels() {
   const choose = (next) => { state.labels = next; remember(storage, "ticket-mode.labels", next); render(); };
-  $("label-rows").replaceChildren(...labelRows(inView(), state.labels).map((row) => el("div", { className: "chips" },
+  $("label-rows").replaceChildren(...labelRows(inChosenProject(), state.labels, inView()).map((row) => el("div", { className: "chips" },
     el("span", { className: "label" }, row.name),
     chip("All", row.all, () => choose(clearedRow(state.labels, row.group))),
     ...row.chips.map((c) => chip(c.text, c.pressed, () => choose(toggled(state.labels, c.choice)), c.count)))));
@@ -369,19 +392,19 @@ function renderLabels() {
 /** A ticket's labels in a group, as small tags after its title, each titled with its group. */
 const labelTags = (t) => groupTags(t).map(({ name, group }) => el("span", { className: "tag", title: group }, name));
 
-/** The priority chips, counting the tickets a worker can be given, most urgent first. */
+/** The priority chips, counting the tickets a worker can be given in the chosen project, most urgent first. A chosen priority it has none of reads 0. */
 function renderPriorities() {
   const choose = (next) => { state.priorities = next; remember(storage, "ticket-mode.priorities", new Set([...next].map(String))); render(); };
   $("priorities").replaceChildren(el("span", { className: "label" }, "Priority"),
     chip("All priorities", state.priorities.size === 0, () => choose(new Set())),
-    ...priorityCounts(inView()).map(([priority, n]) => chip(PRIORITY_NAMES[priority], state.priorities.has(priority), () => choose(toggled(state.priorities, priority)), n)));
+    ...priorityCounts(inChosenProject(), state.priorities).map(([priority, n]) => chip(PRIORITY_NAMES[priority], state.priorities.has(priority), () => choose(toggled(state.priorities, priority)), n)));
 }
 
-/** The plan chips, counting the tickets a worker can be given; none on a machine that names no plan pattern. */
+/** The plan chips, counting the tickets a worker can be given in the chosen project; none on a machine that names no plan pattern. */
 function renderPlans() {
   $("plans").hidden = !state.plan;
   if (!state.plan) return;
-  const plans = planCounts(inView(), state.plan);
+  const plans = planCounts(inChosenProject(), state.plan);
   const choose = (choice) => { state.planChoice = choice; remember(storage, "ticket-mode.plan", new Set(choice ? [choice] : [])); render(); };
   $("plans").replaceChildren(el("span", { className: "label" }, "Plan"),
     chip("All", state.planChoice === null, () => choose(null)),
@@ -429,8 +452,13 @@ async function queueChildren(t) {
 
 function renderPick() {
   renderProjects();
-  const chips = state.assigneeRow ? scopeChips(state.tickets, state.assignee, state.viewer, state.held) : [];
-  renderAssignees(chips);
+  // The Assignee chips count the chosen project's tickets, whatever the scope chosen, so they are made from the project's tickets, not the scope's.
+  // With no project listed (the scope holds none), they are made from every ticket the page holds, so the row still names the people to choose from.
+  // On an instance that reads scopes on demand, the people are `held`'s, instance-wide: a scope's count shows only once the page has read it.
+  const named = chosenName();
+  const projectTickets = named === null ? state.tickets : inProject(state.tickets, named);
+  const chips = state.assigneeRow ? scopeChips(projectTickets, state.assignee, state.viewer, state.held, state.tickets) : [];
+  renderAssignees(chips, projectTickets);
   renderPriorities();
   renderPlans();
   renderLabels();
@@ -506,7 +534,7 @@ function renderPick() {
   const nothingInScope = state.assigneeRow && state.tickets.length > 0 && inView().length === 0 && state.reading !== state.assignee ? scopeEmptyText(state.assignee, state.viewer) : null;
   if (nothingInScope) list.append(el("div", { className: "empty" }, nothingInScope));
   const word = state.assigneeRow ? scopeWord(state.assignee, chips, state.pickOpen) : state.pick;
-  $("loaded").textContent = `${tickets.length} of ${inView().length} ${word} shown, ${state.selected.size} selected`;
+  $("loaded").textContent = `${tickets.length} of ${inChosenProject().length} ${word} shown, ${state.selected.size} selected`;
 }
 
 function since(ms) {

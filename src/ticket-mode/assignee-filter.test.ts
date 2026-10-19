@@ -99,3 +99,13 @@ test("scopeToRead: the signed-in person's tickets are the first list, a scope is
   assert.equal(scopeToRead("ana", new Set([ANYONE])), null, "Anyone holds every person's tickets");
   assert.equal(scopeToRead(ANYONE, new Set(["ana"])), ANYONE, "Anyone is more than the people read so far");
 });
+
+test("A11-123: the chosen person keeps a chip at 0 when the tickets hold none of theirs, named by a ticket of the wider list, and no one else is added", () => {
+  const withoutBen = TICKETS.filter((t) => t.assignee?.id !== "ben");
+  const chips = scopeChips(withoutBen, "ben", DAN, null, TICKETS);
+  assert.deepEqual(chips.map((c) => [c.scope, c.text, c.count, c.pressed]), [
+    [YOU, "Dan Beck (you)", 2, false], [ANYONE, "Anyone", 7, false], [UNASSIGNED, "Unassigned", 2, false], ["ana", "Ana Ruiz", 3, false], ["ben", "Ben Park", 0, true],
+  ]);
+  assert.deepEqual(scopeChips(withoutBen, "ben", DAN).map((c) => c.scope), [YOU, ANYONE, UNASSIGNED, "ana"], "without the wider list, a person with no ticket here has no chip");
+  assert.deepEqual(scopeChips(withoutBen, "nobody", DAN, null, withoutBen).map((c) => c.scope), [YOU, ANYONE, UNASSIGNED, "ana"], "and a person no listed ticket names has none");
+});
