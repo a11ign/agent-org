@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU_AUTOCOMPACT_WINDOW_TOKENS, HAIKU_MODEL_ID } from "./worker-profile.ts";
-import { SEAT_START_FLAGS, seatFirstPrompt, seatStartFlags, startAbsentSeats } from "./wake/is-release-line.ts";
+import { SEAT_START_FLAGS, seatFirstPrompt, seatStartFlags, startAbsentSeats } from "./wake/release-line-and-seats.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 const scratch = tmpDirForFile("seat-4740-");

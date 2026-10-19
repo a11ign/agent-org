@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
+import { deliver as settlingDeliver } from "./wake/fyi-queue.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { leaseItem, leasePath } from "./decision-run/apply.ts";
 import { loadClasses, type DecisionClass } from "./decision-run/registry.ts";

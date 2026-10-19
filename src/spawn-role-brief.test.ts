@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addressed } from "./wake/clear-settle-ms.ts";
+import { addressed } from "./wake/fyi-queue.ts";
 import { ENGINEER_BRIEF } from "./wake/ended-sessions.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { SPAWN_BRIEF_ROLES, engineerBriefSentence, briefRoleSentence } from "./spawn-role-brief.ts";

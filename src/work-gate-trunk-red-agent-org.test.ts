@@ -14,7 +14,7 @@ import { homeProjectDeclaration } from "./project-config.ts";
 import { PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
 import { readLanes, readScopeTrunkRed, scopeTick } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { scopesOf } from "./work-gate/vocabulary.ts";
-import { stuckRowOf } from "./wake/merge-queue-wait-limit-ms.ts";
+import { stuckRowOf } from "./wake/merge-queue-wait.ts";
 
 const REPO = "a11ign/agent-org";
 const BAD = "f02ecda0e5a1b2c3d4e5f60718293a4b5c6d7e8f";

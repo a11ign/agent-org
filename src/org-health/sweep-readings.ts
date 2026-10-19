@@ -5,9 +5,9 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { openIncidentsOf } from "../ticket-port/open-incidents.ts";
 import { closeIncident, closedIncidentsOf, createIncident, jobLogOf } from "../ticket-port/release-incidents.ts";
-import { COPY_COMPARED_IN, TEAM_LEVELS, TEAM_LISTING_JQ, TEAM_PAGE_SIZE, isInstalledOriginal, type CopyPair, type SweepRead, type TeamAccessFact, type TeamRepository } from "./state-label-reading.ts";
-import { COPIES_DIR, COPY_HEADER_CHANGES, COPY_HEADER_END, COPY_HEADER_START, DEFAULT_ROOT, MAX_NAMED, MAX_REASON_CHARS, MERGED_WINDOW, MINUTES_PER_TICK, MS_PER_MINUTE, SIGNALS, TOOL_ROOT, ageText, clear, type Reading, unknown } from "./no-merge-hours.ts";
-import { openFor, readOrNull } from "./review-gated-minutes.ts";
+import { COPY_COMPARED_IN, TEAM_LEVELS, TEAM_LISTING_JQ, TEAM_PAGE_SIZE, isInstalledOriginal, type CopyPair, type SweepRead, type TeamAccessFact, type TeamRepository } from "./board-truth-readings.ts";
+import { COPIES_DIR, COPY_HEADER_CHANGES, COPY_HEADER_END, COPY_HEADER_START, DEFAULT_ROOT, MAX_NAMED, MAX_REASON_CHARS, MERGED_WINDOW, MINUTES_PER_TICK, MS_PER_MINUTE, SIGNALS, TOOL_ROOT, ageText, clear, type Reading, unknown } from "./thresholds.ts";
+import { openFor, readOrNull } from "./overdue-readings.ts";
 
 /** agent-org#1418: `sweepMinutes` is `GRAPHQL_SWEEP_MINUTES`, the longest a repository may go unread on a webhook tick. */
 export type SweepFact = { sweepMinutes: number, repos: SweepRead[] };

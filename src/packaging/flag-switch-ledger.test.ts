@@ -32,7 +32,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
-import type { CanaryState } from "../org-health/fleet-build-incident.ts";
+import type { CanaryState } from "../org-health/fleet-build-readings.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-fleet-build-fact.test.ts`'s rule): the host file is set FIRST and the tool imported AFTER it, dynamically, so
 // the Acceptance's `AGENT_ORG_HOST` (a11y-witness's live declaration) is never what a test below reads; every ledger read gets its own roots.
@@ -48,9 +48,9 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const ledger = await import("../flag-switch-ledger.ts");
 const { discoverFlags, declaresKey, unsetFlags, mergeOf, readFlagLedger, readFlagSwitchesFor, readCanaryState, canaryAbsentFlags, otherTrackerRepos, owedRowsOf, CANARY_ABSENT_MS, FLAGS_WITH_ANOTHER_HOME } = ledger;
-const { SIGNALS } = await import("../org-health/no-merge-hours.ts");
+const { SIGNALS } = await import("../org-health/thresholds.ts");
 const { CANARY_STATE_FILE, flagSwitchReading } = await import("../org-health/claim-refusal.ts");
-const { emptyCanaryState, orgHealthOrders, orgHealthReadings } = await import("../org-health/fleet-build-incident.ts");
+const { emptyCanaryState, orgHealthOrders, orgHealthReadings } = await import("../org-health/fleet-build-readings.ts");
 const { withMachineryFlag } = await import("../org-health.ts");
 const { FLAG_REGISTRY } = await import("../machinery-flag.ts");
 const { ORG_HEALTH_CLASSES } = await import("../work-gate/org-health-suppression.ts");

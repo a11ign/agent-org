@@ -446,7 +446,7 @@ export function hostSeams({ home = homedir(), runProgram = run, herdr = (args) =
 async function liveDeps(argv: string[]): Promise<Deps> {
   const seams = hostSeams();
   const worker = await import("./worker-profile.ts");
-  const wake_0 = await import("./wake/reset.ts");
+  const wake_0 = await import("./wake/seat-reset.ts");
 const wake_1 = await import("./wake.ts");
   // THE LAUNCH ARGUMENTS ARE A REAL SEAT'S: the first cause whose profile is this product's, `ready-row-unclaimed` first for the worker (the headless pilot's), so a dialog the
   // posture flags raise is the dialog a spawned seat meets.

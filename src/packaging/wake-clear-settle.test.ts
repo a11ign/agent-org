@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliver, CLEAR_SETTLE_MS } from "../wake/clear-settle-ms.ts";
+import { deliver, CLEAR_SETTLE_MS } from "../wake/fyi-queue.ts";
 import { deliverHandoffs } from "../wake/ended-sessions.ts";
 import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
 import { clearThenPrompt } from "../prompt-session.ts";

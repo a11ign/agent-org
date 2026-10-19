@@ -15,7 +15,7 @@ import { PROJECT_ROOT } from "./packaging/host-units-project.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { HostConfigRefusal } from "./host-config.ts";
-import { countsAsProof, identityProofFile, identityProofs, recordIdentityProof, widenIdentity, type IdentityProofReading } from "./host-units/tool-version-notes.ts";
+import { countsAsProof, identityProofFile, identityProofs, recordIdentityProof, widenIdentity, type IdentityProofReading } from "./host-units/gh-wrapper-and-notes.ts";
 
 const CANARY = "a11ign/agent-org";
 const REVIEWER_BOT = "a11ign-ai-reviewer[bot]";

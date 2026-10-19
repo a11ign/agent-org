@@ -39,9 +39,9 @@ process.chdir(PROJECT);
 const { partitionUnclaimed, rowBranchOrders } = await import("./work-gate/causes/rows-claims.ts");
 const { readBranchPrs, readBranchPrsOfUnclaimed, branchesToReplace } = await import("./work-gate/reads.ts");
 const { decide } = await import("./work-gate/tick/blocker-cleared-reading.ts");
-const { spawnClaimer } = await import("./wake/is-release-line.ts");
-const { spawnableRole } = await import("./wake/is-pull-request-spawn-order.ts");
-const { spawnedPrompt } = await import("./wake/clear-settle-ms.ts");
+const { spawnClaimer } = await import("./wake/release-line-and-seats.ts");
+const { spawnableRole } = await import("./wake/pull-request-spawn-orders.ts");
+const { spawnedPrompt } = await import("./wake/fyi-queue.ts");
 const { writeFileSync: stamp } = await import("node:fs");
 
 const ROW = 3505;

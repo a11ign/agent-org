@@ -28,9 +28,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { deliver, HOST_REPOS } = await import("./wake/clear-settle-ms.ts");
-const { spawnClaimer } = await import("./wake/is-release-line.ts");
-const { whyNoBrief } = await import("./wake/is-pull-request-spawn-order.ts");
+const { deliver, HOST_REPOS } = await import("./wake/fyi-queue.ts");
+const { spawnClaimer } = await import("./wake/release-line-and-seats.ts");
+const { whyNoBrief } = await import("./wake/pull-request-spawn-orders.ts");
 const { roleBriefPath } = await import("./project-roles.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
 /** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */

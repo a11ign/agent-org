@@ -44,7 +44,7 @@
     },
     {
       "pattern": "^read memo: N identical read\\(s\\) answered from memory, N distinct answer\\(s\\) held at the end of the tick\\.$",
-      "reason": "src/work-gate/reads/exit.ts's exit line (agent-org#1095), written as the gate's process ends on every tick it runs: an identical read made again within the tick is answered from the memory the process holds, not asked of `gh` a second time (read deduplication working). A refused read is never kept, so it is never counted as a hit here, and a different tail of the line is not allowlisted."
+      "reason": "src/work-gate/reads/read-memo-and-exit.ts's exit line (agent-org#1095), written as the gate's process ends on every tick it runs: an identical read made again within the tick is answered from the memory the process holds, not asked of `gh` a second time (read deduplication working). A refused read is never kept, so it is never counted as a hit here, and a different tail of the line is not allowlisted."
     },
     {
       "pattern": "^(PARTIAL: N lane\\(s\\) skipped by pacing, none refused: .*|lane\\(s\\) skipped by pacing, none refused; see the gate's stderr)$",

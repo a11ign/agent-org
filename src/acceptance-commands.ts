@@ -68,7 +68,7 @@ import { join } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { ciInputOf, runCiBodyReports, thisPullRequestInput, type BodyReportInput } from "./acceptance-commands/unmet-command-closure-requirements.ts";
-import { runAcceptanceCommand } from "./acceptance-commands/suite-scripts-for.ts";
+import { runAcceptanceCommand } from "./acceptance-commands/suite-and-checkout-commands.ts";
 
 /**
  * agent-org#1502 (ADR 0045 cut c, a11ign#5460): WHO MAY HAVE ITS ACCEPTANCE COMMAND RUN ON THE ORG SIDE, AND WHERE.

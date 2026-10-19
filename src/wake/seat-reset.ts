@@ -9,7 +9,7 @@ import { roleBriefPath } from "../project-roles.ts";
 import { listingIsComplete, firstLine } from "../herdr-agents.ts";
 import { seatRunKeys } from "../seat-retire-reset.ts";
 import { REVIEWER_DEAD_AFTER_TICKS, hasNoAgent, removeReviewCheckout, reviewerPathsFrom } from "./ensure-reviewer-token.ts";
-import { WAKEABLE, codeRepositoryOf, defaultGh, defaultRun } from "./exit.ts";
+import { WAKEABLE, codeRepositoryOf, defaultGh, defaultRun } from "./exit-and-limits.ts";
 
 /**
  * THE RUNS OF A RETIRED SEAT'S CAUSES END WITH IT (agent-org#1392): one RESET line for each cause the seat owns that has a run in the

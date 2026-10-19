@@ -33,8 +33,8 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { heldRowsOfSpare, heldRowsReadOncePerTick, endFinishedSpares } = await import("./wake/with-ci-failure-class.ts");
-const { spareInstances } = await import("./wake/merge-queue-wait-limit-ms.ts");
+const { heldRowsOfSpare, heldRowsReadOncePerTick, endFinishedSpares } = await import("./wake/ci-class-and-spares.ts");
+const { spareInstances } = await import("./wake/merge-queue-wait.ts");
 const { withScopedPrOwners } = await import("./work-gate/pr-owners.ts");
 const { ownerOfPr } = await import("./work-gate/pr-orders/red-only-by-superseded-run.ts");
 const { homeProjectDeclaration } = await import("./project-config.ts");

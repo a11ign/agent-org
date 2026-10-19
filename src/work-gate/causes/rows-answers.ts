@@ -3,7 +3,7 @@ import { waitingOn, todayIso, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel, ans
 import { subjectMention, subjectRef } from "../../review-attribution.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, BLOCKED_LABEL } from "../../project-vocabulary.ts";
 import { readUnlessRefused } from "../../ticket-port/rows-by-label.ts";
-import { type ConditionalReads, conditionalFor, defaultRun, ghCallName, isGhRun, keptClosedAnswers, readWithFirstWaveTogether, repoNow, runBatch } from "../reads/exit.ts";
+import { type ConditionalReads, conditionalFor, defaultRun, ghCallName, isGhRun, keptClosedAnswers, readWithFirstWaveTogether, repoNow, runBatch } from "../reads/read-memo-and-exit.ts";
 import { herdrRun } from "../reads.ts";
 import { MAX_ROW_ORDERS_PER_TICK, REFUSAL_REASON_CHARS, REVIEWER_REGISTRY_FILE, REVIEWER_STATE_DIR, labelsOf, sessionOf } from "../vocabulary.ts";
 

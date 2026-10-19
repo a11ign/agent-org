@@ -12,7 +12,7 @@ import { bareAnswerLabelOrders, answerGivenOrders } from "../work-gate/causes/ro
 import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { JUDGMENT_CAUSES, CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { readLedger } from "../wake/ended-sessions.ts";
-import { JUDGMENT_TTL_MS } from "../wake/reset.ts";
+import { JUDGMENT_TTL_MS } from "../wake/seat-reset.ts";
 
 test("an OPEN blocker is a wait; a CLOSED one is a wait that has cleared", () => {
   // THE WHOLE POINT. `orchestrator` wrote "blocked by #1772" in a comment at 16:39; #1772 closed at

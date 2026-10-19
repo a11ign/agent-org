@@ -7,7 +7,7 @@ import { defectClassReport } from "../defect-class-line.ts";
 import { resolveAcceptanceSource, sectionsTextOf, sourceLine, type AcceptanceSource } from "../acceptance-file.ts";
 import { CLOSES_FIELD } from "../project-vocabulary.ts";
 import { CORPUS_PATTERNS, FLEET_LAB_PATTERNS, FULL_CAPABILITIES, MUTATE_PATTERN, SHELL_BLOCK_KEYWORDS, UNVERIFIABLE_BUILTINS, commandExists, deriveClosureRequirements, firstRealToken, handRunDeclaration, handRunEvidence, hasFullHistoryDeclaration, isFile, jobCapabilities, needsToken, stripLeadingCd, testFileRequirements, tokenRefusal, type Classification, type ClosesDeclaration, type ClosesReference, type JobCapabilities, type Section, unmetClosureRequirements } from "./classification.ts";
-import { commandTable, extractAcceptanceSection, extractSection, leadingCdTarget, namedTestFiles, operationalScriptEntries, primaryCheckoutCdReason, runAcceptanceCommand, runsTheWholeSuite, stripTrailingCommentary, testFilesRunBy, tsxAcceptanceReason, tsxTestFileArgs, type CommandTable, unmetCommandRequirements } from "./suite-scripts-for.ts";
+import { commandTable, extractAcceptanceSection, extractSection, leadingCdTarget, namedTestFiles, operationalScriptEntries, primaryCheckoutCdReason, runAcceptanceCommand, runsTheWholeSuite, stripTrailingCommentary, testFilesRunBy, tsxAcceptanceReason, tsxTestFileArgs, type CommandTable, unmetCommandRequirements } from "./suite-and-checkout-commands.ts";
 
 /**
  * The #621 counterpart to `unmetCommandRequirements` above -- CLOSURE-DERIVED rather than header-declared,

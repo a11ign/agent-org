@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyCanaryState } from "../org-health/fleet-build-incident.ts";
+import { emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts";
 import { CLOSED_UNDER_HALF_FILE, CLOSED_UNDER_HALF_FLAG, closedUnderHalfOrders, rowsClosedUnderOpenHalf } from "../work-gate/causes/rows-closed-under-half.ts";
 import { REENQUEUE_EJECTED_FLAG, failedEntriesSincePush, jobFailuresOf, mergeGroupGreenSince, ownershipOfFailure, requeueEjected, type EjectionEvidence } from "../work-gate/causes/pr-ejected.ts";

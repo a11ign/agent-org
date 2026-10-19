@@ -29,11 +29,11 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SIGNALS } = await import("./org-health/no-merge-hours.ts");
-const { releaseFailureReadings, releaseFailedReading, readReleaseFailures, failureStreak, firstErrorLine, fileReleaseIncidents, RELEASE_INCIDENT_KEY, RELEASE_FAILURES_TO_WAKE } = await import("./org-health/sweep-fact.ts");
-const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-incident.ts");
+const { SIGNALS } = await import("./org-health/thresholds.ts");
+const { releaseFailureReadings, releaseFailedReading, readReleaseFailures, failureStreak, firstErrorLine, fileReleaseIncidents, RELEASE_INCIDENT_KEY, RELEASE_FAILURES_TO_WAKE } = await import("./org-health/sweep-readings.ts");
+const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-readings.ts");
 const { orgHealthNow, releaseRepositories } = await import("./work-gate/org-health.ts");
-const { GH_READS } = await import("./work-gate/reads/exit.ts");
+const { GH_READS } = await import("./work-gate/reads/read-memo-and-exit.ts");
 
 const SIGNAL = "release-run-failed";
 const PROJECT_REPO = "a11ign/a11ign";

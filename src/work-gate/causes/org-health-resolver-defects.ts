@@ -4,7 +4,7 @@ import { stateEntryPath } from "../../host-config.ts";
 import { blockingImpactTick, resolverOf } from "../../blocking-impact.ts";
 import { resolverDefectKey, resolverDefectText, RESOLVER_DEFECT_LABEL } from "../pr-owners.ts";
 import type { ResolverDefect } from "../pr-owners.ts";
-import { defaultRun } from "../reads/exit.ts";
+import { defaultRun } from "../reads/read-memo-and-exit.ts";
 import { comparablePrFiles, labelledRows, sessionOf } from "../vocabulary.ts";
 
 /** Where the pull requests already reported as resolver defects are remembered between ticks: each tick is a fresh process. */

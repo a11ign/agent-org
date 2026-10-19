@@ -49,7 +49,7 @@ let nextDir = 0;
 /** @returns {Promise<{ port: any } | { reason: string }>} the real queue's pieces, or why it would not load here */
 async function loadReal(): Promise<{ port: any; } | { reason: string; }> {
   try {
-    const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake/reset.ts")]);
+    const [session, wake] = await Promise.all([import("../prompt-session.ts"), import("../wake/seat-reset.ts")]);
     return { port: { session, wake } };
   } catch (error) {
     return { reason: `the real queue cannot load here: ${String(/** @type {Error} */ (error).message).split("\n")[0]}` };

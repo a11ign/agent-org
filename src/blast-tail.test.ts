@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { advance, holdingsOf, MAX_TICK_GAP_MS, type Held, type Ref, type Shelved } from "./blocking-impact.ts";
 import { blastTail, readBlockingRecord, shelvedBehind } from "./blast-tail.ts";
-import { addressed } from "./wake/clear-settle-ms.ts";
+import { addressed } from "./wake/fyi-queue.ts";
 
 const NOW = Date.parse("2026-10-09T10:00:00Z");
 const ROW = 4605;

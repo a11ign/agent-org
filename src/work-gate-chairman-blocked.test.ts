@@ -12,9 +12,9 @@ import assert from "node:assert/strict";
 import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { chairmanReminderWindow, CHAIRMAN_REMINDER_PERIOD_MS } from "./work-gate/causes/rows-backlog.ts";
 import { PROMOTION_ASK_WINDOW_MS } from "./work-gate/vocabulary.ts";
-import { JUDGMENT_TTL_MS } from "./wake/reset.ts";
+import { JUDGMENT_TTL_MS } from "./wake/seat-reset.ts";
 import { MAX_DELIVERIES } from "./wake/holds-as-fyi.ts";
-import { stuckRowOf } from "./wake/merge-queue-wait-limit-ms.ts";
+import { stuckRowOf } from "./wake/merge-queue-wait.ts";
 
 const DAY = CHAIRMAN_REMINDER_PERIOD_MS;
 const MIN = 60_000;

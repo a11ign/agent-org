@@ -26,7 +26,7 @@ import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
 import { UNQUEUED_MINUTES, machineryValues } from "../org-health.ts";
-import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState } from "../org-health/fleet-build-incident.ts";
+import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { type DeclaredIdentities } from "../review-trust.ts";
 import { CHAIRMAN_LOGINS } from "../work-gate/vocabulary.ts";
 

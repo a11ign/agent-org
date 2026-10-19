@@ -135,7 +135,7 @@
       "spawns": 1,
       "calls": 1
     },
-    "src/host-units/gh-spawn-reached-from.ts": {
+    "src/host-units/host-identity-drift.ts": {
       "spawns": 1,
       "calls": 0
     },
@@ -183,7 +183,7 @@
       "spawns": 1,
       "calls": 3
     },
-    "src/org-health/sweep-fact.ts": {
+    "src/org-health/sweep-readings.ts": {
       "spawns": 0,
       "calls": 5
     },
@@ -363,23 +363,23 @@
       "spawns": 0,
       "calls": 2
     },
-    "src/wake/exit.ts": {
+    "src/wake/exit-and-limits.ts": {
       "spawns": 2,
       "calls": 0
     },
-    "src/wake/is-release-line.ts": {
+    "src/wake/release-line-and-seats.ts": {
       "spawns": 0,
       "calls": 4
     },
-    "src/wake/merge-queue-wait-limit-ms.ts": {
+    "src/wake/merge-queue-wait.ts": {
       "spawns": 0,
       "calls": 9
     },
-    "src/wake/reset.ts": {
+    "src/wake/seat-reset.ts": {
       "spawns": 0,
       "calls": 1
     },
-    "src/wake/with-ci-failure-class.ts": {
+    "src/wake/ci-class-and-spares.ts": {
       "spawns": 0,
       "calls": 4
     },
@@ -447,7 +447,7 @@
       "spawns": 0,
       "calls": 3
     },
-    "src/work-gate/reads/exit.ts": {
+    "src/work-gate/reads/read-memo-and-exit.ts": {
       "spawns": 1,
       "calls": 3
     },

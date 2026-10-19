@@ -19,11 +19,11 @@ import { ACCOUNT_LIMIT_FILE, ACCOUNT_LIMIT_FLAG } from "../account-limit.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
 import { DEFAULT_CANARY_OPTIONS, expireSuppressions, machineryCanaryTick, parseCanaryOptions, withMachineryFlag, machineryValues, type CanaryFacts, type CanaryIo, type Suppression } from "../org-health.ts";
 import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
-import { UNSOURCED_MACHINERY_SIGNALS, machineryFlagOn, parseCanaryState, emptyCanaryState } from "../org-health/fleet-build-incident.ts";
+import { UNSOURCED_MACHINERY_SIGNALS, machineryFlagOn, parseCanaryState, emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { EXIT_NOTHING_SENT, machineryDeclarationProblems, machineryFilesIn, machineryRefusal, main } from "../pr-open.ts";
 import { cannotAskExit, tickLanes } from "../work-gate.ts";
 import { deferredWakeCount, incidentSuppressions, machineryCanaryNow } from "../work-gate/causes/org-health-github-incident.ts";
-import { EXIT } from "../work-gate/reads/exit.ts";
+import { EXIT } from "../work-gate/reads/read-memo-and-exit.ts";
 import { pacedUnread } from "../work-gate/pacing.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 

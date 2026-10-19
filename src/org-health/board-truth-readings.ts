@@ -9,8 +9,8 @@ import { declaredClosedRows } from "../row-claim/file-overlap-rule.ts";
 import { extractClosesDeclaration, closesReferences } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { IDLE_REASONS, idleLine } from "../idle-with-open-rows.ts";
-import { AGREEMENT_READ_MS, MAX_NAMED, MS_PER_MINUTE, SIGNALS, TOOL_ROOT, clear, type Reading, type ToolAgreement, unknown } from "./no-merge-hours.ts";
-import { redSinceOf } from "./review-gated-minutes.ts";
+import { AGREEMENT_READ_MS, MAX_NAMED, MS_PER_MINUTE, SIGNALS, TOOL_ROOT, clear, type Reading, type ToolAgreement, unknown } from "./thresholds.ts";
+import { redSinceOf } from "./overdue-readings.ts";
 
 /**
  * SIGNAL: AN OPEN ROW IS NOT IN EXACTLY ONE STATE (#3942). THE RULE IS `stateLabelFindings`' (the leaf the audit reads too), over the open rows

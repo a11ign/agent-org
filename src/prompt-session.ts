@@ -32,12 +32,12 @@ import { dirname } from "node:path";
 
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { herdrRun } from "./herdr-agents.ts";
-import { prepareContext, handoffBacklog, waitedFor, addressed } from "./wake/clear-settle-ms.ts";
-import { orderClockIn } from "./wake/merge-queue-wait-limit-ms.ts";
+import { prepareContext, handoffBacklog, waitedFor, addressed } from "./wake/fyi-queue.ts";
+import { orderClockIn } from "./wake/merge-queue-wait.ts";
 import { CONTEXT_ACTION } from "./wake/holds-as-fyi.ts";
 import { readAgents } from "./herdr-agents.ts";
-import { WAKEABLE } from "./wake/exit.ts";
-import { queueHandoff, handoffQueuePath, ledgerPathFrom, readHandoffs, isLeadSeat, FYI_STALE_MS } from "./wake/reset.ts";
+import { WAKEABLE } from "./wake/exit-and-limits.ts";
+import { queueHandoff, handoffQueuePath, ledgerPathFrom, readHandoffs, isLeadSeat, FYI_STALE_MS } from "./wake/seat-reset.ts";
 import { repointedForReviewer } from "./wake/ensure-reviewer-token.ts";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.

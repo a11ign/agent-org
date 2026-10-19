@@ -75,13 +75,13 @@ import { gitCommonDir, appendJsonl, testsFirstOf, readTestsFirstFlag } from "./m
 import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapshot.ts";
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.ts";
 import { readStandIns, type LaneStandIn } from "./row-claim/lane-stand-in.ts";
-import { activeDrain } from "./wake/is-release-line.ts";
+import { activeDrain } from "./wake/release-line-and-seats.ts";
 import { sparePathsFrom } from "./wake/ended-sessions.ts";
-import { ledgerPathFrom } from "./wake/reset.ts";
-import { isSpareRole } from "./wake/merge-queue-wait-limit-ms.ts";
+import { ledgerPathFrom } from "./wake/seat-reset.ts";
+import { isSpareRole } from "./wake/merge-queue-wait.ts";
 import { isPersistentRole, readSpareRegistry } from "./wake/holds-as-fyi.ts";
 import { readWaitRef } from "./work-gate/org-health.ts";
-import { readWithFirstWaveTogether, runBatch } from "./work-gate/reads/exit.ts";
+import { readWithFirstWaveTogether, runBatch } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readChairmanPriority, EMERGENCY_PRIORITY_LABEL, readEmergencyPriority, readEmergencyPriorityOption } from "./work-gate/causes/rows-offer.ts";
 import { CHAIRMAN_PRIORITY_LABEL } from "./work-gate/vocabulary.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file. #4793: and the gate's own reading of whose a chairman row is. #989: and the gate's own verdict on which emergency row is honoured
 import { lookup } from "./merge-guard/lookups.ts";

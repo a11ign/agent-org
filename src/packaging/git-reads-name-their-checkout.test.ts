@@ -101,10 +101,10 @@ interface Reason { file: string; call: string; kind: Kind; reason: string }
  * closure of the tick was computed by regular expression and its string-reference edges checked by hand, not by a full parse.
  */
 const UNNAMED_CALLS: Reason[] = [
-  { file: "src/acceptance-commands/suite-scripts-for.ts", call: '"ls-files"', kind: "session", reason: "reached only by `unresolvedAcceptancePaths`, whose one caller is `row-file`, which an author runs in their own worktree" },
+  { file: "src/acceptance-commands/suite-and-checkout-commands.ts", call: '"ls-files"', kind: "session", reason: "reached only by `unresolvedAcceptancePaths`, whose one caller is `row-file`, which an author runs in their own worktree" },
   { file: "src/branch-inventory-report.ts", call: '"git"', kind: "session", reason: "the `branches:inventory` CLI, run by an operator standing in the project tree; no unit or workflow runs it" },
   { file: "src/control-plane-hygiene.ts", call: '"git"', kind: "session", reason: "the `hygiene:report` CLI derives `this checkout` from where the operator runs it; no importer" },
-  { file: "src/host-units/gh-spawn-reached-from.ts", call: '"--file", path', kind: "param", reason: "`git config --file <path>` reads the named file and no repository" },
+  { file: "src/host-units/host-identity-drift.ts", call: '"--file", path', kind: "param", reason: "`git config --file <path>` reads the named file and no repository" },
   { file: "src/mark-primary-checkout.ts", call: '"git"', kind: "session", reason: "`primary:mark` marks THIS checkout by design: the directory the operator runs it in" },
   { file: "src/merge-guard/lookups.ts", call: '"ls-remote"', kind: "session", reason: "`lookupBranchTip` is called only by the merge-guard CLI, which CI and the pre-push hook run in the project checkout" },
   { file: "src/merge-guard/reconciliation.ts", call: '"--git-common-dir"', kind: "param", reason: "the checkout is the spawner's `cwd`: CI, the pre-push hook, or the `row-claim` child whose `cwd` the tick sets (`wake.ts` `launch.dir`)" },

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // A plain `.mjs`, and `scripts/**` IS in the typecheck program (#189), so this resolves and is checked.
-import { extractAcceptanceSection } from "../acceptance-commands/suite-scripts-for.ts";
+import { extractAcceptanceSection } from "../acceptance-commands/suite-and-checkout-commands.ts";
 import { acceptanceReport } from "../acceptance-commands/unmet-command-closure-requirements.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 

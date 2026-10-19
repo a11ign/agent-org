@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { agentArgs, profileFor } from "../worker-profile.ts";
-import { addressed } from "../wake/clear-settle-ms.ts";
+import { addressed } from "../wake/fyi-queue.ts";
 import {
   MEASUREMENT_TAIL, assertGhRead, earlyRefusal, fleetAnswerOf, launchArgs, normalizeArgv, pilotRowsOf, runPilot, successOf, userTurn,
 } from "./headless-pilot.ts";

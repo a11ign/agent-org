@@ -20,10 +20,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { withPatchIds } from "../work-gate/causes/pr-reviews.ts";
-import { GH_READS } from "../work-gate/reads/exit.ts";
+import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
 import { readLedger, endedRuns, ledgerLine, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
-import { undelivered, RESET } from "../wake/reset.ts";
+import { undelivered, RESET } from "../wake/seat-reset.ts";
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];

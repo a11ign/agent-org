@@ -13,8 +13,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { APPROVED_REQUIRED_FLAG, APPROVED_REQUIRED_MINUTES, APPROVED_REQUIRED_SIGNAL, approvedRequiredReading, approvedRequiredReadings, type ApprovedRequiredPr } from "./org-health/hold-count.ts";
-import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-incident.ts";
-import { type Reading } from "./org-health/no-merge-hours.ts";
+import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
+import { type Reading } from "./org-health/thresholds.ts";
 
 const MINUTE = 60_000;
 const NOW = Date.UTC(2026, 9, 12, 12, 0);

@@ -3,8 +3,8 @@ import { existsSync, readdirSync, openSync, readSync, closeSync, fstatSync } fro
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { scopesOf } from "../work-gate/vocabulary.ts";
-import { ORDER_STALL_MINUTES } from "../org-health/no-merge-hours.ts";
-import type { CanaryState } from "../org-health/fleet-build-incident.ts";
+import { ORDER_STALL_MINUTES } from "../org-health/thresholds.ts";
+import type { CanaryState } from "../org-health/fleet-build-readings.ts";
 import { REVIEWER_STATE_DIR } from "../work-gate/vocabulary.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { REPO } from "../project-identity.ts";

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { buildReport, retroClasses } from "./org-retro/readings.ts";
 import { renderReport } from "./org-retro.ts";
 import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
-import { emptyCanaryState } from "./org-health/fleet-build-incident.ts";
+import { emptyCanaryState } from "./org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "./org-health.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 

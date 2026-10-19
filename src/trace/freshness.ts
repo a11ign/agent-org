@@ -400,7 +400,7 @@ function hostEffects(log: (line: string) => void): Effects {
     },
     order: async (text) => {
       const { EXIT, STANCE, defaultRun, promptOrQueue } = await import("../prompt-session.ts");
-      const { handoffQueuePath, ledgerPathFrom } = await import("../wake/reset.ts");
+      const { handoffQueuePath, ledgerPathFrom } = await import("../wake/seat-reset.ts");
 const { readAgents } = await import("../herdr-agents.ts");
       // `STANCE.ORDER`: a real order that wakes its seat and asks for no answer. An undeclared or FYI order to a lead seat is HELD (`deliverOrQueue`), which an incident must not be.
       const code = promptOrQueue({ run: defaultRun, label: OWNER_SEAT, text, agents: readAgents(defaultRun), path: handoffQueuePath(ledgerPathFrom(process.argv)), stance: STANCE.ORDER, sender: SENDER });

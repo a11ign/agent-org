@@ -16,13 +16,13 @@ import { join } from "node:path";
 import { ACCOUNT_LIMIT_FLAG, UNREADABLE_RECORD, accountLimitFlag, accountLimitLogPath, nextLimit, pauseRefusal, pausedNow, readAccountLimits, tickAccountLimit,
   writeAccountLimits, ACCOUNT_LIMIT_FILE, type AccountLimit } from "./account-limit.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
-import { deliver as settlingDeliver } from "./wake/clear-settle-ms.ts";
-import { freeLimitMenuSeats, limitMenuTick } from "./wake/exit.ts";
+import { deliver as settlingDeliver } from "./wake/fyi-queue.ts";
+import { freeLimitMenuSeats, limitMenuTick } from "./wake/exit-and-limits.ts";
 import { isLimitMenu, tellBlocked } from "./worker-state.ts";
 import { INSIDE } from "./review-trust.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
 import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
-import { emptyCanaryState, type CanaryState } from "./org-health/fleet-build-incident.ts";
+import { emptyCanaryState, type CanaryState } from "./org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "./org-health.ts";
 import { moduleSource } from "./lib/module-source.ts";
 

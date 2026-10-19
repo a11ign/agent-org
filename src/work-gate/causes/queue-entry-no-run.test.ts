@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { tmpDir } from "../../lib/tmp-fixture.ts";
 import { workGateSource } from "../../lib/work-gate-source.ts";
-import { emptyCanaryState } from "../../org-health/fleet-build-incident.ts";
+import { emptyCanaryState } from "../../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../../org-health.ts";
 import type { QueueEntry } from "../../ticket-port/queue-entry-reads.ts";
 import type { ArmingPort } from "../vocabulary.ts";

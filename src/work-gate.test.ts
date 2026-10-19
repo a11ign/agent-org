@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
-import { OPEN_ROWS_LIMIT, readWithFirstWaveTogether } from "./work-gate/reads/exit.ts";
+import { OPEN_ROWS_LIMIT, readWithFirstWaveTogether } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readChairmanBlocked } from "./work-gate/causes/rows-chairman.ts";
 import { readOpenRows, readPromotableRows, readReadyRows } from "./work-gate/reads.ts";
 import { readTrackerLanes } from "./work-gate/tick.ts";

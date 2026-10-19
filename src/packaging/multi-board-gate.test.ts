@@ -22,11 +22,11 @@ import { scopesOf } from "../work-gate/vocabulary.ts";
 import { greenUnarmedOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
 import { performActions } from "../work-gate/orders.ts";
 import { ledgerLine, readLedger } from "../wake/ended-sessions.ts";
-import { readLedgerDeliveries, stuckRowOf } from "../wake/merge-queue-wait-limit-ms.ts";
+import { readLedgerDeliveries, stuckRowOf } from "../wake/merge-queue-wait.ts";
 import { reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewCheckoutFor, isReviewerOrder, liveReviewers } from "../wake/ensure-reviewer-token.ts";
-import { rowOfOrder } from "../wake/is-release-line.ts";
+import { rowOfOrder } from "../wake/release-line-and-seats.ts";
 import { isPerRowInstance } from "../wake/holds-as-fyi.ts";
-import { codeRepositoryOf } from "../wake/exit.ts";
+import { codeRepositoryOf } from "../wake/exit-and-limits.ts";
 import { connectionOf, readsRowsByLabel, type FakeRow } from "./rows-by-label-fixtures.ts";
 import { parityOwner, reviewerSeat, reviewerInstance, reviewerInstanceNumber, seatName, subjectRef, subjectMention }
   from "../review-attribution.ts";

@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { diffOrders, shadowRun, simulateCutover, stateSnapshot, refuseLiveStateDir, LIVE_STATE_DIR }
   from "../shadow-gate.ts";
-import { VOIDED, handoffId, queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake/reset.ts";
+import { VOIDED, handoffId, queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake/seat-reset.ts";
 import { ledgerLine } from "../wake/ended-sessions.ts";
 
 /** A fresh, empty directory nothing else uses -- never the live `~/.cache/a11ign`. */

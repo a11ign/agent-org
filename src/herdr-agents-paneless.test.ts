@@ -15,8 +15,8 @@ import { join } from "node:path";
 import { readAgents, type ListedAgent } from "./herdr-agents.ts";
 import { stripClosedClaims } from "./work-gate.ts";
 import { dropUnknownHandoffs, UNKNOWN_SESSION_MS } from "./wake/ended-sessions.ts";
-import { queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "./wake/reset.ts";
-import { WAKEABLE } from "./wake/exit.ts";
+import { queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "./wake/seat-reset.ts";
+import { WAKEABLE } from "./wake/exit-and-limits.ts";
 import { IDLE_STATUSES } from "./idle-claimant.ts";
 
 const NOW = Date.parse("2026-10-15T09:00:00Z");

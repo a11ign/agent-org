@@ -14,10 +14,10 @@ import { familyMember } from "../arm-pr.ts";
 import { firstLine, herdrReason } from "../herdr-agents.ts";
 import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "../deferral-log.ts";
 import { BUSY_SEAT_REFUSAL, CAPACITY_REFUSAL, CAPACITY_WAIT_LIMIT_MS, MERGE_QUEUE_WAIT_PHRASE, NO_CLEAR_FIELD } from "./ended-sessions.ts";
-import { START_BUDGET_DEFERRED } from "./is-pull-request-spawn-order.ts";
-import { BUSY_SEAT_DEFERRAL_MS, WAKEABLE, codeRepositoryOf, defaultRun, guardedGh, type SpareInstance } from "./exit.ts";
-import { handoffBacklog, prepareContext, readAgent } from "./clear-settle-ms.ts";
-import { ESCALATED, RESET, SESSIONS_FILE, VOIDED, ledgerKeyOf, undelivered } from "./reset.ts";
+import { START_BUDGET_DEFERRED } from "./pull-request-spawn-orders.ts";
+import { BUSY_SEAT_DEFERRAL_MS, WAKEABLE, codeRepositoryOf, defaultRun, guardedGh, type SpareInstance } from "./exit-and-limits.ts";
+import { handoffBacklog, prepareContext, readAgent } from "./fyi-queue.ts";
+import { ESCALATED, RESET, SESSIONS_FILE, VOIDED, ledgerKeyOf, undelivered } from "./seat-reset.ts";
 import { CONTEXT_ACTION, MAX_DELIVERIES, NO_CLOCK, TRANSCRIPT_READER, newestTranscriptRead, type ClaimOrders, type HostLoad, type OrderClock } from "./holds-as-fyi.ts";
 
 /**
@@ -125,7 +125,7 @@ export function readDeferralHistory(path: string, read: typeof readFileSync = re
  * A QUEUE COUNTS ONLY FOR A STANDING SEAT (`standing`): a spawned instance mid-turn on its row for an hour is working, and its inbox is read when it finishes.
  * A standing seat is never between tasks while it works, which is what makes its oldest queued order a stall and not a wait (#3448: `ceo` held three, oldest 28 min).
  */
-export function stalledOrdersOf({ deferredSince, emitted, backlog, standing, now }: { deferredSince: Map<string, number>; emitted: Set<string>; backlog: ReturnType<typeof handoffBacklog>; standing: Set<string>; now: number; }): import("../org-health/review-gated-minutes.ts").StalledOrder[] {
+export function stalledOrdersOf({ deferredSince, emitted, backlog, standing, now }: { deferredSince: Map<string, number>; emitted: Set<string>; backlog: ReturnType<typeof handoffBacklog>; standing: Set<string>; now: number; }): import("../org-health/overdue-readings.ts").StalledOrder[] {
   const deferred = [...deferredSince]
     .filter(([key]) => emitted.has(key) && !key.includes("/org-health/") && !key.startsWith("engineers/"))
     .map(([key, since]) => ({ kind: ("deferred" as const), name: key, since }));

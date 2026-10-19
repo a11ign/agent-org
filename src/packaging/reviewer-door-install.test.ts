@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 import { moduleSource } from "../lib/module-source.ts";
 
-const { REVIEWER_DOOR_SOURCE, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorState } = await import("../host-units/tool-version-notes.ts");
+const { REVIEWER_DOOR_SOURCE, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorState } = await import("../host-units/gh-wrapper-and-notes.ts");
 const { driftReport, hostUnitDrift } = await import("../host-units.ts");
 const { reviewerDoorPath } = await import("../reviewer-door-path.ts");
 

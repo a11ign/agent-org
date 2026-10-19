@@ -188,11 +188,11 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // `wake.ts`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.ts`'s `why: "blocked"`
   // consumed here (`releaseHeadline`) -- both the same non-vocabulary fact as above; plus prose that happens to start a string segment with the
   // English word "answer:" (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
-  ...nonVocabulary("wake/clear-settle-ms.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
-  ...nonVocabulary("wake/exit.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
+  ...nonVocabulary("wake/fyi-queue.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
+  ...nonVocabulary("wake/exit-and-limits.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
   ...nonVocabulary("wake/holds-as-fyi.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
-  ...nonVocabulary("wake/with-ci-failure-class.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
-  ...nonVocabulary("wake/clear-settle-ms.ts", ['"answer:'], "prose that starts a string segment with the English word (`REFUSED_CLAIM_IS_AN_ANSWER`)"),
+  ...nonVocabulary("wake/ci-class-and-spares.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
+  ...nonVocabulary("wake/fyi-queue.ts", ['"answer:'], "prose that starts a string segment with the English word (`REFUSED_CLAIM_IS_AN_ANSWER`)"),
   // `pr-hold-state.ts` (#4970): `"blocked"` is the worker's declared STATE (`worker-state.ts`'s `DECLARED_STATES`, read by `declarationExcusesHold`), never the `blocked` label, and the leaf
   // cannot import `worker-state.ts` (it reads the file system); and "`answer:" opens the wake text's prose naming the `answer:<session>` field, which is the vocabulary's own prefix
   // quoted for a reader and not matched against anything.

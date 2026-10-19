@@ -26,10 +26,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { route, WAKEABLE, EXIT, blockedSessions } from "../wake/exit.ts";
-import { undelivered, parseOrders, JUDGMENT_TTL_MS, deliveryCounts, RESET } from "../wake/reset.ts";
+import { route, WAKEABLE, EXIT, blockedSessions } from "../wake/exit-and-limits.ts";
+import { undelivered, parseOrders, JUDGMENT_TTL_MS, deliveryCounts, RESET } from "../wake/seat-reset.ts";
 import { readLedger, WAKE_TTL_MS, endedRuns } from "../wake/ended-sessions.ts";
-import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
+import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
 import { readAgents } from "../herdr-agents.ts";
 import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
@@ -37,23 +37,23 @@ import { trackedTopLevelDirs } from "../region-paths.ts";
 import { copyToolAndProject, importClosure } from "./copied-tool-fixture.ts";
 import { isLiveSession } from "../arm-pr.ts";
 import { afterGate, GATE, EXIT as TICK_EXIT } from "../work-tick.ts";
-import { spawnInvocation } from "../wake/is-pull-request-spawn-order.ts";
-import { addressed, clearContext, CLEAR_SETTLE_MS } from "../wake/clear-settle-ms.ts";
+import { spawnInvocation } from "../wake/pull-request-spawn-orders.ts";
+import { addressed, clearContext, CLEAR_SETTLE_MS } from "../wake/fyi-queue.ts";
 import { CLEAR_TIMEOUT_MS, SETTLE_TEST_CLOCK_ENV, settleWaitMs } from "../wake/holds-as-fyi.ts";
-import { RUN_IDLE_RESET_MS } from "../wake/reset.ts";
-import { stuckRowOf, escalateStuck } from "../wake/merge-queue-wait-limit-ms.ts";
-import { spawnableRole, isPilotOrder, MAX_SPAWNS_PER_TICK, engineerRoles, rosterFrom } from "../wake/is-pull-request-spawn-order.ts";
-import { SPAWN_CAUSES } from "../wake/exit.ts";
-import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE } from "../wake/reset.ts";
+import { RUN_IDLE_RESET_MS } from "../wake/seat-reset.ts";
+import { stuckRowOf, escalateStuck } from "../wake/merge-queue-wait.ts";
+import { spawnableRole, isPilotOrder, MAX_SPAWNS_PER_TICK, engineerRoles, rosterFrom } from "../wake/pull-request-spawn-orders.ts";
+import { SPAWN_CAUSES } from "../wake/exit-and-limits.ts";
+import { handoffId, handoffQueuePath, ledgerPathFrom, readHandoffs, queueHandoff, dropHandoffs, staleHandoffs, nothingToDeliver, HANDOFF_STALE_MS, HANDOFF_QUEUE_FILE } from "../wake/seat-reset.ts";
 import { deliverHandoffs as settlingDeliverHandoffs, handoffOrder } from "../wake/ended-sessions.ts";
-import { engineerEligibility, b2Verdict } from "../wake/exit.ts";
-import { ledgerKeyOf } from "../wake/reset.ts";
+import { engineerEligibility, b2Verdict } from "../wake/exit-and-limits.ts";
+import { ledgerKeyOf } from "../wake/seat-reset.ts";
 import { ledgerLine } from "../wake/ended-sessions.ts";
 import { AUTOCOMPACT_WINDOW_TOKENS, PER_ROW_DISALLOWED_TOOLS, WORKER_SETTINGS_PATH }
   from "../worker-profile.ts";
 import { sparePathsFrom } from "../wake/ended-sessions.ts";
 import { hostConfigPath } from "../host-config.ts"; // #850: the pane carries the host the gate resolved
-import { handoffBacklog, backlogReport, fitBatch, waitedFor, staleReport, BATCH_WRAPPER_BYTES } from "../wake/clear-settle-ms.ts";
+import { handoffBacklog, backlogReport, fitBatch, waitedFor, staleReport, BATCH_WRAPPER_BYTES } from "../wake/fyi-queue.ts";
 import { handoffBatches, PROMPT_ARG_MAX, HANDOFF_BATCH_BYTES, targetLabelBytes } from "../wake/ended-sessions.ts";
 import { startedPanes } from "./started-pane.ts";
 import { dropUnknownHandoffs, UNKNOWN_SESSION_MS } from "../wake/ended-sessions.ts";
@@ -2171,7 +2171,7 @@ test("#3769 (1): the settle waits what it always did unless a test clock is set 
 });
 
 test("#3769 (2): in a PROCESS, the clock reaches the real blocking sleep: `clearContext` with no injected sleep returns at once", () => {
-  const wake = fileURLToPath(new URL("../wake/clear-settle-ms.ts", import.meta.url));
+  const wake = fileURLToPath(new URL("../wake/fyi-queue.ts", import.meta.url));
   const probe = `import(${JSON.stringify(wake)}).then(({ clearContext, CLEAR_SETTLE_MS }) => {`
     + " const at = Date.now(); const refused = clearContext(() => '', 'probe');"
     + " console.log(JSON.stringify({ refused, ms: Date.now() - at, real: CLEAR_SETTLE_MS })); });";

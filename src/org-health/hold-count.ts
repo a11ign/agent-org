@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { isAppLogin, spenderPhraseFor } from "../gh-ledger.ts";
 import { GITHUB_ROLES, homeHostConfig, roleIdentity, type HostConfig } from "../host-config.ts";
 import { APPROVED_DIRTY_MINUTES, APPROVED_DIRTY_SIGNAL, HOLDS_PER_PR, HOLDS_PER_PR_SIGNAL, SAME_WAY_RERUN_SIGNAL, type DirtyPr, type PoolReading } from "./claim-refusal.ts";
-import { MAX_NAMED, MS_PER_MINUTE, POOL_LOW_FRACTION, SIGNALS, ageText, clear, hourOf, type Reading, unknown } from "./no-merge-hours.ts";
+import { MAX_NAMED, MS_PER_MINUTE, POOL_LOW_FRACTION, SIGNALS, ageText, clear, hourOf, type Reading, unknown } from "./thresholds.ts";
 
 /** `holds` is the count of `hold:` labels on one open pull request now. */
 export type HoldCount = { number: number | string, holds: number };

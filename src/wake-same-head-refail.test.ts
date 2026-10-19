@@ -24,8 +24,8 @@ const HOST_FILE = join(SCRATCH, "host.json");
 writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join(SCRATCH, "bin"), primary: "fixture", projects: [{ id: "fixture", checkout: PROJECT }],
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
-const { undelivered } = await import("./wake/reset.ts");
-const { withCiFailureClass } = await import("./wake/with-ci-failure-class.ts");
+const { undelivered } = await import("./wake/seat-reset.ts");
+const { withCiFailureClass } = await import("./wake/ci-class-and-spares.ts");
 const { classifyCiFailure } = await import("./ci-failure-class.ts");
 
 const FIRST = { session: "worker-7", cause: "pr-checks-failing", causeKey: "worker-7/pr-checks-failing/pr-77/abcdef12", prompt: "PR 77 has FAILING checks." };
@@ -56,7 +56,7 @@ test("a re-fail whose log could not be read is the gate's order as written, whic
 });
 
 test("a re-fail beyond the per-tick classification cap still carries the failing assertion, and the cap still holds for everything else", async () => {
-  const { ENRICH_AHEAD } = await import("./wake/is-release-line.ts");
+  const { ENRICH_AHEAD } = await import("./wake/release-line-and-seats.ts");
   const plain = Array.from({ length: ENRICH_AHEAD }, (_, i) => ({ ...FIRST, causeKey: `worker-7/pr-checks-failing/pr-${100 + i}/abcdef1${i}`, prompt: `PR ${100 + i} has FAILING checks.` }));
   const beyond = { ...FIRST, causeKey: "worker-7/pr-checks-failing/pr-200/abcdef20", prompt: "PR 200 has FAILING checks." };
   const refail = { ...AGAIN, causeKey: "worker-7/pr-checks-failing/pr-201/abcdef21/refail-1", prompt: "PR 201 FAILED AGAIN at this same head." };

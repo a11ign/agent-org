@@ -29,7 +29,7 @@ import { OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE } from
 import { declaredRegionFiles, NOT_A_COMMIT, trackedTopLevelDirs } from "../region-paths.ts";
 import { startability, subjectAndRegionFacts } from "../row-reachability.ts";
 import { declarationDisagreement, fleetOrLabAcceptance, untrimmedFleetMention } from "../acceptance-commands/classification.ts";
-import { extractAcceptanceSection } from "../acceptance-commands/suite-scripts-for.ts";
+import { extractAcceptanceSection } from "../acceptance-commands/suite-and-checkout-commands.ts";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

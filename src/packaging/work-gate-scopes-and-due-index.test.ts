@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DUE_INDEX_ENTRY as GATE_DUE_INDEX_ENTRY, readOpenRows } from "../work-gate/reads.ts";
-import { MAX_UNCHANGED_SECONDS, OPEN_ROWS_LIMIT, defaultRun, isAmbientRun, isGhRun, readPrs, readWithFirstWaveTogether, standingFor } from "../work-gate/reads/exit.ts";
+import { MAX_UNCHANGED_SECONDS, OPEN_ROWS_LIMIT, defaultRun, isAmbientRun, isGhRun, readPrs, readWithFirstWaveTogether, standingFor } from "../work-gate/reads/read-memo-and-exit.ts";
 import { readPrList, writePrList, type PrEntry } from "../pr-list-memory.ts";
 import { writeTickScopes } from "../tick-scopes.ts";
 import { dueRepos, readDueIndex, writeDueIndex, type DueEntry } from "../due-index.ts";

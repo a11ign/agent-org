@@ -15,7 +15,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { deliver } from "./wake/clear-settle-ms.ts";
+import { deliver } from "./wake/fyi-queue.ts";
 import { INSIDE } from "./review-trust.ts";
 
 const REASON = "unknown model \"gpt-5.6-luna\" for kind codex";

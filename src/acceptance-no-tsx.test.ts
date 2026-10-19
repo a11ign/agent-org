@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { acceptancePathsReason, loadsTypeScriptThroughTsx, tsxAcceptanceReason } from "./acceptance-commands/suite-scripts-for.ts";
+import { acceptancePathsReason, loadsTypeScriptThroughTsx, tsxAcceptanceReason } from "./acceptance-commands/suite-and-checkout-commands.ts";
 import { checkBody } from "./pr-open.ts";
 
 /** A row body whose Acceptance is `lines`, each its own command. */

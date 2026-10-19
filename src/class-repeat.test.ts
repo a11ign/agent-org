@@ -11,8 +11,8 @@ import { test } from "node:test";
 import {
   CLASS_REPEAT_WINDOW_MS, FAILURE_CLASSES_PATH, groupByClass, parseFailureClasses, readClassRepeat, type ClassRepeatFact,
 } from "./class-repeat.ts";
-import { SIGNALS } from "./org-health/no-merge-hours.ts";
-import { classRepeatReadings, orgHealthOrders, orgHealthReadings, orgHealthTick } from "./org-health/fleet-build-incident.ts";
+import { SIGNALS } from "./org-health/thresholds.ts";
+import { classRepeatReadings, orgHealthOrders, orgHealthReadings, orgHealthTick } from "./org-health/fleet-build-readings.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 
 const NOW = Date.parse("2026-10-08T14:00:00Z");
@@ -57,7 +57,7 @@ const factOf = (issues: object[], { how = {}, index = INDEX, now = NOW }: { how?
 /** @param {object[]} issues @param {object} [io] */
 const readingsOf = (issues: object[], io: object = {}) => classRepeatReadings({ now: NOW, classRepeat: factOf(issues, io) });
 /** @param {import("./org-health.ts").Reading[]} readings */
-const orderTexts = (readings: import("./org-health/no-merge-hours.ts").Reading[]) => orgHealthOrders(readings).map((o) => o.prompt);
+const orderTexts = (readings: import("./org-health/thresholds.ts").Reading[]) => orgHealthOrders(readings).map((o) => o.prompt);
 
 const TWO_IN_X = [closed(11, ["class:x"], 10 * MINUTE), closed(10, ["bug", "class:x"], 3 * DAY)];
 

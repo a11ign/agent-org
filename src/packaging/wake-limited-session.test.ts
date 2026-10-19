@@ -21,12 +21,12 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMPACT_THRESHOLD_TOKENS, MAX_DELIVERIES, SETTLE_TEST_CLOCK_ENV } from "../wake/holds-as-fyi.ts";
-import { limitResetAt, sessionAllowance, unavailableReason, LIMIT_UNREADABLE_HOLD_MS } from "../wake/exit.ts";
-import { deliver as settlingDeliver } from "../wake/clear-settle-ms.ts";
+import { limitResetAt, sessionAllowance, unavailableReason, LIMIT_UNREADABLE_HOLD_MS } from "../wake/exit-and-limits.ts";
+import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
 import { deliverHandoffs as settlingDeliverHandoffs } from "../wake/ended-sessions.ts";
-import { escalateStuck } from "../wake/merge-queue-wait-limit-ms.ts";
-import { deliveryCounts } from "../wake/reset.ts";
-import { poolEngineerReason } from "../wake/with-ci-failure-class.ts";
+import { escalateStuck } from "../wake/merge-queue-wait.ts";
+import { deliveryCounts } from "../wake/seat-reset.ts";
+import { poolEngineerReason } from "../wake/ci-class-and-spares.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing. A per-row instance's order reads the instance's own transcripts to decide `/compact` (#2688), and the default root

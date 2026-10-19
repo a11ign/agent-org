@@ -13,8 +13,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
 import { DEAD_OWNER_FALLBACK } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
-import { routeWithFallback } from "./wake/exit.ts";
-import { deliver } from "./wake/clear-settle-ms.ts";
+import { routeWithFallback } from "./wake/exit-and-limits.ts";
+import { deliver } from "./wake/fyi-queue.ts";
 
 type Agent = { label: string, status: string };
 type Order = { session: string, fallback?: string, fallbackOnlyIfAbsent?: boolean, fallbackPrompt?: string, causeKey: string, prompt: string, cause: string };

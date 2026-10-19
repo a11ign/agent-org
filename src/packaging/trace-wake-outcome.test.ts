@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { attributed } from "../prompt-session.ts";
-import { HANDOFF_QUEUE_FILE } from "../wake/reset.ts";
+import { HANDOFF_QUEUE_FILE } from "../wake/seat-reset.ts";
 import { DIRECT_RECORD_FILE } from "../prompt-session.ts";
 import { appendToStore, ghCommandsOf, hourOf, openStore, outcomeSplit, OUTCOME_QUIET_MS, readStore, repoWriteOf, sendsOfLogs, wakeOutcomes, countedHours } from "../trace/store.ts";
 import { PROMPT_LOG_FILES, renderOutcomeSplit, settleWakeOutcomes, SETTLE_AFTER_MS } from "../trace/trace.ts";

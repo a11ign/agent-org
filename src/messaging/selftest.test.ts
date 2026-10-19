@@ -388,7 +388,7 @@ describe("the command", () => {
 // `wake.ts` reads the project's declaration at import, so it loads where `AGENT_ORG_HOST` finds one; elsewhere these cases are SKIPPED WITH THE REFUSAL AS THE REASON,
 // and the "wake.ts loaded" test says which of the two this run was (a skip that fires always is a check that never runs).
 const wake = await import("../wake.ts").then((module) => ({ module }), (error) => ({ reason: String(error.message).split("\n")[0] }));
-const checkChairmanPathModule = await import("../wake/is-release-line.ts");
+const checkChairmanPathModule = await import("../wake/release-line-and-seats.ts");
 const skipUnlessLoaded = "reason" in wake ? `wake.ts cannot load here: ${wake.reason}` : false;
 
 describe("the tick step queues a report for ceo and for nobody else", () => {

@@ -17,9 +17,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { escalateStuck } from "../wake/merge-queue-wait-limit-ms.ts";
+import { escalateStuck } from "../wake/merge-queue-wait.ts";
 import { escalatedKeys } from "../wake/ended-sessions.ts";
-import { deliveryCounts, ledgerKeyOf, ESCALATED, RESET } from "../wake/reset.ts";
+import { deliveryCounts, ledgerKeyOf, ESCALATED, RESET } from "../wake/seat-reset.ts";
 import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
 
 const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));

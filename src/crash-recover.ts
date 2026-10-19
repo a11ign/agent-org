@@ -393,7 +393,7 @@ export function withLaunchFlags(ports: Ports, tool: string): Ports {
     ...ports,
     prepare: async () => {
       wake = await import(pathToFileURL(join(tool, "src/wake.ts")).href);
-      release = await import(pathToFileURL(join(tool, "src/wake/is-release-line.ts")).href);
+      release = await import(pathToFileURL(join(tool, "src/wake/release-line-and-seats.ts")).href);
       profile = await import(pathToFileURL(join(tool, "src/worker-profile.ts")).href);
       hostConfig = await import(pathToFileURL(join(tool, "src/host-config.ts")).href);
     },

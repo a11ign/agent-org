@@ -26,12 +26,12 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { deliver, HOST_REPOS } = await import("./wake/clear-settle-ms.ts");
-const { spawnClaimer, rebuildCheckOn, worktreeToolchainReason, sayToolchainRefusal, REBUILD_CHECK_SWITCH } = await import("./wake/is-release-line.ts");
+const { deliver, HOST_REPOS } = await import("./wake/fyi-queue.ts");
+const { spawnClaimer, rebuildCheckOn, worktreeToolchainReason, sayToolchainRefusal, REBUILD_CHECK_SWITCH } = await import("./wake/release-line-and-seats.ts");
 const { startedPanes } = await import("./packaging/started-pane.ts");
 /** The row the tier check reads: an ordinary one, so the claim never reaches the real `gh` for its labels (`readRowForTier`'s default). */
 const ORDINARY_ROW = () => ({ labels: [], body: "", title: "" });
-type ToolchainGate = import("./wake/is-pull-request-spawn-order.ts").ToolchainGate;
+type ToolchainGate = import("./wake/pull-request-spawn-orders.ts").ToolchainGate;
 
 const ROW = 1169;
 const ORDER = {

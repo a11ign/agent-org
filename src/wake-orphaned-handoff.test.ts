@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveEndedHandoffs } from "./wake/ended-sessions.ts";
-import { handoffId } from "./wake/reset.ts";
+import { handoffId } from "./wake/seat-reset.ts";
 
 const HOUR = 3_600_000;
 const NOW = Date.parse("2026-10-01T08:00:00Z");

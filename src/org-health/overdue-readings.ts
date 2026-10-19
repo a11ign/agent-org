@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { brokenChecks } from "../red-pr.ts";
 import { MANUAL_WAIT_HOURS, STALE_WAIT_GRACE_MINUTES, pastGrace } from "../wait-condition.ts";
-import { AUTO_OFF_MIRROR_PATH, AUTO_OFF_MIRROR_STALE_MINUTES, AUTO_OFF_RECORD_STALE_MINUTES, AUTO_OFF_REFUSAL_MINUTES, DEFAULT_ROOT, FLEET_IDLE_HOURS, HOURS_FROM_MINUTES, MAX_NAMED, MAX_QUOTED_CHARS, MAX_REASON_CHARS, MINUTES_PER_TICK, MS_PER_HOUR, MS_PER_MINUTE, ORDER_STALL_MINUTES, OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, PANE_PROMPT_MINUTES, PRIMARY_STALE_MINUTES, RED_PR_MINUTES, REFUSED_TICKS, SIGNALS, ageText, clear, hourOf, hoursOf, isoOf, type Reading, type RedPr, type ReviewGatedPr, unknown } from "./no-merge-hours.ts";
+import { AUTO_OFF_MIRROR_PATH, AUTO_OFF_MIRROR_STALE_MINUTES, AUTO_OFF_RECORD_STALE_MINUTES, AUTO_OFF_REFUSAL_MINUTES, DEFAULT_ROOT, FLEET_IDLE_HOURS, HOURS_FROM_MINUTES, MAX_NAMED, MAX_QUOTED_CHARS, MAX_REASON_CHARS, MINUTES_PER_TICK, MS_PER_HOUR, MS_PER_MINUTE, ORDER_STALL_MINUTES, OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, PANE_PROMPT_MINUTES, PRIMARY_STALE_MINUTES, RED_PR_MINUTES, REFUSED_TICKS, SIGNALS, ageText, clear, hourOf, hoursOf, isoOf, type Reading, type RedPr, type ReviewGatedPr, unknown } from "./thresholds.ts";
 
 /** agent-org#1538: a review-gated red this long with no reviewer ordered at its head is unasked. The bound is the chairman's (2 hours, a11ign#5528). */
 export const REVIEW_GATED_MINUTES = 120;

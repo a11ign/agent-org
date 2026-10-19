@@ -11,7 +11,7 @@ import { perPullRequestOrders } from "../work-gate/pr-orders.ts";
 import { ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
 import { decide, rowReviewSkillFlagOn } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
-import { emptyCanaryState } from "../org-health/fleet-build-incident.ts";
+import { emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 

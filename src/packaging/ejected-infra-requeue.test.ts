@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { emptyCanaryState, machineryFlagOn, STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-incident.ts";
+import { emptyCanaryState, machineryFlagOn, STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-readings.ts";
 import { machineryValues, withMachineryFlag } from "../org-health.ts";
 import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";

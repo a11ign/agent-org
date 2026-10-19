@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agentOrgCommand } from "../acceptance-commands/suite-scripts-for.ts";
+import { agentOrgCommand } from "../acceptance-commands/suite-and-checkout-commands.ts";
 import { COMMANDS, FIXED_ARGS } from "../commands.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, ProjectDeclarationRefusal } from "../project-config.ts";
 import { roleBriefPath } from "../project-roles.ts";

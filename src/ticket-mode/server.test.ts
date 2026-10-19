@@ -484,7 +484,7 @@ test("A11-84: the start-up runs the host module's check in a child process, and 
   const asked: string[] = [];
   checkGhWrapperAtStart({ err: (line) => said.push(line), run: (program) => { asked.push(program); return { status: 0 }; } });
   assert.equal(asked.length, 1);
-  assert.match(asked[0], /host-units\/tool-version-notes\.ts".*\.then\(\(host\) => host\.startupGhWrapper\(\)\)/s, "the child loads the host module and runs its check");
+  assert.match(asked[0], /host-units\/gh-wrapper-and-notes\.ts".*\.then\(\(host\) => host\.startupGhWrapper\(\)\)/s, "the child loads the host module and runs its check");
   assert.equal(said.join(""), "", "the child logs its own findings, so a clean start adds nothing");
 });
 

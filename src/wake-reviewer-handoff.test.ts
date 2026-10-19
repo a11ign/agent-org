@@ -11,10 +11,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deliver } from "./wake/clear-settle-ms.ts";
+import { deliver } from "./wake/fyi-queue.ts";
 import { deliverHandoffs } from "./wake/ended-sessions.ts";
 import { reviewerMismatch } from "./wake/ensure-reviewer-token.ts";
-import { handoffId } from "./wake/reset.ts";
+import { handoffId } from "./wake/seat-reset.ts";
 
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));
 

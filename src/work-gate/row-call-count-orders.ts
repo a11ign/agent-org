@@ -10,7 +10,7 @@
 // reads an imported binding at load time. `work-gate.ts` re-exports every name this file exports that it exported before.
 import { labelsOf, PARKED_LABEL } from "./vocabulary.ts";
 import { holderWaitingOn } from "./causes/rows-blocker-cleared.ts";
-import { defaultRun, repoNow } from "./reads/exit.ts";
+import { defaultRun, repoNow } from "./reads/read-memo-and-exit.ts";
 import { claimRecordOf } from "../claim-record.ts";
 import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
 import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.ts";

@@ -12,7 +12,7 @@ import { ONE_SHOT_SPAWN_CAUSES, isOneShotOrder } from "../orchestrator-one-shot.
 import { CEO_ONE_SHOT_SPAWN_CAUSES, isCeoOneShotOrder } from "../ceo-one-shot.ts";
 import { SPARE_FAMILIES, familyMember } from "../arm-pr.ts";
 import { firstLine, herdrReason, agentStartArgs, openPane, closedNote } from "../herdr-agents.ts";
-import { PULL_REQUEST_SPAWN_CAUSES, SPAWN_CAUSES, codeRepositoryOf, defaultRun, pullRequestOfOrder, rowMention, spareForOtherRow, type RowRef } from "./exit.ts";
+import { PULL_REQUEST_SPAWN_CAUSES, SPAWN_CAUSES, codeRepositoryOf, defaultRun, pullRequestOfOrder, rowMention, spareForOtherRow, type RowRef } from "./exit-and-limits.ts";
 
 /**
  * `ineligibleReason`, NARROWED TO THE ORDER'S OWN ROW for a ready-row offer (agent-org#459): an instance of the spare family is offered the row it was

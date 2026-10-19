@@ -45,7 +45,7 @@ const shipped = () => loadAllowlist();
 const entryFor = (line: string) => shipped().find((a) => a.pattern.test(normaliseLine(line)));
 
 const WORK_GATE = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
-const READS = fileURLToPath(new URL("./work-gate/reads/exit.ts", import.meta.url));
+const READS = fileURLToPath(new URL("./work-gate/reads/read-memo-and-exit.ts", import.meta.url));
 // The reads module whose import holds the memo for the gate (`reads.ts`); `READS` names where `defaultRun` is.
 const READS_MODULE = fileURLToPath(new URL("./work-gate/reads.ts", import.meta.url));
 
@@ -92,7 +92,7 @@ test("the read memo line is the gate's own line, and the shipped allowlist allow
   const entry = entryFor(line ?? "");
   assert.ok(entry, "an entry matches the line");
   assert.notEqual(entry.reason.trim(), "", "the entry carries its reason");
-  assert.match(entry.reason, /src\/work-gate\/reads\/exit\.ts/, "the reason names the file that writes it");
+  assert.match(entry.reason, /src\/work-gate\/reads\/read-memo-and-exit\.ts/, "the reason names the file that writes it");
 });
 
 test("40 ticks of each counter are offered with an empty allowlist and not with the shipped one", () => {

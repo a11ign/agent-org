@@ -16,7 +16,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GH_READ_TIMEOUT_MS, ghWithin, readPrs } from "./work-gate/reads/exit.ts";
+import { GH_READ_TIMEOUT_MS, ghWithin, readPrs } from "./work-gate/reads/read-memo-and-exit.ts";
 import { moduleSource } from "./lib/module-source.ts";
 
 const BOUND_MS = 400;

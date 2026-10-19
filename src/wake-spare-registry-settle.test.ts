@@ -10,8 +10,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { endFinishedSpares } from "./wake/with-ci-failure-class.ts";
-import { spareInstances } from "./wake/merge-queue-wait-limit-ms.ts";
+import { endFinishedSpares } from "./wake/ci-class-and-spares.ts";
+import { spareInstances } from "./wake/merge-queue-wait.ts";
 
 const NOW = Date.UTC(2026, 9, 1, 12, 0, 0);
 const HOUR = 3_600_000;

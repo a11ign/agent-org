@@ -37,7 +37,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() });
 process.chdir(PROJECT);
 
-const { overdueReading } = await import("../org-health/review-gated-minutes.ts");
+const { overdueReading } = await import("../org-health/overdue-readings.ts");
 const { overdueFacts } = await import("../work-gate/org-health.ts");
 const { claimRecordComment } = await import("../row-claim.ts");
 const { mergedStats, median } = await import("../org-retro/retro-cause.ts");

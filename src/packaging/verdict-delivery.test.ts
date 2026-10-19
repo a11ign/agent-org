@@ -19,7 +19,7 @@ import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
 import { DEFAULT_CANARY_OPTIONS, machineryCanaryTick, withMachineryFlag, type CanaryIo } from "../org-health.ts";
 import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
-import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryFlagOn, parseCanaryState } from "../org-health/fleet-build-incident.ts";
+import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryFlagOn, parseCanaryState } from "../org-health/fleet-build-readings.ts";
 import { OUTSIDE, outsideVerdictBlock, postOutsideVerdicts, VERDICT_DELIVERY_FLAG, type DoorRun } from "../review-trust.ts";
 import { postOutsideVerdictsOf } from "../wake/holds-as-fyi.ts";
 import { conflictingIdleNow, conflictingIdlePrs, parseVerdictLedger, pullReadOf, reconcileLedgerNow, recordWrittenVerdicts, verdictUndeliveredNow, VERDICT_LEDGER_FILE, type PullRead } from "../verdict-delivery.ts";

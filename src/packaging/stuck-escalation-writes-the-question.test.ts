@@ -13,8 +13,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escalateStuck, sessionStateOf, REASK_AFTER_MS } from "../wake/merge-queue-wait-limit-ms.ts";
-import { escalationMemory } from "../wake/with-ci-failure-class.ts";
+import { escalateStuck, sessionStateOf, REASK_AFTER_MS } from "../wake/merge-queue-wait.ts";
+import { escalationMemory } from "../wake/ci-class-and-spares.ts";
 import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
 
 const KEY = "worker-3289/answer-owed/row-3289";

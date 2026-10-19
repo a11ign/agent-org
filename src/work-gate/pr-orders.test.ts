@@ -15,7 +15,7 @@ import { stallReasonOf, reviewGateOf } from "./pr-orders/red-only-by-superseded-
 import { perPullRequestOrders, fileReviewGatedHuman, reviewGatedHumanBrief } from "./pr-orders.ts";
 import { clearedByOf, checkMarkersOf } from "./review-gate.ts";
 import { subjectRef } from "../review-attribution.ts";
-import { reviewGatedUnaskedReading, REVIEW_GATED_MINUTES } from "../org-health/review-gated-minutes.ts";
+import { reviewGatedUnaskedReading, REVIEW_GATED_MINUTES } from "../org-health/overdue-readings.ts";
 import { reviewGatedFacts } from "./org-health.ts";
 
 const NOW = Date.parse("2026-10-16T12:00:00Z");

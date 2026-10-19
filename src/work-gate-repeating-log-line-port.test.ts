@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { repeatingLinesTick } from "./repeating-lines.ts";
 import { CITE_MIN_CHARS, REPEATING_LINE_SWITCH_ENV, isCountMilestone, settleCitedRepeatingLines } from "./work-gate/tick.ts";
-import { repoNow } from "./work-gate/reads/exit.ts";
+import { repoNow } from "./work-gate/reads/read-memo-and-exit.ts";
 import type { Decision, ItemRef, TicketItem, TicketPort } from "./ticket-port/port.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

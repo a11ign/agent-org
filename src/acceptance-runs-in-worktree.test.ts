@@ -14,10 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { rewriteLeadingCd } from "./acceptance-commands/suite-scripts-for.ts";
+import { rewriteLeadingCd } from "./acceptance-commands/suite-and-checkout-commands.ts";
 
 const SRC = new URL(".", import.meta.url);
-const ACCEPTANCE_COMMANDS = new URL("acceptance-commands/suite-scripts-for.ts", SRC).href;
+const ACCEPTANCE_COMMANDS = new URL("acceptance-commands/suite-and-checkout-commands.ts", SRC).href;
 const ACCEPTANCE_CLOSURE = new URL("acceptance-commands/unmet-command-closure-requirements.ts", SRC).href;
 const PR_OPEN = new URL("pr-open.ts", SRC).href;
 

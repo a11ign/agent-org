@@ -17,9 +17,9 @@ import { promptable, clearThenPrompt as settlingClearThenPrompt, queueable, queu
   deepQueueRefusal, DEEP_QUEUE, NEEDS_DECISION_FLAG, EXIT, senderName, resolveSender, attributed,
   deliveredText }
   from "../prompt-session.ts";
-import { readHandoffs } from "../wake/reset.ts";
+import { readHandoffs } from "../wake/seat-reset.ts";
 import { handoffOrder } from "../wake/ended-sessions.ts";
-import { addressed } from "../wake/clear-settle-ms.ts";
+import { addressed } from "../wake/fyi-queue.ts";
 
 import { readLoadedRules } from "./rules-files.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
@@ -480,7 +480,7 @@ test("there is ONE copy of the autonomy footer in the agent-org sources (with it
   // Recursive: a module split into a directory of its own (`wake.ts` and `wake/`) keeps its files under that directory.
   const holders = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => /\.(mjs|ts)$/.test(f) && !/\.test\.(mjs|ts)$/.test(f))
     .filter((f) => readFileSync(new URL(f, dir), "utf8").includes(sentence));
-  assert.deepEqual(holders, ["wake/clear-settle-ms.ts"],
+  assert.deepEqual(holders, ["wake/fyi-queue.ts"],
     "the control: the wake module holds it (in its `wake/` directory), so an empty result would mean the scan is blind, not that it is unique");
 });
 

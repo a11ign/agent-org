@@ -15,7 +15,7 @@ import { CHAIRMAN_PRIORITY_LABEL } from "./work-gate/vocabulary.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { chairmanRowAnsweredByCeo } from "./work-gate/causes/rows-offer.ts";
-import { stuckSubjectOf } from "./wake/merge-queue-wait-limit-ms.ts";
+import { stuckSubjectOf } from "./wake/merge-queue-wait.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 

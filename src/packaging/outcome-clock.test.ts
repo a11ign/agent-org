@@ -41,9 +41,9 @@ execFileSync("git", ["init", "--quiet"], { cwd: PROJECT, env: sandboxGitEnv() })
 process.chdir(PROJECT);
 
 const orgHealth = await import("../org-health.ts");
-const { OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, SIGNALS } = await import("../org-health/no-merge-hours.ts");
-const { overdueReading } = await import("../org-health/review-gated-minutes.ts");
-const { orgHealthTick } = await import("../org-health/fleet-build-incident.ts");
+const { OVERDUE_PR_MINUTES, OVERDUE_ROW_MINUTES, SIGNALS } = await import("../org-health/thresholds.ts");
+const { overdueReading } = await import("../org-health/overdue-readings.ts");
+const { orgHealthTick } = await import("../org-health/fleet-build-readings.ts");
 const { stallReasonOf, STALL_REASON } = await import("../work-gate/pr-orders/red-only-by-superseded-run.ts");
 const { WAIT_FIELDS } = await import("../idle-claimant.ts");
 const { overdueFacts, claimedRowFacts, orgHealthNow, needsHolderAgents, OVERDUE_IDLE_CLAIM_MINUTES, IDLE_CLAIM_REASON } = await import("../work-gate/org-health.ts");

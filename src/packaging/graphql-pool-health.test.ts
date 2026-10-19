@@ -8,9 +8,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { POOL_LOW_FRACTION, SIGNALS } from "../org-health/no-merge-hours.ts";
+import { POOL_LOW_FRACTION, SIGNALS } from "../org-health/thresholds.ts";
 import { poolLowReading } from "../org-health/hold-count.ts";
-import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-incident.ts";
+import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-readings.ts";
 import { poolFromRateLimitField } from "../api-pool.ts";
 import { OPEN_ITEMS_QUERY as ROW_OFF_BOARD_QUERY } from "../ticket-port/github-adapter.ts";
 import { readRowsOffBoard } from "../work-gate/causes/rows-off-board.ts";
