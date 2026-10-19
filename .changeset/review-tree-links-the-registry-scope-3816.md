@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A review tree is now given the registry's `@a11ign/*` packages of the tick's checkout, not only the workspace's. `linkReviewDependencies` linked third-party entries, skipped the root `@a11ign` directory whole, and then deleted every entry of the tree's scope that was not a workspace package, so since the split (`@a11ign/screenreader-fleet`, `@a11ign/screenreader-worker`, `@a11ign/toolchain` are the registry's) a reviewer of a PR importing one died at `ERR_MODULE_NOT_FOUND` before its Acceptance ran (#3806, #3834). Each entry of the tick's root scope that does not lead into `packages/` is now linked to the tick's own, kept by the stale sweep, and removed again once the tick's checkout drops it; a package the reviewed head declares in its workspace still wins by name, so the tree's source is what is reviewed. It reads the one directory the tick already holds. Measured against the live primary at `8940cc2b6`, a fresh tree's `node_modules/@a11ign` held six workspace entries before and those six plus the three registry ones after, and the link took about 12 ms either way.
