@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -73,4 +73,17 @@ test("--from makes the ticket's worktree from another branch, and a malformed --
     const refused = await main(argv, env, () => settings);
     assert.deepEqual([refused.code, refused.out], [2, "usage: ticket:worktree <repo> [--from <branch>]"], argv.join(" "));
   }
+});
+
+test("A11-116: a worktree made from a stacked branch records the commit it was branched at, beside the ticket's files; one made from the default branch records none", async () => {
+  const settings = machine();
+  const env = { [TICKET_ENV.key]: "NBF-3", [TICKET_ENV.branch]: "nbf-3" };
+  const stacked = await main(["repo-a", "--from", "develop"], env, () => settings);
+  assert.equal(stacked.code, 0, stacked.out);
+  const record = join(settings.stateDir, "tickets", "NBF-3", "stack-base.json");
+  const sha = gitSync(join(settings.clones["repo-a"]), ["rev-parse", "origin/develop"]).trim();
+  assert.deepEqual(JSON.parse(readFileSync(record, "utf8")), { repo: "repo-a", branch: "develop", sha }, "the repository, branch and commit it was branched at");
+  const plain = await main(["repo-a"], { [TICKET_ENV.key]: "NBF-4", [TICKET_ENV.branch]: "nbf-4" }, () => settings);
+  assert.equal(plain.code, 0, plain.out);
+  assert.equal(existsSync(join(settings.stateDir, "tickets", "NBF-4", "stack-base.json")), false, "no --from, no record");
 });

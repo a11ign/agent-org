@@ -93,7 +93,7 @@ import { ensureSession } from "./pool-start.ts";
 import { applyEdit, discardEdit, dismiss, remove, stop, stopWriterRun } from "./pool-actions.ts";
 import { close } from "./pool-settle.ts";
 import { reconcile, tick, watchFeedback } from "./pool-watch.ts";
-import { refreshTracker, retargetStacked } from "./pool-tracker.ts";
+import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
 import { releaseReviewers } from "./pool-reviewers.ts";
 import { newPoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
 
@@ -120,6 +120,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     watchFeedback: () => watchFeedback(ctx),
     releaseReviewers: () => releaseReviewers(ctx),
     retargetStacked: () => retargetStacked(ctx),
+    rebaseStacked: () => rebaseStacked(ctx),
     applyEdit: (key: string) => applyEdit(ctx, key),
     discardEdit: (key: string) => discardEdit(ctx, key),
     stopWriterRun: (id: string) => stopWriterRun(ctx, id),

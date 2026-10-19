@@ -32,6 +32,11 @@ export type Ticket = Readonly<{
   /** The key of the ticket this one is part of, whose plan may bind it, or `null`. */
   parent: string | null;
   /**
+   * The summary of its project as the tracker holds it, where a repository's address is written (`github.com/<owner>/<repo>`, see `project-repo.ts`).
+   * Absent from a ticket stored on the queue before it was read, and from a source that does not read projects, which leaves every run to name its own.
+   */
+  projectSummary?: string | null;
+  /**
    * The keys of its sub-issues that are still open: not completed, canceled or a duplicate. A ticket with one is a PARENT, an epic with nothing
    * of its own to build, so it is never queued itself: the board offers to queue these instead (A11-76). Read in the same request as the
    * ticket, never one request per ticket. Once every sub-issue is done or canceled it is empty, and the ticket is an ordinary one again. Absent
@@ -73,9 +78,11 @@ export const DEFAULT_KEYWORDS: Keywords = Object.freeze({ closing: "Closes", non
 
 /**
  * A ticket that blocks another, as the tracker last saw it: its state's type and name, the branch it links pull requests by, and the state of each
- * pull request it links, by URL. `branch` is absent from a blocker read before it was recorded.
+ * pull request it links, by URL. `branch` is absent from a blocker read before it was recorded. `head` is the commit that branch is at on the remote
+ * of the repository the blocked run works in, which the pool reads (`git ls-remote`): absent when the branch is not pushed there, and it is what
+ * makes a blocker stackable, since a pull request is not needed for that.
  */
-export type Blocker = Readonly<{ key: string; state: string; status: string; branch?: string; pulls: Readonly<Record<string, PullState>> }>;
+export type Blocker = Readonly<{ key: string; state: string; status: string; branch?: string; head?: string; pulls: Readonly<Record<string, PullState>> }>;
 
 /**
  * A state move the board made on a ticket, by the state NAMES the tracker shows: the state the ticket was in before, and the one it moved it to.
@@ -159,6 +166,12 @@ export interface TicketSource {
    * source without it never holds a queued run back. Throws when the tracker cannot be asked.
    */
   blockers?(keys: readonly string[]): Promise<ReadonlyMap<string, readonly Blocker[]>>;
+  /**
+   * The summary of each key's project, as the tracker holds it now, for the keys whose ticket has a project. A repository is named there, so a
+   * queued run's repository is read from it (`project-repo.ts`). A key with no project is left out. A source without it leaves each run to the
+   * summary its ticket was queued with. Throws when the tracker cannot be asked.
+   */
+  projectSummaries?(keys: readonly string[]): Promise<ReadonlyMap<string, string | null>>;
   /**
    * Attach a planning run's files to the ticket, each titled with its file name, and move the ticket to the state named `state` when it has not
    * started and its team has a state of that name. Teams name their states differently, so one without it keeps the ticket's state, and the

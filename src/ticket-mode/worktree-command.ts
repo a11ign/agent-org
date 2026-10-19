@@ -2,7 +2,7 @@
 // @ts-check
 // command: ticket:worktree -- a ticket-mode worker makes its worktree in the repository it chose: `ticket:worktree <repo> [--from <branch>]`
 //
-// THE WORKER CHOOSES THE REPOSITORY; THIS MAKES THE CHOICE SAFE. A worker reads its ticket and decides where the work lands, which a model can do
+// THE WORKER CHOOSES THE REPOSITORY WHEN NONE IS PLANNED OR DEFAULTED FROM ITS PROJECT (A11-116); THIS MAKES THE CHOICE SAFE. A worker reads its ticket and decides where the work lands, which a model can do
 // from what a ticket says (a repository named in its environment section, a URL path, a component) and a rule cannot. Making the worktree stays in
 // code, so every worker gets the same branch rules: the ticket's own branch, from the remote's default branch, never somebody else's existing
 // branch, and the same worktree again on a retry (`worktree.ts`). The ticket and its branch arrive in the environment the pool starts the
@@ -10,6 +10,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settings.ts";
+import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { addWorktree, reuseWorktree, worktreePath, type Git, type Prepared } from "./worktree.ts";
 
 /**
@@ -47,7 +48,10 @@ export async function main(argv: string[], env: Record<string, string | undefine
   }
   if (!key || !branch) return { code: 2, out: `ticket:worktree: ${TICKET_ENV.key} and ${TICKET_ENV.branch} are unset; it runs inside a ticket-mode worker` };
   try {
-    const made = await makeWorktree(repo, { settings: settings(), key, branch, ...(from ? { from } : {}) });
+    const current = settings();
+    const made = await makeWorktree(repo, { settings: current, key, branch, ...(from ? { from } : {}) });
+    // A worktree made from a stacked branch records what it was branched from, so agent-org can rebase it onto that branch later (A11-116).
+    if (from !== undefined && made.sha !== undefined) writeStackBase(stackBaseFile(current, key), { repo, branch: from, sha: made.sha });
     return { code: 0, out: `worktree for ${repo}: ${made.path} (branch ${branch}, from ${made.base}). Work and commit only there.` };
   } catch (err) {
     return { code: 1, out: `ticket:worktree: ${String((err as Error)?.message ?? err).split("\n")[0]}` };

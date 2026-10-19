@@ -1,18 +1,23 @@
 // @ts-check
 // module: starting a run -- its workspace and agent, the start dialogs it may answer, and the fill of the free slots
 
-import { type Entry, leaveBatch, recordMove } from "./queue/declared-remains.ts";
+import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/declared-remains.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, PLANNING_DENY, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
-import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordPaths, unreadBlockerKeys, unreadPaths } from "./queue/approve.ts";
-import { type Ticket } from "./source.ts";
+import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordProjectRepos, recordStackBase, unreadBlockerKeys, unreadPaths } from "./queue/approve.ts";
+import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
+import { repoOfProject } from "./project-repo.ts";
+import { remoteHead, rebaseDue, rebaseOnto, afterRebase, roundHeldBy, stackBaseIn } from "./stack-rebase.ts";
+import { repoOf } from "./board-view/settled-by-pulls.ts";
+import { worktreePath } from "./worktree.ts";
+import { type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
 import { ticketDir } from "./ticket-paths.ts";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parsePaths } from "./overlap.ts";
 import { availableParallelism, loadavg } from "node:os";
@@ -113,15 +118,106 @@ async function settleStart(ctx: PoolContext, place: RunPlace): Promise<void> {
 }
 
 /**
- * Ask the tracker which tickets block each of `keys`, and record the answer on each queued run. A source that cannot say records none, so
- * nothing waits; a key the tracker has no ticket for is recorded with none, so it starts and fails on its own. Throws when the tracker cannot be
- * asked.
+ * Ask the tracker which tickets block each of `keys`, and which project each is in, and record both on each queued run: the project's repository is the
+ * run's default (`project-repo.ts`), so it is read here too, from the summary the tracker holds now. Then the commit each stacked blocker's branch is at
+ * is read (`readHeads`). A source that cannot say records none, so nothing waits; a key the tracker has no ticket for is recorded with none, so it starts
+ * and fails on its own. Throws when the tracker cannot be asked.
  */
 export async function readBlockers(ctx: PoolContext, keys: readonly string[]): Promise<void> {
-  const { source } = ctx;
+  const { source, settings, store } = ctx;
   if (keys.length === 0) return;
   const found = source.blockers === undefined ? new Map() : await source.blockers(keys);
+  // Awaited only when the source can say: an extra turn here would delay a start that waits on nothing (see `headsToRead`).
+  const summaries = source.projectSummaries === undefined ? undefined : await summariesOf(source, keys);
+  const clones = Object.keys(settings.clones);
+  update(ctx, (queue) => recordProjectRepos(queue, projectRepos(store.get().entries, keys, summaries, clones)));
   update(ctx, (queue) => recordBlockers(queue, new Map(keys.map((key) => [key, found.get(key) ?? []]))));
+}
+
+/**
+ * The project summaries the tracker gives for `keys`, or undefined when it cannot say: the repositories then come from the summaries the tickets were queued
+ * with, and the failure is logged. A failed summary read never stops a start, as it is not a blocker, so a run is not held back by it (A11-116).
+ */
+async function summariesOf(source: TicketSource, keys: readonly string[]): Promise<ReadonlyMap<string, string | null> | undefined> {
+  if (source.projectSummaries === undefined) return undefined;
+  try {
+    return await source.projectSummaries(keys);
+  } catch (err) {
+    log(`the tracker could not say which projects the queued tickets are in: ${messageOf(err)}`);
+    return undefined;
+  }
+}
+
+/** Whether a blocker's branch is to be read: it has one, and the blocker is not done, canceled or a duplicate (`readHeads`). PURE. */
+const branchToRead = (blocker: Blocker): blocker is Blocker & Readonly<{ branch: string }> => blocker.branch !== undefined && !SETTLED.has(blocker.state);
+
+/** The summary a run's project names: the tracker's now, or, where the source cannot say, the one the ticket was queued with. A project the tracker gives none has none. PURE. */
+const summaryOf = (summaries: ReadonlyMap<string, string | null> | undefined, entry: Entry | undefined, key: string): string | null | undefined =>
+  summaries === undefined ? entry?.ticket.projectSummary : summaries.get(key) ?? null;
+
+/** Whether a queued run among `keys` has a blocker whose branch is to be read (`readHeads`). PURE. */
+const isReadable = (entry: Entry, keys: readonly string[]): boolean => entry.phase === "queued" && keys.includes(entry.ticket.key) && (entry.blockers ?? []).some(branchToRead);
+
+/** The repository each of `keys`' projects names, among `clones`, by key (`project-repo.ts`), read from the summaries the tracker gave or each ticket's own. PURE. */
+function projectRepos(entries: readonly Entry[], keys: readonly string[], summaries: ReadonlyMap<string, string | null> | undefined, clones: readonly string[]): Map<string, string | null> {
+  return new Map(keys.map((key) => [key, repoOfProject(summaryOf(summaries, entries.find((e) => e.ticket.key === key), key), clones)]));
+}
+
+/** The clone a run's blockers' branches are read in: the one of its planned or project's repository, when this machine has it (`readHeads`). */
+function cloneOfRun(settings: TicketSettings, entry: Entry): string | undefined {
+  const repo = repoOf(entry);
+  const clone = repo === null ? undefined : settings.clones[repo];
+  return clone !== undefined && existsSync(clone) ? clone : undefined;
+}
+
+/** Whether any run `isReadable` names has a clone to read in, so the heads are read this pass. */
+export function headsToRead(ctx: PoolContext, keys: readonly string[]): boolean {
+  const { settings, store } = ctx;
+  return store.get().entries.some((entry) => isReadable(entry, keys) && cloneOfRun(settings, entry) !== undefined);
+}
+
+/**
+ * Record the commit each stacked blocker's branch is at on the remote of the repository its blocked run works in, as `head` (A11-116): a branch that is not
+ * pushed there has none, and is not stackable. Only the blockers a run could stack on are asked: those with a branch that are not completed, canceled or a
+ * duplicate. A failed `ls-remote` leaves that head unset and is logged once per pass, so the pass is never thrown out of.
+ */
+export async function readHeads(ctx: PoolContext, keys: readonly string[]): Promise<void> {
+  const { git, settings, store } = ctx;
+  const heads = new Map<string, Map<string, string>>();
+  let logged = false;
+  for (const entry of store.get().entries) {
+    // A repository this machine does not have is no place a branch can be read from, so its blockers carry no head and none of them stacks.
+    const clone = cloneOfRun(settings, entry);
+    if (!isReadable(entry, keys) || clone === undefined) continue;
+    const found = new Map<string, string>();
+    for (const blocker of (entry.blockers ?? []).filter(branchToRead)) {
+      try {
+        const head = await remoteHead(git, clone, blocker.branch);
+        if (head !== null) found.set(blocker.key, head);
+      } catch (err) {
+        if (!logged) log(`${entry.ticket.key}: the remote could not say where ${blocker.branch} is: ${messageOf(err)}`);
+        logged = true;
+      }
+    }
+    heads.set(entry.ticket.key, found);
+  }
+  update(ctx, (queue) => recordHeads(queue, heads));
+}
+
+/**
+ * Rebase a stacked review round onto its blocker's branch before it starts, so the round begins on the rebased branch (A11-116). Returns why the run cannot
+ * start on it, or null when it can. A rebase that conflicts is a person's to resolve, so it ends the run needing one, and no round is started on it.
+ */
+async function rebaseBeforeRound(ctx: PoolContext, entry: Entry): Promise<string | null> {
+  const { git, now, settings } = ctx;
+  const record = entry.stackBase;
+  const clone = record === undefined ? undefined : settings.clones[record.repo];
+  if (record === undefined || clone === undefined) return null;
+  const head = await remoteHead(git, clone, record.branch);
+  if (!rebaseDue(record, head)) return roundHeldBy(record, head);
+  const result = await rebaseOnto({ git, clone, worktree: worktreePath(settings.worktreeRoot, entry.ticket.key, record.repo), own: entry.ticket.branch, base: record });
+  update(ctx, (queue) => recordStackBase(queue, entry.ticket.key, afterRebase(stackBaseIn(queue, entry.ticket.key, record), head, result, now())));
+  return result.ok ? null : `Rebase onto ${record.key} ${result.reason}: a person resolves it`;
 }
 
 /**
@@ -161,9 +257,12 @@ async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<v
  * started beside a run it overlaps before the overlap is known. Each start is recorded before it begins, so a second tick cannot start it again.
  */
 export async function fill(ctx: PoolContext): Promise<void> {
-  const { batches, deps, removing, store } = ctx;
+  const { batches, deps, removing, rebasing, store } = ctx;
   try {
-    await readBlockers(ctx, unreadBlockerKeys(store.get()));
+    const unread = unreadBlockerKeys(store.get());
+    await readBlockers(ctx, unread);
+    // Only when a head is to be read: a start decides on its stacked blockers' heads, so a run read now has them before it starts.
+    if (headsToRead(ctx, unread)) await readHeads(ctx, unread);
     // A paused queue starts nothing, so it reads no plan either: the plans are read when it is unpaused.
     if (!store.get().paused) await readPaths(ctx, unreadPaths(store.get()));
   } catch {
@@ -176,7 +275,7 @@ export async function fill(ctx: PoolContext): Promise<void> {
   const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined && !pathsUnread(entry));
   const begun = new Set<string>();
   for (const entry of starts) {
-    if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key)) continue;
+    if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key) || rebasing.has(entry.ticket.key)) continue;
     const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch);
     for (const member of batch) begun.add(member.ticket.key);
     await (batch.length > 1 ? startBatch(ctx, batch) : startOne(ctx, entry));
@@ -206,6 +305,11 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     if (isPlanning(ctx, entry) && await planReached(ctx, entry.ticket)) {
       // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
       update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false }));
+      return;
+    }
+    const blocked = entry.review !== undefined && entry.stackBase !== undefined ? await rebaseBeforeRound(ctx, entry) : null;
+    if (blocked !== null) {
+      update(ctx, (queue) => finish(queue, entry.ticket.key, { kind: "needs-human", reason: blocked }, now()));
       return;
     }
     const { folder, dir, resume } = await prepare(ctx, entry);

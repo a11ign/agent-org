@@ -1,4 +1,4 @@
-import { CONCLUDED, openPulls, RESULT_KINDS } from "../board-view/view-ticket.ts";
+import { CONCLUDED, openPulls, RESULT_KINDS, type StackBaseRecord } from "../board-view/view-ticket.ts";
 import { isBeingPublished, isParked } from "../board-view/settled-by-pulls.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Draft, Priority, Rejection, ResolvedDuplicate } from "../writer.ts";
@@ -107,6 +107,11 @@ export type Entry = Readonly<{
   /** The repository its batch's planner said its work lands in, or null when it named none. Unset for a ticket planned alone. */
   plannedRepo?: string | null;
   /**
+   * The repository its project names (`project-repo.ts`), or null when its project names none: the default for {@link plannedRepo}. Read by the pool
+   * while the run is queued, from the project's summary as the tracker holds it, so a summary fixed after the run was queued still reaches it.
+   */
+  projectRepo?: string | null;
+  /**
    * The tickets of its batch its planner said it waits on to merge, rather than stacking on their open pull requests: `wait: "merged"` in the
    * order. Unset when there are none. A retry drops it with {@link plannedRepo}.
    */
@@ -167,6 +172,11 @@ export type Entry = Readonly<{
    * finds it, and cleared once every pull request's base is current. The board shows it.
    */
   retargets?: Readonly<Record<string, string>>;
+  /**
+   * The blocker's branch this run was branched from, and the commit it was at, with what agent-org did to keep the run on it (A11-116). Set once the
+   * worktree is made from the branch (`stack-base.json`), and carried through a review round, which the pool rebases before it starts.
+   */
+  stackBase?: StackBaseRecord;
   /** The Claude session the run's worker used, saved when the run ended, so a review run can resume the worker that wrote the code. */
   session?: string;
   /** Set on a review run: the pull requests a person approved, which the run marks ready and sees through their review. See {@link approve}. */
@@ -438,12 +448,12 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom, paths, plannedRepo, pullFiles, partial } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, stackBase } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, pullFiles, partial }) };
+    ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, stackBase }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again.
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
@@ -470,9 +480,9 @@ export function reviewRound(entry: Entry, prs: readonly PullRequest[], now: numb
 /**
  * The fields a review round carries from the run it continues, its paths, pull request files and partial declaration: only those the run has set. PURE.
  */
-const carriedFields = ({ paths, plannedRepo, pullFiles, partial }: Pick<Entry, "paths" | "plannedRepo" | "pullFiles" | "partial">) => ({
-  ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
-  ...(partial !== undefined ? { partial } : {}),
+const carriedFields = ({ paths, plannedRepo, projectRepo, pullFiles, partial, stackBase }: Pick<Entry, "paths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "stackBase">) => ({
+  ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
+  ...(partial !== undefined ? { partial } : {}), ...(stackBase ? { stackBase } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */

@@ -14,6 +14,7 @@ import type { DenyRule } from "./settings.ts";
 import type { PullRequest, WriterForm } from "./queue/declared-remains.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { MAX_DRAFT_BYTES, MAX_DRAFTS } from "./writer.ts";
+import { repoOfProject } from "./project-repo.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -201,28 +202,39 @@ If your work depends on something one of them releases, such as a new package ve
 `;
 }
 
+/** How a stacked run opens its pull request, on a machine that keeps drafts and on one that does not (A11-116). */
+const STACK_OPENED_AS_DRAFT = "`gh pr create --draft --base <branch>`";
+const STACK_OPENED_READY = "`gh pr create --base <branch>`, ready";
+
 /**
- * The section naming the blockers this run is stacked on, or nothing for a run stacked on none. Each is not merged yet, but has an open pull
- * request in the repository where the run's plan puts its work, so the worker branches from it and stacks its own pull request on it. The
- * branch is the tracker's, which a person may not have used, so the worker checks it against the pull request.
+ * The section naming the blockers this run is stacked on, or nothing for a run stacked on none. Each has its branch pushed in the repository where the run's
+ * plan puts its work (A11-116), and an open pull request there when it has one: the worker branches from the branch, and bases its own pull request on it,
+ * with or without that one. The branch is the tracker's, which a person may not have used, so the worker checks it.
  */
-function stackText(bases: readonly StackBase[], worktreeCommand: string): string {
+function stackText(bases: readonly StackBase[], worktreeCommand: string, opening: string): string {
   const [first] = bases;
   if (first === undefined) return "";
   const { repo } = first;
   return `
 ## Stack on the work you wait for
 
-These tickets block this one and are not merged yet. Each has an open pull request in \`${repo}\`, where your plan puts this ticket's work:
+These tickets block this one and are not merged yet. Each has its branch pushed to \`${repo}\`, where your plan puts this ticket's work:
 
-${bases.map(({ key, url, branch }) => `- ${key}: ${url}, on branch \`${branch}\``).join("\n")}
+${bases.map(stackLine).join("\n")}
 
-1. Build on the one your plan says this ticket builds on, or on the last one listed when the plan does not say. Check its branch with \`gh pr view <its pull request url> --json headRefName\`, and use that one where it differs from the branch above. Make your worktree from it: \`${worktreeCommand} ${repo} --from <branch>\`.
-2. After you open your own pull request, stack it on that one, bottom first: \`gh stack link <its pull request url> <your pull request url>\`. Run no other \`gh stack\` command.
-3. Say in your pull request body which pull request yours is stacked on.
-4. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself. Until it does, or when that pull request's branch was merged without being deleted, your pull request's base can be a stale branch. That is expected, not a failure: do not retarget, rebase, push or merge to fix it.
+1. Build on the one your plan says this ticket builds on, or on the last one listed when the plan does not say. Make your worktree from its branch: \`${worktreeCommand} ${repo} --from <branch>\`. Check the branch first: with its pull request, \`gh pr view <its pull request url> --json headRefName\`, and use that one where it differs from the branch above; with none, \`git ls-remote origin <branch>\`.
+2. Open your pull request in place of the pull request step below, with its base set to that branch: ${opening}. It is stacked on the branch even when no pull request is under it.
+3. When the pull request of the one you build on exists by then, also link it, bottom first: \`gh stack link <its pull request url> <your pull request url>\`. Run no other \`gh stack\` command.
+4. Say in your pull request body which branch, and which pull request if there is one, yours is stacked on.
+5. The branch you build on may move while you work. Never rebase it, merge it in, or force-push: agent-org rebases your branch onto it for you after you stop, and a round after that starts on the rebased branch. If \`git fetch\` shows that branch rewritten, that is expected: finish your work.
+6. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself. Until it does, or when that pull request's branch was merged without being deleted, your pull request's base can be a stale branch. That is expected, not a failure: do not retarget, rebase, push or merge to fix it.
 `;
 }
+
+/** One stacked base as the brief lists it: its pull request when it has one, or its pushed branch when it has none yet (A11-116). PURE. */
+const stackLine = ({ key, url, repo, branch }: StackBase): string => (url === null
+  ? `- ${key}: its branch \`${branch}\` is pushed in \`${repo}\`; there is no pull request yet`
+  : `- ${key}: ${url}, on branch \`${branch}\``);
 
 /** What a worker is told about a plan a planning run wrote, which no person agreed: nothing when a person's plan, or none, is all it has. */
 function plannedText({ planned }: { planned: boolean; }): string {
@@ -236,6 +248,18 @@ const plannerInstruction = (run: string, keys: readonly string[], dir: string): 
 
 /** The \`clones\` keys, each quoted, for a brief that asks for one of them by name. */
 const cloneNames = (clones: Readonly<Record<string, string>>): string => Object.keys(clones).map((name) => `\`${name}\``).join(", ");
+
+/**
+ * What a planner is told of a ticket's repository: its project's, from the address in the project's summary (`project-repo.ts`), which is the default for
+ * its `repo` unless the work belongs in another repository. A project naming none leaves the choice to the planner (A11-116). PURE.
+ */
+const projectRepoLine = (ticket: Ticket, clones: Readonly<Record<string, string>>): string => {
+  const repo = repoOfProject(ticket.projectSummary, Object.keys(clones));
+  const project = ticket.project === null ? "No project" : `Its project, ${ticket.project},`;
+  return repo === null
+    ? `${project} names no repository on this machine, so the plan names the one its work lands in.`
+    : `${project} names the repository \`${repo}\`: the plan's \`repo\` is \`${repo}\` unless the work belongs in another repository, which the plan names.`;
+};
 
 const reposText = (clones: Readonly<Record<string, string>>): string => Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
 
@@ -269,6 +293,8 @@ You are an unattended planner. Nobody will answer a question. Plan this ticket, 
 ${ticket.url}
 
 ${ticket.description.trim() || "(no description)"}
+
+${projectRepoLine(ticket, clones)}
 
 ## Files from the ticket
 
@@ -309,7 +335,7 @@ Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may
 export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null }>;
 
 /** One ticket's section of a batch's brief. Its description is quoted, as a parent's is, so its headings cannot read as the brief's. */
-function batchTicketText({ ticket, attachments, parent }: BatchTicket): string {
+function batchTicketText({ ticket, attachments, parent }: BatchTicket, clones: Readonly<Record<string, string>>): string {
   const parentPart = parent === null ? "" : `
 ### ${ticket.key} is part of ${parent.ticket.key}: ${parent.ticket.title}
 
@@ -327,6 +353,8 @@ ${filesText(parent.attachments)}
 ${ticket.url}
 
 ${quoted(ticket.description)}
+
+${projectRepoLine(ticket, clones)}
 
 ### Files from ${ticket.key}
 
@@ -346,7 +374,7 @@ export function batchPlanBriefText({ tickets, runDir, planDir, clones, run, note
   return `# Plan ${keys.length} tickets together: ${keys.join(", ")}
 
 You are an unattended planner. Nobody will answer a question. A person queued these tickets together, so they are likely linked: plan them as one batch, and change no code. Make no worktree, commit, push or pull request. A worker implements each plan once the board has attached it to its ticket.
-${tickets.map(batchTicketText).join("")}
+${tickets.map((member) => batchTicketText(member, clones)).join("")}
 ## The repositories on this machine
 
 Read them to plan, but never change them, commit in them or change their branches:
@@ -366,11 +394,11 @@ ${MISSING_SKILL}
 Write everything in \`${planDir}\`, and nowhere else:
 
 - \`${planDir}/<KEY>/\` for each ticket above holds that ticket's plan files, or a \`${QUESTION_FILE}\` when only a person can settle its plan. The board attaches each plan file to its own ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching that ticket's plan. A question about one ticket does not stop the others, so plan the rest. ${regionInstruction(clones)} ${PATHS_RULE}
-- \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
+- \`${planDir}/${ORDER_FILE}\` is one object with an entry for each ticket: \`{ "<KEY>": { "repo": "<repository>", "after": ["<KEY>", ...], "wait": "stacked" or "merged" } }\`, where \`wait\` is optional. \`repo\` is the repository the ticket's work lands in, or \`null\` for a ticket with a question. A ticket's \`repo\` is its project's repository, named with it above, unless its work belongs in another repository. It must be exactly one of these names, which are the host file's \`clones\` keys: ${cloneNames(clones)}. A name is not the folder its checkout sits in, so never take a \`repo\` from a path: the board refuses any other name, and hands that ticket to a person. \`after\` names the tickets of this batch whose work it needs first. Name only tickets of this batch, never the ticket itself, and make no cycle. The board records each one in the tracker as blocking the ticket, and its worker starts only once they are done, or, where it stacks on one, on that one's branch.
 
 How \`wait\` says how a ticket waits on each ticket in its \`after\`:
 
-- With no \`wait\`, or \`"stacked"\`, the ticket is stacked. When its work lands in the same repository as its blocker and that blocker has an open pull request there, the board starts the ticket on that branch and its pull request is stacked on the blocker's. Choose this when the code builds on the blocker's diff.
+- With no \`wait\`, or \`"stacked"\`, the ticket is stacked. When its work lands in the same repository as its blocker and that blocker's branch is pushed there, the board starts the ticket on that branch, with or without a pull request on it, and its pull request is based on the blocker's branch. Choose this when the code builds on the blocker's diff.
 - \`"wait": "merged"\` keeps the ticket Blocked until every ticket in its \`after\` has merged, then starts it on the default branch. Choose this when the work needs the blocker's change live rather than in a diff: fleet state, a deployed or released package, a published artifact, or anything a worker checks on the running system.
 - When a plan says "wait until X merges", set \`"wait": "merged"\`, or the board contradicts the plan.
 - Tickets of one repository whose work touches the same area, directly or through a shared module, must be ordered in \`${ORDER_FILE}\` with \`after\`, so the later one stacks on or waits for the earlier one. The board holds back a run whose paths overlap a run already in progress, so this order is what keeps them in turn.
@@ -441,10 +469,10 @@ function regionInstruction(clones: Readonly<Record<string, string>>): string {
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, prReview = null, keywords = DEFAULT_KEYWORDS }: {
+  connectors = [], planned = false, drafts = true, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
-  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; prReview?: string | null; keywords?: Keywords;
+  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -461,14 +489,14 @@ ${ticket.description.trim() || "(no description)"}
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)))}${stackText(stackedOn, worktreeCommand)}
+${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)))}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:
 
 ${repos}
 
-1. From the ticket, decide which repository the fix belongs in. A ticket may name a repository that has since been retired or moved into another one: check where the code lives now, and use that. If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a \`wrong-repo\` outcome naming where it belongs.
+1. From the ticket, decide which repository the fix belongs in. ${repo === null ? "" : `The ticket's project names \`${repo}\`, so its work lands there unless it belongs in another of these repositories: then name that one. `}A ticket may name a repository that has since been retired or moved into another one: check where the code lives now, and use that. If the fix belongs in none of these (a backend service, a plugin, another team's code), change nothing and write a \`wrong-repo\` outcome naming where it belongs.
 2. Make your worktree there with \`${worktreeCommand} <repo>\`. It creates \`${folder}/<repo>\` on the ticket's branch \`${ticket.branch}\`, from the repository's default branch, and on a retry it gives you back the one an earlier run made: continue from its commits rather than starting again. Run it once per repository you change; most tickets need one.
 3. Work, commit and push only inside those worktrees. Read each repository's \`CLAUDE.md\` and \`AGENTS.md\` before you change anything, and use the install, test, typecheck and lint commands they give, scoped to the package you change.
 

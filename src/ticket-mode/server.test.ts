@@ -29,7 +29,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     stopWriterRun: (id: string) => { ticks.push(`stop-writer ${id}`); },
     // The pool takes a queued run off, after putting its ticket back: here only the queue's part, which the board's store is asked for.
     remove: async (key: string) => { ticks.push(`remove ${key}`); made.store.set(removeQueued(made.store.get(), key)); },
-    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {},
+    reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {},
   };
   const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
   return { ...made, ticks, dir };
@@ -49,7 +49,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     },
     download: async () => [],
   };
-  const pool = { tick: async () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, applyEdit: async () => {}, discardEdit: () => {} };
+  const pool = { tick: async () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {} };
   const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
@@ -119,7 +119,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
-  const pool = { tick: async () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, applyEdit: async () => {}, discardEdit: () => {} };
+  const pool = { tick: async () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {} };
   return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 
@@ -640,10 +640,11 @@ test("A11-106: the feedback sweeps are each scheduled on the feedback cadence, a
     watchFeedback: () => { calls.push("watchFeedback"); throw new Error("the feed is down"); },
     releaseReviewers: () => { calls.push("releaseReviewers"); },
     retargetStacked: () => { calls.push("retargetStacked"); },
+    rebaseStacked: async () => { calls.push("rebaseStacked"); },
   };
   const scheduled: { run: () => void; ms: number }[] = [];
   startFeedbackSweeps(pool, (run, ms) => { scheduled.push({ run, ms }); });
-  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS], "each sweep is on the feedback cadence");
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS, FEEDBACK_MS], "each sweep is on the feedback cadence");
   const stderr = process.stderr.write;
   const said: string[] = [];
   process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
@@ -652,17 +653,35 @@ test("A11-106: the feedback sweeps are each scheduled on the feedback cadence, a
   } finally {
     process.stderr.write = stderr;
   }
-  assert.deepEqual(calls, ["watchFeedback", "releaseReviewers", "retargetStacked"], "the failing sweep is said, and the next two still run");
+  assert.deepEqual(calls, ["watchFeedback", "releaseReviewers", "retargetStacked", "rebaseStacked"], "the failing sweep is said, and the others still run");
   assert.deepEqual(said, ["ticket:serve: the pull requests' feedback could not be read: the feed is down\n"]);
 });
 
 test("A11-106: the stacked pull requests' sweep is the one scheduled with retargetStacked, not another", () => {
   const retargeted: string[] = [];
   const scheduled: (() => void)[] = [];
-  startFeedbackSweeps({ watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => { retargeted.push("retargetStacked"); } },
+  startFeedbackSweeps({ watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => { retargeted.push("retargetStacked"); }, rebaseStacked: async () => {} },
     (run) => { scheduled.push(run); });
   scheduled[2]();
   assert.deepEqual(retargeted, ["retargetStacked"], "the third sweep is retargetStacked");
+});
+
+test("A11-116: the stacked branches' sweep is scheduled on the feedback cadence, and a rebase that fails asynchronously is said, not lost", async () => {
+  const scheduled: (() => void)[] = [];
+  const ms: number[] = [];
+  startFeedbackSweeps({ watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: () => Promise.reject(new Error("git is gone")) },
+    (run, every) => { scheduled.push(run); ms.push(every); });
+  assert.equal(ms[3], FEEDBACK_MS, "the fourth sweep is the stacked branches'");
+  const stderr = process.stderr.write;
+  const said: string[] = [];
+  process.stderr.write = ((line: string) => { said.push(line); return true; }) as typeof process.stderr.write;
+  try {
+    scheduled[3]();
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.stderr.write = stderr;
+  }
+  assert.deepEqual(said, ["ticket:serve: the stacked branches could not be rebased: git is gone\n"]);
 });
 
 // A board whose list is the key's own reads the rest one scope at a time (the key's workspace holds thousands of open tickets, past what one answer carries).

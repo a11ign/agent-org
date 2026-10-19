@@ -3,7 +3,8 @@
 //
 // MACHINE FACTS ONLY, IN THE HOST FILE AGENT-ORG ALREADY READS. Which repositories this machine has checked out, where worktrees go, how many
 // workers it can carry and where the tracker's key lives are facts no repository can know, which is the host file's rule (`host-config.ts`'s
-// header). Nothing here is a fact about one repository: a worker chooses the repository and reads its own `CLAUDE.md`. The optional `brief`,
+// header). Nothing here is a fact about one repository: a worker reads its own `CLAUDE.md`, and chooses the repository only when none is planned or
+// defaulted from its ticket's project (A11-116). The optional `brief`,
 // `deny`, `plugins` and `connectors` say how workers behave on this machine, for example how they share its dev servers with each other and with
 // the person, and which of the person's connectors they may call.
 // The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does, and the optional `plan` how the board

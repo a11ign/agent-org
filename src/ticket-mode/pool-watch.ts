@@ -338,18 +338,29 @@ export function watchFeedback(ctx: PoolContext): void {
     // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
     if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
     if (!resumesOnConflict(entry)) continue;
+    // A conflict a rebase onto the blocker's branch could not clear is a person's: a worker round would merge the rewritten base in (A11-116).
+    const held = conflictsHeldBy(entry, readable);
     if (isWatched(entry)) {
       // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
-      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
+      const lines = [feedbackSince(held, entry.finishedAt ?? 0), ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
         .filter((line): line is string => line !== null);
       if (lines.length === 0) continue;
       update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now()));
       queued = true;
       continue;
     }
-    if (resumeParked(ctx, entry, readable)) queued = true;
+    if (resumeParked(ctx, entry, held)) queued = true;
   }
   if (queued) void tick(ctx);
+}
+
+/**
+ * The pull requests' reads with their conflicts left out, for a run whose stacked branch a rebase could not be made onto (`stackBase.failed`): the conflict
+ * is a person's to resolve (`rebaseOneStack`), so no round is queued for it (A11-116). The reads are unchanged for any other run. PURE.
+ */
+function conflictsHeldBy(entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): { url: string; read: PullFeedback }[] {
+  if (entry.stackBase?.failed === undefined) return [...readable];
+  return readable.map(({ url, read }) => ({ url, read: { ...read, conflicting: false } }));
 }
 
 /**
