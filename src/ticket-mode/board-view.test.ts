@@ -5,7 +5,7 @@ import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/settled-by-pulls.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
 import { rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
-import { terminalOpenHref, runChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
+import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
 import { CHANGESET_SCAFFOLD, SCAFFOLD_DIRS } from "../scaffold-dirs.ts";
@@ -417,6 +417,12 @@ test("a run's row names its model and effort, and a ticket still to be planned n
   assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "queued", model: "sonnet", effort: "high" }), "sonnet/high");
   assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "queued", model: "sonnet", effort: "high", plan: { model: "opus", effort: "max" } }), "plan on opus/max, then sonnet/high");
   assert.equal(runChoiceLabel({ ticket: { key: "A" }, phase: "running", model: "sonnet", effort: "high", planned: true }), "sonnet/high on an unattended plan");
+});
+
+test("a new-ticket run's card names the model and effort it ran on, and names none for a run queued before they were stamped", () => {
+  assert.equal(writerChoiceLabel({ model: "sonnet", effort: "max" }), "sonnet/max");
+  assert.equal(writerChoiceLabel({}), "");
+  assert.equal(writerChoiceLabel({ model: "sonnet" }), "", "a half-stamped run names none either");
 });
 
 test("a blocker with an open pull request in the run's planned repository is stacked on, not waited for, and any other blocker still holds the run", () => {

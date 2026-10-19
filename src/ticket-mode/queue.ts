@@ -73,10 +73,10 @@ const replaceWriter = (queue: Queue, id: string, change: (run: WriterRun) => Wri
 const findWriter = (queue: Queue, id: string): WriterRun | undefined => (queue.writers ?? []).find((run) => run.id === id);
 
 /**
- * Add a new-ticket request, queued. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused, naming why, so a person clears one
- * first. PURE.
+ * Add a new-ticket request, queued, with the model and effort it runs on. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused,
+ * naming why, so a person clears one first. PURE.
  */
-export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "form">, now: number): Queue {
+export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "form" | "model" | "effort">, now: number): Queue {
   const open = (queue.writers ?? []).filter((run) => run.phase !== "finished").length;
   if (open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
   const run: WriterRun = { ...request, phase: "queued", queuedAt: now, drafts: [], rejected: [] };

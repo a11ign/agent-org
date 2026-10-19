@@ -155,6 +155,12 @@
       <label>Model <select id="planModel"></select></label>
       <label>Effort <select id="planEffort"></select></label>
     </fieldset>
+    <fieldset id="writer-settings" hidden>
+      <legend>Ticket writer</legend>
+      <p class="hint">A new-ticket request is written on these. Until one is chosen here, the host file's is used, and a choice here wins until it is set back to the host default. A request already queued keeps its own.</p>
+      <label>Model <select id="writerModel"></select></label>
+      <label>Effort <select id="writerEffort"></select></label>
+    </fieldset>
     <fieldset>
       <legend>Workers</legend>
       <label>Workers at once <input id="max" type="number" min="1" step="1"></label>
@@ -245,7 +251,7 @@
 // This page only draws what they return and wires the clicks.
 import {
   APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
-  WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, draftControls, draftStatusText, duplicateLines, draftForm, draftFields,
+  WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel, draftControls, draftStatusText, duplicateLines, draftForm, draftFields,
   runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
@@ -273,7 +279,7 @@ const state = {
   // Whether this machine publishes (the host file's `tickets.publish`), and the runs ticked for the next Publish.
   publishing: false, toPublish: new Set(),
   // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
-  choice: { model: "", effort: "", planModel: "", planEffort: "" }, batch: {},
+  choice: { model: "", effort: "", planModel: "", planEffort: "", writerModel: "", writerEffort: "" }, batch: {},
   // Whether this board plans a ticket with no plan before it runs: the machine names a planner and its tracker takes plans.
   planner: false,
   // The pattern a plan's name matches (the host file's `tickets.plan`), or null when the board looks for none; and the plan filter chosen.
@@ -681,6 +687,9 @@ async function readChoice() {
   $("effort").value = state.choice.effort;
   $("planModel").value = state.choice.planModel;
   $("planEffort").value = state.choice.planEffort;
+  // The writer's choice is absent until one is chosen: the select then shows the host default, whose option is "".
+  $("writerModel").value = state.choice.writerModel ?? "";
+  $("writerEffort").value = state.choice.writerEffort ?? "";
   renderFooter();
 }
 async function readMax() {
@@ -791,6 +800,7 @@ const actionButton = (label, title, onClick) => {
 /** One run's card: its status, the terminal it is watched in, what it asks or refused, and its drafts for review. */
 function writerCard(run) {
   const actions = writerRunActions(run);
+  const choice = writerChoiceLabel(run);
   const link = actions.terminal ? terminalLink(state.terminal, { ticket: { key: run.id }, phase: run.phase, workspace: run.workspace, pane: run.pane }) : null;
   const terminal = link && state.connection && safeHref(link) ? el("a", { className: "terminal", href: terminalOpenHref(state.connection, link), title: link, target: "_blank", rel: "noreferrer", textContent: "Open terminal" }) : null;
   const buttons = [
@@ -800,6 +810,7 @@ function writerCard(run) {
   ];
   return el("article", { className: "writer" },
     el("div", { className: "writer-head" }, el("span", { className: `st st-${run.status}`, textContent: WRITER_STATUS_LABEL[run.status] ?? run.status }),
+      choice === "" ? null : el("span", { className: "hint", textContent: choice }),
       el("span", { className: "request", textContent: run.request.split("\n")[0] }), ...buttons),
     run.question ? el("p", { className: "hint", textContent: `It asks: ${run.question}` }) : null,
     run.failure ? el("p", { className: "hint failed", textContent: run.failure }) : null,
@@ -895,11 +906,16 @@ function setup(config) {
   state.planner = config.planner === true;
   state.publishing = config.publish === true;
   state.writer = config.writer === true;
+  // The writer's options are the same choices, and its first clears the choice: its label names the host file's value in force.
+  const hostWriter = config.writerDefault ?? { model: "", effort: "" };
+  $("writerModel").replaceChildren(el("option", { value: "", textContent: `Host default: ${hostWriter.model}` }), ...config.models.map((m) => el("option", { value: m, textContent: m })));
+  $("writerEffort").replaceChildren(el("option", { value: "", textContent: `Host default: ${hostWriter.effort}` }), ...config.efforts.map((x) => el("option", { value: x, textContent: x })));
   state.writerGrill = config.writerGrill === true;
   state.writerRepos = config.repos ?? [];
   state.writerPriorities = config.priorities ?? ["urgent", "high", "medium", "low", "none"];
   $("new-ticket").hidden = !state.writer;
   $("planning-settings").hidden = !state.planner;
+  $("writer-settings").hidden = !state.writer;
   $("plan-first").checked = true;
 }
 
@@ -949,7 +965,7 @@ for (const part of ["model", "effort"]) {
 }
 $("batch-reset").addEventListener("click", () => { state.batch = {}; renderFooter(); });
 $("plan-first").addEventListener("change", renderFooter);
-for (const part of ["planModel", "planEffort"]) $(part).addEventListener("change", () => saveChoice(part));
+for (const part of ["planModel", "planEffort", "writerModel", "writerEffort"]) $(part).addEventListener("change", () => saveChoice(part));
 $("model").addEventListener("change", () => saveChoice("model"));
 $("effort").addEventListener("change", () => saveChoice("effort"));
 $("max").addEventListener("change", saveMax);
