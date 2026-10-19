@@ -168,6 +168,21 @@ test("A11-116: a stacked branch is read from its remote, and its base is kept re
   assert.equal(gitSync(clone, ["for-each-ref", ref]), "", "and released once its run is settled");
 });
 
+test("A11-116: a rebase works on a machine with no git identity, and writes the run's commits as the run's own last commit was committed", async () => {
+  const { seed, clone, worktree, base } = stackedWorktree();
+  commit(seed, "blocker.txt", "one\ntwo\n", "blocker: review fix");
+  gitSync(seed, ["push", "-q", "origin", "blocker"]);
+  // No global identity and no system config: the machine a CI runner or the instance's service may be.
+  const home = tmpDir("stack-rebase-no-identity-");
+  const bare: Git = async (cwd, args) => execFileSync("git", args, {
+    cwd, env: sandboxGitEnv({ HOME: home, XDG_CONFIG_HOME: home, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  });
+  const result = await rebaseOnto({ git: bare, clone, worktree, own: "ticket", base });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(gitSync(worktree, ["log", "-1", "--format=%cn", "HEAD"]), "t", "the rebased commit keeps the committer of the run's own commit");
+  assert.equal(gitSync(worktree, ["log", "-1", "--format=%ce", "HEAD"]), "t@example.invalid", "and its email");
+});
+
 test("A11-116: a git that cannot run is an error the sweep reports, not a head", async () => {
   const failing: Git = async () => { throw new Error("fatal: not a repository"); };
   await assert.rejects(remoteHead(failing, "/nowhere", "blocker"), /not a repository/);

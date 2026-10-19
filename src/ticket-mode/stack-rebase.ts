@@ -119,8 +119,12 @@ export async function rebaseOnto({ git, clone, worktree, own, base }: {
   const before = (await git(worktree, ["rev-parse", "HEAD"])).trim();
   // The run's own branch, as the remote has it now: the lease expects that commit and no other.
   const expect = (await remoteHead(git, clone, own)) ?? "";
+  // A rebase writes its commits with a committer: the one the run's own last commit was made with, so no identity is invented, and a machine with no git identity
+  // of its own (a CI runner, the instance's service) can still rebase.
+  const committer = (await git(worktree, ["log", "-1", "--format=%cn%n%ce", "HEAD"])).split("\n");
+  const identity = ["-c", `user.name=${committer[0]}`, "-c", `user.email=${committer[1]}`];
   try {
-    await git(worktree, ["rebase", "--onto", `origin/${base.branch}`, base.sha]);
+    await git(worktree, [...identity, "rebase", "--onto", `origin/${base.branch}`, base.sha]);
   } catch (err) {
     const files = (await git(worktree, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).trim().split("\n").filter((file) => file !== "");
     await git(worktree, ["rebase", "--abort"]).catch(() => undefined);
