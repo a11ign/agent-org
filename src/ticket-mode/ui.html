@@ -809,10 +809,13 @@ function showRoute() {
   $("pick").hidden = settings || state.tab !== "pick";
   $("board").hidden = settings || state.tab !== "board";
   $("queue-bar").hidden = settings || state.tab !== "pick";
-  // Focus goes to the title when the page opens, and back to the control that opened it when the board returns (the dialog did this for us).
-  if (settings) $("settings-title").focus?.();
-  if (!settings && state.settingsShown) $(state.opener).focus?.();
+  moveFocus(settings);
   state.settingsShown = settings;
+}
+// Focus goes to the title when the page opens, and back to the control that opened it when the board returns (the dialog did this for us).
+function moveFocus(settings) {
+  if (settings) $("settings-title").focus?.();
+  else if (state.settingsShown) $(state.opener).focus?.();
 }
 
 // The dialog's own line, where its outcome is seen: the page's error line sits behind the dialog.

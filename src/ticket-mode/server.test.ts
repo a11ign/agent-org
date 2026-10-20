@@ -857,3 +857,11 @@ test("/api/settings says a host file that cannot be read by its path, and is ref
   const [posted] = await b.api("POST", "/api/settings", { drafts: false });
   assert.equal(posted, 404, "the settings page is read-only: no route takes a POST");
 });
+
+test("/api/settings reads the project of the host file the suite runs against, through the real project reader, and draws its keys", { skip: process.env.AGENT_ORG_HOST ? false : "needs AGENT_ORG_HOST, as the suite sets it" }, async () => {
+  const b = board(4747, {}, { hostPath: process.env.AGENT_ORG_HOST! });
+  const [status, view] = await b.api("GET", "/api/settings", {}) as [number, View];
+  assert.equal(status, 200);
+  assert.equal(view.notes.some((note) => /declares no project/.test(note)), false, "a machine with a project declared is not a board-only one");
+  assert.ok(view.groups.flatMap((group) => group.rows).some((candidate) => candidate.file === "project.json"), "the project's keys are drawn from its file");
+});

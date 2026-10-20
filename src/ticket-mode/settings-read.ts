@@ -6,7 +6,8 @@
 // the other sections still render. A machine that declares no project (a board-only host, which names no `primary`) is a note, not an error.
 //
 // THE READERS ARE LOADED LAZILY. `host-config.ts` and `project-config.ts` resolve a project declaration when they are imported, and a ticket-only
-// machine has none. So they are imported inside a `try`, and never on a host file that is shaped as a ticket-only one.
+// machine has none. So they are imported only where the host file is not shaped as a ticket-only one. A project that cannot be resolved on any other
+// machine is a refusal of the project section, never the note of a machine that declares none.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SCHEMA, type ChoicePart } from "./config-schema.ts";
@@ -31,6 +32,8 @@ export type SettingsReadOptions = Readonly<{
   choicePath: string;
   /** Claude Code's install record, when it is not the default one. */
   pluginRecord?: string;
+  /** Loads `project-config.ts`: the default is the import. A test passes one that fails, to see the failure is shown and not hidden. */
+  loadProject?: () => Promise<ProjectConfig>;
 }>;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -38,17 +41,11 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 /** The note a machine that names no primary gets: it is a board-only machine, and not an error. */
 const NO_PROJECT = "This machine declares no project: its host file names no primary, so no project.json is read.";
 
-type ProjectConfig = typeof import("../project-config.ts");
+export type ProjectConfig = typeof import("../project-config.ts");
 type Sections = Readonly<{ host: Section; tickets: Section; project: Section; notes: readonly string[]; hostWriter: Readonly<{ writerModel?: string; writerEffort?: string }>; hostRaw: Readonly<Record<string, unknown>> | null }>;
 
-/** `project-config.ts`, loaded now, or null when it cannot be: a machine with no project declaration cannot resolve one at import. */
-async function loadProjectConfig(): Promise<ProjectConfig | null> {
-  try {
-    return await import("../project-config.ts");
-  } catch {
-    return null;
-  }
-}
+/** `project-config.ts`, loaded now. Its import resolves the project of this process, and a machine whose project cannot be resolved refuses here. */
+const loadProjectConfigModule = (): Promise<ProjectConfig> => import("../project-config.ts");
 
 /** A declaration read by `parseProjectDeclaration`, as its section: the file's own object, and its refusal when it names one. */
 function declarationOf(path: string, parse: (text: string, source: string) => unknown): Section {
@@ -114,12 +111,19 @@ async function hostSection(text: string, hostPath: string, host: Record<string, 
   }
 }
 
-/** The project's declaration as `parseProjectDeclaration` reads it, or the note that this machine declares none. */
+/**
+ * The project's declaration as `parseProjectDeclaration` reads it. The note that this machine declares no project is for a ticket-only host, and for a
+ * process with no project checkout to read. Any other failure to resolve or read the project is a refusal of the project section, which says why.
+ */
 async function projectSection(options: SettingsReadOptions, host: Record<string, unknown>): Promise<Readonly<{ section: Section; notes: readonly string[] }>> {
   const none = { section: { file: "project.json", raw: null, refusal: null }, notes: [NO_PROJECT] };
   if (options.projectPath === undefined && isTicketOnly(host)) return none;
-  const config = await loadProjectConfig();
-  if (config === null) return none;
+  let config: ProjectConfig;
+  try {
+    config = await (options.loadProject ?? loadProjectConfigModule)();
+  } catch (error) {
+    return { section: { file: "project.json", raw: null, refusal: refusalOf(error) }, notes: [] };
+  }
   if (options.projectPath === undefined && config.HOME_CHECKOUT === config.TICKET_ONLY_CHECKOUT) return none;
   const path = options.projectPath ?? join(config.HOME_CHECKOUT, config.PROJECT_DECLARATION_PATH);
   return { section: declarationOf(path, config.parseProjectDeclaration), notes: [] };
