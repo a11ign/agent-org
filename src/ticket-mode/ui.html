@@ -98,6 +98,11 @@
   .settings-open { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; background: none; border: 1px solid var(--line); border-radius: 6px;
     padding: 5px 10px; color: var(--text); font: inherit; cursor: pointer; }
   .settings-open svg { width: 16px; height: 16px; }
+  .edit-form { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-left: 6px; }
+  .edit-form[hidden] { display: none; }
+  .edit-form textarea { width: min(100%, 420px); font: inherit; }
+  .review-file { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+  button.dangerous { border-color: var(--warn); }
   dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(420px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgb(0 0 0 / .4); }
   dialog h2 { font-size: 16px; margin: 0 0 16px; }
@@ -219,6 +224,21 @@
     <p class="hint">What this instance has enabled, as its files say now. The instance read host.json when it started, except the brief and review notes, which are read for each run.</p>
     <div id="settings-refusals" class="notice" role="alert" hidden></div>
     <div id="settings-notes"></div>
+    <section id="edit-panel" class="setting-edit" aria-labelledby="edit-title" hidden>
+      <h3 id="edit-title">Changes</h3>
+      <p id="edit-note" class="hint" hidden></p>
+      <div id="pending" hidden>
+        <p class="hint">Staged, not saved yet. Review shows what each file would say, and whether the instance's readers accept it.</p>
+        <ul id="pending-list"></ul>
+        <button type="button" id="review-changes">Review changes</button>
+      </div>
+      <div id="review" hidden>
+        <div id="review-files"></div>
+      </div>
+      <p id="edit-refusal" class="notice" role="alert" hidden></p>
+      <div id="restores"></div>
+      <p id="edit-outcome" class="hint" role="status"></p>
+    </section>
     <div class="settings change">
       <fieldset>
         <legend>New runs</legend>
@@ -276,6 +296,9 @@ const el = (tag, props = {}, ...children) => {
 };
 const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
+// The Settings edits (A11-132): the changes staged on the Settings page, the review of them, and the instance they were staged for.
+// `version` counts each change to what is staged, so a review read while the staged changes moved on is not shown.
+const edits = { pending: new Map(), reviewed: null, forConnection: null, version: 0 };
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
   // The board tab shown, Pick or Board. The Settings page takes the window while its address is shown, and the tab is back when it is left.
@@ -748,6 +771,8 @@ async function readMax() {
 const onSettingsPage = () => location.hash === "#/settings";
 async function drawSettings() {
   const chosen = state.connection;
+  // A change staged for one instance is never saved to another: the staged changes go when the instance does.
+  if (edits.forConnection !== (chosen ? chosen.name : null)) clearEdits(chosen);
   $("settings-status").textContent = "";
   $("settings-refusals").hidden = true;
   $("settings-groups").replaceChildren();
@@ -768,6 +793,7 @@ async function drawSettings() {
 /** The rows of the page: each group's keys, with what each says, and the plugins and connectors in words. With no view, an instance without the route is older than this page; any other failure is said. */
 function drawSettingsView(view, failure) {
   if (view === null) {
+    $("edit-panel").hidden = true;
     const older = failure.startsWith("no route");
     const text = older ? "This instance is older than this page and cannot describe its settings. The controls above still change them." : `The settings could not be read: ${failure}`;
     $("settings-notes").replaceChildren(el("p", { className: "notice", textContent: text }));
@@ -777,6 +803,189 @@ function drawSettingsView(view, failure) {
   $("settings-refusals").replaceChildren(...view.refusals.map((r) => el("p", { textContent: `${r.file}: ${r.message}` })));
   $("settings-notes").replaceChildren(...view.notes.map((note) => el("p", { className: "hint", textContent: note })));
   $("settings-groups").replaceChildren(...view.groups.map((group) => settingsGroup(group, view)).filter((node) => node !== null));
+  drawEdits(view);
+}
+
+// The Settings edits (A11-132). A change is staged on its row, reviewed with the readers' verdict, and saved one file at a time. Only a local instance is
+// edited: a remote one's files are changed on that machine, so its rows offer no edit. A refusal names the field, and writes nothing.
+const editable = () => !state.connection || state.connection.kind === "local";
+const changeWords = (c) => `${c.key}: ${c.old} → ${c.new}. ${c.inForce}`;
+/** Nothing is staged, reviewed or said about an instance the page has left. */
+function clearEdits(chosen) {
+  edits.pending.clear();
+  stagingChanged();
+  edits.forConnection = chosen ? chosen.name : null;
+  $("pending-list").replaceChildren();
+  $("review-files").replaceChildren();
+  $("restores").replaceChildren();
+  $("edit-outcome").textContent = "";
+  $("edit-refusal").hidden = true;
+}
+/** Whether the rows and staged changes on the page were read from the instance now chosen: a change to the instance the page has left is refused. */
+const sameInstance = () => edits.forConnection === (state.connection ? state.connection.name : null);
+const OUT_OF_DATE = "This instance changed since these settings were read: open Settings again.";
+/** What is staged has moved on: a review read before now is not shown, and one still in flight is dropped when it lands. */
+function stagingChanged() {
+  edits.version += 1;
+  edits.reviewed = null;
+}
+/** An action on the staged changes, made only for the instance they were read from. Always answers a promise, as the actions are asked for it. */
+const forThisInstance = (action) => async (...args) => (sameInstance() ? action(...args) : showEditRefusal(OUT_OF_DATE));
+/** Shows the edit panel for a local instance, with what is staged, the restores, and a line for a remote one. */
+function drawEdits(view) {
+  const local = editable();
+  $("edit-panel").hidden = false;
+  $("edit-note").hidden = local;
+  $("edit-note").textContent = local ? "" : `This instance is ${connectionLabel(state.connection)}. Its files are changed on that machine, so this page offers no edit here.`;
+  $("pending").hidden = !local || edits.pending.size === 0;
+  $("review").hidden = !local || edits.reviewed === null;
+  $("restores").replaceChildren(...(local ? restoreButtons(view) : []));
+  renderPending();
+  renderReview();
+}
+/** A project's declaration is edited when this machine declares one, which its rows or its refusal show. */
+const projectDeclared = (view) => view.refusals.some((r) => r.file === "project.json") || view.groups.some((g) => g.rows.some((r) => r.file === "project.json"));
+/** The kind of input a row takes, filled with the value it holds, and the staging control that takes what is typed. */
+function editControl(row) {
+  const field = row.input === "boolean"
+    ? el("select", {}, el("option", { value: "true", textContent: "true" }), el("option", { value: "false", textContent: "false" }))
+    : el(row.input === "json" ? "textarea" : "input", row.input === "json" ? { rows: 3 } : { type: row.input === "number" ? "number" : "text" });
+  field.value = row.raw ?? (row.input === "boolean" ? "true" : "");
+  const problem = el("p", { className: "notice", hidden: true });
+  const stage = el("button", { type: "button", textContent: "Stage change" });
+  const reset = el("button", { type: "button", textContent: "Return to default" });
+  const form = el("span", { className: "edit-form", hidden: true }, field, stage, reset, problem);
+  const open = el("button", { type: "button", textContent: "Edit", className: "edit-open" });
+  open.addEventListener("click", () => { form.hidden = !form.hidden; });
+  stage.addEventListener("click", () => {
+    try {
+      stageChange(row, { key: row.key, value: valueOf(row, field.value) });
+      form.hidden = true;
+      problem.hidden = true;
+    } catch (err) {
+      problem.textContent = String(err.message || err);
+      problem.hidden = false;
+    }
+  });
+  reset.addEventListener("click", () => { stageChange(row, { key: row.key, remove: true }); form.hidden = true; });
+  return el("span", { className: "edit" }, open, form);
+}
+/** What was typed, as the value the schema's kind of input takes. A number or JSON that does not read is said on the row, and not sent. */
+function valueOf(row, text) {
+  if (row.input === "boolean") return text === "true";
+  if (row.input === "number") {
+    if (text.trim() === "" || Number.isNaN(Number(text))) throw new Error(`${row.key} needs a number`);
+    return Number(text);
+  }
+  if (row.input === "json") {
+    try { return JSON.parse(text); } catch (err) { throw new Error(`${row.key} needs JSON, such as a list or an object: ${err.message}`); }
+  }
+  return text;
+}
+/** A change staged on its row, with what it was and what it will be, until it is saved or taken back. */
+function stageChangeHere(row, body) {
+  const becomes = "remove" in body ? "returned to its default" : (typeof body.value === "string" ? body.value : JSON.stringify(body.value));
+  stagingChanged();
+  edits.pending.set(`${row.file}|${row.key}`, { file: row.file, key: row.key, old: row.value, becomes, body });
+  renderPending();
+}
+const stageChange = forThisInstance(stageChangeHere);
+function renderPending() {
+  const staged = [...edits.pending.entries()];
+  $("pending").hidden = !editable() || staged.length === 0;
+  $("pending-list").replaceChildren(...staged.map(([id, change]) => {
+    const undo = el("button", { type: "button", textContent: "Take back" });
+    undo.addEventListener("click", () => { edits.pending.delete(id); stagingChanged(); renderPending(); renderReview(); });
+    return el("li", {}, el("span", { textContent: `${change.file} ${change.key}: ${change.old} → ${change.becomes}` }), " ", undo);
+  }));
+}
+/** Each file's changes as the readers would leave it: the old and new value and when it is in force, the dangerous ones named, and the save. */
+async function reviewChangesHere() {
+  const version = edits.version;
+  const files = [...new Set([...edits.pending.values()].map((change) => change.file))];
+  const reviewed = {};
+  try {
+    for (const file of files) {
+      const staged = stagedOf(file);
+      const changes = staged.map(([, change]) => change.body);
+      reviewed[file] = { ids: staged.map(([id]) => id), changes, preview: await call("POST", "/api/settings/preview", { file, changes }) };
+    }
+  } catch (err) {
+    if (err === STALE) return;
+    edits.reviewed = null;
+    showEditRefusal(err);
+    renderReview();
+    return;
+  }
+  // Staged or taken back while the preview was read: what was reviewed is no longer what is staged, so it is not shown.
+  if (version !== edits.version) return;
+  $("edit-refusal").hidden = true;
+  edits.reviewed = reviewed;
+  renderReview();
+}
+const reviewChanges = forThisInstance(reviewChangesHere);
+/** The staged changes of one file, with their ids. */
+const stagedOf = (file) => [...edits.pending.entries()].filter(([, change]) => change.file === file);
+function renderReview() {
+  const reviewed = edits.reviewed;
+  $("review").hidden = !editable() || reviewed === null;
+  $("review-files").replaceChildren(...(reviewed === null ? [] : Object.entries(reviewed).map(([file, entry]) => reviewOf(file, entry))));
+}
+function reviewOf(file, entry) {
+  const { preview } = entry;
+  const dangerous = preview.changes.filter((c) => c.dangerous !== null && c.changed);
+  const lines = preview.changes.map((c) => el("li", { textContent: changeWords(c) }));
+  const notes = preview.note === null ? [] : [el("p", { className: "hint", textContent: preview.note })];
+  // A dangerous key is saved only by its own button, which names the key and what it can break: the second confirmation.
+  const save = dangerous.length === 0
+    ? el("button", { type: "button", textContent: `Save ${file}` })
+    : el("button", { type: "button", className: "dangerous", textContent: `Save ${file} with ${dangerous.map((c) => c.key).join(", ")}, which can break: ${dangerous.map((c) => c.dangerous).join(" ")}` });
+  save.addEventListener("click", () => saveFile(file, entry).catch(report));
+  return el("section", { className: "review-file" }, el("h4", { textContent: `${file}: the change, as the readers accept it` }), el("ul", {}, ...lines), ...notes, save);
+}
+/** A save of one file: the readers check the text again on the instance, and the dangerous keys it is sent with are the ones the page named. */
+async function saveFileHere(file, { ids, changes, preview }) {
+  const confirmed = preview.changes.filter((c) => c.dangerous !== null && c.changed).map((c) => c.key);
+  try {
+    const answer = await call("POST", "/api/settings/save", { file, changes, base: preview.base, confirmed });
+    // Only what was sent is taken off the staged list: a change staged while the save was in flight stays staged.
+    for (const id of ids) edits.pending.delete(id);
+    stagingChanged();
+    $("edit-refusal").hidden = true;
+    $("edit-outcome").textContent = `Saved ${file}. ${answer.changes.map(changeWords).join(" ")}`;
+    await drawSettings();
+  } catch (err) {
+    if (err === STALE) return;
+    showEditRefusal(err);
+  }
+}
+const saveFile = forThisInstance(saveFileHere);
+/** The restore buttons: one per file this machine has, which swap the file with its backup. */
+function restoreButtons(view) {
+  const files = ["host.json", ...(projectDeclared(view) ? ["project.json"] : [])];
+  return files.map((file) => {
+    const button = el("button", { type: "button", textContent: `Restore the backup of ${file}` });
+    button.addEventListener("click", () => restoreFile(file).catch(report));
+    return button;
+  });
+}
+async function restoreFileHere(file) {
+  try {
+    const answer = await call("POST", "/api/settings/restore", { file });
+    edits.reviewed = null;
+    $("edit-refusal").hidden = true;
+    $("edit-outcome").textContent = `Restored ${file} from its backup. ${answer.changes.map(changeWords).join(" ") || "Nothing differed."}`;
+    await drawSettings();
+  } catch (err) {
+    if (err === STALE) return;
+    showEditRefusal(err);
+  }
+}
+const restoreFile = forThisInstance(restoreFileHere);
+function showEditRefusal(err) {
+  $("edit-outcome").textContent = "";
+  $("edit-refusal").textContent = String(err.message || err);
+  $("edit-refusal").hidden = false;
 }
 function settingsGroup({ group, rows }, view) {
   const plugins = group === "Plugins and connectors";
@@ -797,7 +1006,8 @@ function settingRow(row) {
     el("dt", {}, el("code", { textContent: row.key })),
     el("dd", { textContent: `Value: ${row.value}. State: ${row.state}. Source: ${row.source}.` }),
     el("dd", { textContent: row.explanation }),
-    el("dd", { className: "hint", textContent: `If it is wrong: ${row.breaks}` }));
+    el("dd", { className: "hint", textContent: `If it is wrong: ${row.breaks}` }),
+    ...(row.input !== null && editable() ? [el("dd", {}, editControl(row))] : []));
 }
 /** The page or the board, by the address: the Settings page takes the window while its address is shown. */
 function showRoute() {
@@ -1052,6 +1262,7 @@ $("queue").addEventListener("click", async () => {
 $("publish").addEventListener("click", () => call("POST", "/api/publish", { keys: [...state.toPublish] })
   .then((q) => { state.queue = q; state.toPublish = new Set(); report(null); render(); }, report));
 $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
+$("review-changes").addEventListener("click", () => reviewChanges().catch(report));
 for (const id of ["open-settings", "change-choice", "change-max"]) {
   $(id).addEventListener("click", () => {
     state.opener = id;

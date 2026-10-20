@@ -7,9 +7,10 @@
 //
 // THE INPUT IS READ BY THE CALLER (`settings-read.ts`): each file's parsed object, the message each reader refused it with, the saved choices, the
 // queue's number of workers and the plugin install record. This module imports no reader, so a ticket-only machine with no project loads it.
-import type { ChoicePart, File, Group, SchemaEntry } from "./config-schema.ts";
+import type { ChoicePart, File, Group, Input, SchemaEntry } from "./config-schema.ts";
 import { GROUPS } from "./config-schema.ts";
 import type { PluginInstall, PluginState } from "./plugins.ts";
+import { isObject, valueAt } from "./json-value.ts";
 
 export type Section = Readonly<{ file: string; raw: Readonly<Record<string, unknown>> | null; refusal: string | null }>;
 export type ViewInput = Readonly<{
@@ -27,7 +28,8 @@ export type ViewInput = Readonly<{
 
 export type State = "enabled" | "disabled" | "not set" | "default";
 export type Source = "host.json" | "project.json" | "choice.json" | "queue.json" | "built-in default";
-export type Row = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean }>;
+/** A row: what the key says in words, and, for a key the page may change, the kind of input that changes it (`input`) and its value as that input takes it (`raw`). */
+export type Row = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean; input: Input | null; raw: string | null }>;
 export type PluginLine = Readonly<{ plugin: string; installed: string; loads: string }>;
 export type View = Readonly<{
   groups: readonly Readonly<{ group: Group; rows: readonly Row[] }>[];
@@ -42,18 +44,6 @@ const CHOICE_BUILT_IN: Readonly<Record<ChoicePart, string>> = { model: "opus", e
 
 /** Which section reads a host.json key: ticket mode reads its block and the few top-level keys it shares with the board. */
 const TICKET_READ = /^(tickets(\.|$)|clones(\.|$)|stateDir$|binDir$)/;
-
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** The value at `path` in `root`, or undefined: one step per segment, never through a list. */
-function valueAt(root: unknown, path: readonly string[]): unknown {
-  let at = root;
-  for (const part of path) {
-    if (!isObject(at)) return undefined;
-    at = at[part];
-  }
-  return at;
-}
 
 /** The keys an entry stands for: its `<name>` segments are filled from the keys the file holds at that place. */
 function concreteKeys(key: string, root: Readonly<Record<string, unknown>> | null): string[] {
@@ -90,6 +80,12 @@ function stateWhenAbsent(entry: SchemaEntry): State {
   return entry.absent === "default" ? "default" : "not set";
 }
 
+/** The kind of input the page offers to change a key, or null when the key may not be changed from the page. */
+const inputOf = (entry: SchemaEntry): Input | null => (entry.edit.editable ? entry.edit.input : null);
+
+/** A value as the page's input takes it: a text as it is, anything else as JSON. */
+const rawOf = (value: unknown): string => (typeof value === "string" ? value : JSON.stringify(value));
+
 /** The file a section's rows come from, for the source word of a key that is set. */
 const fileOf = (entry: SchemaEntry): Source => (entry.file === "project.json" ? "project.json" : "host.json");
 
@@ -116,7 +112,8 @@ function rowsOf(entry: SchemaEntry, input: ViewInput): Row[] {
     const state = set ? stateWhenSet(entry, value) : (parentAbsent ? "not set" : stateWhenAbsent(entry));
     const source = set ? fileOf(entry) : "built-in default";
     const shown = set ? showValue({ key, value }, entry, input.exists) : (state === "default" ? (entry.default ?? "not set") : "not set");
-    rows.push({ key, file: entry.file, group: entry.group, value: shown, state, source, explanation: entry.explanation, breaks: entry.breaks, depth: path.length - 1, secret: entry.secret !== undefined });
+    rows.push({ key, file: entry.file, group: entry.group, value: shown, state, source, explanation: entry.explanation, breaks: entry.breaks, depth: path.length - 1, secret: entry.secret !== undefined,
+      input: inputOf(entry), raw: set ? rawOf(value) : null });
     if (Array.isArray(value)) rows.push(...elementRows({ parent: entry, key, items: value, state }, input));
   }
   return rows;
@@ -132,7 +129,7 @@ function elementRows({ parent, key, items, state }: Readonly<{ parent: SchemaEnt
       const fieldKey = `${key}${ELEMENT}${field}`;
       const values = items.filter(isObject).map((item) => (item[field] === undefined ? "not set" : showValue({ key: fieldKey, value: item[field] }, entry, input.exists)));
       return { key: fieldKey, file: entry.file, group: entry.group, value: values.join("; ") || "none", state, source: fileOf(entry), explanation: entry.explanation,
-        breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined };
+        breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined, input: null, raw: null };
     });
 }
 
@@ -141,7 +138,7 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
   const part = entry.key as ChoicePart;
   const saved = input.choice.saved[part];
   const hostValue = part === "writerModel" || part === "writerEffort" ? input.choice.host[part] : undefined;
-  const base = { key: entry.key, file: entry.file, group: entry.group, explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false };
+  const base = { key: entry.key, file: entry.file, group: entry.group, explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null };
   if (saved !== undefined) return { ...base, value: saved, state: "enabled", source: "choice.json" };
   if (hostValue !== undefined) return { ...base, value: hostValue, state: "default", source: "host.json" };
   return { ...base, value: CHOICE_BUILT_IN[part], state: "default", source: "built-in default" };
@@ -151,7 +148,7 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
 function queueRow(entry: SchemaEntry, input: ViewInput): Row {
   const { max, source } = input.queue;
   return { key: entry.key, file: entry.file, group: entry.group, value: String(max), state: source === "built-in default" ? "default" : "enabled", source,
-    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false };
+    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null };
 }
 
 /** The connector pattern's name, as the text between its `^mcp__` and the next `__`, or the pattern as written when it has none. */

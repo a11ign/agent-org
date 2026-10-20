@@ -185,3 +185,23 @@ test("a path that names another host stays on the instance's, and an answer too 
     await new Promise<void>((done) => server.close(() => done()));
   }
 });
+
+test("A11-132: the Settings edits are passed on to the machine's own instance, and refused for an ssh or an https connection before anything is sent", async () => {
+  const EDITS = ["/api/settings/preview", "/api/settings/save", "/api/settings/restore"];
+  for (const path of EDITS) assert.equal(passedOn("POST", path), true, path);
+  const LOCAL: Connection = { name: "local", kind: "local" };
+  const LAB: Connection = { name: "lab", kind: "https", origin: "https://agents.example.ts.net", keyFile: "/k" };
+  const sent: string[] = [];
+  const forward = async (_target: Target, request: { path: string }) => { sent.push(request.path); return { status: 200, body: "{}" }; };
+  const target = overSsh("/unused.sock");
+  for (const path of EDITS) {
+    assert.deepEqual(await proxy(fixed(target, LOCAL).remotes, "local", { method: "POST", path, body: "{}" }, forward), [200, {}]);
+    const remotes: Connection[] = [PERSONAL, LAB];
+    for (const remote of remotes) {
+      const [status, body] = await proxy(fixed(target, remote).remotes, remote.name, { method: "POST", path, body: "{}" }, forward);
+      assert.equal(status, 403, `${path} over ${remote.kind}`);
+      assert.match((body as { error: string }).error, new RegExp(`${remote.name}'s settings are not changed from here`));
+    }
+  }
+  assert.equal(sent.length, EDITS.length, "only the calls to the local instance were sent");
+});
