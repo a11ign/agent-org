@@ -585,9 +585,9 @@ test("A11-119: the reviewer's word on a head, and the newest word on an earlier 
 
 test("A11-119: a repository's open pull request urls are listed, and an unanswered or cut-short list is no reading", () => {
   const listed = (answer: () => string) => openPullUrlsOf("a11ign/control", (args) => { assert.deepEqual(args.slice(0, 5), ["pr", "list", "--repo", "a11ign/control", "--state"]); return answer(); });
-  assert.deepEqual(listed(() => JSON.stringify([{ url: "https://github.com/a11ign/control/pull/119" }])), ["https://github.com/a11ign/control/pull/119"]);
+  assert.deepEqual(listed(() => JSON.stringify([{ number: 119, body: "" }])), ["https://github.com/a11ign/control/pull/119"]);
   assert.deepEqual(listed(() => "[]"), [], "none open is a reading");
   assert.equal(listed(() => { throw new Error("gh exited 1"); }), null, "a refused gh is no reading");
   assert.equal(listed(() => "not json"), null);
-  assert.equal(listed(() => JSON.stringify(Array.from({ length: 200 }, (_, i) => ({ url: `u${i}` })))), null, "a list at the limit may be cut short");
+  assert.equal(listed(() => JSON.stringify(Array.from({ length: 200 }, (_, i) => ({ number: i, body: "" })))), null, "a list at the limit may be cut short");
 });

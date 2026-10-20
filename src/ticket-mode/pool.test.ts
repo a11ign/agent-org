@@ -1990,7 +1990,7 @@ function ghFor(pulls: Record<number, unknown>) {
       // The pull requests are in SWEPT_REPO only: every other repository the sweep asks about has none open.
       const repo = args[args.indexOf("--repo") + 1];
       if (repo !== SWEPT_REPO) return "[]";
-      return JSON.stringify(Object.keys(pulls).filter((number) => (pulls[Number(number)] as { state: string }).state === "OPEN").map((number) => ({ url: `https://github.com/${repo}/pull/${number}` })));
+      return JSON.stringify(Object.keys(pulls).filter((number) => (pulls[Number(number)] as { state: string }).state === "OPEN").map((number) => ({ number: Number(number), body: "" })));
     }
     if (args[0] === "pr") {
       const pull = pulls[Number(args[2])] as { state: string; headRefOid: string; reviews: { nodes: unknown[] }; commits: { nodes: { commit: { statusCheckRollup: { contexts: { nodes: unknown[] } } } }[] } } | undefined;

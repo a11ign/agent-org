@@ -12,6 +12,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, m
 import { dirname, join } from "node:path";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { ORG_SESSION, firstLine, readAgents, type ListedAgent } from "../herdr-agents.ts";
+import { openPullsOf } from "../ticket-port/open-pulls.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
 import { headMatches, reviewVerdict as verdictOfText } from "../review-verdict.ts";
 import type { DoorRun, ReviewTrust } from "../review-trust.ts";
@@ -292,21 +293,13 @@ export function reviewedRepositoriesOf(clones: Clones): string[] {
   return [...new Set([identity.REPO, ...declared, ...Object.keys(clones).map((name) => `${owner}/${name}`)])];
 }
 
-/** The most open pull requests one repository's list is read to: a list this long may be cut short, so it is no reading. */
-const OPEN_PULL_LIMIT = 200;
-
 /**
- * The URLs of a repository's open pull requests, or null for "could not ask": a refused `gh`, an answer that does not parse, or a list at the limit,
- * which may be cut short. `null` is never "none are open" (the same rule as `openPullsOf`).
+ * The URLs of a repository's open pull requests, read through the ticket port's `openPullsOf`. Null for "could not ask", which `openPullsOf` also
+ * answers for a list at its limit: `null` is never "none are open".
  */
 export function openPullUrlsOf(repository: string, gh: (args: string[]) => string): string[] | null {
-  try {
-    const pulls: unknown = JSON.parse(gh(["pr", "list", "--repo", repository, "--state", "open", "--limit", String(OPEN_PULL_LIMIT), "--json", "url"]));
-    if (!Array.isArray(pulls) || pulls.length >= OPEN_PULL_LIMIT) return null;
-    return pulls.map((pull) => String(pull?.url));
-  } catch {
-    return null;
-  }
+  const pulls = openPullsOf(repository, gh);
+  return pulls === null ? null : pulls.map(({ number }) => `https://github.com/${repository}/pull/${number}`);
 }
 
 /**
