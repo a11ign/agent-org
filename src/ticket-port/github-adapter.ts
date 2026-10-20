@@ -341,8 +341,3 @@ export function githubTicketAdapter(options: GithubAdapterOptions): GithubTicket
   };
 }
 
-/** The arguments of `gh repo view <repo>`, which the person's own login runs to read a repository (A11-145): it exits 0 when the login can read it. */
-export const repoViewArgs = (repo: string): string[] => ["repo", "view", repo];
-
-/** The arguments of `gh repo clone <remote> <path>`, run as the person's own login when a profile's checkout is missing (A11-145). */
-export const repoCloneArgs = (remote: string, path: string): string[] => ["repo", "clone", remote, path];

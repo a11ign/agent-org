@@ -19,7 +19,7 @@ import { writeAtomic } from "./write-atomic.ts";
 import { pluginStates, type PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
 import type { ProgramRunner } from "../ticket-port/stack-extension.ts";
-import { repoViewArgs } from "../ticket-port/github-adapter.ts";
+import { repoViewArgs } from "../ticket-port/repo-args.ts";
 
 /** A program run with its arguments, as a `RunResult`. `claude` and `gh` are run through it. */
 export type Run = (file: string, args: string[]) => RunResult;

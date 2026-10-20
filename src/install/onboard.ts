@@ -61,7 +61,7 @@ import { houseNotes } from "./house-notes.ts";
 import { retireGuards, type Replacements } from "./interim-guards.ts";
 import { defaultDoctorDeps, diagnose, report, type Check } from "./doctor.ts";
 import { hostIsolation } from "./update-safety.ts";
-import { repoCloneArgs } from "../ticket-port/github-adapter.ts";
+import { repoCloneArgs } from "../ticket-port/repo-args.ts";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
 export const LINEAR_MCP_URL = "https://mcp.linear.app/mcp";
