@@ -24,6 +24,8 @@ export type Ticket = Readonly<{
   branch: string;
   /** The status's name and its position in the team's workflow, for grouping the board the way the tracker does. */
   status: string;
+  /** The state's type as the tracker names it, such as `started` for In Progress: absent from a source that does not read it (A11-144). */
+  statusType?: string;
   statusOrder: number;
   team: string;
   project: string | null;

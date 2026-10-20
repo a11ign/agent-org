@@ -56,7 +56,7 @@ const TABLE_KEYS = [
   "tickets.reviewer", "tickets.pick", "tickets.stallMinutes", "tickets.updateMaxDeferHours", "tickets.workingState", "stateDir",
   "tickets.providers", "tickets.providers.tracker", "tickets.providers.tracker.provider", "tickets.providers.tracker.key", "tickets.providers.tracker.key.path",
   "tickets.providers.tracker.key.keychain", "tickets.providers.tracker.connectors", "tickets.providers.tracker.workingState",
-  "tickets.providers.tracker.plannedState", "tickets.providers.codeHost", "tickets.providers.codeHost.provider", "tickets.providers.codeHost.identity",
+  "tickets.providers.tracker.plannedState", "tickets.providers.tracker.takenStates", "tickets.providers.codeHost", "tickets.providers.codeHost.provider", "tickets.providers.codeHost.identity",
   "tickets.providers.codeHost.identity.<role>", "tickets.providers.codeHost.identity.<role>.mode", "tickets.providers.codeHost.identity.<role>.appId",
   "tickets.providers.codeHost.identity.<role>.keyPath", "tickets.providers.codeHost.identity.<role>.installationId", "tickets.providers.codeHost.identity.<role>.slug",
   "tickets.providers.codeHost.gh", "tickets.providers.codeHost.gh.workers", "tickets.providers.codeHost.gh.leads", "tickets.providers.codeHost.gh.leadsHeader",

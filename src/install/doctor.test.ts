@@ -31,7 +31,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
-    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [],
+    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => null, releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0, now: () => NOW,
     ...over,
   };
@@ -645,4 +645,12 @@ test("A11-140: a plugin that does not load, or does not match, makes the run fai
   const mismatched = Object.values(await checksWithPlugins({ plugins: pluginsAs([loaded("a@m")], [CONNECTOR_ROW]) }));
   const fine = Object.values(await checksWithPlugins({ plugins: pluginsAs([loaded("a@m"), loaded("b@m")]) }));
   assert.deepEqual([notLoading.every((check) => check.ok), mismatched.every((check) => check.ok), fine.every((check) => check.ok)], [false, false, true]);
+});
+
+// A11-145: a conventions plugin refresh a live run held back is said, and no row shows when none waits.
+test("A11-145: doctor says a conventions plugin refresh that a live run held back, and shows no row when none waits", async () => {
+  const waiting = byName(await diagnose(deps({ pluginRefresh: () => "2026-10-20T10:00:00.000Z, with 2 runs live" })));
+  assert.equal(waiting["plugin refresh"].ok, true);
+  assert.equal(waiting["plugin refresh"].detail, "the conventions plugin refresh has waited since 2026-10-20T10:00:00.000Z, with 2 runs live, and runs at the next update with no run live");
+  assert.equal(byName(await diagnose(deps()))["plugin refresh"], undefined);
 });

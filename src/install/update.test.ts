@@ -68,6 +68,7 @@ function deps(checkout: string, git: (args: string[]) => string, states: Partial
     status: { read: () => statuses.at(-1) ?? null, write: (status) => { statuses.push(status); } },
     stackExtension: () => ({ state: "present", version: "v0.2.1" }),
     conventions: () => ({ said: [], failed: [] }),
+    conventionsDeferral: { defer: () => {}, clear: () => {} },
     out: { log: (line: string) => { said.push(line); }, error: (line: string) => { errors.push(line); } },
     ...over,
   };
@@ -367,4 +368,22 @@ test("A11-106: the stack extension is kept even when the update refuses, and its
   const refused = deps(checkout, git, {}, 0, { stackExtension: () => ({ state: "failed", reason: "no network" }) });
   assert.throws(() => update({ version: "v0.2", channel: "release" }, refused.deps), /not a release tag/);
   assert.equal(refused.errors.length, 1);
+});
+
+// A11-145: a live run holds the conventions plugin's refresh back, as it holds back a release, and records the wait for doctor to say so.
+test("A11-145: a live run holds the conventions refresh back and records it; with none live, the refresh runs and the record is cleared", () => {
+  const refreshed: string[] = [];
+  const recorded: number[] = [];
+  const cleared: string[] = [];
+  const conventionsDeferral = { defer: (live: number) => { recorded.push(live); }, clear: () => { cleared.push("cleared"); } };
+  const conventions = () => { refreshed.push("refreshed"); return { said: [], failed: [] }; };
+  const { checkout, git } = installed();
+  const busy = deps(checkout, git, { instance: "running" }, 2, { conventions, conventionsDeferral });
+  update({ version: undefined, channel: "release" }, busy.deps);
+  assert.deepEqual([refreshed, recorded], [[], [2]], "no refresh while two runs are live, and the wait is recorded");
+  assert.ok(busy.said.includes("agent-org update: the conventions plugin refresh waits while 2 runs are live, and runs at the next update with none live"));
+
+  const idle = deps(checkout, git, { instance: "running" }, 0, { conventions, conventionsDeferral });
+  update({ version: undefined, channel: "release" }, idle.deps);
+  assert.deepEqual([refreshed, cleared], [["refreshed"], ["cleared"]], "the refresh runs once none is live, and the record is cleared");
 });

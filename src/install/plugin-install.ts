@@ -12,10 +12,14 @@
 //
 // Every program runs through the `Run` seam, so a test sees each command and answers it; none is run here.
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { agentOrgHome, readOrNull, type Env } from "./paths.ts";
+import { writeAtomic } from "./write-atomic.ts";
 import { pluginStates, type PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
+import type { ProgramRunner } from "../ticket-port/stack-extension.ts";
+import { repoViewArgs } from "../ticket-port/github-adapter.ts";
 
 /** A program run with its arguments, as a `RunResult`. `claude` and `gh` are run through it. */
 export type Run = (file: string, args: string[]) => RunResult;
@@ -70,9 +74,9 @@ const otherSource = (entry: MarketplaceEntry, repo: string) => `the marketplace 
  * The plugin installed for every session, from its repository, and read back. Stops at the first step that cannot be done: a repository the person cannot
  * read, a marketplace `claude` cannot add, or an install that fails. Each step says its result; a step already done says so, and runs nothing.
  */
-export function installConventions({ plugin, repo }: Readonly<{ plugin: string; repo: string }>, deps: ConventionsDeps): ConventionsStep {
+export function installConventions({ plugin, repo }: Readonly<{ plugin: string; repo: string }>, deps: ConventionsDeps, gh: ProgramRunner): ConventionsStep {
   const marketplace = marketplaceOf(plugin);
-  const visible = deps.run("gh", ["repo", "view", repo]);
+  const visible = gh(repoViewArgs(repo));
   if (visible.status !== 0) {
     return { lines: [`could not read ${repo} as your GitHub login: ${firstLine(visible)}. The plugin is private: run \`gh auth login\`, then \`agent-org onboard\` again.`], installPath: null };
   }
@@ -165,3 +169,26 @@ export const runProgram: Run = (file, args) => {
   if (result.error) return { status: null, stdout: "", stderr: result.error.message };
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 };
+
+/** Where a held-back refresh is recorded, beside the update status file, for `doctor` to say so. */
+export const deferralPath = (env: Env, home: string): string => join(agentOrgHome(env, home), "plugins-deferred.json");
+
+/** The refresh a live run held back: since when (kept from the first deferral), and how many runs were live, or null when none is recorded. */
+export function readDeferral(path: string): Readonly<{ since: string; live: number }> | null {
+  const text = readOrNull(path);
+  if (text === null) return null;
+  try {
+    const record: unknown = JSON.parse(text);
+    return isObject(record) && typeof record.since === "string" && typeof record.live === "number" ? { since: record.since, live: record.live } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Records the held-back refresh, keeping the time of the first deferral, so `doctor` can say how long it has waited. */
+export function writeDeferral(path: string, live: number, now: Date): void {
+  writeAtomic(path, `${JSON.stringify({ since: readDeferral(path)?.since ?? now.toISOString(), live })}\n`, 0o600);
+}
+
+/** Removes the record once the refresh has run, so `doctor` says nothing of a deferral that is over. */
+export const clearDeferral = (path: string): void => rmSync(path, { force: true });

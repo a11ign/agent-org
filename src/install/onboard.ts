@@ -61,6 +61,7 @@ import { houseNotes } from "./house-notes.ts";
 import { retireGuards, type Replacements } from "./interim-guards.ts";
 import { defaultDoctorDeps, diagnose, report, type Check } from "./doctor.ts";
 import { hostIsolation } from "./update-safety.ts";
+import { repoCloneArgs } from "../ticket-port/github-adapter.ts";
 
 export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
 export const LINEAR_MCP_URL = "https://mcp.linear.app/mcp";
@@ -149,7 +150,7 @@ function repoOfProfile(repo: ProfileRepo, deps: OnboardDeps): [string, string] {
   if (!isAbsolute(path)) throw new OnboardRefusal(`repos ${repo.name}: the checkout must be an absolute path, or start with ~/`);
   if (!deps.isDirectory(path)) {
     if (repo.remote === undefined) throw new OnboardRefusal(`repos ${repo.name}: ${path} is not a directory, and the profile names no repository to clone it from`);
-    const cloned = deps.run("gh", ["repo", "clone", repo.remote, path]);
+    const cloned = deps.ghAs({})(repoCloneArgs(repo.remote, path));
     if (cloned.status !== 0) throw new OnboardRefusal(`could not clone ${repo.remote} to ${path}: ${firstLine(cloned)}. Run \`gh auth login\`, then onboard again.`);
     deps.out.log(`cloned ${repo.remote} to ${path}`);
   }
@@ -169,7 +170,7 @@ function readHostText(path: string, deps: OnboardDeps): string | null {
  * The host file as an object, moved to the one shape first: an old key is moved into its provider block with a backup beside the file, exactly as
  * `doctor --fix` moves it. A file that would read differently after the move is refused, and nothing is written.
  */
-function currentHost(path: string, deps: OnboardDeps): Record<string, unknown> {
+async function currentHost(path: string, deps: OnboardDeps): Promise<Record<string, unknown>> {
   const text = readHostText(path, deps);
   if (text === null) return {};
   let parsed: unknown;
@@ -179,7 +180,7 @@ function currentHost(path: string, deps: OnboardDeps): Record<string, unknown> {
     throw new OnboardRefusal(`${path} is not valid JSON, so onboard will not write over it. Fix or move it, then run onboard again.`);
   }
   if (!isObject(parsed)) throw new OnboardRefusal(`${path} does not hold a JSON object`);
-  const fix = planHostFix(text);
+  const fix = await planHostFix(text);
   if (fix.kind === "refused") throw new OnboardRefusal(`${path}: ${fix.reason}`);
   if (fix.kind === "nothing") return parsed;
   const backup = writeHostFix(path, text, fix.text, 0o600, deps.now(), (file, body) => deps.writeFile(file, String(body)));
@@ -400,7 +401,7 @@ function installPlugin(conventions: NonNullable<Profile["conventions"]>, deps: O
   return installConventions({ plugin: conventions.plugin, repo: conventions.marketplace }, {
     run: deps.run,
     stateOf: stateOfRecord(deps.home, { read: deps.readFile, exists: deps.exists, record: join(deps.home, ".claude", "plugins", "installed_plugins.json") }),
-  });
+  }, deps.ghAs({}));
 }
 
 /** The contract the plugin declares in its installed manifest, or null when it declares none this reads; a malformed one is said, and not used. */
@@ -520,7 +521,7 @@ async function finishOnboard({ next, options, source, terminal }: Readonly<{ nex
 export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promise<string> {
   const hostFile = hostFilePath(deps.env, deps.home, (path) => readHostText(path, deps));
   const profile = options.profile === undefined ? null : await profileFor(options, deps);
-  const host = currentHost(hostFile, deps);
+  const host = await currentHost(hostFile, deps);
   const tickets = ticketsOf(host);
   const clones = await clonesOf(options, profile, host, deps);
 

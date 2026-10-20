@@ -28,6 +28,7 @@ import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
 import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
+import { deferralPath, readDeferral } from "./plugin-install.ts";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
@@ -89,6 +90,8 @@ export type DoctorDeps = Readonly<{
   isolation: (session: string) => Isolation;
   /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
   updateStatus: () => StatusFile;
+  /** What a conventions plugin refresh that a live run held back says, since when, or null when none waits (A11-145). */
+  pluginRefresh: () => string | null;
   /** The release tags this checkout holds, with no network (A11-90). */
   releaseTags: () => string[];
   /**
@@ -456,6 +459,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
+    ...pluginRefreshChecks(deps),
   ];
 }
 
@@ -490,6 +494,12 @@ function herdrScopeChecks(settings: TicketSettings | null, instanceState: Servic
   }
   const fix = `restart herdr when no run is working (\`herdr --session ${session} server stop\`; the next instance start launches it in its own scope)`;
   return [failed(name, `the herdr server for session ${session} is in ${isolation.cgroup}, the same place as the instance (${isolation.unit}): a restart of the instance interrupts every worker`, fix)];
+}
+
+/** The conventions plugin refresh a live run held back (A11-145): one row while it waits, said as it is, since a wait is not a failure. */
+function pluginRefreshChecks(deps: DoctorDeps): Check[] {
+  const waiting = deps.pluginRefresh();
+  return waiting === null ? [] : [ok("plugin refresh", `the conventions plugin refresh has waited since ${waiting}, and runs at the next update with no run live`)];
 }
 
 /** The hour the hourly update has to move a deferred install in, beyond `tickets.updateMaxDeferHours`, before `doctor` calls it late (A11-90). */
@@ -667,16 +677,16 @@ function answers(port: number, path = "/", { healthy = false }: { healthy?: bool
  * `doctor --fix` (A11-144): moves the host file's old keys into the provider blocks, with a backup beside it. `--dry-run` says what it would move and
  * writes nothing. Returns the lines to print, and whether the run was refused, so the caller sets the exit code.
  */
-function fixHostFile(path: string, { dryRun, now }: { dryRun: boolean; now: Date }): { lines: string[]; refused: boolean } {
+async function fixHostFile(path: string, { dryRun, now }: { dryRun: boolean; now: Date }): Promise<{ lines: string[]; refused: boolean }> {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch {
     return { lines: [`${path} cannot be read`], refused: true };
   }
-  let fix: ReturnType<typeof planHostFix>;
+  let fix: Awaited<ReturnType<typeof planHostFix>>;
   try {
-    fix = planHostFix(text);
+    fix = await planHostFix(text);
   } catch (err) {
     return { lines: [`${path} is not a host file doctor can migrate: ${(err as Error).message}`], refused: true };
   }
@@ -729,6 +739,10 @@ export function defaultDoctorDeps(): DoctorDeps {
     platform: process.platform,
     isolation: (session) => hostIsolation(services, session),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
+    pluginRefresh: () => {
+      const waiting = readDeferral(deferralPath(process.env, homedir()));
+      return waiting === null ? null : `${waiting.since}, with ${waiting.live} ${waiting.live === 1 ? "run" : "runs"} live`;
+    },
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewerGate: async () => {
@@ -755,7 +769,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         return null;
       }
     });
-    const fixed = fixHostFile(hostPath, { dryRun: values["dry-run"] === true, now: new Date() });
+    const fixed = await fixHostFile(hostPath, { dryRun: values["dry-run"] === true, now: new Date() });
     console.log(fixed.lines.join("\n"));
     if (fixed.refused || values["dry-run"] === true) process.exit(fixed.refused ? 1 : 0);
   }

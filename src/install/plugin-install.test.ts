@@ -1,7 +1,9 @@
 // no-token: none -- every program is a stand-in that answers from a list; the install record is an in-memory file, and no `claude` or `gh` is run
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { installConventions, marketplacesOf, pluginVersion, type Run, updateConventions } from "./plugin-install.ts";
+import { clearDeferral, installConventions, marketplacesOf, pluginVersion, readDeferral, type Run, updateConventions, writeDeferral } from "./plugin-install.ts";
+import { join } from "node:path";
+import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
 
@@ -43,12 +45,13 @@ function world({ marketplaces = [] as unknown[], record = {} as Record<string, u
       installPath: loaded === undefined ? null : loaded.installPath,
     };
   };
-  return { calls, state, deps: { run, stateOf, read: (path: string) => state.files.get(path) ?? "" } };
+  const gh = (args: string[]) => run("gh", args);
+  return { calls, state, deps: { run, gh, stateOf, read: (path: string) => state.files.get(path) ?? "" } };
 }
 
 test("a fresh machine adds the marketplace from its repository and installs the plugin for every session, then reads it back", () => {
   const { calls, deps } = world();
-  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps);
+  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps, deps.gh);
   assert.deepEqual(calls, [
     `gh repo view ${REPO}`,
     "claude plugin marketplace list --json",
@@ -68,7 +71,7 @@ test("a second run changes nothing: the marketplace and the install are there, s
     marketplaces: [{ name: "example-marketplace", source: "github", repo: REPO }],
     record: { [PLUGIN]: [{ scope: "user", installPath: INSTALL_PATH }] },
   });
-  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps);
+  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps, deps.gh);
   assert.deepEqual(calls, [`gh repo view ${REPO}`, "claude plugin marketplace list --json"]);
   assert.ok(step.lines.includes(`the marketplace example-marketplace is from ${REPO} already: unchanged`));
   assert.ok(step.lines.includes(`${PLUGIN} is installed for every folder already: unchanged`));
@@ -76,14 +79,14 @@ test("a second run changes nothing: the marketplace and the install are there, s
 
 test("a marketplace listed from another source is left as it is and said, never replaced", () => {
   const { calls, deps } = world({ marketplaces: [{ name: "example-marketplace", source: "directory", repo: null }] });
-  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps);
+  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps, deps.gh);
   assert.ok(!calls.some((line) => line.startsWith("claude plugin marketplace add")), "no marketplace is added over it");
   assert.ok(step.lines.includes("the marketplace example-marketplace is listed from directory, not from example-org/example-plugin: it is left as it is, and not replaced"));
 });
 
 test("a repository the person cannot read stops the step before any claude call, and says how to sign in", () => {
   const { calls, deps } = world({ answers: { "gh repo view": FAILED("HTTP 404: Not Found\nmore") } });
-  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps);
+  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps, deps.gh);
   assert.deepEqual(calls, [`gh repo view ${REPO}`]);
   assert.equal(step.installPath, null);
   assert.equal(step.lines[0], `could not read ${REPO} as your GitHub login: HTTP 404: Not Found. The plugin is private: run \`gh auth login\`, then \`agent-org onboard\` again.`);
@@ -91,14 +94,14 @@ test("a repository the person cannot read stops the step before any claude call,
 
 test("an install that fails is said with its reason, and the plugin is not reported as loading", () => {
   const { deps } = world({ answers: { "claude plugin install": FAILED("plugin not found") } });
-  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps);
+  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps, deps.gh);
   assert.equal(step.installPath, null);
   assert.equal(step.lines.at(-1), `could not install ${PLUGIN}: plugin not found`);
 });
 
 test("a marketplace list that cannot be read is said, and nothing is added", () => {
   const { calls, deps } = world({ answers: { "claude plugin marketplace list": FAILED("claude: not found") } });
-  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps);
+  const step = installConventions({ plugin: PLUGIN, repo: REPO }, deps, deps.gh);
   assert.ok(!calls.some((line) => line.includes("marketplace add")));
   assert.deepEqual(step.lines, ["could not list Claude Code's marketplaces: is `claude` on PATH?"]);
 });
@@ -149,4 +152,16 @@ test("a plugin's version is read from its manifest, and is null when it cannot b
   assert.equal(pluginVersion("/p", () => JSON.stringify({ version: "2.0.0" })), "2.0.0");
   assert.equal(pluginVersion("/p", () => "{ not json"), null);
   assert.equal(pluginVersion(null, () => ""), null);
+});
+
+// A11-145: a refresh a live run held back is recorded once, keeping the first time it waited, and cleared when the refresh runs.
+test("A11-145: a held-back refresh is recorded with the time it first waited, and the record is cleared when the refresh runs", () => {
+  const dir = tmpDir("deferral-");
+  const path = join(dir, "plugins-deferred.json");
+  assert.equal(readDeferral(path), null);
+  writeDeferral(path, 2, new Date("2026-10-20T10:00:00.000Z"));
+  writeDeferral(path, 1, new Date("2026-10-20T11:00:00.000Z"));
+  assert.deepEqual(readDeferral(path), { since: "2026-10-20T10:00:00.000Z", live: 1 });
+  clearDeferral(path);
+  assert.equal(readDeferral(path), null);
 });

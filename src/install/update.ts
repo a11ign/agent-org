@@ -35,7 +35,7 @@ import { loadQueue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { readAgents, herdrRun } from "../herdr-agents.ts";
 import { pinnedPnpm } from "./pnpm.ts";
-import { runProgram, stateOfRecord, updateConventions, type ConventionsUpdate } from "./plugin-install.ts";
+import { clearDeferral, deferralPath, runProgram, stateOfRecord, updateConventions, writeDeferral, type ConventionsUpdate } from "./plugin-install.ts";
 import { hostIsolation, midToolCall, readUpdateStatus, restartDecision, updateStatusPath, writeUpdateStatus, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
 
 export type Channel = "release" | "main";
@@ -63,8 +63,10 @@ export type UpdateDeps = Readonly<{
   status: Readonly<{ read: () => UpdateStatus | null; write: (status: UpdateStatus) => void }>;
   /** The gh stack extension the workers link stacked pull requests with, kept present on every run (A11-106). Never throws. */
   stackExtension: () => StackExtension;
-  /** The conventions plugins `tickets.plugins` names, updated from their repositories on every run (A11-145). Never throws. */
+  /** The conventions plugins `tickets.plugins` names, updated from their repositories when no run is live (A11-145). Never throws. */
   conventions: () => ConventionsUpdate;
+  /** The refresh a live run holds back, recorded for `doctor` to say so, and cleared once the refresh has run (A11-145). */
+  conventionsDeferral: Readonly<{ defer: (live: number) => void; clear: () => void }>;
   out: Pick<Console, "log" | "error">;
 }>;
 
@@ -92,10 +94,18 @@ function keepStackExtension(deps: UpdateDeps): void {
 }
 
 /**
- * The conventions plugins, refreshed from their repositories (A11-145): a plugin that moved is said with its versions, and a step that failed is said as an
- * error. Neither fails the update, since the checkout has moved, or stays, either way.
+ * The conventions plugins, refreshed from their repositories when no run is live (A11-145): a live run holds the refresh back, as it holds back a release, since
+ * a skill is read when it is invoked and a refresh would change a running worker's instructions. A plugin that moved is said with its versions, and a step that
+ * failed is said as an error. Neither fails the update, since the checkout has moved, or stays, either way.
  */
 function keepConventions(deps: UpdateDeps): void {
+  const live = deps.liveRuns();
+  if (live !== null && live > 0) {
+    deps.conventionsDeferral.defer(live);
+    deps.out.log(`agent-org update: the conventions plugin refresh waits while ${live} ${live === 1 ? "run is" : "runs are"} live, and runs at the next update with none live`);
+    return;
+  }
+  deps.conventionsDeferral.clear();
   const { said, failed } = deps.conventions();
   for (const line of said) deps.out.log(`agent-org update: ${line}`);
   for (const line of failed) deps.out.error(`agent-org update: ${line}`);
@@ -321,6 +331,13 @@ function defaultUpdateDeps(): UpdateDeps {
     },
     stackExtension: () => ensureStackExtension(asAccount(defaultGh, workerAccount(readOrNull(hostFilePath(process.env)), process.env))),
     conventions: () => (settings === null ? { said: [], failed: [] } : updateConventions(settings.plugins, { run: runProgram, stateOf: stateOfRecord(homedir()) })),
+    conventionsDeferral: {
+      // A host with no conventions plugin has nothing to wait for, so it records nothing for doctor to say.
+      defer: (live) => {
+        if (settings !== null && settings.plugins.length > 0) writeDeferral(deferralPath(process.env, homedir()), live, new Date());
+      },
+      clear: () => clearDeferral(deferralPath(process.env, homedir())),
+    },
     out: console,
   };
 }

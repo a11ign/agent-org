@@ -1,6 +1,7 @@
 // no-token: none -- a profile is parsed from text and answered by a stand-in question; no file is read and no network is used
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf } from "./onboard-profile.ts";
 
 /** A complete profile with invented names, as the README's example shows one. */
@@ -63,4 +64,11 @@ test("the questions take their defaults on an empty answer, and a publisher othe
   assert.deepEqual(profile.exposure, { provider: "local" });
   assert.deepEqual(profile.reviewer, { provider: "atomic" });
   await assert.rejects(askProfile({ ask: async (question) => (question.startsWith("Publisher") ? "slack" : "") }, []), /publish: onboard asks only for none/);
+});
+
+// The profile committed for the live check holds invented names and fake paths only, and it reads as a profile onboard accepts.
+test("the example profile committed for the live check parses, and names no secret", () => {
+  const text = readFileSync(new URL("./fixtures/onboard-profile.example.json", import.meta.url), "utf8");
+  assert.equal(parseProfile(text).conventions?.plugin, "example@example-marketplace");
+  assert.ok(!/key|token|secret|\.pem/i.test(text), "no secret field or key path is named");
 });

@@ -34,7 +34,7 @@ const HOST = {
     // The named provider blocks (A11-144), each setting in the place its old key holds, with the same value: the drift test reads both, so each new key
     // has an entry and each alias one, and the aliases still parse beside their blocks.
     providers: {
-      tracker: { provider: "linear", key: { path: "/home/a/.config/linear.key" }, connectors: ["^mcp__linear__(get|list)_"], workingState: "In Progress", plannedState: "Planned" },
+      tracker: { provider: "linear", key: { path: "/home/a/.config/linear.key" }, connectors: ["^mcp__linear__(get|list)_"], workingState: "In Progress", plannedState: "Planned", takenStates: ["In Progress", "Planned"] },
       codeHost: {
         provider: "github", stack: true,
         identity: { scheduler: { mode: "github-apps", appId: 123, keyPath: "/home/a/.config/app.pem", installationId: 456, slug: "agent-org-bot" }, workers: { mode: "user-accounts" } },

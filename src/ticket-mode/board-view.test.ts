@@ -225,6 +225,11 @@ test("a parent that is not the person's heads its shown children in its own stat
     "a parent that is the person's own is never a context node");
 });
 
+test("A11-144: a ticket another instance holds, shown with its state, cannot be selected", () => {
+  assert.equal(selectable({ ...TICKETS[1], taken: "In Progress" }, []), false);
+  assert.equal(selectable(TICKETS[1], []), true);
+});
+
 test("a ticket already on the queue cannot be selected again", () => {
   assert.equal(selectable(TICKETS[0], [{ ticket: { key: "NBF-1" }, phase: "queued" }]), false);
   assert.equal(selectable(TICKETS[1], [{ ticket: { key: "NBF-1" }, phase: "queued" }]), true);
