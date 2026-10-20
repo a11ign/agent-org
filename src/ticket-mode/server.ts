@@ -27,6 +27,7 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
+import { takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
@@ -195,6 +196,25 @@ function withDecision(ticket: Ticket): Ticket & Readonly<{ needsDecision?: Needs
 }
 
 /**
+ * A ticket as the page is sent it, with `taken` where another instance holds it (A11-144): this instance holds no run for it and the tracker shows it in a
+ * taken state, so Pick shows the state and does not let the ticket be queued here.
+ */
+function withTaken(board: Pick<Board, "settings" | "store">, ticket: Ticket): Ticket & Readonly<{ taken?: string }> {
+  const held = board.store.get().entries.some((entry) => entry.ticket.key === ticket.key);
+  const state = held ? null : takenState(ticket, board.settings.takenStates);
+  return state === null ? ticket : { ...ticket, taken: state };
+}
+
+/** The first of `tickets` another instance holds, as the sentence a queue route refuses with, or null when none is (A11-144). */
+function refuseTaken(board: Pick<Board, "settings" | "store">, tickets: readonly Ticket[]): string | null {
+  for (const ticket of tickets) {
+    const { taken } = withTaken(board, ticket);
+    if (taken !== undefined) return takenRefusal(ticket.key, taken);
+  }
+  return null;
+}
+
+/**
  * The ticket a queue route adds: the page's copy, unless that copy still holds an open decision, which a Grill may have settled since, so the tracker is read
  * again (A11-134). Throws when the tracker has no such ticket: `of` names the parent it is a sub-issue of, when it is one.
  */
@@ -262,12 +282,12 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so a scope is not read on its own" }];
     const page = await source.scoped!(query.get("assignee") ?? "", query.get("after"));
     for (const ticket of page.tickets) known.tickets.set(ticket.key, ticket);
-    return [200, { ...page, tickets: page.tickets.map(withDecision) }];
+    return [200, { ...page, tickets: page.tickets.map((ticket) => withTaken(board, withDecision(ticket))) }];
   }
   if (method === "GET" && path === "/api/tickets") {
     const tickets = await source.assigned();
     known.tickets = new Map(tickets.map((ticket) => [ticket.key, ticket]));
-    return [200, tickets.map(withDecision)];
+    return [200, tickets.map((ticket) => withTaken(board, withDecision(ticket)))];
   }
   if (method === "GET" && path === "/api/parents") {
     // The parents of the listed tickets that are not listed themselves, so the Pick list can nest under them whatever scope it shows. One the
@@ -306,6 +326,8 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
     const tickets: Ticket[] = [];
     for (const key of keys) tickets.push(await queuedTicket(board, key));
+    const refused = refuseTaken(board, tickets);
+    if (refused !== null) return [409, { error: refused }];
     queueTickets(tickets, choice, { plan: body.plan === true });
     return [200, queueView(board)];
   }
@@ -327,6 +349,8 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     // A sub-issue with an open decision is left out too, and named: a Grill on its own row settles it first (A11-134).
     const undecided = read.filter((ticket) => !nested.includes(ticket.key) && needsDecision(ticket) !== null).map((ticket) => ticket.key);
     const tickets = read.filter((ticket) => !nested.includes(ticket.key) && !undecided.includes(ticket.key));
+    const refused = refuseTaken(board, tickets);
+    if (refused !== null) return [409, { error: refused }];
     queueTickets(tickets, choice, { plan: body.plan === true });
     const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
     const held = undecided.length === 0 ? null : `${undecided.join(", ")} ${undecided.length === 1 ? "holds" : "hold"} an open decision, so not queued: Grill ${undecided.length === 1 ? "it" : "them"} first`;

@@ -22,6 +22,7 @@ import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./
 import { defaultBinDir } from "./worker-files.ts";
 import { isLinearConnector, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
+import { defaultTakenStates } from "./pick-taken.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -70,6 +71,11 @@ export type TicketSettings = Readonly<{
   preflight: readonly Preflight[];
   /** The tracker state a ticket moves to when a worker starts implementing it, if it has not started, or null to leave its state alone. */
   workingState: string | null;
+  /**
+   * The tracker states that mark a ticket as held by another instance in Pick (A11-144): a ticket in one, with no run here, is taken. Absent, the working
+   * and planned states the tracker sets; `[]` takes none of them, though a started state is always taken.
+   */
+  takenStates: readonly string[];
   /**
    * The connector tools a worker may call, as regular expressions matched against the tool's name, each anchored at its start with `^mcp__`.
    * Every other connector stays refused. None by default.
@@ -244,6 +250,16 @@ function plannerOf(value: unknown, plan: string | null, state: Setting): Planner
   const planned = stateName(state.value, state.at);
   if (plan === null) throw new TicketSettingsRefusal("tickets.planner", "needs tickets.plan, which says which tickets have a plan already");
   return Object.freeze({ run: value.run, state: planned });
+}
+
+/** The states a list names as taken, each a state's name: refused by name when one is not. */
+function takenStatesOf(value: unknown, at: string, fallback: readonly string[]): readonly string[] {
+  if (value === undefined) return Object.freeze([...fallback]);
+  if (!Array.isArray(value)) throw new TicketSettingsRefusal(at, `must be a list of state names, such as ["In Progress", "Planned"], not ${JSON.stringify(value)}`);
+  return Object.freeze(value.map((name: unknown, index) => {
+    if (typeof name !== "string" || name.trim() === "") throw new TicketSettingsRefusal(`${at}[${index}]`, `must be a state's name, not ${JSON.stringify(name)}`);
+    return name.trim();
+  }));
 }
 
 /** A state's name, without the spaces around it, which a state's name in the tracker never has; null when the host file names none. */
@@ -460,6 +476,8 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   const stack = settingOf(codeHost, "stack");
   if (stack.value !== undefined && typeof stack.value !== "boolean") throw new TicketSettingsRefusal(stack.at, `must be true or false, not ${JSON.stringify(stack.value)}`);
   const trackerConnectors = settingOf(tracker, "connectors");
+  const takenSetting = settingOf(tracker, "takenStates");
+  const plannedSetting = settingOf(tracker, "plannedState");
   // The Linear patterns of `tickets.connectors` belong to the tracker's block, whichever key the file holds them under, so only the rest is read here.
   const otherConnectors = connectorPatterns(tickets.connectors).filter((pattern) => !isLinearConnector(pattern));
   const terminal = settingOf(exposure, "terminal");
@@ -485,6 +503,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     writer: writerOf(tickets.writer),
     preflight: preflightOf(tickets.preflight),
     workingState: stateName(workingState.value, workingState.at),
+    takenStates: takenStatesOf(takenSetting.value, takenSetting.at, defaultTakenStates(workingState.value, plannedSetting.value)),
     connectors: Object.freeze([...connectorPatterns(trackerConnectors.value, trackerConnectors.at), ...otherConnectors]),
     publish: publisherOf(publish),
     drafts: draftsOf(tickets.drafts),

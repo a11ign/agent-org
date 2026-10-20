@@ -379,6 +379,7 @@ Ticket mode's settings are grouped into provider blocks under `tickets.providers
 | [`tickets.providers.tracker.connectors`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.tracker.workingState`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.tracker.plannedState`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.takenStates`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost.provider`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost.identity`](src/ticket-mode/config-schema.ts) | |

@@ -154,6 +154,43 @@ test("the tickets one press of Queue plans first are one batch when the planner 
   }
 });
 
+test("A11-144: a ticket another instance holds is marked taken in the list, and queueing it is refused with 409 naming its state", async () => {
+  const inProgress = { ...ticket("NBF-1"), status: "In Progress", statusType: "started" } as Ticket;
+  const tracker: TicketSource = { assigned: async () => [inProgress, ticket("NBF-2")], read: async (key) => (key === "NBF-1" ? inProgress : key === "NBF-2" ? ticket("NBF-2") : null), download: async () => [] };
+  const b = board(4747, {}, {}, tracker);
+  const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(listed.find((t: any) => t.key === "NBF-1").taken, "In Progress");
+  assert.equal(listed.find((t: any) => t.key === "NBF-2").taken, undefined, "a ticket no state marks is not taken");
+  const [status, refused] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(status, 409);
+  assert.equal(refused.error, "NBF-1 is In Progress in the tracker and this instance has no run for it, so another instance holds it");
+  const [queuedStatus] = await b.api("POST", "/api/queue", { keys: ["NBF-2"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(queuedStatus, 200, "a ticket that is not taken queues as before");
+});
+
+test("A11-144: a state the team's takenStates names marks its tickets taken, even without the started type", async () => {
+  const planned = { ...ticket("NBF-2"), status: "Planned" } as Ticket;
+  const tracker: TicketSource = { assigned: async () => [planned], read: async (key) => (key === "NBF-2" ? planned : null), download: async () => [] };
+  const b = board(4747, { providers: { tracker: { provider: "linear", takenStates: ["Planned"] } } }, {}, tracker);
+  const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(listed[0].taken, "Planned");
+  const other = board(4747, { providers: { tracker: { provider: "linear", takenStates: [] } } }, {}, tracker);
+  const [, unlisted] = await other.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(unlisted[0].taken, undefined, "an empty list takes no state that is not started");
+});
+
+test("A11-144: a ticket this instance holds a run for is not marked taken, though the tracker now shows it In Progress", async () => {
+  const live: Ticket[] = [ticket("NBF-1")];
+  const tracker: TicketSource = { assigned: async () => live.map((t) => ({ ...t })), read: async (key) => live.find((t) => t.key === key) ?? null, download: async () => [] };
+  const b = board(4747, {}, {}, tracker);
+  await b.api("GET", "/api/tickets", {});
+  const [queued] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(queued, 200);
+  live[0] = { ...live[0], status: "In Progress", statusType: "started" };
+  const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(listed[0].taken, undefined, "this instance's own run holds it");
+});
+
 test("queueing without plan first, or on a board that does not plan, plans nothing", async () => {
   const b = planningBoard();
   await b.api("GET", "/api/tickets", {});

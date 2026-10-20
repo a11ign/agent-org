@@ -427,7 +427,7 @@ test("addBlockers() is refused when Linear answers success false, and when it ha
  * since the Pick view filters by label group. Each addition is a field of the same request, never a request of its own, and is changed here on
  * purpose: this pin is what notices a field list that grew or shrank by accident.
  */
-const FIELDS = "identifier title description url branchName priority state { name position } team { key } project { name summary: description } assignee { id name } parent { identifier } "
+const FIELDS = "identifier title description url branchName priority state { name position type } team { key } project { name summary: description } assignee { id name } parent { identifier } "
   + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } } '
   + "labels(first: 50) { nodes { name parent { name } } }";
 
