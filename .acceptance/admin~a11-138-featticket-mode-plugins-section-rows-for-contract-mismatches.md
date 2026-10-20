@@ -9,4 +9,4 @@ npm run lint
 
 Mutation: the page's `contractRows` was put back to the base page, which draws no rows; the test "each contract mismatch is a row in the Plugins section" went red and the other tests stayed green. The page was restored and the suite passed again.
 
-Consumer-declaration: the Settings page now draws the rows, so A11-136's acceptance line "The Settings page receives the rows in its view and does not draw them (A11-138)" is no longer true. No reader's answer changes: the view and `GET /api/settings` are the same.
+Consumer-declaration: none -- no reader's answer changes: the view and `GET /api/settings` are the same. This PR makes A11-136's acceptance line "The Settings page receives the rows in its view and does not draw them (A11-138)" out of date; that file is A11-136's and is not edited here.
