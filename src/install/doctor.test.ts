@@ -365,7 +365,7 @@ test("doctor says a gh wrapper it could not check is not a pass", async () => {
 
 test("A11-94: doctor says whether the ticket writer is configured, and fails one that cannot read a Linear ticket to check for duplicates", async () => {
   const hostWith = (tickets: Record<string, unknown>) => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, ...tickets } });
-  const writer = { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." };
+  const writer = { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." };
   const read = (over: Partial<DoctorDeps>) => diagnose(deps(over)).then((checks) => byName(checks)["ticket writer"]);
   const absent = await read({});
   assert.deepEqual([absent.ok, absent.detail], [true, "no: New ticket is hidden, since tickets.writer is not named"], "informational when not named");
@@ -373,8 +373,12 @@ test("A11-94: doctor says whether the ticket writer is configured, and fails one
   assert.deepEqual([reading.ok, reading.detail], [true, "yes: New ticket is shown, and Grill is on"]);
   const quick = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__claude_ai_Linear__(get|list|search)_"] }) : HOST) });
   assert.deepEqual([quick.ok, quick.detail], [true, "yes: New ticket is shown, and Grill is off until tickets.terminal is named"]);
+  // An instruction from before the writer filed its own ticket still says draft: the check says so, without failing.
+  const drafting = { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." };
+  const stale = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer: drafting, connectors: ["^mcp__linear__get_issue$"], terminal: TERMINAL }) : HOST) });
+  assert.deepEqual([stale.ok, stale.detail], [true, "yes: New ticket is shown, and Grill is on; its instruction says draft, but the writer files its own ticket now: say so instead"]);
   // An instruction copied from the README's old example, which named a mode: built from a template, so no shipped fixture carries the word.
-  const naming = { run: `Run the a11ign:create-ticket skill, ${"quick"}, for this request: {request}. Write each draft under {dir}/drafts.` };
+  const naming = { run: `Run the a11ign:create-ticket skill, ${"quick"}, for this request: {request}, in {dir}.` };
   const named = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer: naming, connectors: ["^mcp__linear__get_issue$"], terminal: TERMINAL }) : HOST) });
   assert.deepEqual([named.ok, named.detail], [true, "yes: New ticket is shown, and Grill is on; its instruction names the mode quick, which the board's choice overrides: remove the word"],
     "POSITIVE CONTROL: an instruction that names a mode is said, and does not fail the check");

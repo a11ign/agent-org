@@ -1,47 +1,73 @@
 // @ts-check
 // module: the runs the board starts for itself -- how a new-ticket run and a publish run finish
 
-import { type DraftRecord, type PublishRun, type WriterRun } from "./queue/declared-remains.ts";
+import { type PublishRun, type WriterRun, type WriterTicket } from "./queue/declared-remains.ts";
 import { type RunPlace } from "./pool-paths.ts";
-import { newDraftId, parseWriterOutcome, readDrafts, resolveDuplicates } from "./writer.ts";
-import { createDrafts } from "./writer-create.ts";
+import { CREATED_FILE, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import { inPickScope } from "./pick-scope.ts";
+import { joined } from "./queue.ts";
 import { forgetRun, messageOf, publishPlace, update, writerPlace, writerAgentRunning } from "./pool-state.ts";
-import { writerDrafted, writerFailed, writerOf, writerWaiting } from "./queue.ts";
+import { writerEnded, writerWaiting } from "./queue.ts";
 import { QUESTION_CHARS } from "./pool-outcome.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { publishDone, publishFailed } from "./queue/approve.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { hasPlan } from "./board-view/view-ticket.ts";
 import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ASKED_FILE, OUTCOME_FILE, WAITING_FILE } from "./worker-files.ts";
 
 /**
- * The run's outcome, read once its agent is idle. `needs-human` ends a quick run failed, with its reason; a grill run's is its question, which it waits on
- * (`askPerson`). `drafted` reads each draft file, resolves its duplicates in the tracker, and makes each draft's ticket (`createDrafts`), then ends
- * the run. Its workspace is closed once its drafts are read.
+ * The run's outcome, read once its agent is idle (A11-135). The run filed its own tickets, so the outcome names the keys it made: each is checked against
+ * the record the hook kept, read back from the tracker, and shown, and the run ends with them. A quick run's `needs-human` ends it failed, with its reason,
+ * and keeps the tickets it made. A grill run's `needs-human` is its question, which it waits on (`askPerson`).
  */
 export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunPlace, text: string): Promise<void> {
-  const { finishing, herdr, now, session, settings, source, store } = ctx;
+  const { finishing, now } = ctx;
   finishing.add(run.id);
   try {
     const outcome = parseWriterOutcome(text);
     if (typeof outcome === "string") return endWriter(ctx, run, outcome);
-    if (outcome.kind === "needs-human") {
-      return run.mode === "grill" ? askPerson(ctx, run, place, outcome.reason) : endWriter(ctx, run, outcome.reason.slice(0, QUESTION_CHARS));
-    }
-    const read = readDrafts(place.dir, Object.keys(settings.clones));
-    const drafts = await Promise.all(read.drafts.map(async ({ file, draft }): Promise<DraftRecord> => ({
-      id: newDraftId(), file, draft, duplicates: await resolveDuplicates(draft.duplicates, (key) => source.read(key)), status: "creating",
-    })));
+    if (outcome.kind === "needs-human" && run.mode === "grill" && outcome.created.length === 0) return askPerson(ctx, run, place, outcome.reason);
+    const made = await ticketsMade(ctx, place, outcome.created);
+    const reason = outcome.kind === "needs-human" ? outcome.reason.slice(0, QUESTION_CHARS) : undefined;
+    const failure = [reason, ...made.problems].filter((part): part is string => part !== undefined).join("; ");
     if (!writerAgentRunning(ctx, run.id)) return;
-    if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
-    update(ctx, (queue) => writerDrafted(queue, run.id, { drafts, rejected: read.rejected }, now()));
-    if (writerOf(store.get(), run.id)?.phase === "creating") await createDrafts(ctx, run.id);
+    closeWriter(ctx, run);
+    update(ctx, (queue) => writerEnded(queue, run.id, { tickets: made.tickets, failure: failure === "" ? undefined : failure }, now()));
   } catch (err) {
     endWriter(ctx, run, messageOf(err).split("\n")[0]);
   } finally {
     finishing.delete(run.id);
   }
+}
+
+/**
+ * The tickets a new-ticket run made, as the board shows them (A11-135). The run's record names each ticket the hook saw it create, and each is read back
+ * from the tracker for its address. When `tickets.plan` is set, each must have a plan attached. A key the outcome names that the record does not hold is
+ * a problem, and is not shown: the run named a ticket it did not create. A record that cannot be read shows nothing and is the problem.
+ */
+async function ticketsMade(ctx: PoolContext, place: RunPlace, named: readonly string[]): Promise<Readonly<{ tickets: WriterTicket[]; problems: string[] }>> {
+  const recorded = readCreatedKeys(place.dir);
+  if (recorded === null) return { tickets: [], problems: [`${CREATED_FILE} cannot be read, so the tickets it made cannot be checked`] };
+  const unrecorded = named.filter((key) => !recorded.includes(key)).map((key) => `it names ${key}, a ticket it did not create`);
+  const checked = await Promise.all([...new Set(recorded)].map((key) => madeTicket(ctx, key)));
+  return { tickets: checked.map(({ ticket }) => ticket), problems: [...unrecorded, ...checked.flatMap(({ problem }) => (problem === null ? [] : [problem]))] };
+}
+
+/** One ticket the run made, read back from the tracker, and the problem with it, if it has one. */
+async function madeTicket({ settings, source }: PoolContext, key: string): Promise<Readonly<{ ticket: WriterTicket; problem: string | null }>> {
+  const unread: WriterTicket = { key, url: null, inPick: false };
+  let found;
+  try {
+    found = await source.read(key);
+  } catch (err) {
+    return { ticket: unread, problem: `${key} could not be read from the tracker: ${messageOf(err).split("\n")[0]}` };
+  }
+  if (found === null) return { ticket: unread, problem: `${key} is not in the tracker` };
+  const ticket: WriterTicket = { key, url: found.url, inPick: inPickScope(settings.pick, found) };
+  if (settings.plan !== null && !hasPlan(found, new RegExp(settings.plan))) return { ticket, problem: `${key} has no plan attached` };
+  return { ticket, problem: null };
 }
 
 /**
@@ -57,14 +83,32 @@ function askPerson(ctx: PoolContext, run: WriterRun, place: RunPlace, reason: st
   update(ctx, (queue) => writerWaiting(queue, run.id, question, now()));
 }
 
-/** Close a new-ticket run's workspace and record why it failed. Nothing it wrote is kept as a draft. */
-export function endWriter(ctx: PoolContext, run: WriterRun, failure: string): void {
-  const { herdr, now, session } = ctx;
+/** Close a new-ticket run's workspace, and forget its run. */
+function closeWriter(ctx: PoolContext, run: WriterRun): void {
+  const { herdr, session } = ctx;
   const { name } = writerPlace(ctx, run);
-  if (!writerAgentRunning(ctx, run.id)) return;
   if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
   forgetRun(ctx, name);
-  update(ctx, (queue) => writerFailed(queue, run.id, failure, now()));
+}
+
+/**
+ * The tickets a run's record holds, for a run that ends without its outcome read (A11-135): the agent filed them before it ended, so they are shown as
+ * made. No tracker call is made on this path, so each is shown by key, without its address, and without a Pick claim (`inPick` is null). A record that
+ * cannot be read is named as the problem, since the tickets it made cannot then be shown.
+ */
+export function filedOf(ctx: PoolContext, run: WriterRun): Readonly<{ tickets: WriterTicket[]; problem: string | null }> {
+  const keys = readCreatedKeys(writerPlace(ctx, run).dir);
+  if (keys === null) return { tickets: [], problem: `${CREATED_FILE} cannot be read, so the tickets it filed cannot be shown` };
+  return { tickets: keys.map((key) => ({ key, url: null, inPick: null })), problem: null };
+}
+
+/** Close a new-ticket run's workspace and record why it failed. The tickets it filed before it failed stay, and are shown. */
+export function endWriter(ctx: PoolContext, run: WriterRun, failure: string): void {
+  const { now } = ctx;
+  if (!writerAgentRunning(ctx, run.id)) return;
+  const filed = filedOf(ctx, run);
+  closeWriter(ctx, run);
+  update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filed.tickets, failure: joined(failure, filed.problem) }, now()));
 }
 
 /** Close the publish run's workspace and record how it ended: each of its runs Published, or why it failed. */

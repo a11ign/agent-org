@@ -188,7 +188,9 @@ function writerCheck(settings: TicketSettings | null): Check {
   const grill = settings.terminal === null ? "Grill is off until tickets.terminal is named" : "Grill is on";
   const mode = MODE_WORD.exec(settings.writer.run);
   const named = mode === null ? "" : `; its instruction names the mode ${mode[1]}, which the board's choice overrides: remove the word`;
-  return ok("ticket writer", `yes: New ticket is shown, and ${grill}${named}`);
+  // A writer files its own ticket now (A11-135), so an instruction that still tells it to write drafts is out of date.
+  const drafts = /\bdrafts?\b/i.test(settings.writer.run) ? "; its instruction says draft, but the writer files its own ticket now: say so instead" : "";
+  return ok("ticket writer", `yes: New ticket is shown, and ${grill}${named}${drafts}`);
 }
 
 /**

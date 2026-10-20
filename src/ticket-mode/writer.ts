@@ -1,248 +1,47 @@
 // @ts-check
-// module: a ticket writer's drafts -- the draft files a writer run leaves, read and checked strictly, and the ticket text each one makes
+// module: a new-ticket run's outcome, and the record of the tickets it created -- read and checked strictly
 //
-// THE BOARD OWNS THE DRAFT FORMAT. The ticket-writing skill is outside this repository and its unattended mode plans existing tickets, so the
-// writer's brief (`worker-files.ts`) tells the run the one JSON shape the board reads, and this module checks it. A draft is refused BY NAME AND
-// FIELD (`02-wire.json: "priority" must be one of ...`), and a malformed draft never discards the good ones beside it: the caller shows the
-// refusals and keeps the rest. Nothing here reads the tracker to decide a draft is valid, except to resolve the duplicates a draft names, and
-// nothing here creates a ticket: `writer-create.ts` does, once the run's outcome is read.
-import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+// THE WRITER FILES ITS OWN TICKETS (A11-135). The create-ticket skill runs inside the writer run: it creates each ticket with the tracker's create tool
+// and attaches its plan with the attachment tools. `hook.ts` allows exactly those calls and refuses any update. Each creation's key is written to the
+// record beside the outcome file by the PostToolUse hook, as the creation returns, so the board can check the outcome's keys against what the run
+// really made. Nothing here creates a ticket, and nothing here reads the tracker.
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Ticket } from "./source.ts";
 
-/** The folder under a writer run's folder where the run leaves its drafts, one JSON file each. */
-export const DRAFT_DIR = "drafts";
-/** The most draft files one writer run may leave; the rest are refused by name. */
-export const MAX_DRAFTS = 10;
-/** The largest draft file that is read. */
-export const MAX_DRAFT_BYTES = 200_000;
-/** The priorities a draft may name, most urgent first. */
+/** The file beside a writer run's outcome where the PostToolUse hook records each ticket the run created, one JSON line each. Only the hook writes it. */
+export const CREATED_FILE = "created-issues.jsonl";
+/** The priorities a writer's form may name, most urgent first. */
 export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
 export type Priority = (typeof PRIORITIES)[number];
-/** Linear's number for each priority: 0 is none, 1 the most urgent. */
+/** Linear's number for each priority: 0 is none, 1 the most urgent. The brief tells the run these numbers. */
 export const PRIORITY_NUMBER: Readonly<Record<Priority, number>> = Object.freeze({ urgent: 1, high: 2, medium: 3, low: 4, none: 0 });
+/** The most tickets one writer run may create: the hook refuses an eleventh creation. */
+export const MAX_CREATED = 10;
 
 /** A ticket's key, such as `A11-12`. */
 const TICKET_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
-/** A reference to another draft of the same request, by its file's name without `.json`: `draft:02-wire`. */
-const DRAFT_REF = /^draft:([\w.-]+)$/;
-const TITLE_CHARS = 255;
-const TEAM_KEY = /^[A-Za-z][A-Za-z0-9]*$/;
+/** The longest reason a run's outcome may give. */
+const REASON_CHARS = 2000;
 
-/** A ticket a draft says it duplicates: the key it names and why. */
-export type Duplicate = Readonly<{ key: string; why: string }>;
+/** How a writer run's outcome file says it ended: the keys it created, and, for a run that cannot finish, why. */
+export type WriterOutcome = Readonly<{ kind: "created"; created: readonly string[] }
+  | { kind: "needs-human"; reason: string; created: readonly string[] }>;
 
-/** One draft, as it is checked: every field present, with the defaults a draft leaves out. */
-export type Draft = Readonly<{
-  title: string;
-  why: string;
-  doneWhen: readonly string[];
-  notes: string | null;
-  team: string | null;
-  project: string | null;
-  repo: string | null;
-  goal: string | null;
-  labels: readonly string[];
-  priority: Priority;
-  /** A ticket's key, or `draft:<stem>` for a draft of the same request. */
-  parent: string | null;
-  blocks: readonly string[];
-  blockedBy: readonly string[];
-  duplicates: readonly Duplicate[];
-}>;
-
-/** A duplicate as the board shows it: its title and address when the tracker has the ticket, or null for "not found in the tracker". */
-export type ResolvedDuplicate = Readonly<{ key: string; why: string; title: string | null; url: string | null }>;
-
-/** A draft file the board refused, by its name, and why. */
-export type Rejection = Readonly<{ file: string; reason: string }>;
-
-/** What one writer run's folder holds: its drafts that are valid, and the files refused. */
-export type DraftRead = Readonly<{ drafts: readonly Readonly<{ file: string; draft: Draft }>[]; rejected: readonly Rejection[] }>;
-
-/** The fields a draft may hold, and nothing else: an unknown one is refused by name, so a typo is not silently dropped. */
-const FIELDS: ReadonlySet<string> = new Set(["title", "why", "doneWhen", "notes", "team", "project", "repo", "goal", "labels", "priority", "parent", "blocks", "blockedBy", "duplicates"]);
-
-/** A draft that fails the check, naming the file and, when one field is at fault, the field. */
-export class DraftRefusal extends Error {
-  readonly file: string;
-  readonly field: string | null;
-  constructor(file: string, field: string | null, reason: string) {
-    super(field === null ? `${file}: ${reason}` : `${file}: "${field}" ${reason}`);
-    this.file = file;
-    this.field = field;
-  }
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
-
-/** The stem of a draft file's name: its name without `.json`, which is how another draft names it. */
-export const stemOf = (file: string): string => file.replace(/\.json$/, "");
-
-/** A key a draft may name: a ticket's own key, or a draft of this request by `draft:<stem>`. */
-function keyOrDraft(value: unknown, field: string, file: string, stems: ReadonlySet<string> | null, own: string): string {
-  if (typeof value !== "string") throw new DraftRefusal(file, field, `must be a ticket key, such as A11-12, or draft:<file name without .json>, not ${JSON.stringify(value)}`);
-  if (TICKET_KEY.test(value)) return value;
-  const ref = DRAFT_REF.exec(value);
-  if (ref === null) throw new DraftRefusal(file, field, `must be a ticket key, such as A11-12, or draft:<file name without .json>, not ${JSON.stringify(value)}`);
-  if (ref[1] === own) throw new DraftRefusal(file, field, `names this draft itself, ${value}`);
-  if (stems !== null && !stems.has(ref[1])) throw new DraftRefusal(file, field, `names ${value}, which is not a draft of this request`);
-  return value;
-}
-
-function listOf<T>(value: unknown, field: string, file: string, item: (entry: unknown, index: number) => T): T[] {
+/** The keys an outcome names, each a ticket key, or the reason it is not one. PURE. */
+function keysIn(value: unknown): string[] | string {
   if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new DraftRefusal(file, field, "must be a list");
-  return value.map((entry, index) => item(entry, index));
-}
-
-function optionalText(value: unknown, field: string, file: string): string | null {
-  if (value === undefined || value === null) return null;
-  if (!nonEmpty(value)) throw new DraftRefusal(file, field, "must be a non-empty string, or left out");
-  return value;
+  if (!Array.isArray(value)) return "its created list is not a list of ticket keys";
+  const bad = value.find((key) => typeof key !== "string" || !TICKET_KEY.test(key));
+  return bad === undefined ? [...value] : `its created list names ${JSON.stringify(bad)}, which is not a ticket key such as A11-12`;
 }
 
 /**
- * One draft, checked: the object a draft file holds, named by `file`. `repos` are the repositories on this machine, which `repo` must name; `stems`
- * are the other drafts of the request, which `parent`, `blocks` and `blockedBy` may name (null while the request's drafts are not all known). Throws a
- * {@link DraftRefusal} naming the field. PURE.
- */
-export function draftFrom(file: string, value: unknown, repos: readonly string[], stems: ReadonlySet<string> | null = null): Draft {
-  if (!isObject(value)) throw new DraftRefusal(file, null, "must be a JSON object");
-  const unknown = Object.keys(value).find((key) => !FIELDS.has(key));
-  if (unknown !== undefined) throw new DraftRefusal(file, unknown, `is not a draft field: the fields are ${[...FIELDS].join(", ")}`);
-  const own = stemOf(file);
-  const title = value.title;
-  if (!nonEmpty(title) || title.length > TITLE_CHARS || title.includes("\n")) throw new DraftRefusal(file, "title", `must be one line of 1 to ${TITLE_CHARS} characters`);
-  if (!nonEmpty(value.why)) throw new DraftRefusal(file, "why", "must be a non-empty string");
-  const doneWhen = value.doneWhen;
-  if (!Array.isArray(doneWhen) || doneWhen.length === 0 || !doneWhen.every(nonEmpty)) {
-    throw new DraftRefusal(file, "doneWhen", "must be a non-empty list of non-empty strings, one per item that finishes the ticket");
-  }
-  const team = optionalText(value.team, "team", file);
-  if (team !== null && !TEAM_KEY.test(team)) throw new DraftRefusal(file, "team", `must be a team's key, such as A11, not ${JSON.stringify(team)}`);
-  const repo = optionalText(value.repo, "repo", file);
-  if (repo !== null && !repos.includes(repo)) throw new DraftRefusal(file, "repo", `must be one of the repositories on this machine: ${repos.join(", ")}`);
-  const priority = value.priority ?? "none";
-  if (typeof priority !== "string" || !(PRIORITIES as readonly string[]).includes(priority)) {
-    throw new DraftRefusal(file, "priority", `must be one of ${PRIORITIES.join(", ")}, not ${JSON.stringify(priority)}`);
-  }
-  const labels = listOf(value.labels, "labels", file, (entry) => {
-    if (!nonEmpty(entry)) throw new DraftRefusal(file, "labels", "must be a list of non-empty label names");
-    return entry;
-  });
-  const duplicates = listOf(value.duplicates, "duplicates", file, (entry) => {
-    const isDuplicateEntry = (candidate: unknown): candidate is { key: string; why: string } => isObject(candidate) && typeof candidate.key === "string"
-      && TICKET_KEY.test(candidate.key) && typeof candidate.why === "string" && nonEmpty(candidate.why);
-    if (!isDuplicateEntry(entry)) {
-      throw new DraftRefusal(file, "duplicates", `must be a list of { "key": "<ticket key>", "why": "<why it is the same>" }, not ${JSON.stringify(entry)}`);
-    }
-    return { key: entry.key, why: entry.why };
-  });
-  return Object.freeze({
-    title,
-    why: value.why,
-    doneWhen: Object.freeze([...doneWhen]),
-    notes: optionalText(value.notes, "notes", file),
-    team: team?.toUpperCase() ?? null,
-    project: optionalText(value.project, "project", file),
-    repo,
-    goal: optionalText(value.goal, "goal", file),
-    labels: Object.freeze(labels),
-    priority: priority as Priority,
-    parent: value.parent === undefined || value.parent === null ? null : keyOrDraft(value.parent, "parent", file, stems, own),
-    blocks: Object.freeze(listOf(value.blocks, "blocks", file, (entry) => keyOrDraft(entry, "blocks", file, stems, own))),
-    blockedBy: Object.freeze(listOf(value.blockedBy, "blockedBy", file, (entry) => keyOrDraft(entry, "blockedBy", file, stems, own))),
-    duplicates: Object.freeze(duplicates),
-  });
-}
-
-/**
- * The ticket's text in the house shape: why, what finishes it, the tickets the writer found it duplicates, the repository it is for, then any notes. PURE.
- */
-export function descriptionOf(draft: Draft, duplicates: readonly ResolvedDuplicate[] = []): string {
-  const lines = [`**Why:** ${draft.why}`, "", "**Done when:**", "", ...draft.doneWhen.map((item) => `* ${item}`)];
-  if (duplicates.length > 0) lines.push("", "**Possible duplicates:**", "", ...duplicates.map(duplicateLine));
-  if (draft.repo !== null) lines.push("", `**Repository:** ${draft.repo}`);
-  if (draft.notes !== null) lines.push("", draft.notes);
-  return `${lines.join("\n")}\n`;
-}
-
-/** One possible duplicate as the ticket's text names it: its key, its title and address when the tracker has it, and the writer's reason. PURE. */
-const duplicateLine = ({ key, why, title, url }: ResolvedDuplicate): string =>
-  `* ${key}${title === null ? " (not found in the tracker)" : `: ${title}`}${url === null ? "" : ` ${url}`} - ${why}`;
-
-/**
- * Read the draft files a writer run left in `dir`'s drafts folder. Each file is refused by name when it is not a plain `.json` file, is larger than
- * {@link MAX_DRAFT_BYTES}, is not JSON, or fails {@link draftFrom}; more than {@link MAX_DRAFTS} files refuses the rest. A draft that names another
- * draft by a stem no file has is refused too. The valid drafts and the refusals are each in file-name order.
- */
-export function readDrafts(dir: string, repos: readonly string[]): DraftRead {
-  const folder = join(dir, DRAFT_DIR);
-  if (!existsSync(folder)) return { drafts: [], rejected: [] };
-  const names = readdirSync(folder).sort();
-  const rejected: Rejection[] = [];
-  const candidates: { file: string; text: string }[] = [];
-  names.forEach((file, index) => {
-    if (index >= MAX_DRAFTS) {
-      rejected.push({ file, reason: `${file}: more than ${MAX_DRAFTS} drafts, so this one is not read` });
-      return;
-    }
-    const path = join(folder, file);
-    const stat = lstatSync(path);
-    if (!file.endsWith(".json") || !stat.isFile()) {
-      rejected.push({ file, reason: `${file}: a draft is a plain .json file, not a link, a folder or another kind of file` });
-      return;
-    }
-    if (stat.size > MAX_DRAFT_BYTES) {
-      rejected.push({ file, reason: `${file}: a draft is at most ${MAX_DRAFT_BYTES / 1000} KB` });
-      return;
-    }
-    candidates.push({ file, text: readFileSync(path, "utf8") });
-  });
-  const stems = new Set(candidates.map(({ file }) => stemOf(file)));
-  const drafts: { file: string; draft: Draft }[] = [];
-  for (const { file, text } of candidates) {
-    try {
-      drafts.push({ file, draft: draftFrom(file, parseJson(file, text), repos, stems) });
-    } catch (err) {
-      if (!(err instanceof DraftRefusal)) throw err;
-      rejected.push({ file, reason: err.message });
-    }
-  }
-  return { drafts, rejected: rejected.sort((a, b) => (a.file < b.file ? -1 : 1)) };
-}
-
-function parseJson(file: string, text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new DraftRefusal(file, null, "is not valid JSON");
-  }
-}
-
-/**
- * A draft's identity, stored on the board: a fresh UUID, which the tracker takes as the ticket's own id, so a creation that is retried after a restart
- * makes no second ticket. Random, so it is the one thing here that is not pure.
- */
-export const newDraftId = (): string => randomUUID();
-
-/** The duplicates of a draft, each read from the tracker: its title and address, or null where the tracker has no ticket by that key. */
-export async function resolveDuplicates(duplicates: readonly Duplicate[], read: (key: string) => Promise<Ticket | null>): Promise<ResolvedDuplicate[]> {
-  return Promise.all(duplicates.map(async ({ key, why }) => {
-    const found = await read(key).catch(() => null);
-    return { key, why, title: found?.title ?? null, url: found?.url ?? null };
-  }));
-}
-
-/** How a writer run's outcome file says it ended: its drafts are written, or it cannot finish, and the reason is shown as the run's failure. */
-export type WriterOutcome = Readonly<{ kind: "drafted" } | { kind: "needs-human"; reason: string }>;
-
-/**
- * A writer run's outcome, from its file's text: `drafted`, or `needs-human` with the question. Anything else, or text that is not JSON, is the failure
- * the caller shows, named. PURE.
+ * A writer run's outcome, from its file's text: `created` with the keys it made, or `needs-human` with the reason and any keys it made before it stopped.
+ * Anything else, or text that is not JSON, is the failure the caller shows, named. PURE.
  */
 export function parseWriterOutcome(text: string): WriterOutcome | string {
   let outcome: unknown;
@@ -252,8 +51,80 @@ export function parseWriterOutcome(text: string): WriterOutcome | string {
     return "its outcome is not valid JSON";
   }
   if (!isObject(outcome) || typeof outcome.kind !== "string") return "its outcome names no kind";
-  if (outcome.kind === "drafted") return { kind: "drafted" };
-  if (outcome.kind === "needs-human" && nonEmpty(outcome.reason)) return { kind: "needs-human", reason: outcome.reason };
+  const keys = keysIn(outcome.created);
+  if (typeof keys === "string") return keys;
+  if (outcome.kind === "created") {
+    return keys.length === 0 ? "its created outcome names no ticket: a run that made none ends needs-human, with its reason" : { kind: "created", created: keys };
+  }
+  if (outcome.kind === "needs-human" && typeof outcome.reason === "string" && outcome.reason.trim() !== "") {
+    return { kind: "needs-human", reason: outcome.reason.slice(0, REASON_CHARS), created: keys };
+  }
   if (outcome.kind === "needs-human") return "its needs-human outcome gives no reason";
   return `it wrote the outcome ${JSON.stringify(outcome.kind)}, which a new-ticket run cannot end on`;
+}
+
+/**
+ * The key a creation's result names, from the result the tracker's tool returned: its JSON text, found in a content block or the result itself, with the
+ * issue's `identifier` or, failing that, its `id` when that is a ticket key (the tracker's own tools answer with the key as `id`). Null when the result
+ * names none. PURE.
+ */
+export function createdKeyOf(response: unknown): string | null {
+  for (const text of textsOf(response)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const issue = isObject(parsed) && isObject(parsed.issue) ? parsed.issue : parsed;
+    if (!isObject(issue)) continue;
+    const key = [issue.identifier, issue.id].find((candidate) => typeof candidate === "string" && TICKET_KEY.test(candidate));
+    if (typeof key === "string") return key;
+  }
+  return null;
+}
+
+/** The text a tool's result carries, in whichever shape the hook is given: a string, content blocks, or an object. */
+function textsOf(response: unknown): string[] {
+  if (typeof response === "string") return [response];
+  if (Array.isArray(response)) return response.flatMap(textsOf);
+  if (isObject(response)) {
+    if (typeof response.text === "string") return [response.text];
+    if ("content" in response) return textsOf(response.content);
+    return [JSON.stringify(response)];
+  }
+  return [];
+}
+
+/** The record's line for a created ticket: its key, as one JSON object on one line. PURE. */
+export const createdLine = (key: string): string => `${JSON.stringify({ identifier: key })}\n`;
+
+/**
+ * The keys a writer run's record names, in the order it made them, or null when the record cannot be read: a record that is missing is no keys, and
+ * one the board cannot read names none it can trust. PURE over the text it is given.
+ */
+export function createdKeysOf(text: string): string[] | null {
+  const keys: string[] = [];
+  for (const line of text.split("\n").filter((entry) => entry !== "")) {
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return null;
+    }
+    if (!isObject(entry) || typeof entry.identifier !== "string" || !TICKET_KEY.test(entry.identifier)) return null;
+    keys.push(entry.identifier);
+  }
+  return keys;
+}
+
+/** The keys a writer run's folder records as created: none when nothing was, or null when the record cannot be read. */
+export function readCreatedKeys(dir: string, read: (path: string) => string = (path) => readFileSync(path, "utf8")): string[] | null {
+  const file = join(dir, CREATED_FILE);
+  if (!existsSync(file)) return [];
+  try {
+    return createdKeysOf(read(file));
+  } catch {
+    return null;
+  }
 }

@@ -14,9 +14,8 @@ import { conflictLines, feedbackSince, parseOutcome, publishResult, QUESTION_CHA
 import { isParked, isWatched, resumesOnConflict } from "./board-view/settled-by-pulls.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, type WriterRun, type WrittenOutcome } from "./queue/declared-remains.ts";
 import { paneBackgroundWork } from "./background-work.ts";
-import { endPublish, endWriter, finishWriter } from "./pool-board-runs.ts";
-import { observeWriter, writerFailed, writerResumed, writerWaiting } from "./queue.ts";
-import { createDrafts } from "./writer-create.ts";
+import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.ts";
+import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-ticket.ts";
 import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
@@ -235,7 +234,7 @@ function promptBackgroundGone(ctx: PoolContext, entry: Entry): void {
 
 /**
  * Each new-ticket run's status, from the same listing as the ticket runs'. A running one ends once its outcome file is there and its agent is idle or
- * done, when its drafts are read and made into tickets (`finishWriter`). A quick run ends failed when its agent stops without one. A grill run is
+ * done, when its outcome is read and the tickets it filed are checked (`finishWriter`). A quick run ends failed when its agent stops without one. A grill run is
  * different: when its agent ends its turn with no outcome, the run is Waiting for the person, who answers in its terminal. It keeps its workspace, its
  * pane and its slot, and resumes when its agent works again. It fails only when its agent exits, or when nobody answers for too long (A11-129).
  */
@@ -354,10 +353,11 @@ export function reconcile(ctx: PoolContext): void {
     update(ctx, (queue) => publishFailed(queue, "the pool restarted while it was running", now()));
   }
   for (const run of store.get().writers ?? []) {
-    // A run that had its outcome read is making its tickets, which need no agent: the drafts still `creating` are asked again, with their ids.
-    if (run.phase === "creating") void createDrafts(ctx, run.id);
     const lost = run.phase === "starting" || (run.phase === "running" && !listed.has(writerPlace(ctx, run).name));
-    if (lost) update(ctx, (queue) => writerFailed(queue, run.id, "the pool restarted while it was running", now()));
+    if (lost) {
+      const filed = filedOf(ctx, run);
+      update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filed.tickets, failure: joined("the pool restarted while it was running", filed.problem) }, now()));
+    }
   }
 }
 

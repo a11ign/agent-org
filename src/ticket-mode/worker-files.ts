@@ -13,7 +13,7 @@ import type { StackBase } from "./board-view/settled-by-pulls.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest, WriterForm, WriterMode } from "./queue/declared-remains.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
-import { MAX_DRAFT_BYTES, MAX_DRAFTS } from "./writer.ts";
+import { MAX_CREATED, PRIORITY_NUMBER, type Priority } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 
@@ -59,6 +59,16 @@ export const PUBLISH_FILE = "publish-run";
  * `tickets.connectors` names, and no other connector, since the run may only read the tracker and never create a ticket.
  */
 export const WRITER_FILE = "writer-run";
+/**
+ * The tracker tools a new-ticket run may call to file its ticket and attach its plan, which the board grants by name in the writer's mark beside the
+ * outcome file (A11-135). Creation only: `hook.ts` refuses any call with an `id`, a relation that writes on another ticket, and an attachment to a
+ * ticket the run did not create. A build worker is granted none of them.
+ */
+export const WRITER_CREATE_TOOLS: readonly string[] = Object.freeze([
+  "mcp__linear__save_issue",
+  "mcp__linear__prepare_attachment_upload",
+  "mcp__linear__create_attachment_from_upload",
+]);
 /**
  * Present beside the outcome file of a grill run that is waiting for the person (A11-129), written by the board: the question its agent asked, as
  * `{ "question": "...", "at": <ms> }`. The stop hook writes it when the agent ends its turn with no outcome, and the board shows it on the run's card.
@@ -717,10 +727,11 @@ export type HookCommand = Readonly<{ node: string; bin: string }>;
 
 /**
  * The ticket folder's `.claude/settings.local.json`. `readDirs` are the person's repositories, which the worker reads but never changes.
- * `plugins` are enabled here because a worker starts in the ticket's folder, where no project settings of the person's apply.
+ * `plugins` are enabled here because a worker starts in the ticket's folder, where no project settings of the person's apply. A new-ticket run
+ * (`writer`) also records each ticket it creates, as the creation returns (`ticket:hook post-tool-use`), so the board can check its outcome.
  */
-export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [] }: {
-  model: string; ticketDir: string; readDirs: readonly string[]; hook: HookCommand; plugins?: readonly string[];
+export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [], writer = false }: {
+  model: string; ticketDir: string; readDirs: readonly string[]; hook: HookCommand; plugins?: readonly string[]; writer?: boolean;
 }): Record<string, unknown> {
   const command = (event: string) => ({ type: "command", command: hook.node, args: [hook.bin, "ticket:hook", event, ticketDir], timeout: 30 });
   return {
@@ -731,6 +742,7 @@ export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [] 
     hooks: {
       Stop: [{ hooks: [command("stop")] }],
       PreToolUse: [{ matcher: "*", hooks: [command("pre-tool-use")] }],
+      ...(writer ? { PostToolUse: [{ matcher: "mcp__linear__save_issue", hooks: [command("post-tool-use")] }] } : {}),
     },
   };
 }
@@ -774,35 +786,48 @@ const requestQuoted = (request: string): string => request.split("\n").map((line
 
 /** What each mode asks of the run, which the brief's `## The mode` section says. */
 const MODE_TEXT: Readonly<Record<WriterMode, string>> = {
-  quick: "You are unattended. Nobody will answer a question: decide every question yourself, and write one or more drafts.",
-  grill: "You are interactive: the person is in this run's terminal. Ask them your questions one at a time, and wait for each answer before the next. Write no draft until the questions are done. Your first message to them is your first question. To ask a question, end your turn with it: the board shows the question to the person and keeps this run, in its terminal, until they answer. Do not write an outcome to ask a question. Write `drafted` only when the questions are done and every draft is written.",
+  quick: "You are unattended. Nobody will answer a question: the skill's unattended create answers its own grill, and you file the ticket.",
+  grill: "You are interactive: the person is in this run's terminal. Run the skill's grill with them: ask your questions one at a time, and wait for each answer before the next. Your first message to them is your first question. To ask a question, end your turn with it: the board shows the question to the person and keeps this run, in its terminal, until they answer. Do not write an outcome to ask a question. Write `created` only once the grill is done, the ticket is filed and its plan is attached.",
+};
+
+/** Where each of the form's choices lands on the ticket, as the brief says it. */
+const CHOICE_LANDS: Readonly<Record<keyof WriterForm, string>> = {
+  project: "the project of the ticket, by its name",
+  repo: "the last line of the description: `**Repository:** <repo>`",
+  goal: "a label in the group `Goal`",
+  priority: "the ticket's priority number",
+  parent: "the ticket's `parentId`: the ticket is filed as a child of it",
 };
 
 /** The form's choices as the brief's requirements: each one the person made, or none. PURE. */
 const formText = (form: WriterForm): string => {
   const lines = [
-    form.project === undefined ? undefined : `- Project: ${form.project}`,
-    form.repo === undefined ? undefined : `- Repository: \`${form.repo}\` (the draft's \`repo\`)`,
-    form.goal === undefined ? undefined : `- Goal: ${form.goal} (the draft's \`goal\`)`,
-    form.priority === undefined ? undefined : `- Priority: ${form.priority} (the draft's \`priority\`)`,
-    form.parent === undefined ? undefined : `- Parent: ${form.parent} (the draft's \`parent\`)`,
+    form.project === undefined ? undefined : `- Project: ${form.project} (${CHOICE_LANDS.project})`,
+    form.repo === undefined ? undefined : `- Repository: \`${form.repo}\` (${CHOICE_LANDS.repo})`,
+    form.goal === undefined ? undefined : `- Goal: ${form.goal} (${CHOICE_LANDS.goal})`,
+    form.priority === undefined ? undefined : `- Priority: ${form.priority}, number ${PRIORITY_NUMBER[form.priority as Priority]} (${CHOICE_LANDS.priority})`,
+    form.parent === undefined ? undefined : `- Parent: ${form.parent} (${CHOICE_LANDS.parent})`,
   ].filter((line): line is string => line !== undefined);
-  return lines.length === 0 ? "None. The request decides each of these." : `${lines.join("\n")}\n\nThese are requirements. Use them as given: the board creates each ticket with them.`;
+  return lines.length === 0 ? "None. The request decides each of these." : `${lines.join("\n")}\n\nThese are requirements. Use them as given: you set each one on the ticket you file.`;
 };
 
 /**
- * A new-ticket run's brief (A11-94, A11-124): the instruction the machine configures, with the person's request, the folder and the board's mode filled in,
- * the choices the form made, the repositories it may read, the one draft format the board reads, and the outcome it writes last. The mode decides how the
- * run works: quick runs unattended, grill asks the person in its terminal first. The run reads the tracker with read-only tools only, to check for
- * duplicates. The board makes the tickets from the drafts when the run ends. PURE.
+ * A new-ticket run's brief (A11-94, A11-124, A11-135): the instruction the machine configures, with the person's request, the folder and the board's mode
+ * filled in, the choices the form made and where each lands, the team, the repositories it may read, and the outcome it writes last. The run runs the
+ * create-ticket skill in full, in the mode the board chose, and files its own ticket and plan through the tracker's tools (`WRITER_CREATE_TOOLS`).
+ * Its one prohibition is an update to a ticket it did not create. PURE.
  */
-export function writerBriefText({ run, request, mode, form, clones, dir }: {
+export function writerBriefText({ run, request, mode, form, clones, dir, pickTeam }: {
   run: string; request: string; mode: WriterMode; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
+  /** The team `tickets.pick` lists, or null: the team a new ticket goes in when its form names no parent. */
+  pickTeam: string | null;
 }): string {
   const instruction = run.replaceAll("{request}", request).replaceAll("{dir}", dir).replaceAll("{mode}", mode);
   return `# New ticket: ${request.split("\n")[0].slice(0, 120)}
 
-You are a ticket writer on this machine. A person asked for a ticket on the board. You write drafts of it and change nothing else: create no ticket, post no comment, edit no ticket, change no repository, and open no pull request. When this run ends, the board creates the ticket from each draft, and nothing is shown to the person before that.
+You are a ticket writer on this machine. A person asked for a ticket on the board. Run the \`a11ign:create-ticket\` skill in full for it: its grill, its plan, its ticket in the skill's format, and the plan attached to the ticket. You file the ticket yourself, through the tracker's tools, and the board shows the ticket it made when this run ends.
+
+The one thing you must not do: call the tracker's create-or-update tool with an \`id\`, or change, close, move or delete a ticket you did not create in this run. Create a ticket only with no \`id\`.
 
 ## The request
 
@@ -822,7 +847,9 @@ ${MODE_TEXT[mode]}
 
 ${instruction}
 
-Check the tracker for a ticket that already asks for the same thing, with the read-only Linear tools (\`get\`, \`list\`, \`search\`, \`extract\`): a ticket that is open, and that the draft would duplicate. Name each one in the draft's \`duplicates\` with the reason. Read the repositories below to write the draft's Done-when from what the code does today.
+If the instruction above mentions draft files, ignore that: this run writes no draft, and it files its ticket as this brief says.
+
+Check the tracker before you file, with the read-only Linear tools (\`get\`, \`list\`, \`search\`, \`extract\`), for an open ticket that already asks for the same thing. Name each one under "Possible duplicates" in the description, with the reason. Read the repositories below to write the Done-when from what the code does today.
 
 Repositories on this machine (read only; never change them):
 
@@ -830,40 +857,26 @@ ${reposText(clones)}
 
 ${MISSING_SKILL}
 
-## The draft files
+## The ticket
 
-Write one JSON file per ticket under \`${dir}/drafts/\`, named \`NN-short-name.json\` (for example \`01-board.json\`). At most ${MAX_DRAFTS} files, each at most ${MAX_DRAFT_BYTES / 1000} KB. A file the board cannot read is refused by its name, and the rest are kept, so check each one:
-
-\`\`\`json
-{
-  "title": "feat(scope): one line, under 255 characters",
-  "why": "why the ticket is wanted, in a sentence or two",
-  "doneWhen": ["one item that finishes the ticket", "another"],
-  "notes": "optional, markdown",
-  "team": "A11",
-  "project": "a project's name, if the choices name one",
-  "repo": "one of the repositories above, when the ticket is for one",
-  "goal": "a label in the group Goal",
-  "labels": ["a label the team has"],
-  "priority": "urgent | high | medium | low | none",
-  "parent": "A11-12, or draft:<the file name of another draft in this request, without .json>",
-  "blocks": ["A11-3"],
-  "blockedBy": ["draft:01-board"],
-  "duplicates": [{ "key": "A11-9", "why": "the same request, already open" }]
-}
-\`\`\`
-
-Only \`title\`, \`why\` and \`doneWhen\` are required. A field you leave out is left out, not written as null. No other field is read, so a field that is not in this list is refused by name.
+- **Team:** the team of the parent ticket the form names, else ${pickTeam === null ? "none: when the form names no parent and no team is set here, end needs-human, since no team is known" : `\`${pickTeam}\`, the team the Pick view lists`}. The skill's Step 6 takes the team from this brief, and asks nobody.
+- **Title, description, labels, project and goal:** the skill's Steps 5, 7 and 8, as written. The description ends with \`**Repository:** <repo>\` when the form names a repository.
+- **Priority:** the number of the form's priority, and 0 when the form names none.
+- **Relations:** \`parentId\`, \`blockedBy\` and \`relatedTo\` are set on the ticket you create. Never set \`blocks\`: it writes a relation on another ticket.
+- **Status:** make no status move. The skill's Planned move does not happen in this run: the ticket stays in the state it lands in, since a ticket is never updated after it is created here.
+- **Plan:** write the plan and its ADRs as the skill's unattended create form says, with "Decisions made without a person", and attach them to the ticket you created, as its Step 10 and \`plan-attachment.md\` say.
+- **Tracker tools:** create the ticket with \`mcp__linear__save_issue\`, with no \`id\`. Attach files with \`mcp__linear__prepare_attachment_upload\` and \`mcp__linear__create_attachment_from_upload\`, naming only a ticket this run created. Use the \`mcp__linear__\` tools, not the claude.ai Linear ones.
+- **Several tickets:** an epic is its parent and one child per repository. This run creates at most ${MAX_CREATED} tickets.
 
 ## The outcome file
 
 Write \`${dir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
 
 \`\`\`json
-{ "kind": "drafted" }
-{ "kind": "needs-human", "reason": "<why the run cannot finish, which the board shows as its failure>" }
+{ "kind": "created", "created": ["A11-140"] }
+{ "kind": "needs-human", "reason": "<why the run cannot finish, which the board shows as its failure>", "created": ["A11-140"] }
 \`\`\`
 
-Write \`drafted\` once every draft is written. Write \`needs-human\` only when the run cannot finish at all.
+List in \`created\` every ticket you made, each by its key. Write \`created\` once every ticket is filed and its plan is attached. Write \`needs-human\` only when the run cannot finish at all, and then list in \`created\` any ticket you made before it stopped, so the board shows it. The board checks each key against the tickets this run created, so a key it did not make fails the run.
 `;
 }

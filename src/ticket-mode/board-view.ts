@@ -46,7 +46,7 @@ export const connectionLabel = (connection: ViewConnection): string => (connecti
 
 /*
  * NEW TICKETS (A11-94, A11-124). The page draws a request's form and its runs as these return them. Nothing here creates a ticket: a request is sent,
- * and the board makes its tickets when the run ends. No screen reviews a draft.
+ * and the run files its own tickets. The page shows each ticket the run made, as a link.
  */
 
 /** A new-ticket request's runs, as the board words each status. */
@@ -98,11 +98,11 @@ export function writerChoiceLabel(run: Pick<WriterRunView, "model" | "effort">):
   return run.model === undefined || run.effort === undefined ? "" : `${run.model}/${run.effort}`;
 }
 
-/** A ticket a new-ticket run made, as the board shows it: its key and address, whether Pick lists it, and the tracker's warnings on it. */
-export type WriterTicketView = Readonly<{ file: string; key: string; url: string; inPick: boolean; warnings: readonly string[] }>;
+/** A ticket a new-ticket run made, as the board shows it: its key, its address when the tracker has it, and whether Pick lists it. */
+export type WriterTicketView = Readonly<{ key: string; url: string | null; inPick: boolean | null }>;
 
-/** A new-ticket run's view on the board: its request, its phase, the tickets it made and what was refused. */
+/** A new-ticket run's view on the board: its request, its phase, and the tickets it made. */
 export type WriterRunView = Readonly<{
   id: string; request: string; mode: "quick" | "grill"; phase: string; status: string; form: Readonly<Record<string, string>>; model?: string; effort?: string;
-  workspace?: string; pane?: string; failure?: string; tickets: readonly WriterTicketView[]; rejected: readonly Readonly<{ file: string; reason: string }>[];
+  workspace?: string; pane?: string; failure?: string; tickets: readonly WriterTicketView[];
 }>;

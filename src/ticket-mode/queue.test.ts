@@ -7,9 +7,8 @@ import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/declared-remains.ts";
 import { approve, conflictRound, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths } from "./queue/approve.ts";
-import { emptyQueue, loadQueue, nextStarts, saveQueue, changeDraft, dismissWriter, draftOf, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerCreated, writerDrafted, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
+import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import type { Blocker, Ticket } from "./source.ts";
-import type { Draft } from "./writer.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const choice = { model: "opus", effort: "high" };
@@ -750,9 +749,8 @@ test("A11-106: what a finished run's stacked pull requests need said of their ba
  */
 
 const request = { id: "w1", request: "Show the requests a person made", mode: "quick" as const, form: {} };
-/** A draft the writer left, as the board holds it: waiting to be made. */
-const drafted = (file: string) => ({ file, draft: { title: file, why: "w", doneWhen: ["d"], notes: null, team: null, project: null, repo: null, goal: null, labels: [],
-  priority: "none", parent: null, blocks: [], blockedBy: [], duplicates: [] } as Draft, duplicates: [], status: "creating" as const, id: `d-${file}` });
+/** A ticket the run filed, as the board holds it once the tracker has read it back (A11-135). */
+const filed = (key: string) => ({ key, url: `https://linear.app/x/${key}`, inPick: true });
 
 test("a writer run is queued, starts on a free slot, and holds one while it runs and while it starts", () => {
   let queue = queueWriter(emptyQueue(1), request, 1);
@@ -762,12 +760,10 @@ test("a writer run is queued, starts on a free slot, and holds one while it runs
   assert.equal(liveRunCount(queue), 1);
   queue = markWriterRunning(queue, "w1", "ws", "p");
   assert.equal(writerStatus(writerOf(queue, "w1")!), "writing");
-  queue = writerDrafted(queue, "w1", { drafts: [drafted("01-a.json")], rejected: [] }, 3);
-  assert.equal(liveRunCount(queue), 0, "a run whose tickets are being made holds no slot: no agent runs");
-  assert.equal(writerStatus(writerOf(queue, "w1")!), "writing", "it is still writing, its tickets are being made");
-  queue = changeDraft(queue, "w1", "d-01-a.json", (draft) => ({ ...draft, status: "created", created: { key: "NBF-1", url: "u", inPick: true } }));
-  queue = writerCreated(queue, "w1", 4);
+  queue = writerEnded(queue, "w1", { tickets: [filed("NBF-1")] }, 4);
+  assert.equal(liveRunCount(queue), 0, "a run that has ended holds no slot");
   assert.equal(writerStatus(writerOf(queue, "w1")!), "done");
+  assert.deepEqual(writerOf(queue, "w1")?.tickets, [filed("NBF-1")]);
 });
 
 test("a writer run records the model and effort it is queued with, and a run queued without them records none", () => {
@@ -792,12 +788,12 @@ test("A11-129: a grill run whose agent ends its turn on a question is Waiting, w
   assert.deepEqual(writerResumed(queue, "w1", 40), queue, "a run that is not waiting is unchanged");
 });
 
-test("A11-129: a waiting run that fails or is drafted is no longer waiting, and the run's terminal is kept on the record", () => {
+test("A11-129: a waiting run that fails or files its tickets is no longer waiting, and the run's terminal is kept on the record", () => {
   const waiting = writerWaiting(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), { ...request, mode: "grill" as const }, 1), "w1", 2), "w1", "ws", "p"), "w1", "a question", 3);
   const failed = writerOf(writerFailed(waiting, "w1", "nobody answered its question for 4 hours", 4), "w1")!;
   assert.deepEqual([writerStatus(failed), failed.waiting, failed.workspace, failed.pane], ["failed", undefined, "ws", "p"], "a failed run keeps its workspace on the record");
-  const done = writerOf(writerDrafted(waiting, "w1", { drafts: [drafted("01-a.json")], rejected: [] }, 4), "w1")!;
-  assert.equal(done.waiting, undefined, "a run that drafted has its answer, and no question");
+  const done = writerOf(writerEnded(waiting, "w1", { tickets: [filed("NBF-2")] }, 4), "w1")!;
+  assert.equal(done.waiting, undefined, "a run that filed its tickets has its answer, and no question");
 });
 
 test("A11-129: a run that ends keeps the terminal it was in once its workspace and pane are cleared, so a link to that terminal can say it ended", () => {
@@ -833,73 +829,64 @@ test("a grill run is running while it waits on the person between its questions:
   assert.equal(writerToStart(queue), undefined, "a running run is not queued again");
 });
 
-test("a run that wrote no valid draft ends failed and names each refused file; a run that wrote none at all says so", () => {
-  const queue = queueWriter(emptyQueue(1), request, 1);
-  const bad = writerDrafted(queue, "w1", { drafts: [], rejected: [{ file: "02-wire.json", reason: '02-wire.json: "priority" must be one of urgent' }] }, 2);
-  assert.equal(writerOf(bad, "w1")?.failure, 'none of its drafts is valid: 02-wire.json: "priority" must be one of urgent');
-  assert.equal(writerStatus(writerOf(bad, "w1")!), "failed");
-  assert.equal(writerOf(writerDrafted(queue, "w1", { drafts: [], rejected: [] }, 2), "w1")?.failure, "it wrote no draft");
+test("a run that files no ticket and fails says why, and keeps any ticket it made before it stopped", () => {
+  const running = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p");
+  const stopped = writerEnded(running, "w1", { tickets: [filed("NBF-4")], failure: "its attachment was refused (500)" }, 3);
+  assert.deepEqual([writerStatus(writerOf(stopped, "w1")!), writerOf(stopped, "w1")?.failure], ["failed", "its attachment was refused (500)"]);
+  assert.deepEqual(writerOf(stopped, "w1")?.tickets, [filed("NBF-4")], "the ticket stays made, and is shown with the failure");
+  assert.equal(writerOf(writerEnded(running, "w1", { tickets: [] }, 3), "w1")?.failure, undefined, "a run that ends with no failure is done");
 });
 
-test("a run whose drafts are made ends done, and fails naming a refused file or a draft that was not made; the tickets made stay", () => {
-  let queue = writerDrafted(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p"), "w1",
-    { drafts: [drafted("01-a.json"), drafted("02-b.json")], rejected: [] }, 3);
-  queue = changeDraft(queue, "w1", "d-01-a.json", (draft) => ({ ...draft, status: "created", created: { key: "NBF-1", url: "u", inPick: true } }));
-  queue = changeDraft(queue, "w1", "d-02-b.json", (draft) => ({ ...draft, status: "failed", failure: "no label" }));
-  queue = writerCreated(queue, "w1", 4);
-  assert.equal(writerOf(queue, "w1")?.failure, "02-b.json was not created: no label");
-  assert.equal(writerStatus(writerOf(queue, "w1")!), "failed");
-  assert.equal(writerOf(queue, "w1")?.drafts[0].created?.key, "NBF-1", "the ticket made is kept");
-  const refusedFile = writerDrafted(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p"), "w1",
-    { drafts: [drafted("01-a.json")], rejected: [{ file: "02-x.json", reason: "02-x.json: is not valid JSON" }] }, 3);
-  const refused = writerCreated(changeDraft(refusedFile, "w1", "d-01-a.json", (draft) => ({ ...draft, status: "created", created: { key: "NBF-3", url: "u", inPick: true } })), "w1", 4);
-  assert.equal(writerOf(refused, "w1")?.failure, "1 draft file refused, shown above", "a refused file fails the run even when its drafts are made");
-  const made = writerDrafted(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p"), "w1",
-    { drafts: [drafted("01-a.json")], rejected: [] }, 3);
-  const clean = writerCreated(changeDraft(made, "w1", "d-01-a.json", (draft) => ({ ...draft, status: "created", created: { key: "NBF-2", url: "u", inPick: true } })), "w1", 4);
-  assert.deepEqual([writerOf(clean, "w1")?.failure, writerStatus(writerOf(clean, "w1")!)], [undefined, "done"]);
-});
-
-test("a stopped run fails the drafts not yet made, keeps the tickets made, and a finished run dismisses once, while one still under way must be stopped first", () => {
+test("a stopped run keeps the tickets it made, and a finished run dismisses once, while one still under way must be stopped first", () => {
   let queue = markWriterRunning(markWriterStarting(queueWriter(emptyQueue(1), request, 1), "w1", 2), "w1", "ws", "p");
   assert.throws(() => dismissWriter(queue, "w1"), /stop the new-ticket request before you dismiss it/);
-  queue = writerDrafted(queue, "w1", { drafts: [drafted("01-a.json"), drafted("02-b.json")], rejected: [] }, 3);
-  queue = changeDraft(queue, "w1", "d-01-a.json", (draft) => ({ ...draft, status: "created", created: { key: "NBF-1", url: "u", inPick: true } }));
   queue = stopWriter(queue, "w1", 4);
   assert.equal(writerOf(queue, "w1")?.failure, "stopped on the board");
-  assert.deepEqual(writerOf(queue, "w1")?.drafts.map(({ status }) => status), ["created", "failed"]);
   queue = stopWriter(queue, "w1", 5);
   assert.equal(writerOf(queue, "w1")?.finishedAt, 4, "a finished run is not changed by a stop");
   queue = dismissWriter(queue, "w1");
   assert.deepEqual(queue.writers, []);
 });
 
-test("a draft is changed by its own id, and a writer run round-trips through the queue file with its drafts", () => {
+test("a writer run round-trips through the queue file with the tickets it filed", () => {
   const path = join(tmpDir("ticket-queue-writers-"), "queue.json");
-  let queue = writerDrafted(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(2), request, 1), "w1", 2), "w1", "ws", "p"), "w1",
-    { drafts: [drafted("01-a.json")], rejected: [{ file: "02-b.json", reason: "02-b.json: is not valid JSON" }] }, 3);
-  queue = changeDraft(queue, "w1", "d-01-a.json", (draft) => ({ ...draft, status: "created", created: { key: "NBF-1", url: "u", inPick: true } }));
+  const queue = writerEnded(markWriterRunning(markWriterStarting(queueWriter(emptyQueue(2), request, 1), "w1", 2), "w1", "ws", "p"), "w1",
+    { tickets: [filed("NBF-1")], failure: "its plan is not attached" }, 3);
   saveQueue(path, queue);
   const loaded = loadQueue(path, 2);
-  assert.equal(loaded.writers?.[0].drafts[0].status, "created");
-  assert.deepEqual(loaded.writers?.[0].rejected, [{ file: "02-b.json", reason: "02-b.json: is not valid JSON" }]);
-  assert.equal(draftOf(loaded, "w1", "d-01-a.json")?.created?.key, "NBF-1");
+  assert.deepEqual(loaded.writers?.[0].tickets, [filed("NBF-1")]);
+  assert.equal(loaded.writers?.[0].failure, "its plan is not attached");
   assert.equal(loadQueue(join(tmpDir("ticket-queue-old-"), "queue.json"), 2).writers, undefined, "a file from before writer runs loads with none");
 });
 
-test("a run an older board left for review is failed, and a draft it left pending creates nothing; an older grill run waiting is running again", () => {
+test("a run an older board left for review is failed, and an older grill run waiting is running again; a run an older board was filing is failed to check the tracker", () => {
   const path = join(tmpDir("ticket-queue-legacy-"), "queue.json");
+  const draft = (file: string, status: string, created?: { key: string; url: string; inPick?: boolean }) => ({ id: `d-${file}`, file, status, created,
+    draft: { title: file, why: "w", doneWhen: ["d"], notes: null, team: null, project: null, repo: null, goal: null, labels: [], priority: "none", parent: null,
+      blocks: [], blockedBy: [], duplicates: [] }, duplicates: [] });
   const old = { entries: [], max: 1, paused: true, writers: [
-    { ...request, phase: "finished", queuedAt: 1, finishedAt: 5, drafts: [{ ...drafted("01-a.json"), status: "pending" }], rejected: [] },
+    { ...request, phase: "finished", queuedAt: 1, finishedAt: 5, drafts: [draft("01-a.json", "pending")], rejected: [] },
     { ...request, id: "w2", phase: "waiting", question: "Which goal?", queuedAt: 1, startedAt: 1, drafts: [], rejected: [] },
-    { ...request, id: "w3", phase: "finished", queuedAt: 1, finishedAt: 5, drafts: [{ ...drafted("01-c.json"), status: "creating" }], rejected: [] },
+    { ...request, id: "w3", phase: "creating", queuedAt: 1, startedAt: 1, drafts: [draft("01-c.json", "created", { key: "NBF-7", url: "u" }), draft("02-d.json", "creating")], rejected: [] },
   ] };
   writeFileSync(path, JSON.stringify(old));
   const loaded = loadQueue(path, 1);
   assert.equal(writerOf(loaded, "w1")?.failure, LEGACY_REVIEW_FAILURE);
   assert.equal(writerStatus(writerOf(loaded, "w1")!), "failed");
-  assert.deepEqual([writerOf(loaded, "w1")?.drafts[0].status, writerOf(loaded, "w1")?.drafts[0].failure], ["failed", LEGACY_REVIEW_FAILURE], "no ticket is made from it");
+  assert.deepEqual(writerOf(loaded, "w1")?.tickets, [], "no ticket is made from a draft left for review");
   assert.equal(writerOf(loaded, "w2")?.phase, "running", "its agent is still in its terminal");
   assert.equal(writerOf(loaded, "w2")?.startedAt, undefined, "and its clock starts again: a grill limit counts from the resume, not from an hours-old start");
-  assert.equal(writerOf(loaded, "w3")?.drafts[0].status, "failed", "a draft an older board was creating is checked in the tracker first");
+  assert.equal(writerOf(loaded, "w3")?.failure, LEGACY_CREATING_FAILURE);
+  assert.deepEqual(writerOf(loaded, "w3")?.tickets, [{ key: "NBF-7", url: "u", inPick: true }], "a ticket an older board made is kept, as made, and an absent flag meant in Pick");
 });
+
+test("a legacy run that was creating its tickets, with every draft made, ends done: no ticket is left to make (A11-135)", () => {
+  const path = join(tmpDir("ticket-queue-legacy-done-"), "queue.json");
+  const made = { id: "d-a", file: "01-a.json", status: "created", created: { key: "NBF-8", url: "u" },
+    draft: { title: "a", why: "w", doneWhen: ["d"], notes: null, team: null, project: null, repo: null, goal: null, labels: [], priority: "none", parent: null,
+      blocks: [], blockedBy: [], duplicates: [] }, duplicates: [] };
+  writeFileSync(path, JSON.stringify({ entries: [], max: 1, paused: true, writers: [{ ...request, phase: "creating", queuedAt: 1, startedAt: 1, drafts: [made], rejected: [] }] }));
+  const loaded = writerOf(loadQueue(path, 1), "w1");
+  assert.deepEqual([loaded?.phase, loaded?.failure, loaded?.tickets.map(({ key }) => key)], ["finished", undefined, ["NBF-8"]]);
+});
+

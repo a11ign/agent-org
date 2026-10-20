@@ -10,8 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlapWait, waitsOn } from "./board-view/settled-by-pulls.ts";
-import type { Rejection } from "./writer.ts";
-import { MAX_WRITER_RUNS, replace, type DraftRecord, type Entry, type Queue, type WriterPhase, type WriterRun } from "./queue/declared-remains.ts";
+import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/declared-remains.ts";
 import { runOf, slotsHeld } from "./queue/approve.ts";
 
 /** Record that the board completed the ticket of the finished run `key`, so it is not completed again. */
@@ -49,9 +48,9 @@ export function emptyQueue(max: number): Queue {
 /** The queue on disk, or an empty one with `max` when there is no file yet. */
 export function loadQueue(path: string, max: number): Queue {
   if (!existsSync(path)) return emptyQueue(max);
-  const parsed = JSON.parse(readFileSync(path, "utf8")) as Queue;
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as Omit<Queue, "writers"> & { writers?: readonly LegacyRun[] };
   return { entries: parsed.entries ?? [], max: parsed.max ?? max, paused: parsed.paused ?? true, ...(parsed.publish ? { publish: parsed.publish } : {}),
-    ...(parsed.writers ? { writers: (parsed.writers as LegacyRun[]).map(writerAsRead) } : {}) };
+    ...(parsed.writers ? { writers: parsed.writers.map(writerAsRead) } : {}) };
 }
 
 /** Replace the file whole: write beside it, then rename over it. */
@@ -63,8 +62,8 @@ export function saveQueue(path: string, queue: Queue): void {
 }
 
 /*
- * WRITER RUNS. A new-ticket request is a short run of the ticket-writing skill, which leaves drafts; the board makes a ticket from each one when the
- * run ends. These transitions keep each run's phase, slot, drafts and failure, as the publish run's do for its own.
+ * WRITER RUNS. A new-ticket request is a run of the ticket-writing skill, which files its own ticket and attaches its plan (A11-135). These transitions
+ * keep each run's phase, slot, tickets and failure, as the publish run's do for its own.
  */
 
 /** Change the writer run `id`, if there is one. */
@@ -78,31 +77,36 @@ const notWaiting = ({ waiting: _answered, ...run }: WriterRun): WriterRun => run
 
 /** The failure an older board's review left, which this board no longer offers: the request is failed, and nothing is created from its drafts. */
 export const LEGACY_REVIEW_FAILURE = "this request was left for review by an older board, and the review screen is gone: dismiss it and ask again";
+/** The failure of a run an older board was making tickets for: this board files none from drafts, so the tracker is checked before the request is asked again. */
+export const LEGACY_CREATING_FAILURE = "the board no longer makes tickets from drafts: check the tracker before you ask again";
 
-/** A draft as an older board wrote it: `pending` and `discarded` are statuses this board no longer has. */
-type LegacyDraft = Omit<DraftRecord, "status"> & Readonly<{ status: DraftRecord["status"] | "pending" | "discarded" }>;
+/** A draft as an older board wrote it: only the fields this reading needs, with the statuses an older board had. */
+type LegacyDraft = Readonly<{ file: string; status: "creating" | "created" | "failed" | "pending" | "discarded";
+  created?: Readonly<{ key: string; url: string; inPick?: boolean }> }>;
 
-/** A writer run as an older board wrote it: a grill run may be `waiting` on its question, and its drafts may be for review. */
-type LegacyRun = Omit<WriterRun, "drafts" | "phase"> & Readonly<{ phase: WriterPhase | "waiting"; drafts: readonly LegacyDraft[] }>;
-
-/** A draft as this board reads it. A draft an older board left for review is failed: nothing is made from it now. A draft an older board was creating is failed too, so the tracker is checked before the request is asked again. */
-const draftAsRead = (draft: LegacyDraft): DraftRecord => {
-  if (draft.status === "pending" || draft.status === "discarded") return { ...draft, status: "failed", failure: LEGACY_REVIEW_FAILURE };
-  if (draft.status === "creating") return { ...draft, status: "failed", failure: "the board stopped while it was creating this ticket: check the tracker before you ask again" };
-  return { ...draft, status: draft.status };
-};
+/** A writer run as an older board wrote it: a grill run may be `waiting` on its question, and its drafts may be for review or being made. */
+type LegacyRun = Omit<WriterRun, "tickets" | "phase"> & Readonly<{ phase: WriterPhase | "waiting" | "creating"; tickets?: readonly WriterTicket[];
+  drafts?: readonly LegacyDraft[]; rejected?: readonly unknown[] }>;
 
 /**
- * A writer run as this board reads it. A grill run `waiting` on its question is running again: its agent is still in its terminal, and its clock starts
- * again, since the grill limit counts from the resume. A run with a draft an older board left for review is failed, so no ticket is made from it. PURE.
+ * A writer run as this board reads it (A11-135). The tickets an older board made from its drafts are kept, as made. A run with a draft an older board left
+ * for review is failed, so no ticket is made from it. A run an older board was making tickets for is failed too, saying to check the tracker. A grill
+ * run `waiting` on its question is running again: its agent is still in its terminal, and its clock starts again, since the grill limit counts from the
+ * resume. PURE.
  */
 export function writerAsRead(run: LegacyRun): WriterRun {
-  const drafts = run.drafts.map(draftAsRead);
-  if (run.drafts.some(({ status }) => status === "pending" || status === "discarded")) {
-    return { ...run, phase: "finished", drafts, failure: LEGACY_REVIEW_FAILURE, finishedAt: run.finishedAt ?? run.queuedAt };
+  const { drafts = [], tickets: filed = [], rejected: _rejected, ...rest } = run;
+  const tickets: WriterTicket[] = [...filed, ...drafts.flatMap(({ status, created }) => (status === "created" && created !== undefined
+    ? [{ key: created.key, url: created.url, inPick: created.inPick !== false }] : []))];
+  if (drafts.some(({ status }) => status === "pending" || status === "discarded")) {
+    return { ...rest, phase: "finished", tickets, failure: LEGACY_REVIEW_FAILURE, finishedAt: run.finishedAt ?? run.queuedAt };
   }
-  if (run.phase === "waiting") return { ...run, phase: "running", drafts, startedAt: undefined };
-  return { ...run, phase: run.phase, drafts };
+  if (run.phase === "creating") {
+    const unmade = drafts.some(({ status }) => status !== "created");
+    return { ...rest, phase: "finished", tickets, ...(unmade ? { failure: LEGACY_CREATING_FAILURE } : {}), finishedAt: run.finishedAt ?? run.queuedAt };
+  }
+  if (run.phase === "waiting") return { ...rest, phase: "running", tickets, startedAt: undefined };
+  return { ...rest, phase: run.phase, tickets };
 }
 
 /**
@@ -112,7 +116,7 @@ export function writerAsRead(run: LegacyRun): WriterRun {
 export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "form" | "model" | "effort">, now: number): Queue {
   const open = (queue.writers ?? []).filter((run) => run.phase !== "finished").length;
   if (open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
-  const run: WriterRun = { ...request, phase: "queued", queuedAt: now, drafts: [], rejected: [] };
+  const run: WriterRun = { ...request, phase: "queued", queuedAt: now, tickets: [] };
   return { ...queue, writers: [...(queue.writers ?? []), run] };
 }
 
@@ -147,52 +151,27 @@ export const writerResumed = (queue: Queue, id: string, now: number): Queue =>
   replaceWriter(queue, id, (run) => (run.waiting === undefined ? run : { ...notWaiting(run), startedAt: now }));
 
 /**
- * The writer run's outcome was read: its valid drafts are kept, each waiting to be made, with its duplicates, and each refused file is kept by name. The
- * run is then `creating` (`writerCreated` ends it). A run with no valid draft ends failed, saying what each refused file got wrong. PURE.
+ * The writer run ended (A11-135): it finished, with the tickets it created, shown as links, and why it failed when it did. A ticket made before a failure
+ * stays made and is shown with it. PURE.
  */
-export function writerDrafted(queue: Queue, id: string, written: Readonly<{ drafts: readonly DraftRecord[]; rejected: readonly Rejection[] }>, now: number): Queue {
-  if (written.drafts.length === 0) {
-    const reasons = written.rejected.map(({ reason }) => reason).join("; ");
-    const failure = written.rejected.length === 0 ? "it wrote no draft" : `none of its drafts is valid: ${reasons}`;
-    return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, failure, rejected: written.rejected }));
-  }
-  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "creating", drafts: written.drafts, rejected: written.rejected }));
+export function writerEnded(queue: Queue, id: string, ended: Readonly<{ tickets: readonly WriterTicket[]; failure?: string }>, now: number): Queue {
+  return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, tickets: ended.tickets, failure: ended.failure }));
 }
 
-/**
- * Every draft of the run has been made or refused: the run is finished. It fails, saying why, when a draft file was refused or a draft's ticket was not
- * made; the tickets already made stay made and are shown with it. PURE.
- */
-export function writerCreated(queue: Queue, id: string, now: number): Queue {
-  return replaceWriter(queue, id, (run) => {
-    const refused = run.rejected.length === 0 ? [] : [`${run.rejected.length} draft file${run.rejected.length === 1 ? "" : "s"} refused, shown above`];
-    const notMade = run.drafts.filter(({ status }) => status !== "created").map(({ file, failure }) => `${file} was not created: ${failure ?? "it was not tried"}`);
-    const failure = [...refused, ...notMade].join("; ");
-    return { ...run, phase: "finished", finishedAt: now, ...(failure === "" ? { failure: undefined } : { failure }) };
-  });
-}
-
-/** The writer run's draft `draftId`, or undefined. */
-export const draftOf = (queue: Queue, id: string, draftId: string): DraftRecord | undefined => findWriter(queue, id)?.drafts.find((draft) => draft.id === draftId);
-
-/** Record the tracker's answer for draft `draftId` of run `id`, which holds it: the change is made to the draft record only. */
-export const changeDraft = (queue: Queue, id: string, draftId: string, change: (draft: DraftRecord) => DraftRecord): Queue =>
-  replaceWriter(queue, id, (run) => ({ ...run, drafts: run.drafts.map((draft) => (draft.id === draftId ? change(draft) : draft)) }));
-
-/** The writer run failed: it holds no slot, and the drafts it had are kept as they are. */
+/** The writer run failed: it holds no slot, and the tickets it had made are kept as they are. */
 export function writerFailed(queue: Queue, id: string, failure: string, now: number): Queue {
   return replaceWriter(queue, id, (run) => ({ ...notWaiting(run), phase: "finished", finishedAt: now, failure }));
 }
 
-/**
- * The person stopped the writer run. A draft not yet made is failed, saying so, and is not tried; the tickets already made stay. Its workspace is closed
- * by the caller.
- */
-export const stopWriter = (queue: Queue, id: string, now: number): Queue =>
-  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : {
-    ...notWaiting(run), phase: "finished", finishedAt: now, failure: "stopped on the board",
-    drafts: run.drafts.map((draft) => (draft.status === "creating" ? { ...draft, status: "failed", failure: "stopped on the board" } : draft)),
-  }));
+/** The person stopped the writer run. Its workspace is closed by the caller, and the tickets it already made stay. */
+export const stopWriter = (queue: Queue, id: string, now: number, stopped: Readonly<{ tickets: readonly WriterTicket[]; problem: string | null }> = { tickets: [], problem: null }): Queue =>
+  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...notWaiting(run), phase: "finished", finishedAt: now, tickets: stopped.tickets, failure: joined("stopped on the board", stopped.problem) }));
+
+/** The failure text from its parts, with the empty ones left out, or undefined when none is left. PURE. */
+export const joined = (...parts: readonly (string | null)[]): string | undefined => {
+  const text = parts.filter((part): part is string => part !== null).join("; ");
+  return text === "" ? undefined : text;
+};
 
 /** Remove a finished writer run from the board. A run still under way is stopped first. */
 export function dismissWriter(queue: Queue, id: string): Queue {

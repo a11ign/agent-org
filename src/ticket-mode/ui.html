@@ -170,7 +170,7 @@
 <dialog id="new-ticket-dialog" aria-labelledby="new-ticket-title">
   <form method="dialog" class="settings">
     <h2 id="new-ticket-title">New ticket</h2>
-    <p class="hint">Say what the ticket is for, in plain words. A writer reads the repositories and the tracker, checks for a duplicate, and makes the ticket when it ends. Nothing is shown for review.</p>
+    <p class="hint">Say what the ticket is for, in plain words. A writer runs the ticket-writing skill: it grills, writes the plan, and files the ticket itself, and the ticket is shown here when it ends.</p>
     <label class="stack">Request <textarea id="writer-request" rows="4" maxlength="8000"></textarea></label>
     <fieldset>
       <legend>How</legend>
@@ -777,12 +777,12 @@ function renderHeld() {
 
 function render() { renderPick(); renderBoard(); renderFooter(); renderHeld(); }
 
-// NEW TICKETS (A11-94, A11-124). A request's form and its runs. The board makes a request's tickets when its run ends: nothing here reviews a draft.
+// NEW TICKETS (A11-94, A11-124, A11-135). A request's form and its runs. The run files its own tickets; the page shows each one it made.
 const writerForm = () => ({
   request: $("writer-request").value, mode: $("writer-mode").value, project: $("writer-project").value, repo: $("writer-repo").value,
   goal: $("writer-goal").value, priority: $("writer-priority").value, parent: $("writer-parent").value,
 });
-const WRITER_NOTE = "The ticket is made when the run ends. Nothing is shown for review.";
+const WRITER_NOTE = "The ticket is filed when the run ends, and its plan is attached to it.";
 /** How long a grill run's blank tab waits for the run's terminal, before it is closed: a run that has no workspace by then has not started. */
 const TERMINAL_WAIT_MS = 10 * 60_000;
 function openNewTicket() {
@@ -863,7 +863,7 @@ const actionButton = (label, title, onClick) => {
   b.addEventListener("click", onClick);
   return b;
 };
-/** One run's card: its status, the terminal it is watched in, the tickets it made, and what it refused or why it failed. */
+/** One run's card: its status, the terminal it is watched in, the tickets it filed, and why it failed. */
 function writerCard(run) {
   const actions = writerRunActions(run);
   const choice = writerChoiceLabel(run);
@@ -881,16 +881,14 @@ function writerCard(run) {
     // The question the agent asked, which the person answers in the terminal: shown until it is answered (A11-129).
     run.waiting ? el("p", { className: "waiting", textContent: run.waiting.question }) : null,
     ...run.tickets.map(writerTicket),
-    run.failure ? el("p", { className: "hint failed", textContent: run.failure }) : null,
-    ...run.rejected.map(({ reason }) => el("p", { className: "hint failed", textContent: reason })));
+    run.failure ? el("p", { className: "hint failed", textContent: run.failure }) : null);
 }
-/** A ticket the run made: its key, linked to the tracker, and a note when Pick does not list it, and the tracker's warnings on it. */
+/** A ticket the run filed: its key, linked to the tracker when the board has its address, and a note when Pick does not list it. */
 function writerTicket(ticket) {
-  const href = safeHref(ticket.url);
+  const href = ticket.url === null ? null : safeHref(ticket.url);
   return el("p", { className: "made" },
     href ? el("a", { href, target: "_blank", rel: "noreferrer", textContent: `Created ${ticket.key}` }) : el("span", { textContent: `Created ${ticket.key}` }),
-    ticket.inPick ? null : el("span", { className: "hint", textContent: " It is outside the list Pick shows, so it is not in it." }),
-    ...ticket.warnings.map((warning) => el("span", { className: "hint failed", textContent: ` ${warning}` })));
+    ticket.inPick === false ? el("span", { className: "hint", textContent: " It is outside the list Pick shows, so it is not in it." }) : null);
 }
 async function writerAction(run, verb) {
   try {

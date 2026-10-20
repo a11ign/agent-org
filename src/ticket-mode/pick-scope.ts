@@ -8,6 +8,16 @@
 import type { PickScope } from "./settings.ts";
 import { PICK_SETTING } from "./assignee-filter.ts";
 
+/** The team a ticket goes in when the form names no parent: the team `tickets.pick` lists, or null. */
+export const pickTeamOf = (pick: PickScope): string | null => (typeof pick === "object" && "team" in pick ? pick.team : null);
+
+/** Whether a created ticket is in the Pick view's list, so the board can say when it is not. The key's own tickets are, since they are assigned to it. */
+export function inPickScope(pick: PickScope, ticket: Readonly<{ team: string | null; project: string | null }>): boolean {
+  if (pick === "assigned") return true;
+  if ("team" in pick) return ticket.team === pick.team;
+  return ticket.project === pick.project;
+}
+
 /** What the Pick view's count line says the tickets are, after "<n> of <m>": "assigned to you", or which team or project they are open in. */
 export function pickLabel(scope: PickScope): string {
   if (scope === "assigned") return "assigned to you";

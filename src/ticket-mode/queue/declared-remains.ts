@@ -1,7 +1,7 @@
 import { CONCLUDED, openPulls, RESULT_KINDS, type StackBaseRecord } from "../board-view/view-ticket.ts";
 import { isBeingPublished, isParked } from "../board-view/settled-by-pulls.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
-import type { Draft, Priority, Rejection, ResolvedDuplicate } from "../writer.ts";
+import type { Priority } from "../writer.ts";
 
 /**
  * What a worker's `partial` declaration says remains of its ticket: its words, trimmed, or null for none, which is a blank declaration or the brief's
@@ -243,37 +243,21 @@ export type PublishRun = Readonly<{
 export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: boolean; publish?: PublishRun; writers?: readonly WriterRun[] }>;
 
 /**
- * A draft a writer run left, as the board holds it: the draft as checked, its duplicates as the tracker has them, and its status. `creating` is kept
- * before the tracker is asked, so a restart in between is seen: the creation is asked again with the same id, and the tracker's own id keeps it to one
- * ticket. `created` carries the ticket's key and address, and whether Pick lists it; `failed` carries why the tracker refused it, or why it was not tried.
+ * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list
+ * shows it. The run filed it itself; the board reads it back from the tracker to show it.
  */
-export type DraftRecord = Readonly<{
-  id: string;
-  file: string;
-  draft: Draft;
-  duplicates: readonly ResolvedDuplicate[];
-  status: "creating" | "created" | "failed";
-  /** The ticket the board made, once it has. `inPick` says whether Pick's list shows it; absent on a ticket an older board made, which did not say. */
-  created?: Readonly<{ key: string; url: string; inPick?: boolean }>;
-  /** Why the draft's ticket was not made. */
-  failure?: string;
-  /** The tracker's warnings on the ticket it made: a relation that did not land. */
-  warnings?: readonly string[];
-}>;
+export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: boolean | null }>;
 
-/** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal before it drafts. */
+/** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. */
 export type WriterMode = "quick" | "grill";
 
 /** The choices the form made, each a requirement in the writer's brief. */
 export type WriterForm = Readonly<{ project?: string; repo?: string; goal?: string; priority?: Priority; parent?: string }>;
 
-/**
- * The phases of a writer run. Only `starting` and `running` hold a worker slot. `creating` is the board making the tickets its drafts describe, once the
- * run's outcome is read: no agent runs then.
- */
-export type WriterPhase = "queued" | "starting" | "running" | "creating" | "finished";
+/** The phases of a writer run. Only `starting` and `running` hold a worker slot. */
+export type WriterPhase = "queued" | "starting" | "running" | "finished";
 
-/** A new-ticket request and the run that writes its drafts: a record of its own, not a ticket entry, since its ticket does not exist yet. */
+/** A new-ticket request and the run that files its ticket: a record of its own, not a ticket entry, since its ticket does not exist yet. */
 export type WriterRun = Readonly<{
   id: string;
   request: string;
@@ -299,8 +283,8 @@ export type WriterRun = Readonly<{
   lastTerminal?: Readonly<{ workspace: string; pane: string }>;
   /** Why the run failed, once it has. A stopped run says so. */
   failure?: string;
-  drafts: readonly DraftRecord[];
-  rejected: readonly Rejection[];
+  /** The tickets the run created, in the order it created them, shown as links once the run ends. */
+  tickets: readonly WriterTicket[];
 }>;
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
