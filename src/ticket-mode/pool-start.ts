@@ -32,8 +32,8 @@ import { type PoolContext } from "./pool-context.ts";
 const START_TIMEOUT_MS = 90_000;
 
 // A new pane's shell is not at its prompt for a moment, longer on a loaded host, and herdr refuses an agent start until it is (`agent_pane_busy`).
-const SHELL_POLL_MS = 500;
-const SHELL_POLLS = 30;
+const SHELL_TRY_MS = 500;
+const SHELL_TRIES = 30;
 
 /** Did herdr refuse because the pane's shell is not ready yet? PURE. */
 export function paneShellNotReady(err: unknown): boolean {
@@ -74,6 +74,19 @@ async function start(ctx: PoolContext, entry: Entry, folder: string, dir: string
   return startAgent(ctx, { ...runPlace(ctx, entry), folder }, env, [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })], runId);
 }
 
+/** Run herdr's `agent start` for `args`, trying again while herdr says the pane's shell is not ready, and throw whatever else it refuses with. */
+async function startOnceShellReady(ctx: PoolContext, args: string[]): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await ctx.herdrAsync(args, START_TIMEOUT_MS);
+      return;
+    } catch (err) {
+      if (!paneShellNotReady(err) || attempt >= SHELL_TRIES) throw err;
+      await ctx.wait(SHELL_TRY_MS);
+    }
+  }
+}
+
 /**
  * Open a workspace named `place.name` in `place.folder`, with `env` in its shell, and start Claude in it with `tail` after the command. Returns
  * the workspace and its pane, or throws with herdr's reason, naming `what`, after closing anything it opened.
@@ -84,15 +97,7 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
   const opened = openPane(run, place.name, env, place.folder, session);
   if ("refusal" in opened) throw new Error(opened.refusal);
   try {
-    for (let poll = 1; ; poll++) {
-      try {
-        await herdrAsync(agentStartArgs(place.name, "claude", opened.pane, [...tail], session), START_TIMEOUT_MS);
-        break;
-      } catch (err) {
-        if (!paneShellNotReady(err) || poll >= SHELL_POLLS) throw err;
-        await ctx.wait(SHELL_POLL_MS);
-      }
-    }
+    await startOnceShellReady(ctx, agentStartArgs(place.name, "claude", opened.pane, [...tail], session));
   } catch (err) {
     // A start can outlast its timeout and still succeed: ask the listing before calling it a failure.
     const listed = readAgents(run, session)?.find((agent) => agent.label === place.name);

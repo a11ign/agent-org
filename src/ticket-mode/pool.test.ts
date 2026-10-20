@@ -32,14 +32,13 @@ const source: TicketSource = { assigned: async () => [], read: async () => null,
 function herdr(status: Map<string, string>, screen: { text: string } = { text: "" }) {
   const calls: string[][] = [];
   const refused = new Set<string>();
-  /** The next `left` agent starts are refused as herdr refuses a pane whose shell is not at its prompt yet, then starts go through. */
-  const busy = { left: 0, code: "agent_pane_busy" };
+  /** The error codes herdr refuses the next agent starts with, in order, as it refuses a pane whose shell is not at its prompt yet; after them starts go through. */
+  const refusals: string[] = [];
   let next = 0;
   const run = (args: string[]) => {
     calls.push(args);
-    if (args.includes("agent") && args.includes("start") && busy.left > 0) {
-      busy.left -= 1;
-      throw Object.assign(new Error("herdr exited 1"), { stderr: JSON.stringify({ error: { code: busy.code, message: "agent target pane is not an available shell" } }) });
+    if (args.includes("agent") && args.includes("start") && refusals.length > 0) {
+      throw Object.assign(new Error("herdr exited 1"), { stderr: JSON.stringify({ error: { code: refusals.shift(), message: "agent target pane is not an available shell" } }) });
     }
     if (args.some((arg) => refused.has(arg))) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: "workspace_not_found" } }) });
     if (args.includes("read")) return screen.text;
@@ -51,7 +50,7 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
     if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s })) } });
     return JSON.stringify({ type: "ok" });
   };
-  return { run, calls, refused, busy };
+  return { run, calls, refused, refusals };
 }
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
@@ -3951,22 +3950,22 @@ test("preflight: nothing is asked while nothing is waiting to start", async () =
   assert.equal(asked.length, 0);
 });
 
-const SHELL_WAIT_MS = 500;
+const SHELL_TRY_MS = 500;
 const SHELL_TRIES = 30;
+const BUSY = "agent_pane_busy";
 
-/** A pool starting NBF-1 while herdr refuses its first `refusals` agent starts with `code`, and every wait it makes. */
-async function startRefused(refusals: number, code = "agent_pane_busy") {
+/** A pool starting NBF-1 while herdr refuses its agent starts with `refusals`, in order, and every half-second wait it makes. */
+async function startRefused(refusals: string[]) {
   const waits: number[] = [];
   const made = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
-  made.h.busy.left = refusals;
-  made.h.busy.code = code;
+  made.h.refusals.push(...refusals);
   await made.pool.tick();
   const starts = made.h.calls.filter((args) => args.includes("start")).length;
-  return { ...made, starts, shellWaits: waits.filter((ms) => ms === SHELL_WAIT_MS) };
+  return { ...made, starts, shellWaits: waits.filter((ms) => ms === SHELL_TRY_MS) };
 }
 
 test("a start waits for a new pane's shell, and goes on once herdr accepts it", async () => {
-  const { h, entry, starts, shellWaits } = await startRefused(3);
+  const { h, entry, starts, shellWaits } = await startRefused([BUSY, BUSY, BUSY]);
   assert.equal(entry("NBF-1").phase, "running");
   assert.equal(shellWaits.length, 3, "one half-second wait for each refusal");
   assert.equal(h.calls.filter((args) => args.includes("create")).length, 1, "the same workspace is started again, not a new one");
@@ -3974,7 +3973,7 @@ test("a start waits for a new pane's shell, and goes on once herdr accepts it", 
 });
 
 test("a pane whose shell never comes up fails the run after 30 tries, and closes its workspace", async () => {
-  const { h, entry, starts, shellWaits } = await startRefused(1000);
+  const { h, entry, starts, shellWaits } = await startRefused(Array(1000).fill(BUSY));
   const outcome = entry("NBF-1").outcome;
   assert.equal(outcome?.kind, "crashed");
   assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /herdr could not start Claude for NBF-1/);
@@ -3984,8 +3983,15 @@ test("a pane whose shell never comes up fails the run after 30 tries, and closes
 });
 
 test("any other refusal fails the start at once, without waiting", async () => {
-  const { entry, starts, shellWaits } = await startRefused(1, "agent_pane_not_found");
+  const { entry, starts, shellWaits } = await startRefused(["agent_pane_not_found"]);
   assert.equal(entry("NBF-1").outcome?.kind, "crashed");
   assert.equal(shellWaits.length, 0);
   assert.equal(starts, 1);
+});
+
+test("a refusal that is not the busy one ends the waiting at once, after some busy ones", async () => {
+  const { entry, starts, shellWaits } = await startRefused([BUSY, BUSY, "agent_pane_not_found"]);
+  assert.equal(entry("NBF-1").outcome?.kind, "crashed");
+  assert.equal(shellWaits.length, 2);
+  assert.equal(starts, 3);
 });
