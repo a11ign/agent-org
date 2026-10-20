@@ -123,14 +123,16 @@
   .settings input[type="number"] { width: 72px; }
   .settings .actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .hint { color: var(--muted); font-size: 12px; margin: 0; }
-  .setting-group { margin: 18px 0; }
+  .setting-group { margin: 12px 0; }
   .setting-group > summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; }
   .setting-group > summary > h3 { font-size: 15px; margin: 0; }
   .settings-search { display: grid; gap: 6px; margin: 12px 0; }
   .settings-search label { display: grid; gap: 4px; max-width: 480px; }
-  .setting { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; }
+  .settings-search label.check { display: flex; align-items: center; gap: 8px; }
+  .setting { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin: 0 0 4px; display: grid; grid-template-columns: minmax(12em, max-content) 1fr; gap: 0 14px; align-items: baseline; }
   .setting dt { font-weight: 600; overflow-wrap: anywhere; }
-  .setting dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+  .setting dd { margin: 0; overflow-wrap: anywhere; }
+  @media (max-width: 760px) { .setting { display: block; } .setting dt { margin-bottom: 2px; } }
   .setting .row-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .setting-nested { margin: 0 0 8px 16px; }
   .setting-nested > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
@@ -256,6 +258,13 @@
       <div id="restores"></div>
       <p id="edit-outcome" class="hint" role="status"></p>
     </section>
+    <div class="settings-search">
+      <label>Search settings by key or description <input id="settings-search" type="search" autocomplete="off"></label>
+      <label class="check"><input id="settings-all" type="checkbox"> Show settings at their defaults</label>
+      <p id="settings-search-status" class="hint" role="status"></p>
+    </div>
+    <div id="settings-groups"></div>
+    <!-- The controls sit below the sections, so the sections a person came for are the first things on the page (A11-146). -->
     <div class="settings change">
       <fieldset>
         <legend>New runs</legend>
@@ -281,11 +290,6 @@
       </fieldset>
       <p id="settings-status" class="hint" role="status"></p>
     </div>
-    <div class="settings-search">
-      <label>Search settings by key or description <input id="settings-search" type="search" autocomplete="off"></label>
-      <p id="settings-search-status" class="hint" role="status"></p>
-    </div>
-    <div id="settings-groups"></div>
   </section>
 </main>
 <footer id="queue-bar">
@@ -330,7 +334,7 @@ const state = {
   settingsShown: false, opener: "open-settings", boardHash: "",
   // The Settings search (A11-146): the query typed, the sections the person last left open or closed (by name; `Machine` starts closed), and the view last read,
   // which a query is applied to without reading the instance again. Kept across a redraw, so a save does not close what was open.
-  settingsSearch: { query: "", open: {}, view: null, sections: [] },
+  settingsSearch: { query: "", all: false, open: {}, view: null, sections: [] },
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
   pick: "assigned to you", empty: null,
   // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
@@ -908,7 +912,7 @@ function drawSearch() {
   let matching = 0;
   for (const section of sections) {
     // A key that does not matter now is shown only by a search that finds it (its role's App fields, while the role uses no App).
-    const visible = section.rows.filter(({ row }) => shown.has(row.key) && (searching || row.inUse));
+    const visible = section.rows.filter(({ row }) => shown.has(row.key) && (searching || (row.inUse && (state.settingsSearch.all || isSet(row)))));
     // A setting inside a role or routing block brings that block's row along, so the match reads in place.
     const holders = new Set(visible.map(({ row }) => row.nest));
     const context = section.rows.filter(({ row }) => holders.has(row.key));
@@ -922,12 +926,15 @@ function drawSearch() {
       nested.node.open = searching || (state.settingsSearch.open[nested.parent] ?? false);
     }
     matching += visible.length;
-    section.count.textContent = settingsCount(visible.length);
+    const atDefaults = section.rows.filter(({ row }) => row.inUse && !visibleRows.has(row)).length;
+    section.count.textContent = searching || atDefaults === 0 ? settingsCount(visible.length) : `${visible.length} set, ${atDefaults} at defaults`;
     section.node.hidden = searching && visible.length === 0 && !section.alwaysShown;
     section.node.open = searching || (state.settingsSearch.open[section.group] ?? section.group !== "Machine");
   }
   $("settings-search-status").textContent = searchWords(query, matching);
 }
+/** A setting is set when the file holds it, or it is a provider's line, which every section shows. A default is what the page shows only when asked. */
+const isSet = (row) => row.state === "enabled" || row.state === "disabled" || row.key.endsWith(".provider");
 /** What the search line says: nothing without a query, else how many settings match, or that none does. */
 function searchWords(query, matching) {
   if (query === "") return "";
@@ -1161,13 +1168,11 @@ function renderContractMismatchRows(rows) {
 function settingRow(row) {
   const editing = row.editable && editable();
   const shown = row.alias ?? `Value: ${row.value}`;
+  // A provider is chosen by `agent-org onboard`, which may need secrets or installs, so a provider's row says where it is changed.
+  const onboard = row.key.endsWith(".provider") && row.why !== null ? el("span", { className: "hint", textContent: " Change the provider with agent-org onboard." }) : null;
   return el("dl", { className: "setting" },
     el("dt", {}, el("code", { textContent: row.key })),
-    el("dd", { textContent: `${shown}. State: ${row.state}. Source: ${row.source}. ${editing ? "Editable" : "Read-only"}.` }),
-    // A provider is chosen by `agent-org onboard`, which may need secrets or installs, so a provider's row says where it is changed.
-    ...(row.key.endsWith(".provider") && row.why !== null ? [el("dd", { className: "hint", textContent: "Change the provider with agent-org onboard" })] : []),
-    el("dd", {}, detailsOf(row)),
-    ...(editing ? [el("dd", {}, editControl(row))] : []));
+    el("dd", {}, `${shown}. State: ${row.state}. Source: ${row.source}. ${editing ? "Editable" : "Read-only"}.`, onboard, detailsOf(row), editing ? editControl(row) : null));
 }
 /** What the key does, what breaks if it is wrong, and, for a key the page does not change in place, why not: behind one disclosure, closed until opened. */
 function detailsOf(row) {
@@ -1436,6 +1441,10 @@ $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { 
 $("review-changes").addEventListener("click", () => reviewChanges().catch(report));
 $("settings-search").addEventListener("input", () => {
   state.settingsSearch.query = $("settings-search").value;
+  drawSearch();
+});
+$("settings-all").addEventListener("change", () => {
+  state.settingsSearch.all = $("settings-all").checked;
   drawSearch();
 });
 for (const id of ["open-settings", "change-choice", "change-max"]) {

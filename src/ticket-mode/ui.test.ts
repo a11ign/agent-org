@@ -1885,7 +1885,7 @@ test("the Settings page has its landmarks and headings, every control has its la
   assert.match(section, /<h2 id="settings-title" tabindex="-1">Settings<\/h2>/, "its heading names it");
   const controls = section.split("\n").filter((line) => /<(select|input)\b/.test(line));
   assert.ok(controls.length >= 5, "the controls are on the page");
-  for (const line of controls) assert.match(line, /<label>[^<]*<(select|input)\b/, `a control is labelled by its wrapping label: ${line.trim()}`);
+  for (const line of controls) assert.match(line, /<label(?: class="[^"]*")?>[^<]*<(select|input)\b/, `a control is labelled by its wrapping label: ${line.trim()}`);
   assert.doesNotMatch(html, /onclick=|role="button"/, "the page uses native controls only");
   assert.match(html, /aria-labelledby", id\)|setAttribute\("aria-labelledby"/, "each group names its heading");
 });
@@ -2058,7 +2058,7 @@ test("Settings: the plugins' checks stay on the page during a search, and a sear
 
 test("Settings: a key that is not in use is hidden, and a search finds it and shows it", async () => {
   const withApp = { ...GROUPED, groups: [...GROUPED.groups.slice(0, 2),
-    { group: "Code host", rows: [SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.mode", group: "Code host", explanation: "Whether the role acts as the person's account.", value: "user-accounts", state: "default", source: "built-in default" }),
+    { group: "Code host", rows: [SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.mode", group: "Code host", explanation: "Whether the role acts as the person's account.", value: "user-accounts", state: "enabled", source: "host.json" }),
       SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.appId", group: "Code host", explanation: "The App's id. Required with github-apps.", inUse: false })] }] };
   const p = await settingsPage({ config: SETTINGS, settings: withApp });
   assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler.mode"], "the App's id is not drawn");
@@ -2083,6 +2083,27 @@ test("Settings: a role's settings sit in a disclosure under the role, closed unt
   assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler", "tickets.providers.codeHost.identity.scheduler.mode"], "a search opens the disclosure and shows the match");
   await search(p, "");
   assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler"], "clearing the search closes it again, as the person left it");
+});
+
+/** The Show settings at their defaults checkbox, set and changed as a person does. */
+async function showDefaults(p: Page, on: boolean) {
+  p.$("settings-all").checked = on;
+  p.$("settings-all").fire("change");
+  await settleAll();
+}
+
+test("Settings: a setting at its default is not drawn until the defaults are asked for, and a search or the checkbox draws it", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  // GROUPED's Exposure port is at its default, and Tracker's provider line is always drawn.
+  assert.deepEqual(rowsIn(sectionNamed(p, "Exposure").node), ["tickets.port"], "the set alias is drawn, and the default port is not");
+  assert.equal(sectionNamed(p, "Exposure").node.all().find((n) => n.tag === "span")!.text(), "1 set, 1 at defaults", "the summary says what is set and what is at its defaults");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Tracker").node), ["tickets.providers.tracker.provider", "tickets.providers.tracker.key.path"], "a provider's line and a set setting are drawn");
+  await showDefaults(p, true);
+  assert.ok(rowsIn(sectionNamed(p, "Exposure").node).includes("tickets.providers.exposure.port"), "the checkbox draws the defaults");
+  assert.equal(sectionNamed(p, "Exposure").node.all().find((n) => n.tag === "span")!.text(), "2 settings", "with the checkbox on, the count is every setting");
+  await showDefaults(p, false);
+  await search(p, "port");
+  assert.ok(rowsIn(sectionNamed(p, "Exposure").node).includes("tickets.providers.exposure.port"), "a search finds a default");
 });
 
 test("Settings: an editable row keeps its Edit control, and a read-only row has none", async () => {
