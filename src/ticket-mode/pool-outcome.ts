@@ -1,7 +1,7 @@
 // @ts-check
 // module: what the pool reads from a run's files -- its outcome, its plan files, and the lines it quotes to a worker
 
-import { type WrittenOutcome } from "./queue/declared-remains.ts";
+import { type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { join } from "node:path";
 import { conflictLine, PUBLISHED_FILE } from "./worker-files.ts";
 import { readFileSync } from "node:fs";

@@ -1,12 +1,12 @@
 // @ts-check
 // module: ending a run -- how it ended and what that does to its ticket, its plan, its proposed edit, and its ticket's state
 
-import { clearMove, type Entry, type Outcome, type ProposedEdit, type WrittenOutcome } from "./queue/declared-remains.ts";
+import { clearMove, type Entry, type Outcome, type ProposedEdit, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
 import { ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, unpark } from "./queue/approve.ts";
+import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, unpark } from "./queue/queue-transitions.ts";
 import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";

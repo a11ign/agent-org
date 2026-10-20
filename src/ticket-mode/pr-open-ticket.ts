@@ -19,7 +19,7 @@ import { pathsAsRegion } from "./overlap.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Keywords, type TicketSource } from "./source.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
-import { declaredRemains } from "./queue/declared-remains.ts";
+import { declaredRemains } from "./queue/queue-entries-and-outcomes.ts";
 import { READY_FILE } from "./worker-files.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 

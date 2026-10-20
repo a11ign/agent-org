@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { type HookCommand } from "./worker-files.ts";
-import { type Queue } from "./queue/declared-remains.ts";
+import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.ts";
 import { type TicketSource } from "./source.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync } from "./pool-herdr.ts";

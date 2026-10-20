@@ -16,8 +16,8 @@ import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, completableRuns, finish, queuePublish, recordPullStates, respond, pauseQueue, resumeQueue } from "./queue/approve.ts";
-import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Outcome, type Queue } from "./queue/declared-remains.ts";
+import { approve, completableRuns, finish, queuePublish, recordPullStates, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
+import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";

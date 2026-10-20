@@ -13,7 +13,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { StackBaseRecord } from "./board-view/view-types-and-filters.ts";
-import { find, type Queue } from "./queue/declared-remains.ts";
+import { find, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import type { TicketSettings } from "./settings.ts";
 import type { Git } from "./worktree.ts";

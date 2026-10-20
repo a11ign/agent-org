@@ -10,8 +10,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlapWait, waitsOn } from "./board-view/pull-status-and-notes.ts";
-import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/declared-remains.ts";
-import { runOf, slotsHeld } from "./queue/approve.ts";
+import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
+import { runOf, slotsHeld } from "./queue/queue-transitions.ts";
 
 /** Record that the board completed the ticket of the finished run `key`, so it is not completed again. */
 export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace(queue, key, (entry) => ({ ...entry, closedByBoard: true }));

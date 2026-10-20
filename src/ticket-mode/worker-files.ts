@@ -11,7 +11,7 @@
 import { join } from "node:path";
 import type { StackBase } from "./board-view/pull-status-and-notes.ts";
 import type { DenyRule } from "./settings.ts";
-import type { PullRequest, WriterForm, WriterMode } from "./queue/declared-remains.ts";
+import type { PullRequest, WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { DECISIONS_FILE, MAX_CREATED, PRIORITY_NUMBER, type Priority } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";

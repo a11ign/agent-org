@@ -30,7 +30,7 @@ import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { asAccount, ensureStackExtension, STACK_EXTENSION, type StackExtension } from "../ticket-port/stack-extension.ts";
 import { workerAccount } from "./stack-account.ts";
-import { liveRunCount, type Queue } from "../ticket-mode/queue/declared-remains.ts";
+import { liveRunCount, type Queue } from "../ticket-mode/queue/queue-entries-and-outcomes.ts";
 import { loadQueue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { readAgents, herdrRun } from "../herdr-agents.ts";

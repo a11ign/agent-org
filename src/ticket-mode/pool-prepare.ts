@@ -2,7 +2,7 @@
 // module: a run's files, written before its agent starts -- its brief, its refusals and connectors, and its settings file
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { type Entry } from "./queue/declared-remains.ts";
+import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";

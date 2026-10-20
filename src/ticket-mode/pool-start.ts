@@ -1,14 +1,14 @@
 // @ts-check
 // module: starting a run -- its workspace and agent, the start dialogs it may answer, and the fill of the free slots
 
-import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/declared-remains.ts";
+import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, PLANNING_DENY, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, workerFlags, WRITER_CREATE_TOOLS, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
-import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, unreadBlockerKeys, unreadPaths } from "./queue/approve.ts";
+import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, unreadBlockerKeys, unreadPaths } from "./queue/queue-transitions.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { remoteHead, rebaseDue, rebaseOnto, afterRebase, roundHeldBy, stackBaseIn } from "./stack-rebase.ts";

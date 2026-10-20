@@ -264,7 +264,7 @@ export const parentKeys = (nodes: readonly TicketNode[]): string[] =>
 
 /**
  * A ticket can be selected when it is not on the queue already, is not a parent (the queue refuses one: `queue.ts`'s `refuseParents`), and holds no open
- * decision (the queue refuses that too: `declared-remains.ts`'s `refuseDecisions`).
+ * decision (the queue refuses that too: `queue-entries-and-outcomes.ts`'s `refuseDecisions`).
  */
 export const selectable = (ticket: ViewTicket, entries: readonly ViewEntry[]): boolean =>
   !isParentTicket(ticket) && ticket.needsDecision === undefined && !entries.some((e) => e.ticket.key === ticket.key);

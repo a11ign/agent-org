@@ -1,7 +1,7 @@
 // @ts-check
 // module: a person's actions on a run -- stop, dismiss, remove, stop a new-ticket run, and apply or discard a proposed edit
 
-import { clearEdit, dismiss as dismissFinished, isLive, proposedEdit, remove as removeQueued } from "./queue/declared-remains.ts";
+import { clearEdit, dismiss as dismissFinished, isLive, proposedEdit, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { close, end, restoreWorkingState } from "./pool-settle.ts";
 import { stopWriter, writerOf } from "./queue.ts";
 import { filedOf } from "./pool-board-runs.ts";

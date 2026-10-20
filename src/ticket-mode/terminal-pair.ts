@@ -8,7 +8,7 @@
 import { join } from "node:path";
 import { pluginConfigDir } from "../install/terminal.ts";
 import { escapeRegExp } from "../lib/escape-regexp.ts";
-import { type Queue, writerStatus } from "./queue/declared-remains.ts";
+import { type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import type { TicketSettings } from "./settings.ts";
 
 /*
