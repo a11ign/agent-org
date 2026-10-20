@@ -204,9 +204,11 @@ test("an old key that is set shows where its new key is, in place of its value, 
   assert.equal(row(view, "github.identity.scheduler.mode").editable, false, "an alias is shown, not changed");
 });
 
-test("an old key that is not set shows no alias, and its value is as it was", () => {
+test("an old key that is not set shows no alias, and its value is as it was; an old key that is set is in use", () => {
   const view = viewOf({ host: { tickets: {} } });
   assert.deepEqual([row(view, "tickets.linearKey").alias, row(view, "tickets.linearKey").state], [null, "default"], "its built-in default still says so");
+  assert.equal(row(view, "tickets.linearKey").inUse, false, "an old key nothing sets is not in use");
+  assert.equal(row(viewOf({ host: { tickets: { linearKey: { keychain: "x" } } } }), "tickets.linearKey").inUse, true, "an old key that is set is in use");
 });
 
 test("a provider whose block is missing says so, and says it is set by aliases while an old key of its block is set", () => {
@@ -228,6 +230,15 @@ test("a role's App fields matter only while the role uses a GitHub App, and are 
   assert.equal(row(view, `${app}.scheduler`).inUse, true);
   const stray = viewOf({ host: { tickets: { providers: { codeHost: { identity: { scheduler: { mode: "user-accounts", appId: 7 } } } } } } });
   assert.equal(row(stray, `${app}.scheduler.appId`).inUse, true, "an App id that is set is in use, so a refusal for it is seen");
+});
+
+test("a role is one row that shows its mode, and its own keys sit inside it; the routing gh's keys sit inside gh", () => {
+  const view = viewOf({ host: { tickets: { providers: { codeHost: { identity: { scheduler: { mode: "github-apps" } }, gh: { workers: "/w" } } } } } });
+  const role = row(view, "tickets.providers.codeHost.identity.scheduler");
+  assert.deepEqual([role.value, role.nest], ["github-apps", null], "the role shows its mode, and sits at the top");
+  assert.equal(row(view, "tickets.providers.codeHost.identity.scheduler.mode").nest, "tickets.providers.codeHost.identity.scheduler");
+  assert.equal(row(view, "tickets.providers.codeHost.gh.workers").nest, "tickets.providers.codeHost.gh");
+  assert.equal(row(view, "tickets.providers.codeHost.gh").nest, null);
 });
 
 test("the machine's plumbing is in Machine alone, and each provider's settings are in that provider's own section", () => {

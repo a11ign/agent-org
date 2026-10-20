@@ -1921,7 +1921,7 @@ test("Back to the board returns to the card the board was showing, and focus goe
 
 /** A row as the page's view gives it: its key, group and words, and whether the page changes it in place (`editable`, with its `input`, else `why`). */
 const SHOWN = (row: { key: string; group: string; explanation: string } & Record<string, unknown>) => ({ file: "host.json", value: "x", state: "enabled", source: "host.json",
-  breaks: `what breaks ${row.key}`, depth: 0, secret: false, input: null, raw: null, editable: false, why: null, alias: null, inUse: true, ...row });
+  breaks: `what breaks ${row.key}`, depth: 0, secret: false, input: null, raw: null, editable: false, why: null, alias: null, inUse: true, nest: null, ...row });
 /** Settings in four sections, as a provider's keys sit among the machine's: Tracker and Exposure hold a provider each, Workers holds a key that is not one, and Machine holds the plumbing. */
 const GROUPED = {
   refusals: [], notes: [], plugins: [], words: [], contract: [],
@@ -1954,8 +1954,14 @@ async function search(p: Page, query: string) {
   p.$("settings-search").fire("input");
   await settleAll();
 }
-/** The keys of the rows in a section, in the order the page draws them. */
-const rowsIn = (section: Node_) => section.all().filter((n) => n.tag === "dl" && !n.hidden).map((n) => n.all().find((c) => c.tag === "code")!.text());
+/** Whether a node is drawn: it is not hidden, and no ancestor is hidden or a closed disclosure. */
+const drawn = (node: Node_): boolean => {
+  if (node.hidden) return false;
+  if (node.parent === null) return true;
+  return (node.parent.tag !== "details" || node.parent.open) && drawn(node.parent);
+};
+/** The keys of the rows in a section that are drawn, in the order the page draws them. */
+const rowsIn = (section: Node_) => section.all().filter((n) => n.tag === "dl" && drawn(n)).map((n) => n.all().find((c) => c.tag === "code")!.text());
 
 /** The text a person sees: a closed Details shows its summary and nothing under it, and a hidden node shows nothing. */
 const visibleText = (node: Node_): string => node.hidden ? "" : node.tag === "details" && !node.open
@@ -2060,6 +2066,23 @@ test("Settings: a key that is not in use is hidden, and a search finds it and sh
   await search(p, "app");
   assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler.appId"], "a search finds it");
   assert.equal(p.$("settings-search-status").textContent, "1 setting matches");
+});
+
+test("Settings: a role's settings sit in a disclosure under the role, closed until a person opens it or a search finds one of them", async () => {
+  const roleFixture = { ...GROUPED, groups: [...GROUPED.groups.slice(0, 2),
+    { group: "Code host", rows: [
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler", group: "Code host", explanation: "One role's identity.", value: "user-accounts", state: "enabled", source: "host.json" }),
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.mode", group: "Code host", explanation: "Whether the role acts as the person's account.", value: "user-accounts", state: "enabled", source: "host.json", nest: "tickets.providers.codeHost.identity.scheduler" }),
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.appId", group: "Code host", explanation: "The App's id. Required with github-apps.", inUse: false, nest: "tickets.providers.codeHost.identity.scheduler" }),
+    ] }] };
+  const p = await settingsPage({ config: SETTINGS, settings: roleFixture });
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler"], "the role is drawn; its settings are not, while the disclosure is closed");
+  const nested = sectionNamed(p, "Code host").node.all().find((n) => n.tag === "details" && n.className === "setting-nested")!;
+  assert.equal(nested.all().find((n) => n.tag === "summary")!.text(), "1 setting", "the disclosure says how many settings it holds that are drawn");
+  await search(p, "acts as");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler", "tickets.providers.codeHost.identity.scheduler.mode"], "a search opens the disclosure and shows the match");
+  await search(p, "");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler"], "clearing the search closes it again, as the person left it");
 });
 
 test("Settings: an editable row keeps its Edit control, and a read-only row has none", async () => {

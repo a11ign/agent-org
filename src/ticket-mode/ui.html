@@ -132,6 +132,8 @@
   .setting dt { font-weight: 600; overflow-wrap: anywhere; }
   .setting dd { margin: 2px 0 0; overflow-wrap: anywhere; }
   .setting .row-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .setting-nested { margin: 0 0 8px 16px; }
+  .setting-nested > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
   .setting-group ul { margin: 6px 0; padding-left: 20px; }
   .change { margin-bottom: 12px; }
   .hint.failed { color: var(--bad); }
@@ -907,8 +909,18 @@ function drawSearch() {
   for (const section of sections) {
     // A key that does not matter now is shown only by a search that finds it (its role's App fields, while the role uses no App).
     const visible = section.rows.filter(({ row }) => shown.has(row.key) && (searching || row.inUse));
-    const visibleRows = new Set(visible.map(({ row }) => row));
+    // A setting inside a role or routing block brings that block's row along, so the match reads in place.
+    const holders = new Set(visible.map(({ row }) => row.nest));
+    const context = section.rows.filter(({ row }) => holders.has(row.key));
+    const visibleRows = new Set([...visible, ...context].map(({ row }) => row));
     for (const { row, node } of section.rows) node.hidden = !visibleRows.has(row);
+    // A role's or routing block's settings sit in a disclosure of their own: closed until a person opens it, and open where a search finds one of them.
+    for (const nested of section.nested) {
+      const inside = nested.items.filter(({ row }) => visibleRows.has(row)).length;
+      nested.node.hidden = inside === 0;
+      nested.summary.textContent = settingsCount(inside);
+      nested.node.open = searching || (state.settingsSearch.open[nested.parent] ?? false);
+    }
     matching += visible.length;
     section.count.textContent = settingsCount(visible.length);
     section.node.hidden = searching && visible.length === 0 && !section.alwaysShown;
@@ -1113,7 +1125,20 @@ function settingsGroup({ group, rows }, view) {
   const id = `group-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
   const count = el("span", { className: "hint" });
   const shown = rows.map((row) => ({ row, node: settingRow(row) }));
-  const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: group }), count), ...shown.map(({ node }) => node));
+  const parents = new Set(rows.map((row) => row.key));
+  const top = shown.filter(({ row }) => row.nest === null || !parents.has(row.nest));
+  const nested = [];
+  const children = top.flatMap((item) => {
+    const items = shown.filter(({ row }) => row.nest === item.row.key);
+    if (items.length === 0) return [item.node];
+    const summary = el("summary", {});
+    const node = el("details", { className: "setting-nested" }, summary, ...items.map((child) => child.node));
+    // A person's open or closed choice for a nested block is kept, as a section's is.
+    node.addEventListener("toggle", () => { if (state.settingsSearch.query === "") state.settingsSearch.open[item.row.key] = node.open; });
+    nested.push({ parent: item.row.key, node, summary, items });
+    return [item.node, node];
+  });
+  const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: group }), count), ...children);
   section.setAttribute("aria-labelledby", id);
   // Only a choice made while nothing is searched is kept: a search's own opening of a section is not the person's.
   section.addEventListener("toggle", () => { if (state.settingsSearch.query === "") state.settingsSearch.open[group] = section.open; });
@@ -1123,7 +1148,7 @@ function settingsGroup({ group, rows }, view) {
       ...renderContractMismatchRows(view.contract ?? []),
       el("ul", {}, ...view.words.map((words) => el("li", { textContent: words }))));
   }
-  return { group, node: section, count, rows: shown, alwaysShown: plugins };
+  return { group, node: section, count, rows: shown, nested, alwaysShown: plugins };
 }
 /** The contract mismatches, one row each, under a label in words; the page draws none of its own (the server's check gives them). Nothing when there are none. */
 function renderContractMismatchRows(rows) {

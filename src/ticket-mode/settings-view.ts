@@ -38,8 +38,10 @@ export type Source = "host.json" | "project.json" | "choice.json" | "queue.json"
  */
 export type Row = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean;
   input: Input | null; raw: string | null; editable: boolean; why: string | null; alias: string | null;
-  /** Whether the key matters to the host now. False for an App's field of a role that does not use an App, until the field is set: the page hides it, and a search still finds it. */
-  inUse: boolean }>;
+  /** Whether the key matters to the host now: an old key matters only while it is set, and an App's field of a role that does not use an App only while the role uses one. The page hides the rest, and a search still finds them. */
+  inUse: boolean;
+  /** The row this one sits inside, for a key of a role (`identity.<role>`) or of the routing gh: the page nests it under that row. Null at the top of a section. */
+  nest: string | null }>;
 export type PluginLine = Readonly<{ plugin: string; installed: string; loads: string }>;
 export type View = Readonly<{
   groups: readonly Readonly<{ group: Group; rows: readonly Row[] }>[];
@@ -113,6 +115,20 @@ function inUseOf(entry: SchemaEntry, key: string, root: Readonly<Record<string, 
   return valueAt(root, [...key.split(".").slice(0, role + 1), "mode"]) === "github-apps";
 }
 
+/** The row a key sits inside: a role's keys inside the role, and the routing gh's keys inside `gh`. Null for a key that sits at the top of its section. */
+function nestOf(key: string): string | null {
+  const role = /^((?:tickets\.providers\.codeHost|github)\.identity\.[^.]+)\..+/.exec(key);
+  if (role) return role[1];
+  const routing = /^((?:tickets\.providers\.codeHost\.)?gh)\..+/.exec(key);
+  return routing ? routing[1] : null;
+}
+
+/** A role's row shows its mode, which is what a person reads of the role; the role's other keys sit inside it. */
+function roleValue(root: Readonly<Record<string, unknown>>, path: readonly string[]): string {
+  const mode = valueAt(root, [...path, "mode"]);
+  return typeof mode === "string" ? mode : "user-accounts";
+}
+
 /** The text an old key shows in place of its value: its new key, with the names its `<name>` segments carry in this key, and the command that moves it. */
 function aliasText(entry: SchemaEntry, key: string): string | null {
   if (entry.aliasOf === undefined) return null;
@@ -171,9 +187,10 @@ function rowsOf(entry: SchemaEntry, input: ViewInput): Row[] {
     // A child of an absent parent that has no value of its own is not set, whatever the entry's own default says.
     const state = set ? stateWhenSet(entry, value) : (aliased ? "enabled" : (parentAbsent ? "not set" : stateWhenAbsent(entry)));
     const source = set || aliased ? fileOf(entry) : "built-in default";
-    const shown = set ? showValue({ key, value }, entry, input.exists) : (aliased ? ALIASED_VALUE : absentValue(entry, state));
+    const roleRow = /^(?:tickets\.providers\.codeHost|github)\.identity\.[^.]+$/.test(key);
+    const shown = set ? (roleRow ? roleValue(root, path) : showValue({ key, value }, entry, input.exists)) : (aliased ? ALIASED_VALUE : absentValue(entry, state));
     rows.push({ key, file: entry.file, group: entry.group, value: shown, state, source, explanation: entry.explanation, breaks: entry.breaks, depth: path.length - 1, secret: entry.secret !== undefined,
-      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null, inUse: set || inUseOf(entry, key, root) });
+      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null, inUse: set || (entry.aliasOf === undefined && inUseOf(entry, key, root)), nest: nestOf(key) });
     if (Array.isArray(value)) rows.push(...elementRows({ parent: entry, key, items: value, state }, input));
   }
   return rows;
@@ -190,7 +207,7 @@ function elementRows({ parent, key, items, state }: Readonly<{ parent: SchemaEnt
       const values = items.filter(isObject).map((item) => (item[field] === undefined ? "not set" : showValue({ key: fieldKey, value: item[field] }, entry, input.exists)));
       return { key: fieldKey, file: entry.file, group: entry.group, value: values.join("; ") || "none", state, source: fileOf(entry), explanation: entry.explanation,
         breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined, input: null, raw: null, editable: false, why: whyOf(entry) ?? "a list is changed as a whole",
-        alias: items.length > 0 ? aliasText(entry, fieldKey) : null, inUse: true };
+        alias: items.length > 0 ? aliasText(entry, fieldKey) : null, inUse: entry.aliasOf === undefined || items.length > 0, nest: nestOf(fieldKey) };
     });
 }
 
@@ -200,7 +217,7 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
   const saved = input.choice.saved[part];
   const hostValue = part === "writerModel" || part === "writerEffort" ? input.choice.host[part] : undefined;
   const base = { key: entry.key, file: entry.file, group: entry.group, explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null,
-    editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true };
+    editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true, nest: null };
   if (saved !== undefined) return { ...base, value: saved, state: "enabled", source: "choice.json" };
   if (hostValue !== undefined) return { ...base, value: hostValue, state: "default", source: "host.json" };
   return { ...base, value: CHOICE_BUILT_IN[part], state: "default", source: "built-in default" };
@@ -210,7 +227,7 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
 function queueRow(entry: SchemaEntry, input: ViewInput): Row {
   const { max, source } = input.queue;
   return { key: entry.key, file: entry.file, group: entry.group, value: String(max), state: source === "built-in default" ? "default" : "enabled", source,
-    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null, editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true };
+    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null, editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true, nest: null };
 }
 
 /** The connector pattern's name, as the text between its `^mcp__` and the next `__`, or the pattern as written when it has none. */
