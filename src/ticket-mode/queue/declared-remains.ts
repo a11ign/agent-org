@@ -2,6 +2,7 @@ import { CONCLUDED, openPulls, RESULT_KINDS, type StackBaseRecord } from "../boa
 import { isBeingPublished, isParked } from "../board-view/settled-by-pulls.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
+import { needsDecision } from "../open-decisions.ts";
 
 /**
  * What a worker's `partial` declaration says remains of its ticket: its words, trimmed, or null for none, which is a blank declaration or the brief's
@@ -285,6 +286,10 @@ export type WriterRun = Readonly<{
   failure?: string;
   /** The tickets the run created, in the order it created them, shown as links once the run ends. */
   tickets: readonly WriterTicket[];
+  /** The key of the ticket a Grill run grills, which it writes its answers into rather than filing a ticket (A11-134). */
+  ticket?: string;
+  /** The description of that ticket when the Grill started: the answers are written only while it still holds this text. */
+  startedFrom?: string;
 }>;
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
@@ -384,6 +389,19 @@ export function childOrder(children: readonly string[], blockers: ReadonlyMap<st
 }
 
 /**
+ * Refuse a ticket that still holds an open decision, or a screen's behaviour that is not grilled: a worker may not settle either (`open-decisions.ts`), so
+ * the queue holds the rule itself, as the page's Select does not. The reason names each ticket and its open line, and says to Grill it. PURE.
+ */
+export function refuseDecisions(tickets: readonly Ticket[]): void {
+  const held = tickets.flatMap((ticket) => {
+    const open = needsDecision(ticket);
+    return open === null ? [] : [`${ticket.key}: ${open.reason}`];
+  });
+  if (held.length === 0) return;
+  throw new Error(held.join("; "));
+}
+
+/**
  * Add each ticket not already on the queue, after the last entry. A ticket already there is left as it is. Each ticket `planFirst` names is
  * planned, on its model and effort, before it is worked. With `planFirst.batch`, the ones added are batched in runs of up to
  * {@link PLAN_BATCH_MAX}, in queue order, and a run of one is no batch. A parent is refused, whole, before anything is added: see
@@ -392,6 +410,7 @@ export function childOrder(children: readonly string[], blockers: ReadonlyMap<st
 export function enqueue(queue: Queue, tickets: readonly Ticket[], choice: RunChoice, now: number, planFirst: PlanFirst | null = null): Queue {
   refuseParents(tickets.filter((ticket) => find(queue, ticket.key) === undefined));
   const fresh = tickets.filter((ticket) => find(queue, ticket.key) === undefined);
+  refuseDecisions(fresh);
   const planned = fresh.filter((ticket) => planFirst?.keys.has(ticket.key)).map((ticket) => ticket.key);
   const batches = new Map<string, string>();
   for (let start = 0; planFirst?.batch === true && start < planned.length; start += PLAN_BATCH_MAX) {

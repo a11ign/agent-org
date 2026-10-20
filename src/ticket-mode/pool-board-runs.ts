@@ -3,7 +3,9 @@
 
 import { type PublishRun, type WriterRun, type WriterTicket } from "./queue/declared-remains.ts";
 import { type RunPlace } from "./pool-paths.ts";
-import { CREATED_FILE, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import { CREATED_FILE, DECISIONS_FILE, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import { sectionsNeeded, settledDescription } from "./open-decisions.ts";
+import { type Ticket } from "./source.ts";
 import { inPickScope } from "./pick-scope.ts";
 import { joined } from "./queue.ts";
 import { forgetRun, messageOf, publishPlace, update, writerPlace, writerAgentRunning } from "./pool-state.ts";
@@ -13,7 +15,7 @@ import { closedNote } from "../herdr-agents.ts";
 import { publishDone, publishFailed } from "./queue/approve.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { hasPlan } from "./board-view/view-ticket.ts";
-import { renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ASKED_FILE, OUTCOME_FILE, WAITING_FILE } from "./worker-files.ts";
 
@@ -28,6 +30,7 @@ export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunP
   try {
     const outcome = parseWriterOutcome(text);
     if (typeof outcome === "string") return endWriter(ctx, run, outcome);
+    if (outcome.kind === "decided") return await settleGrill(ctx, run, place, outcome.ticket);
     if (outcome.kind === "needs-human" && run.mode === "grill" && outcome.created.length === 0) return askPerson(ctx, run, place, outcome.reason);
     const made = await ticketsMade(ctx, place, outcome.created);
     const reason = outcome.kind === "needs-human" ? outcome.reason.slice(0, QUESTION_CHARS) : undefined;
@@ -68,6 +71,40 @@ async function madeTicket({ settings, source }: PoolContext, key: string): Promi
   const ticket: WriterTicket = { key, url: found.url, inPick: inPickScope(settings.pick, found) };
   if (settings.plan !== null && !hasPlan(found, new RegExp(settings.plan))) return { ticket, problem: `${key} has no plan attached` };
   return { ticket, problem: null };
+}
+
+/**
+ * A Grill run's answers, written into the ticket it grilled (A11-134). The ticket is read again, and its description must still be the one the Grill started
+ * from: otherwise nothing is written and the run fails with that reason. The answers go under the old text, with the marker of each section they answer, so the
+ * ticket can then be queued. The run files no ticket, so it ends with none.
+ */
+async function settleGrill(ctx: PoolContext, run: WriterRun, place: RunPlace, key: string): Promise<void> {
+  const { now, source } = ctx;
+  if (run.ticket !== key) return endWriter(ctx, run, `the outcome names ${key}, which is not the ticket this run grills (${run.ticket ?? "none"})`);
+  const answersPath = join(place.dir, DECISIONS_FILE);
+  const answers = existsSync(answersPath) ? readFileSync(answersPath, "utf8") : "";
+  let fresh: Ticket | null;
+  try {
+    fresh = await source.read(key);
+  } catch (err) {
+    return endWriter(ctx, run, `${key} could not be read from the tracker: ${messageOf(err).split("\n")[0]}`);
+  }
+  if (fresh === null) return endWriter(ctx, run, `${key} is not in the tracker`);
+  const needed = sectionsNeeded(fresh);
+  // Settled already, by an edit made while the Grill ran: nothing is left to write, and the run ends with none.
+  if (needed.length === 0) {
+    if (!writerAgentRunning(ctx, run.id)) return;
+    closeWriter(ctx, run);
+    return update(ctx, (queue) => writerEnded(queue, run.id, { tickets: [] }, now()));
+  }
+  const missing = needed.filter((section) => !new RegExp(`^## ${section}\\s*$`, "m").test(answers));
+  if (missing.length > 0) return endWriter(ctx, run, `${DECISIONS_FILE} has no ${missing.map((section) => `## ${section}`).join(" or ")} section, which ${key} still needs`);
+  if (run.startedFrom === undefined || fresh.description !== run.startedFrom) return endWriter(ctx, run, `${key} changed while it was grilled, so nothing was written: Grill it again`);
+  if (source.updateTicketText === undefined) return endWriter(ctx, run, `this tracker cannot edit ${key}'s text`);
+  if (!writerAgentRunning(ctx, run.id)) return;
+  await source.updateTicketText(key, { description: settledDescription(fresh.description, answers) });
+  closeWriter(ctx, run);
+  update(ctx, (queue) => writerEnded(queue, run.id, { tickets: [] }, now()));
 }
 
 /**

@@ -26,6 +26,7 @@ import { markWriterRunning, markWriterStarting, nextStarts, writerFailed, writer
 import { clearRunDir, prepare, prepareBatch, writeBoardRunFiles } from "./pool-prepare.ts";
 import { hasPlan } from "./board-view/view-ticket.ts";
 import { pickTeamOf } from "./pick-scope.ts";
+import { needsDecision } from "./open-decisions.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -339,6 +340,16 @@ function stoppedWhileStarting(ctx: PoolContext, key: string, workspace: string):
   return true;
 }
 
+/**
+ * The open decision that holds a work run back, as its reason, or null (A11-134). A work run never starts on a ticket with an open decision: the queue refused
+ * one, but the tracker may have changed since, or the ticket was queued before the check, and no worker chooses the answer. A synchronous check, so a run
+ * without one starts with no extra turn of the event loop.
+ */
+function openDecisionHold(ctx: PoolContext, entry: Entry): string | null {
+  if (isPlanning(ctx, entry) || entry.review !== undefined) return null;
+  return needsDecision(entry.ticket)?.reason ?? null;
+}
+
 /** Start one run for one ticket, the rest of its batch, if it had one, being started already or waiting on a blocker. */
 async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
   const { now } = ctx;
@@ -351,7 +362,8 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
       update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false }));
       return;
     }
-    const blocked = entry.review !== undefined && entry.stackBase !== undefined ? await rebaseBeforeRound(ctx, entry) : null;
+    // A work run held by an open decision ends needs-human with its reason (A11-134); a review round may wait on its stacked base instead.
+    const blocked = openDecisionHold(ctx, entry) ?? (entry.review !== undefined && entry.stackBase !== undefined ? await rebaseBeforeRound(ctx, entry) : null);
     if (blocked !== null) {
       update(ctx, (queue) => finish(queue, entry.ticket.key, { kind: "needs-human", reason: blocked }, now()));
       return;
@@ -430,7 +442,7 @@ async function planReached(ctx: PoolContext, queued: Ticket): Promise<boolean> {
  * while it starts is closed, as a ticket run stopped while it starts is. A start that fails ends the run failed, saying why.
  */
 async function startWriter(ctx: PoolContext): Promise<void> {
-  const { herdr, now, session, settings, store } = ctx;
+  const { herdr, now, session, settings, source, store } = ctx;
   const queued = writerToStart(store.get());
   const writer = settings.writer;
   if (queued === undefined) return;
@@ -440,10 +452,12 @@ async function startWriter(ctx: PoolContext): Promise<void> {
     const model = queued.model ?? writer.model;
     const effort = queued.effort ?? writer.effort;
     const place = writerPlace(ctx, queued);
+    // A Grill run's ticket is read as it is now: its brief is the grill of that text, and the run may file nothing (A11-134).
+    const grilled = queued.ticket === undefined ? undefined : await readGrilled(source, queued.ticket);
     clearRunDir(ctx, place.folder, place.dir);
     writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, form: queued.form, clones: settings.clones,
-      dir: place.dir, pickTeam: pickTeamOf(settings.pick) }));
-    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: WRITER_CREATE_TOOLS })}\n`);
+      dir: place.dir, pickTeam: pickTeamOf(settings.pick), ...(grilled === undefined ? {} : { ticket: grilled }) }));
+    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: grilled === undefined ? WRITER_CREATE_TOOLS : [] })}\n`);
     writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model, writer: true });
     const tail = [writerPrompt(place.dir, queued.mode), ...workerFlags({ name: `writer-${queued.id}`, model, effort, addDirs: [place.dir] })];
     const { workspace, pane } = await startAgent(ctx, place, {}, tail, "the new-ticket run");
@@ -456,6 +470,13 @@ async function startWriter(ctx: PoolContext): Promise<void> {
   } catch (err) {
     update(ctx, (queue) => writerFailed(queue, queued.id, messageOf(err).split("\n")[0], now()));
   }
+}
+
+/** The ticket a Grill run grills, as the tracker has it now. Throws when the tracker has no such ticket: the run fails, and says so (A11-134). */
+async function readGrilled(source: Pick<TicketSource, "read">, key: string): Promise<Ticket> {
+  const found = await source.read(key);
+  if (found === null) throw new Error(`${key} is not in the tracker`);
+  return found;
 }
 
 /**

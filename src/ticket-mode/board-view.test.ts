@@ -1060,3 +1060,9 @@ test("A11-119: the Pull requests section lists the pull requests the pool has re
   assert.deepEqual(unlistedPulls([run], reviews), [{ url: "https://github.com/a11ign/agent-org/pull/1800", label: "a11ign/agent-org #1800", text: "awaiting review at 91bf0677" }]);
   assert.deepEqual(unlistedPulls([run], { "https://github.com/a11ign/control/pull/119": "reviewing" }), [], "hidden when none is unlisted");
 });
+
+test("A11-134: a ticket the server says holds an open decision cannot be selected, and an ordinary one can", () => {
+  const held = { ...TICKETS[0], needsDecision: { kind: "decision", reason: "held" } };
+  assert.equal(selectable(held, []), false);
+  assert.equal(selectable(TICKETS[0], []), true);
+});

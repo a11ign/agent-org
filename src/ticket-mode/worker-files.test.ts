@@ -672,3 +672,33 @@ test("A11-135: a writer's settings record each creation as it returns, and no ot
     args: ["/tool/src/bin.ts", "ticket:hook", "post-tool-use", "/d"], timeout: 30 }] }]);
   assert.equal("PostToolUse" in (workerSettings(base) as any).hooks, false, "a build worker records nothing");
 });
+
+test("A11-134: the worker brief says nobody answers it, settles no product decision and ends needs-human with one question, and the old instruction to decide is gone", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.ok(brief.includes("Nobody will answer you in this run. Settle no product or design decision the ticket did not settle: end with `needs-human`, naming the one question, and you may state your recommendation. Decide technical matters yourself."));
+  assert.equal(brief.includes("so decide"), false);
+  assert.match(brief, /A product decision is what a person sees or does, what a control is called or does/);
+  assert.match(brief, /Write `needs-human` only for a real question[^]*A product or design decision the ticket did not settle is one of these: name the one question, and do not pick an answer\./);
+});
+
+test("A11-134: both planners end a ticket with a decision only a person can make in its QUESTION.md, and never record it as made without asking", () => {
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.match(brief, /ends that ticket in its `QUESTION\.md`, with no plan\. It is never recorded under "Decisions made without a person"/);
+    assert.match(brief, /a `Product:` bullet is a defect, and the board refuses that plan/);
+  }
+  assert.match(plan, /the `QUESTION\.md` says the behaviour grill is needed/);
+});
+
+test("A11-134: a Grill run's brief grills one ticket, asks its open line and its screen's behaviour, and files nothing: it ends decided", () => {
+  const grilled = { ...ticket, description: "## Acceptance\n\n### 4. Decide whether to isolate the failing ticket or keep the stall\n\n**Screen:** yes\n" };
+  const brief = writerBriefText({ ...WRITER, request: "Grill NBF-1270", mode: "grill", form: {}, dir: "/d", pickTeam: "A11", ticket: grilled });
+  assert.match(brief, /^# Grill NBF-1270: Refresh Data gives no feedback\n/);
+  assert.ok(brief.includes("`### 4. Decide whether to isolate the failing ticket or keep the stall`"));
+  assert.match(brief, /the ticket changes a screen\. Ask the person what they see, what each control does/);
+  assert.ok(brief.includes("/d/decisions.md"));
+  assert.ok(brief.includes('{ "kind": "decided", "ticket": "NBF-1270" }'));
+  assert.match(brief, /File no ticket, attach nothing, and change nothing in the tracker/);
+  assert.equal(brief.includes("mcp__linear__save_issue"), false);
+});

@@ -888,3 +888,57 @@ test("/api/settings reads the project of the host file the suite runs against, t
   assert.equal(view.notes.some((note) => /declares no project/.test(note)), false, "a machine with a project declared is not a board-only one");
   assert.ok(view.groups.flatMap((group) => group.rows).some((candidate) => candidate.file === "project.json"), "the project's keys are drawn from its file");
 });
+
+/** A ticket the tracker holds with an open decision in its Acceptance: the page is sent it with `needsDecision` (A11-134). */
+const DECIDING = { ...ticket("A11-50"), description: "## Acceptance\n\n- Decide whether the list sorts.\n" } as Ticket;
+
+test("A11-134: the page is sent each ticket's open decision as needsDecision, and a ticket with none is sent without one", async () => {
+  const tracker: TicketSource = { assigned: async () => [DECIDING, ticket("NBF-2")], read: async () => null, download: async () => [] };
+  const [, tickets] = await board(4747, {}, {}, tracker).api("GET", "/api/tickets", {}) as [number, any[]];
+  assert.match(tickets[0].needsDecision.reason, /An open decision is still in acceptance: "- Decide whether the list sorts\."/);
+  assert.equal(tickets[1].needsDecision, undefined);
+});
+
+test("A11-134: the queue refuses a ticket with an open decision, naming its line, and Queue its children leaves such a sub-issue out and names it", async () => {
+  const sub = { ...ticket("A11-51"), description: "" } as Ticket;
+  const tracker: TicketSource = {
+    assigned: async () => [DECIDING],
+    read: async (key) => (key === "A11-24" ? { ...ticket(key), children: ["A11-50", "A11-51"] } : key === "A11-50" ? DECIDING : key === "A11-51" ? sub : null),
+    download: async () => [],
+  };
+  const b = board(4747, {}, {}, tracker);
+  await b.api("GET", "/api/tickets", {});
+  await assert.rejects(b.api("POST", "/api/queue", { keys: ["A11-50"], model: "opus", effort: "high" }),
+    /^Error: A11-50: An open decision is still in acceptance: "- Decide whether the list sorts\.". Grill it to settle the decision before it is queued\.$/);
+  assert.deepEqual(b.store.get().entries, [], "nothing is queued");
+  const [, answer] = await b.api("POST", "/api/queue-children", { key: "A11-24", model: "opus", effort: "high" }) as [number, any];
+  assert.deepEqual(answer.keys, ["A11-51"]);
+  assert.match(answer.note, /A11-50 holds an open decision, so not queued: Grill it first/);
+});
+
+test("A11-134: a ticket the page copied with an open decision is queued once its tracker text is settled, since the queue reads it again", async () => {
+  let text = DECIDING.description;
+  const tracker: TicketSource = { assigned: async () => [DECIDING], read: async () => ({ ...DECIDING, description: text }), download: async () => [] };
+  const b = board(4747, {}, {}, tracker);
+  await b.api("GET", "/api/tickets", {});
+  text = `${DECIDING.description}\n**Decisions:** settled\n`;
+  const [status, queue] = await b.api("POST", "/api/queue", { keys: ["A11-50"], model: "opus", effort: "high" }) as [number, any];
+  assert.equal(status, 200);
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-50"]);
+});
+
+test("A11-134: Grill on a ticket with an open decision queues a grill run on it that files nothing and keeps the text it started from, and is refused without a terminal or a settled ticket", async () => {
+  const tracker: TicketSource = { assigned: async () => [DECIDING], read: async (key) => (key === "A11-50" ? DECIDING : key === "NBF-1" ? ticket("NBF-1") : null), download: async () => [] };
+  const b = board(4747, WRITER, {}, tracker);
+  const [status, writers] = await b.api("POST", "/api/grill-ticket", { key: "A11-50" }) as [number, any];
+  assert.equal(status, 200);
+  assert.deepEqual(writers.runs.map((r: any) => [r.request, r.mode, r.status, r.ticket]), [["Grill A11-50", "grill", "queued", "A11-50"]]);
+  assert.equal(writers.runs[0].startedFrom, undefined, "the text it started from is kept on the board, not sent to the page");
+  const [, view] = await b.api("GET", "/api/queue", {}) as [number, any];
+  assert.equal(view.writers[0].startedFrom, undefined, "the queue the page reads holds no Grill run's ticket text either");
+  assert.deepEqual(b.ticks, ["tick"], "the pool is woken to start it");
+  await assert.rejects(b.api("POST", "/api/grill-ticket", { key: "NBF-1" }), /NBF-1 has no open decision and no screen behaviour to grill/);
+  await assert.rejects(b.api("POST", "/api/grill-ticket", { key: "A11-404" }), /no ticket A11-404/);
+  const plain = board(4747, { writer: WRITER.writer }, {}, tracker);
+  await assert.rejects(plain.api("POST", "/api/grill-ticket", { key: "A11-50" }), /Grill needs a terminal: name tickets.terminal in the host file/);
+});
