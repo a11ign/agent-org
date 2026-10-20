@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { SCHEMA } from "./config-schema.ts";
 import { HOST_FILE_ENV, parseTicketSettings, plansInBatches, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
 
 const clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform": "/repos/nbl-ui-platform", "platform-monorepo": "/repos/platform-monorepo" };
@@ -287,9 +288,10 @@ test("a machine names how a new ticket is written from a person's request: the w
 test("A11-124: the writer's instruction may name the board's mode with {mode}, which is optional, and the shipped example and its fixtures name no mode", () => {
   const withMode = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.";
   assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run: withMode } } }).writer?.run, withMode, "{mode} is accepted, and not required");
-  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
-  const example = /Run the a11ign:create-ticket skill[^"`]*\{dir\}\./.exec(readme)?.[0];
-  assert.ok(example, "POSITIVE CONTROL: the README's example is found");
+  // The shipped example is the schema's words for `tickets.writer.run`: the README's key table no longer carries example values (A11-141).
+  const writerRun = SCHEMA.find((entry) => entry.key === "tickets.writer.run")?.explanation ?? "";
+  const example = /Run the a11ign:create-ticket skill[^"`]*\{dir\}\./.exec(writerRun)?.[0];
+  assert.ok(example, "POSITIVE CONTROL: the schema's example is found");
   assert.doesNotMatch(example, /\b(quick|grill)\b/i, "the example names no mode: the board passes it");
   for (const file of ["../install/doctor.test.ts", "./worker-files.test.ts", "./server.test.ts", "./pool.test.ts", "./serve-ticket-only-host.test.ts"]) {
     const text = readFileSync(new URL(file, import.meta.url), "utf8");
