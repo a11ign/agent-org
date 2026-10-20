@@ -9,7 +9,7 @@ import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { isPlanning, runChoice, runPlace } from "./pool-state.ts";
-import { repoOf, stackedOn } from "./board-view/settled-by-pulls.ts";
+import { repoOf, stackedOn } from "./board-view/pull-status-and-notes.ts";
 import { STACK_BASE_FILE } from "./stack-rebase.ts";
 import { pluginProblems } from "./plugins.ts";
 import { hostFactsOf } from "./plugin-contract.ts";

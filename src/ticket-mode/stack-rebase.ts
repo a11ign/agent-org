@@ -12,7 +12,7 @@
 // ASYNCHRONOUS git, through the same `Git` the worktrees use, so a test runs it on real repositories in temporary directories.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { StackBaseRecord } from "./board-view/view-ticket.ts";
+import type { StackBaseRecord } from "./board-view/view-types-and-filters.ts";
 import { find, type Queue } from "./queue/declared-remains.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import type { TicketSettings } from "./settings.ts";

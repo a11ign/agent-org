@@ -9,7 +9,7 @@
 // the only writer of the file, which it replaces whole by rename, so a reader never sees half of one.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { overlapWait, waitsOn } from "./board-view/settled-by-pulls.ts";
+import { overlapWait, waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/declared-remains.ts";
 import { runOf, slotsHeld } from "./queue/approve.ts";
 

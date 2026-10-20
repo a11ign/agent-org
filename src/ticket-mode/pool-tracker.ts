@@ -7,8 +7,8 @@ import { completableRuns, recordPullStates, recordRetargets, recordStackBase, re
 import { SETTLED, type Entry } from "./queue/declared-remains.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
-import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-ticket.ts";
-import { settledByPulls } from "./board-view/settled-by-pulls.ts";
+import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
+import { settledByPulls } from "./board-view/pull-status-and-notes.ts";
 import { recordClosedByBoard } from "./queue.ts";
 import { sweepRetargets } from "../ticket-port/stack-retarget.ts";
 import { afterRebase, protectStack, rebaseDue, rebaseOnto, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type RebaseResult } from "./stack-rebase.ts";

@@ -190,7 +190,7 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
   ...nonVocabulary("claim-stall/stall-causes-and-claim-readings.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
   // `ticket-mode/board-view.ts`: `RunStatus`'s own `"blocked"` is a ticket-mode RUN's status (a queued run waiting on tickets that block it), never the `blocked` GitHub label.
-  ...nonVocabulary("ticket-mode/board-view/settled-by-pulls.ts", ['"blocked"'], "a ticket-mode run's own status, not the `blocked` label"),
+  ...nonVocabulary("ticket-mode/board-view/pull-status-and-notes.ts", ['"blocked"'], "a ticket-mode run's own status, not the `blocked` label"),
   // `wake.ts`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.ts`'s `why: "blocked"`
   // consumed here (`releaseHeadline`) -- both the same non-vocabulary fact as above; plus prose that happens to start a string segment with the
   // English word "answer:" (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
@@ -228,7 +228,7 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // `auto-arm-sweep.ts` (agent-org#1573): `run(["pr", "ready", ...])` -- the same CLI verb, for an approved draft the outside home readies before it arms.
   ...nonVocabulary("ticket-port/outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
   // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.
-  ...nonVocabulary("ticket-mode/board-view/view-ticket.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
+  ...nonVocabulary("ticket-mode/board-view/view-types-and-filters.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
   // `ticket-mode/linear.ts`: `"backlog"` and `"triage"` are Linear's own state TYPES, read to decide whether a planned ticket moves to the planner's state; never the board's `backlog` column.
   ...nonVocabulary("ticket-mode/linear.ts", ['"backlog"'], "a Linear state type, read from Linear, never the board's backlog"),
 ];

@@ -12,7 +12,7 @@ import { finish, markPublishRunning, markPublishStarting, markRunning, markStart
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { remoteHead, rebaseDue, rebaseOnto, afterRebase, roundHeldBy, stackBaseIn } from "./stack-rebase.ts";
-import { repoOf } from "./board-view/settled-by-pulls.ts";
+import { repoOf } from "./board-view/pull-status-and-notes.ts";
 import { worktreePath } from "./worktree.ts";
 import { type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
@@ -24,7 +24,7 @@ import { parsePaths } from "./overlap.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { markWriterRunning, markWriterStarting, nextStarts, writerFailed, writerOf, writerToStart } from "./queue.ts";
 import { clearRunDir, current, prepare, prepareBatch, writeBoardRunFiles } from "./pool-prepare.ts";
-import { hasPlan } from "./board-view/view-ticket.ts";
+import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { needsDecision } from "./open-decisions.ts";
 import { type PoolContext } from "./pool-context.ts";

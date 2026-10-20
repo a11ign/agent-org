@@ -1,4 +1,4 @@
-import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-ticket.ts";
+import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-types-and-filters.ts";
 import { SCAFFOLD_DIRS } from "../../scaffold-dirs.ts";
 
 /**

@@ -14,7 +14,7 @@ import { QUESTION_CHARS } from "./pool-outcome.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { publishDone, publishFailed } from "./queue/approve.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { hasPlan } from "./board-view/view-ticket.ts";
+import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ASKED_FILE, OUTCOME_FILE, WAITING_FILE } from "./worker-files.ts";

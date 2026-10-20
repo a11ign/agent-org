@@ -7,7 +7,7 @@ import { stopWriter, writerOf } from "./queue.ts";
 import { filedOf } from "./pool-board-runs.ts";
 import { forgetRun, update, writerPlace } from "./pool-state.ts";
 import { closedNote } from "../herdr-agents.ts";
-import { isBeingPublished, isParked } from "./board-view/settled-by-pulls.ts";
+import { isBeingPublished, isParked } from "./board-view/pull-status-and-notes.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** Stop a live run: close its workspace and keep its worktrees. */

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { terminalLink } from "./board-view/settled-by-pulls.ts";
+import { terminalLink } from "./board-view/pull-status-and-notes.ts";
 import { finish, markRunning, markStarting } from "./queue/approve.ts";
 import { enqueue, type PublishRun, type Queue, type WriterRun } from "./queue/declared-remains.ts";
 import { emptyQueue } from "./queue.ts";

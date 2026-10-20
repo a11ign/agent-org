@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
-import { hasPlan } from "./board-view/view-ticket.ts";
+import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { readOrNull } from "../install/paths.ts";
 import { effectiveTerminal, localTerminalPort } from "../install/terminal.ts";
 import { mintTerminalCode, type TerminalMint, type TerminalRun, terminalRunOf } from "./terminal-pair.ts";

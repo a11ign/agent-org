@@ -1,5 +1,5 @@
-import { COMPLETING_KINDS, openPulls, type StackBaseRecord } from "../board-view/view-ticket.ts";
-import { isParked, isPublishing, isWatched, overlapWait, resumesOnConflict, runActions, runStatus, settledByPulls } from "../board-view/settled-by-pulls.ts";
+import { COMPLETING_KINDS, openPulls, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { isParked, isPublishing, isWatched, overlapWait, resumesOnConflict, runActions, runStatus, settledByPulls } from "../board-view/pull-status-and-notes.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictsIn } from "../worker-files.ts";
 import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type Queue, type WorkingNote, writerLive } from "./declared-remains.ts";

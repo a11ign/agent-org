@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
-import { runActions, runStatus } from "./board-view/settled-by-pulls.ts";
+import { runActions, runStatus } from "./board-view/pull-status-and-notes.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
 import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, earlierReviewWord, loadReviewerGate, openPullUrlsOf, readPullState, readReviewerMemory, reviewWordAt, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";

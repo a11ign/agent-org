@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
-import { rebaseNote, runStatus, waitNote } from "./board-view/settled-by-pulls.ts";
+import { rebaseNote, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
