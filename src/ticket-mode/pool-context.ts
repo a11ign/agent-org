@@ -137,7 +137,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const gateRefusal = reviewerOn ? reviewerRefusal() : null;
   if (gateRefusal !== null) log(`tickets.reviewer is set, but no reviewer starts: ${gateRefusal}`);
   /** The reviewer a machine with `tickets.reviewer` starts for each settled head: the atomic one unless the caller injected another. */
-  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads });
+  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads, clones: settings.clones });
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
   const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts } = reviewerMemory;
   /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */

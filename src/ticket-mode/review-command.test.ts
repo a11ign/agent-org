@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { reviewOnDemand } from "./review-command.ts";
-import type { ReviewerPort } from "./reviewer-port.ts";
+import { atomicReviewerPort, loadReviewerGate, type ReviewerPort } from "./reviewer-port.ts";
 
 const URL = "https://github.com/a11ign/control/pull/119";
 const HEAD = "3aeaba9bd".padEnd(40, "0");
@@ -55,4 +55,15 @@ test("an address that is not a pull request is refused before anything is asked,
   assert.equal(reviewOnDemand({ url: "a11ign/control#119", port: p, readHead: () => HEAD }).code, 2);
   assert.equal(reviewOnDemand({ url: URL, port: p, readHead: () => null }).code, 1);
   assert.deepEqual(calls, []);
+});
+
+test("ticket:review starts the reviewer for a repository the host clones and the project does not declare, with no entry in project.json", async () => {
+  await loadReviewerGate();
+  const gh = () => JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
+    statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] });
+  const port = atomicReviewerPort({ session: "tickets", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, declared: { exact: ["worker-bot"], pattern: [] },
+    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }) });
+  const r = reviewOnDemand({ url: "https://github.com/a11ign/plugin/pull/7", port, readHead: () => HEAD });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /started reviewer-plugin-7 for .*a11ign\/plugin\/pull\/7 at 3aeaba9b/);
 });

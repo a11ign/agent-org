@@ -19,7 +19,7 @@ import type { DoorRun, ReviewTrust } from "../review-trust.ts";
 /** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
 type GateModules = {
   wake: typeof import("../wake/ensure-reviewer-token.ts") & typeof import("../wake/ci-class-and-spares.ts") & typeof import("../wake/pull-request-spawn-orders.ts") & typeof import("../wake/seat-reset.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
-  identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts"); doorPath: typeof import("../reviewer-door-path.ts");
+  identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts"); doorPath: typeof import("../reviewer-door-path.ts"); host: typeof import("../host-config.ts");
 };
 
 /** What `loadReviewerGate` found: the modules, or the refusal that keeps them from loading on this host. Null until it has run. */
@@ -32,8 +32,10 @@ let gate: { ok: true; modules: GateModules } | { ok: false; refusal: unknown } |
  */
 export async function loadReviewerGate(): Promise<void> {
   if (gate !== null) return;
+  // The host file's module is read only once the gate's own modules have loaded: it is one of them (`pull-request-spawn-orders` imports it), so
+  // it is already loaded then, and a host with no `primary` keeps the refusal the declaration names, not this one.
   gate = await Promise.all([import("../wake/ensure-reviewer-token.ts"), import("../wake/ci-class-and-spares.ts"), import("../wake/pull-request-spawn-orders.ts"), import("../wake/seat-reset.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
-    ([tokens, withCiFailure, spawnOrder, reset, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake: { ...tokens, ...withCiFailure, ...spawnOrder, ...reset }, trust, config, identity, orders, doorPath } }),
+    async ([tokens, withCiFailure, spawnOrder, reset, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake: { ...tokens, ...withCiFailure, ...spawnOrder, ...reset }, trust, config, identity, orders, doorPath, host: await import("../host-config.ts") } }),
     (refusal: unknown) => ({ ok: false as const, refusal }),
   );
 }
@@ -139,26 +141,72 @@ function pullOf(url: string): { repository: string; number: number } | null {
   return match === null ? null : { repository: match[1], number: Number(match[2]) };
 }
 
-/** The key of a repository the project declares: `""` for the primary's, `null` for one it does not declare, which is no seat at all. */
+/** The host's checkouts by repository name (`host.json`'s `clones`), which carry no owner: a name is one of this org's repositories. */
+type Clones = Readonly<Record<string, string>>;
+
+/** The key of a repository the project declares: `""` for the primary's, `null` for one it does not declare. */
 function repoKeyOf(repository: string): string | null {
   const { config, identity } = reviewerGate();
   if (repository === identity.REPO) return "";
   return config.homeProjectDeclaration().code.find((code) => code.repo === repository)?.key ?? null;
 }
 
-/** The repository a key names: the reverse of {@link repoKeyOf}, and `null` for a key the project does not declare. */
-function repositoryOfKey(key: string): string | null {
-  const { config, identity } = reviewerGate();
-  return key === "" ? identity.REPO : config.homeProjectDeclaration().code.find((code) => code.key === key)?.repo ?? null;
+/**
+ * The seat key and checkout of a repository the host clones and the project does not declare (PURE). Its key is its clone's name, which must be a
+ * reviewer key (`reviewerInstance`'s grammar) and no declared key of another repository; its owner must be `owner`, the primary's, since `clones`
+ * carries names only. Null for a repository that is none of these; a refusal names why a clone of it cannot be a seat.
+ */
+export function clonedSeatOf(repository: string, { owner, clones, codes }: { owner: string; clones: Clones; codes: readonly { key: string; repo: string }[] }): { key: string; clone: string } | { refusal: string } | null {
+  const [repoOwner, name] = repository.split("/");
+  if (repoOwner !== owner || !Object.hasOwn(clones, name)) return null;
+  if (!/^[a-z0-9-]+$/.test(name) || /-[0-9]+$/.test(name)) return { refusal: `its name \`${name}\` cannot be a reviewer key (lowercase letters, digits and hyphens, not ending in a number)` };
+  const clash = codes.find((code) => code.key === name);
+  if (clash !== undefined) return { refusal: `the project declares \`${name}\` as the key of ${clash.repo}, so the host's clone \`${name}\` would take the same reviewer seat` };
+  return { key: name, clone: clones[name] };
 }
 
+/** The repository a key names: the reverse of {@link repoKeyOf} and {@link clonedSeatOf}, and `null` for a key neither the project declares nor the host clones. */
+function repositoryOfKey(key: string, clones: Clones): string | null {
+  const { config, identity } = reviewerGate();
+  if (key === "") return identity.REPO;
+  const declared = config.homeProjectDeclaration().code.find((code) => code.key === key)?.repo;
+  if (declared !== undefined) return declared;
+  return Object.hasOwn(clones, key) ? `${identity.REPO.split("/")[0]}/${key}` : null;
+}
+
+/**
+ * A reviewer's seat for a pull request: its label, number and repository key. A repository the host clones and the project does not declare also
+ * names its `repository` and its `clone`, which the gate's calls would otherwise take from the declaration; a declared or primary seat names neither.
+ */
+type Seat = { label: string; number: number; key: string; repository?: string; clone?: string };
+
 /** The reviewer's seat for a pull request: `reviewer-<n>` in the primary, `reviewer-<key>-<n>` elsewhere, or a refusal naming why it has none. */
-function seatOf(url: string): { label: string; number: number; key: string } | { refusal: string } {
+function seatOf(url: string, clones: Clones): Seat | { refusal: string } {
   const pull = pullOf(url);
   if (pull === null) return { refusal: `no reviewer for ${url}: it is not a pull request url` };
   const key = repoKeyOf(pull.repository);
-  if (key === null) return { refusal: `no reviewer for ${url}: ${pull.repository} is not a repository the project declares` };
-  return { label: reviewerSeat({ repoKey: key, number: pull.number }), number: pull.number, key };
+  if (key !== null) return { label: reviewerSeat({ repoKey: key, number: pull.number }), number: pull.number, key };
+  const { config, identity } = reviewerGate();
+  const cloned = clonedSeatOf(pull.repository, { owner: identity.REPO.split("/")[0], clones, codes: config.homeProjectDeclaration().code });
+  if (cloned === null) return { refusal: `no reviewer for ${url}: ${pull.repository} is not a repository the project declares (\`code\` in .agent-org/project.json) and the host does not clone it (\`clones\` in host.json)` };
+  if ("refusal" in cloned) return { refusal: `no reviewer for ${url}: ${cloned.refusal}` };
+  return { label: reviewerSeat({ repoKey: cloned.key, number: pull.number }), number: pull.number, key: cloned.key, repository: pull.repository, clone: cloned.clone };
+}
+
+/** What a cloned-only seat's checkout is made in: its clone, which the gate would otherwise take from the declaration. Nothing for any other seat. */
+function rootOf(seat: Seat): { repoRoot?: string } {
+  return seat.clone === undefined ? {} : { repoRoot: seat.clone };
+}
+
+/** The environment a cloned-only seat's reviewer runs with: the repository its verdict door posts to, which the declaration would otherwise name. Nothing for any other seat. */
+function repositoryEnvOf(seat: Seat): Record<string, string> {
+  const { host } = reviewerGate();
+  return seat.repository === undefined ? {} : { GH_REPO: seat.repository, [host.HOST_CONFIG_ENV]: host.hostConfigPath() };
+}
+
+/** The spawn option a cloned-only seat adds: its environment. Nothing for any other seat, so their spawn is called as it was. */
+function envOptionOf(seat: Seat): { env?: Record<string, string> } {
+  return seat.repository === undefined ? {} : { env: repositoryEnvOf(seat) };
 }
 
 /**
@@ -362,7 +410,7 @@ export function verdictFileIn(tree: string, number: number, head: string): strin
  */
 export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>(),
   removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync,
-  checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor }: {
+  checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor, clones = {} }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
   spawn?: typeof import("../wake/ensure-reviewer-token.ts").spawnReviewer; checkout?: typeof import("../wake/ensure-reviewer-token.ts").prepareReviewCheckout; heads?: Map<string, string>;
   removeCheckout?: typeof import("../wake/ensure-reviewer-token.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
@@ -372,14 +420,16 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
   mint?: (tree: string) => string | null;
   /** Runs the verdict door with the reviewer's environment: throws on a non-zero exit, with the door's stderr. */
   door?: DoorRun;
+  /** The host's checkouts (`clones`): a repository one of them names, under the primary's owner, is reviewed with no entry in the project's `code`. */
+  clones?: Clones;
 }): ReviewerPort {
-  const seams: AtomicSeams = { session, run, gh, declared, spawn, checkout, heads, removeCheckout, uncommittedPaths, exists, checkoutOf, mint, door };
+  const seams: AtomicSeams = { session, run, gh, declared, spawn, checkout, heads, removeCheckout, uncommittedPaths, exists, checkoutOf, mint, door, clones };
   return {
     live: (ref) => liveReviewer(seams, ref),
     start: (ref) => startReviewer(seams, ref),
     settled: (ref) => settledReviewer(seams, ref),
     verdictFileOf: ({ pr, head }) => {
-      const seat = seatOf(pr);
+      const seat = seatOf(pr, seams.clones);
       return "refusal" in seat ? null : verdictFileIn(checkoutOf(seat.label), seat.number, head);
     },
     repostVerdict: (ref, file) => repostReviewerVerdict(seams, ref, file),
@@ -434,12 +484,12 @@ function uncommittedOf(seams: AtomicSeams, path: string): { paths: string[] } | 
 }
 
 function liveReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): boolean {
-  const seat = seatOf(pr);
+  const seat = seatOf(pr, seams.clones);
   return !("refusal" in seat) && seams.heads.get(seat.label) === head && (listedOf(seams)?.some((agent) => agent.label === seat.label) ?? false);
 }
 
 function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<{ label: string }> | Readonly<{ refusal: string }> {
-  const seat = seatOf(pr);
+  const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return seat;
   const { trust } = reviewerGate();
   const state = readReviewState(pr, seams.gh, seams.declared);
@@ -452,10 +502,10 @@ function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<
   // A reviewer still holding the label is one for an earlier head: its workspace is closed before the next one starts under the same label.
   const stale = agents.some((agent) => agent.label === seat.label);
   if (stale) closeWorkspace(seams.run, seams.session, seat.label);
-  const tree = seams.checkout({ pr: seat.number, session: seat.label, trust: trust.INSIDE });
+  const tree = seams.checkout({ pr: seat.number, session: seat.label, trust: trust.INSIDE, ...rootOf(seat) });
   if ("refusal" in tree) return tree;
   const started = seams.spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
-    agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(seams), cwd: tree.path });
+    agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(seams), cwd: tree.path, ...envOptionOf(seat) });
   if ("refusal" in started) return started;
   const prompted = sendPrompt(seams, seat, state, head);
   if ("refusal" in prompted) return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
@@ -464,7 +514,7 @@ function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<
 }
 
 function settledReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): ReviewerSettled {
-  const seat = seatOf(pr);
+  const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat || seams.heads.get(seat.label) !== head) return "gone";
   const agents = listedOf(seams);
   // herdr did not say what is running, so the reviewer is working as far as anyone can tell: nothing is said of it on a guess.
@@ -475,7 +525,7 @@ function settledReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Reviewe
 }
 
 function repostReviewerVerdict(seams: AtomicSeams, { pr, head }: ReviewerRef, file: string): RepostAnswer {
-  const seat = seatOf(pr);
+  const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return { refusal: seat.refusal, final: true };
   const word = verdictWordOf(file, head);
   if (word === null) return { refusal: `the verdict file ${file} does not open with a verdict for ${head.slice(0, 8)}`, final: true };
@@ -484,7 +534,7 @@ function repostReviewerVerdict(seams: AtomicSeams, { pr, head }: ReviewerRef, fi
   const minted = seams.mint(tree);
   if (minted !== null) return { refusal: minted, final: false };
   try {
-    seams.door(reviewerGate().doorPath.reviewerDoorPath(), [String(seat.number), word, file], reviewerGate().wake.reviewerEnvironment(seat.label, {}, tree));
+    seams.door(reviewerGate().doorPath.reviewerDoorPath(), [String(seat.number), word, file], reviewerGate().wake.reviewerEnvironment(seat.label, repositoryEnvOf(seat), tree));
     return { posted: true };
   } catch (err) {
     const status = (err as { status?: number | null }).status ?? null;
@@ -493,7 +543,7 @@ function repostReviewerVerdict(seams: AtomicSeams, { pr, head }: ReviewerRef, fi
 }
 
 function repromptReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): PromptAnswer {
-  const seat = seatOf(pr);
+  const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return seat;
   const state = readReviewState(pr, seams.gh, seams.declared);
   if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
@@ -502,7 +552,7 @@ function repromptReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Prompt
 }
 
 function closeReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): CloseAnswer {
-  const seat = seatOf(pr);
+  const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return seat;
   if (seams.heads.get(seat.label) !== head) return { refusal: `no close for ${pr}: ${seat.label} was not started for ${head}` };
   const agents = listedOf(seams);
@@ -516,7 +566,7 @@ function closeReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): CloseAnsw
 }
 
 function retireReviewer(seams: AtomicSeams, pr: string): RetireAnswer {
-  const seat = seatOf(pr);
+  const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return seat;
   const { wake } = reviewerGate();
   const agents = listedOf(seams);
@@ -532,7 +582,7 @@ function retireReviewer(seams: AtomicSeams, pr: string): RetireAnswer {
   const uncommitted = uncommittedOf(seams, path);
   if ("refusal" in uncommitted) return { refusal: `no retire for ${pr}: ${uncommitted.refusal}` };
   const head = seams.heads.get(seat.label) ?? "an unrecorded head";
-  const left = seams.removeCheckout({ pr: seat.number, session: seat.label, key: seat.key });
+  const left = seams.removeCheckout({ pr: seat.number, session: seat.label, key: seat.key, ...rootOf(seat) });
   if (left !== null) return { refusal: `no retire for ${pr}: ${left}` };
   seams.heads.delete(seat.label);
   // The discard is reported only once it has happened: a removal that fails keeps the tree and says nothing was discarded.
@@ -542,7 +592,7 @@ function retireReviewer(seams: AtomicSeams, pr: string): RetireAnswer {
 function listedPullUrls(seams: AtomicSeams): string[] {
   return (listedOf(seams) ?? []).flatMap((agent) => {
     const instance = reviewerInstance(agent.label);
-    const repository = instance === null ? null : repositoryOfKey(instance.key);
+    const repository = instance === null ? null : repositoryOfKey(instance.key, seams.clones);
     return instance === null || repository === null ? [] : [`https://github.com/${repository}/pull/${instance.number}`];
   });
 }

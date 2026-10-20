@@ -46,7 +46,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     process.stderr.write(`ticket:review: the reviewer does not load on this host: ${refusal}\n`);
     process.exit(1);
   }
-  const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh });
+  const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, clones: settings.clones });
   const { code, out } = reviewOnDemand({ url, head, port, readHead: (u) => readReviewState(u, defaultGh)?.head ?? null });
   (code === 0 ? process.stdout : process.stderr).write(`${out}\n`);
   process.exit(code);
