@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingHttpHeaders } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createServer as createTcpServer } from "node:net";
 import type { Connection, Connections, Target } from "./connections.ts";
@@ -81,7 +81,7 @@ test("the worker terminal's pairing code is passed on as a POST, and never as a 
 test("only the routes the page calls are passed on, by the method it calls them with, so a pairing code there is never asked for", async () => {
   for (const path of ["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings"]) assert.equal(passedOn("GET", path), true, path);
   assert.equal(passedOn("POST", "/api/settings"), false, "the settings page reads its configuration and writes none of it");
-  for (const path of ["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss", "/api/queue/NBF-1/apply-edit", "/api/queue/NBF-1/discard-edit"]) {
+  for (const path of ["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/queue/NBF-1/approve", "/api/queue/NBF-1/talk", "/api/queue/NBF-1/stop", "/api/queue/NBF-1/dismiss", "/api/queue/NBF-1/apply-edit", "/api/queue/NBF-1/discard-edit"]) {
     assert.equal(passedOn("POST", path), true, path);
   }
   for (const path of ["/api/writer/w1/stop", "/api/writer/w1/dismiss"]) {
@@ -205,4 +205,13 @@ test("A11-132: the Settings edits are passed on to the machine's own instance, a
     }
   }
   assert.equal(sent.length, EDITS.length, "only the calls to the local instance were sent");
+});
+
+test("every run action the page can send to an instance is passed on, so no button is refused by the proxy", () => {
+  const page = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
+  const labels = /const ACTION_LABEL = \{([^}]*)\};/.exec(page)?.[1] ?? "";
+  const verbs = [...labels.matchAll(/(?:^|[\s,])(?:"([a-z-]+)"|([a-z]+)):/g)].map((m) => m[1] ?? m[2]);
+  assert.ok(verbs.includes("talk") && verbs.includes("dismiss"), "the page's action labels were read");
+  // Start anyway is an override of an overlap wait that only the machine's own board offers: the proxy has never passed it on.
+  for (const verb of verbs.filter((v) => v !== "start-anyway")) assert.equal(passedOn("POST", `/api/queue/NBF-1/${verb}`), true, verb);
 });
