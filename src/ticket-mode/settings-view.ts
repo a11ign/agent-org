@@ -31,8 +31,13 @@ export type ViewInput = Readonly<{
 
 export type State = "enabled" | "disabled" | "not set" | "default";
 export type Source = "host.json" | "project.json" | "choice.json" | "queue.json" | "built-in default";
-/** A row: what the key says in words, and, for a key the page may change, the kind of input that changes it (`input`) and its value as that input takes it (`raw`). */
-export type Row = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean; input: Input | null; raw: string | null }>;
+/**
+ * A row: what the key says in words, and, for a key the page may change, the kind of input that changes it (`input`) and its value as that input takes it (`raw`).
+ * `editable` says the page changes the key in place; `why` says, for a key that is not, why not (null when it is editable). `alias` replaces the value text of
+ * an old key that is set: where its new key is, and that `agent-org doctor --fix` moves it there.
+ */
+export type Row = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean;
+  input: Input | null; raw: string | null; editable: boolean; why: string | null; alias: string | null }>;
 export type PluginLine = Readonly<{ plugin: string; installed: string; loads: string }>;
 export type View = Readonly<{
   groups: readonly Readonly<{ group: Group; rows: readonly Row[] }>[];
@@ -84,11 +89,41 @@ function stateWhenAbsent(entry: SchemaEntry): State {
   return entry.absent === "default" ? "default" : "not set";
 }
 
-/** The kind of input the page offers to change a key, or null when the key may not be changed from the page. */
-const inputOf = (entry: SchemaEntry): Input | null => (entry.edit.editable ? entry.edit.input : null);
-
 /** A value as the page's input takes it: a text as it is, anything else as JSON. */
 const rawOf = (value: unknown): string => (typeof value === "string" ? value : JSON.stringify(value));
+
+/** How the page may change a key: its input, whether it is changed in place, and, when it is not, why. */
+const editOf = (entry: SchemaEntry): Pick<Row, "input" | "editable" | "why"> =>
+  (entry.edit.editable ? { input: entry.edit.input, editable: true, why: null } : { input: null, editable: false, why: entry.edit.why });
+
+/** Why a key is not changed in place, from its schema entry, and null for a key that is. */
+const whyOf = (entry: SchemaEntry): string | null => (entry.edit.editable ? null : entry.edit.why);
+
+/** The reason a choice or the number of workers is changed by the controls above the list, not in place. */
+const CONTROLS_ABOVE = "changed with the controls above the list, not in place";
+
+/** The text an old key shows in place of its value: its new key, with the names its `<name>` segments carry in this key, and the command that moves it. */
+function aliasText(entry: SchemaEntry, key: string): string | null {
+  if (entry.aliasOf === undefined) return null;
+  const shown = key.split(".");
+  const names = entry.key.split(".");
+  const target = entry.aliasOf.split(".").map((segment) => (/^<[a-z]+>$/.test(segment) ? shown[names.indexOf(segment)] : segment)).join(".");
+  return `Alias of ${target}: run agent-org doctor --fix`;
+}
+
+/** Whether the file holds any key an entry stands for. */
+function anyKeySet(entry: SchemaEntry, input: ViewInput): boolean {
+  const root = fileRoot(entry, input);
+  return concreteKeys(entry.key, root).some((key) => valueAt(root, key.split(".")) !== undefined);
+}
+
+/** A provider's key in a block the file does not hold, when one of the block's old keys is set: the old key still sets it until `doctor --fix` moves it. */
+function setByAliases(entry: SchemaEntry, input: ViewInput): boolean {
+  if (!entry.key.startsWith("tickets.providers.") || !entry.key.endsWith(".provider")) return false;
+  const block = entry.key.slice(0, -".provider".length);
+  if (valueAt(fileRoot(entry, input), block.split(".")) !== undefined) return false;
+  return input.entries.some((candidate) => candidate.aliasOf?.startsWith(`${block}.`) && anyKeySet(candidate, input));
+}
 
 /** The file a section's rows come from, for the source word of a key that is set. */
 const fileOf = (entry: SchemaEntry): Source => (entry.file === "project.json" ? "project.json" : "host.json");
@@ -101,6 +136,14 @@ function sectionOf(entry: SchemaEntry, input: ViewInput): Section {
 /** The marker a list's element keys carry in the schema: `tickets.deny[].pattern` is `pattern` of each rule in `tickets.deny`. */
 const ELEMENT = "[].";
 
+/** The value a provider shows while only its old key sets it, until `doctor --fix` moves that key. */
+const ALIASED_VALUE = "set by aliases";
+
+/** The value an absent key shows: its built-in default when it has one. */
+function absentValue(entry: SchemaEntry, state: State): string {
+  return state === "default" ? (entry.default ?? "not set") : "not set";
+}
+
 /** The rows of one schema entry, for each key it stands for in the file, each followed by its list's element rows. */
 function rowsOf(entry: SchemaEntry, input: ViewInput): Row[] {
   const root = fileRoot(entry, input);
@@ -112,12 +155,14 @@ function rowsOf(entry: SchemaEntry, input: ViewInput): Row[] {
     const parent = input.entries.find((candidate) => candidate.file === entry.file && candidate.key === parentKey);
     const parentAbsent = parent !== undefined && parent.absent === "unset" && valueAt(root, path.slice(0, -1)) === undefined;
     const set = value !== undefined;
+    // A provider whose block is missing but whose old key is set is in force from the file, through that old key.
+    const aliased = !set && setByAliases(entry, input);
     // A child of an absent parent that has no value of its own is not set, whatever the entry's own default says.
-    const state = set ? stateWhenSet(entry, value) : (parentAbsent ? "not set" : stateWhenAbsent(entry));
-    const source = set ? fileOf(entry) : "built-in default";
-    const shown = set ? showValue({ key, value }, entry, input.exists) : (state === "default" ? (entry.default ?? "not set") : "not set");
+    const state = set ? stateWhenSet(entry, value) : (aliased ? "enabled" : (parentAbsent ? "not set" : stateWhenAbsent(entry)));
+    const source = set || aliased ? fileOf(entry) : "built-in default";
+    const shown = set ? showValue({ key, value }, entry, input.exists) : (aliased ? ALIASED_VALUE : absentValue(entry, state));
     rows.push({ key, file: entry.file, group: entry.group, value: shown, state, source, explanation: entry.explanation, breaks: entry.breaks, depth: path.length - 1, secret: entry.secret !== undefined,
-      input: inputOf(entry), raw: set ? rawOf(value) : null });
+      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null });
     if (Array.isArray(value)) rows.push(...elementRows({ parent: entry, key, items: value, state }, input));
   }
   return rows;
@@ -133,7 +178,8 @@ function elementRows({ parent, key, items, state }: Readonly<{ parent: SchemaEnt
       const fieldKey = `${key}${ELEMENT}${field}`;
       const values = items.filter(isObject).map((item) => (item[field] === undefined ? "not set" : showValue({ key: fieldKey, value: item[field] }, entry, input.exists)));
       return { key: fieldKey, file: entry.file, group: entry.group, value: values.join("; ") || "none", state, source: fileOf(entry), explanation: entry.explanation,
-        breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined, input: null, raw: null };
+        breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined, input: null, raw: null, editable: false, why: whyOf(entry) ?? "a list is changed as a whole",
+        alias: items.length > 0 ? aliasText(entry, fieldKey) : null };
     });
 }
 
@@ -142,7 +188,8 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
   const part = entry.key as ChoicePart;
   const saved = input.choice.saved[part];
   const hostValue = part === "writerModel" || part === "writerEffort" ? input.choice.host[part] : undefined;
-  const base = { key: entry.key, file: entry.file, group: entry.group, explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null };
+  const base = { key: entry.key, file: entry.file, group: entry.group, explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null,
+    editable: false, why: CONTROLS_ABOVE, alias: null };
   if (saved !== undefined) return { ...base, value: saved, state: "enabled", source: "choice.json" };
   if (hostValue !== undefined) return { ...base, value: hostValue, state: "default", source: "host.json" };
   return { ...base, value: CHOICE_BUILT_IN[part], state: "default", source: "built-in default" };
@@ -152,7 +199,7 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
 function queueRow(entry: SchemaEntry, input: ViewInput): Row {
   const { max, source } = input.queue;
   return { key: entry.key, file: entry.file, group: entry.group, value: String(max), state: source === "built-in default" ? "default" : "enabled", source,
-    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null };
+    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null, editable: false, why: CONTROLS_ABOVE, alias: null };
 }
 
 /** The connector pattern's name, as the text between its `^mcp__` and the next `__`, or the pattern as written when it has none. */

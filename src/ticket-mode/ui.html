@@ -124,10 +124,14 @@
   .settings .actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .hint { color: var(--muted); font-size: 12px; margin: 0; }
   .setting-group { margin: 18px 0; }
-  .setting-group > h3 { font-size: 15px; margin: 0 0 8px; }
+  .setting-group > summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; }
+  .setting-group > summary > h3 { font-size: 15px; margin: 0; }
+  .settings-search { display: grid; gap: 6px; margin: 12px 0; }
+  .settings-search label { display: grid; gap: 4px; max-width: 480px; }
   .setting { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; }
   .setting dt { font-weight: 600; overflow-wrap: anywhere; }
   .setting dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+  .setting .row-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
   .setting-group ul { margin: 6px 0; padding-left: 20px; }
   .change { margin-bottom: 12px; }
   .hint.failed { color: var(--bad); }
@@ -275,6 +279,10 @@
       </fieldset>
       <p id="settings-status" class="hint" role="status"></p>
     </div>
+    <div class="settings-search">
+      <label>Search settings by key or description <input id="settings-search" type="search" autocomplete="off"></label>
+      <p id="settings-search-status" class="hint" role="status"></p>
+    </div>
     <div id="settings-groups"></div>
   </section>
 </main>
@@ -299,6 +307,8 @@ import {
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
 // The Assignee filter: whose tickets the list shows, its chips and their counts, and the words the counter and the empty state say. assignee-filter.ts decides them, tested there.
 import { ANYONE, NO_VIEWER, defaultScope, inScope, ownerName, scopeChips, scopeEmptyText, scopeToRead, scopeWord, showsOwner } from "/assignee-filter.js";
+// The Settings page's search: which groups and rows a query leaves (settings-search.ts, A11-146).
+import { searchGroups } from "/settings-search.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -316,6 +326,9 @@ const state = {
   tab: "pick",
   // Whether the Settings page is shown, the control that opened it (focus goes back to it), and the board's address, which Back returns to.
   settingsShown: false, opener: "open-settings", boardHash: "",
+  // The Settings search (A11-146): the query typed, the sections the person last left open or closed (by name; `Machine` starts closed), and the view last read,
+  // which a query is applied to without reading the instance again. Kept across a redraw, so a save does not close what was open.
+  settingsSearch: { query: "", open: {}, view: null, sections: [] },
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
   pick: "assigned to you", empty: null,
   // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
@@ -849,6 +862,8 @@ async function drawSettings() {
   $("settings-refusals").hidden = true;
   $("settings-groups").replaceChildren();
   $("settings-notes").replaceChildren();
+  // Until the rows are read, a search has nothing to filter, so it waits for them (drawSettingsView sets the view again).
+  state.settingsSearch.view = null;
   await Promise.all([readChoice(), readMax()]);
   let view = null;
   let failure = "";
@@ -865,6 +880,7 @@ async function drawSettings() {
 /** The rows of the page: each group's keys, with what each says, and the plugins and connectors in words. With no view, an instance without the route is older than this page; any other failure is said. */
 function drawSettingsView(view, failure) {
   if (view === null) {
+    $("settings-search-status").textContent = "";
     $("edit-panel").hidden = true;
     const older = failure.startsWith("no route");
     const text = older ? "This instance is older than this page and cannot describe its settings. The controls above still change them." : `The settings could not be read: ${failure}`;
@@ -874,8 +890,35 @@ function drawSettingsView(view, failure) {
   $("settings-refusals").hidden = view.refusals.length === 0;
   $("settings-refusals").replaceChildren(...view.refusals.map((r) => el("p", { textContent: `${r.file}: ${r.message}` })));
   $("settings-notes").replaceChildren(...view.notes.map((note) => el("p", { className: "hint", textContent: note })));
-  $("settings-groups").replaceChildren(...view.groups.map((group) => settingsGroup(group, view)).filter((node) => node !== null));
+  state.settingsSearch.view = view;
+  state.settingsSearch.sections = view.groups.map((group) => settingsGroup(group, view)).filter((section) => section !== null);
+  $("settings-groups").replaceChildren(...state.settingsSearch.sections.map((section) => section.node));
+  drawSearch();
   drawEdits(view);
+}
+/** Shows what a query leaves, on the rows already built, so an open Edit form, a value typed into it and an open Details stay as they are. A section with no match is
+ * hidden, unless it holds the plugins' checks, which a search does not filter; a section with a match is open. */
+function drawSearch() {
+  const { query, view, sections } = state.settingsSearch;
+  if (view === null) return;
+  const searching = query !== "";
+  const shown = new Set(searchGroups(view.groups, query).flatMap((group) => group.rows.map((row) => row.key)));
+  let matching = 0;
+  for (const section of sections) {
+    const hits = section.rows.filter(({ row }) => shown.has(row.key));
+    for (const { row, node } of section.rows) node.hidden = !shown.has(row.key);
+    matching += hits.length;
+    section.count.textContent = settingsCount(searching ? hits.length : section.rows.length);
+    section.node.hidden = searching && hits.length === 0 && !section.alwaysShown;
+    section.node.open = searching || (state.settingsSearch.open[section.group] ?? section.group !== "Machine");
+  }
+  $("settings-search-status").textContent = searchWords(query, matching);
+}
+/** What the search line says: nothing without a query, else how many settings match, or that none does. */
+function searchWords(query, matching) {
+  if (query === "") return "";
+  if (matching === 0) return "No setting matches";
+  return `${matching} ${matching === 1 ? "setting matches" : "settings match"}`;
 }
 
 // The Settings edits (A11-132). A change is staged on its row, reviewed with the readers' verdict, and saved one file at a time. Only a local instance is
@@ -1059,19 +1102,26 @@ function showEditRefusal(err) {
   $("edit-refusal").textContent = String(err.message || err);
   $("edit-refusal").hidden = false;
 }
+const settingsCount = (n) => `${n} setting${n === 1 ? "" : "s"}`;
+/** One section, built once for the view: a disclosure whose summary names the group and counts its settings. `Machine` starts closed. The plugins and connectors are
+ * said in their section whatever a search leaves, since they are checks and not settings. Returns what drawSearch needs, or null for a section with nothing to say. */
 function settingsGroup({ group, rows }, view) {
   const plugins = group === "Conventions plugin";
   if (rows.length === 0 && !(plugins && (view.plugins.length > 0 || view.words.length > 0))) return null;
   const id = `group-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
-  const section = el("section", { className: "setting-group" }, el("h3", { id, textContent: group }), ...rows.map(settingRow));
+  const count = el("span", { className: "hint" });
+  const shown = rows.map((row) => ({ row, node: settingRow(row) }));
+  const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: group }), count), ...shown.map(({ node }) => node));
   section.setAttribute("aria-labelledby", id);
+  // Only a choice made while nothing is searched is kept: a search's own opening of a section is not the person's.
+  section.addEventListener("toggle", () => { if (state.settingsSearch.query === "") state.settingsSearch.open[group] = section.open; });
   if (plugins) {
     section.append(el("p", { className: "hint", textContent: "Plugins each worker runs with, and whether a worker's session loads each one" }),
       el("ul", {}, ...view.plugins.map((line) => el("li", { textContent: `${line.plugin}: ${line.installed}; ${line.loads}` }))),
       ...renderContractMismatchRows(view.contract ?? []),
       el("ul", {}, ...view.words.map((words) => el("li", { textContent: words }))));
   }
-  return section;
+  return { group, node: section, count, rows: shown, alwaysShown: plugins };
 }
 /** The contract mismatches, one row each, under a label in words; the page draws none of its own (the server's check gives them). Nothing when there are none. */
 function renderContractMismatchRows(rows) {
@@ -1080,14 +1130,25 @@ function renderContractMismatchRows(rows) {
   list.setAttribute("aria-labelledby", "contract-label");
   return [el("p", { id: "contract-label", textContent: "Contract mismatches: what a plugin declares that this host's keys do not meet" }), list];
 }
-/** One key: its name, then in words its value, its state and where the value comes from, what the key does, and what breaks if it is wrong. */
+/** One key, on one line: its name, then its value (or the alias that stands for it), its state and source in words, and whether the page changes it in place. */
 function settingRow(row) {
+  const editing = row.editable && editable();
+  const shown = row.alias ?? `Value: ${row.value}`;
   return el("dl", { className: "setting" },
     el("dt", {}, el("code", { textContent: row.key })),
-    el("dd", { textContent: `Value: ${row.value}. State: ${row.state}. Source: ${row.source}.` }),
-    el("dd", { textContent: row.explanation }),
-    el("dd", { className: "hint", textContent: `If it is wrong: ${row.breaks}` }),
-    ...(row.input !== null && editable() ? [el("dd", {}, editControl(row))] : []));
+    el("dd", { textContent: `${shown}. State: ${row.state}. Source: ${row.source}. ${editing ? "Editable" : "Read-only"}.` }),
+    // A provider is chosen by `agent-org onboard`, which may need secrets or installs, so a provider's row says where it is changed.
+    ...(row.key.endsWith(".provider") && row.why !== null ? [el("dd", { className: "hint", textContent: "Change the provider with agent-org onboard" })] : []),
+    el("dd", {}, detailsOf(row)),
+    ...(editing ? [el("dd", {}, editControl(row))] : []));
+}
+/** What the key does, what breaks if it is wrong, and, for a key the page does not change in place, why not: behind one disclosure, closed until opened. */
+function detailsOf(row) {
+  return el("details", { className: "row-details" },
+    el("summary", { textContent: "Details" }),
+    el("p", { textContent: row.explanation }),
+    el("p", { className: "hint", textContent: `If it is wrong: ${row.breaks}` }),
+    ...(row.why === null ? [] : [el("p", { className: "hint", textContent: `Read-only: ${row.why}.` })]));
 }
 /** The page or the board, by the address: the Settings page takes the window while its address is shown. */
 function showRoute() {
@@ -1346,6 +1407,10 @@ $("publish").addEventListener("click", () => call("POST", "/api/publish", { keys
   .then((q) => { state.queue = q; state.toPublish = new Set(); report(null); render(); }, report));
 $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
 $("review-changes").addEventListener("click", () => reviewChanges().catch(report));
+$("settings-search").addEventListener("input", () => {
+  state.settingsSearch.query = $("settings-search").value;
+  drawSearch();
+});
 for (const id of ["open-settings", "change-choice", "change-max"]) {
   $(id).addEventListener("click", () => {
     state.opener = id;

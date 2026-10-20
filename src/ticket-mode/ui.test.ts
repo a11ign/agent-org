@@ -8,6 +8,7 @@ import * as view_1 from "./board-view/pull-status-and-notes.ts";
 import * as view_2 from "./board-view/view-types-and-filters.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
+import * as settingsSearch from "./settings-search.ts";
 import { testEach } from "../lib/test-each.ts";
 
 /**
@@ -16,9 +17,9 @@ import { testEach } from "../lib/test-each.ts";
  * and its top-level `await` runs inside an async wrapper.
  */
 const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
-const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters|assignee-filter)\.js";$/gm;
+const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters|assignee-filter|settings-search)\.js";$/gm;
 const imported = [...MODULE.matchAll(IMPORTS)].map((m) => m[1]).sort();
-if (imported.join() !== "assignee-filter,board-view,label-filters") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js, /label-filters.js and /assignee-filter.js as this test expects`);
+if (imported.join() !== "assignee-filter,board-view,label-filters,settings-search") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js, /label-filters.js, /assignee-filter.js and /settings-search.js as this test expects`);
 const SCRIPT = `(async () => {\n${MODULE.replace(IMPORTS, "")}\n})();`;
 
 class Node_ {
@@ -165,7 +166,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, ...settingsSearch, document, fetch,
     window: { localStorage, open: browser.open, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
@@ -1918,12 +1919,149 @@ test("Back to the board returns to the card the board was showing, and focus goe
   assert.equal(p.$("change-max").attrs.focused, "true", "focus is back on Change, which opened the page");
 });
 
+/** A row as the page's view gives it: its key, group and words, and whether the page changes it in place (`editable`, with its `input`, else `why`). */
+const SHOWN = (row: { key: string; group: string; explanation: string } & Record<string, unknown>) => ({ file: "host.json", value: "x", state: "enabled", source: "host.json",
+  breaks: `what breaks ${row.key}`, depth: 0, secret: false, input: null, raw: null, editable: false, why: null, alias: null, ...row });
+/** Settings in four sections, as a provider's keys sit among the machine's: Tracker and Exposure hold a provider each, Workers holds a key that is not one, and Machine holds the plumbing. */
+const GROUPED = {
+  refusals: [], notes: [], plugins: [], words: [], contract: [],
+  groups: [
+    { group: "Tracker", rows: [
+      SHOWN({ key: "tickets.providers.tracker.provider", group: "Tracker", explanation: "The tracker's provider.", value: "linear", state: "default", source: "built-in default",
+        why: "choosing or switching a provider goes through agent-org onboard" }),
+      SHOWN({ key: "tickets.providers.tracker.key.path", group: "Tracker", explanation: "The file the tracker's key is in.", value: "/k/linear.key (the file is missing)", secret: true, input: "text", raw: "/k/linear.key", editable: true, why: null }),
+    ] },
+    { group: "Exposure", rows: [
+      SHOWN({ key: "tickets.providers.exposure.port", group: "Exposure", explanation: "The loopback port the instance listens on.", value: "4747", state: "default", source: "built-in default", input: "number", raw: "4747", editable: true, why: null }),
+      SHOWN({ key: "tickets.port", group: "Exposure", explanation: "The loopback port the instance listens on.", value: "4747", state: "enabled", source: "host.json", alias: "Alias of tickets.providers.exposure.port: run agent-org doctor --fix",
+        why: "an alias; move it with agent-org doctor --fix, to tickets.providers.exposure.port" }),
+    ] },
+    { group: "Workers", rows: [SHOWN({ key: "tickets.stallMinutes", group: "Workers", explanation: "How long a run may be silent before it is stalled.", value: "20" })] },
+    { group: "Machine", rows: [SHOWN({ key: "binDir", group: "Machine", explanation: "The folder the routing gh is installed in.", value: "/home/a/.local/bin" })] },
+  ],
+};
+
+/** Each section on the Settings page: its name, whether it is open, and its node. */
+const sectionsOf = (p: Page) => p.$("settings-groups").all().filter((n) => n.tag === "details" && n.className === "setting-group" && !n.hidden)
+  .map((section) => ({ name: section.all().find((n) => n.tag === "h3")!.text(), open: section.open, node: section }));
+/** The section named `name`, as the page draws it now. */
+const sectionNamed = (p: Page, name: string) => sectionsOf(p).find((section) => section.name === name)!;
+/** A person opens or closes a section, which the browser reports as a toggle. */
+const toggle = (section: { node: Node_ }, open: boolean) => { section.node.open = open; section.node.fire("toggle"); };
+/** Type `query` into the Settings search, and let the page show what it leaves. */
+async function search(p: Page, query: string) {
+  p.$("settings-search").value = query;
+  p.$("settings-search").fire("input");
+  await settleAll();
+}
+/** The keys of the rows in a section, in the order the page draws them. */
+const rowsIn = (section: Node_) => section.all().filter((n) => n.tag === "dl" && !n.hidden).map((n) => n.all().find((c) => c.tag === "code")!.text());
+
+/** The text a person sees: a closed Details shows its summary and nothing under it, and a hidden node shows nothing. */
+const visibleText = (node: Node_): string => node.hidden ? "" : node.tag === "details" && !node.open
+  ? node.children.filter((child) => child.tag === "summary").map((child) => child.text()).join("")
+  : node.textContent + node.children.map(visibleText).join("");
+
+test("Settings: each provider's section, the conventions plugin's and the others' are open, Machine starts closed, and each summary counts its settings", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Tracker", true], ["Exposure", true], ["Workers", true], ["Machine", false]]);
+  assert.match(sectionNamed(p, "Tracker").node.all().find((n) => n.tag === "span")!.text(), /^2 settings$/, "the summary counts the section's settings");
+  assert.match(sectionNamed(p, "Workers").node.all().find((n) => n.tag === "span")!.text(), /^1 setting$/);
+});
+
+test("Settings: a section a person closes stays closed when the page is drawn again, and Machine a person opens stays open", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  toggle(sectionNamed(p, "Tracker"), false);
+  toggle(sectionNamed(p, "Machine"), true);
+  p.location.hash = "#/settings";
+  await p.hashChange();
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Tracker", false], ["Exposure", true], ["Workers", true], ["Machine", true]]);
+});
+
+test("Settings: a search shows only the sections with a match, opened, with the match's count; clearing it restores each section as the person left it", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  toggle(sectionNamed(p, "Tracker"), false);
+  await search(p, "port");
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Exposure", true]], "sections with no match are not drawn, and the one with a match is open");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Exposure").node), ["tickets.providers.exposure.port", "tickets.port"], "every match is shown, and nothing else");
+  assert.equal(p.$("settings-search-status").textContent, "2 settings match");
+  await search(p, "binDir");
+  assert.equal(p.$("settings-search-status").textContent, "1 setting matches");
+  assert.deepEqual(sectionsOf(p).map((section) => section.name), ["Machine"], "Machine is reachable by search even though it starts closed");
+  assert.equal(sectionNamed(p, "Machine").open, true, "a section with a match is opened");
+  await search(p, "zzz");
+  assert.equal(p.$("settings-search-status").textContent, "No setting matches");
+  assert.deepEqual(sectionsOf(p), []);
+  await search(p, "");
+  assert.equal(p.$("settings-search-status").textContent, "");
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Tracker", false], ["Exposure", true], ["Workers", true], ["Machine", false]],
+    "clearing restores each section to what the person left, and Machine is closed again");
+});
+
+test("Settings: a search does not change what the person left open, so a redraw after it is as the person left it", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  await search(p, "port");
+  await search(p, "");
+  p.location.hash = "#/settings";
+  await p.hashChange();
+  assert.equal(sectionNamed(p, "Machine").open, false, "Machine is closed as it was before the search");
+});
+
+test("Settings: a row says Editable or Read-only, what the key does and what breaks are behind its Details, and a read-only key's reason is there too", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  const port = rowOf(p, "tickets.providers.exposure.port");
+  assert.match(port.text(), /Value: 4747\. State: default\. Source: built-in default\. Editable\./);
+  const alias = rowOf(p, "tickets.port");
+  assert.match(alias.text(), /Alias of tickets\.providers\.exposure\.port: run agent-org doctor --fix\. State: enabled\. Source: host\.json\. Read-only\./, "an alias says where its key is in place of its value");
+  assert.doesNotMatch(alias.text(), /Value: 4747/, "its value text is replaced");
+  const provider = rowOf(p, "tickets.providers.tracker.provider");
+  assert.match(provider.text(), /Change the provider with agent-org onboard/, "a provider's row says where it is changed");
+  assert.equal(visibleText(p.$("settings-groups")).includes("The loopback port the instance listens on."), false, "the explanation is not visible until Details opens");
+  assert.equal(visibleText(p.$("settings-groups")).includes("If it is wrong"), false, "nor is what breaks");
+  const details = alias.all().find((n) => n.tag === "details")!;
+  details.open = true;
+  assert.match(visibleText(alias), /The loopback port the instance listens on\.[\s\S]*If it is wrong: what breaks tickets\.port[\s\S]*Read-only: an alias; move it with agent-org doctor --fix, to tickets\.providers\.exposure\.port\./,
+    "opened, the explanation, what breaks and the reason read-only are all there");
+});
+
+test("Settings: a search leaves an open Edit form and the value typed into it as they were, and a Details that is open stays open", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  const row = rowOf(p, "tickets.providers.exposure.port");
+  buttonIn(row, "Edit").fire("click");
+  row.all().find((n) => n.tag === "input")!.value = "5000";
+  row.all().find((n) => n.tag === "details")!.open = true;
+  await search(p, "port");
+  await search(p, "");
+  const again = rowOf(p, "tickets.providers.exposure.port");
+  assert.equal(again, row, "the row is the one that was drawn, not a new one");
+  assert.equal(again.all().find((n) => n.tag === "input")!.value, "5000", "the value typed is still there");
+  assert.equal(again.all().find((n) => n.tag === "form" || n.className === "edit-form")!.hidden, false, "the Edit form is still open");
+  assert.equal(again.all().find((n) => n.tag === "details")!.open, true, "the Details is still open");
+});
+
+test("Settings: the plugins' checks stay on the page during a search, and a search that leaves no setting still shows them", async () => {
+  const withChecks = { ...GROUPED, groups: [...GROUPED.groups, { group: "Conventions plugin", rows: [] }],
+    plugins: [{ plugin: "a11ign@a11ign-local", installed: "not installed", loads: "a worker's session does not load it" }],
+    contract: [{ plugin: "a11ign@a11ign-local", kind: "connector-need", why: "needs the connector tools matched by ^mcp__linear__get_, which tickets.connectors does not allow" }] };
+  const p = await settingsPage({ config: SETTINGS, settings: withChecks });
+  await search(p, "zzz");
+  assert.deepEqual(sectionsOf(p).map((section) => section.name), ["Conventions plugin"], "no setting matches, and the plugins' section is still there");
+  assert.match(sectionNamed(p, "Conventions plugin").node.text(), /Mismatch: needs the connector tools/, "its check is said");
+  assert.match(sectionNamed(p, "Conventions plugin").node.text(), /a11ign@a11ign-local: not installed/, "its plugin line is said");
+});
+
+test("Settings: an editable row keeps its Edit control, and a read-only row has none", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  assert.ok(buttonIn(rowOf(p, "tickets.providers.exposure.port"), "Edit"), "an editable row is edited in place");
+  assert.equal(rowOf(p, "tickets.port").all().some((n) => n.tag === "button"), false, "an alias is shown, not changed");
+});
+
 /** Settings a local instance can edit: a switch and a number, each with the input its schema entry takes. */
 const EDITABLE = {
   refusals: [], notes: [], plugins: [], words: [], contract: [],
   groups: [
-    { group: "Publishing", rows: [{ key: "tickets.drafts", file: "host.json", group: "Publishing", value: "true", state: "default", source: "built-in default", explanation: "Whether a worker opens its pull request as a draft.", breaks: "Any value other than true or false is refused by name.", depth: 0, secret: false, input: "boolean", raw: null }] },
-    { group: "Serving and terminal", rows: [{ key: "tickets.port", file: "host.json", group: "Serving and terminal", value: "4747", state: "default", source: "built-in default", explanation: "The loopback port the instance listens on.", breaks: "A port another program holds stops the instance.", depth: 0, secret: false, input: "number", raw: "4747" }] },
+    { group: "Publishing", rows: [{ key: "tickets.drafts", file: "host.json", group: "Publishing", value: "true", state: "default", source: "built-in default", explanation: "Whether a worker opens its pull request as a draft.", breaks: "Any value other than true or false is refused by name.", depth: 0, secret: false, input: "boolean", raw: null, editable: true, why: null, alias: null }] },
+    { group: "Serving and terminal", rows: [{ key: "tickets.port", file: "host.json", group: "Serving and terminal", value: "4747", state: "default", source: "built-in default", explanation: "The loopback port the instance listens on.", breaks: "A port another program holds stops the instance.", depth: 0, secret: false, input: "number", raw: "4747", editable: true, why: null, alias: null }] },
   ],
 };
 /** The reader's answer to a preview of `tickets.drafts` set to false: one change, dangerous, in force after the board restarts. */

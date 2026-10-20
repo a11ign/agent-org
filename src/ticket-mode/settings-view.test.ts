@@ -177,3 +177,54 @@ test("a plugin installed only for one folder is not said to be missing from ever
   const [line] = viewOf({ plugins: { readable: true, plugins } }).plugins;
   assert.equal(line.loads, "only a worker in /work/NBF-1 loads it; to load it for every worker, install it for every folder with `claude plugin install p@m --scope user`.");
 });
+
+test("the rows say which keys the page changes in place, and for a key it does not, why not", () => {
+  const view = viewOf({ host: { tickets: { providers: { tracker: { provider: "linear" } } } } });
+  const provider = row(view, "tickets.providers.tracker.provider");
+  assert.deepEqual([provider.editable, provider.input], [false, null]);
+  assert.match(provider.why ?? "", /agent-org onboard/, "a provider is changed by onboard, which says why");
+  const path = row(view, "tickets.providers.tracker.key.path");
+  assert.deepEqual([path.editable, path.why], [true, null], "an editable key has no reason not to be");
+  assert.match(row(view, "tickets.providers.tracker.key").why ?? "", /tickets\.providers\.tracker\.key\.path/, "a container says which key changes it");
+});
+
+test("the choices and the number of workers, which the controls above the list change, are read-only rows that say so", () => {
+  const view = viewOf({ host: { tickets: { max: 4 } } });
+  for (const key of ["model", "effort", "tickets.max"]) {
+    const found = row(view, key);
+    assert.deepEqual([found.editable, found.input], [false, null], `${key} is not changed in place`);
+    assert.match(found.why ?? "", /controls above the list/, `${key} says the controls above change it`);
+  }
+});
+
+test("an old key that is set shows where its new key is, in place of its value, with the names its segments carry", () => {
+  const view = viewOf({ host: { tickets: { linearKey: { keychain: "agent-org-linear" } }, github: { identity: { scheduler: { mode: "github-apps" } } } } });
+  assert.equal(row(view, "tickets.linearKey").alias, "Alias of tickets.providers.tracker.key: run agent-org doctor --fix");
+  assert.equal(row(view, "github.identity.scheduler.mode").alias, "Alias of tickets.providers.codeHost.identity.scheduler.mode: run agent-org doctor --fix");
+  assert.equal(row(view, "github.identity.scheduler.mode").editable, false, "an alias is shown, not changed");
+});
+
+test("an old key that is not set shows no alias, and its value is as it was", () => {
+  const view = viewOf({ host: { tickets: {} } });
+  assert.deepEqual([row(view, "tickets.linearKey").alias, row(view, "tickets.linearKey").state], [null, "default"], "its built-in default still says so");
+});
+
+test("a provider whose block is missing says so, and says it is set by aliases while an old key of its block is set", () => {
+  const missing = row(viewOf({ host: { tickets: {} } }), "tickets.providers.tracker.provider");
+  assert.deepEqual([missing.value, missing.state], ["linear", "default"]);
+  const byAlias = row(viewOf({ host: { tickets: { linearKey: { keychain: "agent-org-linear" } } } }), "tickets.providers.tracker.provider");
+  assert.deepEqual([byAlias.value, byAlias.state, byAlias.source], ["set by aliases", "enabled", "host.json"], "in force from the file, through its old key");
+  const held = row(viewOf({ host: { tickets: { providers: { tracker: { provider: "linear" } }, linearKey: { keychain: "agent-org-linear" } } } }), "tickets.providers.tracker.provider");
+  assert.equal(held.value, "linear", "a block the file holds keeps its own provider");
+});
+
+test("the machine's plumbing is in Machine alone, and each provider's settings are in that provider's own section", () => {
+  const view = viewOf({});
+  const groupOf = (key: string) => view.groups.find((group) => group.rows.some((candidate) => candidate.key === key))?.group;
+  for (const key of ["schema", "home", "binDir", "projects", "tool"]) assert.equal(groupOf(key), "Machine", `${key} is machine plumbing`);
+  assert.equal(groupOf("tickets.providers.tracker.provider"), "Tracker");
+  assert.equal(groupOf("tickets.providers.exposure.port"), "Exposure");
+  assert.equal(groupOf("tickets.providers.codeHost.gh.workers"), "Code host");
+  assert.equal(groupOf("tickets.providers.publish.run"), "Publisher");
+  assert.equal(groupOf("tickets.providers.reviewer.provider"), "Reviewer");
+});
