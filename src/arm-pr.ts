@@ -26,7 +26,7 @@ import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT, homeProjectDeclaration } from "./p
 // line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
 // `pr-armed-state.ts` imports nothing at all, so the `actions/checkout`-only property holds.
 import { armedQueryArgs, armedReason, ejectionVerdict } from "./pr-armed-state.ts";
-import { extractClosesDeclaration } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { extractClosesDeclaration } from "./acceptance-commands/acceptance-report-and-closure.ts";
 // #1969: THE REFUSAL'S SCOPE, and a LEAF import for the reason `api-pool.ts`'s own header gives. The
 // reading is not reimplemented here -- a second copy of "how to read a pool" is the one place two readers
 // could silently disagree about what exhausted looks like.

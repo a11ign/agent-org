@@ -25,7 +25,7 @@
 // edit `ROUTED_TO`, `FLEET_LAB_PATTERNS` or `fleetOrLabAcceptance`: it asks the last as it stands. It counts only the ceo's own one-shot records: a live orchestrator one-shot is not held
 // against it here, which is reported as an open item.
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
-import { fleetOrLabAcceptance } from "./acceptance-commands/classification.ts";
+import { fleetOrLabAcceptance } from "./acceptance-commands/command-classes-and-declarations.ts";
 import { hostConfigPath } from "./host-config.ts";
 import { declaredRegionFiles, declaresNoCommit } from "./region-paths.ts";
 import { STAND_IN_MAX_AGE_MS, readStandIns, standInPath, writeStandIn, type LaneStandIn } from "./row-claim/lane-stand-in.ts";

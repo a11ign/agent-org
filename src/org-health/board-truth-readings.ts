@@ -6,7 +6,7 @@ import { boardTruthTable } from "../board-truth-audit.ts";
 import { PARKED_LABEL, isItemWait, namedDoneWhens, parseWaits } from "../wait-condition.ts";
 import { holdersOf } from "../pr-hold-state.ts";
 import { declaredClosedRows } from "../row-claim/file-overlap-rule.ts";
-import { extractClosesDeclaration, closesReferences } from "../acceptance-commands/unmet-command-closure-requirements.ts";
+import { extractClosesDeclaration, closesReferences } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { IDLE_REASONS, idleLine } from "../idle-with-open-rows.ts";
 import { AGREEMENT_READ_MS, MAX_NAMED, MS_PER_MINUTE, SIGNALS, TOOL_ROOT, clear, type Reading, type ToolAgreement, unknown } from "./thresholds.ts";

@@ -67,7 +67,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { ciInputOf, runCiBodyReports, thisPullRequestInput, type BodyReportInput } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { ciInputOf, runCiBodyReports, thisPullRequestInput, type BodyReportInput } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { runAcceptanceCommand } from "./acceptance-commands/suite-and-checkout-commands.ts";
 
 /**
@@ -237,5 +237,5 @@ function main() {
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
 
 // The package declares these names for its callers (public-interface.test.ts): they stay on this entry, declared in the file below.
-export { extractClosesDeclaration, closesReferences, acceptanceSourceOfThisPullRequest, prAuthorFromEnv } from "./acceptance-commands/unmet-command-closure-requirements.ts";
-export { hasFullHistoryDeclaration } from "./acceptance-commands/classification.ts";
+export { extractClosesDeclaration, closesReferences, acceptanceSourceOfThisPullRequest, prAuthorFromEnv } from "./acceptance-commands/acceptance-report-and-closure.ts";
+export { hasFullHistoryDeclaration } from "./acceptance-commands/command-classes-and-declarations.ts";

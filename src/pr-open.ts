@@ -55,7 +55,7 @@ import { readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { acceptanceSourceOf, closesReferences, extractClosesDeclaration, extractMutationSection, runCiBodyReports } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { acceptanceSourceOf, closesReferences, extractClosesDeclaration, extractMutationSection, runCiBodyReports } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { extractAcceptanceSection, runAcceptanceCommand } from "./acceptance-commands/suite-and-checkout-commands.ts";
 import { ACCEPTANCE_DIR, acceptanceFileForBranch, isAcceptancePath, sectionsTextOf, writeAcceptanceFile } from "./acceptance-file.ts";
 import { declaredRegionFiles, splitRegionEntry } from "./region-paths.ts";
@@ -140,9 +140,9 @@ export function acceptanceEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
  * @returns {{ ok: boolean, lines: string[] }}
  */
 export function checkBody(body: string, { run = runForReal, diff = { ok: false, why: "no diff was handed to checkBody" }, rowLabels, readFile, reports }: {
-    run?: (command: string) => number; diff?: import("./acceptance-commands/unmet-command-closure-requirements.ts").DiffReading;
-    rowLabels?: import("./acceptance-commands/unmet-command-closure-requirements.ts").BodyReportInput["rowLabels"]; readFile?: (path: string) => string;
-    reports?: import("./acceptance-commands/unmet-command-closure-requirements.ts").BodyReport[];
+    run?: (command: string) => number; diff?: import("./acceptance-commands/acceptance-report-and-closure.ts").DiffReading;
+    rowLabels?: import("./acceptance-commands/acceptance-report-and-closure.ts").BodyReportInput["rowLabels"]; readFile?: (path: string) => string;
+    reports?: import("./acceptance-commands/acceptance-report-and-closure.ts").BodyReport[];
 } = {}): { ok: boolean; lines: string[]; } {
   // #891: checked BEFORE anything else, and returned on its own -- `acceptanceReport` actually RUNS the
   // body's Acceptance command for real, and a body worth refusing for a leak is not worth running
@@ -172,7 +172,7 @@ export function checkBody(body: string, { run = runForReal, diff = { ok: false, 
  * @param {{ rowBody: (number: number, repo?: string) => string, rootFiles?: Set<string>, tree: { key: string, repo: string | undefined } }} deps
  * @returns {{ kind: "region", region: string[] } | { kind: "unread", why: string } | { kind: "no-section", row: string }}
  */
-function readRegions(references: import("./acceptance-commands/classification.ts").ClosesReference[], { rowBody, rootFiles, tree, code = homeProjectDeclaration().code }: { rowBody: (number: number, repo?: string) => string; rootFiles?: Set<string>; tree: { key: string; repo: string | undefined; }; code?: readonly { key: string; repo: string; }[]; }): { kind: "region"; region: string[]; rows: RegionRow[]; } | { kind: "unread"; why: string; } | { kind: "no-section"; row: string; } {
+function readRegions(references: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesReference[], { rowBody, rootFiles, tree, code = homeProjectDeclaration().code }: { rowBody: (number: number, repo?: string) => string; rootFiles?: Set<string>; tree: { key: string; repo: string | undefined; }; code?: readonly { key: string; repo: string; }[]; }): { kind: "region"; region: string[]; rows: RegionRow[]; } | { kind: "unread"; why: string; } | { kind: "no-section"; row: string; } {
   const union: Set<string> = new Set();
   const rows: RegionRow[] = [];
   for (const reference of references) {
@@ -201,7 +201,7 @@ function readRegions(references: import("./acceptance-commands/classification.ts
 }
 
 /** agent-org#923: one row the body closes, as its Region reads: the repositories its entries are read in, in no order. */
-type RegionRow = { reference: import("./acceptance-commands/classification.ts").ClosesReference; name: string; repositories: string[]; };
+type RegionRow = { reference: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesReference; name: string; repositories: string[]; };
 
 /**
  * agent-org#923: THE REPOSITORY A REGION ENTRY IS READ IN -- the one `regionRepository` and `readRegions` both ask. An entry whose key names one of the
@@ -220,7 +220,7 @@ function repositoryOfEntry(entry: string, text: string, code: readonly { key: st
  * @param {import("./acceptance-commands.ts").ClosesReference} reference
  * @returns {string}
  */
-const referenceName = (reference: import("./acceptance-commands/classification.ts").ClosesReference): string => `${reference.repo ?? ""}#${reference.number}`;
+const referenceName = (reference: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesReference): string => `${reference.repo ?? ""}#${reference.number}`;
 
 /**
  * #2617: WHICH DECLARED REPOSITORY THIS TREE IS, by `--repo` (the flag `gh pr` takes to name one), as its key -- the first repository's,
@@ -413,7 +413,7 @@ export function diffBaseOf(rest: string[], git: (args: string[]) => string): str
  * @param {(args: string[]) => string} [git]
  * @returns {import("./acceptance-commands.ts").DiffReading}
  */
-export function localDiffReading(rest: string[], git: (args: string[]) => string = defaultGit): import("./acceptance-commands/unmet-command-closure-requirements.ts").DiffReading {
+export function localDiffReading(rest: string[], git: (args: string[]) => string = defaultGit): import("./acceptance-commands/acceptance-report-and-closure.ts").DiffReading {
   const base = diffBaseOf(rest, git);
   try {
     const files = git(["diff", "--name-only", "--no-renames", "--diff-filter=ACMR", "-z", `${base}...HEAD`]);
@@ -1483,7 +1483,7 @@ export function machineryDeclarationProblems(body: string): string[] {
  * @param {import("./acceptance-commands.ts").DiffReading} diff @param {string} body
  * @returns {string | null}
  */
-export function machineryRefusal(diff: import("./acceptance-commands/unmet-command-closure-requirements.ts").DiffReading, body: string): string | null {
+export function machineryRefusal(diff: import("./acceptance-commands/acceptance-report-and-closure.ts").DiffReading, body: string): string | null {
   if (!diff.ok) return null;
   const touched = machineryFilesIn(diff.files);
   if (touched.length === 0) return null;

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { fleetOrLabAcceptance, untrimmedFleetMention, declarationDisagreement } from "../acceptance-commands/classification.ts";
+import { fleetOrLabAcceptance, untrimmedFleetMention, declarationDisagreement } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { flagValue } from "../lib/cli-flags.ts";
 import { templateFieldsReason } from "../row-claim/template-fields-rule.ts";

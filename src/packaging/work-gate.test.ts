@@ -32,7 +32,7 @@ import { shippedUnits } from "../host-units/shipped-units.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
-import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/classification.ts";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
 import { MAX_ROW_ORDERS_PER_TICK, comparablePrFiles, ownerOf, NOT_PICKABLE, NOT_STARTABLE, ROUTED_TO, PROMOTION_ASK_WINDOW_MS, HOUR_MS, PARKED_LABEL } from "../work-gate/vocabulary.ts";
 import { readCommitShas, readPatchId, withPatchIds, readWorktreeStamps, reviewBlocked, reviewableHead, pipelineCodeownerReviewMissing } from "../work-gate/causes/pr-reviews.ts";

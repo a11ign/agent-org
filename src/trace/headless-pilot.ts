@@ -35,7 +35,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { agentArgs, profileFor } from "../worker-profile.ts";
 import { addressed, PRIMARY_CHECKOUT } from "../wake/fyi-queue.ts";
 import { extractAcceptanceSection } from "../acceptance-commands/suite-and-checkout-commands.ts";
-import { declaredFleetAnswer } from "../acceptance-commands/classification.ts";
+import { declaredFleetAnswer } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { extractLabeledSection } from "../region-paths.ts";
 import { REPO } from "../project-identity.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";

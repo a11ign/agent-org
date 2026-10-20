@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { deliver } from "./wake/fyi-queue.ts";
 import { spawnableRole, type ClaimedRow, type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { SPAWN_CAUSES } from "./wake/exit-and-limits.ts";
-import { fleetOrLabAcceptance } from "./acceptance-commands/classification.ts";
+import { fleetOrLabAcceptance } from "./acceptance-commands/command-classes-and-declarations.ts";
 import { RESOURCES } from "./project-vocabulary.ts";
 import { laneReason } from "./row-claim/runner-rule.ts";
 import { readStandIns, writeStandIn } from "./row-claim/lane-stand-in.ts";

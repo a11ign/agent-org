@@ -13,8 +13,8 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseConsumerDeclarations, valueAtKey, valueMatches } from "./consumer-declaration.ts";
 import { consumerDeclarationReport, consumerDeclarationStep, consumerDeclarationVerdict, type ConsumerFileReader } from "./closes-mismatch-check.ts";
-import { extractClosesDeclaration } from "./acceptance-commands/unmet-command-closure-requirements.ts";
-import { type ClosesDeclaration } from "./acceptance-commands/classification.ts";
+import { extractClosesDeclaration } from "./acceptance-commands/acceptance-report-and-closure.ts";
+import { type ClosesDeclaration } from "./acceptance-commands/command-classes-and-declarations.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 
 const LABEL = "Consumer-declaration:";

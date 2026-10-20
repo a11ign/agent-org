@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, ciInputOf, prAuthorFromEnv, runCiBodyReports, thisPullRequestInput } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, ciInputOf, prAuthorFromEnv, runCiBodyReports, thisPullRequestInput } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { checkoutPullRequestMerge, installPullRequestCheckout, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, OUTSIDE_ACCEPTANCE_FLAG, outsideAcceptanceOn, shadowAcceptanceVerdict } from "./acceptance-commands.ts";
 import { INSIDE, reviewTrustOf } from "./review-trust.ts";
 import { acceptanceGateOf, greenUnarmedOrders } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";

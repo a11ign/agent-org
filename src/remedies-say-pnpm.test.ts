@@ -45,7 +45,7 @@ const EXEMPT: Record<string, { lines: number; why: string }> = {
   "src/row-file/body-from-argv.ts": { lines: 1, why: "recogniser: a body line that starts with `npm`/`npx` looks like a command, whichever manager it names" },
   "src/host-units/shipped-units.ts": { lines: 2, why: "recognisers: an installed unit that still says `npm`/`npx` is followed to its program, as `pnpm` is" },
   "src/update-primary.ts": { lines: 2, why: "records: names `npm ci` as the one command the primary must never run (it deletes `node_modules` from under every worktree)" },
-  "src/acceptance-commands/unmet-command-closure-requirements.ts": { lines: 1, why: "recognisers: the closure reader matches `npm test` and `npx`/`npm` as command words in an Acceptance, which it reads and never runs" },
+  "src/acceptance-commands/acceptance-report-and-closure.ts": { lines: 1, why: "recognisers: the closure reader matches `npm test` and `npx`/`npm` as command words in an Acceptance, which it reads and never runs" },
   "src/wake/ensure-reviewer-token.ts": { lines: 2, why: "records: #2376 again -- the reviewer checkout's comment on the `npx` that died writing `~/.npm`, and the npm cache text the checkout prints" },
   "src/wake/pull-request-spawn-orders.ts": { lines: 1, why: "records: #2376, a reviewer's `npx` died writing `~/.npm`; the sentence is about what npx did" },
   "src/haiku-brief.ts": { lines: 1, why: "records: Anthropic's published Haiku 5.5 text, copied verbatim and sha256-pinned (`wake-haiku-brief.test.ts`); its `e.g. npm install` is an example in their sentence, not a remedy the tool prints" },

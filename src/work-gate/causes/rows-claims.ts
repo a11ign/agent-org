@@ -8,7 +8,7 @@ import { declaredRegionFiles } from "../../region-paths.ts";
 import { claimedRegionOverlapReason, claimedRegionsOf, fileOverlapReason } from "../../row-claim/file-overlap-rule.ts";
 import { missingTemplateFields } from "../../row-claim/template-fields-rule.ts";
 import { isRepoWideResolutionFault, recentClosesSiblings } from "../../closes-mismatch-check.ts";
-import { extractClosesDeclaration } from "../../acceptance-commands/unmet-command-closure-requirements.ts";
+import { extractClosesDeclaration } from "../../acceptance-commands/acceptance-report-and-closure.ts";
 import { BLOCKED_LABEL, SESSION_PREFIX } from "../../project-vocabulary.ts";
 import { KEPT_CLAIMS_FILE, readJsonObject } from "../../claim-stall/claim-stalled.ts";
 import { writeJsonObject } from "../../claim-stall.ts";

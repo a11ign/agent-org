@@ -7,7 +7,7 @@
 //
 // PURE: rows, pull requests and the clock in, incidents and ledger events out. Which pull request names which row is `acceptance-commands.ts`'s `extractClosesDeclaration` (the
 // parser CI and `pr:open` use), so a body is read once and one way; the live read, with its `null` for a population nobody could read, is `org-retro.ts`'s.
-import { closesReferences, extractClosesDeclaration } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { closesReferences, extractClosesDeclaration } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import type { FailureEvent } from "./failure-ledger.ts";
 import { ROW_NOT_FINISHABLE } from "./idle-claim-incident.ts";
 

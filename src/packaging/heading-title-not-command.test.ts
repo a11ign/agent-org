@@ -20,7 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { extractAcceptanceSection } from "../acceptance-commands/suite-and-checkout-commands.ts";
-import { extractRefutationSection } from "../acceptance-commands/unmet-command-closure-requirements.ts";
+import { extractRefutationSection } from "../acceptance-commands/acceptance-report-and-closure.ts";
 
 /** Runs one fixture against both `Acceptance:` and `Refutation:`, since #438's rule is one shared parser. */
 const bothFields = [

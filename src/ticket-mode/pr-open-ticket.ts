@@ -11,7 +11,7 @@
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { CI_BODY_REPORTS, type BodyReport, type DiffReading } from "../acceptance-commands/unmet-command-closure-requirements.ts";
+import { CI_BODY_REPORTS, type BodyReport, type DiffReading } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "../pr-open-region.ts";
 import { declaredRegionFiles, splitRegionEntry } from "../region-paths.ts";
 import { linearSource, readLinearKey } from "./linear.ts";

@@ -33,7 +33,7 @@ import { shippedUnits } from "../host-units/shipped-units.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import { type Declaration } from "../lib/pin-ratchet.ts";
-import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/classification.ts";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { decide as decideOnHost } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { comparablePrFiles } from "../work-gate/vocabulary.ts";
