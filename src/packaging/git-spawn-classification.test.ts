@@ -182,6 +182,55 @@ const GIT_IS_INJECTED_SEAM: Record<string, string> = {
     + "with `sandboxGitEnv()`. The file's own child_process use is `systemctl` (`systemctlRun`), which is not git (a11ign#5152 split of work-gate/reads.ts)",
 };
 
+/**
+ * FILES WHOSE SPAWN COMMAND IS NOT A LITERAL AND CANNOT BE SHOWN TO BE GIT -- classified, never silently skipped.
+ *
+ * A command the file does not show (a parameter, a member read, a template with a substitution) is treated as a possible git spawn, because
+ * skipping what cannot be read is the hole this guard exists to close. Most of these are the caller's command (`gh`, `node`, `pnpm`), so
+ * the entry names where the value comes from. The verdict stays with the file: an exempted file must not spawn anything that can be git.
+ */
+const COMMAND_IS_NOT_GIT: Record<string, string> = {
+  "src/agent-tool-update.ts": "`run(program)` is called only with \"codex\", a file under the home's .local/bin, \"claude\", \"curl\" or \"herdr\" (hostSeams, and the tests that inject runProgram); none is git",
+  "src/arm-pr.ts": "`defaultRun`'s command is always \"gh\": `gh()` is its only caller and hard-codes run(\"gh\", args), and the injected run callers ignore the command",
+  "src/board-snapshot.ts": "`defaultRun`'s command is always \"gh\": every seam call is run(\"gh\", args), and no production caller injects run",
+  "src/host-kernel.ts": "the privileged command is REBOOT_ARGV (sudo systemctl reboot), compared by value before the spawn; the other argv literals are systemctl",
+  "src/host-pnpm.ts": "the command is a PATH entry joined with \"pnpm\", so its basename is always pnpm",
+  "src/install/onboard.ts": "every command at this spawn is a literal (herdr, claude, security); the seam's only callers pass those",
+  "src/install/service.ts": "the seam's default is only called with the literals launchctl, systemctl, systemd-analyze or tailscale",
+  "src/messaging/ask-ceo.ts": "pnpmCliInvocation returns process.execPath, a PATH file named pnpm, or corepack, and throws otherwise; never git",
+  "src/node-strips-types.ts": "every binary is a PATH entry or an Exec program whose basename is node",
+  "src/prune-tmp.ts": "the command is the literal \"gh\": openPullRequests runs run(\"gh\", ...) and its one production caller injects nothing else",
+  "src/review-trust.ts": "the command is the pr-review-verdict file under the reviewer bin directory; the env var sets only the directory, not the basename",
+  "src/ticket-mode/pair-command.ts": "the command is the bun binary findBun returns: bunHomePath, or a PATH entry joined with bun",
+  "src/ticket-mode/pool-herdr.ts": "herdrServerCommand returns only the literals herdr or systemd-run, and the other execFile is the literal herdr",
+  "src/ticket-mode/remote.ts": "the command is always ssh: both argv builders begin with \"ssh\"",
+  "src/packaging/keyed-tree-pnpm-store.test.ts": "the command is node_modules/.bin/tool in a scratch tree the test writes itself, a shim script and never git",
+  "src/work-tick-health.ts": "the node argument is process.execPath from work-tick's wakeCommand, its only production caller; tests pass a placeholder",
+  "src/work-tick.ts": "the spawn commands are systemctl and process.execPath (wakeCommand.node)",
+  "src/gh-ledger.test.ts": "argv[0] is process.execPath: the argv array is built from process.execPath on the line before the spawn",
+  "src/private-tmp.test.ts": "RSTEST is the node_modules/.bin/rstest that findRstest locates, never git",
+  "src/decision-run/brief.test.ts": "the match is spawn-shaped text inside a fixture string of the source check, not a call",
+  "src/lib/walk-scope.ts": "the match is the word spawn inside a string literal describing ChildProcess, not a call",
+  "src/packaging/live-default-seams.test.ts": "the match is inside the FIXTURE_SCRIPT template string, not a call",
+  "src/packaging/no-npm-spawn.test.ts": "the matches are spawn-shaped text inside fixture strings, not calls",
+  "src/ticket-port/ticket-port.test.ts": "the matches are inside a fixture template string, not calls",
+};
+
+/**
+ * FILES WHOSE SPAWN COMMAND CAN BE GIT ONLY THROUGH WHAT THE OPERATOR OR AN INSTALLED TOOL SUPPLIES, AND ARE DELIBERATELY NOT SCRUBBED.
+ *
+ * Each of these runs a command named by an env var or argv after `--` (the operator's own setting), or by a path an installed tool reports
+ * for itself (codex's managed binary). Scrubbing `GIT_*` from them would change what that environment does: a behaviour the ticket does not
+ * name. They are listed so a reviewer can decide, not hidden.
+ */
+const COMMAND_SUPPLIED_BY_OPERATOR: Record<string, string> = {
+  "src/board-document.ts": "the Chrome path is BOARD_DOCUMENT_CHROME when the operator sets it (checked only for existence), else a fixed candidate list; a git path there would run as the browser",
+  "src/codex-drift.ts": "the daemon program is the path codex app-server daemon reports for its own managed binary, run as reported; it is codex's own output, not a git spawn",
+  "src/host-units/gh-wrapper-and-notes.ts": "the minter's command is A11Y_APP_NODE when the operator sets it, else node; a git path there would run with the script and role as arguments",
+  "src/suite-slots.ts": "the `run -- <command>` argv is the command the operator types after `--`; scrubbing it would change the operator's own environment",
+  "src/ticket-mode/ui-css.test.ts": "the Chrome path is BOARD_DOCUMENT_CHROME when set, else a fixed list of browser binaries; the same operator setting as board-document.ts",
+};
+
 /** The spawning capability a file must import before it can spawn anything, whatever the callee is named. */
 const CAN_SPAWN = /from\s+["']node:child_process["']|require\(\s*["']node:child_process["']/;
 
@@ -195,11 +244,11 @@ const CAN_SPAWN = /from\s+["']node:child_process["']|require\(\s*["']node:child_
  * fixed files rather than trusting the regex on sight.
  */
 /**
- * #1185: THE PER-SPAWN CHECK MOVED TO `local/git-spawn-scrubbed`. WHAT STAYS HERE, AND WHY.
+ * #1185: THE PER-SPAWN CHECK IS `local/git-spawn-scrubbed` IN a11ign, NOT IN THIS REPO. WHAT STAYS HERE, AND WHY.
  *
- * The rule asks, of each `execFileSync("git", …)`, whether its file imports AND calls a canonical helper,
- * and reports **at the spawn's line** on every lint run. That is strictly better than this sweep for that
- * question: the sweep runs once in the PR suite and fails far from the call.
+ * a11ign's rule asks, of each `execFileSync("git", …)`, whether its file imports AND calls a canonical helper,
+ * and reports **at the spawn's line** on every lint run. agent-org has no such rule (ADR 0045 keeps the repos
+ * apart), so the per-spawn check here is the tests below, and the sweep runs once in the PR suite.
  *
  * **Two things it cannot do, and they are why this file is not deleted:**
  *
@@ -212,7 +261,7 @@ const CAN_SPAWN = /from\s+["']node:child_process["']|require\(\s*["']node:child_
  *    and carries a reason longer than a placeholder. The rule's `dataNotASpawn` option can only be a list;
  *    an exemption nobody checks is a bypass, and #1167's `guarded-by <symbol>` learned the same lesson.
  *
- * So: the rule holds the line per spawn, and this file holds the claims ABOUT THE SET. Measured at the
+ * So: the per-spawn tests below hold the line, and the claims ABOUT THE SET sit beside them. Measured at the
  * conversion: 79 files spawn git and 79 scrub, so neither has a finding to make today.
  */
 function spawnsGit(executable: string): boolean {
@@ -223,6 +272,100 @@ function spawnsGit(executable: string): boolean {
 function usesCanonicalHelper(executable: string): boolean {
   if (!CANONICAL_HELPER_IMPORT.test(executable)) return false;
   return /\bsandboxGitEnv\(/.test(executable) || /\bwithGitSandbox\(/.test(executable);
+}
+
+/**
+ * What a spawn's command can be, as far as its file shows: a literal, `process.execPath`, a `git` name, or a name the file binds.
+ * `unresolved` is not a verdict of git. It is the admission that the guard cannot tell, and such a file must scrub or be exempted.
+ */
+type CommandVerdict = "git" | "not-git" | "unresolved";
+
+const SPAWN_FUNCTIONS = "execFileSync|execFile|execSync|spawnSync|spawn";
+
+/** A spawn call, up to the start of its first argument. */
+const SPAWN_CALL = new RegExp(`\\b(?:${SPAWN_FUNCTIONS})\\(\\s*`, "g");
+
+/** A file can spawn only if it imports `child_process`: a spawn-shaped call in a fixture string in any other file spawns nothing. */
+const SPAWN_CAPABILITY = /["'](?:node:)?child_process["']/;
+
+/** A `git` string, or a `GIT`/`GIT_*` name, anywhere in a command expression: `process.env.GIT ?? "git"`, a ternary, a concatenation. */
+const NAMES_GIT = /["'`]git["'`]|\bGIT(?:_\w+)?\b/;
+
+/** A name is followed through `const|let|var` at most this many times: `const a = "git"; const b = a; spawnSync(b)` resolves, a longer chain does not. */
+const BINDING_HOPS = 2;
+
+/** The text of a call's first argument, from `start` to the comma or closing bracket at depth zero. */
+function firstArgument(text: string, start: number): string {
+  let depth = 0;
+  let end = start;
+  for (; end < text.length; end++) {
+    const c = text[end];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) break;
+      depth--;
+    } else if (c === "," && depth === 0) break;
+  }
+  return text.slice(start, end).trim();
+}
+
+/** A literal names git by its last path segment; an escape can spell git in a way the text does not show, so it is not proven. */
+function literalVerdict(value: string): CommandVerdict {
+  if (value.includes("\\")) return "unresolved";
+  return value.split("/").pop() === "git" ? "git" : "not-git";
+}
+
+function commandVerdict(command: string, executable: string, hops: number): CommandVerdict {
+  const literal = /^(["'`])([^"'`$]*)\1$/.exec(command);
+  if (literal) return literalVerdict(literal[2]);
+  if (/^process\.(?:execPath|argv0)$/.test(command)) return "not-git";
+  if (NAMES_GIT.test(command)) return "git";
+  if (/^[A-Za-z_$][\w$]*$/.test(command)) return bindingVerdict(command, executable, hops);
+  return "unresolved";
+}
+
+/**
+ * A bound name's verdict, from its declarations in the same file. "Not git" is proven only when every use of the name is one of those
+ * declarations or the command of a spawn: a parameter, a reassignment or a read the file does not show would be a use this cannot see.
+ */
+function bindingVerdict(name: string, executable: string, hops: number): CommandVerdict {
+  if (hops >= BINDING_HOPS) return "unresolved";
+  const escaped = name.replace(/\$/g, "\\$");
+  const initializers = [...executable.matchAll(new RegExp(`(?:const|let|var)\\s+${escaped}\\s*=(?![=>])([^\\n;]*)`, "g"))]
+    .map((match) => match[1].trim());
+  if (initializers.length === 0) return "unresolved";
+  const verdicts = initializers.map((initializer) => commandVerdict(initializer, executable, hops + 1));
+  if (verdicts.includes("git")) return "git";
+  const uses = executable.match(new RegExp(`(?<![.\\w$])${escaped}(?![\\w$])`, "g"))?.length ?? 0;
+  const spawnUses = executable.match(new RegExp(`\\b(?:${SPAWN_FUNCTIONS})\\(\\s*${escaped}(?![\\w$])`, "g"))?.length ?? 0;
+  const onlyDeclaredAndSpawned = uses === initializers.length + spawnUses;
+  return onlyDeclaredAndSpawned && verdicts.every((verdict) => verdict === "not-git") ? "not-git" : "unresolved";
+}
+
+/** Each spawn call in a file that can spawn, with the verdict for its command. */
+function spawnCommands(executable: string): { argument: string; verdict: CommandVerdict }[] {
+  if (!SPAWN_CAPABILITY.test(executable)) return [];
+  return [...executable.matchAll(SPAWN_CALL)].map((match) => {
+    const argument = firstArgument(executable, (match.index ?? 0) + match[0].length);
+    return { argument, verdict: commandVerdict(argument, executable, 0) };
+  });
+}
+
+const REASON: Record<"git" | "unresolved", string> = {
+  git: "resolves to git, and its file does not import and call a canonical scrubbing helper",
+  unresolved: "command is not a string literal and cannot be shown not to be git: scrub it through a canonical helper, or exempt it in COMMAND_IS_NOT_GIT with a reason",
+};
+
+/** The spawns in a file whose command can be git and whose file neither scrubs nor is exempted, each named by its verdict. */
+function unscrubbedCommands(file: string, executable: string): string[] {
+  if (usesCanonicalHelper(executable)) return [];
+  const problems: string[] = [];
+  for (const { argument, verdict } of spawnCommands(executable)) {
+    if (verdict === "not-git") continue;
+    if (verdict === "unresolved" && (file in COMMAND_IS_NOT_GIT || file in COMMAND_SUPPLIED_BY_OPERATOR)) continue;
+    problems.push(`${file}: spawn(${argument}, ...) ${REASON[verdict]}`);
+  }
+  return problems;
 }
 
 test("the discovery finds a non-trivial population -- vacuity guard for the walk itself", () => {
@@ -284,6 +427,35 @@ test("every git-spawning file imports and USES a canonical GIT_* scrubbing helpe
     + unclassified.map((f) => `  ${f}`).join("\n"));
 });
 
+test("every spawn whose command can be git, and is not a literal, is scrubbed or exempted with a reason", () => {
+  const problems = trackedSourceFiles().flatMap(({ path: file, text }) => unscrubbedCommands(file, stripComments(text)));
+  assert.deepEqual(problems, [],
+    `${problems.length} spawn command(s) are not proven not git, and their file neither scrubs nor is exempted:\n`
+    + problems.map((problem) => `  ${problem}`).join("\n"));
+});
+
+test("every COMMAND_IS_NOT_GIT and COMMAND_SUPPLIED_BY_OPERATOR entry names a real file with an unresolved command and no git spawn -- the exemption is not a bypass", () => {
+  const tracked = new Map(trackedSourceFiles().map((f) => [f.path, f.text]));
+  for (const [file, reason] of Object.entries({ ...COMMAND_IS_NOT_GIT, ...COMMAND_SUPPLIED_BY_OPERATOR })) {
+    assert.ok(tracked.has(file), `${file} is exempted but is not a tracked source file -- a stale exemption hides the next real one`);
+    const commands = spawnCommands(stripComments(tracked.get(file) ?? ""));
+    assert.ok(commands.some((command) => command.verdict === "unresolved"),
+      `${file} is exempted from a rule it no longer trips -- delete the entry rather than carrying it`);
+    assert.ok(commands.every((command) => command.verdict !== "git"),
+      `${file} spawns something that can be git, so "the command is not git" is false -- the exemption is hiding a real unscrubbed spawn`);
+    assert.ok(reason.trim().length > 40, `${file}'s exemption needs a reason a reader can check, not a placeholder`);
+  }
+});
+
+test("the spawn census sees the unresolved commands -- vacuity guard for the classifier", () => {
+  const unresolved = trackedSourceFiles()
+    .flatMap((f) => spawnCommands(stripComments(f.text)))
+    .filter((command) => command.verdict === "unresolved");
+  // MEASURED on this change (agent-org src/, the walk this guard reads): 97 unresolved spawn commands, including the exempted ones. A lower
+  // bound, not a pin: a classifier that matches nothing drops to zero, and this is what fails it.
+  assert.ok(unresolved.length >= 90, `only ${unresolved.length} unresolved spawn command(s) -- the classifier is probably matching nothing`);
+});
+
 // --- The guard must be shown to fail, or it proves nothing (CLAUDE.md: "a guard must be shown to fail
 // before it is trusted") ---
 
@@ -331,6 +503,70 @@ test("MUTATION: a git spawn whose first argument is an expression naming git is 
     + 'spawnSync(process.env.GIT ?? "git", ["status"], { cwd: "/tmp" });\n';
   assert.ok(spawnsGit(stripComments(fixture)), "a first argument that can still be git must be discovered");
   assert.ok(!usesCanonicalHelper(stripComments(fixture)), "and an unscrubbed one is not classified SAFE");
+  assert.match(unscrubbedCommands("src/fixture.ts", stripComments(fixture)).join("\n"), /resolves to git/,
+    "and the failure says it resolves to git, not that it cannot be told");
+});
+
+/** The import that makes a fixture able to spawn at all; every spawn fixture below starts with it. */
+const SPAWN_IMPORT = 'import { spawnSync } from "node:child_process";\n';
+
+test("MUTATION: a spawn whose command is a variable bound to git is flagged, and says it resolves to git", () => {
+  const problems = unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'const bin = "git";\nspawnSync(bin, ["status"], { cwd: "/tmp" });\n'));
+  assert.equal(problems.length, 1, "the bound name must be followed to its literal");
+  assert.match(problems[0], /resolves to git/);
+});
+
+test("MUTATION: a variable bound to git through two bindings is followed; a third is not, and says it cannot be shown not to be git", () => {
+  const twoHops = unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'const a = "git";\nconst b = a;\nspawnSync(b, ["status"]);\n'));
+  assert.match(twoHops.join("\n"), /resolves to git/);
+  const threeHops = unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT
+    + 'const a = "git";\nconst b = a;\nconst c = b;\nspawnSync(c, ["status"]);\n'));
+  assert.match(threeHops.join("\n"), /cannot be shown not to be git/);
+});
+
+test("MUTATION: a variable the file does not bind is flagged, and says it cannot be shown not to be git", () => {
+  const problems = unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'function run(cmd: string) {\n  spawnSync(cmd, ["status"]);\n}\n'));
+  assert.equal(problems.length, 1, "a parameter is not a literal, so it cannot be waved through");
+  assert.match(problems[0], /cannot be shown not to be git/);
+});
+
+test("MUTATION: a variable reassigned after its declaration is not proven not git", () => {
+  const problems = unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'let bin = "node";\nbin = "git";\nspawnSync(bin, ["status"]);\n'));
+  assert.match(problems.join("\n"), /cannot be shown not to be git/, "the second assignment is a use the declaration does not show");
+});
+
+test("NEGATIVE: a variable bound to a non-git value, and process.execPath, are not flagged", () => {
+  assert.deepEqual(unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'const bin = "node";\nspawnSync(bin, ["-e", ""]);\n')), []);
+  assert.deepEqual(unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'spawnSync(process.execPath, ["-e", ""]);\n')), []);
+});
+
+test("MUTATION: a template string naming git is flagged, one with a substitution is unresolved, and a plain non-git one is not flagged", () => {
+  assert.match(unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + "spawnSync(`git`, [\"status\"]);\n")).join("\n"), /resolves to git/);
+  assert.match(unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + "spawnSync(`${dir}/git`, [\"status\"]);\n")).join("\n"), /cannot be shown not to be git/);
+  assert.deepEqual(unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + "spawnSync(`node`, [\"-e\", \"\"]);\n")), []);
+});
+
+test("MUTATION: a literal path ending in git is flagged, and an escape that spells git is not proven not git", () => {
+  assert.match(unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'spawnSync("/usr/bin/git", ["status"]);\n')).join("\n"), /resolves to git/,
+    "the last path segment is the program, so /usr/bin/git is git");
+  assert.match(unscrubbedCommands("src/fixture.ts", stripComments(SPAWN_IMPORT + 'spawnSync("\\x67it", ["status"]);\n')).join("\n"), /cannot be shown not to be git/,
+    "an escape spells git without the text showing it");
+});
+
+test("MUTATION: a call to a function whose name ends in spawn is not a spawn use of the name it is passed", () => {
+  // respawn's parameter `bin` is not the spawnSync command: the spawn inside it takes a name the file does not bind, so it must be flagged.
+  const fixture = SPAWN_IMPORT
+    + 'const bin = "node";\n'
+    + 'function respawn(bin: string) { return spawnSync(bin, ["status"], { cwd: "/tmp" }); }\n'
+    + 'export const go = () => respawn(process.env.GIT_BIN ?? "git");\n';
+  assert.match(unscrubbedCommands("src/fixture.ts", stripComments(fixture)).join("\n"), /cannot be shown not to be git/);
+});
+
+test("CONTROL: an unresolved command in a file that imports and calls the helper is classified SAFE", () => {
+  const fixture = SPAWN_IMPORT
+    + 'import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";\n'
+    + 'function run(cmd: string) {\n  spawnSync(cmd, ["status"], { env: sandboxGitEnv() });\n}\n';
+  assert.deepEqual(unscrubbedCommands("src/fixture.ts", stripComments(fixture)), []);
 });
 
 test("NEGATIVE: a spawn of another program with a later \"git\" argument is not discovered as a git spawn", () => {
