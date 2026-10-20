@@ -4104,15 +4104,20 @@ test("a refusal that is not the busy one ends the waiting at once, after some bu
 /** A ticket that still holds an open decision in its Acceptance: the line the start guard names (A11-134). */
 const OPEN_DECISION = "## Acceptance\n\n### 4. Decide whether to isolate the failing ticket or keep the stall\n";
 
+/** NBF-1's work run is held for its open decision: it ends needs-human with the line, and no worker was started (A11-134). */
+function assertHeldForDecision(made: ReturnType<typeof setup>): void {
+  const outcome = made.entry("NBF-1").outcome;
+  assert.equal(outcome?.kind, "needs-human");
+  assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", /Decide whether to isolate the failing ticket or keep the stall/);
+  assert.equal(made.h.calls.some((args) => args.includes("start")), false, "no worker is started");
+}
+
 test("A11-134: a work run never starts on a ticket with an open decision: it ends needs-human with the line, and no worker is started", async () => {
   const made = setup(1, ["NBF-1"]);
   const queue = made.store.get();
   made.store.set({ ...queue, entries: queue.entries.map((e) => ({ ...e, ticket: { ...e.ticket, description: OPEN_DECISION } })) });
   await made.pool.tick();
-  const outcome = made.entry("NBF-1").outcome;
-  assert.equal(outcome?.kind, "needs-human");
-  assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", /Decide whether to isolate the failing ticket or keep the stall/);
-  assert.equal(made.h.calls.some((args) => args.includes("start")), false, "no worker is started");
+  assertHeldForDecision(made);
 });
 
 /** NBF-1 planned by a planning run whose one plan file says `plan`, once the run is read: the plans the tracker took, and the ticket (A11-134). */
@@ -4189,4 +4194,11 @@ test("A11-134: a Grill run's brief grills its ticket, and the run is granted no 
   assert.match(brief, /^# Grill NBF-1: Title NBF-1\n/);
   assert.match(brief, /File no ticket, attach nothing, and change nothing in the tracker/);
   assert.deepEqual(JSON.parse(readFileSync(join(fixture.dir, WRITER_FILE), "utf8")).tools, []);
+});
+
+test("A11-134: a decision the tracker gains after a ticket is queued holds its work run too: the run ends needs-human with the line, and no worker is started", async () => {
+  // Queued clean: the copy the queue holds has no open decision, but the tracker now says the Acceptance leaves one open.
+  const made = setup(1, ["NBF-1"], {}, { source: trackerOf({ "NBF-1": { description: OPEN_DECISION } }) });
+  await made.pool.tick();
+  assertHeldForDecision(made);
 });

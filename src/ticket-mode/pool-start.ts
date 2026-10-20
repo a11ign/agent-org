@@ -23,7 +23,7 @@ import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parsePaths } from "./overlap.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { markWriterRunning, markWriterStarting, nextStarts, writerFailed, writerOf, writerToStart } from "./queue.ts";
-import { clearRunDir, prepare, prepareBatch, writeBoardRunFiles } from "./pool-prepare.ts";
+import { clearRunDir, current, prepare, prepareBatch, writeBoardRunFiles } from "./pool-prepare.ts";
 import { hasPlan } from "./board-view/view-ticket.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { needsDecision } from "./open-decisions.ts";
@@ -342,12 +342,11 @@ function stoppedWhileStarting(ctx: PoolContext, key: string, workspace: string):
 
 /**
  * The open decision that holds a work run back, as its reason, or null (A11-134). A work run never starts on a ticket with an open decision: the queue refused
- * one, but the tracker may have changed since, or the ticket was queued before the check, and no worker chooses the answer. A synchronous check, so a run
- * without one starts with no extra turn of the event loop.
+ * one, but the tracker may have changed since the ticket was queued, and no worker chooses the answer. So the ticket is read as the tracker has it now, the
+ * same read `prepare` briefs the worker with, and not the copy taken when it was queued.
  */
-function openDecisionHold(ctx: PoolContext, entry: Entry): string | null {
-  if (isPlanning(ctx, entry) || entry.review !== undefined) return null;
-  return needsDecision(entry.ticket)?.reason ?? null;
+async function openDecisionHold(ctx: PoolContext, entry: Entry): Promise<string | null> {
+  return needsDecision(await current(ctx, entry.ticket))?.reason ?? null;
 }
 
 /** Start one run for one ticket, the rest of its batch, if it had one, being started already or waiting on a blocker. */
@@ -362,8 +361,10 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
       update(ctx, (queue) => planDone(queue, entry.ticket.key, { unattended: false }));
       return;
     }
-    // A work run held by an open decision ends needs-human with its reason (A11-134); a review round may wait on its stacked base instead.
-    const blocked = openDecisionHold(ctx, entry) ?? (entry.review !== undefined && entry.stackBase !== undefined ? await rebaseBeforeRound(ctx, entry) : null);
+    // A work run held by an open decision ends needs-human with its reason (A11-134); a review round may wait on its stacked base instead. Only a work run
+    // reads the tracker here, so a planning run or a review round starts as it did before.
+    const held = isPlanning(ctx, entry) || entry.review !== undefined ? null : await openDecisionHold(ctx, entry);
+    const blocked = held ?? (entry.review !== undefined && entry.stackBase !== undefined ? await rebaseBeforeRound(ctx, entry) : null);
     if (blocked !== null) {
       update(ctx, (queue) => finish(queue, entry.ticket.key, { kind: "needs-human", reason: blocked }, now()));
       return;
