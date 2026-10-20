@@ -888,7 +888,7 @@ function writerTicket(ticket) {
   const href = ticket.url === null ? null : safeHref(ticket.url);
   return el("p", { className: "made" },
     href ? el("a", { href, target: "_blank", rel: "noreferrer", textContent: `Created ${ticket.key}` }) : el("span", { textContent: `Created ${ticket.key}` }),
-    ticket.inPick ? null : el("span", { className: "hint", textContent: " It is outside the list Pick shows, so it is not in it." }));
+    ticket.inPick === false ? el("span", { className: "hint", textContent: " It is outside the list Pick shows, so it is not in it." }) : null);
 }
 async function writerAction(run, verb) {
   try {

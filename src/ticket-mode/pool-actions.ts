@@ -28,7 +28,8 @@ export function stopWriterRun(ctx: PoolContext, id: string): void {
   const { name } = writerPlace(ctx, run);
   if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
   forgetRun(ctx, name);
-  update(ctx, (queue) => stopWriter(queue, id, now(), filedOf(ctx, run)));
+  const filed = filedOf(ctx, run);
+  update(ctx, (queue) => stopWriter(queue, id, now(), { tickets: filed.tickets, problem: filed.problem }));
 }
 
 /**

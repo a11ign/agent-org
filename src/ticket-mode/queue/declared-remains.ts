@@ -246,7 +246,7 @@ export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: b
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list
  * shows it. The run filed it itself; the board reads it back from the tracker to show it.
  */
-export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: boolean }>;
+export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: boolean | null }>;
 
 /** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. */
 export type WriterMode = "quick" | "grill";

@@ -15,7 +15,7 @@ import { isParked, isWatched, resumesOnConflict } from "./board-view/settled-by-
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, type WriterRun, type WrittenOutcome } from "./queue/declared-remains.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.ts";
-import { observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
+import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-ticket.ts";
 import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
@@ -354,7 +354,10 @@ export function reconcile(ctx: PoolContext): void {
   }
   for (const run of store.get().writers ?? []) {
     const lost = run.phase === "starting" || (run.phase === "running" && !listed.has(writerPlace(ctx, run).name));
-    if (lost) update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filedOf(ctx, run), failure: "the pool restarted while it was running" }, now()));
+    if (lost) {
+      const filed = filedOf(ctx, run);
+      update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filed.tickets, failure: joined("the pool restarted while it was running", filed.problem) }, now()));
+    }
   }
 }
 

@@ -5,6 +5,7 @@ import { type PublishRun, type WriterRun, type WriterTicket } from "./queue/decl
 import { type RunPlace } from "./pool-paths.ts";
 import { CREATED_FILE, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
 import { inPickScope } from "./pick-scope.ts";
+import { joined } from "./queue.ts";
 import { forgetRun, messageOf, publishPlace, update, writerPlace, writerAgentRunning } from "./pool-state.ts";
 import { writerEnded, writerWaiting } from "./queue.ts";
 import { QUESTION_CHARS } from "./pool-outcome.ts";
@@ -91,22 +92,23 @@ function closeWriter(ctx: PoolContext, run: WriterRun): void {
 }
 
 /**
- * The tickets a run's record holds, for a run that ends without its outcome read (A11-135): the agent filed them before it stopped, so they are shown as
- * made. Their addresses are not read here, since no tracker call is made on this path, so they are shown by key. Pick is only assumed to list the
- * key's own tickets, which the skill assigns.
+ * The tickets a run's record holds, for a run that ends without its outcome read (A11-135): the agent filed them before it ended, so they are shown as
+ * made. No tracker call is made on this path, so each is shown by key, without its address, and without a Pick claim (`inPick` is null). A record that
+ * cannot be read is named as the problem, since the tickets it made cannot then be shown.
  */
-export function filedOf(ctx: PoolContext, run: WriterRun): WriterTicket[] {
-  const keys = readCreatedKeys(writerPlace(ctx, run).dir) ?? [];
-  return keys.map((key) => ({ key, url: null, inPick: ctx.settings.pick === "assigned" }));
+export function filedOf(ctx: PoolContext, run: WriterRun): Readonly<{ tickets: WriterTicket[]; problem: string | null }> {
+  const keys = readCreatedKeys(writerPlace(ctx, run).dir);
+  if (keys === null) return { tickets: [], problem: `${CREATED_FILE} cannot be read, so the tickets it filed cannot be shown` };
+  return { tickets: keys.map((key) => ({ key, url: null, inPick: null })), problem: null };
 }
 
 /** Close a new-ticket run's workspace and record why it failed. The tickets it filed before it failed stay, and are shown. */
 export function endWriter(ctx: PoolContext, run: WriterRun, failure: string): void {
   const { now } = ctx;
   if (!writerAgentRunning(ctx, run.id)) return;
-  const tickets = filedOf(ctx, run);
+  const filed = filedOf(ctx, run);
   closeWriter(ctx, run);
-  update(ctx, (queue) => writerEnded(queue, run.id, { tickets, failure }, now()));
+  update(ctx, (queue) => writerEnded(queue, run.id, { tickets: filed.tickets, failure: joined(failure, filed.problem) }, now()));
 }
 
 /** Close the publish run's workspace and record how it ended: each of its runs Published, or why it failed. */

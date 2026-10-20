@@ -3773,6 +3773,13 @@ test("stopping a new-ticket run closes its workspace, and keeps the tickets it h
   assert.equal(closes(h, "w1"), 1, "a second stop closes nothing");
 });
 
+test("a stopped run whose record cannot be read says so, and shows no ticket it cannot read (A11-135)", async () => {
+  const fixture = await workingRun({ id: "w9" });
+  writeFileSync(join(fixture.dir, CREATED_FILE), "not a record\n");
+  fixture.pool.stopWriterRun("w9");
+  assert.deepEqual([fixture.run().tickets, fixture.run().failure], [[], `stopped on the board; ${CREATED_FILE} cannot be read, so the tickets it filed cannot be shown`]);
+});
+
 test("after a restart, a new-ticket run herdr still lists is adopted, and one it does not list fails", async () => {
   const { pool, status, name, run, restart } = writing({ id: "w5" });
   await pool.tick();

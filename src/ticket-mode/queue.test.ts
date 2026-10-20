@@ -877,5 +877,16 @@ test("a run an older board left for review is failed, and an older grill run wai
   assert.equal(writerOf(loaded, "w2")?.phase, "running", "its agent is still in its terminal");
   assert.equal(writerOf(loaded, "w2")?.startedAt, undefined, "and its clock starts again: a grill limit counts from the resume, not from an hours-old start");
   assert.equal(writerOf(loaded, "w3")?.failure, LEGACY_CREATING_FAILURE);
-  assert.deepEqual(writerOf(loaded, "w3")?.tickets, [{ key: "NBF-7", url: "u", inPick: false }], "a ticket an older board made is kept, as made");
+  assert.deepEqual(writerOf(loaded, "w3")?.tickets, [{ key: "NBF-7", url: "u", inPick: true }], "a ticket an older board made is kept, as made, and an absent flag meant in Pick");
 });
+
+test("a legacy run that was creating its tickets, with every draft made, ends done: no ticket is left to make (A11-135)", () => {
+  const path = join(tmpDir("ticket-queue-legacy-done-"), "queue.json");
+  const made = { id: "d-a", file: "01-a.json", status: "created", created: { key: "NBF-8", url: "u" },
+    draft: { title: "a", why: "w", doneWhen: ["d"], notes: null, team: null, project: null, repo: null, goal: null, labels: [], priority: "none", parent: null,
+      blocks: [], blockedBy: [], duplicates: [] }, duplicates: [] };
+  writeFileSync(path, JSON.stringify({ entries: [], max: 1, paused: true, writers: [{ ...request, phase: "creating", queuedAt: 1, startedAt: 1, drafts: [made], rejected: [] }] }));
+  const loaded = writerOf(loadQueue(path, 1), "w1");
+  assert.deepEqual([loaded?.phase, loaded?.failure, loaded?.tickets.map(({ key }) => key)], ["finished", undefined, ["NBF-8"]]);
+});
+

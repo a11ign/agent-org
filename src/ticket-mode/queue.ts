@@ -97,11 +97,14 @@ type LegacyRun = Omit<WriterRun, "tickets" | "phase"> & Readonly<{ phase: Writer
 export function writerAsRead(run: LegacyRun): WriterRun {
   const { drafts = [], tickets: filed = [], rejected: _rejected, ...rest } = run;
   const tickets: WriterTicket[] = [...filed, ...drafts.flatMap(({ status, created }) => (status === "created" && created !== undefined
-    ? [{ key: created.key, url: created.url, inPick: created.inPick ?? false }] : []))];
+    ? [{ key: created.key, url: created.url, inPick: created.inPick !== false }] : []))];
   if (drafts.some(({ status }) => status === "pending" || status === "discarded")) {
     return { ...rest, phase: "finished", tickets, failure: LEGACY_REVIEW_FAILURE, finishedAt: run.finishedAt ?? run.queuedAt };
   }
-  if (run.phase === "creating") return { ...rest, phase: "finished", tickets, failure: LEGACY_CREATING_FAILURE, finishedAt: run.finishedAt ?? run.queuedAt };
+  if (run.phase === "creating") {
+    const unmade = drafts.some(({ status }) => status !== "created");
+    return { ...rest, phase: "finished", tickets, ...(unmade ? { failure: LEGACY_CREATING_FAILURE } : {}), finishedAt: run.finishedAt ?? run.queuedAt };
+  }
   if (run.phase === "waiting") return { ...rest, phase: "running", tickets, startedAt: undefined };
   return { ...rest, phase: run.phase, tickets };
 }
@@ -161,8 +164,14 @@ export function writerFailed(queue: Queue, id: string, failure: string, now: num
 }
 
 /** The person stopped the writer run. Its workspace is closed by the caller, and the tickets it already made stay. */
-export const stopWriter = (queue: Queue, id: string, now: number, tickets: readonly WriterTicket[] = []): Queue =>
-  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...notWaiting(run), phase: "finished", finishedAt: now, tickets, failure: "stopped on the board" }));
+export const stopWriter = (queue: Queue, id: string, now: number, stopped: Readonly<{ tickets: readonly WriterTicket[]; problem: string | null }> = { tickets: [], problem: null }): Queue =>
+  replaceWriter(queue, id, (run) => (run.phase === "finished" ? run : { ...notWaiting(run), phase: "finished", finishedAt: now, tickets: stopped.tickets, failure: joined("stopped on the board", stopped.problem) }));
+
+/** The failure text from its parts, with the empty ones left out, or undefined when none is left. PURE. */
+export const joined = (...parts: readonly (string | null)[]): string | undefined => {
+  const text = parts.filter((part): part is string => part !== null).join("; ");
+  return text === "" ? undefined : text;
+};
 
 /** Remove a finished writer run from the board. A run still under way is stopped first. */
 export function dismissWriter(queue: Queue, id: string): Queue {

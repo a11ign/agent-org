@@ -99,7 +99,7 @@ export function writerChoiceLabel(run: Pick<WriterRunView, "model" | "effort">):
 }
 
 /** A ticket a new-ticket run made, as the board shows it: its key, its address when the tracker has it, and whether Pick lists it. */
-export type WriterTicketView = Readonly<{ key: string; url: string | null; inPick: boolean }>;
+export type WriterTicketView = Readonly<{ key: string; url: string | null; inPick: boolean | null }>;
 
 /** A new-ticket run's view on the board: its request, its phase, and the tickets it made. */
 export type WriterRunView = Readonly<{
