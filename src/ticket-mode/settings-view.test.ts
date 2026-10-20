@@ -101,7 +101,8 @@ test("a refused file shows its refusal and no rows of its own, and the other sec
 test("a host file that is refused draws none of its own keys, and names the refusal as its message", () => {
   const view = viewOf({ host: null, tickets: {} });
   assert.deepEqual(view.refusals.map((r) => r.file), ["host.json"]);
-  assert.equal(rowsOf(view).some((candidate) => candidate.file === "host.json" && candidate.group === "GitHub"), false);
+  assert.equal(rowsOf(view).some((candidate) => candidate.file === "host.json" && (candidate.key === "gh" || candidate.key.startsWith("gh.") || candidate.key.startsWith("github"))), false,
+    "the host file's own gh and github keys are not drawn, though the tickets block's code host keys are");
 });
 
 test("a machine with no project declaration says so as a note, not as a refusal", () => {

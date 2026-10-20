@@ -31,6 +31,22 @@ const HOST = {
     workingState: "In Progress", connectors: ["^mcp__linear__(get|list)_"], publish: { run: "publish {prs} into {dir}", model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] },
     drafts: true, designTools: true, prReview: "a11ign:clean-code-review", reviewer: "atomic", pick: { team: "A11" }, stallMinutes: 30, updateMaxDeferHours: 2,
     serve: "tailscale", servePorts: { ui: 9443, terminal: 9444 },
+    // The named provider blocks (A11-144), each setting in the place its old key holds, with the same value: the drift test reads both, so each new key
+    // has an entry and each alias one, and the aliases still parse beside their blocks.
+    providers: {
+      tracker: { provider: "linear", key: { path: "/home/a/.config/linear.key" }, connectors: ["^mcp__linear__(get|list)_"], workingState: "In Progress", plannedState: "Planned" },
+      codeHost: {
+        provider: "github", stack: true,
+        identity: { scheduler: { mode: "github-apps", appId: 123, keyPath: "/home/a/.config/app.pem", installationId: 456, slug: "agent-org-bot" }, workers: { mode: "user-accounts" } },
+        gh: { workers: "/home/a/gh/workers", leads: "/home/a/gh/leads", leadsHeader: ["header"], leadsWorkspaces: [{ id: "lead1", role: "lead" }] },
+      },
+      publish: { provider: "slack", run: "publish {prs} into {dir}", model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] },
+      reviewer: { provider: "atomic" },
+      exposure: {
+        provider: "tailscale", port: 4747, uiPort: 4748, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}",
+        tailnetPorts: { ui: 9443, terminal: 9444 },
+      },
+    },
   },
 };
 
@@ -181,11 +197,13 @@ test("A11-132: every editable entry says when a change is in force, every entry 
   }
   const dangerous = editable.flatMap((entry) => (entry.edit.editable && entry.edit.dangerous !== undefined ? [`${entry.file} ${entry.key}`] : []));
   assert.deepEqual(dangerous.sort(), [
-    "host.json binDir", "host.json clones.<name>", "host.json events.receiver.port", "host.json events.receiver.secretPath", "host.json github.identity.<role>.keyPath",
-    "host.json github.identity.<role>.mode", "host.json home", "host.json primary", "host.json projects", "host.json stateDir", "host.json tickets.connectors",
-    "host.json tickets.deny", "host.json tickets.drafts", "host.json tickets.linearKey.path", "host.json tickets.plugins", "host.json tickets.port",
-    "host.json tickets.preflight", "host.json tickets.publish", "host.json tickets.publish.connectors", "host.json tickets.serve", "host.json tickets.servePorts",
-    "host.json tickets.uiPort", "host.json tickets.worktreeRoot", "host.json triage.keyPath", "project.json beforeTick",
+    "host.json binDir", "host.json clones.<name>", "host.json events.receiver.port", "host.json events.receiver.secretPath", "host.json home",
+    "host.json primary", "host.json projects", "host.json stateDir", "host.json tickets.connectors", "host.json tickets.deny", "host.json tickets.drafts",
+    "host.json tickets.plugins", "host.json tickets.preflight", "host.json tickets.providers.codeHost.identity.<role>.keyPath",
+    "host.json tickets.providers.codeHost.identity.<role>.mode", "host.json tickets.providers.exposure.port", "host.json tickets.providers.exposure.tailnetPorts",
+    "host.json tickets.providers.exposure.uiPort", "host.json tickets.providers.publish.connectors", "host.json tickets.providers.publish.run",
+    "host.json tickets.providers.tracker.connectors", "host.json tickets.providers.tracker.key.path", "host.json tickets.worktreeRoot", "host.json triage.keyPath",
+    "project.json beforeTick",
   ].sort(), "the set is pinned: change this test with the flags in config-schema.ts");
   for (const entry of editable) {
     if (entry.edit.editable && entry.edit.dangerous !== undefined) assert.ok(entry.edit.dangerous.length > MIN_SENTENCE, `${entry.key} says what it can break`);
@@ -195,7 +213,8 @@ test("A11-132: every editable entry says when a change is in force, every entry 
 test("A11-132: a key that is only shown is never editable as a secret's contents: the secret keys are the path keys, and the keychain is not editable", () => {
   const secrets = SCHEMA.filter((entry) => entry.secret !== undefined);
   for (const entry of secrets) {
-    if (entry.secret === "path") assert.equal(entry.edit.editable, true, `${entry.key} is editable as a path`);
+    // An alias is shown, not changed: its new key is the editable path (A11-144).
+    if (entry.secret === "path") assert.equal(entry.edit.editable, entry.aliasOf === undefined, `${entry.key} is editable as a path, unless it is an alias`);
     if (entry.secret === "keychain") assert.equal(entry.edit.editable, false, `${entry.key} is not editable`);
   }
 });

@@ -1787,7 +1787,7 @@ const DESCRIBED = {
   groups: [
     { group: "Workers", rows: [{ key: "tickets.max", file: "host.json", group: "Workers", value: "3", state: "default", source: "built-in default", explanation: "How many workers run at once.", breaks: "Too high starts more workers than the machine carries.", depth: 0, secret: false }] },
     { group: "Pick", rows: [{ key: "tickets.linearKey.path", file: "host.json", group: "Pick", value: "/k/linear.key (the file is missing)", state: "enabled", source: "host.json", explanation: "The file the tracker's key is in.", breaks: "The board cannot read the tracker.", depth: 2, secret: true }] },
-    { group: "Plugins and connectors", rows: [] },
+    { group: "Conventions plugin", rows: [] },
   ],
   plugins: [{ plugin: "nbl-ui@applied-ai", installed: "not installed", loads: "a worker's session does not load it: nbl-ui@applied-ai is not installed: install it for every folder" }],
   words: ["A worker may call any tool of the connector `linear` whose name matches `^mcp__linear__`."],
@@ -1814,7 +1814,7 @@ test("the page draws what each key says, in its group, with its state and source
   const p = await page(new Map(), { config: SETTINGS, settings: DESCRIBED });
   await openFrom(p, "open-settings");
   const headings = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
-  assert.deepEqual(headings, ["Workers", "Pick", "Plugins and connectors"], "one heading per group, in the page's order");
+  assert.deepEqual(headings, ["Workers", "Pick", "Conventions plugin"], "one heading per group, in the page's order");
   const text = p.$("settings-groups").text();
   assert.match(text, /tickets\.max[\s\S]*Value: 3\. State: default\. Source: built-in default\./);
   assert.match(text, /tickets\.linearKey\.path[\s\S]*Value: \/k\/linear\.key \(the file is missing\)\. State: enabled\. Source: host\.json\./, "a secret path shows its path and whether the file exists");

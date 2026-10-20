@@ -83,6 +83,8 @@ test("a ticket:* program gets the workers' GH_CONFIG_DIR the host file declares,
   assert.equal(hostGhConfigDir(JSON.stringify({ clones: {} })), null);
   assert.equal(hostGhConfigDir(JSON.stringify({ gh: { workers: "relative" } })), null);
   assert.equal(hostGhConfigDir(null), null);
+  assert.equal(hostGhConfigDir(JSON.stringify({ tickets: { providers: { codeHost: { provider: "github", gh: { workers: "/home/agent/workers" } } } } })), "/home/agent/workers/gh",
+    "the workers' account is read where doctor --fix moved gh to (A11-144)");
   const read = (path: string) => (path === "/srv/h.json" ? hostGhConfigDir(host) : null);
   assert.equal(programEnv("ticket:review", {}, () => "/srv/h.json", read).GH_CONFIG_DIR, "/home/agent/workers/gh");
   assert.equal(programEnv("ticket:review", { AGENT_ORG_HOST: "/srv/h.json", GH_CONFIG_DIR: "/mine/gh" }, () => "/x", read).GH_CONFIG_DIR, "/mine/gh");

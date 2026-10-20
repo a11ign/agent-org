@@ -9,7 +9,9 @@ import type { StatusFile, UpdateStatus } from "./update-safety.ts";
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
 const HOUR = 3600e3;
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
-const HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
+// The provider blocks (A11-144): the tracker and the exposure named, each with its own settings, so no alias is read.
+const HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { tracker: { provider: "linear", key: { keychain: "agent-org-linear" } },
+  exposure: { provider: "local", port: 4800, uiPort: 4801, terminal: TERMINAL } } } });
 /** The same host file with a `primary` project, which is the host that installs the `gh` wrapper. */
 const HOST_WITH_PROJECT = JSON.stringify({ ...JSON.parse(HOST), primary: "p", projects: [] });
 const MCP_LIST = "Checking MCP server health…\n\nbookctx: http://127.0.0.1:8421/mcp (HTTP) - ✔ Connected\nlinear: https://mcp.linear.app/mcp (HTTP) - ✔ Connected\n";
@@ -30,19 +32,71 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [],
-    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), now: () => NOW,
+    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, now: () => NOW,
     ...over,
   };
 }
 
 const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntries(checks.map((check) => [check.name, check]));
 
+/** A host file as an install from before A11-144 wrote it: each concern's loose keys, no provider block. */
+const OLD_HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
+
+test("A11-144: a host file that still reads an old key fails one row per key, each naming its place and `doctor --fix`, and the rest stays as it was", async () => {
+  const checks = byName(await diagnose(deps({ readFile: () => OLD_HOST })));
+  assert.deepEqual(checks["alias tickets.linearKey"], {
+    name: "alias tickets.linearKey", ok: false, detail: "tickets.linearKey is read as an alias; its place is tickets.providers.tracker.key", fix: "agent-org doctor --fix",
+  });
+  assert.match(checks["alias tickets.port"].detail, /its place is tickets\.providers\.exposure\.port$/);
+  assert.match(checks["alias tickets.terminal"].detail, /its place is tickets\.providers\.exposure\.terminal$/);
+  assert.equal(checks["tracker (linear)"].ok, true, "the tracker's own checks still pass, so its row does");
+  assert.match(checks["tracker (linear)"].detail, /^from aliases \(tickets\.linearKey\)/);
+});
+
+test("A11-144: a provider row says where its settings came from, and a block a host file leaves out takes its default, which doctor says", async () => {
+  const checks = byName(await diagnose(deps({ readFile: () => JSON.stringify({ clones: { netbox: "/src/netbox" } }) })));
+  assert.match(checks["tracker (linear)"].detail, /^no block: the default, linear, with the Keychain service agent-org-linear, applies/);
+  assert.match(checks["exposure (local)"].detail, /^no block: the default, local, on loopback with ports 4747 and 4748, applies/);
+  assert.match(checks["publisher (none)"].detail, /no block: the default, none, which publishes nothing, applies/);
+  assert.deepEqual(Object.keys(checks).filter((name) => name.startsWith("alias ")), [], "no old key is read, so no alias row");
+});
+
+test("A11-144: an atomic reviewer fails when its gate does not load, and the row says so with the gate's check; no reviewer asks the gate nothing", async () => {
+  const atomic = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { reviewer: { provider: "atomic" } } } });
+  const refused = byName(await diagnose(deps({ readFile: () => atomic, reviewerGate: async () => "the gate's modules do not load" })));
+  assert.equal(refused["reviewer gate"].ok, false);
+  assert.equal(refused["reviewer (atomic)"].ok, false);
+  assert.equal(refused["reviewer (atomic)"].detail, "from tickets.providers.reviewer: the gate's modules do not load");
+  const loads = byName(await diagnose(deps({ readFile: () => atomic })));
+  assert.equal(loads["reviewer (atomic)"].ok, true);
+  let asked = false;
+  const none = byName(await diagnose(deps({ reviewerGate: async () => { asked = true; return "x"; } })));
+  assert.equal(none["reviewer (none)"].ok, true);
+  assert.equal(asked, false, "no reviewer, so no gate is loaded");
+});
+
+test("A11-144: a code host that names stack false is not asked for the gh stack extension", async () => {
+  const withoutStack = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { codeHost: { provider: "github", stack: false } } } });
+  const checks = byName(await diagnose(deps({ readFile: () => withoutStack })));
+  assert.equal(Object.keys(checks).some((name) => name === "gh stack" || name === "stacked pull requests"), false);
+  assert.equal(checks["code host (github)"].ok, true);
+});
+
+test("A11-144: a provider row fails when a check it summarises fails, with that check's fix", async () => {
+  const terminalDown = byName(await diagnose(deps({ healthy: async () => false })));
+  assert.equal(terminalDown["tracker (linear)"].ok, true);
+  assert.equal(terminalDown["exposure (local)"].ok, false);
+  assert.equal(terminalDown["exposure (local)"].fix, terminalDown["terminal answering"].fix);
+});
+
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["gh stack", true], ["herdr", true], ["tracker key", true], ["linear mcp", true],
-    ["ticket writer", true], ["instance service", true], ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true],
-    ["terminal address", true], ["terminal service", true], ["terminal answering", true], ["pairing", true], ["auto-update service", true], ["update lag", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
+    ["herdr", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["ticket writer", true], ["instance service", true],
+    ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
+    ["terminal answering", true], ["exposure (local)", true], ["publisher (none)", true], ["reviewer (none)", true], ["pairing", true],
+    ["auto-update service", true], ["update lag", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
   assert.match(report(checks), /ok {4}ui answering: http:\/\/127\.0\.0\.1:4801 answers/);

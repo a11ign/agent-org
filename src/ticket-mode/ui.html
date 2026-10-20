@@ -1058,7 +1058,7 @@ function showEditRefusal(err) {
   $("edit-refusal").hidden = false;
 }
 function settingsGroup({ group, rows }, view) {
-  const plugins = group === "Plugins and connectors";
+  const plugins = group === "Conventions plugin";
   if (rows.length === 0 && !(plugins && (view.plugins.length > 0 || view.words.length > 0))) return null;
   const id = `group-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
   const section = el("section", { className: "setting-group" }, el("h3", { id, textContent: group }), ...rows.map(settingRow));

@@ -54,6 +54,18 @@ const TABLE_KEYS = [
   "tickets.linearKey", "tickets.brief", "tickets.review", "tickets.plugins", "tickets.deny", "tickets.connectors", "tickets.terminal",
   "tickets.plan", "tickets.planner", "tickets.publish", "tickets.writer", "tickets.preflight", "tickets.drafts", "tickets.prReview",
   "tickets.reviewer", "tickets.pick", "tickets.stallMinutes", "tickets.updateMaxDeferHours", "tickets.workingState", "stateDir",
+  "tickets.providers", "tickets.providers.tracker", "tickets.providers.tracker.provider", "tickets.providers.tracker.key", "tickets.providers.tracker.key.path",
+  "tickets.providers.tracker.key.keychain", "tickets.providers.tracker.connectors", "tickets.providers.tracker.workingState",
+  "tickets.providers.tracker.plannedState", "tickets.providers.codeHost", "tickets.providers.codeHost.provider", "tickets.providers.codeHost.identity",
+  "tickets.providers.codeHost.identity.<role>", "tickets.providers.codeHost.identity.<role>.mode", "tickets.providers.codeHost.identity.<role>.appId",
+  "tickets.providers.codeHost.identity.<role>.keyPath", "tickets.providers.codeHost.identity.<role>.installationId", "tickets.providers.codeHost.identity.<role>.slug",
+  "tickets.providers.codeHost.gh", "tickets.providers.codeHost.gh.workers", "tickets.providers.codeHost.gh.leads", "tickets.providers.codeHost.gh.leadsHeader",
+  "tickets.providers.codeHost.gh.leadsWorkspaces", "tickets.providers.codeHost.gh.leadsWorkspaces[].id", "tickets.providers.codeHost.gh.leadsWorkspaces[].role",
+  "tickets.providers.codeHost.stack", "tickets.providers.publish", "tickets.providers.publish.provider", "tickets.providers.publish.run", "tickets.providers.publish.model",
+  "tickets.providers.publish.effort", "tickets.providers.publish.connectors", "tickets.providers.reviewer", "tickets.providers.reviewer.provider",
+  "tickets.providers.exposure", "tickets.providers.exposure.provider", "tickets.providers.exposure.port", "tickets.providers.exposure.uiPort",
+  "tickets.providers.exposure.terminal", "tickets.providers.exposure.tailnetPorts", "tickets.providers.exposure.tailnetPorts.ui",
+  "tickets.providers.exposure.tailnetPorts.terminal",
 ];
 
 /** A key of TABLE_KEYS with no row in the table: a row deleted without a change to the list. */

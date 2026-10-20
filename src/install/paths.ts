@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveProviders } from "../ticket-mode/providers.ts";
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
@@ -83,7 +84,8 @@ export function hostFilePath(env: Env = process.env, home: string = homedir(), r
 export function hostGhConfigDir(hostText: string | null): string | null {
   if (hostText === null) return null;
   try {
-    const workers = JSON.parse(hostText)?.gh?.workers;
+    // `gh` is read where it now lives, the code host's block, or where it lived before (A11-144): the same account either way.
+    const workers = (resolveProviders(JSON.parse(hostText)).blocks.codeHost.settings.gh?.value as { workers?: unknown } | undefined)?.workers;
     return typeof workers === "string" && isAbsolute(workers) ? join(workers, "gh") : null;
   } catch {
     return null;

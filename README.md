@@ -366,8 +366,52 @@ a worker can choose from:
   "tickets": { "max": 3 } }
 ```
 
+Ticket mode's settings are grouped into provider blocks under `tickets.providers`: `tracker` (`linear`), `codeHost` (`github`), `publish` (`slack` or `none`), `reviewer` (`atomic` or `none`) and `exposure` (`local` or `tailscale`). Each block reads only its own settings. A block left out takes its provider's default, which `agent-org doctor` says. The old keys, such as `tickets.linearKey`, `tickets.workingState`, `tickets.publish`, `tickets.reviewer`, `tickets.port` and `tickets.serve`, are read as aliases for one release: `agent-org doctor` names the place each one moves to, and `agent-org doctor --fix` moves them, keeps a backup of the host file beside it, and writes nothing unless the moved file reads the same settings. Choosing or switching a provider goes through `agent-org onboard`; the Settings page edits a provider's values.
+
 | key | |
 | --- | --- |
+| [`tickets.providers`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.key`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.key.path`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.key.keychain`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.connectors`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.workingState`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.plannedState`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.identity`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.identity.<role>`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.identity.<role>.mode`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.identity.<role>.appId`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.identity.<role>.keyPath`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.identity.<role>.installationId`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.identity.<role>.slug`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.gh`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.gh.workers`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.gh.leads`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.gh.leadsHeader`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.gh.leadsWorkspaces`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.gh.leadsWorkspaces[].id`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.gh.leadsWorkspaces[].role`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.stack`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.publish`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.publish.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.publish.run`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.publish.model`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.publish.effort`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.publish.connectors`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.reviewer`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.reviewer.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.port`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.uiPort`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.terminal`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.tailnetPorts`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.tailnetPorts.ui`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.tailnetPorts.terminal`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.max`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.port`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.uiPort`](src/ticket-mode/config-schema.ts) | |

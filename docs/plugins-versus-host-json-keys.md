@@ -197,3 +197,7 @@ The run start calls the same function, so the page and `clearRunDir` cannot disa
 - **F6.** `docs(agent-org): link the README key table to the schema`. Repository `agent-org`. The README key table is a third description of the keys, after the readers and the schema from A11-131, so it links to the schema. Blocked by: A11-131's schema child.
 
 **Filing.** A worker cannot file these. Its connector allow list covers Linear reads and comments, and no create tool. The pull request lists them under "Filing", with the request to run for each.
+
+## 8. Addendum (A11-144): the tracker and the code host are built in
+
+The open question of A11-144 was whether the tracker and the code host are plugins, as the conventions plugin is, or built-in providers picked by name. They are built in. A11-143 Decision 1 settles it: the tracker and the code host are code that agent-org runs (API calls and auth), so each is a provider picked by name under `tickets.providers` (`tracker: linear`, `codeHost: github`), and a later tracker such as Jira is a code change behind the same provider interface. The "go, narrowly" of section 7 stands for the conventions plugin alone, which says how tickets are written and reviewed. Section 6's contract is not extended to the providers, and neither needs a `metadata.agentOrg` entry.
