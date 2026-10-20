@@ -168,12 +168,14 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
  * The files a run the board starts for itself (a publish or a new-ticket run) is given beside its brief: its refusals, this machine's connectors, the
  * host's protected programs, and its settings file in the folder its agent starts in. The caller writes its own mark first.
  */
-export function writeBoardRunFiles(ctx: PoolContext, place: RunPlace, { deny, readDirs, model }: Readonly<{ deny: readonly DenyRule[]; readDirs: readonly string[]; model: string }>): void {
+export function writeBoardRunFiles(ctx: PoolContext, place: RunPlace, { deny, readDirs, model, writer = false }: Readonly<{
+  deny: readonly DenyRule[]; readDirs: readonly string[]; model: string; writer?: boolean;
+}>): void {
   const { hook, settings } = ctx;
   writeFileSync(join(place.dir, DENY_FILE), `${JSON.stringify(deny)}\n`);
   writeFileSync(join(place.dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
   writeFileSync(join(place.dir, PROTECTED_FILE), `${JSON.stringify(protectedPaths(settings.binDir))}\n`);
   mkdirSync(join(place.folder, ".claude"), { recursive: true });
   writeFileSync(join(place.folder, SETTINGS_FILE),
-    `${JSON.stringify(workerSettings({ model, ticketDir: place.dir, readDirs, hook, plugins: settings.plugins }), null, 2)}\n`);
+    `${JSON.stringify(workerSettings({ model, ticketDir: place.dir, readDirs, hook, plugins: settings.plugins, writer }), null, 2)}\n`);
 }

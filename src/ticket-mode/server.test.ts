@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { markPublishRunning, markPublishStarting } from "./queue/approve.ts";
-import { markWriterRunning, markWriterStarting, queueWriter, writerDrafted, writerFailed } from "./queue.ts";
+import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
 import { remove as removeQueued } from "./queue/declared-remains.ts";
 import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
@@ -559,40 +559,30 @@ test("A11-129: /api/terminal-run says whether a worker link's terminal is a run'
  * New-ticket requests (A11-94): the routes queue a run of the writer, and only the approve route creates a ticket, in the tracker, with the person's approval.
  */
 
-const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." }, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" };
+const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." }, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" };
 
-/** A tracker that answers reads and records each create; a created ticket is NBF-101, NBF-102, and so on. */
-function creating() {
-  const created: string[] = [];
-  const tracker: TicketSource = {
+/** A tracker that answers reads: it holds NBF-1, A11-12 and the tickets a run files. */
+function creating(): TicketSource {
+  return {
     assigned: async () => [ticket("NBF-1")],
-    read: async (key) => (key === "NBF-1" || key === "A11-12" ? { ...ticket(key), team: key.split("-")[0] } as Ticket : null),
+    read: async (key) => (key === "NBF-1" || key === "A11-12" || key.startsWith("NBF-10") ? { ...ticket(key), team: key.split("-")[0] } as Ticket : null),
     download: async () => [],
-    createTicket: async (input) => {
-      created.push(input.title);
-      const made = { ...ticket(`NBF-${100 + created.length}`), url: `https://linear.app/x/NBF-${100 + created.length}`, team: "NBF" } as Ticket;
-      return { ticket: made, warnings: [] };
-    },
   };
-  return { tracker, created };
 }
 
-/** The writer's board, whose tracker creates the tickets its runs' drafts describe, and the list of the tickets created. */
+/** The writer's board, on a tracker that holds the tickets its runs file. */
 function writerBoard() {
-  const { tracker, created } = creating();
-  return { b: board(4747, WRITER, {}, tracker), created };
+  return board(4747, WRITER, {}, creating());
 }
 
-/** A writer run whose drafts are being made, as the pool hands the board once the run's outcome is read: the board's store holds it. */
-function withDraft(b: ReturnType<typeof board>, id = "w7") {
-  const draft = { title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"], notes: null, team: null, project: null, repo: null, goal: null, labels: [], priority: "none",
-    parent: null, blocks: [], blockedBy: [], duplicates: [] } as never;
-  b.store.set(writerDrafted(markWriterRunning(markWriterStarting(queueWriter(b.store.get(), { id, request: "Show requests", mode: "quick", form: {} }, 1), id, 2), id, "ws", "p"),
-    id, { drafts: [{ id: "d1", file: "01-show.json", draft, duplicates: [], status: "creating" }], rejected: [] }, 3));
+/** The writer run `w7`, as the pool leaves it once its agent has filed the tickets its outcome names: finished, with each ticket shown (A11-135). */
+function filedBy(b: ReturnType<typeof board>, tickets: readonly { key: string; url: string | null; inPick: boolean }[]) {
+  b.store.set({ ...b.store.get(), writers: b.store.get().writers!.map((run) => ({ ...run, phase: "finished" as const, finishedAt: 4, tickets })) });
 }
+
 
 test("a new-ticket request is queued as a run of the writer and shown with its status, and is refused by name when it cannot be", async () => {
-  const { tracker } = creating();
+  const tracker = creating();
   const b = board(4747, WRITER, {}, tracker);
   const [status, writers] = await b.api("POST", "/api/writer", { request: "Show requests a person made", repo: "nbl-ui-netbox", priority: "high" }) as [number, any];
   assert.equal(status, 200);
@@ -608,7 +598,7 @@ test("a new-ticket request is queued as a run of the writer and shown with its s
 });
 
 test("grill is refused without a terminal, and a machine with no writer writes no tickets", async () => {
-  const { tracker } = creating();
+  const tracker = creating();
   const plain = board(4747, { writer: WRITER.writer }, {}, tracker);
   await assert.rejects(plain.api("POST", "/api/writer", { request: "a", mode: "grill" }), /grill needs tickets.terminal/);
   const none = board(4747, {}, {}, tracker);
@@ -636,7 +626,7 @@ test("the settings save the ticket writer's model and effort apart from the othe
 });
 
 test("a new-ticket request is stamped with the writer's model and effort in force: the host file's, then the one chosen, then the host file's once cleared", async () => {
-  const { tracker } = creating();
+  const tracker = creating();
   let tick = 0;
   // The board is built once, and the choice changes between the requests: the next request takes the change, with no restart.
   const b = board(4747, { ...WRITER, writer: { run: WRITER.writer.run, model: "sonnet", effort: "medium" } }, { now: () => (tick += 1) }, tracker);
@@ -665,37 +655,32 @@ test("/api/config gives the ticket writer's host default, which is null on a mac
 
 
 
-test("the drafts are made by the board, so there is no approve or discard route: a draft's path is not a route, and a request's stop and dismiss create nothing", async () => {
-  const { b, created } = writerBoard();
+test("the run files its own tickets, so there is no approve or discard route: a ticket's path is not a route, and a request's stop and dismiss are as before", async () => {
+  const b = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });
-  withDraft(b);
   const [approve] = await b.api("POST", "/api/writer/w7/drafts/d1/approve", { draft: {} }) as [number, any];
   const [discard] = await b.api("POST", "/api/writer/w7/drafts/d1/discard", {}) as [number, any];
   assert.deepEqual([approve, discard], [404, 404], "POSITIVE CONTROL: the review's routes are gone");
   await b.api("POST", "/api/writer/w7/stop", {});
   await assert.rejects(b.api("POST", "/api/writer/w7/dismiss", {}), /stop the new-ticket request before you dismiss it/, "a run still under way is not dismissed");
-  assert.equal(created.length, 0, "a stop and a refused dismiss create nothing");
 });
 
-test("a run's drafts that the board makes show as tickets on the run, with their key and address, and the page's view holds no draft to review", async () => {
-  const { b } = writerBoard();
+test("a run's filed tickets show on the run as links, with their key and address, and the page's view holds no draft to review", async () => {
+  const b = writerBoard();
   await b.api("POST", "/api/writer", { request: "Show requests" });
-  withDraft(b);
-  const [, made] = await b.api("GET", "/api/writer", {}) as [number, any];
-  assert.deepEqual(made.runs[0].tickets, [], "no ticket while the run is making its tickets");
-  assert.equal("drafts" in made.runs[0], false, "the page is not sent drafts to review");
-  const run = b.store.get().writers![0];
-  b.store.set({ ...b.store.get(), writers: [{ ...run, phase: "finished", finishedAt: 4, drafts: [{ ...run.drafts[0], status: "created", created: { key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true } }] }] });
+  const [, filing] = await b.api("GET", "/api/writer", {}) as [number, any];
+  assert.deepEqual(filing.runs[0].tickets, [], "no ticket while the run is filing");
+  assert.equal("drafts" in filing.runs[0], false, "the page is not sent drafts to review");
+  filedBy(b, [{ key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true }]);
   const [, after] = await b.api("GET", "/api/writer", {}) as [number, any];
-  assert.deepEqual([after.runs[0].status, after.runs[0].tickets], ["done", [{ file: "01-show.json", key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true, warnings: [] }]]);
-  // A ticket an older board made did not record whether Pick lists it: the page must not say it is outside Pick.
-  b.store.set({ ...b.store.get(), writers: [{ ...run, phase: "finished", finishedAt: 4, drafts: [{ ...run.drafts[0], status: "created", created: { key: "NBF-102", url: "u" } }] }] });
-  const [, older] = await b.api("GET", "/api/writer", {}) as [number, any];
-  assert.equal(older.runs[0].tickets[0].inPick, true, "POSITIVE CONTROL: no note for a ticket whose Pick listing an older board did not record");
+  assert.deepEqual([after.runs[0].status, after.runs[0].tickets], ["done", [{ key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true }]]);
+  filedBy(b, [{ key: "NBF-102", url: null, inPick: false }]);
+  const [, unaddressed] = await b.api("GET", "/api/writer", {}) as [number, any];
+  assert.deepEqual(unaddressed.runs[0].tickets, [{ key: "NBF-102", url: null, inPick: false }], "a ticket the tracker has no address for is shown by its key");
 });
 
 test("stopping a run keeps what it wrote, and a request whose run is not known is refused by name", async () => {
-  const b = board(4747, WRITER, {}, creating().tracker);
+  const b = board(4747, WRITER, {}, creating());
   await b.api("POST", "/api/writer", { request: "Show requests" });
   const [, stopped] = await b.api("POST", "/api/writer/w7/stop", {}) as [number, any];
   assert.deepEqual(b.ticks.filter((t) => t.startsWith("stop-writer")), ["stop-writer w7"], "the pool stops the run");

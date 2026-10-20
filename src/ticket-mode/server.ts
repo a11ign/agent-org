@@ -186,12 +186,9 @@ function queueView(board: Pick<Board, "store" | "pool">) {
   return { ...board.store.get(), held: board.pool.held?.() ?? null };
 }
 
-/** A new-ticket request as the page shows it: its status, and the tickets its drafts made, with their keys. Its drafts stay on the board. */
+/** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
 function writerViewOf(run: WriterRun) {
-  const { drafts, ...shown } = run;
-  const tickets = drafts.flatMap(({ file, status, created, warnings }) => (status === "created" && created !== undefined
-    ? [{ file, key: created.key, url: created.url, inPick: created.inPick !== false, warnings: warnings ?? [] }] : []));
-  return { ...shown, status: writerStatus(run), tickets };
+  return { ...run, status: writerStatus(run) };
 }
 
 /** The new-ticket requests, each with its status, as the page shows them. */

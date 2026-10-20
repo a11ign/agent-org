@@ -546,44 +546,102 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
   assert.equal(plan.includes("order.json"), false, "a ticket planned alone writes no order");
 });
 
-
 /*
- * A new-ticket run's brief (A11-94): the instruction, the request quoted, the choices as requirements, the draft format the board reads, the read-only
- * tracker, and what the run writes last. Quick and grill are told apart.
+ * A new-ticket run's brief (A11-94, A11-135): the instruction, the request quoted, the choices as requirements and where each lands, the team, the
+ * read-only tracker and the two tools a run files with, and what the run writes last. Both modes run the create-ticket skill in full (A11-135).
  */
 
-const WRITER = { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts.", clones: { "nbl-ui-netbox": "/r/netbox" } };
+const WRITER = { run: "Run the a11ign:create-ticket skill for this request: {request}.", clones: { "nbl-ui-netbox": "/r/netbox" } };
+/** The brief a run of `mode` is given, for the request "x" with nothing else chosen and the team `A11` on the Pick view. */
+const briefIn = (mode: WriterMode, pickTeam: string | null = "A11") => writerBriefText({ ...WRITER, request: "x", mode, form: {}, dir: "/d", pickTeam });
+/** Each pattern is in the text: a brief is checked as one list of what it must say. */
+const says = (text: string, patterns: readonly RegExp[]): void => {
+  for (const pattern of patterns) assert.match(text, pattern);
+};
 
-test("A11-94: a new-ticket brief fills in the instruction, quotes the request, states the choices as requirements, and gives the draft format and outcome the board reads", () => {
-  const brief = writerBriefText({ ...WRITER, request: "Show the requests\nA person made", mode: "quick", form: { repo: "nbl-ui-netbox", priority: "high" }, dir: "/state/tickets/writer/w1" });
-  assert.match(brief, /^# New ticket: Show the requests$/m);
-  assert.match(brief, /> Show the requests\n> A person made/, "the request, quoted line by line");
-  assert.match(brief, /for this request: Show the requests\nA person made\. Write each draft under \/state\/tickets\/writer\/w1\/drafts\./, "the instruction, with the request and the folder filled in");
-  for (const [pattern, why] of [
-    [/- Repository: `nbl-ui-netbox`/, undefined],
-    [/- Priority: high/, undefined],
-    [/These are requirements/, undefined],
-    [/under `\/state\/tickets\/writer\/w1\/drafts\/`, named `NN-short-name\.json`/, "the drafts folder and its file names"],
-  ] as const) assert.match(brief, pattern, why);
-  for (const field of ["title", "why", "doneWhen", "duplicates", "blockedBy", "parent"]) assert.match(brief, new RegExp(`"${field}"`), field);
-  for (const pattern of [
-    /At most 10 files/,
-    /No other field is read, so a field that is not in this list is refused by name\./,
-    /\{ "kind": "drafted" \}/,
-    /\/state\/tickets\/writer\/w1\/outcome\.json/,
-  ]) assert.match(brief, pattern);
-  assert.match(brief, /create no ticket, post no comment, edit no ticket/, "a writer creates nothing");
+test("A11-135: the brief tells a run to run the create-ticket skill in full, in both modes, and forbids no step of it", () => {
+  // The README's example instruction is the one a host file starts from, so it is held to the same rule as the built-in one.
+  const readme = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Make the ticket and attach its plan.";
+  for (const mode of ["quick", "grill"] as const) {
+    for (const run of [WRITER.run, readme]) {
+      const brief = writerBriefText({ run, request: "x", mode, form: {}, clones: {}, dir: "/d", pickTeam: "A11" });
+      says(brief, [/Run the `a11ign:create-ticket` skill in full/, /call the tracker's create-or-update tool with an `id`/]);
+      for (const banned of [/drafts only/i, /\bskip/i, /do not run the grill/i, /no plan/i, /create no ticket/i]) {
+        assert.doesNotMatch(brief, banned, `${mode}: no instruction to skip a step (${banned})`);
+      }
+    }
+  }
 });
 
-test("A11-94: a new-ticket brief reads the tracker with read-only tools only, and says so", () => {
-  const brief = writerBriefText({ ...WRITER, request: "x", mode: "quick", form: {}, dir: "/d" });
-  assert.match(brief, /read-only Linear tools.*`get`, `list`, `search`, `extract`/);
-  assert.match(brief, /Name each one in the draft's `duplicates`/);
-  assert.match(brief, /None\. The request decides each of these\./, "no choices made: the request decides");
+test("A11-135: the brief states that the run files its own ticket, with the tracker's tools, and that it makes no draft", () => {
+  const brief = briefIn("quick");
+  says(brief, [
+    /You file the ticket yourself, through the tracker's tools/,
+    /`mcp__linear__save_issue`, with no `id`/,
+    /`mcp__linear__prepare_attachment_upload` and `mcp__linear__create_attachment_from_upload`, naming only a ticket this run created/,
+    /Never set `blocks`: it writes a relation on another ticket/,
+    /If the instruction above mentions draft files, ignore that: this run writes no draft/,
+  ]);
+  assert.doesNotMatch(brief, /The draft files|drafts\//, "no draft format is given");
 });
 
-/** The brief a run of `mode` is given, for the request "x" with nothing else chosen. */
-const briefIn = (mode: WriterMode) => writerBriefText({ ...WRITER, request: "x", mode, form: {}, dir: "/d" });
+test("A11-135: the brief says where each choice of the form lands on the ticket", () => {
+  const brief = writerBriefText({ ...WRITER, request: "Show the requests\nA person made", mode: "quick", form: { project: "Board", repo: "nbl-ui-netbox", goal: "Speed",
+    priority: "high", parent: "A11-12" }, dir: "/state/tickets/writer/w1", pickTeam: "A11" });
+  says(brief, [
+    /^# New ticket: Show the requests$/m,
+    /> Show the requests\n> A person made/,
+    /for this request: Show the requests\nA person made\./,
+    /- Project: Board \(the project of the ticket, by its name\)/,
+    /- Repository: `nbl-ui-netbox` \(the last line of the description: `\*\*Repository:\*\* <repo>`\)/,
+    /- Goal: Speed \(a label in the group `Goal`\)/,
+    /- Priority: high, number 2 \(the ticket's priority number\)/,
+    /- Parent: A11-12 \(the ticket's `parentId`: the ticket is filed as a child of it\)/,
+    /These are requirements\. Use them as given: you set each one on the ticket you file\./,
+    /`parentId`, `blockedBy` and `relatedTo` are set on the ticket you create/,
+  ]);
+});
+
+test("A11-135: the team is the parent's, else the team the Pick view lists, and with neither the run ends needs-human", () => {
+  assert.match(briefIn("quick", "A11"), /the team of the parent ticket the form names, else `A11`, the team the Pick view lists/);
+  assert.match(briefIn("quick", null), /else none: when the form names no parent and no team is set here, end needs-human/);
+});
+
+test("A11-135: the brief keeps the duplicate check under Possible duplicates, and reads the tracker with read-only tools", () => {
+  says(briefIn("quick"), [
+    /read-only Linear tools \(`get`, `list`, `search`, `extract`\)/,
+    /Name each one under "Possible duplicates" in the description, with the reason/,
+    /None\. The request decides each of these\./,
+  ]);
+});
+
+test("A11-135: the outcome the board reads is created with the keys made, or needs-human with the reason and any key made before it", () => {
+  says(briefIn("quick"), [
+    /\{ "kind": "created", "created": \["A11-140"\] \}/,
+    /\{ "kind": "needs-human", "reason": "<why the run cannot finish, which the board shows as its failure>", "created": \["A11-140"\] \}/,
+    /Write `\/d\/outcome\.json` as the last thing you do/,
+    /every ticket you made, each by its key/,
+  ]);
+});
+
+test("A11-135: quick runs the skill's unattended create, and grill runs the skill's grill with the person in the terminal, in each case then filing the same ticket", () => {
+  const quick = briefIn("quick");
+  says(quick, [/You are unattended\. Nobody will answer a question: the skill's unattended create answers its own grill, and you file the ticket\./]);
+  assert.doesNotMatch(quick, /Nobody will answer a question: decide/, "the old quick text is gone");
+  const grill = briefIn("grill");
+  says(grill, [
+    /You are interactive: the person is in this run's terminal\. Run the skill's grill with them: ask your questions one at a time, and wait for each answer before the next\./,
+    /Write `created` only once the grill is done, the ticket is filed and its plan is attached\./,
+  ]);
+  assert.doesNotMatch(grill, /Write no draft/);
+  assert.doesNotMatch(grill, /Nobody will answer/);
+});
+
+test("A11-135: a grill run asks by ending its turn with the question, and no outcome is written to ask", () => {
+  const grill = briefIn("grill");
+  assert.match(grill, /To ask a question, end your turn with it: the board shows the question to the person and keeps this run, in its terminal, until they answer\. Do not write an outcome to ask a question\./);
+  assert.doesNotMatch(briefIn("quick"), /end your turn with it/, "a quick run asks nothing");
+});
 
 test("A11-124: the brief names the board's mode, and says it wins over the instruction, in each mode", () => {
   for (const mode of ["quick", "grill"] as const) {
@@ -593,32 +651,9 @@ test("A11-124: the brief names the board's mode, and says it wins over the instr
   }
 });
 
-test("A11-124: quick runs unattended and decides, and the board creates the ticket from each draft", () => {
-  const quick = briefIn("quick");
-  assert.match(quick, /You are unattended\. Nobody will answer a question: decide every question yourself, and write one or more drafts\./);
-  assert.match(quick, /the board creates the ticket from each draft/);
-});
-
-test("A11-124: grill asks the person one question at a time in the run's terminal before it drafts, and writes needs-human only when it cannot finish", () => {
-  const grill = briefIn("grill");
-  assert.match(grill, /You are interactive: the person is in this run's terminal\. Ask them your questions one at a time, and wait for each answer before the next\. Write no draft until the questions are done\./);
-  assert.doesNotMatch(grill, /Nobody will answer/);
-  assert.match(grill, /Write `needs-human` only when the run cannot finish at all\./);
-});
-
-test("A11-129: grill asks by ending its turn with the question, and no outcome is written to ask; needs-human is for a run that cannot finish, and the quick brief is unchanged", () => {
-  const grill = briefIn("grill");
-  assert.match(grill, /To ask a question, end your turn with it: the board shows the question to the person and keeps this run, in its terminal, until they answer\. Do not write an outcome to ask a question\./);
-  assert.doesNotMatch(grill, /the board keeps the run until you write the outcome/, "the old contract, which made a question a missing outcome, is gone");
-  assert.match(grill, /Write `drafted` only when the questions are done and every draft is written\./);
-  const quick = briefIn("quick");
-  assert.match(quick, /You are unattended\. Nobody will answer a question: decide every question yourself, and write one or more drafts\./);
-  assert.doesNotMatch(quick, /end your turn with it/, "a quick run asks nothing");
-});
-
 test("A11-124: a {mode} placeholder in the instruction is filled with the board's mode, and the instruction names no mode of its own", () => {
-  const brief = writerBriefText({ run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.", request: "x", mode: "grill", form: {}, clones: {}, dir: "/d" });
-  assert.match(brief, /Run the a11ign:create-ticket skill, grill, for this request: x\. Write each draft under \/d\/drafts\./);
+  const brief = writerBriefText({ run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}.", request: "x", mode: "grill", form: {}, clones: {}, dir: "/d", pickTeam: null });
+  assert.match(brief, /Run the a11ign:create-ticket skill, grill, for this request: x\./);
 });
 
 test("A11-124: the first prompt of a grill run asks its first question; a quick run's is the pointer to its brief alone", () => {
@@ -627,7 +662,13 @@ test("A11-124: the first prompt of a grill run asks its first question; a quick 
 });
 
 test("A11-94: the writer's brief names the one repository list it may read, and no other repository", () => {
-  const brief = writerBriefText({ ...WRITER, request: "x", mode: "quick", form: {}, dir: "/d" });
-  assert.match(brief, /- `nbl-ui-netbox` at `\/r\/netbox`/);
-  assert.match(brief, /read only; never change them/);
+  says(briefIn("quick"), [/- `nbl-ui-netbox` at `\/r\/netbox`/, /read only; never change them/]);
+});
+
+test("A11-135: a writer's settings record each creation as it returns, and no other run's settings do", () => {
+  const base = { model: "opus", ticketDir: "/d", readDirs: [], hook: { node: "/usr/bin/node", bin: "/tool/src/bin.ts" } };
+  const writer = workerSettings({ ...base, writer: true }) as any;
+  assert.deepEqual(writer.hooks.PostToolUse, [{ matcher: "mcp__linear__save_issue", hooks: [{ type: "command", command: "/usr/bin/node",
+    args: ["/tool/src/bin.ts", "ticket:hook", "post-tool-use", "/d"], timeout: 30 }] }]);
+  assert.equal("PostToolUse" in (workerSettings(base) as any).hooks, false, "a build worker records nothing");
 });

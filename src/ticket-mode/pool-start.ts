@@ -4,7 +4,7 @@
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/declared-remains.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
-import { BRIEF_FILE, firstPrompt, PLANNING_DENY, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
+import { BRIEF_FILE, firstPrompt, PLANNING_DENY, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, workerFlags, WRITER_CREATE_TOOLS, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
@@ -25,7 +25,7 @@ import { availableParallelism, loadavg } from "node:os";
 import { markWriterRunning, markWriterStarting, nextStarts, writerFailed, writerOf, writerToStart } from "./queue.ts";
 import { clearRunDir, prepare, prepareBatch, writeBoardRunFiles } from "./pool-prepare.ts";
 import { hasPlan } from "./board-view/view-ticket.ts";
-import { DRAFT_DIR } from "./writer.ts";
+import { pickTeamOf } from "./pick-scope.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
@@ -402,7 +402,7 @@ async function planReached(ctx: PoolContext, queued: Ticket): Promise<boolean> {
 }
 
 /**
- * Start the first queued new-ticket run: its brief (with its mode), its mark, which lets the run read the tracker and nothing else, and its settings, then its agent,
+ * Start the first queued new-ticket run: its brief (with its mode), its mark, which lets the run read the tracker and file the one ticket it creates (A11-135), and its settings, then its agent,
  * on the model and effort it was queued with (the writer's, when it has none of its own: a run queued before the choice was stamped). A run stopped
  * while it starts is closed, as a ticket run stopped while it starts is. A start that fails ends the run failed, saying why.
  */
@@ -418,10 +418,10 @@ async function startWriter(ctx: PoolContext): Promise<void> {
     const effort = queued.effort ?? writer.effort;
     const place = writerPlace(ctx, queued);
     clearRunDir(ctx, place.folder, place.dir);
-    rmSync(join(place.dir, DRAFT_DIR), { recursive: true, force: true });
-    writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, form: queued.form, clones: settings.clones, dir: place.dir }));
-    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode })}\n`);
-    writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model });
+    writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, form: queued.form, clones: settings.clones,
+      dir: place.dir, pickTeam: pickTeamOf(settings.pick) }));
+    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: WRITER_CREATE_TOOLS })}\n`);
+    writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model, writer: true });
     const tail = [writerPrompt(place.dir, queued.mode), ...workerFlags({ name: `writer-${queued.id}`, model, effort, addDirs: [place.dir] })];
     const { workspace, pane } = await startAgent(ctx, place, {}, tail, "the new-ticket run");
     if (writerOf(store.get(), queued.id)?.phase !== "starting") {

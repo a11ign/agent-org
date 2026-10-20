@@ -1,173 +1,68 @@
-// no-token: gh -- the drafts are handed in as JSON and files in a temporary folder; nothing here spawns anything
+// no-token: gh -- the outcomes and tool results are handed in as JSON text and files in a temporary folder; nothing here spawns anything
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import type { Ticket } from "./source.ts";
-import { DraftRefusal, descriptionOf, draftFrom, MAX_DRAFTS, parseWriterOutcome, readDrafts, resolveDuplicates } from "./writer.ts";
+import { CREATED_FILE, createdKeyOf, createdKeysOf, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import { inPickScope } from "./pick-scope.ts";
 
-const repos = ["agent-org", "nbl-ui-netbox"];
-const good = { title: "feat(agent-org): show new-ticket requests", why: "The chairman wants tickets from the board.", doneWhen: ["The board creates an approved draft"] };
-
-/** The refusal `draftFrom` throws for `draft` in `file`, as the file and field it names. */
-function refused(draft: unknown, file = "02-wire.json", stems: ReadonlySet<string> | null = null): DraftRefusal {
-  try {
-    draftFrom(file, draft, repos, stems);
-  } catch (err) {
-    if (err instanceof DraftRefusal) return err;
-    throw err;
-  }
-  assert.fail(`${JSON.stringify(draft)} was accepted`);
-}
-
-/** A folder holding `files` (name -> text) under a writer run's drafts folder, and the run's folder. */
-function folderWith(files: Readonly<Record<string, string>>): string {
-  const dir = tmpDir("writer-drafts-");
-  mkdirSync(join(dir, "drafts"));
-  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, "drafts", name), text);
-  return dir;
-}
-
-test("a good draft is read with its defaults: no notes, no team, priority none, and no relations", () => {
-  const draft = draftFrom("01-board.json", good, repos);
-  assert.deepEqual({ ...draft, doneWhen: [...draft.doneWhen] }, { ...good, doneWhen: [...good.doneWhen], notes: null, team: null, project: null, repo: null, goal: null,
-  labels: [], priority: "none", parent: null, blocks: [], blockedBy: [], duplicates: [] });
+test("A11-135: a created outcome names the keys it made, and a run that made none cannot end created", () => {
+  assert.deepEqual(parseWriterOutcome('{ "kind": "created", "created": ["A11-140", "A11-141"] }'), { kind: "created", created: ["A11-140", "A11-141"] });
+  assert.match(parseWriterOutcome('{ "kind": "created", "created": [] }') as string, /names no ticket/);
+  assert.match(parseWriterOutcome('{ "kind": "created" }') as string, /names no ticket/);
 });
 
-test("every field of a draft is read, and a team key is upper-cased as the tracker stores it", () => {
-  const draft = draftFrom("02-wire.json", { ...good, notes: "Use the **same** route.", team: "a11", project: "agent-org", repo: "agent-org", goal: "Keep the board honest",
-  labels: ["Bucket: Board"], priority: "high", parent: "A11-12", blocks: ["A11-3"], blockedBy: ["draft:01-board"], duplicates: [{ key: "A11-9", why: "same request" }] }, repos, new Set(["01-board"]));
-  assert.equal(draft.team, "A11");
-  assert.equal(draft.priority, "high");
-  assert.equal(draft.parent, "A11-12");
-  assert.deepEqual([...draft.blockedBy], ["draft:01-board"]);
-  assert.deepEqual([...draft.duplicates], [{ key: "A11-9", why: "same request" }]);
+test("A11-135: a key that is not a ticket key is refused by name, and an outcome of any other kind is refused", () => {
+  assert.match(parseWriterOutcome('{ "kind": "created", "created": ["not a key"] }') as string, /"not a key", which is not a ticket key/);
+  assert.match(parseWriterOutcome('{ "kind": "created", "created": "A11-140" }') as string, /is not a list of ticket keys/);
+  assert.match(parseWriterOutcome('{ "kind": "drafted" }') as string, /cannot end on/);
+  assert.match(parseWriterOutcome("not json") as string, /not valid JSON/);
+  assert.match(parseWriterOutcome('{ "reason": "x" }') as string, /names no kind/);
 });
 
-test("a draft that is not an object, or names a field no draft has, is refused by its name", () => {
-  assert.match(refused("a draft").message, /^02-wire\.json: must be a JSON object$/);
-  assert.match(refused(["a"]).message, /^02-wire\.json: must be a JSON object$/);
-  assert.equal(refused({ ...good, colour: "red" }).field, "colour");
-  assert.match(refused({ ...good, colour: "red" }).message, /^02-wire\.json: "colour" is not a draft field/);
+test("A11-135: a needs-human outcome gives its reason, and keeps any ticket it made before it stopped", () => {
+  assert.deepEqual(parseWriterOutcome('{ "kind": "needs-human", "reason": "no team", "created": ["A11-140"] }'),
+    { kind: "needs-human", reason: "no team", created: ["A11-140"] });
+  assert.deepEqual(parseWriterOutcome('{ "kind": "needs-human", "reason": "no team" }'), { kind: "needs-human", reason: "no team", created: [] });
+  assert.match(parseWriterOutcome('{ "kind": "needs-human", "reason": " " }') as string, /gives no reason/);
 });
 
-test("a draft missing its why, its title or its done-when is refused by the field", () => {
-  assert.equal(refused({ ...good, why: "" }).field, "why");
-  assert.equal(refused({ ...good, why: undefined }).field, "why");
-  assert.equal(refused({ ...good, title: "two\nlines" }).field, "title");
-  assert.equal(refused({ ...good, title: "x".repeat(256) }).field, "title");
-  assert.equal(refused({ ...good, doneWhen: [] }).field, "doneWhen");
-  assert.equal(refused({ ...good, doneWhen: ["ok", " "] }).field, "doneWhen");
-  assert.equal(refused({ ...good, doneWhen: "one item" }).field, "doneWhen");
+test("A11-135: a creation's key is read from the result the tracker's tool returned, in any of its shapes", () => {
+  assert.equal(createdKeyOf({ identifier: "A11-140", title: "x" }), "A11-140");
+  // Linear's own MCP answers with the key as `id`, as its get_issue does.
+  assert.equal(createdKeyOf({ id: "A11-135", title: "x", url: "https://linear.app/x" }), "A11-135");
+  assert.equal(createdKeyOf([{ type: "text", text: JSON.stringify({ issue: { identifier: "A11-141" } }) }]), "A11-141");
+  assert.equal(createdKeyOf({ content: [{ type: "text", text: JSON.stringify({ id: "A11-142" }) }] }), "A11-142");
+  assert.equal(createdKeyOf(JSON.stringify({ identifier: "A11-143" })), "A11-143");
 });
 
-test("a bad priority names what it may be, and a repository must be one on this machine", () => {
-  const priority = refused({ ...good, priority: "hi" });
-  assert.equal(priority.message, '02-wire.json: "priority" must be one of urgent, high, medium, low, none, not "hi"');
-  assert.equal(refused({ ...good, repo: "elsewhere" }).field, "repo");
-  assert.match(refused({ ...good, repo: "elsewhere" }).message, /repositories on this machine: agent-org, nbl-ui-netbox/);
+test("A11-135: a result that names no ticket key gives none, so the hook refuses to record it", () => {
+  assert.equal(createdKeyOf({ content: [{ type: "text", text: "Created the issue." }] }), null);
+  assert.equal(createdKeyOf({ id: "7d1c5e2a-0000-4000-8000-000000000001" }), null);
+  assert.equal(createdKeyOf(undefined), null);
 });
 
-test("a key that is not a key, and a draft reference to no draft of the request, are refused", () => {
-  assert.equal(refused({ ...good, parent: "A11" }).field, "parent");
-  assert.equal(refused({ ...good, blocks: ["draft:03-later"] }, "02-wire.json", new Set(["01-board"])).field, "blocks");
-  assert.match(refused({ ...good, blocks: ["draft:03-later"] }, "02-wire.json", new Set(["01-board"])).message, /is not a draft of this request/);
-  assert.match(refused({ ...good, blockedBy: ["draft:02-wire"] }).message, /names this draft itself/);
-  assert.equal(refused({ ...good, blockedBy: [7] }).field, "blockedBy");
+test("A11-135: the record reads one key per line, and a line that is not a key makes the whole record unreadable", () => {
+  assert.deepEqual(createdKeysOf('{"identifier":"A11-140"}\n{"identifier":"A11-141"}\n'), ["A11-140", "A11-141"]);
+  assert.deepEqual(createdKeysOf(""), []);
+  assert.equal(createdKeysOf('{"identifier":"A11-140"}\nnot json\n'), null);
+  assert.equal(createdKeysOf('{"identifier":"x"}\n'), null);
 });
 
-test("a duplicate names a ticket key and the reason, and nothing else", () => {
-  assert.equal(refused({ ...good, duplicates: [{ key: "wire", why: "same" }] }).field, "duplicates");
-  assert.equal(refused({ ...good, duplicates: [{ key: "A11-9" }] }).field, "duplicates");
+test("A11-135: the record is read from the run's folder: none when there is none, and null when it cannot be read", () => {
+  const dir = tmpDir("writer-record");
+  assert.deepEqual(readCreatedKeys(dir), [], "no record yet: nothing was created");
+  writeFileSync(join(dir, CREATED_FILE), '{"identifier":"A11-150"}\n');
+  assert.deepEqual(readCreatedKeys(dir), ["A11-150"]);
+  assert.equal(readCreatedKeys(dir, () => { throw new Error("EACCES"); }), null, "a record that cannot be read is not trusted");
 });
 
-test("a label, a goal or a project that is empty is refused by its field", () => {
-  assert.equal(refused({ ...good, labels: [""] }).field, "labels");
-  assert.equal(refused({ ...good, goal: " " }).field, "goal");
-  assert.equal(refused({ ...good, project: 3 }).field, "project");
-});
-
-test("the ticket text is the house shape: why, what finishes it, the repository, then the notes", () => {
-  const draft = draftFrom("02-wire.json", { ...good, repo: "agent-org", notes: "Keep the old route." }, repos);
-  assert.equal(descriptionOf(draft), [
-  "**Why:** The chairman wants tickets from the board.", "", "**Done when:**", "", "* The board creates an approved draft", "",
-  "**Repository:** agent-org", "", "Keep the old route.", "",
-  ].join("\n"));
-  assert.equal(descriptionOf(draftFrom("03-plain.json", good, repos)), "**Why:** The chairman wants tickets from the board.\n\n**Done when:**\n\n* The board creates an approved draft\n");
-});
-
-test("a folder's drafts are read in name order, and a malformed one is refused by name while the good ones are kept", () => {
-  const dir = folderWith({
-    "01-board.json": JSON.stringify(good),
-    "02-wire.json": JSON.stringify({ ...good, priority: "hi" }),
-    "03-broken.json": "{ not json",
-    "04-empty.json": "",
-  });
-  symlinkSync(join(dir, "drafts", "01-board.json"), join(dir, "drafts", "05-link.json"));
-  const read = readDrafts(dir, repos);
-  assert.deepEqual(read.drafts.map(({ file }) => file), ["01-board.json"]);
-  assert.deepEqual(read.rejected.map(({ file }) => file), ["02-wire.json", "03-broken.json", "04-empty.json", "05-link.json"]);
-  assert.match(read.rejected[0].reason, /^02-wire\.json: "priority" must be one of/);
-  assert.match(read.rejected[1].reason, /^03-broken\.json: is not valid JSON$/);
-  assert.match(read.rejected[3].reason, /^05-link\.json: a draft is a plain \.json file/);
-});
-
-test("a file too large, or a file past the tenth, is refused by its name", () => {
-  const big = JSON.stringify({ ...good, notes: "x".repeat(210_000) });
-  const files = Object.fromEntries(Array.from({ length: MAX_DRAFTS + 1 }, (_, i) => [`${String(i + 1).padStart(2, "0")}-d.json`, JSON.stringify(good)]));
-  const dir = folderWith({ ...files, "00-big.json": big });
-  const read = readDrafts(dir, repos);
-  assert.equal(read.drafts.length, MAX_DRAFTS - 1, "ten files are read, the first of them the big one, refused");
-  assert.ok(read.rejected.some(({ file, reason }) => file === "00-big.json" && /at most 200 KB/.test(reason)));
-  assert.ok(read.rejected.some(({ file, reason }) => file === `${String(MAX_DRAFTS + 1).padStart(2, "0")}-d.json` && /more than 10 drafts/.test(reason)));
-});
-
-test("a request that leaves no drafts folder, or an empty one, reads as no drafts", () => {
-  const dir = tmpDir("writer-empty-");
-  assert.deepEqual(readDrafts(dir, repos), { drafts: [], rejected: [] });
-  mkdirSync(join(dir, "drafts"));
-  assert.deepEqual(readDrafts(dir, repos), { drafts: [], rejected: [] });
-});
-
-test("a draft that names another draft by a file no draft has is refused by name", () => {
-  const dir = folderWith({
-    "01-board.json": JSON.stringify(good),
-    "02-wire.json": JSON.stringify({ ...good, parent: "draft:09-gone" }),
-  });
-  const read = readDrafts(dir, repos);
-  assert.deepEqual(read.drafts.map(({ file }) => file), ["01-board.json"]);
-  assert.match(read.rejected[0].reason, /^02-wire\.json: "parent" names draft:09-gone, which is not a draft of this request$/);
-});
-
-test("a duplicate is shown with its title and address when the tracker has it, and listed as not found when it has not", async () => {
-  const found = await resolveDuplicates([{ key: "A11-9", why: "same" }, { key: "A11-404", why: "gone" }], async (key) =>
-    (key === "A11-9" ? { key, title: "Show requests", url: "https://linear.app/a11ign/issue/A11-9" } as Ticket : null));
-  assert.deepEqual(found, [
-    { key: "A11-9", why: "same", title: "Show requests", url: "https://linear.app/a11ign/issue/A11-9" },
-    { key: "A11-404", why: "gone", title: null, url: null },
-  ]);
-  const unreadable = await resolveDuplicates([{ key: "A11-9", why: "same" }], async () => { throw new Error("offline"); });
-  assert.deepEqual(unreadable, [{ key: "A11-9", why: "same", title: null, url: null }]);
-});
-
-test("a writer run's outcome is drafted, or needs-human with its question; anything else is named as the failure", () => {
-  assert.deepEqual(parseWriterOutcome('{ "kind": "drafted" }'), { kind: "drafted" });
-  assert.deepEqual(parseWriterOutcome('{ "kind": "needs-human", "reason": "Which goal?" }'), { kind: "needs-human", reason: "Which goal?" });
-  assert.equal(parseWriterOutcome('{ "kind": "needs-human" }'), "its needs-human outcome gives no reason");
-  assert.equal(parseWriterOutcome('{ "kind": "done" }'), 'it wrote the outcome "done", which a new-ticket run cannot end on');
-  assert.equal(parseWriterOutcome("{ nope"), "its outcome is not valid JSON");
-  assert.equal(parseWriterOutcome("{}"), "its outcome names no kind");
-});
-
-test("a ticket's description names the duplicates the writer found, after the done-when list, with their title and address when the tracker has them", () => {
-  const draft = draftFrom("01-show.json", { title: "feat: show", why: "Why", doneWhen: ["It lists them"], repo: "nbl-ui-netbox", notes: "Notes here" }, repos);
-  const duplicates = [{ key: "NBF-9", why: "same request", title: "Show requests", url: "https://linear.app/x/NBF-9" }, { key: "NBF-404", why: "gone", title: null, url: null }];
-  assert.equal(descriptionOf(draft, duplicates), [
-    "**Why:** Why", "", "**Done when:**", "", "* It lists them", "",
-    "**Possible duplicates:**", "", "* NBF-9: Show requests https://linear.app/x/NBF-9 - same request", "* NBF-404 (not found in the tracker) - gone", "",
-    "**Repository:** nbl-ui-netbox", "", "Notes here", "",
-  ].join("\n"), "POSITIVE CONTROL: the duplicates are named in the text");
-  assert.equal(descriptionOf(draft), descriptionOf(draft, []), "a draft with no duplicates reads as it always did");
-  assert.doesNotMatch(descriptionOf(draft), /Possible duplicates/);
+test("A11-135: Pick lists a created ticket when it is assigned, in the team or project Pick names, and not otherwise", () => {
+  const ticket = { team: "NBF", project: "Board" };
+  assert.equal(inPickScope("assigned", { team: "OTHER", project: null }), true);
+  assert.equal(inPickScope({ team: "NBF" }, ticket), true);
+  assert.equal(inPickScope({ team: "A11" }, ticket), false);
+  assert.equal(inPickScope({ project: "Board" }, ticket), true);
+  assert.equal(inPickScope({ project: "Other" }, ticket), false);
 });

@@ -45,6 +45,11 @@
 // it cannot read, or a log it cannot read or write, refuses the pushes and pull requests it holds, since it could not check them.
 //
 // IT FAILS OPEN, OUT LOUD, for a payload or a count it cannot read: a hook that refused on what it could not read would stop every worker.
+//
+// A NEW-TICKET RUN FILES ITS OWN TICKET (A11-135). The board grants it, in its mark, the tracker's create tool and the two attachment tools, and no other
+// filing tool. A creation is refused when it names an `id` (an update) or `blocks` (a relation on another ticket), and past ten in the run. An attachment is
+// refused unless it names a ticket the run created, which the POST-TOOL-USE hook records as each creation returns (`created-issues.jsonl`, which only the
+// hook writes). A build worker is refused every filing tool by name, before the connector allow list is read, and the refusal names New ticket.
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -54,7 +59,8 @@ import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
 import { checkOutcome } from "./outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
-  STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+  STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_CREATE_TOOLS, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, readCreatedKeys } from "./writer.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
 
@@ -95,9 +101,10 @@ function readyRefusal(approved: readonly string[]): Refusal {
 
 /**
  * The review, publish, writer and ready marks are the board's: a worker that wrote one would lift a refusal. So are a grill run's question and its moved
- * outcome: a worker that wrote them would answer its own question (A11-129).
+ * outcome: a worker that wrote them would answer its own question (A11-129). The record of a new-ticket run's created tickets is the hook's own, so
+ * a run could not write in a key it did not create (A11-135).
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -112,6 +119,12 @@ const READ_ONLY_CONNECTOR = /^mcp__[\w-]+__(get|list|search|extract|read|find|fe
  */
 const PR_REVIEW_FILE_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${[PR_REVIEW_FILE, PR_REVIEW_LOG_FILE].map(escapeRegExp).join("|")})\\b`),
   why: `${PR_REVIEW_FILE} and ${PR_REVIEW_LOG_FILE} are the pool's and the hook's: a worker may not write them, nor name them in a command` };
+/**
+ * The tracker tools that file a ticket or attach to one, on either Linear server. Only a new-ticket run may call them, and only the ones the board granted
+ * it (A11-135): a build worker is refused each by name, whatever `tickets.connectors` allows.
+ */
+const FILING_TOOL = /^mcp__(?:linear|claude_ai_Linear)__(?:save_issue|create_attachment|create_attachment_from_upload|prepare_attachment_upload)$/;
+const FILING_REFUSAL = "workers file no tickets (Linear is read and comment only for them); to file one, use New ticket on the board";
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 /** The commands that install the host's programs, which write its `gh` wrapper and launcher: the host's to run (A11-84). */
@@ -158,6 +171,54 @@ const SKILL_REFUSALS: readonly Refusal[] = [
 ];
 
 /**
+ * A filing call from a new-ticket run (A11-135): only a tool the board granted, and only the creation the run needs. A creation is `save_issue` with no
+ * `id`, and no `blocks`, which writes on another ticket. An attachment names a ticket this run created. A run's record it cannot read refuses the call,
+ * since the check could not be made. PURE.
+ */
+function writerFiling(toolName: string, input: Record<string, unknown>, run: Readonly<{ grants: readonly string[]; created: readonly string[] | null }>): HookResult {
+  const { grants, created } = run;
+  if (!grants.includes(toolName)) return refuse(`${toolName} is not a tool the board granted this new-ticket run: it files one ticket and attaches its plan, and nothing else`);
+  if (created === null) return refuse(`${CREATED_FILE} cannot be read, so ${toolName} cannot be checked against the tickets this run created`);
+  if (toolName.endsWith("save_issue")) {
+    if ("id" in input) return refuse(`${toolName} is called with an id, which updates an existing ticket: a new-ticket run creates tickets and never updates one`);
+    if ("blocks" in input) return refuse(`${toolName} is called with blocks, which writes a relation on another ticket: a new-ticket run sets parentId, blockedBy and relatedTo only`);
+    if (created.length >= MAX_CREATED) return refuse(`this run has already created ${MAX_CREATED} tickets, the most a new-ticket run may create`);
+    return ALLOW;
+  }
+  const issue = String(input.issue ?? "");
+  return created.includes(issue) ? ALLOW : refuse(`${toolName} names ${issue || "no ticket"}, which this run did not create: a new-ticket run attaches only to a ticket it created`);
+}
+
+/** The filing tools the board granted a new-ticket run, from its mark beside the outcome file: none where the mark names none or cannot be read. PURE over `read`. */
+export function writerGrants(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8")): string[] {
+  try {
+    const { tools } = JSON.parse(read(join(ticketDir, WRITER_FILE))) as { tools?: unknown };
+    return Array.isArray(tools) ? tools.filter((tool): tool is string => WRITER_CREATE_TOOLS.includes(tool as string)) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The PostToolUse verdict for a creation a new-ticket run made (A11-135). The key the tracker answered with is appended to the record beside the outcome
+ * file, which the board checks the outcome's keys against and the PreToolUse hook counts. A result with no key, or a record that cannot be written, is
+ * refused out loud, so the agent sees that a ticket it made is not recorded. A call that is not a creation by a new-ticket run is ignored.
+ */
+export function recordCreated(ticketDir: string, toolName: string, response: unknown): HookResult {
+  if (toolName !== "mcp__linear__save_issue" || !existsSync(join(ticketDir, WRITER_FILE))) return ALLOW;
+  const key = createdKeyOf(response);
+  if (key === null) {
+    return refuse(`the ticket was created, but its key is not in the result, so it is not recorded and the board cannot show it: look it up in the tracker, and do not create it again`);
+  }
+  try {
+    appendFileSync(join(ticketDir, CREATED_FILE), createdLine(key));
+  } catch (err) {
+    return refuse(`${key} was created, but ${CREATED_FILE} cannot be written (${firstLine(err)}), so the board cannot show it`);
+  }
+  return ALLOW;
+}
+
+/**
  * The PreToolUse verdict for one tool call. `machine` holds this machine's own Bash refusals, after the built-in ones, and `connectors` the
  * connector tool names it allows. `approved` names the pull requests a review run may mark ready, by URL: none for any other run. `publish`
  * holds the connector tool names a publish run may call as well, and is null for any other run, which may not announce a pull request. `ready` is
@@ -168,8 +229,12 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   machine?: readonly Refusal[];
   /** The connector tool names this machine allows. */
   connectors?: readonly RegExp[];
-  /** A new-ticket run: it may call only the allowed connectors that only read the tracker. */
+  /** A new-ticket run: it may call only the allowed connectors that only read the tracker, and the filing tools the board granted it. */
   writer?: boolean;
+  /** The filing tools the board granted a new-ticket run, by name. */
+  grants?: readonly string[];
+  /** The keys the run has created so far, from its record; null when the record cannot be read. */
+  created?: readonly string[] | null;
   /** The pull requests a review run may mark ready, by URL. */
   approved?: readonly string[];
   /** The connector tool names a publish run may call, or null for a run that is no publish run. */
@@ -179,11 +244,12 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   /** The host's own programs a worker may not write, by path. */
   hostPrograms?: readonly string[];
 } = {}): HookResult {
-  const { machine = [], connectors = [], approved = [], publish = null, ready = false, hostPrograms = [], writer = false } = options;
+  const { machine = [], connectors = [], approved = [], publish = null, ready = false, hostPrograms = [], writer = false, grants = [], created = [] } = options;
   if (toolName.startsWith("mcp__")) {
+    if (FILING_TOOL.test(toolName)) return writer ? writerFiling(toolName, input, { grants, created }) : refuse(FILING_REFUSAL);
     if (writer) {
       return connectors.some((pattern) => pattern.test(toolName)) && READ_ONLY_CONNECTOR.test(toolName) ? ALLOW
-        : refuse(`${toolName} may not be called by a new-ticket run: it reads the tracker, and creates nothing`);
+        : refuse(`${toolName} may not be called by a new-ticket run: it reads the tracker, and creates nothing but the ticket it files and that ticket's plan`);
     }
     const allowed = [...connectors, ...(publish ?? [])];
     return allowed.some((pattern) => pattern.test(toolName)) ? ALLOW : refuse(`${toolName} is a connector this machine's tickets.connectors does not allow`);
@@ -532,13 +598,19 @@ function stopPayload(stdin: string): { transcriptPath?: string; lastMessage?: st
   }
 }
 
+/** The events the hook answers: the Stop, PreToolUse and PostToolUse hooks a worker's settings name (`worker-files.ts`'s `workerSettings`). */
+const HOOK_EVENTS: readonly string[] = ["stop", "pre-tool-use", "post-tool-use"];
+
 export function main(stdin: string, argv: string[]): HookResult {
   const [event, ticketDir] = argv;
-  if ((event !== "stop" && event !== "pre-tool-use") || !ticketDir) return { code: 0, say: [`ticket:hook: usage is ticket:hook stop|pre-tool-use <ticket dir>, so this call is ALLOWED.`] };
+  if (!HOOK_EVENTS.includes(String(event)) || !ticketDir) {
+    return { code: 0, say: [`ticket:hook: usage is ticket:hook stop|pre-tool-use|post-tool-use <ticket dir>, so this call is ALLOWED.`] };
+  }
   try {
     if (event === "stop") return stopVerdict(ticketDir, stopPayload(stdin));
-    const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown> };
+    const payload = JSON.parse(stdin) as { tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown };
     const tool = String(payload.tool_name ?? "");
+    if (event === "post-tool-use") return recordCreated(ticketDir, tool, payload.tool_response);
     const input = payload.tool_input ?? {};
     const { refusals, note } = machineRefusals(ticketDir);
     const allowed = machineConnectors(ticketDir);
@@ -547,6 +619,7 @@ export function main(stdin: string, argv: string[]): HookResult {
     const verdict = toolVerdict(tool, resolved, {
       machine: refusals, connectors: allowed.connectors, approved: approvedPulls(ticketDir), publish: publishConnectors(ticketDir),
       ready: existsSync(join(ticketDir, READY_FILE)), hostPrograms: guarded.paths, writer: existsSync(join(ticketDir, WRITER_FILE)),
+      grants: writerGrants(ticketDir), created: readCreatedKeys(ticketDir),
     });
     const review = prReviewSetting(ticketDir);
     // A call the other refusals stopped is neither logged nor gated: it did not run.

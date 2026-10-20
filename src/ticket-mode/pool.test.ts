@@ -22,7 +22,8 @@ import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled } from "./reviewer-port.ts";
-import type { NewTicket, PullState, Ticket, TicketSource } from "./source.ts";
+import type { PullState, Ticket, TicketSource } from "./source.ts";
+import { CREATED_FILE } from "./writer.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
@@ -3454,10 +3455,11 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
 });
 
 /*
- * New-ticket runs (A11-94): a person's request starts one run of the writer, which leaves drafts for the board to review. It writes no ticket.
+ * New-ticket runs (A11-94, A11-135): a person's request starts one run of the writer, which files its own ticket and attaches its plan. The board
+ * shows the tickets the run's outcome names, each checked against what the hook recorded as the run created it.
  */
 
-const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." } };
+const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." } };
 const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; form: { repo?: string }; model?: string; effort?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
@@ -3476,93 +3478,93 @@ async function workingRun(request: Partial<typeof WRITER_REQUEST> = {}) {
   return fixture;
 }
 
-/** The drafts a writer run's agent leaves in `dir`, each file by name, and the outcome it writes last. */
-function leaveDrafts(dir: string, drafts: Record<string, unknown>, outcome: Record<string, unknown> = { kind: "drafted" }): void {
-  mkdirSync(join(dir, "drafts"), { recursive: true });
-  for (const [file, draft] of Object.entries(drafts)) writeFileSync(join(dir, "drafts", file), JSON.stringify(draft));
+/** The record the hook keeps for the keys a run's agent files: one key per line, as the PostToolUse hook appends each (A11-135). */
+const recordOf = (keys: readonly string[]): string => keys.map((key) => `${JSON.stringify({ identifier: key })}\n`).join("");
+
+/** The record the hook keeps as the run's agent files each ticket, written into the run's folder. */
+function recordFiled(dir: string, keys: readonly string[]): void {
+  writeFileSync(join(dir, CREATED_FILE), recordOf(keys));
+}
+
+/** A run started, whose agent files `record` and writes `outcome` and then goes `end`: the run's outcome is read once it is idle (A11-135). */
+async function filesThenEnds(fixture: ReturnType<typeof writing>, record: string, outcome: Record<string, unknown>, end: string): Promise<void> {
+  await fixture.pool.tick();
+  writeFileSync(join(fixture.dir, CREATED_FILE), record);
+  leaveOutcome(fixture.dir, outcome);
+  await agentIs(fixture, fixture.name, "working");
+  await agentIs(fixture, fixture.name, end);
+  await writerSettled();
+}
+
+/** The outcome a writer run's agent writes last: `created` with the keys it filed, or `needs-human` with its reason. */
+function leaveOutcome(dir: string, outcome: Record<string, unknown>): void {
   writeFileSync(join(dir, "outcome.json"), JSON.stringify(outcome));
 }
 
-/** Let the reads a finished writer run makes (its drafts' duplicates) settle. */
+/** Let the reads a finished writer run makes (each filed ticket read back from the tracker) settle. */
 async function writerSettled(): Promise<void> {
   for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
-/** The draft a valid writer run leaves: a title, why and done-when, as the board checks them. */
-const goodDraft = { title: "feat: show requests", why: "A person asks for it", doneWhen: ["The board lists them"] };
-
-/** A tracker that makes a ticket for each create, recording what it was asked. A create asked again with one id gives back the ticket it made. */
-function creating(tickets: Record<string, Ticket> = {}): { tracker: TicketSource; made: NewTicket[] } {
-  const made: NewTicket[] = [];
-  const byId = new Map<string, Ticket>();
-  let next = 0;
-  const tracker: TicketSource = {
-    ...source,
-    read: async (key) => tickets[key] ?? null,
-    createTicket: async (input) => {
-      made.push(input);
-      const existing = byId.get(input.id);
-      if (existing !== undefined) return { ticket: existing, warnings: [] };
-      next += 1;
-      const ticket = { ...ticketOf(`NBF-${next}`), team: input.team ?? "NBF", project: input.project, url: `https://linear.app/x/NBF-${next}` } as Ticket;
-      byId.set(input.id, ticket);
-      return { ticket, warnings: [] };
-    },
-  };
-  return { tracker, made };
+/** A tracker that holds the given tickets, read back by key. A ticket it does not hold is not in the tracker. */
+function trackerOf(tickets: Record<string, Partial<Ticket>> = {}): TicketSource {
+  return { ...source, read: async (key) => (tickets[key] === undefined ? null : { ...ticketOf(key), ...tickets[key] }) as Ticket };
 }
-/** A ticket as the tracker holds it, for the creating tracker's reads. */
+
+/** A ticket as the tracker holds it, for the tracker's reads. */
 const ticketOf = (key: string): Ticket => ({ key, title: `Title ${key}`, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog",
   statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 
-test("a writer run's drafts become tickets once its agent is idle with its outcome: each valid draft is created, a bad one is named, and a duplicate is named in its ticket", async () => {
-  const { tracker, made } = creating({ "NBF-9": { ...ticketOf("NBF-9"), title: "Show requests", url: "https://linear.app/x/NBF-9" } });
+test("a writer run's filed tickets are shown once its agent is idle with its outcome: each key the record holds is read back and shown, and a key it does not hold fails the run", async () => {
+  const tracker = trackerOf({ "NBF-1": { url: "https://linear.app/x/NBF-1" } });
   const { pool, status, name, dir, run, store } = writing({}, WRITER, tracker);
   await pool.tick();
-  mkdirSync(join(dir, "drafts"), { recursive: true });
-  writeFileSync(join(dir, "drafts", "01-show.json"), JSON.stringify({ ...goodDraft, team: "NBF", project: "Visual Explorer - GA", goal: "Keep the board honest",
-    labels: ["Bucket: Board"], priority: "high", duplicates: [{ key: "NBF-9", why: "same request" }, { key: "NBF-404", why: "gone" }] }));
-  writeFileSync(join(dir, "drafts", "02-bad.json"), JSON.stringify({ ...goodDraft, priority: "hi" }));
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "drafted" }));
+  recordFiled(dir, ["NBF-1"]);
+  leaveOutcome(dir, { kind: "created", created: ["NBF-1", "NBF-9"] });
   status.set(name, "working");
   await pool.tick();
   status.set(name, "idle");
   await pool.tick();
   await writerSettled();
   assert.equal(run().phase, "finished");
-  assert.equal(run().drafts.length, 1);
-  assert.equal(run().drafts[0].status, "created");
-  assert.deepEqual(run().drafts[0].created, { key: "NBF-1", url: "https://linear.app/x/NBF-1", inPick: true });
-  assert.deepEqual(run().drafts[0].duplicates.map(({ key, title }) => [key, title]), [["NBF-9", "Show requests"], ["NBF-404", null]]);
-  assert.match(run().rejected[0].reason, /^02-bad\.json: "priority" must be one of/);
-  assert.equal(run().failure, "1 draft file refused, shown above", "a refused file fails the run, and the ticket made stays");
+  assert.deepEqual(run().tickets.map(({ key, url }) => [key, url]), [["NBF-1", "https://linear.app/x/NBF-1"]], "the ticket made is shown as a link");
+  assert.equal(run().failure, "it names NBF-9, a ticket it did not create", "a key the record does not hold fails the run, naming it");
   assert.equal(writerStatus(run()), "failed");
-  assert.equal(made.length, 1, "one create reached the tracker");
-  assert.equal(made[0].project, "Visual Explorer - GA");
-  assert.match(made[0].description, /\*\*Possible duplicates:\*\*\n\n\* NBF-9: Show requests https:\/\/linear\.app\/x\/NBF-9 - same request\n\* NBF-404 \(not found in the tracker\) - gone/);
   assert.equal(store.get().entries.length, 0, "no ticket is queued by a writer run");
 });
 
-test("a run whose drafts are all refused fails, naming each file, and a run that wrote no outcome fails as it stopped", async () => {
-  const { pool, status, name, dir, run } = writing();
-  await pool.tick();
-  leaveDrafts(dir, { "01-bad.json": { ...goodDraft, why: "" } });
-  await agentIs({ pool, status }, name, "idle");
-  await writerSettled();
-  assert.equal(run().failure, 'none of its drafts is valid: 01-bad.json: "why" must be a non-empty string');
-  assert.equal(run().phase, "finished");
+test("a run that files its ticket and attaches its plan ends done, with the key shown; a plan the board requires but the ticket lacks fails it, naming the ticket and still showing it", async () => {
+  const withPlan = writing({ id: "p1" }, { ...WRITER, plan: "-plan-[^/]*\\.md$" }, trackerOf({ "NBF-1": { uploads: ["NBF-1-0001-plan-show.md"] } }));
+  await filesThenEnds(withPlan, recordOf(["NBF-1"]), { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([withPlan.run().phase, withPlan.run().failure, writerStatus(withPlan.run())], ["finished", undefined, "done"], "POSITIVE CONTROL: a planned ticket ends done");
 
-  const quiet = writing({ id: "w2" });
-  await quiet.pool.tick();
-  await agentIs(quiet, quiet.name, "working");
-  await agentIs(quiet, quiet.name, "done");
-  await writerSettled();
-  assert.equal(quiet.run().failure, "it stopped without writing an outcome");
+  const unplanned = writing({ id: "p2" }, { ...WRITER, plan: "-plan-[^/]*\\.md$" }, trackerOf({ "NBF-2": {} }));
+  await filesThenEnds(unplanned, recordOf(["NBF-2"]), { kind: "created", created: ["NBF-2"] }, "done");
+  assert.equal(unplanned.run().failure, "NBF-2 has no plan attached", "the run fails naming the ticket");
+  assert.deepEqual(unplanned.run().tickets.map(({ key }) => key), ["NBF-2"], "and the ticket is still shown");
 });
 
-test("a grill run idle between its questions stays running and holds its slot; it is not failed for going idle, and its tickets are made when its outcome is drafted", async () => {
-  const { tracker, made } = creating();
-  const fixture = writing({ mode: "grill" }, WRITER, tracker);
+test("a run whose record cannot be read shows no ticket and fails, and a run whose outcome names no ticket fails as it says", async () => {
+  const unreadable = writing({ id: "u1" }, WRITER, trackerOf({ "NBF-1": {} }));
+  await filesThenEnds(unreadable, "not a record\n", { kind: "created", created: ["NBF-1"] }, "done");
+  assert.deepEqual([unreadable.run().tickets, unreadable.run().failure], [[], `${CREATED_FILE} cannot be read, so the tickets it made cannot be checked`]);
+
+  const none = await workingRun({ id: "u2" });
+  leaveOutcome(none.dir, { kind: "created", created: [] });
+  await agentIs(none, none.name, "idle");
+  await writerSettled();
+  assert.match(none.run().failure ?? "", /its created outcome names no ticket/);
+});
+
+test("a quick run that stops on a needs-human outcome fails with its reason, and keeps the ticket it filed before it stopped", async () => {
+  const fixture = writing({ id: "n1" }, WRITER, trackerOf({ "NBF-3": {} }));
+  const { run } = fixture;
+  await filesThenEnds(fixture, recordOf(["NBF-3"]), { kind: "needs-human", reason: "the attachment was refused", created: ["NBF-3"] }, "idle");
+  assert.deepEqual([run().phase, run().failure, run().tickets.map(({ key }) => key)], ["finished", "the attachment was refused", ["NBF-3"]]);
+});
+
+test("a grill run idle between its questions stays running and holds its slot; it is not failed for going idle, and its tickets are shown when its outcome is written", async () => {
+  const fixture = writing({ mode: "grill" }, WRITER, trackerOf({ "NBF-1": {} }));
   const { pool, dir, run, store } = fixture;
   await pool.tick();
   await agentIs(fixture, fixture.name, "working");
@@ -3570,16 +3572,15 @@ test("a grill run idle between its questions stays running and holds its slot; i
   await writerSettled();
   assert.deepEqual([run().phase, run().failure], ["running", undefined], "POSITIVE CONTROL: idle with no outcome is a question, not a failure");
   assert.equal(liveRunCount(store.get()), 1, "it holds its slot while the person answers");
-  leaveDrafts(dir, { "01-show.json": goodDraft });
+  recordFiled(dir, ["NBF-1"]);
+  leaveOutcome(dir, { kind: "created", created: ["NBF-1"] });
   await pool.tick();
   await writerSettled();
-  assert.deepEqual([run().phase, run().failure], ["finished", undefined]);
-  assert.equal(made.length, 1);
+  assert.deepEqual([run().phase, run().failure, run().tickets.map(({ key }) => key)], ["finished", undefined, ["NBF-1"]]);
 });
 
-test("a Grill turn that ends in a question and no outcome file is Waiting: its pane and slot stay, and the answer resumes it, and its ticket is made when it drafts", async () => {
-  const { tracker, made } = creating();
-  const fixture = writing({ mode: "grill" }, WRITER, tracker);
+test("a Grill turn that ends in a question and no outcome file is Waiting: its pane and slot stay, and the answer resumes it, and its ticket is shown when it is filed", async () => {
+  const fixture = writing({ mode: "grill" }, WRITER, trackerOf({ "NBF-1": {} }));
   const { pool, name, dir, run, store, h } = fixture;
   await pool.tick();
   await agentIs(fixture, name, "working");
@@ -3598,13 +3599,15 @@ test("a Grill turn that ends in a question and no outcome file is Waiting: its p
   assert.deepEqual([writerStatus(run()), run().waiting], ["writing", undefined], "the answer resumes it: the wait is cleared");
   writeFileSync(join(dir, "waiting.json"), JSON.stringify({ question: "Q2: which goal?", at: 200 }));
   await agentIs(fixture, name, "done");
+  await writerSettled();
   assert.equal(run().waiting?.question, "Q2: which goal?", "a new question is shown in place of the last");
   await agentIs(fixture, name, "working");
-  leaveDrafts(dir, { "01-show.json": goodDraft });
+  recordFiled(dir, ["NBF-1"]);
+  leaveOutcome(dir, { kind: "created", created: ["NBF-1"] });
   await agentIs(fixture, name, "idle");
   await writerSettled();
   assert.deepEqual([run().phase, run().failure, writerStatus(run())], ["finished", undefined, "done"]);
-  assert.equal(made.length, 1, "the ticket is made when the grill ends");
+  assert.deepEqual(run().tickets.map(({ key }) => key), ["NBF-1"], "the ticket is shown when the grill ends");
 });
 
 test("a Grill run whose stop hook wrote no question shows the fixed line, and a Grill needs-human outcome is its question, not a failure", async () => {
@@ -3614,7 +3617,7 @@ test("a Grill run whose stop hook wrote no question shows the fixed line, and a 
   assert.equal(quiet.run().waiting?.question, "Its agent is waiting for you in its terminal.", "no question on file: the fixed line");
 
   const asks = await workingRun({ id: "w2", mode: "grill" });
-  leaveDrafts(asks.dir, {}, { kind: "needs-human", reason: "Which goal does it serve?" });
+  leaveOutcome(asks.dir, { kind: "needs-human", reason: "Which goal does it serve?" });
   await agentIs(asks, asks.name, "idle");
   await writerSettled();
   assert.deepEqual([writerStatus(asks.run()), asks.run().waiting?.question, asks.run().phase, asks.run().failure], ["waiting", "Which goal does it serve?", "running", undefined]);
@@ -3627,7 +3630,7 @@ test("a Grill run whose stop hook wrote no question shows the fixed line, and a 
 
 test("a Quick needs-human outcome still ends the run failed, saying why, and a Quick run that goes done with no outcome has stopped", async () => {
   const quick = await workingRun({ id: "w3" });
-  leaveDrafts(quick.dir, {}, { kind: "needs-human", reason: "Which goal does it serve?" });
+  leaveOutcome(quick.dir, { kind: "needs-human", reason: "Which goal does it serve?" });
   await agentIs(quick, quick.name, "idle");
   await writerSettled();
   assert.deepEqual([quick.run().phase, quick.run().failure], ["finished", "Which goal does it serve?"]);
@@ -3667,28 +3670,23 @@ function setStartedAt(fixture: ReturnType<typeof writing>, startedAt: number): v
   fixture.store.set({ ...fixture.store.get(), writers: fixture.store.get().writers!.map((r) => (r.id === fixture.run().id ? { ...r, startedAt } : r)) });
 }
 
-test("a ticket is created in each mode from a stubbed writer and tracker: the run's drafts are made as tickets, with the choices they name, and the run ends done", async () => {
+test("a ticket is filed in each mode by a stubbed writer whose record and outcome agree: the run ends done with the key, and no ticket is queued", async () => {
   for (const mode of ["quick", "grill"] as const) {
-    const { tracker, made } = creating();
-    const { pool, status, name, dir, run, store } = writing({ id: `m-${mode}`, mode }, WRITER, tracker);
+    const { pool, status, name, dir, run, store } = writing({ id: `m-${mode}`, mode }, WRITER, trackerOf({ "NBF-1": {} }));
     await pool.tick();
     status.set(name, "working");
     await pool.tick();
-    mkdirSync(join(dir, "drafts"), { recursive: true });
-    writeFileSync(join(dir, "drafts", "01-show.json"), JSON.stringify({ ...goodDraft, team: "NBF", project: "Visual Explorer - GA", goal: "Keep the board honest",
-      labels: ["Bucket: Board"], priority: "high", blocks: [], parent: null }));
-    await endWith({ pool, status }, dir, name, { kind: "drafted" });
+    recordFiled(dir, ["NBF-1"]);
+    leaveOutcome(dir, { kind: "created", created: ["NBF-1"] });
+    await agentIs({ pool, status }, name, "idle");
     await writerSettled();
-    assert.equal(made.length, 1, `${mode}: one ticket is made from the one draft`);
-    assert.deepEqual([made[0].team, made[0].project, made[0].goal, made[0].labels, made[0].priority], ["NBF", "Visual Explorer - GA", "Keep the board honest", ["Bucket: Board"], 2], `${mode}: the choices the draft names`);
-    assert.equal(made[0].title, goodDraft.title);
-    assert.deepEqual([run().phase, run().failure, run().drafts[0].created?.key, writerStatus(run())], ["finished", undefined, "NBF-1", "done"], `${mode}: the run ends done with the key`);
+    assert.deepEqual([run().phase, run().failure, run().tickets.map(({ key }) => key), writerStatus(run())], ["finished", undefined, ["NBF-1"], "done"], `${mode}: the run ends done with the key`);
     assert.equal(store.get().entries.length, 0, `${mode}: no ticket is queued`);
   }
 });
 
 test("a grill run's first prompt asks its first question, and its brief names the board's mode, which is not the instruction's", async () => {
-  const { pool, dir, h, name } = writing({ mode: "grill" }, { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts. Mode: {mode}." } });
+  const { pool, dir, h, name } = writing({ mode: "grill" }, { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}. Mode: {mode}." } });
   await pool.tick();
   const start = h.calls.find((args) => args.includes("start") && args.includes(name))!;
   assert.ok(start.some((arg) => arg.endsWith("Your first message to me is your first question.")), "the first prompt says the first message is a question");
@@ -3719,40 +3717,25 @@ test("a new-ticket run that never ends is failed after 30 minutes of running, an
   assert.deepEqual([grill.run().phase, grill.run().failure], ["finished", "it did not finish within 240 minutes"]);
 });
 
-test("after a restart, a run making its tickets is asked again with the same ids, and makes one ticket for each draft", async () => {
-  const { tracker, made } = creating();
-  const { pool, status, name, store, restart, run } = writing({ id: "w8" }, WRITER, tracker);
-  await pool.tick();
-  status.set(name, "working");
-  await pool.tick();
-  const drafts = [{ id: "d-restart", file: "01-show.json", draft: { title: "feat: show", why: "why", doneWhen: ["done"], notes: null, team: "NBF", project: null, repo: null,
-    goal: null, labels: [], priority: "none" as const, parent: null, blocks: [], blockedBy: [], duplicates: [] }, duplicates: [], status: "creating" as const }];
-  store.set({ ...store.get(), writers: store.get().writers!.map((r) => (r.id === "w8" ? { ...r, phase: "creating" as const, drafts, rejected: [] } : r)) });
-  restart().reconcile();
-  await writerSettled();
-  restart().reconcile();
-  await writerSettled();
-  assert.equal(made.length, 1, "the tracker was asked once for the draft: a second asking finds it made");
-  assert.deepEqual([run().phase, run().drafts[0].created?.key], ["finished", "NBF-1"]);
-});
-
-test("a new-ticket run starts on a free slot, with the writer's model, its brief naming the request, and the mark that lets it read the tracker only", async () => {
+test("a new-ticket run starts on a free slot, with the writer's model, its brief naming the request, and the mark that lets it file its ticket and read the tracker", async () => {
   const { pool, settings, dir, name, h, run } = writing();
   await pool.tick();
   assert.equal(run().phase, "running", "it starts");
   assert.deepEqual([run().workspace, run().pane], ["w1", "w1:p1"]);
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
-  assert.match(brief, /for this request: Show the requests a person made\. Write each draft under /, "the instruction, with the request and the folder filled in");
+  assert.match(brief, /for this request: Show the requests a person made, in \//, "the instruction, with the request and the folder filled in");
   assert.match(brief, /> Show the requests a person made/, "the request, quoted");
-  assert.match(brief, /repo`: `nbl-ui-netbox`|\(the draft's `repo`\)/, "the choices the form made are requirements");
-  assert.equal(readFileSync(join(dir, "writer-run"), "utf8").trim(), "{\"mode\":\"quick\"}", "the mark the hook reads names the run's mode, which lets a grill run end its turn");
+  assert.match(brief, /- Repository: `nbl-ui-netbox`/, "the choices the form made are requirements");
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "writer-run"), "utf8")), { mode: "quick", tools: ["mcp__linear__save_issue", "mcp__linear__prepare_attachment_upload", "mcp__linear__create_attachment_from_upload"] },
+    "the mark names the run's mode, and the three tools the board grants it, which lets a grill run end its turn");
   const deny = JSON.parse(readFileSync(join(dir, "deny.json"), "utf8")) as { pattern: string }[];
   assert.ok(deny.some(({ pattern }) => pattern.includes("ticket:worktree")), "a writer changes no repository: the planning refusals apply to it");
   const start = h.calls.find((args) => args.includes("start") && args.includes(name))!;
   assert.ok(start.includes("opus") && start.includes("high"), "the writer's default model and effort");
   assert.equal(settings.writer?.model, "opus");
   assert.ok(existsSync(join(settings.stateDir, "tickets", "writer", "w1")));
-  assert.ok(existsSync(join(writerFolder(settings, "w1"), ".claude", "settings.local.json")), "its settings sit in a folder of its own, so runs never overwrite each other's");
+  const sessionSettings = JSON.parse(readFileSync(join(writerFolder(settings, "w1"), ".claude", "settings.local.json"), "utf8")) as { hooks: Record<string, unknown> };
+  assert.ok("PostToolUse" in sessionSettings.hooks, "its settings record each ticket it files, as the creation returns");
 });
 
 test("a new-ticket run starts on the model and effort it was queued with, whatever the host file says, and one queued before they were stamped starts on the host file's", async () => {
@@ -3776,19 +3759,17 @@ test("a new-ticket run starts though the queue is paused, as a person asked for 
   assert.equal(ctx.run().phase, "running", "Pause does not hold a new-ticket run");
 });
 
-
-test("stopping a new-ticket run closes its workspace, and keeps the drafts it had written; a run that has ended is left alone", async () => {
-  const { pool, status, name, dir, run, h, store } = writing({ id: "w4" });
-  await pool.tick();
-  status.set(name, "working");
-  await pool.tick();
-  leaveDrafts(dir, { "01-a.json": goodDraft });
-  pool.stopWriterRun("w4");
+test("stopping a new-ticket run closes its workspace, and keeps the tickets it had filed; a run that has ended is left alone", async () => {
+  const fixture = await workingRun({ id: "w4" });
+  const { run, h, store } = fixture;
+  recordFiled(fixture.dir, ["NBF-1"]);
+  fixture.pool.stopWriterRun("w4");
   assert.equal(closes(h, "w1"), 1, "the workspace is closed");
   assert.equal(run().phase, "finished");
   assert.equal(run().failure, "stopped on the board");
+  assert.deepEqual(run().tickets.map(({ key }) => key), ["NBF-1"], "the ticket it filed before the stop stays, and is shown");
   assert.equal(store.get().writers?.length, 1);
-  pool.stopWriterRun("w4");
+  fixture.pool.stopWriterRun("w4");
   assert.equal(closes(h, "w1"), 1, "a second stop closes nothing");
 });
 

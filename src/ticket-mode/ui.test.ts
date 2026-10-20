@@ -1190,7 +1190,7 @@ test("A11-80: a run whose worker wrote working shows In progress with its reason
  */
 
 const WRITER_CONFIG = { writer: true, writerGrill: true, repos: ["nbl-ui-netbox", "platform-monorepo"], priorities: ["urgent", "high", "medium", "low", "none"] };
-const RUN = { id: "w7", request: "Show the requests a person made", mode: "quick", phase: "finished", status: "done", form: {}, tickets: [], rejected: [] };
+const RUN = { id: "w7", request: "Show the requests a person made", mode: "quick", phase: "finished", status: "done", form: {}, tickets: [] };
 /** The New ticket form, filled with a grill request, and sent. */
 async function sendGrill(p: Awaited<ReturnType<typeof page>>) {
   p.$("new-ticket").fire("click");
@@ -1309,24 +1309,27 @@ test("A11-129: a board opened with a hash that is not a valid encoding loads wit
 
 test("a run that made its tickets shows each as a link by its key, and says so when Pick does not list it", async () => {
   const made = { ...RUN, tickets: [
-    { file: "01-show.json", key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true, warnings: [] },
-    { file: "02-wire.json", key: "NBF-102", url: "https://linear.app/x/NBF-102", inPick: false, warnings: ["NBF-102 was created, but it did not block A11-3"] },
+    { key: "NBF-101", url: "https://linear.app/x/NBF-101", inPick: true },
+    { key: "NBF-102", url: "https://linear.app/x/NBF-102", inPick: false },
   ] };
   const p = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [{ ...made, status: "done" }] } });
   const links = cardOf(p).all().filter((n) => n.tag === "a").map((a) => [a.textContent, (a as Node_ & { href?: string }).href]);
   assert.deepEqual(links, [["Created NBF-101", "https://linear.app/x/NBF-101"], ["Created NBF-102", "https://linear.app/x/NBF-102"]]);
   assert.ok(cardOf(p).text().includes("It is outside the list Pick shows, so it is not in it."), "the one Pick does not list is said");
-  assert.ok(cardOf(p).text().includes("NBF-102 was created, but it did not block A11-3"), "and the tracker's warning is shown");
+  const unaddressed = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [{ ...RUN, status: "failed", failure: "it names NBF-9, a ticket it did not create",
+    tickets: [{ key: "NBF-103", url: null, inPick: true }] }] } });
+  assert.ok(cardOf(unaddressed).text().includes("Created NBF-103"), "a ticket the tracker has no address for is named, without a link");
+  assert.equal(cardOf(unaddressed).all().some((n) => n.tag === "a" && n.textContent === "Created NBF-103"), false, "and is not a link");
 });
 
-test("the card has no review: no Approve, Approve and queue or Discard, and a failed run shows why and each refused file's reason", async () => {
-  const failed = { ...RUN, status: "failed", failure: "02-wire.json was not created: NBF has no label named Speed", rejected: [{ file: "03-x.json", reason: '03-x.json: "priority" must be one of urgent' }] };
+test("the card has no review: no Approve, Approve and queue or Discard, and a failed run shows why and the ticket it made", async () => {
+  const failed = { ...RUN, status: "failed", failure: "NBF-9 is not in the tracker; NBF-10 has no plan attached", tickets: [{ key: "NBF-10", url: "https://linear.app/x/NBF-10", inPick: true }] };
   const p = await page(new Map(), { config: WRITER_CONFIG, writers: { runs: [failed] } });
   const labels = cardOf(p).all().filter((n) => n.tag === "button").map((n) => n.textContent);
   assert.deepEqual(labels, ["Dismiss"], "a finished run offers Dismiss, and nothing to approve");
   assert.ok(cardOf(p).text().includes("Failed"));
-  assert.ok(cardOf(p).text().includes("02-wire.json was not created: NBF has no label named Speed"), "why it failed");
-  assert.ok(cardOf(p).text().includes('03-x.json: "priority" must be one of urgent'), "each refused file's reason");
+  assert.ok(cardOf(p).text().includes("NBF-9 is not in the tracker; NBF-10 has no plan attached"), "why it failed");
+  assert.ok(cardOf(p).text().includes("Created NBF-10"), "the ticket it made stays shown with the failure");
   assert.equal(p.$("writers-list").all().filter((n) => n.className === "draft").length, 0);
 });
 
@@ -1355,7 +1358,7 @@ test("a run that made a ticket reads Pick again on the page's poll, so the ticke
   const before = reads();
   await p.poll();
   assert.equal(reads(), before, "nothing changed: Pick is not read again");
-  runs = [{ ...RUN, status: "done", tickets: [{ file: "01-show.json", key: "NBF-101", url: "u", inPick: true, warnings: [] }] }];
+  runs = [{ ...RUN, status: "done", tickets: [{ key: "NBF-101", url: "u", inPick: true }] }];
   await p.poll();
   assert.equal(reads(), before + 1, "a ticket made: Pick is read again, and it shows there");
 });

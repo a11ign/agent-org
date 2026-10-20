@@ -4,6 +4,7 @@
 import { clearEdit, dismiss as dismissFinished, isLive, proposedEdit, remove as removeQueued } from "./queue/declared-remains.ts";
 import { close, end, restoreWorkingState } from "./pool-settle.ts";
 import { stopWriter, writerOf } from "./queue.ts";
+import { filedOf } from "./pool-board-runs.ts";
 import { forgetRun, update, writerPlace } from "./pool-state.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { isBeingPublished, isParked } from "./board-view/settled-by-pulls.ts";
@@ -25,9 +26,9 @@ export function stopWriterRun(ctx: PoolContext, id: string): void {
   const run = writerOf(store.get(), id);
   if (run === undefined || run.phase === "finished") return;
   const { name } = writerPlace(ctx, run);
-  if (run.workspace && run.phase !== "creating") closedNote((args) => herdr(args), run.workspace, session);
+  if (run.workspace) closedNote((args) => herdr(args), run.workspace, session);
   forgetRun(ctx, name);
-  update(ctx, (queue) => stopWriter(queue, id, now()));
+  update(ctx, (queue) => stopWriter(queue, id, now(), filedOf(ctx, run)));
 }
 
 /**

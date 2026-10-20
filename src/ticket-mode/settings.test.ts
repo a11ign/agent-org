@@ -288,7 +288,7 @@ test("A11-124: the writer's instruction may name the board's mode with {mode}, w
   const withMode = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Write each draft under {dir}/drafts.";
   assert.deepEqual(parseTicketSettings({ clones, tickets: { writer: { run: withMode } } }).writer?.run, withMode, "{mode} is accepted, and not required");
   const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
-  const example = /Run the a11ign:create-ticket skill[^"`]*\{dir\}\/drafts\./.exec(readme)?.[0];
+  const example = /Run the a11ign:create-ticket skill[^"`]*\{dir\}\./.exec(readme)?.[0];
   assert.ok(example, "POSITIVE CONTROL: the README's example is found");
   assert.doesNotMatch(example, /\b(quick|grill)\b/i, "the example names no mode: the board passes it");
   for (const file of ["../install/doctor.test.ts", "./worker-files.test.ts", "./server.test.ts", "./pool.test.ts", "./serve-ticket-only-host.test.ts"]) {

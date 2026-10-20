@@ -247,7 +247,7 @@ test("ticket:serve with AGENT_ORG_HOST unset reads ~/.agent-org/host.json and st
  * writer run that leaves a draft, and the ticket the board makes when the run ends. The tracker and herdr are fakes; the board and its pool are the real ones.
  */
 
-const WRITER_HOST = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." } };
+const WRITER_HOST = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." } };
 
 /** Resolves once `ready` holds, polling the pool's background work; fails the test when it does not hold in time. */
 async function waitFor(ready: () => boolean): Promise<void> {
@@ -274,7 +274,7 @@ function herdrWith(status: Map<string, string>) {
   };
 }
 
-test("on a ticket-only host, a new-ticket request runs the writer, its draft waits for approval, and approving it creates and queues the ticket", async () => {
+test("on a ticket-only host, a new-ticket request runs the writer, which files its ticket, and the board shows the ticket it filed when the run ends", async () => {
   const root = tmpDir("serve-ticket-writer-");
   const keyPath = join(root, "linear.key");
   writeFileSync(keyPath, "lin_api_test\n");
@@ -283,16 +283,11 @@ test("on a ticket-only host, a new-ticket request runs the writer, its draft wai
     tickets: { linearKey: { path: keyPath }, ...WRITER_HOST } }));
   const settings = readTicketSettings({ [HOST_FILE_ENV]: hostPath });
   assert.equal(settings.writer?.model, "opus", "the writer's defaults, on a host that names no more");
-  const created: string[] = [];
   const source: TicketSource = {
     assigned: async () => [],
-    read: async () => null,
+    read: async (key) => (key === "NBF-101" ? { key, title: "feat: show requests", description: "", url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog",
+      statusOrder: 0, team: "NBF", project: null, priority: 0, parent: null } as Ticket : null),
     download: async () => [],
-    createTicket: async (input) => {
-      created.push(input.title);
-      return { ticket: { key: "NBF-101", title: input.title, description: input.description, url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog",
-        statusOrder: 0, team: "NBF", project: null, priority: input.priority, parent: null } as Ticket, warnings: [] };
-    },
   };
   const status = new Map<string, string>();
   const board = createBoard({ settings, source, key: "k".repeat(48), queuePath: join(root, "state", "tickets", "queue.json"), choicePath: join(root, "state", "tickets", "choice.json"),
@@ -306,15 +301,14 @@ test("on a ticket-only host, a new-ticket request runs the writer, its draft wai
   const label = herdrName(`writer-${id}`);
   assert.equal(board.store.get().writers?.[0].phase, "running", "the writer started on the ticket-only host");
   const dir = join(root, "state", "tickets", "writer", id);
-  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /for this request: Show the requests a person made\. Write each draft under/);
-  mkdirSync(join(dir, "drafts"), { recursive: true });
-  writeFileSync(join(dir, "drafts", "01-show.json"), JSON.stringify({ title: "feat: show requests", why: "A person asks", doneWhen: ["It lists them"] }));
-  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "drafted" }));
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /for this request: Show the requests a person made, in /);
+  // The agent files its ticket: the hook records the key as the creation returns, and the outcome names it.
+  writeFileSync(join(dir, "created-issues.jsonl"), `${JSON.stringify({ identifier: "NBF-101" })}\n`);
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "created", created: ["NBF-101"] }));
   status.set(label, "idle");
   await board.pool.tick();
-  // The run's outcome is read and its ticket is made: nothing is reviewed, approved or queued by a person.
+  // The run's outcome is read and its ticket is checked: nothing is reviewed, approved or queued by a person.
   await waitFor(() => board.store.get().writers?.[0].phase === "finished");
-  assert.deepEqual(created, ["feat: show requests"], "the board made the ticket when the run ended");
   assert.equal(board.store.get().entries.length, 0, "and queued nothing: the person queues it from Pick, if they want it queued");
   const [, ready] = await board.api("GET", "/api/writer", {}) as [number, any];
   assert.deepEqual([ready.runs[0].status, ready.runs[0].tickets.map(({ key }: { key: string }) => key)], ["done", ["NBF-101"]]);
