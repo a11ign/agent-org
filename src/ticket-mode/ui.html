@@ -108,6 +108,13 @@
   .settings input[type="number"] { width: 72px; }
   .settings .actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .hint { color: var(--muted); font-size: 12px; margin: 0; }
+  .setting-group { margin: 18px 0; }
+  .setting-group > h3 { font-size: 15px; margin: 0 0 8px; }
+  .setting { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; }
+  .setting dt { font-weight: 600; overflow-wrap: anywhere; }
+  .setting dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+  .setting-group ul { margin: 6px 0; padding-left: 20px; }
+  .change { margin-bottom: 12px; }
   .hint.failed { color: var(--bad); }
   .no-plan { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--warn); }
   .no-plan.covered { color: var(--muted); }
@@ -131,42 +138,11 @@
   <label class="connection" id="connection-label" hidden>Instance <select id="connection" aria-label="Which instance to show"></select></label>
   <button class="tab" data-tab="pick" aria-selected="true">Pick</button>
   <button class="tab" data-tab="board" aria-selected="false">Board</button>
-  <button class="settings-open" id="open-settings" type="button" aria-haspopup="dialog">
+  <button class="settings-open" id="open-settings" type="button">
     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h7M13 4h1M2 12h1M7 12h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="11" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="12" r="2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
     Settings
   </button>
 </header>
-<dialog id="settings" aria-labelledby="settings-title">
-  <form method="dialog" class="settings">
-    <h2 id="settings-title">Settings</h2>
-    <fieldset>
-      <legend>New runs</legend>
-      <p class="hint">The default for tickets you queue. The Pick footer can choose otherwise for one batch. A run already on the queue keeps its own.</p>
-      <label>Model <select id="model"></select></label>
-      <label>Effort <select id="effort"></select></label>
-    </fieldset>
-    <fieldset id="planning-settings" hidden>
-      <legend>Planning</legend>
-      <p class="hint">A ticket queued with Plan first is planned on these before it runs. Planning decides for you, so it usually wants the most capable model.</p>
-      <label>Model <select id="planModel"></select></label>
-      <label>Effort <select id="planEffort"></select></label>
-    </fieldset>
-    <fieldset id="writer-settings" hidden>
-      <legend>Ticket writer</legend>
-      <p class="hint">A new-ticket request is written on these. Until one is chosen here, the host file's is used, and a choice here wins until it is set back to the host default. A request already queued keeps its own.</p>
-      <label>Model <select id="writerModel"></select></label>
-      <label>Effort <select id="writerEffort"></select></label>
-    </fieldset>
-    <fieldset>
-      <legend>Workers</legend>
-      <label>Workers at once <input id="max" type="number" min="1" step="1"></label>
-    </fieldset>
-    <div class="actions">
-      <p id="settings-status" class="hint" role="status"></p>
-      <button class="primary" value="done">Done</button>
-    </div>
-  </form>
-</dialog>
 <dialog id="new-ticket-dialog" aria-labelledby="new-ticket-title">
   <form method="dialog" class="settings">
     <h2 id="new-ticket-title">New ticket</h2>
@@ -235,6 +211,41 @@
       <div class="run-list" id="runs"></div>
     </div>
   </section>
+  <section id="settings-page" aria-labelledby="settings-title" hidden>
+    <nav class="bar" aria-label="Settings">
+      <a href="#" id="back-to-board">Back to the board</a>
+    </nav>
+    <h2 id="settings-title" tabindex="-1">Settings</h2>
+    <p class="hint">What this instance has enabled, as its files say now. The instance read host.json when it started, except the brief and review notes, which are read for each run.</p>
+    <div id="settings-refusals" class="notice" role="alert" hidden></div>
+    <div id="settings-notes"></div>
+    <div class="settings change">
+      <fieldset>
+        <legend>New runs</legend>
+        <p class="hint">The default for tickets you queue. The Pick footer can choose otherwise for one batch. A run already on the queue keeps its own.</p>
+        <label>Model <select id="model"></select></label>
+        <label>Effort <select id="effort"></select></label>
+      </fieldset>
+      <fieldset id="planning-settings" hidden>
+        <legend>Planning</legend>
+        <p class="hint">A ticket queued with Plan first is planned on these before it runs. Planning decides for you, so it usually wants the most capable model.</p>
+        <label>Model <select id="planModel"></select></label>
+        <label>Effort <select id="planEffort"></select></label>
+      </fieldset>
+      <fieldset id="writer-settings" hidden>
+        <legend>Ticket writer</legend>
+        <p class="hint">A new-ticket request is written on these. Until one is chosen here, the host file's is used, and a choice here wins until it is set back to the host default. A request already queued keeps its own.</p>
+        <label>Model <select id="writerModel"></select></label>
+        <label>Effort <select id="writerEffort"></select></label>
+      </fieldset>
+      <fieldset>
+        <legend>Workers</legend>
+        <label>Workers at once <input id="max" type="number" min="1" step="1"></label>
+      </fieldset>
+      <p id="settings-status" class="hint" role="status"></p>
+    </div>
+    <div id="settings-groups"></div>
+  </section>
 </main>
 <footer id="queue-bar">
   <label class="batch">Run on <select id="batch-model" aria-label="Model for the tickets you queue next"></select></label>
@@ -267,6 +278,10 @@ const $ = (id) => document.getElementById(id);
 const storage = (() => { try { return window.localStorage; } catch { return null; } })();
 const state = {
   tickets: [], parents: [], queue: { entries: [], max: 3, paused: true }, selected: new Set(), terminal: null,
+  // The board tab shown, Pick or Board. The Settings page takes the window while its address is shown, and the tab is back when it is left.
+  tab: "pick",
+  // Whether the Settings page is shown, the control that opened it (focus goes back to it), and the board's address, which Back returns to.
+  settingsShown: false, opener: "open-settings", boardHash: "",
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
   pick: "assigned to you", empty: null,
   // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
@@ -729,11 +744,75 @@ async function readMax() {
   render();
 }
 
-// The settings dialog, with each control showing what is saved now.
-async function openSettings() {
-  await Promise.all([readChoice(), readMax()]);
+// The Settings page, at its own address. Its controls show what is saved now, and its rows what the instance's files say now (`/api/settings`).
+const onSettingsPage = () => location.hash === "#/settings";
+async function drawSettings() {
+  const chosen = state.connection;
   $("settings-status").textContent = "";
-  $("settings").showModal();
+  $("settings-refusals").hidden = true;
+  $("settings-groups").replaceChildren();
+  $("settings-notes").replaceChildren();
+  await Promise.all([readChoice(), readMax()]);
+  let view = null;
+  let failure = "";
+  try {
+    view = await call("GET", "/api/settings");
+  } catch (err) {
+    if (err === STALE) return;
+    failure = String(err.message || err);
+  }
+  // An answer for another instance, or for an address the page has left, is not drawn.
+  if (state.connection !== chosen || !onSettingsPage()) return;
+  drawSettingsView(view, failure);
+}
+/** The rows of the page: each group's keys, with what each says, and the plugins and connectors in words. With no view, an instance without the route is older than this page; any other failure is said. */
+function drawSettingsView(view, failure) {
+  if (view === null) {
+    const older = failure.startsWith("no route");
+    const text = older ? "This instance is older than this page and cannot describe its settings. The controls above still change them." : `The settings could not be read: ${failure}`;
+    $("settings-notes").replaceChildren(el("p", { className: "notice", textContent: text }));
+    return;
+  }
+  $("settings-refusals").hidden = view.refusals.length === 0;
+  $("settings-refusals").replaceChildren(...view.refusals.map((r) => el("p", { textContent: `${r.file}: ${r.message}` })));
+  $("settings-notes").replaceChildren(...view.notes.map((note) => el("p", { className: "hint", textContent: note })));
+  $("settings-groups").replaceChildren(...view.groups.map((group) => settingsGroup(group, view)).filter((node) => node !== null));
+}
+function settingsGroup({ group, rows }, view) {
+  const plugins = group === "Plugins and connectors";
+  if (rows.length === 0 && !(plugins && (view.plugins.length > 0 || view.words.length > 0))) return null;
+  const id = `group-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
+  const section = el("section", { className: "setting-group" }, el("h3", { id, textContent: group }), ...rows.map(settingRow));
+  section.setAttribute("aria-labelledby", id);
+  if (plugins) {
+    section.append(el("p", { className: "hint", textContent: "Plugins each worker runs with, and whether a worker's session loads each one" }),
+      el("ul", {}, ...view.plugins.map((line) => el("li", { textContent: `${line.plugin}: ${line.installed}; ${line.loads}` }))),
+      el("ul", {}, ...view.words.map((words) => el("li", { textContent: words }))));
+  }
+  return section;
+}
+/** One key: its name, then in words its value, its state and where the value comes from, what the key does, and what breaks if it is wrong. */
+function settingRow(row) {
+  return el("dl", { className: "setting" },
+    el("dt", {}, el("code", { textContent: row.key })),
+    el("dd", { textContent: `Value: ${row.value}. State: ${row.state}. Source: ${row.source}.` }),
+    el("dd", { textContent: row.explanation }),
+    el("dd", { className: "hint", textContent: `If it is wrong: ${row.breaks}` }));
+}
+/** The page or the board, by the address: the Settings page takes the window while its address is shown. */
+function showRoute() {
+  const settings = onSettingsPage();
+  // The board's address is remembered, so Back returns to the card the board was showing.
+  if (!settings) state.boardHash = location.hash;
+  $("back-to-board").setAttribute("href", state.boardHash || "#");
+  $("settings-page").hidden = !settings;
+  $("pick").hidden = settings || state.tab !== "pick";
+  $("board").hidden = settings || state.tab !== "board";
+  $("queue-bar").hidden = settings || state.tab !== "pick";
+  // Focus goes to the title when the page opens, and back to the control that opened it when the board returns (the dialog did this for us).
+  if (settings) $("settings-title").focus?.();
+  if (!settings && state.settingsShown) $(state.opener).focus?.();
+  state.settingsShown = settings;
 }
 
 // The dialog's own line, where its outcome is seen: the page's error line sits behind the dialog.
@@ -747,12 +826,14 @@ function showRefused(err) {
 }
 
 // Each setting is saved as it changes, and only what changed is sent. One the board refuses puts the controls back to what is saved.
+// An answer for an instance no longer shown is dropped, refusals included: it is not a word about the instance now on the page.
 function saveChoice(part) {
   call("POST", "/api/choice", { [part]: $(part).value }).then(({ choice }) => {
     setDefault(choice);
     showSaved();
     renderFooter();
   }, (err) => {
+    if (err === STALE) return;
     showRefused(err);
     return readChoice();
   }).catch(report);
@@ -763,6 +844,7 @@ function saveMax() {
     showSaved();
     render();
   }, (err) => {
+    if (err === STALE) return;
     showRefused(err);
     return readMax();
   }).catch(report);
@@ -933,9 +1015,9 @@ function setup(config) {
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
     for (const other of document.querySelectorAll(".tab")) other.setAttribute("aria-selected", String(other === tab));
-    $("pick").hidden = tab.dataset.tab !== "pick";
-    $("board").hidden = tab.dataset.tab !== "board";
-    $("queue-bar").hidden = tab.dataset.tab !== "pick";
+    state.tab = tab.dataset.tab;
+    if (onSettingsPage()) location.hash = "";
+    showRoute();
   });
 }
 $("filter").addEventListener("input", render);
@@ -967,7 +1049,12 @@ $("queue").addEventListener("click", async () => {
 $("publish").addEventListener("click", () => call("POST", "/api/publish", { keys: [...state.toPublish] })
   .then((q) => { state.queue = q; state.toPublish = new Set(); report(null); render(); }, report));
 $("toggle-pause").addEventListener("click", () => call("POST", "/api/paused", { paused: state.queue.paused === false }).then((q) => { state.queue = q; render(); }, report));
-for (const id of ["open-settings", "change-choice", "change-max"]) $(id).addEventListener("click", () => { openSettings().catch(report); });
+for (const id of ["open-settings", "change-choice", "change-max"]) {
+  $(id).addEventListener("click", () => {
+    state.opener = id;
+    location.hash = "#/settings";
+  });
+}
 for (const part of ["model", "effort"]) {
   $(`batch-${part}`).addEventListener("change", () => {
     state.batch = batchOverride(state.choice, { ...batchChoice(state.choice, state.batch), [part]: $(`batch-${part}`).value });
@@ -1012,6 +1099,8 @@ async function load() {
   // Parents are read after the first render, so the list never waits on them. Without them, every ticket stands on its own.
   state.parents = await call("GET", "/api/parents").catch(() => []);
   renderPick();
+  // The Settings page, when its address is shown, is drawn again for the instance just chosen, so nothing of another instance stays on it.
+  if (onSettingsPage()) drawSettings().catch(report);
   // Who holds the rest is read after the first paint: it takes a while on a large workspace, and the person's own tickets do not wait for it.
   if (state.scopes) {
     const held = await call("GET", "/api/people").catch(() => null);
@@ -1060,10 +1149,15 @@ try {
   const named = new URLSearchParams(location.search).get("connection");
   state.connection = chosenConnection(state.connections, named ?? [...recall(storage, "ticket-mode.connection")][0] ?? null);
   renderConnections(listed?.refusal);
+  showRoute();
   await load();
-  // The card the link names is scrolled to, once the page has drawn it (A11-129).
-  if (location.hash) scrollToNamedCard();
+  // The card the link names is scrolled to, once the page has drawn it (A11-129). The Settings address names no card.
+  if (location.hash && !onSettingsPage()) scrollToNamedCard();
 } catch (err) { report(err); }
+window.addEventListener("hashchange", () => {
+  showRoute();
+  if (onSettingsPage()) drawSettings().catch(report);
+});
 setInterval(() => {
   call("GET", "/api/queue").then((q) => { state.queue = q; renderBoard(); renderPick(); renderHeld(); }, report);
   refreshWriters().catch(report);

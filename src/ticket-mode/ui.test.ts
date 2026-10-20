@@ -68,6 +68,12 @@ const TICKETS = [
 const inOneProject = <T extends { project: string | null }>(tickets: readonly T[]) => tickets.map((t) => ({ ...t, project: "Alpha" }));
 const ONE_PROJECT = inOneProject(TICKETS);
 
+/** An element of the fake document. Focus is recorded as an attribute, so a test can check focus went back to the control that opened Settings. */
+const fakeElement = (id: string) => {
+  const node = new Node_(`#${id}`);
+  return Object.assign(node, { focus: () => { node.attrs.focused = "true"; } });
+};
+
 /** Run the page's script against a fake document, with `storage` as its localStorage. Resolves once the first render has happened. */
 /** A browser as the page sees it: the tabs it opens (none while `blockTabs`, as a pop-up blocker does), the timers it sets and the poll it runs, for a test to run by hand. */
 function browserStubs(blockTabs: boolean) {
@@ -94,9 +100,12 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   /** An instance that reads scopes on demand: who holds the open tickets, and the pages of a scope (`/api/tickets?assignee=...`) by that query's text. */
   held?: unknown; scoped?: Record<string, { tickets: unknown[]; next: string | null }>;
   /** Why this instance starts no run (`tickets.preflight`), as its queue answer carries it. */
-  queueHeld?: { name: string; reason: string; since: number } };
+  queueHeld?: { name: string; reason: string; since: number };
+  /** What the instance's Settings page reads (`/api/settings`), by default an instance with nothing to describe. */
+  settings?: unknown };
+const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [] };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
-  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "" }: PageOptions = {}) {
+  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -105,7 +114,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   const gate = new Promise<void>((done) => { release = done; });
   const document = {
     // eslint-disable-next-line clean-code/names-describe-side-effects -- the DOM's getElementById, which the page script calls by this name; the fake creates and caches the node on first request
-    getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, new Node_(`#${id}`)); return byId.get(id)!; },
+    getElementById: (id: string) => { if (!byId.has(id)) byId.set(id, fakeElement(id)); return byId.get(id)!; },
     createElement: (tag: string) => new Node_(tag),
     querySelectorAll: () => [],
   };
@@ -141,14 +150,19 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/choice": () => { saved = { ...saved, ...body }; return { choice: saved }; },
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
       ...(children === undefined ? {} : { "/api/queue-children": () => children }),
+      "/api/settings": () => settings,
     };
     const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}) };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
   const browser = browserStubs(blockTabs);
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, document, fetch, window: { localStorage, open: browser.open },
-    location: { search, hash }, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
+  // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
+  const location = { search, hash };
+  const hashListeners: (() => void)[] = [];
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, document, fetch,
+    window: { localStorage, open: browser.open, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
+    location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
   for (let i = 0; i < 10; i++) await settle();
   const $ = (id: string) => document.getElementById(id);
@@ -165,7 +179,9 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   const poll = async () => { for (const fn of browser.polls) fn(); for (let i = 0; i < 10; i++) await settle(); };
   /** Run the timers the page set, and let what they start settle. */
   const runTimers = async () => { for (const fn of browser.timers.splice(0)) fn(); for (let i = 0; i < 10; i++) await settle(); };
-  return { $, groups, shownKeys, chip, posts, saveElsewhere, requested, release, tabs: browser.tabs, poll, runTimers };
+  /** The browser's `hashchange`, after the page has changed its address. */
+  const hashChange = async () => { for (const fn of hashListeners) fn(); for (let i = 0; i < 10; i++) await settle(); };
+  return { $, groups, shownKeys, chip, posts, saveElsewhere, requested, release, tabs: browser.tabs, poll, runTimers, location, hashChange };
 }
 
 /** Let the page's pending fetches and their handlers run. */
@@ -388,10 +404,10 @@ test("Select all takes the visible tickets, and Queue sends exactly those with t
 
 const SETTINGS = { models: ["opus", "sonnet"], efforts: ["high", "max"], choice: { model: "opus", effort: "high" } };
 
-/** Open Settings from `button`, and let it read what is saved. */
+/** Open Settings from `button`, as the browser does: the button changes the address, and the page hears of it. */
 async function openFrom(p: Page, button: string) {
   p.$(button).fire("click");
-  await settle();
+  await p.hashChange();
 }
 /** Change one control, in Settings or the Pick footer, and let what it does come back. */
 async function change(p: Page, id: string, value: string) {
@@ -409,6 +425,12 @@ async function settingsPage(options: Parameters<typeof page>[1]) {
   const p = await page(new Map(), options);
   await openFrom(p, "open-settings");
   return p;
+}
+/** Choose another instance in the switcher, and let the page load it. */
+async function chooseInstance(p: Page, name: string) {
+  p.$("connection").value = name;
+  p.$("connection").fire("change");
+  await settle();
 }
 /** Press Queue, and let the board answer. */
 async function pressQueue(p: Page) {
@@ -436,7 +458,8 @@ test("the Pick footer says what a queued ticket runs with, Settings saves each p
   const p = await page(new Map(), { config: SETTINGS });
   assert.deepEqual(footerChoice(p), ["opus", "high"]);
   await openFrom(p, "change-choice");
-  assert.equal(p.$("settings").open, true, "Change opens the settings");
+  assert.equal(p.location.hash, "#/settings", "Change opens the settings page");
+  assert.equal(p.$("settings-page").hidden, false);
   await change(p, "model", "sonnet");
   assert.deepEqual(p.posts.at(-1), { path: "/api/choice", body: { model: "sonnet" } });
   assert.deepEqual(footerChoice(p), ["sonnet", "high"]);
@@ -462,7 +485,7 @@ test("workers at once is set in Settings, opened from the Board's Change, and th
   const p = await page(new Map(), { config: SETTINGS });
   assert.equal(p.$("max-note").textContent, "Up to 3 workers at once");
   await openFrom(p, "change-max");
-  assert.equal(p.$("settings").open, true);
+  assert.equal(p.$("settings-page").hidden, false, "the Board's Change opens the settings page");
   assert.equal(p.$("max").value, "3", "the control shows what is saved");
   await change(p, "max", "5");
   assert.deepEqual(p.posts.at(-1), { path: "/api/max", body: { max: 5 } });
@@ -1732,4 +1755,111 @@ test("preflight: the reason is shown as text, never as markup", async () => {
   const held = await page(new Map(), { queueHeld: { name: "x", reason: "<img src=x onerror=alert(1)>", since: 5 } });
   assert.equal(held.$("held").textContent.includes("<img src=x onerror=alert(1)>"), true);
   assert.equal(held.$("held").children.length, 0, "set as text, so it holds no element");
+});
+
+/** What an instance's Settings page reads: one group with a key, a refused file, a note and a plugin that does not load. */
+const DESCRIBED = {
+  refusals: [{ file: "host.json (tickets)", message: "ticket mode: `tickets.drafts` in the host file must be true or false, not \"yes\"" }],
+  notes: ["This machine declares no project: its host file names no primary, so no project.json is read."],
+  groups: [
+    { group: "Workers", rows: [{ key: "tickets.max", file: "host.json", group: "Workers", value: "3", state: "default", source: "built-in default", explanation: "How many workers run at once.", breaks: "Too high starts more workers than the machine carries.", depth: 0, secret: false }] },
+    { group: "Pick", rows: [{ key: "tickets.linearKey.path", file: "host.json", group: "Pick", value: "/k/linear.key (the file is missing)", state: "enabled", source: "host.json", explanation: "The file the tracker's key is in.", breaks: "The board cannot read the tracker.", depth: 2, secret: true }] },
+    { group: "Plugins and connectors", rows: [] },
+  ],
+  plugins: [{ plugin: "nbl-ui@applied-ai", installed: "not installed", loads: "a worker's session does not load it: nbl-ui@applied-ai is not installed: install it for every folder" }],
+  words: ["A worker may call any tool of the connector `linear` whose name matches `^mcp__linear__`."],
+};
+
+test("Settings is a page at its own address: the dialog is gone, the three ways in open it, and the way back returns to the board", async () => {
+  const html = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /<dialog id="settings"/, "the dialog is removed");
+  assert.match(html, /<nav class="bar" aria-label="Settings">\s*<a href="#" id="back-to-board">Back to the board<\/a>/, "a way back to the board is on the page");
+  for (const button of ["open-settings", "change-choice", "change-max"]) {
+    const p = await page(new Map(), { config: SETTINGS, settings: DESCRIBED });
+    await openFrom(p, button);
+    assert.equal(p.location.hash, "#/settings", `${button} opens the page at its own address`);
+    assert.equal(p.$("settings-page").hidden, false);
+    assert.equal(p.$("pick").hidden, true, "the board is not shown beside it");
+    p.location.hash = "";
+    await p.hashChange();
+    assert.equal(p.$("settings-page").hidden, true, `${button}: the way back closes it`);
+    assert.equal(p.$("pick").hidden, false, "and the Pick board is back");
+  }
+});
+
+test("the page draws what each key says, in its group, with its state and source in words, and the refused file as its message", async () => {
+  const p = await page(new Map(), { config: SETTINGS, settings: DESCRIBED });
+  await openFrom(p, "open-settings");
+  const headings = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
+  assert.deepEqual(headings, ["Workers", "Pick", "Plugins and connectors"], "one heading per group, in the page's order");
+  const text = p.$("settings-groups").text();
+  assert.match(text, /tickets\.max[\s\S]*Value: 3\. State: default\. Source: built-in default\./);
+  assert.match(text, /tickets\.linearKey\.path[\s\S]*Value: \/k\/linear\.key \(the file is missing\)\. State: enabled\. Source: host\.json\./, "a secret path shows its path and whether the file exists");
+  assert.match(text, /nbl-ui@applied-ai: not installed; a worker's session does not load it/, "a plugin says whether a worker's session loads it");
+  assert.match(text, /A worker may call any tool of the connector `linear`/, "a connector is said in words");
+  assert.equal(p.$("settings-refusals").hidden, false);
+  assert.match(p.$("settings-refusals").text(), /tickets\.drafts/, "the refusal names the field");
+  assert.match(p.$("settings-notes").text(), /declares no project/, "a machine with no project says so, plainly");
+  assert.equal(p.$("max").value, "3", "the controls keep what is saved");
+});
+
+test("an instance older than this page cannot describe its settings, and says so; its controls still change what is saved", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/settings"], errors: { "/api/settings": "no route GET /api/settings" } });
+  await openFrom(p, "open-settings");
+  assert.match(p.$("settings-notes").text(), /older than this page and cannot describe its settings/);
+  await change(p, "max", "5");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/max", body: { max: 5 } }, "the controls work without the new route");
+});
+
+test("the page shows the instance it is showing: an answer that arrives after another instance is chosen is not drawn", async () => {
+  const LOCAL_ANSWER = { ...DESCRIBED, refusals: [], notes: [], plugins: [], words: [], groups: [{ group: "Workers", rows: [{ key: "LOCAL-ONLY", file: "host.json", group: "Workers", value: "1", state: "enabled", source: "host.json", explanation: "x", breaks: "y", depth: 0, secret: false }] }] };
+  const p = await page(new Map(), { config: SETTINGS, settings: DESCRIBED, connections: { connections: [{ name: "local", kind: "local" }, { name: "other", kind: "ssh", ssh: "other" }], refusal: null },
+    hold: { "/c/local/api/settings": LOCAL_ANSWER } });
+  await openFrom(p, "open-settings");
+  await chooseInstance(p, "other");
+  p.release();
+  await settle();
+  assert.equal(p.$("settings-groups").text().includes("LOCAL-ONLY"), false, "the first instance's answer is dropped");
+  assert.match(p.$("settings-groups").text(), /tickets\.max/, "the instance chosen is what is drawn");
+});
+
+test("the Settings page has its landmarks and headings, every control has its label, and nothing is a click on a box that is not a control", () => {
+  const html = readFileSync(new URL("./ui.html", import.meta.url), "utf8");
+  const section = html.slice(html.indexOf('<section id="settings-page"'), html.indexOf('</main>'));
+  assert.match(html, /<main>[\s\S]*<section id="settings-page"[\s\S]*<\/main>/, "the page is in main");
+  assert.match(section, /<h2 id="settings-title" tabindex="-1">Settings<\/h2>/, "its heading names it");
+  const controls = section.split("\n").filter((line) => /<(select|input)\b/.test(line));
+  assert.ok(controls.length >= 5, "the controls are on the page");
+  for (const line of controls) assert.match(line, /<label>[^<]*<(select|input)\b/, `a control is labelled by its wrapping label: ${line.trim()}`);
+  assert.doesNotMatch(html, /onclick=|role="button"/, "the page uses native controls only");
+  assert.match(html, /aria-labelledby", id\)|setAttribute\("aria-labelledby"/, "each group names its heading");
+});
+
+test("a settings read that fails for another reason says what failed, and does not call the instance older", async () => {
+  const p = await page(new Map(), { config: SETTINGS, refused: ["/api/settings"], errors: { "/api/settings": "Linear could not be reached" } });
+  await openFrom(p, "open-settings");
+  assert.match(p.$("settings-notes").text(), /could not be read: Linear could not be reached/);
+  assert.doesNotMatch(p.$("settings-notes").text(), /older than this page/);
+});
+
+test("a refused change answered after another instance is chosen is not said on the page, which now shows the other instance", async () => {
+  const p = await page(new Map(), { config: SETTINGS, connections: { connections: [{ name: "local", kind: "local" }, { name: "other", kind: "ssh", ssh: "other" }], refusal: null },
+    refused: ["/c/local/api/choice"], errors: { "/c/local/api/choice": "/api/choice refused" }, hold: { "/c/local/api/choice": { error: "x" } } });
+  await openFrom(p, "open-settings");
+  p.$("model").value = "sonnet";
+  p.$("model").fire("change");
+  await settle();
+  await chooseInstance(p, "other");
+  p.release();
+  await settle();
+  assert.equal(p.$("settings-status").textContent.includes("another instance was chosen"), false, "the stale refusal is not drawn");
+});
+
+test("Back to the board returns to the card the board was showing, and focus goes back to the control that opened Settings", async () => {
+  const p = await page(new Map(), { config: SETTINGS, hash: "#card-7" });
+  await openFrom(p, "change-max");
+  assert.equal(p.$("back-to-board").attrs.href, "#card-7", "Back names the card the board was on");
+  p.location.hash = "";
+  await p.hashChange();
+  assert.equal(p.$("change-max").attrs.focused, "true", "focus is back on Change, which opened the page");
 });

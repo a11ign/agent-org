@@ -13,6 +13,7 @@ import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/declared-remains.ts";
 import type { Ticket, TicketSource } from "./source.ts";
+import type { View } from "./settings-view.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const KEY = "a".repeat(48);
@@ -825,4 +826,34 @@ test("preflight: every answer that carries the queue carries the held state, so 
     const [, answer] = await b.api(method, path, body) as [number, any];
     assert.equal(answer.held?.name, "disk", `${method} ${path}`);
   }
+});
+
+test("/api/settings reads the host file fresh on each request: a refused key shows its message, and an edit shows on the next read", async () => {
+  const dir = tmpDir("ticket-server-settings-");
+  const hostPath = join(dir, "host.json");
+  const host = (tickets: Record<string, unknown>) => JSON.stringify({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets });
+  writeFileSync(hostPath, host({ drafts: "yes", max: 2 }));
+  const b = board(4747, {}, { hostPath });
+  const [status, view] = await b.api("GET", "/api/settings", {}) as [number, View];
+  assert.equal(status, 200);
+  assert.equal(view.refusals.length, 1, "one refusal: the tickets block");
+  assert.match(view.refusals[0].message, /`tickets\.drafts`/, "the refusal names the field");
+  assert.equal(view.groups.flatMap((group) => group.rows).some((candidate) => candidate.key === "tickets.max"), false, "the refused block draws none of its keys");
+  assert.ok(view.notes.some((note) => /declares no project/.test(note)), "a board-only machine says it declares no project");
+  writeFileSync(hostPath, host({ drafts: false, max: 2 }));
+  const [, again] = await b.api("GET", "/api/settings", {}) as [number, View];
+  assert.deepEqual(again.refusals, [], "the edit is read at once, with no restart");
+  const drafts = again.groups.flatMap((group) => group.rows).find((candidate) => candidate.key === "tickets.drafts");
+  assert.deepEqual([drafts?.state, drafts?.value], ["disabled", "false"]);
+});
+
+test("/api/settings says a host file that cannot be read by its path, and is refused for a POST", async () => {
+  const dir = tmpDir("ticket-server-settings-missing-");
+  const hostPath = join(dir, "absent.json");
+  const b = board(4747, {}, { hostPath });
+  const [status, view] = await b.api("GET", "/api/settings", {}) as [number, View];
+  assert.equal(status, 200);
+  assert.deepEqual(view.refusals.map((r) => r.message), [`ticket mode: \`AGENT_ORG_HOST\` names ${hostPath}, which cannot be read`]);
+  const [posted] = await b.api("POST", "/api/settings", { drafts: false });
+  assert.equal(posted, 404, "the settings page is read-only: no route takes a POST");
 });
