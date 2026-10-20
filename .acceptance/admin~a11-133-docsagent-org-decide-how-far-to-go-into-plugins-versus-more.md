@@ -17,4 +17,4 @@ grep -Eq "^\*\*(Go|No-go)" "$f"
 
 Mutation: none, since the record is documentation and no check reads behaviour. The block is a presence check on the file's rows, sections and verdict, plus a check that it copies no host value. Run on the file as written, the block exits 0 and prints nothing.
 
-Consumer-declaration: none. No code, test or reader changes, so no consumer of `host.json`, `project.json` or the plugin changes.
+Consumer-declaration: none -- no code, test or reader changes, so no consumer of `host.json`, `project.json` or the plugin changes.
