@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { agentOrgVersionDefault, type ContractRow, contractRows, type HostFacts, onPathDefault, readPluginContract } from "./plugin-contract.ts";
+import { agentOrgVersionDefault, type Contract, type ContractRead, type ContractRow, contractRows, type HostFacts, onPathDefault, readPluginContract, readsContract } from "./plugin-contract.ts";
 
 /** Claude Code's record of which plugins are installed, for whom, and where each install's files are. */
 const INSTALLED_PLUGINS = join(homedir(), ".claude", "plugins", "installed_plugins.json");
@@ -109,6 +109,9 @@ export type ProblemOptions = RecordOptions & Readonly<{
   onPath?: (command: string) => boolean;
 }>;
 
+/** A plugin the session loads that declares a contract: its entry in `tickets.plugins`, its name (which its skills are namespaced by), and the contract. */
+export type PluginContract = Readonly<{ entry: string; name: string; contract: Contract }>;
+
 /** What the Settings page and a run start both read of the plugins: each one's state, and the refusals and rows that stop a run. */
 export type PluginProblems = Readonly<{
   states: Readonly<{ readable: boolean; plugins: PluginState[] }>;
@@ -116,6 +119,8 @@ export type PluginProblems = Readonly<{
   unreachable: string[];
   /** The contract rows: one per mismatch, of each plugin the session gets with a contract, each row said once. */
   rows: ContractRow[];
+  /** The contracts the session's loading plugins declare, as read, so a check can say which plugin provides a skill without reading the files again (A11-139). */
+  contracts: PluginContract[];
 }>;
 
 /**
@@ -124,13 +129,15 @@ export type PluginProblems = Readonly<{
  */
 export function pluginProblems({ wanted, folder, host }: Readonly<{ wanted: readonly string[]; folder: string; host: HostFacts }>, options: ProblemOptions = {}): PluginProblems {
   const states = pluginStates(wanted, folder, options);
-  const rows = states.plugins.flatMap(({ plugin, loads, installPath }) => (loads === true && installPath !== null ? contractRowsOf({ entry: plugin, installPath }, host, options) : []));
-  return { states, unreachable: unreachableOf(states.plugins), rows: [...new Map(rows.map((row) => [row.why, row])).values()] };
+  const reads = states.plugins.flatMap(({ plugin, loads, installPath }) => (loads === true && installPath !== null
+    ? [{ entry: plugin, read: readPluginContract(installPath, { read: options.read }) }] : []));
+  const rows = reads.flatMap((installed) => contractRowsOf(installed, host, options));
+  const contracts = reads.flatMap(({ entry, read }) => (read.kind === "found" && readsContract(read.contract) ? [{ entry, name: read.name, contract: read.contract }] : []));
+  return { states, unreachable: unreachableOf(states.plugins), rows: [...new Map(rows.map((row) => [row.why, row])).values()], contracts };
 }
 
 /** The rows of one installed plugin's contract: none for no contract, and one row for a contract that is present and cannot be read. */
-function contractRowsOf({ entry, installPath }: Readonly<{ entry: string; installPath: string }>, host: HostFacts, options: ProblemOptions): ContractRow[] {
-  const read = readPluginContract(installPath, { read: options.read });
+function contractRowsOf({ entry, read }: Readonly<{ entry: string; read: ContractRead }>, host: HostFacts, options: ProblemOptions): ContractRow[] {
   if (read.kind === "none") return [];
   if (read.kind === "malformed") return [{ plugin: entry, kind: "contract-malformed", why: `${entry}'s agent-org contract is malformed: ${read.why}. Fix it in the plugin's .claude-plugin/plugin.json.` }];
   return contractRows({ entry, name: read.name, contract: read.contract, host, agentOrgVersion: options.agentOrgVersion ?? agentOrgVersionDefault, onPath: options.onPath ?? onPathDefault });

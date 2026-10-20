@@ -1,9 +1,9 @@
 // no-token: none -- every check's reading is injected: no `node`, PATH, Keychain, service manager or port is asked
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { diagnose, report, type DoctorDeps } from "./doctor.ts";
+import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
-import type { PluginState } from "../ticket-mode/plugins.ts";
+import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
 
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
@@ -30,7 +30,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [],
-    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [] }), now: () => NOW,
+    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), now: () => NOW,
     ...over,
   };
 }
@@ -366,28 +366,68 @@ test("doctor says a gh wrapper it could not check is not a pass", async () => {
 });
 
 
+/** A host file whose `tickets` block is `tickets`, over the ports and key every doctor test here uses. */
+const hostWith = (tickets: Record<string, unknown>) => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, ...tickets } });
+
 test("A11-94: doctor says whether the ticket writer is configured, and fails one that cannot read a Linear ticket to check for duplicates", async () => {
-  const hostWith = (tickets: Record<string, unknown>) => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, ...tickets } });
   const writer = { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." };
   const read = (over: Partial<DoctorDeps>) => diagnose(deps(over)).then((checks) => byName(checks)["ticket writer"]);
   const absent = await read({});
   assert.deepEqual([absent.ok, absent.detail], [true, "no: New ticket is hidden, since tickets.writer is not named"], "informational when not named");
   const reading = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__linear__get_issue$"], terminal: TERMINAL }) : HOST) });
-  assert.deepEqual([reading.ok, reading.detail], [true, "yes: New ticket is shown, and Grill is on"]);
+  assert.deepEqual([reading.ok, reading.detail], [true, "yes: New ticket is shown, and Grill is on; its skill is not checked against a plugin's contract"]);
   const quick = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__claude_ai_Linear__(get|list|search)_"] }) : HOST) });
-  assert.deepEqual([quick.ok, quick.detail], [true, "yes: New ticket is shown, and Grill is off until tickets.terminal is named"]);
-  // An instruction from before the writer filed its own ticket still says draft: the check says so, without failing.
-  const drafting = { run: "Run the a11ign:create-ticket skill for this request: {request}. Write each draft under {dir}/drafts." };
-  const stale = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer: drafting, connectors: ["^mcp__linear__get_issue$"], terminal: TERMINAL }) : HOST) });
-  assert.deepEqual([stale.ok, stale.detail], [true, "yes: New ticket is shown, and Grill is on; its instruction says draft, but the writer files its own ticket now: say so instead"]);
-  // An instruction copied from the README's old example, which named a mode: built from a template, so no shipped fixture carries the word.
-  const naming = { run: `Run the a11ign:create-ticket skill, ${"quick"}, for this request: {request}, in {dir}.` };
-  const named = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer: naming, connectors: ["^mcp__linear__get_issue$"], terminal: TERMINAL }) : HOST) });
-  assert.deepEqual([named.ok, named.detail], [true, "yes: New ticket is shown, and Grill is on; its instruction names the mode quick, which the board's choice overrides: remove the word"],
-    "POSITIVE CONTROL: an instruction that names a mode is said, and does not fail the check");
+  assert.deepEqual([quick.ok, quick.detail], [true, "yes: New ticket is shown, and Grill is off until tickets.terminal is named; its skill is not checked against a plugin's contract"]);
   const cannot = await read({ readFile: (path) => (path.endsWith("host.json") ? hostWith({ writer, connectors: ["^mcp__claude_ai_Linear__save_"] }) : HOST) });
   assert.equal(cannot.ok, false, "no connector reads a ticket");
   assert.match(cannot.fix ?? "", /agent-org onboard/);
+});
+
+// A11-139: the writer's skill is checked against the contract of the plugin that provides it, never against the words of its instruction.
+const WRITER_RUN = (skill: string) => `Run the ${skill} skill for this request: {request}, in {dir}.`;
+const writerHost = (run: string) => hostWith({ terminal: TERMINAL, plugins: ["a11ign@m"], connectors: ["^mcp__linear__get_issue$"], writer: { run } });
+const providing = (skill: string): PluginContract => ({ entry: "a11ign@m", name: "a11ign", contract: { contract: "1.0", agentOrg: ">=0.258.0 <1.0.0", provides: { writer: { skill } }, needs: { connectors: [], commands: [] } } });
+/** The ticket writer's check, for a host whose writer runs `run` and a session that loads `a11ign@m` with `contracts`, and how many times the install record was asked. */
+async function ticketWriter(run: string, contracts: PluginContract[]): Promise<{ check: Check; asked: number }> {
+  let asked = 0;
+  const checks = byName(await diagnose(deps({
+    readFile: (path) => (path.endsWith("host.json") ? writerHost(run) : HOST),
+    plugins: (input) => { asked += 1; return { ...pluginsAs([loaded("a11ign@m")])(input), contracts }; },
+  })));
+  return { check: checks["ticket writer"], asked };
+}
+
+test("A11-139: the ticket writer passes when the plugin's contract provides the skill it names, says which plugin, and the install record is asked once", async () => {
+  const provided = await ticketWriter(WRITER_RUN("a11ign:create-ticket"), [providing("a11ign:create-ticket")]);
+  assert.deepEqual([provided.check.ok, provided.check.detail], [true, "yes: New ticket is shown, and Grill is on; its skill is provided by a11ign@m"]);
+  assert.equal(provided.asked, 1, "the plugin checks and the writer share one read of the record");
+});
+
+test("A11-139: the ticket writer fails when the plugin's contract does not provide the skill it names, with the fix the skill row gives", async () => {
+  const other = await ticketWriter(WRITER_RUN("a11ign:other"), [providing("a11ign:create-ticket")]);
+  assert.deepEqual([other.check.ok, other.check.detail, other.check.fix], [false,
+    "tickets.writer.run names a11ign:other, which a11ign@m does not provide as its writer skill: name a skill it provides, or remove the key.",
+    "name a skill it provides, or remove the key."]);
+});
+
+test("A11-139: the ticket writer fails when any skill its run names is not provided, not only the first", async () => {
+  const both = await ticketWriter("Run the a11ign:create-ticket skill, then a11ign:other, for this request: {request}, in {dir}.", [providing("a11ign:create-ticket")]);
+  assert.equal(both.check.ok, false, "POSITIVE CONTROL: the second name is the one the contract does not provide");
+  assert.match(both.check.detail, /^tickets\.writer\.run names a11ign:other, which a11ign@m does not provide/);
+});
+
+test("A11-139: a writer whose skill no loading plugin's contract covers is not checked, and the detail says so", async () => {
+  const none = await ticketWriter(WRITER_RUN("a11ign:create-ticket"), []);
+  assert.deepEqual([none.check.ok, none.check.detail], [true, "yes: New ticket is shown, and Grill is on; its skill is not checked against a plugin's contract"]);
+});
+
+test("A11-139: the instruction's words do not decide the writer check: a mode word or draft wording is neither said nor a failure", async () => {
+  // Built from a template, so no shipped fixture carries the words (A11-124). The positive controls show the run does name them.
+  const run = `Run the a11ign:create-ticket skill, ${"quick"}, for this request: {request}. Write each draft under {dir}/drafts.`;
+  assert.match(run, /\bquick\b/, "POSITIVE CONTROL: the run names a mode");
+  assert.match(run, /\bdrafts?\b/, "POSITIVE CONTROL: the run says draft");
+  const { check } = await ticketWriter(run, [providing("a11ign:create-ticket")]);
+  assert.deepEqual([check.ok, check.detail], [true, "yes: New ticket is shown, and Grill is on; its skill is provided by a11ign@m"]);
 });
 
 const WORKERS_HOST = JSON.stringify({ gh: { workers: "/home/agent/workers" }, clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
@@ -475,7 +515,7 @@ const loaded = (plugin: string): PluginState => ({ plugin, installs: [], loads: 
 const notLoaded = (plugin: string, why: string): PluginState => ({ plugin, installs: [], loads: false, why, installPath: null });
 const notRead = (plugin: string): PluginState => ({ plugin, installs: [], loads: null, why: null, installPath: null });
 /** The plugins check, injected with what the install record says of each plugin, and the contract rows `pluginProblems` returns for them. */
-const pluginsAs = (plugins: PluginState[], rows: ContractRow[] = [], readable = true): DoctorDeps["plugins"] => () => ({ states: { readable, plugins }, unreachable: [], rows });
+const pluginsAs = (plugins: PluginState[], rows: ContractRow[] = [], readable = true): DoctorDeps["plugins"] => () => ({ states: { readable, plugins }, unreachable: [], rows, contracts: [] });
 const checksWithPlugins = async (over: Partial<DoctorDeps>) => byName(await diagnose(deps({ readFile: () => PLUGINS_HOST, ...over })));
 
 test("A11-140: doctor lists each enabled plugin as ok when it loads with no contract mismatch, and asks for the plugins a worker's folder gets", async () => {

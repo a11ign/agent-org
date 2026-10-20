@@ -24,8 +24,8 @@ import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
-import { hostFactsOf, type HostFacts } from "../ticket-mode/plugin-contract.ts";
-import { pluginProblems, type PluginProblems } from "../ticket-mode/plugins.ts";
+import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
+import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
@@ -175,15 +175,23 @@ function linearMcpCheck(deps: DoctorDeps): Check {
 /** The Linear tools a writer checks for duplicates with: either connector's read of a ticket, which a `tickets.connectors` entry must allow. */
 const LINEAR_READS = ["mcp__linear__get_issue", "mcp__claude_ai_Linear__get_issue"];
 
-/** A mode word in the instruction: the board passes the mode to the run, so the instruction need not name one (A11-124). */
-const MODE_WORD = /\b(quick|grill)\b/i;
+/**
+ * Each `plugin:skill` the writer's run names, of a plugin the session loads with a contract, with that contract (A11-139). Empty when the run names no such
+ * skill, since a plugin that declares nothing is not checked.
+ */
+function namedWriters(settings: TicketSettings, plugins: PluginProblems | null): (PluginContract & { ref: SkillRef })[] {
+  const contracts = plugins?.contracts ?? [];
+  const named = skillRefs(hostFactsOf(settings)).filter(({ key }) => key === "writer");
+  return named.flatMap((ref) => contracts.filter(({ name }) => name === ref.plugin).map((contract) => ({ ...contract, ref })));
+}
 
 /**
  * The ticket writer (A11-94). Always informational when `tickets.writer` is absent, which hides New ticket on the board. When it is named, it fails
  * if no `tickets.connectors` entry lets a worker read a Linear ticket, since the writer checks for duplicates that way, and says whether Grill is on.
- * It also says, without failing, when the instruction names a mode: the board's choice wins over it, and the word can go.
+ * Its skill is checked against the contract of the plugin that provides it (A11-139), never against the words of the instruction: a plugin's contract
+ * that does not provide the skill fails it, and one that provides it says which plugin does.
  */
-function writerCheck(settings: TicketSettings | null): Check {
+function writerCheck(settings: TicketSettings | null, plugins: PluginProblems | null): Check {
   if (settings === null) return ok("ticket writer", "not checked: the host file did not parse");
   if (settings.writer === null) return ok("ticket writer", "no: New ticket is hidden, since tickets.writer is not named");
   const reads = settings.connectors.some((pattern) => LINEAR_READS.some((tool) => new RegExp(pattern).test(tool)));
@@ -192,11 +200,14 @@ function writerCheck(settings: TicketSettings | null): Check {
       "run `agent-org onboard`, which names the Linear reads in tickets.connectors");
   }
   const grill = settings.terminal === null ? "Grill is off until tickets.terminal is named" : "Grill is on";
-  const mode = MODE_WORD.exec(settings.writer.run);
-  const named = mode === null ? "" : `; its instruction names the mode ${mode[1]}, which the board's choice overrides: remove the word`;
-  // A writer files its own ticket now (A11-135), so an instruction that still tells it to write drafts is out of date.
-  const drafts = /\bdrafts?\b/i.test(settings.writer.run) ? "; its instruction says draft, but the writer files its own ticket now: say so instead" : "";
-  return ok("ticket writer", `yes: New ticket is shown, and ${grill}${named}${drafts}`);
+  const writers = namedWriters(settings, plugins);
+  if (writers.length === 0) return ok("ticket writer", `yes: New ticket is shown, and ${grill}; its skill is not checked against a plugin's contract`);
+  const unprovided = writers.find(({ contract, ref }) => !providesSkill(contract, ref));
+  if (unprovided !== undefined) {
+    const why = notProvidedWhy(unprovided.entry, unprovided.ref);
+    return failed("ticket writer", why, fixOf(why));
+  }
+  return ok("ticket writer", `yes: New ticket is shown, and ${grill}; its skill is provided by ${writers[0].entry}`);
 }
 
 /**
@@ -266,9 +277,9 @@ function fixOf(why: string): string {
  * Nothing on a host file that did not parse or names no plugin, as `preflightChecks` says nothing on a host that names none. An unreadable record is not
  * checked and is no failure, since a run start is not refused by it either.
  */
-function pluginChecks(settings: TicketSettings | null, deps: DoctorDeps): Check[] {
-  if (settings === null || settings.plugins.length === 0) return [];
-  const { states, rows } = deps.plugins({ wanted: settings.plugins, folder: ticketFolder(settings, "<ticket>"), host: hostFactsOf(settings) });
+function pluginChecks(settings: TicketSettings | null, plugins: PluginProblems | null): Check[] {
+  if (settings === null || plugins === null) return [];
+  const { states, rows } = plugins;
   const checks = states.plugins.map(({ plugin, loads, why }): Check => {
     const name = `plugin ${plugin}`;
     if (loads === false && why !== null) return failed(name, why, fixOf(why));
@@ -305,6 +316,15 @@ function stacksChecks(settings: TicketSettings | null, account: Account, deps: D
   return [ok(name, `available for ${repos.join(", ")}`)];
 }
 
+/**
+ * The plugins as a worker's session gets them, asked once a run for both the plugin checks and the ticket writer's (A11-139). Null when the host file did not
+ * parse or names no plugin, so the install record is not asked of a host with none to check.
+ */
+function pluginsOf(settings: TicketSettings | null, deps: DoctorDeps): PluginProblems | null {
+  if (settings === null || settings.plugins.length === 0) return null;
+  return deps.plugins({ wanted: settings.plugins, folder: ticketFolder(settings, "<ticket>"), host: hostFactsOf(settings) });
+}
+
 /** Every check, in the order a person fixes them. */
 export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const { check: host, settings, noProject } = hostCheck(deps);
@@ -313,6 +333,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const instanceState = deps.serviceState("instance");
   const instance = await serviceChecks("instance", settings?.port ?? 4747, instanceState, deps);
   const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
+  const plugins = pluginsOf(settings, deps);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -325,8 +346,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     keyCheck(settings, deps),
     linearMcpCheck(deps),
-    writerCheck(settings),
-    ...pluginChecks(settings, deps),
+    writerCheck(settings, plugins),
+    ...pluginChecks(settings, plugins),
     ...await preflightChecks(settings, deps),
     ...instance,
     ...herdrScopeChecks(settings, instanceState, deps),
