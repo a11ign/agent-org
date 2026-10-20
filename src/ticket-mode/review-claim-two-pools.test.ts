@@ -58,7 +58,7 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
   refuseSpawn?: string;
 }): PoolContext {
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, instance), tickets: { drafts: false, reviewer: "atomic", instance } });
-  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, run: herdrOf(status), gh: github.gh, claimGh: () => github.gh, declared: DECLARED,
+  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, run: herdrOf(status), gh: github.gh, claimGh: () => github.gh, mint: () => null, declared: DECLARED,
     clones: settings.clones, now: () => clock.now, checkout: () => ({ path: "/work/pr-7", head: HEAD }),
     spawn: (order) => {
       if (refuseSpawn !== undefined) return { refusal: refuseSpawn };

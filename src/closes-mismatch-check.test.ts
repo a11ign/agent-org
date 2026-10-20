@@ -250,8 +250,7 @@ test("#4770 CLI: `Closes: none` on the claimed branch exits 1 and prints the ref
 
 test("#4770 CLI: the same branch declaring `Closes #4770` goes on to the existing comparison and passes", () => {
   const { status, out } = runCheck({ headRef: BRANCH, rows: ROWS, own: [4770] }, "Closes #4770");
-  // The check's own words go into the failure: a run that exits 1 says what it found, not only that it did.
-  assert.equal(status, 0, out);
+  assert.equal(status, 0);
   assert.match(out, /declared and resolved agree/);
 });
 

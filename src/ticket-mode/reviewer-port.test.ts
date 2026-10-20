@@ -82,7 +82,7 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
  * The `gh` a port is given, and the `gh` its claims are written with (the reviewer role's, which the port makes from the reviewer's environment): one fake
  * for both, so a claim written through one is read back through the other, and no test reaches GitHub.
  */
-const claiming = (fake: ReturnType<typeof ghFor>) => ({ gh: fake.run, claimGh: () => fake.run });
+const claiming = (fake: ReturnType<typeof ghFor>) => ({ gh: fake.run, claimGh: () => fake.run, mint: () => null });
 
 /** A reviewer port that records each start and reports none live, so only the pool's own once-per-head memory stops a second start. */
 function fakePort() {
