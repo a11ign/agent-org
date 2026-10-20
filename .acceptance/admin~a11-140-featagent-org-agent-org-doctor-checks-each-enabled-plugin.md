@@ -34,4 +34,4 @@ npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/install/doct
 
 Mutation: the `...pluginChecks(settings, deps),` line was removed from `diagnose`, and six of the seven new cases went red (the quiet-host case holds either way, and is there so the check stays silent when it should). The line was restored and the file passes.
 
-Consumer-declaration: none. `doctor` gains checks, and `DoctorDeps` gains one member that only `doctor` and its test use. The reader, the Settings page and the run start are unchanged.
+Consumer-declaration: none -- `doctor` gains checks, and `DoctorDeps` gains one member that only `doctor` and its test use. The reader, the Settings page and the run start are unchanged.
