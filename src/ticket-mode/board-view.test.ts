@@ -5,7 +5,8 @@ import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/settled-by-pulls.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
 import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/settled-by-pulls.ts";
-import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref } from "./board-view.ts";
+import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls } from "./board-view.ts";
+import { pullReviewText, type PullRead } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
 import { CHANGESET_SCAFFOLD, SCAFFOLD_DIRS } from "../scaffold-dirs.ts";
@@ -1018,4 +1019,44 @@ test("A11-106: a finished run shows what its stacked pull requests need said of 
   assert.equal(boardView_1.retargetNote({ ...finished, phase: "running" } as ViewEntry), null, "a running run says nothing of its bases");
   assert.equal(boardView_1.retargetNote({ ticket: { key: "NBF-3" }, phase: "finished" } as ViewEntry), null, "a run with no note says nothing");
   assert.equal(runStatus(finished), runStatus({ ticket: { key: "NBF-2" }, phase: "finished" } as ViewEntry), "the run's status does not change for the note");
+});
+
+/** A pull request's review as the pool read it, with its head at `h1` and nothing else set, unless `extra` says otherwise (A11-119). */
+const read = (extra: Partial<PullRead> = {}): PullRead => ({ head: "91bf0677aaaa", settled: true, reviewing: false, verdict: null, earlier: null, refusal: null, unposted: null, ...extra });
+
+test("A11-119: a pull request's review state reads as the board words it, for each state the pool can read", () => {
+  const cases: [string, PullRead | null][] = [
+    ["review state not read", null],
+    ["awaiting review at 91bf0677", read()],
+    ["reviewing", read({ reviewing: true })],
+    ["changes requested at 68bd2e8d, new head 91bf0677 not yet reviewed", read({ earlier: { head: "68bd2e8daaaa", word: "changes requested" } })],
+    ["changes requested at 91bf0677", read({ verdict: "changes requested" })],
+    ["approved at 91bf0677", read({ verdict: "approved" })],
+    ["dismissed at 91bf0677", read({ verdict: "dismissed" })],
+    ["waiting for checks at 91bf0677", read({ settled: false })],
+    ["not reviewed: no reviewer: its author is outside the org", read({ refusal: "no reviewer: its author is outside the org" })],
+    ["awaiting review at 91bf0677", read({ earlier: { head: "68bd2e8daaaa", word: "approved" } })],
+  ];
+  for (const [text, state] of cases) assert.equal(pullReviewText(state), text);
+});
+
+test("A11-119: a verdict on the current head says so before a verdict on an earlier one, and a reviewer live beats both", () => {
+  assert.equal(pullReviewText(read({ verdict: "approved", earlier: { head: "68bd2e8daaaa", word: "changes requested" } })), "approved at 91bf0677");
+  assert.equal(pullReviewText(read({ reviewing: true, verdict: "changes requested" })), "reviewing");
+});
+
+test("A11-119: a run row names the review state of each open pull request the pool has read, and no other", () => {
+  // A review run that ended needs-human keeps its pull requests in `review`, as `pullsOf` reads them for an outcome that is not a result.
+  const entry = { outcome: { kind: "needs-human", reason: "which colour?" }, review: [{ url: "https://github.com/a11ign/control/pull/119" }, { url: "https://github.com/a11ign/control/pull/120" }],
+    pullStates: { "https://github.com/a11ign/control/pull/120": "merged" } } as unknown as Parameters<typeof reviewLinesOf>[0];
+  assert.deepEqual(reviewLinesOf(entry, { "https://github.com/a11ign/control/pull/119": "awaiting review at 91bf0677", "https://github.com/a11ign/control/pull/120": "approved at 1" }),
+    ["a11ign/control #119: awaiting review at 91bf0677"], "the merged pull request is not open, and an unread one shows no line");
+  assert.deepEqual(reviewLinesOf(entry, {}), [], "nothing is read yet: nothing is shown");
+});
+
+test("A11-119: the Pull requests section lists the pull requests the pool has read that no run lists, and none when every one belongs to a run", () => {
+  const run = { outcome: { kind: "ready-pr", prs: [{ url: "https://github.com/a11ign/control/pull/119" }] } } as unknown as Parameters<typeof unlistedPulls>[0][number];
+  const reviews = { "https://github.com/a11ign/control/pull/119": "reviewing", "https://github.com/a11ign/agent-org/pull/1800": "awaiting review at 91bf0677" };
+  assert.deepEqual(unlistedPulls([run], reviews), [{ url: "https://github.com/a11ign/agent-org/pull/1800", label: "a11ign/agent-org #1800", text: "awaiting review at 91bf0677" }]);
+  assert.deepEqual(unlistedPulls([run], { "https://github.com/a11ign/control/pull/119": "reviewing" }), [], "hidden when none is unlisted");
 });

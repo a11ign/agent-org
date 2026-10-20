@@ -12,9 +12,11 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, m
 import { dirname, join } from "node:path";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { ORG_SESSION, firstLine, readAgents, type ListedAgent } from "../herdr-agents.ts";
+import { openPullsOf } from "../ticket-port/open-pulls.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
 import { headMatches, reviewVerdict as verdictOfText } from "../review-verdict.ts";
 import type { DoorRun, ReviewTrust } from "../review-trust.ts";
+import type { ReviewWord } from "./board-view/pull-review-state.ts";
 
 /** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
 type GateModules = {
@@ -259,6 +261,45 @@ export function reviewVerdict(reviews: readonly Review[], head: string): "convin
  */
 export function reviewPostedAt(reviews: readonly Review[], head: string): boolean {
   return reviews.some((r) => r.author === REVIEWER_LOGIN && r.commit === head && (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" || r.state === "DISMISSED"));
+}
+
+/** The words a reviewer's review states read as on the board (A11-119). A review in any other state is no verdict. */
+const REVIEW_WORDS: Readonly<Record<string, ReviewWord>> = { APPROVED: "approved", CHANGES_REQUESTED: "changes requested", DISMISSED: "dismissed" };
+
+/** The newest review the reviewer posted that `keep` accepts, as its head and its word, or null when there is none. */
+function reviewWordOf(reviews: readonly Review[], keep: (review: Review) => boolean): Readonly<{ head: string; word: ReviewWord }> | null {
+  const newest = reviews.filter((r) => r.author === REVIEWER_LOGIN && Object.hasOwn(REVIEW_WORDS, r.state) && keep(r)).sort((a, b) => b.at - a.at)[0];
+  return newest === undefined ? null : { head: newest.commit, word: REVIEW_WORDS[newest.state] };
+}
+
+/** The word of the reviewer's newest review on `head`, or null while it has posted none there (A11-119). */
+export function reviewWordAt(reviews: readonly Review[], head: string): ReviewWord | null {
+  return reviewWordOf(reviews, (r) => r.commit === head)?.word ?? null;
+}
+
+/** The newest word of the reviewer's review on a head other than `head`, with that head, or null (A11-119). */
+export function earlierReviewWord(reviews: readonly Review[], head: string): Readonly<{ head: string; word: ReviewWord }> | null {
+  return reviewWordOf(reviews, (r) => r.commit !== head);
+}
+
+/**
+ * The repositories whose open pull requests the pool reviews (A11-119): the primary's, the project's declared ones, and the host's clones under the
+ * primary's owner. These are the repositories `seatOf` accepts, so a pull request of any other is one no reviewer could start for.
+ */
+export function reviewedRepositoriesOf(clones: Clones): string[] {
+  const { config, identity } = reviewerGate();
+  const owner = identity.REPO.split("/")[0];
+  const declared = config.homeProjectDeclaration().code.map((code) => code.repo);
+  return [...new Set([identity.REPO, ...declared, ...Object.keys(clones).map((name) => `${owner}/${name}`)])];
+}
+
+/**
+ * The URLs of a repository's open pull requests, read through the ticket port's `openPullsOf`. Null for "could not ask", which `openPullsOf` also
+ * answers for a list at its limit: `null` is never "none are open".
+ */
+export function openPullUrlsOf(repository: string, gh: (args: string[]) => string): string[] | null {
+  const pulls = openPullsOf(repository, gh);
+  return pulls === null ? null : pulls.map(({ number }) => `https://github.com/${repository}/pull/${number}`);
 }
 
 /**

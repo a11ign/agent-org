@@ -58,7 +58,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun"> & Partial<Pick<ReturnType<typeof createPool>, "held">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -186,7 +186,8 @@ type Board = Readonly<{
 
 /** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
 function queueView(board: Pick<Board, "store" | "pool">) {
-  return { ...board.store.get(), held: board.pool.held?.() ?? null };
+  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119).
+  return { ...board.store.get(), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {} };
 }
 
 /** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
@@ -559,7 +560,7 @@ export function checkGhWrapperAtStart({ err = (line: string) => process.stderr.w
  * The sweeps the server runs on the feedback cadence, each on its own timer (A11-106): one that throws is said, and the others still run on theirs. `every` is
  * what schedules a sweep, which `serve` passes `setInterval` for, so a test sees each sweep and its interval without a timer.
  */
-export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked">,
+export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "reviewNewHeads">,
   every: (run: () => void, ms: number) => unknown): void {
   const sweeps: { sweep: () => void | Promise<void>; failure: string }[] = [
     { sweep: () => pool.watchFeedback(), failure: "the pull requests' feedback could not be read" },
@@ -569,6 +570,8 @@ export function startFeedbackSweeps(pool: Pick<ReturnType<typeof createPool>, "w
     { sweep: () => pool.retargetStacked(), failure: "the stacked pull requests' bases could not be checked" },
     // The stacked branches are rebased when their blocker's branch moves (A11-116). Asynchronous, so a failure is said when it settles.
     { sweep: () => pool.rebaseStacked(), failure: "the stacked branches could not be rebased" },
+    // A reviewer on each new head of every open pull request, whatever its run is in (A11-119): not the watched runs' only.
+    { sweep: () => pool.reviewNewHeads(), failure: "the reviewers of open pull requests could not be started" },
   ];
   const said = (failure: string, err: unknown) => process.stderr.write(`ticket:serve: ${failure}: ${String((err as Error)?.message ?? err)}\n`);
   for (const { sweep, failure } of sweeps) {

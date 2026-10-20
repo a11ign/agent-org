@@ -8,7 +8,7 @@ import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/settled-by-pulls.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, loadReviewerGate, readPullState, readReviewerMemory, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, earlierReviewWord, loadReviewerGate, openPullUrlsOf, readPullState, readReviewerMemory, reviewWordAt, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";
 import { enqueue, type Queue } from "./queue/declared-remains.ts";
 import { pauseQueue, resumeQueue } from "./queue/approve.ts";
@@ -570,4 +570,24 @@ test("clonedSeatOf takes a clone only of the primary's owner, refuses a name tha
   assert.equal(clonedSeatOf(`${OWNER}/not-cloned`, { owner: OWNER, clones, codes }), null, "a repository the host does not clone is no seat");
   assert.match(refusalOf(clonedSeatOf(`${OWNER}/.github`, { owner: OWNER, clones: { ".github": "/repos/github" }, codes: [] })), /its name `\.github` cannot be a reviewer key \(lowercase letters, digits and hyphens, not ending in a number\)/);
   assert.ok(refusalOf(clonedSeatOf(`${OWNER}/github`, { owner: OWNER, clones, codes })).includes(`declares \`github\` as the key of ${OWNER}/.github`), "the clone named as a declared key would take that key's seat");
+});
+
+test("A11-119: the reviewer's word on a head, and the newest word on an earlier one, read off its reviews only", () => {
+  const review = (state: string, commit: string, at: number, author = REVIEWER_LOGIN) => ({ author, state, commit, at });
+  const reviews = [review("CHANGES_REQUESTED", "68bd2e8d", 1), review("APPROVED", "68bd2e8d", 3, "a-person"), review("COMMENTED", "91bf0677", 4), review("DISMISSED", "91bf0677", 2)];
+  assert.equal(reviewWordAt(reviews, "91bf0677"), "dismissed", "a comment is no verdict, the dismissal is the newest verdict on that head");
+  assert.equal(reviewWordAt(reviews, "68bd2e8d"), "changes requested", "a person's approval is not the reviewer's");
+  assert.equal(reviewWordAt(reviews, "abcdef12"), null);
+  assert.deepEqual(earlierReviewWord(reviews, "91bf0677"), { head: "68bd2e8d", word: "changes requested" });
+  assert.deepEqual(earlierReviewWord(reviews, "68bd2e8d"), { head: "91bf0677", word: "dismissed" }, "the newest on any other head");
+  assert.equal(earlierReviewWord([review("CHANGES_REQUESTED", "68bd2e8d", 1)], "68bd2e8d"), null, "a head is never earlier than itself");
+});
+
+test("A11-119: a repository's open pull request urls are listed, and an unanswered or cut-short list is no reading", () => {
+  const listed = (answer: () => string) => openPullUrlsOf("a11ign/control", (args) => { assert.deepEqual(args.slice(0, 5), ["pr", "list", "--repo", "a11ign/control", "--state"]); return answer(); });
+  assert.deepEqual(listed(() => JSON.stringify([{ number: 119, body: "" }])), ["https://github.com/a11ign/control/pull/119"]);
+  assert.deepEqual(listed(() => "[]"), [], "none open is a reading");
+  assert.equal(listed(() => { throw new Error("gh exited 1"); }), null, "a refused gh is no reading");
+  assert.equal(listed(() => "not json"), null);
+  assert.equal(listed(() => JSON.stringify(Array.from({ length: 200 }, (_, i) => ({ number: i, body: "" })))), null, "a list at the limit may be cut short");
 });
