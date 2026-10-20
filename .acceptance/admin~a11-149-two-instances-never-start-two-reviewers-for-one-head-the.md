@@ -25,4 +25,4 @@ npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-port/review-c
 
 Mutation: the protocol's "held" branch was made to return "won" for every instance (5 tests red); the door's claim write was removed (3 door tests red); the port's claim step was bypassed (2 two-pool tests red); the release calls after a refused start were removed (1 two-pool test red). Each was restored and the files compared byte for byte before the suite ran again.
 
-Consumer-declaration: `atomicReviewerPort` now takes `instance`, required. Its callers are `pool-context.ts` and `review-command.ts`, and every test that builds one passes it. `tickets.instance` is read only by `parseTicketSettings`.
+Consumer-declaration: none -- `atomicReviewerPort` and `tickets.instance` are read only inside this repository: the port's callers (`pool-context.ts`, `review-command.ts`) and every test that builds one pass the instance, and `parseTicketSettings` is the only reader of the setting. No other repository reads either.
