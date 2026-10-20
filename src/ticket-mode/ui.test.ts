@@ -2289,3 +2289,12 @@ test("every action on a run is an icon with a tooltip and its words kept for a s
   const link = runRows(p).find((r) => r.text().includes("D-1"))!.all().find((n) => n.tag === "a" && n.className === "pr-link") as (Node_ & { title?: string }) | undefined;
   assert.match(link?.title ?? "", /on GitHub$/, "a pull request is an icon link to GitHub");
 });
+
+test("Settings: the Changes panel is drawn only while it has something in it, and the restore buttons sit with the controls below the sections", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS });
+  assert.equal(p.$("edit-panel").hidden, true, "with nothing staged, saved or refused, the panel is not drawn");
+  assert.equal(p.$("restores").children.length, 1, "the restore buttons are still on the page");
+  await stage(p, "tickets.drafts", "false");
+  assert.equal(p.$("edit-panel").hidden, false, "a staged change draws the panel, where it is reviewed");
+  assert.equal(p.$("restores").children.length, 1, "and the restore buttons stay below the sections");
+});

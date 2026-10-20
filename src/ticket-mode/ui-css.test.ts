@@ -127,3 +127,22 @@ test("A11-123: the project sidebar sits beside the list on a wide window, above 
   assert.ok(narrow.sidebar.bottom <= narrow.list.top, "under 760px the sidebar is above the list");
   assert.ok(narrow.scrollWidth <= narrow.innerWidth, `no horizontal scroll: the page is ${narrow.scrollWidth}px wide in a ${narrow.innerWidth}px window`);
 });
+
+/**
+ * THE SETTINGS PAGE HIDES WHAT IT HIDES, FROM A REAL CHROME. A row the page leaves out (a default, or a row no search finds) carries `hidden`, but
+ * a setting row sets its own display, which would show it unless the page's rule for `[hidden]` wins inside the Settings page. The fake DOM in
+ * `ui.test.ts` has no layout, so this is the only proof that the hidden rows are not drawn.
+ */
+test("a setting the page hides is not drawn: a hidden row or section stays hidden under the page's own style sheet", (t) => {
+  const chrome = chromeOrSkip(t);
+  if (chrome === null) return;
+  const html = `<!doctype html><meta charset="utf-8"><style>${CSS}</style><main><section id="settings-page">
+<details class="setting-group" id="section" hidden><summary>Tracker</summary><dl class="setting" id="row" hidden><dt>k</dt><dd>v</dd></dl></details>
+<dl class="setting" id="shown"><dt>k</dt><dd>v</dd></dl></section></main>
+<pre id="out"></pre>
+<script>
+const display = (id) => getComputedStyle(document.getElementById(id)).display;
+document.getElementById("out").textContent = JSON.stringify({ section: display("section"), row: display("row"), shown: display("shown") });
+</script>`;
+  assert.deepEqual(JSON.parse(dumpOut(chrome, html, [])), { section: "none", row: "none", shown: "grid" });
+});
