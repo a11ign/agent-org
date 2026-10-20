@@ -45,10 +45,33 @@ function keyTableProblems(markdown: string): string[] {
   });
 }
 
+/**
+ * The keys the table has, in its order. The table is not a list of every key (the schema is, and most of its keys have no row), so a key
+ * added to or removed from the table is a change to this list, made on purpose.
+ */
+const TABLE_KEYS = [
+  "tickets.max", "tickets.port", "tickets.uiPort", "tickets.serve", "tickets.servePorts", "tickets.herdrSession", "tickets.worktreeRoot",
+  "tickets.linearKey", "tickets.brief", "tickets.review", "tickets.plugins", "tickets.deny", "tickets.connectors", "tickets.terminal",
+  "tickets.plan", "tickets.planner", "tickets.publish", "tickets.writer", "tickets.preflight", "tickets.drafts", "tickets.prReview",
+  "tickets.reviewer", "tickets.pick", "tickets.stallMinutes", "tickets.updateMaxDeferHours", "tickets.workingState", "stateDir",
+];
+
+/** A key of TABLE_KEYS with no row in the table: a row deleted without a change to the list. */
+function missingRowProblems(markdown: string): string[] {
+  const keysInTable = keyTableRows(markdown).map((row) => SCHEMA_LINK.exec(row.cells[0] ?? "")?.[1]);
+  return TABLE_KEYS.filter((key) => !keysInTable.includes(key)).map((key) => `README.md: ${key} has no row in the key table`);
+}
+
 const README = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
 
-test("every key in the README's key table links to the schema, and each is a key the schema describes", () => {
-  assert.deepEqual(keyTableProblems(README), []);
+test("every key in the README's key table links to the schema, each is a key the schema describes, and none the list names is missing", () => {
+  assert.deepEqual([...keyTableProblems(README), ...missingRowProblems(README)], []);
+});
+
+test("a key the list names with no row in the table is named", () => {
+  const table = ["| key | |", "| --- | --- |", "| [`tickets.max`](src/ticket-mode/config-schema.ts) | |"];
+  assert.ok(missingRowProblems(table.join("\n")).includes("README.md: tickets.port has no row in the key table"));
+  assert.ok(!missingRowProblems(table.join("\n")).includes("README.md: tickets.max has no row in the key table"));
 });
 
 test("a row that describes its key in the table is named by its line", () => {
