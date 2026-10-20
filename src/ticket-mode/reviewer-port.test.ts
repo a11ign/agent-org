@@ -8,11 +8,13 @@ import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/settled-by-pulls.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, loadReviewerGate, readPullState, readReviewerMemory, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, loadReviewerGate, readPullState, readReviewerMemory, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";
 import { enqueue, type Queue } from "./queue/declared-remains.ts";
 import { pauseQueue, resumeQueue } from "./queue/approve.ts";
 import { parseTicketSettings } from "./settings.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
+import { HOST_CONFIG_ENV, hostConfigPath } from "../host-config.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -481,4 +483,91 @@ test("the re-posts a pool remembers are kept on disk, and a memory file from bef
   assert.deepEqual(readReviewerMemory(path), { memory: { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map() }, unreadable: false });
   writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [], reposts: { k: { attempts: "two" } } }));
   assert.equal(readReviewerMemory(path).unreadable, true, "a malformed count is unreadable, never read as nothing remembered");
+});
+
+/** A repository this host clones and the project does not declare, under the primary's owner: the atomic reviewer takes its pull requests. */
+const OWNER = REPO.split("/")[0];
+const PLUGIN_URL = `https://github.com/${OWNER}/plugin/pull/7`;
+const refusalOf = (answer: object | null): string => answer !== null && "refusal" in answer && typeof answer.refusal === "string" ? answer.refusal : "";
+
+/** An atomic port whose only clone is `plugin`, recording each checkout and each spawn; herdr lists `listed`. */
+function clonedPort(listed: Map<string, string>, clones: Record<string, string> = { plugin: "/repos/plugin" }) {
+  const herd = herdr(listed);
+  const checkouts: object[] = [];
+  const spawned: { options: object; env: unknown; cwd: unknown }[] = [];
+  const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED, clones,
+    checkout: (args) => { checkouts.push(args); return { path: "/work/pr-7", head: "h1" }; },
+    spawn: (order, _agents, options) => { spawned.push({ options, env: options.env, cwd: options.cwd }); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
+  return { port, herd, checkouts, spawned };
+}
+
+test("the atomic reviewer starts a reviewer for a repository the host clones and the project does not declare, in its clone, naming its repository", async () => {
+  await loadReviewerGate();
+  const made = clonedPort(new Map());
+  assert.deepEqual(made.port.start({ pr: PLUGIN_URL, head: "h1" }), { label: "reviewer-plugin-7" });
+  assert.deepEqual(made.checkouts, [{ pr: 7, session: "reviewer-plugin-7", trust: INSIDE, repoRoot: "/repos/plugin" }], "the checkout is made in the clone");
+  assert.deepEqual(made.spawned[0].env, { GH_REPO: `${OWNER}/plugin`, [HOST_CONFIG_ENV]: hostConfigPath() }, "the reviewer's door posts to the clone's repository");
+  const prompt = made.herd.calls.find((args) => args.includes("prompt"))!;
+  assert.equal(prompt[4], "reviewer-plugin-7", "the gate's prompt goes to the clone's seat");
+});
+
+test("a cloned-only reviewer is live for its head, is listed by its pull request, and is retired from its clone", async () => {
+  await loadReviewerGate();
+  const removed: object[] = [];
+  const herd = herdr(new Map([["reviewer-plugin-7", "idle"], ["reviewer-foo-3", "idle"]]));
+  const port = atomicReviewerPort({ session: "tickets", run: herd.run, gh: ghFor({ head: "h1" }).run, declared: DECLARED, clones: { plugin: "/repos/plugin" },
+    heads: new Map([["reviewer-plugin-7", "h1"]]), exists: () => false,
+    removeCheckout: (args) => { removed.push(args); return null; } });
+  assert.equal(port.live({ pr: PLUGIN_URL, head: "h1" }), true, "live for the head it was started for");
+  assert.deepEqual(port.listedPulls(), [PLUGIN_URL], "the sweep finds the clone's pull request, and no reviewer of a repository neither declared nor cloned");
+  assert.deepEqual(port.retire(PLUGIN_URL), { retired: true, report: null });
+  assert.deepEqual(removed, [{ pr: 7, session: "reviewer-plugin-7", key: "plugin", repoRoot: "/repos/plugin" }], "the checkout is removed from the clone under its own ref");
+});
+
+test("a verdict of a cloned-only reviewer is posted through the door with its repository in the environment", async () => {
+  await loadReviewerGate();
+  const { tree, file } = verdictTree("reviewer-clone-repost-", `${verdictLine(H1, "convinced")}\n\nbody\n`);
+  const doorCalls: { args: string[]; env: Record<string, string> }[] = [];
+  const port = atomicReviewerPort({ session: "tickets", run: herdr(new Map()).run, gh: ghFor({ head: "h1" }).run, declared: DECLARED, clones: { plugin: "/repos/plugin" },
+    checkoutOf: () => tree, mint: () => null, door: (_path, args, env) => { doorCalls.push({ args, env }); } });
+  assert.deepEqual(port.repostVerdict({ pr: PLUGIN_URL, head: H1 }, file), { posted: true });
+  assert.deepEqual(doorCalls.map((call) => call.args), [["7", "convinced", file]]);
+  assert.equal(doorCalls[0].env.GH_REPO, `${OWNER}/plugin`, "the door posts to the clone's pull request, not the primary's pull request of the same number");
+});
+
+test("a repository neither declared nor cloned, or cloned under another owner, is refused, and the refusal names the project's declaration and the host's clones", async () => {
+  await loadReviewerGate();
+  const made = clonedPort(new Map());
+  for (const pr of [`https://github.com/someone-else/plugin/pull/7`, `https://github.com/${OWNER}/not-cloned/pull/7`]) {
+    const refusal = refusalOf(made.port.start({ pr, head: "h1" }));
+    assert.match(refusal, /project\.json/, `${pr} names the project's declaration`);
+    assert.match(refusal, /host\.json/, `${pr} names the host's clones`);
+  }
+  assert.deepEqual(made.checkouts, [], "nothing is checked out for a refused repository");
+});
+
+test("a clone whose name cannot be a reviewer key is refused by name, and no checkout is made", async () => {
+  await loadReviewerGate();
+  const made = clonedPort(new Map(), { Foo: "/repos/Foo" });
+  assert.match(refusalOf(made.port.start({ pr: `https://github.com/${OWNER}/Foo/pull/7`, head: "h1" })), /its name `Foo` cannot be a reviewer key/);
+  assert.deepEqual(made.checkouts, []);
+});
+
+test("a declared repository whose name is also a clone keeps its declared key, with no clone as its checkout and nothing added to its environment", async () => {
+  await loadReviewerGate();
+  const declared = homeProjectDeclaration().code.find((code) => code.key !== "")!;
+  const made = clonedPort(new Map(), { [declared.key]: "/repos/elsewhere" });
+  assert.deepEqual(made.port.start({ pr: `https://github.com/${declared.repo}/pull/7`, head: "h1" }), { label: `reviewer-${declared.key}-7` });
+  assert.equal("repoRoot" in made.checkouts[0], false, "the gate takes the declared clone, as it does now");
+  assert.equal("env" in made.spawned[0].options, false, "the spawn is called with no environment of its own, as it was");
+});
+
+test("clonedSeatOf takes a clone only of the primary's owner, refuses a name that cannot be a key, and refuses a name a declared repository is keyed by", () => {
+  const clones = { plugin: "/repos/plugin", ".github": "/repos/github", github: "/repos/github-clone" };
+  const codes = [{ key: "", repo: `${OWNER}/${OWNER}` }, { key: "github", repo: `${OWNER}/.github` }];
+  assert.deepEqual(clonedSeatOf(`${OWNER}/plugin`, { owner: OWNER, clones, codes }), { key: "plugin", clone: "/repos/plugin" });
+  assert.equal(clonedSeatOf("someone-else/plugin", { owner: OWNER, clones, codes }), null, "another owner's repository is no clone of this org's");
+  assert.equal(clonedSeatOf(`${OWNER}/not-cloned`, { owner: OWNER, clones, codes }), null, "a repository the host does not clone is no seat");
+  assert.match(refusalOf(clonedSeatOf(`${OWNER}/.github`, { owner: OWNER, clones: { ".github": "/repos/github" }, codes: [] })), /its name `\.github` cannot be a reviewer key \(lowercase letters, digits and hyphens, not ending in a number\)/);
+  assert.ok(refusalOf(clonedSeatOf(`${OWNER}/github`, { owner: OWNER, clones, codes })).includes(`declares \`github\` as the key of ${OWNER}/.github`), "the clone named as a declared key would take that key's seat");
 });
