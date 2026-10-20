@@ -21,7 +21,7 @@ import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Ou
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
 import { CREATED_FILE } from "./writer.ts";
 
@@ -226,6 +226,11 @@ test("a run ends on its outcome file once the agent is idle; idle before it ever
 });
 
 const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
+
+/** The repository the sweep tests open pull requests in: the org's own, a clone of this host (`clones` names it under the primary's owner). */
+const SWEPT_REPO = "a11ign/nbl-ui-netbox";
+const sweptPr = `https://github.com/${SWEPT_REPO}/pull/1`;
+const SWEPT_REPO_PULL_2 = `https://github.com/${SWEPT_REPO}/pull/2`;
 
 /** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
 async function approvedRun(tickets: Record<string, unknown> = {},
@@ -1981,6 +1986,12 @@ function ghFor(pulls: Record<number, unknown>) {
   const run = (args: string[]) => {
     calls.push(args);
     if (args[1] === "user") return "worker-bot\n";
+    if (args[0] === "pr" && args[1] === "list") {
+      // The pull requests are in SWEPT_REPO only: every other repository the sweep asks about has none open.
+      const repo = args[args.indexOf("--repo") + 1];
+      if (repo !== SWEPT_REPO) return "[]";
+      return JSON.stringify(Object.keys(pulls).filter((number) => (pulls[Number(number)] as { state: string }).state === "OPEN").map((number) => ({ url: `https://github.com/${repo}/pull/${number}` })));
+    }
     if (args[0] === "pr") {
       const pull = pulls[Number(args[2])] as { state: string; headRefOid: string; reviews: { nodes: unknown[] }; commits: { nodes: { commit: { statusCheckRollup: { contexts: { nodes: unknown[] } } } }[] } } | undefined;
       if (pull === undefined) throw new Error("gh exited 1");
@@ -2610,6 +2621,13 @@ async function reviewedRun(port: ReviewerPort, pulls: Record<number, unknown>) {
   return ctx;
 }
 
+/** NBF-1 Ready to merge, and one watch after it has started its reviewer for h1: `pulls` is read from then on. */
+async function startedFor(port: ReviewerPort, pulls: Record<number, unknown>) {
+  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
+  await watchRound(ctx.pool);
+  return ctx;
+}
+
 /** Ends the feedback round a watch started: its worker is idle and writes a reviewed outcome, which settles the run Ready to merge again. */
 async function finishRound({ pool, status, dir }: { pool: ReturnType<typeof createPool>; status: Map<string, string>; dir: string }) {
   status.set(herdrName("NBF-1"), "idle");
@@ -3207,13 +3225,18 @@ function reviewerWith({ closeAnswers = ["closed"], retire = () => ({ retired: tr
   return { port, starts, closes, retired };
 }
 
-test("a reviewer is closed once its verdict on its head is posted: started, and closed in the same watch", async () => {
+test("a reviewer is closed once its verdict on its head is posted, and is not started again for that head", async () => {
   const { port, starts, closes } = reviewerWith();
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) }).run, REVIEWING, port);
+  const pulls = { 1: feedbackPull() };
+  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started");
-  assert.deepEqual(closes, [{ pr: approvedPr.url, head: "h1" }], "and closed once its approval is posted");
+  assert.deepEqual(closes, [], "and not closed before its verdict is posted");
+  pulls[1] = feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] });
+  ctx.restart().watchFeedback();
+  await roundStarted();
+  assert.deepEqual(closes, [{ pr: approvedPr.url, head: "h1" }], "closed once its approval is posted");
   ctx.restart().watchFeedback();
   await roundStarted();
   assert.equal(closes.length, 1, "a closed reviewer is not closed again");
@@ -3222,23 +3245,24 @@ test("a reviewer is closed once its verdict on its head is posted: started, and 
 
 test("a reviewer still working at its verdict is asked again on each watch until it is closed", async () => {
   const { port, starts, closes } = reviewerWith({ closeAnswers: ["busy", "busy", "closed"] });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) }).run, REVIEWING, port);
-  for (let watch = 1; watch <= 3; watch += 1) {
-    ctx.pool.watchFeedback();
-    await roundStarted();
-    assert.equal(closes.length, watch, `watch ${watch} asks for the close again`);
+  const pulls = { 1: feedbackPull() };
+  const ctx = await startedFor(port, pulls);
+  pulls[1] = feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] });
+  const closesAfterEachWatch: number[] = [];
+  for (let watch = 0; watch < 4; watch += 1) {
+    await watchRound(ctx.pool);
+    closesAfterEachWatch.push(closes.length);
   }
-  ctx.pool.watchFeedback();
-  await roundStarted();
-  assert.equal(closes.length, 3, "once closed, no watch asks again");
+  assert.deepEqual(closesAfterEachWatch, [1, 2, 3, 3], "asked again on each watch while it is busy, and not once it is closed");
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "nothing is started while it is busy");
 });
 
 test("a not-convinced verdict closes its reviewer in the watch that starts the round, and the sweep asks again while it is busy", async () => {
   const { port, closes } = reviewerWith({ closeAnswers: ["busy", "closed"] });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] }) }).run, REVIEWING, port);
-  ctx.pool.watchFeedback();
-  await roundStarted();
+  const pulls = { 1: feedbackPull() };
+  const ctx = await startedFor(port, pulls);
+  pulls[1] = feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] });
+  await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the worker's round is started");
   assert.equal(closes.length, 1, "the close is asked in the watch that started the round, and found it busy");
   ctx.pool.releaseReviewers();
@@ -3247,12 +3271,92 @@ test("a not-convinced verdict closes its reviewer in the watch that starts the r
   assert.equal(closes.length, 2, "no further close once it is closed");
 });
 
+/** A pool with no run at all, its reviewer on, and `pulls` open on nbl-ui-netbox: what reviews them is the sweep (A11-119). */
+async function sweptPool(port: ReviewerPort, pulls: Record<number, unknown>) {
+  await loadReviewerGate();
+  const made = setup(1, [], REVIEWING, { gh: ghFor(pulls).run, reviewerPort: port });
+  return made;
+}
+
+test("A11-119: an open pull request no run lists gets one reviewer, and the sweep starts none for that head twice", async () => {
+  const { port, starts } = fakeReviewer();
+  const ctx = await sweptPool(port, { 1: feedbackPull() });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts, [{ pr: sweptPr, head: "h1" }], "one reviewer, for its head");
+  ctx.pool.reviewNewHeads();
+  assert.equal(starts.length, 1, "a second sweep starts nothing for h1");
+});
+
+test("A11-119: a new head after requested changes gets a reviewer, though its run ended needs-human; the board says so beside the pull request", async () => {
+  const { port, starts } = reviewerWith();
+  await loadReviewerGate();
+  const pulls = { 1: feedbackPull({ head: "h1", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] }) };
+  const ctx = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], REVIEWING, { gh: ghFor(pulls).run, reviewerPort: port, clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts.map((ref) => ref.head), [], "h1 has its verdict, so nothing is started for it");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1");
+  pulls[1] = feedbackPull({ head: "h2", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts.map((ref) => ref.head), ["h2"], "the new head is started");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "reviewing", "and the board shows the reviewer on it");
+});
+
+test("A11-119: a head with a posted review, or one ticket:review started, is not started by the sweep; the board says the verdict", async () => {
+  const { port, starts } = fakeReviewer();
+  const pulls = { 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) };
+  const ctx = await sweptPool(port, pulls);
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts, [], "a head with an approval is not started");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
+  pulls[1] = feedbackPull({ head: "h2" });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map() });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts, [], "a head ticket:review started is not started again");
+});
+
+test("A11-119: a start ticket:review recorded is kept by the pool's next write, and a pull request the pool forgot is not brought back by the file", async () => {
+  const { port, starts } = fakeReviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull() };
+  const ctx = await sweptPool(port, pulls);
+  ctx.pool.reviewNewHeads();
+  const path = reviewerMemoryPath(ctx.settings.stateDir);
+  const handStarted = `${SWEPT_REPO_PULL_2}@h9`;
+  // ticket:review starts pull request 2 between the pool's sweeps, and records it in the file the pool shares.
+  const recorded = readReviewerMemory(path).memory;
+  recorded.started.add(handStarted);
+  writeReviewerMemory(path, recorded);
+  // Pull request 1 merges: the pool forgets it, and writes its copy, which had not read `handStarted` yet.
+  pulls[1] = feedbackPull({ state: "MERGED" });
+  ctx.pool.releaseReviewers();
+  const onDisk = readReviewerMemory(path).memory.started;
+  assert.ok(onDisk.has(handStarted), "the start ticket:review recorded survives the pool's write");
+  assert.equal(onDisk.has(`${sweptPr}@h1`), false, "the forgotten start is not brought back");
+  // Pull request 2 opens with the head ticket:review started it for: the next sweep reads that start, and starts nothing.
+  pulls[2] = feedbackPull({ head: "h9" });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts.map((ref) => ref.pr), [sweptPr], "pull request 2 at h9 is not started again");
+});
+
+test("A11-119: a refusal to start is said once for a head, and is asked again on the next sweep; a head not settled green starts nothing", async () => {
+  const starts: ReviewerRef[] = [];
+  const port: ReviewerPort = { ...fakeReviewer().port, start(ref) { starts.push(ref); return { refusal: "no reviewer for it: its author is outside the org" }; } };
+  const ctx = await sweptPool(port, { 1: feedbackPull() });
+  const logged = await captureStderr(async () => {
+    ctx.pool.reviewNewHeads();
+    ctx.pool.reviewNewHeads();
+  });
+  assert.equal(starts.length, 2, "each sweep asks again, since a refusal is not recorded as started");
+  assert.equal(logged.filter((line) => line.includes("its author is outside the org")).length, 1, "and said once");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "not reviewed: no reviewer for it: its author is outside the org");
+  const unsettled = await sweptPool(fakeReviewer().port, { 1: feedbackPull({ checks: [{ name: "ci", status: "IN_PROGRESS" }] }) });
+  unsettled.pool.reviewNewHeads();
+  assert.equal(unsettled.pool.pullReviews()[sweptPr], "waiting for checks at h1", "and it is not started");
+});
+
 test("a merged pull request's reviewer is retired by the sweep, and what the pool remembers of it is dropped from disk", async () => {
   const { port, starts, retired } = reviewerWith();
   const pulls = { 1: feedbackPull() };
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
-  ctx.pool.watchFeedback();
-  await roundStarted();
+  const ctx = await startedFor(port, pulls);
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"]);
   const memory = () => readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory;
   assert.equal(memory().started.size, 1, "remembered before the merge");

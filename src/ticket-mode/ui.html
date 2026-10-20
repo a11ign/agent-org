@@ -214,6 +214,7 @@
     <div class="runs">
       <nav class="filters" id="filters" aria-label="Filter runs by status"></nav>
       <div class="run-list" id="runs"></div>
+      <section class="run-list" id="pull-requests" aria-label="Pull requests" hidden></section>
     </div>
   </section>
   <section id="settings-page" aria-labelledby="settings-title" hidden>
@@ -282,7 +283,7 @@
 import {
   APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
-  runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  reviewLinesOf, unlistedPulls, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -687,6 +688,8 @@ function row(e) {
       startedAnyway ? el("div", { className: "meta" }, startedAnyway) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
+      // The review state the pool read of each open pull request, beside a run's question or its work (A11-119).
+      ...reviewLinesOf(e, state.queue.pulls ?? {}).map((line) => el("div", { className: "meta" }, line)),
       evidence,
       o && o.edit ? proposal(o.edit) : null,
       verdictNote(e) ? el("div", { className: "waiting" }, verdictNote(e)) : null,
@@ -712,6 +715,11 @@ function renderBoard() {
   const runs = runsShown(state.queue.entries, state.runFilter, state.queue.publish);
   $("runs").replaceChildren(...(runs.length > 0 ? runs.map(row)
     : [el("div", { className: "empty" }, state.runFilter ? `No runs are ${LABEL[state.runFilter].toLowerCase()}.` : "Nothing queued yet. Pick tickets on the Pick tab.")]));
+  // The open pull requests the pool has read that no run lists: a person's pull request, or one no run has (A11-119). Hidden when there are none.
+  const unlisted = unlistedPulls(state.queue.entries, state.queue.pulls ?? {});
+  $("pull-requests").hidden = unlisted.length === 0;
+  $("pull-requests").replaceChildren(...(unlisted.length > 0 ? [el("h2", {}, "Pull requests"), ...unlisted.map((pr) => el("div", { className: "run" },
+    el("div", { className: "title" }, el("a", { href: safeHref(pr.url), target: "_blank", rel: "noreferrer" }, pr.label)), el("div", { className: "meta" }, pr.text)))] : []));
   $("max-note").textContent = workersLabel(state.queue.max);
   $("publish").hidden = !state.publishing;
   $("publish").textContent = publishLabel(state.toPublish.size);

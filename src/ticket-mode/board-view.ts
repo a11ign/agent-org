@@ -9,7 +9,7 @@
 // (`isParked`) decide what the board shows and what the pool does, so `queue.ts` and `pool.ts` import them from here rather than restating them.
 
 /** The fields of a ticket the board shows. */
-import type { ViewEntry, ViewTicket } from "./board-view/view-ticket.ts";
+import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
 
 /**
  * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a
@@ -106,3 +106,25 @@ export type WriterRunView = Readonly<{
   id: string; request: string; mode: "quick" | "grill"; phase: string; status: string; form: Readonly<Record<string, string>>; model?: string; effort?: string;
   workspace?: string; pane?: string; failure?: string; tickets: readonly WriterTicketView[];
 }>;
+
+/** A pull request's address as the board names it: `owner/repo #number`, read off its url (A11-119). */
+export function pullLabel(url: string): string {
+  return url.replace("https://github.com/", "").replace("/pull/", " #");
+}
+
+/**
+ * The review line of each open pull request of a run that the pool has read (A11-119): `owner/repo #n: <its review state>`. A pull request the pool has not
+ * read shows none. `reviews` is the queue's `pulls`, a url to the words its review state reads as (`pullReviewText`).
+ */
+export function reviewLinesOf(entry: ViewEntry, reviews: Readonly<Record<string, string>>): string[] {
+  return openPulls(entry).filter(({ url }) => reviews[url] !== undefined).map(({ url }) => `${pullLabel(url)}: ${reviews[url]}`);
+}
+
+/**
+ * The open pull requests the pool has read that no run lists (A11-119): what the runs tab's "Pull requests" section shows for a person's pull request with
+ * no run. Each is its label, its url and its review line. Empty when every one the pool has read belongs to a run.
+ */
+export function unlistedPulls(entries: readonly ViewEntry[], reviews: Readonly<Record<string, string>>): { url: string; label: string; text: string }[] {
+  const listed = new Set(entries.flatMap((entry) => pullsOf(entry).map(({ url }) => url)));
+  return Object.entries(reviews).filter(([url]) => !listed.has(url)).map(([url, text]) => ({ url, label: pullLabel(url), text }));
+}

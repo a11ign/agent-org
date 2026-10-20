@@ -90,6 +90,8 @@ function browserStubs(blockTabs: boolean) {
 }
 
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
+  /** The review state the pool read of each open pull request, by url, as the queue carries it (A11-119). */
+  pulls?: Record<string, string>;
   connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown>; pick?: unknown; children?: unknown;
   /** The new-ticket requests the board reads, and what a writer route answers for a path and body (default: the requests, as they are). */
   writers?: { runs: unknown[] }; writerReply?: (path: string, body: any) => unknown;
@@ -106,7 +108,7 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   /** What the instance answers a Settings edit with (`/api/settings/preview`, `save` and `restore`), by its path and body. */
   edits?: (path: string, body: any) => unknown };
 const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [], contract: [] };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children, pulls,
   writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
@@ -155,7 +157,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/settings": () => settings,
       ...(edits === undefined ? {} : { "/api/settings/preview": () => edits("/api/settings/preview", body), "/api/settings/save": () => edits("/api/settings/save", body), "/api/settings/restore": () => edits("/api/settings/restore", body) }),
     };
-    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}) };
+    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), pulls: pulls ?? {} };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -213,6 +215,24 @@ test("a priority chip filters the list, several can be chosen at once, and All p
 test("a remembered priority filter is applied when the page loads again", async () => {
   const p = await page(new Map([["ticket-mode.priorities", JSON.stringify(["2"])]]), { tickets: BY_PRIORITY });
   assert.deepEqual(p.shownKeys(), ["H-1"]);
+});
+
+test("A11-119: a needs-human run shows its pull request's review state beside its question, and a pull request no run lists is in the Pull requests section", async () => {
+  const review = [{ url: "https://github.com/a11ign/control/pull/119", repo: "a11ign/control" }];
+  const reviews = { "https://github.com/a11ign/control/pull/119": "awaiting review at 91bf0677", "https://github.com/a11ign/agent-org/pull/1800": "reviewing" };
+  const p = await page(new Map(), { entries: [entry("N-1", { phase: "finished", finishedAt: 7, outcome: { kind: "needs-human", reason: "which colour?" }, review })], pulls: reviews });
+  assert.ok(p.$("runs").text().includes("which colour?"), "the question is shown");
+  assert.ok(p.$("runs").text().includes("a11ign/control #119: awaiting review at 91bf0677"), "beside it, the pull request's review state");
+  assert.equal(p.$("pull-requests").hidden, false, "the section is shown for the one no run lists");
+  assert.ok(p.$("pull-requests").text().includes("a11ign/agent-org #1800") && p.$("pull-requests").text().includes("reviewing"), "with its label and its review state");
+  assert.equal(p.$("pull-requests").text().includes("#119"), false, "and not the one a run lists");
+});
+
+test("A11-119: the Pull requests section is hidden when every pull request the pool has read belongs to a run", async () => {
+  const review = [{ url: "https://github.com/a11ign/control/pull/119", repo: "a11ign/control" }];
+  const p = await page(new Map(), { entries: [entry("N-1", { phase: "finished", finishedAt: 7, outcome: { kind: "needs-human", reason: "which colour?" }, review })],
+    pulls: { "https://github.com/a11ign/control/pull/119": "reviewing" } });
+  assert.equal(p.$("pull-requests").hidden, true);
 });
 
 /** Which status sections are collapsed, in order. */

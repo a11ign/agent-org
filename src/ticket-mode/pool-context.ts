@@ -13,6 +13,7 @@ import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsy
 import { log } from "./pool-state.ts";
 import { defaultGit, type Git } from "./worktree.ts";
 import { atomicReviewerPort, reviewerMemoryPath, reviewerRefusal, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, withoutReviewerReviews } from "./reviewer-port.ts";
+import { type PullRead } from "./board-view/pull-review-state.ts";
 
 export type PoolDeps = Readonly<{
   settings: TicketSettings;
@@ -87,6 +88,12 @@ export type PoolContext = Readonly<{
   reviewerResumed: ReviewerMemory["resumed"];
   reviewerReposts: ReviewerMemory["reposts"];
   closing: Map<string, ReviewerRef>;
+  /** What the pool last read of each open pull request's review, by its url (A11-119): what the board shows, and the sweep's own memory of a verdict not posted. */
+  pullReads: Map<string, PullRead>;
+  /** The `url@head` keys whose refusal to start a reviewer was said, so a sweep says each once (A11-119). */
+  refusedHeads: Set<string>;
+  /** The `url@head` keys the pool forgot or un-recorded: a memory file that still holds one does not put it back (A11-119). */
+  reviewerDropped: Set<string>;
   claudeSessions: Map<string, string>;
   finishing: Set<string>;
   /** The tick's pass: whether one is under way, and whether another was asked for while it was. */
@@ -142,6 +149,10 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts } = reviewerMemory;
   /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */
   const closing = new Map<string, ReviewerRef>();
+  /** The last read of each open pull request's review, and the refusals said, for the board and the sweep (A11-119). */
+  const pullReads = new Map<string, PullRead>();
+  const refusedHeads = new Set<string>();
+  const reviewerDropped = new Set<string>();
   /** The feedback a worker answers is read without the reviewer's own reviews, so its verdict never moves `feedbackAt`. */
   const feedbackGh = settings.reviewer === null ? gh : withoutReviewerReviews(gh);
   /** Each live run's Claude session id by its workspace, as herdr last reported it (it changes when herdr restarts a session). */
@@ -151,6 +162,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackGh, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerStarted, reviewerResumed,
-    reviewerReposts, closing, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
+    reviewerReposts, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };
 }

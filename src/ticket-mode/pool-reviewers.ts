@@ -1,11 +1,18 @@
 // @ts-check
 // module: the reviewers the pool starts for its pull requests -- started once per head, their verdicts posted and closed, and retired with their pull requests
+//
+// EVERY NEW HEAD OF AN OPEN PULL REQUEST GETS A REVIEWER, WHATEVER RUN IT HAS (A11-119). `reviewNewHeads` looks at every open pull request of the repositories
+// the org holds on the server's sweep, so a run still running, one that ended `needs-human`, one with no run, and a pull request a person opened are all
+// reviewed. `reviewerLines` does the same for the pull requests of a watched run, on `watchFeedback`, and adds the round a requested change asks for. Both go
+// through `reviewPull`, so there is one start rule: a head is started once (`reviewerStarted`, recorded before the start), and never when a review is already
+// posted on it.
 
-import { readPullState, readReviewState, type Repost, REVIEWER_LOGIN, type ReviewerPort, reviewPostedAt, reviewVerdict, writeReviewerMemory } from "./reviewer-port.ts";
+import { earlierReviewWord, openPullUrlsOf, readPullState, readReviewState, readReviewerMemory, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { type Entry } from "./queue/declared-remains.ts";
 import { recordVerdictNotPosted } from "./queue/approve.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { type PullRead, pullReviewText } from "./board-view/pull-review-state.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -20,6 +27,9 @@ const NO_VERDICT_FILE = "the reviewer ended without writing a verdict file";
 const rememberReviewers = (ctx: PoolContext): void => {
   const { reviewerFile, reviewerMemory, reviewerOn } = ctx;
   if (!reviewerOn) return;
+  // Taken in before the write, since `ticket:review` may have recorded a start since this pool last read the file: a write of the pool's copy alone would
+  // drop it, and the pool would then start a second reviewer on that head.
+  adoptRememberedReviewers(ctx);
   try { writeReviewerMemory(reviewerFile, reviewerMemory); }
   catch (err) { log(`${reviewerFile} cannot be written, so a restart may start a reviewer again: ${messageOf(err)}`); }
 };
@@ -64,60 +74,96 @@ function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, url: string, head
 }
 
 /**
- * The reviewer for each open pull request of a watched run, when the machine starts one: started once per head (`reviewerStarted`, and the port
- * says whether one is live for that head), and the first `not-convinced` verdict on each head asks the worker to answer it (`reviewerResumed`).
- * Returns the lines a round's brief says it answers, and none for `convinced` or a head with no verdict yet. A reviewer that ended without its verdict
- * on the pull request is looked at first (`unpostedVerdict`), so a reviewer started in this watch is not judged before it has begun.
- * The run records what is still not posted (`verdictNotPosted`), and that is cleared once every pull request has its verdict.
+ * Starts the reviewer for `url` at `head` (A11-119's one start path). Recorded BEFORE the start, so an instance stopped while the reviewer starts never
+ * starts it again for this head; a refusal un-records it. One herdr already lists for this head is adopted, not started. Returns the port's refusal, or
+ * null when there is none. A refusal is said once per `url@head`, so a sweep every few minutes does not repeat it for a pull request that stays red.
+ */
+function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string, key: string): string | null {
+  const { refusedHeads, reviewerStarted } = ctx;
+  reviewerStarted.add(key);
+  ctx.reviewerDropped.delete(key);
+  rememberReviewers(ctx);
+  const adopted = reviewer.live({ pr: url, head });
+  const started = adopted ? null : reviewer.start({ pr: url, head });
+  if (started === null) return null;
+  if (!("refusal" in started)) {
+    // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
+    rememberReviewers(ctx);
+    log(`${url}: started ${started.label} for ${head.slice(0, 8)}`);
+    return null;
+  }
+  reviewerStarted.delete(key);
+  ctx.reviewerDropped.add(key);
+  rememberReviewers(ctx);
+  if (!refusedHeads.has(key)) {
+    refusedHeads.add(key);
+    log(started.refusal);
+  }
+  return started.refusal;
+}
+
+/**
+ * One open pull request at its current head, as the pool looks at it (A11-119): a posted verdict is remembered, a reviewer that ended without one is looked
+ * at (`unpostedVerdict`), a head whose checks have settled green gets its reviewer once (`startFor`), and a posted verdict closes its reviewer. What it
+ * read is kept for the board (`pullReads`). Returns the state read and the verdict not posted, or null when GitHub did not say, which the caller says.
+ */
+function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Readonly<{ state: ReviewState; unposted: string | null }> | null {
+  const { closing, gh, pullReads, reviewerReposts, reviewerStarted } = ctx;
+  const state = readReviewState(url, gh);
+  if (state === null) return null;
+  const { head } = state;
+  const key = `${url}@${head}`;
+  const posted = reviewPostedAt(state.reviews, head);
+  let unposted: string | null = null;
+  if (posted) {
+    if (reviewerReposts.delete(key)) rememberReviewers(ctx);
+  } else if (reviewerStarted.has(key)) {
+    unposted = unpostedVerdict(ctx, reviewer, url, head, key);
+  }
+  // A head whose checks have not settled green gets no reviewer yet: this look passes it by, and the next one asks again. Nor does a pull request GitHub
+  // does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads it open must not start a
+  // reviewer for it again. A new head after requested changes has no posted review, so it is started here.
+  const startable = state.settled && !posted && !reviewerStarted.has(key);
+  const refusal = startable && readPullState(url, gh) === "OPEN" ? startFor(ctx, reviewer, url, head, key) : null;
+  // Once its verdict is posted, the reviewer for this head closes: its workspace goes, and its checkout stays (`close`). One still working is kept
+  // in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round below, and no watch reads this run until it ends.
+  if (reviewVerdict(state.reviews, head) !== null && reviewer.live({ pr: url, head })) {
+    const ref = { pr: url, head };
+    const answer = reviewer.close(ref);
+    if ("refusal" in answer) {
+      log(answer.refusal);
+      closing.delete(key);
+    } else if (answer.state === "busy") closing.set(key, ref);
+    else closing.delete(key);
+  }
+  const read: PullRead = {
+    head, settled: state.settled, reviewing: reviewer.live({ pr: url, head }), verdict: reviewWordAt(state.reviews, head),
+    earlier: earlierReviewWord(state.reviews, head), refusal, unposted,
+  };
+  pullReads.set(url, read);
+  return { state, unposted };
+}
+
+/**
+ * The reviewer for each open pull request of a watched run, when the machine starts one (`reviewPull`): the first `not-convinced` verdict on each head asks
+ * the worker to answer it (`reviewerResumed`). Returns the lines a round's brief says it answers, and none for `convinced` or a head with no verdict yet.
+ * A reviewer that ended without its verdict on the pull request is looked at first (`unpostedVerdict`), so a reviewer started in this watch is not judged
+ * before it has begun. The run records what is still not posted (`verdictNotPosted`), and that is cleared once every pull request has its verdict.
  */
 export function reviewerLines(ctx: PoolContext, entry: Entry, urls: readonly string[]): string[] {
-  const { closing, gh, reviewer, reviewerReposts, reviewerResumed, reviewerStarted } = ctx;
+  const { reviewer, reviewerResumed } = ctx;
   if (reviewer === undefined) return [];
   const lines: string[] = [];
   const unposted: string[] = [];
   for (const url of urls) {
-    const state = readReviewState(url, gh);
-    if (state === null) {
+    const pulled = reviewPull(ctx, reviewer, url);
+    if (pulled === null) {
       log(`${url}: its reviewer could not be checked, the next watch asks again`);
       continue;
     }
+    const { state, unposted: said } = pulled;
+    if (said !== null) unposted.push(said);
     const key = `${url}@${state.head}`;
-    if (reviewPostedAt(state.reviews, state.head)) {
-      if (reviewerReposts.delete(key)) rememberReviewers(ctx);
-    } else if (reviewerStarted.has(key)) {
-      const said = unpostedVerdict(ctx, reviewer, url, state.head, key);
-      if (said !== null) unposted.push(said);
-    }
-    // A head whose checks have not settled green gets no reviewer yet: this watch passes it by, and the next one asks again. Nor does a pull
-    // request GitHub does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads
-    // it open must not start a reviewer for it again.
-    if (state.settled && !reviewerStarted.has(key) && readPullState(url, gh) === "OPEN") {
-      // Recorded BEFORE the start, so an instance stopped while the reviewer starts never starts it again for this head; a refusal un-records
-      // it. One herdr already lists for this head (started by an instance that stopped before it could record it) is adopted, not started.
-      reviewerStarted.add(key);
-      rememberReviewers(ctx);
-      const adopted = reviewer.live({ pr: url, head: state.head });
-      const started = adopted ? null : reviewer.start({ pr: url, head: state.head });
-      if (started !== null && "refusal" in started) {
-        log(started.refusal);
-        reviewerStarted.delete(key);
-        rememberReviewers(ctx);
-      } else if (started !== null) {
-        // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
-        rememberReviewers(ctx);
-      }
-    }
-    // Once its verdict is posted, the reviewer for this head closes: its workspace goes, and its checkout stays (`close`). One still working is kept
-    // in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round below, and no watch reads this run until it ends.
-    if (reviewVerdict(state.reviews, state.head) !== null && reviewer.live({ pr: url, head: state.head })) {
-      const ref = { pr: url, head: state.head };
-      const answer = reviewer.close(ref);
-      if ("refusal" in answer) {
-        log(answer.refusal);
-        closing.delete(key);
-      } else if (answer.state === "busy") closing.set(key, ref);
-      else closing.delete(key);
-    }
     if (reviewVerdict(state.reviews, state.head) === "not-convinced" && !reviewerResumed.has(key)) {
       reviewerResumed.add(key);
       rememberReviewers(ctx);
@@ -133,14 +179,64 @@ export function reviewerLines(ctx: PoolContext, entry: Entry, urls: readonly str
   return lines;
 }
 
+/** Takes in what the reviewer memory file says and the pool does not: a start `ticket:review` made, its `url@head` and its seat's head (A11-119). */
+function adoptRememberedReviewers(ctx: PoolContext): void {
+  const { reviewerDropped, reviewerFile, reviewerMemory, reviewerStarted } = ctx;
+  const { memory } = readReviewerMemory(reviewerFile);
+  for (const key of memory.started) if (!reviewerDropped.has(key)) reviewerStarted.add(key);
+  for (const [label, head] of memory.heads) reviewerMemory.heads.set(label, head);
+}
+
+/**
+ * Every open pull request of the repositories the org holds gets its reviewer on each new head, whatever run it has (A11-119): a head whose checks have
+ * settled green is started once, a head with a posted verdict is not, and a new head after requested changes is. It runs on the server's sweep, not on
+ * `watchFeedback`, which reads only the pull requests of a watched run: one still running, one that ended `needs-human`, and one a person opened with no run
+ * are all reviewed here. It queues no worker round, since a round is for a watched run. Runs only where there is a reviewer; what `ticket:review` started
+ * is adopted first, so the two never start a second reviewer for one head.
+ */
+export function reviewNewHeads(ctx: PoolContext): void {
+  const { gh, pullReads, reviewer, settings } = ctx;
+  if (reviewer === undefined) return;
+  adoptRememberedReviewers(ctx);
+  const listed = new Set<string>();
+  let unlisted = false;
+  for (const repository of reviewedRepositoriesOf(settings.clones)) {
+    const urls = openPullUrlsOf(repository, gh);
+    if (urls === null) {
+      unlisted = true;
+      log(`${repository}: its open pull requests could not be listed, so their reviewers are looked at on the next sweep`);
+      continue;
+    }
+    for (const url of urls) {
+      listed.add(url);
+      const before = pullReads.get(url)?.unposted ?? null;
+      const pulled = reviewPull(ctx, reviewer, url);
+      if (pulled === null) {
+        log(`${url}: its reviewer could not be checked, the next sweep asks again`);
+        continue;
+      }
+      // Said when it changes: a verdict that stays unposted is one line, not one per sweep.
+      if (pulled.unposted !== null && pulled.unposted !== before) log(`${url}: ${pulled.unposted}`);
+    }
+  }
+  // A pull request no longer open is no longer shown, unless a repository could not be listed: then what it showed stays until the next sweep reads it.
+  if (!unlisted) for (const url of [...pullReads.keys()]) if (!listed.has(url)) pullReads.delete(url);
+}
+
+/** The review state of each open pull request the pool has read, as the board words it, by its url (A11-119). */
+export function pullReviewsOf(ctx: PoolContext): Record<string, string> {
+  return Object.fromEntries([...ctx.pullReads].map(([url, read]) => [url, pullReviewText(read)]));
+}
+
 /**
  * Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed, re-posts) and any verdict still awaiting its close.
  */
 function forgetPull(ctx: PoolContext, url: string): void {
-  const { closing, reviewerReposts, reviewerResumed, reviewerStarted } = ctx;
+  const { closing, reviewerDropped, reviewerReposts, reviewerResumed, reviewerStarted } = ctx;
   const ofPull = (key: string) => key.startsWith(`${url}@`);
   for (const key of [...reviewerStarted, ...reviewerResumed, ...reviewerReposts.keys()]) {
     if (ofPull(key)) {
+      if (reviewerStarted.has(key)) reviewerDropped.add(key);
       reviewerStarted.delete(key);
       reviewerResumed.delete(key);
       reviewerReposts.delete(key);
