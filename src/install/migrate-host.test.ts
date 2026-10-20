@@ -162,3 +162,20 @@ test("A11-144: doctor and doctor --fix run on a ticket-only host with no primary
   assert.doesNotMatch(plain.stderr, /REFUSED|ProjectDeclarationRefusal/);
   assert.match(plain.stdout, /host file: .*: 1 repositories/);
 });
+
+test("A11-144: doctor --fix, then doctor, on a copy of each host shape leaves no alias row, on this branch's own code", () => {
+  // The chairman's live check runs this same pair on the real host files; this runs it on a copy of each shape, so the branch carries the evidence.
+  const doctor = fileURLToPath(new URL("./doctor.ts", import.meta.url));
+  for (const [name, file] of [["ticket-only", TICKET_ONLY_FILE], ["agents", AGENTS_HOST]] as const) {
+    const host = join(tmpDir("doctor-copy-"), "host.json");
+    writeFileSync(host, JSON.stringify(file, null, 2));
+    const env: Record<string, string | undefined> = { ...process.env, AGENT_ORG_HOST: host };
+    delete env.AGENT_ORG_TICKET;
+    const fix = spawnSync(process.execPath, [doctor, "--fix"], { env, encoding: "utf8", timeout: 120_000 });
+    assert.match(fix.stdout, /moved, and the old file is kept at/, `${name}: ${fix.stdout}${fix.stderr}`);
+    const plain = spawnSync(process.execPath, [doctor], { env, encoding: "utf8", timeout: 120_000 });
+    assert.doesNotMatch(plain.stderr, /REFUSED|ProjectDeclarationRefusal/, name);
+    assert.doesNotMatch(plain.stdout, /^FAIL {2}alias /m, `${name}: an alias row remains`);
+    assert.match(plain.stdout, /tracker \(linear\)/, `${name}: the tracker's provider row is there`);
+  }
+});
