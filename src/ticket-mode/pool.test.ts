@@ -32,9 +32,15 @@ const source: TicketSource = { assigned: async () => [], read: async () => null,
 function herdr(status: Map<string, string>, screen: { text: string } = { text: "" }) {
   const calls: string[][] = [];
   const refused = new Set<string>();
+  /** The next `left` agent starts are refused as herdr refuses a pane whose shell is not at its prompt yet, then starts go through. */
+  const busy = { left: 0, code: "agent_pane_busy" };
   let next = 0;
   const run = (args: string[]) => {
     calls.push(args);
+    if (args.includes("agent") && args.includes("start") && busy.left > 0) {
+      busy.left -= 1;
+      throw Object.assign(new Error("herdr exited 1"), { stderr: JSON.stringify({ error: { code: busy.code, message: "agent target pane is not an available shell" } }) });
+    }
     if (args.some((arg) => refused.has(arg))) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: "workspace_not_found" } }) });
     if (args.includes("read")) return screen.text;
     if (args.includes("create")) {
@@ -45,14 +51,14 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
     if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s })) } });
     return JSON.stringify({ type: "ok" });
   };
-  return { run, calls, refused };
+  return { run, calls, refused, busy };
 }
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
-  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort, preflight, now = () => 100, clones }:
+  { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort, preflight, now = () => 100, clones, wait }:
     { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: (args: string[]) => string;
-      reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string> } = {}) {
+      reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string>; wait?: (ms: number) => Promise<void> } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: clones ?? { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
   const queued = keys.map((key) => (key in parents ? { ...ticket(key), parent: parents[key] } : ticket(key)));
@@ -63,7 +69,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const screen = { text: "" };
   const h = herdr(status, screen);
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}), ...(reviewerPort ? { reviewerPort } : {}), ...(preflight ? { preflight } : {}) };
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}), ...(reviewerPort ? { reviewerPort } : {}), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
   const pool = createPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
@@ -3943,4 +3949,39 @@ test("preflight: nothing is asked while nothing is waiting to start", async () =
   const { pool } = setup(1, [], { preflight: [FAILING_LOGIN] }, { preflight: exec });
   await pool.tick();
   assert.equal(asked.length, 0);
+});
+
+test("a start waits for a new pane's shell, and goes on once herdr accepts it", async () => {
+  const waits: number[] = [];
+  const { pool, h, entry } = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
+  h.busy.left = 3;
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.deepEqual(waits.filter((ms) => ms === 500), [500, 500, 500], "one half-second wait for each refusal");
+  assert.equal(h.calls.filter((args) => args.includes("create")).length, 1, "the same workspace is started again, not a new one");
+  assert.equal(h.calls.filter((args) => args.includes("start")).length, 4);
+});
+
+test("a pane whose shell never comes up fails the run after 30 tries, and closes its workspace", async () => {
+  const waits: number[] = [];
+  const { pool, h, entry } = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
+  h.busy.left = 1000;
+  await pool.tick();
+  const outcome = entry("NBF-1").outcome;
+  assert.equal(outcome?.kind, "crashed");
+  assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /herdr could not start Claude for NBF-1/);
+  assert.equal(h.calls.filter((args) => args.includes("start")).length, 30);
+  assert.equal(waits.length, 29);
+  assert.ok(h.calls.some((args) => args.includes("close")), "the workspace it opened is closed");
+});
+
+test("any other refusal fails the start at once, without waiting", async () => {
+  const waits: number[] = [];
+  const { pool, h, entry } = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
+  h.busy.left = 1;
+  h.busy.code = "agent_pane_not_found";
+  await pool.tick();
+  assert.equal(entry("NBF-1").outcome?.kind, "crashed");
+  assert.deepEqual(waits, []);
+  assert.equal(h.calls.filter((args) => args.includes("start")).length, 1);
 });
