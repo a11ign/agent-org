@@ -9,4 +9,4 @@ npm run lint
 
 Mutation: the base production files (`doctor.ts`, `plugins.ts`, `plugin-contract.ts`, `settings.ts`) were copied into a scratch copy and run against the new tests. Seven went red: the A11-94 writer case (its detail changed), the five `A11-139: the ticket writer ...` and writer-skill cases in `doctor.test.ts`, and `A11-139: the contract a session loads ...` in `plugins.test.ts`. The reader-to-contract test in `plugin-contract.test.ts` passed on the base, as a behaviour this change keeps. The rest of the 121 passed on both.
 
-Consumer-declaration: `pluginProblems` gains the field `contracts`; its callers `pool-prepare.ts` and `settings-read.ts` read named fields and are unchanged. Nothing else reads the detail text of the `ticket writer` check (`grep` of `src/` finds no reader of it outside the doctor and its tests).
+Consumer-declaration: none -- `pluginProblems` gains the field `contracts`, and its callers `pool-prepare.ts` and `settings-read.ts` read named fields and are unchanged. Nothing else reads the detail text of the `ticket writer` check (`grep` of `src/` finds no reader of it outside the doctor and its tests).
