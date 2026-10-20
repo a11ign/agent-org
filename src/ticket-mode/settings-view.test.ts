@@ -189,12 +189,12 @@ test("the rows say which keys the page changes in place, and for a key it does n
   assert.match(row(view, "tickets.providers.tracker.key").why ?? "", /tickets\.providers\.tracker\.key\.path/, "a container says which key changes it");
 });
 
-test("the choices and the number of workers, which the controls above the list change, are read-only rows that say so", () => {
+test("the choices and the number of workers, which the controls below the sections change, are read-only rows that say so", () => {
   const view = viewOf({ host: { tickets: { max: 4 } } });
   for (const key of ["model", "effort", "tickets.max"]) {
     const found = row(view, key);
     assert.deepEqual([found.editable, found.input], [false, null], `${key} is not changed in place`);
-    assert.match(found.why ?? "", /controls above the list/, `${key} says the controls above change it`);
+    assert.match(found.why ?? "", /controls below the sections/, `${key} says the controls below change it`);
   }
 });
 

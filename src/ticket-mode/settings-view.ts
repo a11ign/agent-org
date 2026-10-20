@@ -105,8 +105,8 @@ const editOf = (entry: SchemaEntry): Pick<Row, "input" | "editable" | "why"> =>
 /** Why a key is not changed in place, from its schema entry, and null for a key that is. */
 const whyOf = (entry: SchemaEntry): string | null => (entry.edit.editable ? null : entry.edit.why);
 
-/** The reason a choice or the number of workers is changed by the controls above the list, not in place. */
-const CONTROLS_ABOVE = "changed with the controls above the list, not in place";
+/** The reason a choice or the number of workers is changed by the controls below the sections, not in place. */
+const CONTROLS_ABOVE = "changed with the controls below the sections, not in place";
 
 /** Whether a key matters now. A role's App fields (`appId`, `keyPath`, ...) matter only while the role's `mode` is `github-apps`; the role itself and its `mode` always do. */
 function inUseOf(entry: SchemaEntry, key: string, root: Readonly<Record<string, unknown>>): boolean {
