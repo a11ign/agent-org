@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { emptyCanaryState, machineryFlagOn, STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-readings.ts";
 import { machineryValues, withMachineryFlag } from "../org-health.ts";
-import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
+import { MACHINERY_SIGNALS } from "../org-health/hold-and-rerun-readings.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, jobFailuresOf, ownershipOfFailure, requeueEjected, type EjectionEvidence } from "../work-gate/causes/pr-ejected.ts";
 import { readArmingOf } from "../work-gate/tick/blocker-cleared-reading.ts";

@@ -34,7 +34,7 @@ import { declaredClosedRows } from "./row-claim/file-overlap-rule.ts";
 import { declaredGhAccount } from "./gh-identity.ts";
 import { repeatingLinesTick } from "./repeating-lines.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { readToolAgreement } from "./org-health/board-truth-readings.ts";
+import { readToolAgreement } from "./org-health/board-truth-and-access-readings.ts";
 import { fileReleaseIncidents, type ReleaseRuns } from "./org-health/sweep-readings.ts";
 import { machineryFlagOn, type CanaryState } from "./org-health/fleet-build-readings.ts";
 import { stateEntryPath } from "./host-config.ts";
@@ -499,7 +499,7 @@ function readGateTick() {
   // exhausted pool, which is the whole reason the detection can exist. `GIT_READS` counts it.
   const offerHierarchy = endGateSpan("offerHierarchy", offerHierarchyNow(rows, allOpen)); // #4524: who the chairman's rows are, from the tracker's history, and the declared milestone ranking
   const rowBranches = endGateSpan("rowBranches", readRowBranches()), branchPrs = endGateSpan("branchPrs", readBranchPrsOfUnclaimed(rows, rowBranches)); // #3892: one `pr list` per branch of an unclaimed row, none when there is none
-  const pools: import("./org-health/claim-refusal.ts").PoolReading[] = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
+  const pools: import("./org-health/claim-and-tick-readings.ts").PoolReading[] = []; // #3448: the GraphQL budget the off-board read names, handed to the org-health tick
   const offBoard = rowsOffBoardOrSay(undefined, pools), primaryDrift = readPrimaryDriftNow(); endGateSpan("offBoard+primaryDrift"); // #2781: local git, once; it feeds `decide` and banners its orders
   // #1969: NAMED RATHER THAN CALLED TWICE. `shouldBeMerging` needs the same answer `decide` does, and
   // `requiredWhenNeeded` makes a `gh` call when anything is red -- calling it inline in both places would

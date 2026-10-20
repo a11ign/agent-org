@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { armMerge as armPullRequest, armedAlready } from "../../arm-pr.ts";
 import { machineryFlagOn, orgHealthOrders, type CanaryState } from "../../org-health/fleet-build-readings.ts";
-import { queueEntryNoRunReading, queueHeadAgeReading, type QueueNoRunFact } from "../../org-health/claim-refusal.ts";
+import { queueEntryNoRunReading, queueHeadAgeReading, type QueueNoRunFact } from "../../org-health/claim-and-tick-readings.ts";
 import { writeJsonObject } from "../../claim-stall.ts";
 import { TRACKER, githubTicketAdapter } from "../../ticket-port/github-adapter.ts";
 import { dequeuePullRequestOf, mergeGroupRunCountOf, queueEntriesOf, type QueueEntry } from "../../ticket-port/queue-entry-reads.ts";

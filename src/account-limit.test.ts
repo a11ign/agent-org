@@ -21,7 +21,7 @@ import { freeLimitMenuSeats, limitMenuTick } from "./wake/exit-and-limits.ts";
 import { isLimitMenu, tellBlocked } from "./worker-state.ts";
 import { INSIDE } from "./review-trust.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
-import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-and-tick-readings.ts";
 import { emptyCanaryState, type CanaryState } from "./org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "./org-health.ts";
 import { moduleSource } from "./lib/source-text-reads.ts";

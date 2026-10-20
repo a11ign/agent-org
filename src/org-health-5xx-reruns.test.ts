@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SIGNALS } from "./org-health/thresholds.ts";
-import { manualRerunsReading, readRerunsOn5xx, requiredRedOn5xxReading, rerunsPerDay } from "./org-health/claim-refusal.ts";
+import { manualRerunsReading, readRerunsOn5xx, requiredRedOn5xxReading, rerunsPerDay } from "./org-health/claim-and-tick-readings.ts";
 import { orgHealthReadings } from "./org-health/fleet-build-readings.ts";
 import { CI_RERUN_LEDGER_FILE, rerunLedgerLine } from "./ci-rerun-on-5xx.ts";
 

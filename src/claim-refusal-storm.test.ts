@@ -31,7 +31,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { SIGNALS } = await import("./org-health/thresholds.ts");
 const { CLAIM_REFUSED_KIND } = await import("./failure-ledger.ts");
-const { claimRefusalStormReading, readClaimRefusals } = await import("./org-health/claim-refusal.ts");
+const { claimRefusalStormReading, readClaimRefusals } = await import("./org-health/claim-and-tick-readings.ts");
 const { orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("./org-health/fleet-build-readings.ts");
 
 const MINUTE = 60_000;

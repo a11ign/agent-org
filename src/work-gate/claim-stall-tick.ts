@@ -28,7 +28,7 @@ import { declaredWaitsOf, waitItemOf, conditionHolds, type WaitFacts } from "../
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { WORKER_STATE_DIR, readDeclarations, lastDeliveredTo, declarationReading } from "../worker-state.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
-import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { DEFAULT_CANARY_OPTIONS } from "../org-health.ts";
 import { machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health/fleet-build-readings.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";

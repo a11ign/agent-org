@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { READS_OUTSIDE, touchesDiff } from "../../ci-failure-class.ts";
-import { CANARY_STATE_FILE } from "../../org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "../../org-health/claim-and-tick-readings.ts";
 import { UNQUEUED_MINUTES } from "../../org-health.ts";
 import { parseCanaryState, machineryFlagOn, emptyCanaryState, type CanaryState } from "../../org-health/fleet-build-readings.ts";
 import { ejectionQueryArgs, queueEjectionOf } from "../../pr-armed-state.ts";

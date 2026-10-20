@@ -25,7 +25,7 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { SIGNALS } = await import("../org-health/thresholds.ts");
-const { teamAccessReading } = await import("../org-health/board-truth-readings.ts");
+const { teamAccessReading } = await import("../org-health/board-truth-and-access-readings.ts");
 const { readTeamAccess, parseTeamListing } = await import("../org-health/sweep-readings.ts");
 const { orgHealthReadings } = await import("../org-health/fleet-build-readings.ts");
 const { orgHealthNow } = await import("../work-gate/org-health.ts");

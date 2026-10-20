@@ -19,7 +19,7 @@ import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-le
 import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
 import { IDLE_CLAIMANT_MINUTES, STOPPED_CLAIMANT_MINUTES, WAIT_FIELDS, idleClaimantReading, isStoppedHolder, stoppedNudgePrompt } from "./idle-claimant.ts";
 import { FLAG_REGISTRY } from "./machinery-flag.ts";
-import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-and-tick-readings.ts";
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-10T09:00:00Z");

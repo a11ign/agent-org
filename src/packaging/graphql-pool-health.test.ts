@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { POOL_LOW_FRACTION, SIGNALS } from "../org-health/thresholds.ts";
-import { poolLowReading } from "../org-health/hold-count.ts";
+import { poolLowReading } from "../org-health/hold-and-rerun-readings.ts";
 import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-readings.ts";
 import { poolFromRateLimitField } from "../api-pool.ts";
 import { OPEN_ITEMS_QUERY as ROW_OFF_BOARD_QUERY } from "../ticket-port/github-adapter.ts";

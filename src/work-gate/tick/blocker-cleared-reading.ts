@@ -534,7 +534,7 @@ export function dispatchedLabJobsOrSay(read: typeof readDispatchedLabJobs = read
  *  @param [pools] where the read leaves the GraphQL pool it saw (#3448)
  *  @param [run] the `gh` call, the real one unless a test hands it another
  */
-export function rowsOffBoardOrSay(log: (line: string) => void = (line) => process.stderr.write(line), pools: import("../../org-health/claim-refusal.ts").PoolReading[] = [],
+export function rowsOffBoardOrSay(log: (line: string) => void = (line) => process.stderr.write(line), pools: import("../../org-health/claim-and-tick-readings.ts").PoolReading[] = [],
   run: typeof defaultRun = defaultRun) {
   const facts = readRowsOffBoard(run, pools);
   if (facts === null) {

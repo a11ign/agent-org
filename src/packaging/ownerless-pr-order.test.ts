@@ -24,7 +24,7 @@ import { ownerOfPr } from "../work-gate/pr-orders/red-only-by-superseded-run.ts"
 import { ownerlessAskFlagOn } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
-import { MACHINERY_SIGNALS } from "../org-health/hold-count.ts";
+import { MACHINERY_SIGNALS } from "../org-health/hold-and-rerun-readings.ts";
 import { UNQUEUED_MINUTES, machineryValues } from "../org-health.ts";
 import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { type DeclaredIdentities } from "../review-trust.ts";

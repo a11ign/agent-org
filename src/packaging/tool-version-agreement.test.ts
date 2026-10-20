@@ -26,7 +26,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const lib = await import("../lib/tool-version-agreement.ts");
 const { SIGNALS } = await import("../org-health/thresholds.ts");
-const { toolVersionReading, readToolAgreement } = await import("../org-health/board-truth-readings.ts");
+const { toolVersionReading, readToolAgreement } = await import("../org-health/board-truth-and-access-readings.ts");
 const { agreement, agreementReport, releaseCycleMs, shippedReleaseCycleMs, readWorktree, readLastCiRun, memoFile, mainDeclaresAgentOrg, RESOLVER_LINE, lockedCommit } = lib;
 
 const MINUTE = 60_000;

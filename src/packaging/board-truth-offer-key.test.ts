@@ -17,7 +17,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BOARD_TRUTH_CLEAR_MINUTES, BOARD_TRUTH_PAIR_FLAG, boardTruthPairStep, boardTruthReading, boardTruthReadings, type BoardTruthPairs } from "../org-health/board-truth-readings.ts";
+import { BOARD_TRUTH_CLEAR_MINUTES, BOARD_TRUTH_PAIR_FLAG, boardTruthPairStep, boardTruthReading, boardTruthReadings, type BoardTruthPairs } from "../org-health/board-truth-and-access-readings.ts";
 import { SIGNALS } from "../org-health/thresholds.ts";
 import { boardTruthPairOffers, emptyCanaryState, machineryFlagOn, parseCanaryState, type BoardTruthPairIo } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts";
