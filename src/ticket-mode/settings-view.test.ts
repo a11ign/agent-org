@@ -139,9 +139,9 @@ test("a list's items show under the list, one row per field", () => {
 
 test("a plugin's installs, and whether a worker's session loads it, are said in words, with the fix", () => {
   const plugins: PluginState[] = [
-    { plugin: "a@m", installs: [{ scope: "user", projectPath: null }], loads: true, why: null },
-    { plugin: "b@m", installs: [{ scope: "project", projectPath: "/x" }], loads: false, why: "b@m is installed only for /x: install it for every folder." },
-    { plugin: "c@m", installs: [], loads: null, why: null },
+    { plugin: "a@m", installs: [{ scope: "user", projectPath: null }], loads: true, why: null, installPath: "/cache/a" },
+    { plugin: "b@m", installs: [{ scope: "project", projectPath: "/x" }], loads: false, why: "b@m is installed only for /x: install it for every folder.", installPath: null },
+    { plugin: "c@m", installs: [], loads: null, why: null, installPath: null },
   ];
   const lines = viewOf({ plugins: { readable: true, plugins } }).plugins;
   assert.deepEqual(lines.map((line) => line.loads), ["a worker's session loads it", "only a worker in /x loads it; to load it for every worker, install it for every folder with `claude plugin install b@m --scope user`.",
@@ -151,7 +151,7 @@ test("a plugin's installs, and whether a worker's session loads it, are said in 
 });
 
 test("an unreadable install record is not checked, never loaded", () => {
-  const lines = viewOf({ plugins: { readable: false, plugins: [{ plugin: "a@m", installs: [], loads: null, why: null }] } }).plugins;
+  const lines = viewOf({ plugins: { readable: false, plugins: [{ plugin: "a@m", installs: [], loads: null, why: null, installPath: null }] } }).plugins;
   assert.deepEqual(lines, [{ plugin: "a@m", installed: "not installed", loads: "not checked: Claude Code's install record cannot be read" }]);
 });
 
@@ -172,7 +172,7 @@ test("the explanation and what breaks are carried on every row, so the page can 
 });
 
 test("a plugin installed only for one folder is not said to be missing from every worker: only a worker in that folder gets it", () => {
-  const plugins: PluginState[] = [{ plugin: "p@m", installs: [{ scope: "project", projectPath: "/work/NBF-1" }], loads: false, why: "p@m is installed only for /work/NBF-1, so a worker in <ticket> runs without it" }];
+  const plugins: PluginState[] = [{ plugin: "p@m", installs: [{ scope: "project", projectPath: "/work/NBF-1" }], loads: false, why: "p@m is installed only for /work/NBF-1, so a worker in <ticket> runs without it", installPath: null }];
   const [line] = viewOf({ plugins: { readable: true, plugins } }).plugins;
   assert.equal(line.loads, "only a worker in /work/NBF-1 loads it; to load it for every worker, install it for every folder with `claude plugin install p@m --scope user`.");
 });

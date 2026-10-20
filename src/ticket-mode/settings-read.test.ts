@@ -1,7 +1,7 @@
 // no-token: gh -- reads temporary host and project files written by the test, and runs the real project reader on them; nothing outside the temporary folder
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
@@ -58,4 +58,17 @@ test("a ticket-only host, which names no primary, is a note that it declares no 
   const view = await readSettingsView(options(dir, path));
   assert.equal(view.notes.some((note) => NO_PROJECT.test(note)), true);
   assert.deepEqual(view.refusals.filter((r) => r.file === "project.json"), []);
+});
+
+test("the Settings page reads the same contract rows a run start refuses on, and the plugin's line says it loads", async () => {
+  const dir = tmpDir("settings-read-contract-");
+  const install = join(dir, "install");
+  mkdirSync(join(install, ".claude-plugin"), { recursive: true });
+  writeFileSync(join(install, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "a11ign", metadata: { agentOrg: { contract: "2.0", agentOrg: ">=0.0.0 <1.0.0", provides: {}, needs: {} } } }));
+  const record = join(dir, "installed_plugins.json");
+  writeFileSync(record, JSON.stringify({ version: 2, plugins: { "a11ign@m": [{ scope: "user", installPath: install }] } }));
+  const settings = parseTicketSettings({ clones: { r: "/r" }, stateDir: dir, tickets: { plugins: ["a11ign@m"] } });
+  const view = await readSettingsView(options(dir, primaryHost(dir), { settings, pluginRecord: record }));
+  assert.deepEqual(view.contract.map(({ plugin, kind }) => [plugin, kind]), [["a11ign@m", "contract-major"]]);
+  assert.deepEqual(view.plugins.map(({ plugin, loads }) => [plugin, loads]), [["a11ign@m", "a worker's session loads it"]]);
 });

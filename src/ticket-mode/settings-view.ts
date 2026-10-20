@@ -10,6 +10,7 @@
 import type { ChoicePart, File, Group, Input, SchemaEntry } from "./config-schema.ts";
 import { GROUPS } from "./config-schema.ts";
 import type { PluginInstall, PluginState } from "./plugins.ts";
+import type { ContractRow } from "./plugin-contract.ts";
 import { isObject, valueAt } from "./json-value.ts";
 
 export type Section = Readonly<{ file: string; raw: Readonly<Record<string, unknown>> | null; refusal: string | null }>;
@@ -23,6 +24,8 @@ export type ViewInput = Readonly<{
   choice: Readonly<{ saved: Readonly<Partial<Record<ChoicePart, string>>>; host: Readonly<{ writerModel?: string; writerEffort?: string }> }>;
   queue: Readonly<{ max: number; source: "queue.json" | "host.json" | "built-in default" }>;
   plugins: Readonly<{ readable: boolean; plugins: readonly PluginState[] }>;
+  /** The contract rows of the plugins and host keys, one per mismatch. Returned in the view; drawing them is not this module's. */
+  contract?: readonly ContractRow[];
   exists: (path: string) => boolean;
 }>;
 
@@ -36,6 +39,7 @@ export type View = Readonly<{
   refusals: readonly Readonly<{ file: string; message: string }>[];
   notes: readonly string[];
   plugins: readonly PluginLine[];
+  contract: readonly ContractRow[];
   words: readonly string[];
 }>;
 
@@ -205,7 +209,7 @@ export function settingsView(input: ViewInput): View {
   });
   // Every group, in the page's order, even one with no rows: the plugins and connectors are drawn in one of them, and the page skips the rest when empty.
   const groups = GROUPS.map((group) => ({ group, rows: rows.filter((row) => row.group === group) }));
-  return { groups, refusals, notes: input.notes, plugins: pluginLines(input), words: wordsOf(input.tickets.refusal === null ? input.tickets.raw : null) };
+  return { groups, refusals, notes: input.notes, plugins: pluginLines(input), contract: input.contract ?? [], words: wordsOf(input.tickets.refusal === null ? input.tickets.raw : null) };
 }
 
 /** The object a key is read from in its file: the whole project file, or the whole host file, which a ticket key is read from too. */
