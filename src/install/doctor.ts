@@ -11,6 +11,7 @@
 // registered, and herdr web ui answers `/api/health` on the port that address names. A `tickets.terminal` served by another machine is that
 // machine's to check. Linear's MCP (A11-71) is read from `claude mcp list`, which connects to each server, so "connected" is a real answer.
 // The auto-update service is checked for being registered: it runs once an hour, so it has no port.
+// EACH PLUGIN `tickets.plugins` NAMES (A11-140) is checked as a worker's session gets it: it loads, and its declared contract matches the host's keys.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { request } from "node:http";
@@ -23,6 +24,9 @@ import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
 import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
+import { hostFactsOf, type HostFacts } from "../ticket-mode/plugin-contract.ts";
+import { pluginProblems, type PluginProblems } from "../ticket-mode/plugins.ts";
+import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
@@ -85,6 +89,8 @@ export type DoctorDeps = Readonly<{
   updateStatus: () => StatusFile;
   /** The release tags this checkout holds, with no network (A11-90). */
   releaseTags: () => string[];
+  /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
+  plugins: (input: { wanted: readonly string[]; folder: string; host: HostFacts }) => PluginProblems;
   now: () => number;
 }>;
 
@@ -244,6 +250,37 @@ function stackChecks(settings: TicketSettings | null, deps: DoctorDeps): Check[]
   return [ok(name, `${STACK_EXTENSION} ${found.version} (for ${scope})`), ...stacksChecks(settings, account, deps)];
 }
 
+/** The contract mismatch's fix, as `preflight`'s: the board refuses a run while one stands. */
+const CONTRACT_FIX = "fix what the row says: the board refuses a run while a mismatch stands";
+const NOT_CHECKED = "not checked: Claude Code's install record cannot be read for it";
+
+/** The fix a `why` sentence ends with: what follows its last colon, since each one says what is wrong and then how to fix it (A11-140). */
+function fixOf(why: string): string {
+  const colon = why.lastIndexOf(": ");
+  return colon < 0 ? why : why.slice(colon + 2);
+}
+
+/**
+ * Each plugin `tickets.plugins` enables, as a worker's session gets it (A11-140): one check per entry, ok when it loads and its contract matches the host's
+ * keys, else the sentence that names the mismatch. A contract row about a plugin that is not enabled belongs to no entry, so it is listed in `plugin contract`.
+ * Nothing on a host file that did not parse or names no plugin, as `preflightChecks` says nothing on a host that names none. An unreadable record is not
+ * checked and is no failure, since a run start is not refused by it either.
+ */
+function pluginChecks(settings: TicketSettings | null, deps: DoctorDeps): Check[] {
+  if (settings === null || settings.plugins.length === 0) return [];
+  const { states, rows } = deps.plugins({ wanted: settings.plugins, folder: ticketFolder(settings, "<ticket>"), host: hostFactsOf(settings) });
+  const checks = states.plugins.map(({ plugin, loads, why }): Check => {
+    const name = `plugin ${plugin}`;
+    if (loads === false && why !== null) return failed(name, why, fixOf(why));
+    if (loads !== true) return ok(name, NOT_CHECKED);
+    const mismatches = rows.filter((row) => row.plugin === plugin);
+    return mismatches.length === 0 ? ok(name, "loads for a worker's session, and no contract mismatch")
+      : failed(name, mismatches.map((row) => row.why).join(" "), CONTRACT_FIX);
+  });
+  const unowned = rows.filter((row) => !settings.plugins.includes(row.plugin));
+  return unowned.length === 0 ? checks : [...checks, failed("plugin contract", unowned.map((row) => row.why).join(" "), CONTRACT_FIX)];
+}
+
 /** Whether GitHub makes stacked pull requests available to each GitHub repository a clone names. A host file with no GitHub clone adds no check. */
 function stacksChecks(settings: TicketSettings | null, account: Account, deps: DoctorDeps): Check[] {
   const name = "stacked pull requests";
@@ -289,6 +326,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     keyCheck(settings, deps),
     linearMcpCheck(deps),
     writerCheck(settings),
+    ...pluginChecks(settings, deps),
     ...await preflightChecks(settings, deps),
     ...instance,
     ...herdrScopeChecks(settings, instanceState, deps),
@@ -550,6 +588,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     isolation: (session) => hostIsolation(services, session),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
     releaseTags: localReleaseTags,
+    plugins: (input) => pluginProblems(input),
     now: () => Date.now(),
   });
   console.log(report(checks));

@@ -2,6 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { diagnose, report, type DoctorDeps } from "./doctor.ts";
+import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
+import type { PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
 
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
@@ -27,7 +29,8 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
-    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [], now: () => NOW,
+    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [],
+    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [] }), now: () => NOW,
     ...over,
   };
 }
@@ -462,4 +465,72 @@ test("doctor says nothing of preflight on a host that names none, and runs nothi
   const checks = await diagnose(deps({ preflight: async () => { ran = true; return { status: 1, timedOut: false, output: "" }; } }));
   assert.equal(checks.some((c) => c.name.startsWith("preflight")), false);
   assert.equal(ran, false);
+});
+
+// A11-140: each plugin `tickets.plugins` enables is listed, ok or with the mismatch named; one that does not load fails, named.
+const PLUGINS_HOST = JSON.stringify({ ...JSON.parse(HOST), tickets: { ...JSON.parse(HOST).tickets, plugins: ["a@m", "b@m"] } });
+const WHY_NOT_INSTALLED = "a@m is not installed: install it for every folder with `claude plugin install a@m --scope user`.";
+const CONNECTOR_ROW: ContractRow = { plugin: "a@m", kind: "connector-need", why: "a@m needs the connector tools matched by ^mcp__linear__save_, which tickets.connectors does not allow: add the pattern to tickets.connectors." };
+const loaded = (plugin: string): PluginState => ({ plugin, installs: [], loads: true, why: null, installPath: `/cache/${plugin}` });
+const notLoaded = (plugin: string, why: string): PluginState => ({ plugin, installs: [], loads: false, why, installPath: null });
+const notRead = (plugin: string): PluginState => ({ plugin, installs: [], loads: null, why: null, installPath: null });
+/** The plugins check, injected with what the install record says of each plugin, and the contract rows `pluginProblems` returns for them. */
+const pluginsAs = (plugins: PluginState[], rows: ContractRow[] = [], readable = true): DoctorDeps["plugins"] => () => ({ states: { readable, plugins }, unreachable: [], rows });
+const checksWithPlugins = async (over: Partial<DoctorDeps>) => byName(await diagnose(deps({ readFile: () => PLUGINS_HOST, ...over })));
+
+test("A11-140: doctor lists each enabled plugin as ok when it loads with no contract mismatch, and asks for the plugins a worker's folder gets", async () => {
+  const asked: { wanted: readonly string[]; folder: string }[] = [];
+  const checks = await checksWithPlugins({ plugins: (input) => { asked.push(input); return pluginsAs([loaded("a@m"), loaded("b@m")])(input); } });
+  assert.deepEqual([checks["plugin a@m"].ok, checks["plugin b@m"].ok], [true, true]);
+  assert.equal(checks["plugin a@m"].detail, "loads for a worker's session, and no contract mismatch");
+  assert.match(report(Object.values(checks)), /ok {4}plugin a@m: loads for a worker's session, and no contract mismatch\n/);
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0].wanted, ["a@m", "b@m"]);
+  assert.match(asked[0].folder, /\/<ticket>$/, "a worker's session starts in its ticket's folder, as the Settings page asks");
+});
+
+test("A11-140: doctor fails an enabled plugin that does not load, naming it with its fix, and the other one stays ok", async () => {
+  const checks = await checksWithPlugins({ plugins: pluginsAs([notLoaded("a@m", WHY_NOT_INSTALLED), loaded("b@m")]) });
+  const [failing, passing] = [checks["plugin a@m"], checks["plugin b@m"]];
+  assert.deepEqual([failing.ok, failing.detail, failing.fix, passing.ok], [false, WHY_NOT_INSTALLED, "install it for every folder with `claude plugin install a@m --scope user`.", true]);
+  assert.ok(report(Object.values(checks)).includes(`FAIL  plugin a@m: ${WHY_NOT_INSTALLED}\n      fix: install it for every folder`));
+});
+
+test("A11-140: doctor fails a loading plugin whose contract does not match the host's keys, naming the plugin and the key", async () => {
+  const checks = await checksWithPlugins({ plugins: pluginsAs([loaded("a@m"), loaded("b@m")], [CONNECTOR_ROW]) });
+  assert.equal(checks["plugin a@m"].ok, false);
+  assert.equal(checks["plugin a@m"].detail, CONNECTOR_ROW.why);
+  assert.match(checks["plugin a@m"].detail, /^a@m .*tickets\.connectors/);
+  assert.equal(checks["plugin a@m"].fix, "fix what the row says: the board refuses a run while a mismatch stands");
+  assert.equal(checks["plugin b@m"].ok, true);
+});
+
+test("A11-140: a contract row about a plugin the host does not enable is listed in plugin contract, failed", async () => {
+  const row: ContractRow = { plugin: "nbl-ui", kind: "plugin-not-enabled", why: "skills.prReview names nbl-ui:review, but tickets.plugins does not enable nbl-ui: add that plugin to tickets.plugins." };
+  const checks = await checksWithPlugins({ plugins: pluginsAs([loaded("a@m")], [row]) });
+  assert.equal(checks["plugin contract"].ok, false);
+  assert.equal(checks["plugin contract"].detail, row.why);
+  assert.equal("plugin nbl-ui" in checks, false, "no entry owns the row, so no entry check says it");
+  assert.equal(checks["plugin a@m"].ok, true);
+});
+
+test("A11-140: doctor adds no plugin check on a host that names no plugin, or whose host file did not parse, and asks the record nothing", async () => {
+  const neverAsked = (): never => { throw new Error("the install record must not be asked"); };
+  const none = await diagnose(deps({ plugins: neverAsked }));
+  assert.equal(none.some((check) => check.name.startsWith("plugin")), false);
+  const unparsed = await diagnose(deps({ readFile: () => "{", plugins: neverAsked }));
+  assert.equal(unparsed.some((check) => check.name.startsWith("plugin")), false);
+});
+
+test("A11-140: an unreadable install record is not checked, and fails nothing", async () => {
+  const checks = await checksWithPlugins({ plugins: pluginsAs([notRead("a@m"), notRead("b@m")], [], false) });
+  assert.deepEqual([checks["plugin a@m"].ok, checks["plugin a@m"].detail, checks["plugin a@m"].fix], [true, "not checked: Claude Code's install record cannot be read for it", null]);
+  assert.equal(checks["plugin b@m"].ok, true);
+});
+
+test("A11-140: a plugin that does not load, or does not match, makes the run fail, and a plugin that is fine does not", async () => {
+  const notLoading = Object.values(await checksWithPlugins({ plugins: pluginsAs([notLoaded("a@m", WHY_NOT_INSTALLED)]) }));
+  const mismatched = Object.values(await checksWithPlugins({ plugins: pluginsAs([loaded("a@m")], [CONNECTOR_ROW]) }));
+  const fine = Object.values(await checksWithPlugins({ plugins: pluginsAs([loaded("a@m"), loaded("b@m")]) }));
+  assert.deepEqual([notLoading.every((check) => check.ok), mismatched.every((check) => check.ok), fine.every((check) => check.ok)], [false, false, true]);
 });
