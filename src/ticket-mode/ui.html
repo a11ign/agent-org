@@ -600,7 +600,9 @@ function renderPick() {
         return;
       }
       // A ticket with an open decision cannot be picked until a Grill settles it: its pill says so, and the reason is the pill's title (A11-134).
-      const decision = taken === undefined && t.needsDecision !== undefined ? el("span", { className: "pill", textContent: NEEDS_DECISION, title: t.needsDecision.reason }) : pill(standing);
+      // A ticket another instance holds shows its state, and is not selectable (A11-144).
+      const decision = taken === undefined && t.taken !== undefined ? el("span", { className: "pill", textContent: `Taken: ${t.taken}`, title: "Another instance holds this ticket: this one has no run for it" })
+        : taken === undefined && t.needsDecision !== undefined ? el("span", { className: "pill", textContent: NEEDS_DECISION, title: t.needsDecision.reason }) : pill(standing);
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: !free(t) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
       place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { mark: planMark(t), note: grillButton(t) }), pill(projectOf(t)), owner(t), decision), depth);
@@ -1058,7 +1060,7 @@ function showEditRefusal(err) {
   $("edit-refusal").hidden = false;
 }
 function settingsGroup({ group, rows }, view) {
-  const plugins = group === "Plugins and connectors";
+  const plugins = group === "Conventions plugin";
   if (rows.length === 0 && !(plugins && (view.plugins.length > 0 || view.words.length > 0))) return null;
   const id = `group-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
   const section = el("section", { className: "setting-group" }, el("h3", { id, textContent: group }), ...rows.map(settingRow));

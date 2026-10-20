@@ -2,6 +2,8 @@ export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
   /** The keys of its open sub-issues, as the tracker last read them: see `source.ts`. */
   children?: readonly string[];
+  /** The state another instance holds it in, when this instance holds no run for it (A11-144): the server sets it (`pick-taken.ts`); absent otherwise. */
+  taken?: string;
   /** Why it cannot be queued yet: an open decision, or a screen's behaviour not grilled. The server sets it (`open-decisions.ts`); absent when it can be queued. */
   needsDecision?: Readonly<{ kind: string; reason: string }>;
 }>;
@@ -263,11 +265,11 @@ export const parentKeys = (nodes: readonly TicketNode[]): string[] =>
   nodes.flatMap((n) => (n.children.length > 0 ? [n.ticket.key, ...parentKeys(n.children)] : []));
 
 /**
- * A ticket can be selected when it is not on the queue already, is not a parent (the queue refuses one: `queue.ts`'s `refuseParents`), and holds no open
- * decision (the queue refuses that too: `queue-entries-and-outcomes.ts`'s `refuseDecisions`).
+ * A ticket can be selected when it is not on the queue already, is not a parent (the queue refuses one: `queue.ts`'s `refuseParents`), holds no open
+ * decision (the queue refuses that too: `queue-entries-and-outcomes.ts`'s `refuseDecisions`), and is not taken by another instance (A11-144).
  */
 export const selectable = (ticket: ViewTicket, entries: readonly ViewEntry[]): boolean =>
-  !isParentTicket(ticket) && ticket.needsDecision === undefined && !entries.some((e) => e.ticket.key === ticket.key);
+  !isParentTicket(ticket) && ticket.needsDecision === undefined && ticket.taken === undefined && !entries.some((e) => e.ticket.key === ticket.key);
 
 /**
  * A parent's checkbox: the keys of the tickets under it, at any depth, that can still be picked, ticked when every one is selected and part

@@ -161,9 +161,9 @@ test("a restore with no backup says there is none, and a backup the readers refu
   assert.equal(readFileSync(hostPath, "utf8"), before);
 });
 
-test("tickets.serve is in force after the units are reinstalled, tickets.max is in force after the board restarts, and not at all once the queue holds its own", async () => {
-  const { options, queuePath } = setup();
-  const serve = await previewEdit(options, "host.json", [{ key: "tickets.serve", value: "tailscale" }]);
+test("the exposure's UI port is in force after the units are reinstalled, tickets.max is in force after the board restarts, and not at all once the queue holds its own", async () => {
+  const { options, queuePath } = setup((folder) => hostWith(folder, `, "providers": { "exposure": { "provider": "tailscale" } }`));
+  const serve = await previewEdit(options, "host.json", [{ key: "tickets.providers.exposure.tailnetPorts", value: { ui: 9443, terminal: 9444 } }]);
   assert.equal(serve.changes[0].applies, "unit");
   assert.match(serve.changes[0].inForce, /reinstall and restart agent-org-instance\.service and agent-org-ui\.service/);
   const max = await previewEdit(options, "host.json", [{ key: "tickets.max", value: 2 }]);
@@ -176,17 +176,18 @@ test("tickets.serve is in force after the units are reinstalled, tickets.max is 
 
 test("a key file is named by its path and never read: the answers show the path and whether the file exists, and no read reaches a key file", async () => {
   const marker = "SECRET-MARKER-7f3a";
-  const { dir, hostPath, options } = setup((folder) => hostWith(folder, `, "linearKey": { "path": "${join(folder, "old.key")}" }`));
+  const { dir, hostPath, options } = setup((folder) => hostWith(folder, `, "providers": { "tracker": { "provider": "linear", "key": { "path": "${join(folder, "old.key")}" } } }`));
   writeFileSync(join(dir, "old.key"), marker);
   writeFileSync(join(dir, "new.key"), marker);
   const reads: string[] = [];
   const counted = { ...options, fs: seam(reads) };
-  const preview = await previewEdit(counted, "host.json", [{ key: "tickets.linearKey.path", value: join(dir, "new.key") }]);
-  const saved = await saveEdit(counted, "host.json", [{ key: "tickets.linearKey.path", value: join(dir, "new.key") }], { base: preview.base, confirmed: ["tickets.linearKey.path"] });
+  const key = "tickets.providers.tracker.key.path";
+  const preview = await previewEdit(counted, "host.json", [{ key, value: join(dir, "new.key") }]);
+  const saved = await saveEdit(counted, "host.json", [{ key, value: join(dir, "new.key") }], { base: preview.base, confirmed: [key] });
   assert.match(preview.changes[0].new, /new\.key \(the file exists\)/);
   assert.equal(JSON.stringify([preview, saved]).includes(marker), false, "the marker is in no answer");
   assert.equal(reads.some((path) => path.endsWith(".key")), false, "no key file was read");
-  assert.equal(JSON.parse(readFileSync(hostPath, "utf8")).tickets.linearKey.path, join(dir, "new.key"));
+  assert.equal(JSON.parse(readFileSync(hostPath, "utf8")).tickets.providers.tracker.key.path, join(dir, "new.key"));
 });
 
 test("the keychain service name and a key file's contents cannot be changed from the page", async () => {

@@ -7,9 +7,10 @@
 // defaulted from its ticket's project (A11-116). The optional `brief`,
 // `deny`, `plugins` and `connectors` say how workers behave on this machine, for example how they share its dev servers with each other and with
 // the person, and which of the person's connectors they may call.
-// The optional `terminal` says where this machine serves a worker's terminal in a browser, if it does, and the optional `plan` how the board
-// recognises a ticket's plan among the files uploaded to it. The optional `publish` says how a person's chosen pull requests are announced. The
-// optional `pick` says which tickets the Pick view lists: the key's own, or every open ticket of one team or project.
+// The optional `plan` says how the board recognises a ticket's plan among the files uploaded to it, and `pick` which tickets the Pick view lists.
+// The concerns that name a provider (the tracker, the code host, the publisher, the reviewer and the exposure: where the board and a worker's terminal
+// are served) are the named blocks under `tickets.providers`, read by `providers.ts`, which this module validates. Their old keys still stand for one
+// release, as aliases, and `doctor --fix` moves them (A11-144).
 //
 // READ RAW, AS `haiku-brief.ts` READS ITS KEY. `readHostConfig` ignores unknown keys, so `tickets` is inert to every existing reader, and this
 // module does not teach the strict reader a block only ticket mode uses. It imports neither `host-config.ts` nor `project-config.ts`: both
@@ -19,9 +20,14 @@
 // the field, never answered with a guess.
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
+import { isLinearConnector, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
+import { TicketSettingsRefusal } from "./settings-refusal.ts";
+import { defaultTakenStates } from "./pick-taken.ts";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+
+export { TicketSettingsRefusal };
 
 /** The variable that names the host file, as `project-config.ts` (`HOST_ENV`) spells it; restated so this module resolves nothing at import. */
 export const HOST_FILE_ENV = "AGENT_ORG_HOST";
@@ -66,6 +72,11 @@ export type TicketSettings = Readonly<{
   /** The tracker state a ticket moves to when a worker starts implementing it, if it has not started, or null to leave its state alone. */
   workingState: string | null;
   /**
+   * The tracker states that mark a ticket as held by another instance in Pick (A11-144): a ticket in one, with no run here, is taken. Absent, the working
+   * and planned states the tracker sets; `[]` takes none of them, though a started state is always taken.
+   */
+  takenStates: readonly string[];
+  /**
    * The connector tools a worker may call, as regular expressions matched against the tool's name, each anchored at its start with `^mcp__`.
    * Every other connector stays refused. None by default.
    */
@@ -106,6 +117,10 @@ export type TicketSettings = Readonly<{
    * (never Funnel), and the page accepts this machine's MagicDNS name. Null, the default, serves both on loopback only.
    */
   serve: ServePorts | null;
+  /** Whether doctor requires the `gh stack` extension of the workers' account, the code host's `stack` setting. True by default. */
+  stackRequired: boolean;
+  /** The named provider blocks and the old keys still read, as `providers.ts` reports them, for doctor and the Settings page (A11-144). */
+  providers: Providers;
 }>;
 
 /** The tailnet HTTPS ports `tickets.serve` serves the page and the terminal on. */
@@ -150,18 +165,13 @@ export type Writer = Readonly<{
   effort: string;
 }>;
 
-export class TicketSettingsRefusal extends Error {
-  readonly field: string;
-  constructor(field: string, reason: string) {
-    super(`ticket mode: \`${field}\` in the host file ${reason}`);
-    this.field = field;
-  }
-}
-
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The `tickets` block of a host file's parsed JSON, or `{}` when it has none. */
 export const ticketsBlock = (host: unknown): Record<string, unknown> => (isObject(host) && isObject(host.tickets) ? host.tickets : {});
+
+/** A setting of a block by its name; one the block holds no key of has no value, at its own name. */
+const settingOf = (report: BlockReport, name: string): Setting => report.settings[name] ?? { value: undefined, at: name };
 
 function absolutePath(value: unknown, field: string): string {
   if (typeof value !== "string" || !isAbsolute(value)) throw new TicketSettingsRefusal(field, `must be an absolute path, not ${JSON.stringify(value)}`);
@@ -174,13 +184,14 @@ function positiveInteger(value: unknown, field: string, fallback: number): numbe
   return value as number;
 }
 
-function keySource(value: unknown): KeySource {
+/** A tracker key's source, read from the key at `field`: a Keychain service, or a file's absolute path. Absent is the Keychain's default service. */
+function keySource(value: unknown, field: string): KeySource {
   if (value === undefined) return { keychain: "agent-org-linear" };
   const isKeychainKey = (candidate: unknown): candidate is { keychain: string } => isObject(candidate) && typeof candidate.keychain === "string"
     && candidate.keychain !== "" && candidate.path === undefined;
   if (isKeychainKey(value)) return { keychain: value.keychain };
-  if (isObject(value) && value.keychain === undefined) return { path: absolutePath(value.path, "tickets.linearKey.path") };
-  throw new TicketSettingsRefusal("tickets.linearKey", "must be { \"keychain\": \"<service>\" } or { \"path\": \"/abs/file\" }");
+  if (isObject(value) && value.keychain === undefined) return { path: absolutePath(value.path, `${field}.path`) };
+  throw new TicketSettingsRefusal(field, "must be { \"keychain\": \"<service>\" } or { \"path\": \"/abs/file\" }");
 }
 
 const DENY_RULE_SHAPE = "{ \"pattern\": \"<regular expression>\", \"reason\": \"<why>\" }";
@@ -193,10 +204,11 @@ function pluginList(value: unknown): readonly string[] {
   return Object.freeze([...value]);
 }
 
-function terminalTemplate(value: unknown): string | null {
+/** The live terminal's web address, read from `field`, or null when none is named. */
+function terminalTemplate(value: unknown, field: string): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string" || !/^https?:\/\/[^\s]+$/.test(value) || !/\{(workspace|pane)\}/.test(value)) {
-    throw new TicketSettingsRefusal("tickets.terminal", "must be a web address that names the run's {workspace} or {pane}, such as \"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal\"");
+    throw new TicketSettingsRefusal(field, "must be a web address that names the run's {workspace} or {pane}, such as \"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal\"");
   }
   return value;
 }
@@ -225,18 +237,29 @@ export const plansInBatches = (planner: Planner | null): boolean => planner?.run
 
 /**
  * A planner needs the plan pattern, which is how the board knows which tickets already have a plan. This is the `planner` extension point's host key: whether
- * the skill it names is one a plugin provides is checked by `contractRows` (A11-139), not here, so this reader asks only the shape.
+ * the skill it names is one a plugin provides is checked by `contractRows` (A11-139), not here, so this reader asks only the shape. Its state is the
+ * tracker's `plannedState`, read from its own key (A11-144).
  */
-function plannerOf(value: unknown, plan: string | null): Planner | null {
+function plannerOf(value: unknown, plan: string | null, state: Setting): Planner | null {
   if (value === undefined) return null;
   const isKeysRun = (candidate: unknown): candidate is Record<string, unknown> & { run: string } => isObject(candidate) && typeof candidate.run === "string"
     && /\{keys?\}/.test(candidate.run) && candidate.run.includes("{dir}");
   if (!isKeysRun(value)) {
     throw new TicketSettingsRefusal("tickets.planner", PLANNER_SHAPE);
   }
-  const state = stateName(value.state, "tickets.planner.state");
+  const planned = stateName(state.value, state.at);
   if (plan === null) throw new TicketSettingsRefusal("tickets.planner", "needs tickets.plan, which says which tickets have a plan already");
-  return Object.freeze({ run: value.run, state });
+  return Object.freeze({ run: value.run, state: planned });
+}
+
+/** The states a list names as taken, each a state's name: refused by name when one is not. */
+function takenStatesOf(value: unknown, at: string, fallback: readonly string[]): readonly string[] {
+  if (value === undefined) return Object.freeze([...fallback]);
+  if (!Array.isArray(value)) throw new TicketSettingsRefusal(at, `must be a list of state names, such as ["In Progress", "Planned"], not ${JSON.stringify(value)}`);
+  return Object.freeze(value.map((name: unknown, index) => {
+    if (typeof name !== "string" || name.trim() === "") throw new TicketSettingsRefusal(`${at}[${index}]`, `must be a state's name, not ${JSON.stringify(name)}`);
+    return name.trim();
+  }));
 }
 
 /** A state's name, without the spaces around it, which a state's name in the tracker never has; null when the host file names none. */
@@ -304,8 +327,6 @@ function writerOf(value: unknown): Writer | null {
   return Object.freeze({ run: value.run, model: word(value.model, "tickets.writer.model", "opus"), effort: word(value.effort, "tickets.writer.effort", "high") });
 }
 
-const PUBLISHER_SHAPE = "must be { \"run\": \"<the publish run's instruction, naming {prs} and {dir}>\", \"model\": \"<optional, haiku>\", \"effort\": \"<optional, low>\", \"connectors\": [\"^mcp__...\"] }";
-
 /** A model's or an effort's name: one word. */
 function word(value: unknown, field: string, fallback: string): string {
   if (value === undefined) return fallback;
@@ -313,15 +334,21 @@ function word(value: unknown, field: string, fallback: string): string {
   return value;
 }
 
-function publisherOf(value: unknown): Publisher | null {
-  if (value === undefined) return null;
-  const isPrsRun = (candidate: unknown): candidate is Record<string, unknown> & { run: string } => isObject(candidate) && typeof candidate.run === "string"
-    && candidate.run.includes("{prs}") && candidate.run.includes("{dir}");
-  if (!isPrsRun(value)) {
-    throw new TicketSettingsRefusal("tickets.publish", PUBLISHER_SHAPE);
+/**
+ * The publisher of a block: its run, which names {prs} and {dir}, with its model, effort and connectors. A `none` block publishes nothing (null); a `slack`
+ * block's run is refused by name at the key it was read from (A11-144).
+ */
+function publisherOf(publish: BlockReport): Publisher | null {
+  if (publish.provider === "none") return null;
+  const run = settingOf(publish, "run");
+  if (typeof run.value !== "string" || !run.value.includes("{prs}") || !run.value.includes("{dir}")) {
+    throw new TicketSettingsRefusal(run.at, PUBLISHER_SHAPE);
   }
-  return Object.freeze({ run: value.run, model: word(value.model, "tickets.publish.model", "haiku"), effort: word(value.effort, "tickets.publish.effort", "low"),
-    connectors: connectorPatterns(value.connectors, "tickets.publish.connectors") });
+  const model = settingOf(publish, "model");
+  const effort = settingOf(publish, "effort");
+  const connectors = settingOf(publish, "connectors");
+  return Object.freeze({ run: run.value, model: word(model.value, model.at, "haiku"), effort: word(effort.value, effort.at, "low"),
+    connectors: connectorPatterns(connectors.value, connectors.at) });
 }
 
 function denyRules(value: unknown): readonly DenyRule[] {
@@ -339,10 +366,6 @@ function denyRules(value: unknown): readonly DenyRule[] {
   }));
 }
 
-/**
- * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
- * @param home the user's home directory, for the default state directory
- */
 /** `tickets.designTools`: true when workers have a design tool, so a design gate's check is done. Absent is false. Any other value is refused by name. */
 function designToolsOf(value: unknown): boolean {
   if (value === undefined) return false;
@@ -369,13 +392,6 @@ function prReviewOf(value: unknown): string | null {
   return value;
 }
 
-/** `tickets.reviewer`: `"atomic"`, or absent for no reviewer. Any other value is refused by name. */
-function reviewerOf(value: unknown): Reviewer | null {
-  if (value === undefined) return null;
-  if (value !== "atomic") throw new TicketSettingsRefusal("tickets.reviewer", `must be "atomic" or absent, not ${JSON.stringify(value)}`);
-  return value;
-}
-
 const PICK_SHAPE = "must be \"assigned\", { \"team\": \"<team key, such as A11>\" } or { \"project\": \"<project name>\" }";
 /** A team's key as Linear spells one: a letter, then letters and digits. */
 const TEAM_KEY = /^[A-Za-z][A-Za-z0-9]*$/;
@@ -395,7 +411,6 @@ function pickOf(value: unknown): PickScope {
   throw new TicketSettingsRefusal("tickets.pick", `${PICK_SHAPE}, not ${JSON.stringify(value)}`);
 }
 
-const SERVE_SHAPE = "must be \"tailscale\", or absent to serve the board on loopback only";
 const SERVE_PORTS_SHAPE = "must be { \"ui\": <port>, \"terminal\": <port> }, each optional, each a port from 1 to 65535";
 
 /** A tailnet HTTPS port: a whole number from 1 to 65535. */
@@ -406,28 +421,38 @@ function servePort(value: unknown, field: string, fallback: number): number {
 }
 
 /**
- * `tickets.serve` and `tickets.servePorts`: null when the board is served on loopback only, else the tailnet ports, 9443 and 9444 by default. A
- * `servePorts` without `serve` is refused, as is any other `serve` value, a port that is not a port, and two equal ports.
+ * The tailnet ports of a tailscale exposure: `{ ui, terminal }`, 9443 and 9444 by default. Any other key, a port that is not a port, and two equal
+ * ports are each refused by name, at the key the setting was read from.
+ */
+function tailnetPortsOf(setting: Setting): ServePorts {
+  const { value, at } = setting;
+  if (value === undefined) return Object.freeze({ ui: 9443, terminal: 9444 });
+  if (!isObject(value) || Object.keys(value).some((key) => key !== "ui" && key !== "terminal")) throw new TicketSettingsRefusal(at, SERVE_PORTS_SHAPE);
+  const ports = { ui: servePort(value.ui, `${at}.ui`, 9443), terminal: servePort(value.terminal, `${at}.terminal`, 9444) };
+  if (ports.ui === ports.terminal) throw new TicketSettingsRefusal(at, `ui and terminal must be different ports, and both are ${ports.ui}`);
+  return Object.freeze(ports);
+}
+
+/**
+ * The tailnet ports the board and the terminal are served on, or null when they are served on loopback only, read from one `tickets` block (the
+ * `tickets.serve` and `tickets.servePorts` the release before A11-144 read, or the exposure block). Kept for the units, which read the ports from the
+ * host file they have.
  */
 export function serveOf(tickets: Record<string, unknown>): ServePorts | null {
-  const { serve, servePorts } = tickets;
-  if (serve === undefined) {
-    if (servePorts !== undefined) throw new TicketSettingsRefusal("tickets.servePorts", "is read only with tickets.serve: \"tailscale\", which is absent");
-    return null;
-  }
-  if (serve !== "tailscale") throw new TicketSettingsRefusal("tickets.serve", `${SERVE_SHAPE}, not ${JSON.stringify(serve)}`);
-  const block = servePorts === undefined ? {} : servePorts;
-  if (!isObject(block) || Object.keys(block).some((key) => key !== "ui" && key !== "terminal")) throw new TicketSettingsRefusal("tickets.servePorts", SERVE_PORTS_SHAPE);
-  const ports = { ui: servePort(block.ui, "tickets.servePorts.ui", 9443), terminal: servePort(block.terminal, "tickets.servePorts.terminal", 9444) };
-  if (ports.ui === ports.terminal) throw new TicketSettingsRefusal("tickets.servePorts", `ui and terminal must be different ports, and both are ${ports.ui}`);
-  return Object.freeze(ports);
+  const { exposure } = resolveProviders({ tickets }).blocks;
+  return exposure.provider === "tailscale" ? tailnetPortsOf(settingOf(exposure, "tailnetPorts")) : null;
 }
 
 /** `tickets.uiPort`, read from a `tickets` block as the settings read it: the loopback port the page listens on, 4748 by default. */
 export function uiPortOf(tickets: Record<string, unknown>): number {
-  return positiveInteger(tickets.uiPort, "tickets.uiPort", 4748);
+  const uiPort = settingOf(resolveProviders({ tickets }).blocks.exposure, "uiPort");
+  return positiveInteger(uiPort.value, uiPort.at, 4748);
 }
 
+/**
+ * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
+ * @param home the user's home directory, for the default state directory
+ */
 export function parseTicketSettings(host: unknown, home: string = homedir()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
@@ -441,39 +466,56 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   const session = tickets.herdrSession ?? "tickets";
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) throw new TicketSettingsRefusal("tickets.herdrSession", "must be a herdr session name");
   const plan = planPattern(tickets.plan);
-  const port = positiveInteger(tickets.port, "tickets.port", 4747);
-  const uiPort = positiveInteger(tickets.uiPort, "tickets.uiPort", 4748);
-  if (uiPort === port) throw new TicketSettingsRefusal("tickets.uiPort", `must differ from tickets.port, which is ${port} too`);
+  const providers = resolveProviders(host);
+  const { tracker, codeHost, publish, reviewer, exposure } = providers.blocks;
+  const port = settingOf(exposure, "port");
+  const uiPort = settingOf(exposure, "uiPort");
+  const portNumber = positiveInteger(port.value, port.at, 4747);
+  const uiPortNumber = positiveInteger(uiPort.value, uiPort.at, 4748);
+  if (uiPortNumber === portNumber) throw new TicketSettingsRefusal(uiPort.at, `must differ from ${port.at}, which is ${portNumber} too`);
+  const stack = settingOf(codeHost, "stack");
+  if (stack.value !== undefined && typeof stack.value !== "boolean") throw new TicketSettingsRefusal(stack.at, `must be true or false, not ${JSON.stringify(stack.value)}`);
+  const trackerConnectors = settingOf(tracker, "connectors");
+  const takenSetting = settingOf(tracker, "takenStates");
+  const plannedSetting = settingOf(tracker, "plannedState");
+  // The Linear patterns of `tickets.connectors` belong to the tracker's block, whichever key the file holds them under, so only the rest is read here.
+  const otherConnectors = connectorPatterns(tickets.connectors).filter((pattern) => !isLinearConnector(pattern));
+  const terminal = settingOf(exposure, "terminal");
+  const workingState = settingOf(tracker, "workingState");
+  const linearKey = settingOf(tracker, "key");
   return Object.freeze({
     clones: Object.freeze(repos),
     max: positiveInteger(tickets.max, "tickets.max", 3),
-    port,
-    uiPort,
+    port: portNumber,
+    uiPort: uiPortNumber,
     herdrSession: session,
     binDir: host.binDir === undefined ? defaultBinDir(home) : absolutePath(host.binDir, "binDir"),
     worktreeRoot: tickets.worktreeRoot === undefined ? join(stateDir, "tickets", "worktrees") : absolutePath(tickets.worktreeRoot, "tickets.worktreeRoot"),
     stateDir,
-    linearKey: keySource(tickets.linearKey),
+    linearKey: keySource(linearKey.value, linearKey.at),
     brief: tickets.brief === undefined ? null : absolutePath(tickets.brief, "tickets.brief"),
     review: tickets.review === undefined ? null : absolutePath(tickets.review, "tickets.review"),
     deny: denyRules(tickets.deny),
     plugins: pluginList(tickets.plugins),
-    terminal: terminalTemplate(tickets.terminal),
+    terminal: terminalTemplate(terminal.value, terminal.at),
     plan,
-    planner: plannerOf(tickets.planner, plan),
+    planner: plannerOf(tickets.planner, plan, settingOf(tracker, "plannedState")),
     writer: writerOf(tickets.writer),
     preflight: preflightOf(tickets.preflight),
-    workingState: stateName(tickets.workingState, "tickets.workingState"),
-    connectors: connectorPatterns(tickets.connectors),
-    publish: publisherOf(tickets.publish),
+    workingState: stateName(workingState.value, workingState.at),
+    takenStates: takenStatesOf(takenSetting.value, takenSetting.at, defaultTakenStates(workingState.value, plannedSetting.value)),
+    connectors: Object.freeze([...connectorPatterns(trackerConnectors.value, trackerConnectors.at), ...otherConnectors]),
+    publish: publisherOf(publish),
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
     prReview: prReviewOf(tickets.prReview),
-    reviewer: reviewerOf(tickets.reviewer),
+    reviewer: reviewer.provider === "atomic" ? "atomic" : null,
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
-    serve: serveOf(tickets),
+    serve: exposure.provider === "tailscale" ? tailnetPortsOf(settingOf(exposure, "tailnetPorts")) : null,
+    stackRequired: stack.value ?? true,
+    providers,
   });
 }
 

@@ -34,6 +34,8 @@ test("the address onboard writes names the run's workspace and pane, and its por
 
 test("the terminal serves tickets.herdrSession on tickets.terminal's port, and tickets on 7318 by default", () => {
   assert.deepEqual(terminalTarget({}), { session: "tickets", port: 7318 });
+  assert.deepEqual(terminalTarget({ tickets: { providers: { exposure: { provider: "local", terminal: "http://127.0.0.1:7410/?ws={workspace}" } } } }).port, 7410,
+    "the exposure block's address is the one the service serves, after doctor --fix moved it (A11-144)");
   assert.deepEqual(terminalTarget({ tickets: { herdrSession: "work", terminal: "http://127.0.0.1:7400/?ws={workspace}" } }), { session: "work", port: 7400 });
   assert.deepEqual(terminalTarget({ tickets: { herdrSession: "../x", terminal: "https://elsewhere/?ws={workspace}" } }), { session: "tickets", port: 7318 });
 });

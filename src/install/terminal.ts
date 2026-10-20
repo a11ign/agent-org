@@ -14,6 +14,7 @@
 // PURE: what is installed is read by the caller and passed in.
 import { isAbsolute, join } from "node:path";
 import type { Env } from "./paths.ts";
+import { resolveProviders } from "../ticket-mode/providers.ts";
 
 /** The plugin, as `herdr plugin install` takes it, and as herdr's `plugins.json` names it. */
 export const TERMINAL_PLUGIN = "devswha/herdr-web-ui";
@@ -85,7 +86,16 @@ export function terminalTarget(host: unknown): { session: string; port: number }
   const tickets = typeof host === "object" && host !== null && !Array.isArray(host) ? (host as Record<string, unknown>).tickets : undefined;
   const block = typeof tickets === "object" && tickets !== null && !Array.isArray(tickets) ? (tickets as Record<string, unknown>) : {};
   const session = typeof block.herdrSession === "string" && /^[A-Za-z0-9_-]+$/.test(block.herdrSession) ? block.herdrSession : DEFAULT_HERDR_SESSION;
-  return { session, port: loopbackPort(block.terminal) ?? DEFAULT_TERMINAL_PORT };
+  return { session, port: loopbackPort(exposureTerminal(host)) ?? DEFAULT_TERMINAL_PORT };
+}
+
+/** The terminal address the host file names, where the exposure block holds it (A11-144) or the old `tickets.terminal` still does; undefined when neither can be read. */
+function exposureTerminal(host: unknown): unknown {
+  try {
+    return resolveProviders(host).blocks.exposure.settings.terminal?.value;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The directory herdr web ui keeps its settings in for `session`: `HERDR_PLUGIN_CONFIG_DIR`, where its token and `pair` read them. */

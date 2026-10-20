@@ -22,6 +22,8 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
+import type { ProviderBlock } from "../ticket-mode/providers.ts";
+import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
@@ -89,6 +91,11 @@ export type DoctorDeps = Readonly<{
   updateStatus: () => StatusFile;
   /** The release tags this checkout holds, with no network (A11-90). */
   releaseTags: () => string[];
+  /**
+   * The reviewer gate's refusal, or null when its modules load (A11-144): asked only when the reviewer is `atomic`. A test injects one, so no module is
+   * loaded.
+   */
+  reviewerGate: () => Promise<string | null>;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
   plugins: (input: { wanted: readonly string[]; folder: string; host: HostFacts }) => PluginProblems;
   now: () => number;
@@ -245,6 +252,7 @@ const STACK_DOCS = "https://github.github.com/gh-stack/";
  * missing. Once it is listed, each GitHub repository a clone names is asked whether GitHub makes stacked pull requests available to it.
  */
 function stackChecks(settings: TicketSettings | null, deps: DoctorDeps): Check[] {
+  if (settings !== null && !settings.stackRequired) return [];
   const name = "gh stack";
   const account = workerAccount(hostText(deps), deps.env);
   const listing = deps.ghAs(account)(["extension", "list"]);
@@ -325,6 +333,65 @@ function pluginsOf(settings: TicketSettings | null, deps: DoctorDeps): PluginPro
   return deps.plugins({ wanted: settings.plugins, folder: ticketFolder(settings, "<ticket>"), host: hostFactsOf(settings) });
 }
 
+/** What a block's settings came from, in the words a row gives: its block, the old keys it still reads, or the default it takes with no block. */
+function sourceOf(settings: TicketSettings, block: ProviderBlock): string {
+  const report = settings.providers.blocks[block];
+  if (report.from === "block") return `from tickets.providers.${block}`;
+  if (report.from === "default") return `no block: the default, ${DEFAULT_TEXT[block]}, applies`;
+  const aliases = settings.providers.aliases.filter(({ new: place }) => place === `tickets.providers.${block}` || place.startsWith(`tickets.providers.${block}.`));
+  return `from aliases (${aliases.map(({ old }) => old).join(", ")})`;
+}
+
+/** The default each block takes with no block and no alias, in the words doctor says it with. */
+const DEFAULT_TEXT: Readonly<Record<ProviderBlock, string>> = {
+  tracker: "linear, with the Keychain service agent-org-linear",
+  codeHost: "github, with every role on a user account",
+  publish: "none, which publishes nothing",
+  reviewer: "none, which starts no reviewer",
+  exposure: "local, on loopback with ports 4747 and 4748",
+};
+
+const PROVIDER_LABEL: Readonly<Record<ProviderBlock, string>> = {
+  tracker: "tracker",
+  codeHost: "code host",
+  publish: "publisher",
+  reviewer: "reviewer",
+  exposure: "exposure",
+};
+
+/**
+ * One check per provider (A11-144), named for it and its provider, ok when every check it summarises passes. Its detail says where its settings came
+ * from, so a block a machine does not have is said to take the default.
+ */
+function providerRow(settings: TicketSettings, block: ProviderBlock, wrapped: readonly Check[]): Check {
+  const name = `${PROVIDER_LABEL[block]} (${settings.providers.blocks[block].provider})`;
+  const source = sourceOf(settings, block);
+  const failing = wrapped.filter((check) => !check.ok);
+  if (failing.length === 0) return ok(name, wrapped.length === 0 ? source : `${source}, and its checks pass`);
+  return failed(name, `${source}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises");
+}
+
+/**
+ * The reviewer's row (A11-144), with the gate's check when the reviewer is `atomic`: the gate's modules must load, or no reviewer starts a run. With no
+ * reviewer, the row says so and asks nothing.
+ */
+async function reviewerChecks(settings: TicketSettings, deps: DoctorDeps): Promise<Check[]> {
+  if (settings.reviewer === null) return [providerRow(settings, "reviewer", [])];
+  const refusal = await deps.reviewerGate();
+  const gate = refusal === null ? ok("reviewer gate", "the gate's modules load") : failed("reviewer gate", refusal, "fix what it names: no reviewer starts while the gate does not load");
+  return [gate, providerRow(settings, "reviewer", [gate])];
+}
+
+/**
+ * One FAIL row per old key the file still reads (A11-144): the key, and its place under `tickets.providers`. A host file with none is green here. The
+ * fix is the same for every row, so the person runs it once.
+ */
+function aliasChecks(settings: TicketSettings | null): Check[] {
+  if (settings === null) return [];
+  return settings.providers.aliases.map(({ old, new: place, stale }) => failed(`alias ${old}`,
+    `${old} is read as an alias; its place is ${place}${stale ? ", where its value already is, so it only needs removing" : ""}`, "agent-org doctor --fix"));
+}
+
 /** Every check, in the order a person fixes them. */
 export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const { check: host, settings, noProject } = hostCheck(deps);
@@ -334,6 +401,17 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const instance = await serviceChecks("instance", settings?.port ?? 4747, instanceState, deps);
   const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
   const plugins = pluginsOf(settings, deps);
+  const gh = noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper());
+  const stack = stackChecks(settings, deps);
+  const terminal = await terminalChecks(settings, deps);
+  const tailnet = await tailnetChecks(settings, deps);
+  const key = keyCheck(settings, deps);
+  const linear = linearMcpCheck(deps);
+  const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...stack])];
+  const tracker = settings === null ? [] : [providerRow(settings, "tracker", [key, linear])];
+  const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...tailnet])];
+  const publisher = settings === null ? [] : [providerRow(settings, "publish", [])];
+  const reviewer = settings === null ? [] : await reviewerChecks(settings, deps);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -341,19 +419,25 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
       ? failed("launcher", "`agent-org` is not on PATH", `add its directory to PATH: export PATH="$HOME/.local/bin:$PATH" in your shell's rc file`)
       : ok("launcher", launcher),
     host,
-    ...(noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper())),
-    ...stackChecks(settings, deps),
+    ...aliasChecks(settings),
+    ...gh,
+    ...stack,
+    ...codeHost,
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
-    keyCheck(settings, deps),
-    linearMcpCheck(deps),
+    key,
+    linear,
+    ...tracker,
     writerCheck(settings, plugins),
     ...pluginChecks(settings, plugins),
     ...await preflightChecks(settings, deps),
     ...instance,
     ...herdrScopeChecks(settings, instanceState, deps),
     ...ui,
-    ...await terminalChecks(settings, deps),
-    ...await tailnetChecks(settings, deps),
+    ...terminal,
+    ...tailnet,
+    ...exposure,
+    ...publisher,
+    ...reviewer,
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
@@ -567,8 +651,49 @@ function answers(port: number, path = "/", { healthy = false }: { healthy?: bool
   });
 }
 
+/**
+ * `doctor --fix` (A11-144): moves the host file's old keys into the provider blocks, with a backup beside it. `--dry-run` says what it would move and
+ * writes nothing. Returns the lines to print, and whether the run was refused, so the caller sets the exit code.
+ */
+async function fixHostFile(path: string, { dryRun, now }: { dryRun: boolean; now: Date }): Promise<{ lines: string[]; refused: boolean }> {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return { lines: [`${path} cannot be read`], refused: true };
+  }
+  let fix: Awaited<ReturnType<typeof planHostFix>>;
+  try {
+    fix = await planHostFix(text);
+  } catch (err) {
+    return { lines: [`${path} is not a host file doctor can migrate: ${(err as Error).message}`], refused: true };
+  }
+  if (fix.kind === "nothing") return { lines: [`${path}: ${fix.reason}; nothing is written`], refused: false };
+  if (fix.kind === "refused") return { lines: [`${path}: ${fix.reason}`], refused: true };
+  const moves = describeMoves(fix.moves).map((line) => `  ${line}`);
+  if (dryRun) return { lines: [`${path}: would move, and nothing is written:`, ...moves, "diff:", ...fix.lines], refused: false };
+  const backup = writeHostFix(path, text, fix.text, statSync(path).mode & 0o777, now);
+  return { lines: [`${path}: moved, and the old file is kept at ${backup}:`, ...moves], refused: false };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
-  parseArgs({ args: process.argv.slice(2), strict: true });
+  const { values } = parseArgs({ args: process.argv.slice(2), options: { fix: { type: "boolean" }, "dry-run": { type: "boolean" } }, strict: true });
+  if (values["dry-run"] === true && values.fix !== true) {
+    console.error("doctor: --dry-run says what --fix would move, so it needs --fix");
+    process.exit(2);
+  }
+  if (values.fix === true) {
+    const hostPath = hostFilePath(process.env, homedir(), (file) => {
+      try {
+        return readFileSync(file, "utf8");
+      } catch {
+        return null;
+      }
+    });
+    const fixed = await fixHostFile(hostPath, { dryRun: values["dry-run"] === true, now: new Date() });
+    console.log(fixed.lines.join("\n"));
+    if (fixed.refused || values["dry-run"] === true) process.exit(fixed.refused ? 1 : 0);
+  }
   const services = defaultServiceDeps();
   const checks = await diagnose({
     env: process.env, home: homedir(),
@@ -610,6 +735,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
+    reviewerGate: async () => {
+      const port = await import("../ticket-mode/reviewer-port.ts");
+      await port.loadReviewerGate();
+      return port.reviewerRefusal();
+    },
     now: () => Date.now(),
   });
   console.log(report(checks));

@@ -21,6 +21,8 @@ import { isAbsolute, join } from "node:path";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA, TICKET_ONLY_CHECKOUT } from "./project-config.ts";
 import { LATEST, isToolVersion } from "./lib/release-tag.ts";
 import { GITHUB_ROLES, type AppIdentity, type GithubRole } from "./app-token.ts";
+import { resolveProviders, type Setting } from "./ticket-mode/providers.ts";
+import { TicketSettingsRefusal } from "./ticket-mode/settings-refusal.ts";
 
 export { GITHUB_ROLES, type GithubRole };
 
@@ -140,23 +142,41 @@ function readProjects(host: Record<string, unknown>, source: string): HostProjec
   });
 }
 
+/**
+ * A code host setting, read through the provider blocks (A11-144): `tickets.providers.codeHost` first, then the top-level key it still stands for, which
+ * the strict reader accepts for one release. A refusal the blocks raise is raised here under the same field, so it names the key the value came from.
+ * @param {Record<string, unknown>} host @param {"gh" | "identity"} name @param {string} source
+ */
+function codeHostSetting(host: Record<string, unknown>, name: "gh" | "identity", source: string): Setting {
+  // Only the code host's block is read, so a ticket setting this reader does not take cannot refuse a host file that machine runs without ticket mode.
+  const tickets = isObject(host.tickets) ? host.tickets : {};
+  const providers = isObject(tickets.providers) ? { codeHost: tickets.providers.codeHost } : undefined;
+  try {
+    return resolveProviders({ gh: host.gh, github: host.github, tickets: { providers } }).blocks.codeHost.settings[name] ?? { value: undefined, at: name };
+  } catch (cause) {
+    if (cause instanceof TicketSettingsRefusal) throw new HostConfigRefusal(cause.field, cause.reason, source);
+    throw cause;
+  }
+}
+
 /** @param {Record<string, unknown>} host @param {string} source @returns {GhDirectories} */
 function readGh(host: Record<string, unknown>, source: string): GhDirectories {
-  const gh = requiredObject(host.gh, "gh", source);
-  const header = requiredList(gh, "leadsHeader", "gh.", source).map((line, index) => {
-    if (typeof line !== "string") throw new HostConfigRefusal(`gh.leadsHeader[${index}]`, `it must be a string, not ${describe(line)}`, source);
+  const { value, at } = codeHostSetting(host, "gh", source);
+  const gh = requiredObject(value, at, source);
+  const header = requiredList(gh, "leadsHeader", `${at}.`, source).map((line, index) => {
+    if (typeof line !== "string") throw new HostConfigRefusal(`${at}.leadsHeader[${index}]`, `it must be a string, not ${describe(line)}`, source);
     return line;
   });
-  const workspaces = requiredList(gh, "leadsWorkspaces", "gh.", source).map((entry, index) => {
-    const at = `gh.leadsWorkspaces[${index}].`;
-    const workspace = requiredObject(entry, `gh.leadsWorkspaces[${index}]`, source);
-    const id = requiredString(workspace, "id", at, source);
-    if (!/^\S+$/.test(id)) throw new HostConfigRefusal(`${at}id`, `it must be one word, not ${JSON.stringify(id)}`, source);
-    return { id, role: requiredString(workspace, "role", at, source) };
+  const workspaces = requiredList(gh, "leadsWorkspaces", `${at}.`, source).map((entry, index) => {
+    const entryAt = `${at}.leadsWorkspaces[${index}].`;
+    const workspace = requiredObject(entry, `${at}.leadsWorkspaces[${index}]`, source);
+    const id = requiredString(workspace, "id", entryAt, source);
+    if (!/^\S+$/.test(id)) throw new HostConfigRefusal(`${entryAt}id`, `it must be one word, not ${JSON.stringify(id)}`, source);
+    return { id, role: requiredString(workspace, "role", entryAt, source) };
   });
   return {
-    workers: requiredPath(gh, "workers", "gh.", source),
-    leads: requiredPath(gh, "leads", "gh.", source),
+    workers: requiredPath(gh, "workers", `${at}.`, source),
+    leads: requiredPath(gh, "leads", `${at}.`, source),
     leadsHeader: header,
     leadsWorkspaces: workspaces,
   };
@@ -230,14 +250,15 @@ const GITHUB_ID = /^[A-Za-z0-9._-]+$/;
  */
 function readGithub(host: Record<string, unknown>, source: string): Readonly<GithubDeclaration> {
   const roles: Record<GithubRole, Readonly<RoleIdentity>> = { scheduler: USER_ACCOUNTS, workers: USER_ACCOUNTS, managers: USER_ACCOUNTS, reviewer: USER_ACCOUNTS };
-  if (Object.hasOwn(host, "github")) {
-    const github = requiredObject(host.github, "github", source);
-    const identity = Object.hasOwn(github, "identity") ? requiredObject(github.identity, "github.identity", source) : {};
+  if (Object.hasOwn(host, "github")) requiredObject(host.github, "github", source);
+  const { value, at } = codeHostSetting(host, "identity", source);
+  if (value !== undefined) {
+    const identity = requiredObject(value, at, source);
     for (const key of Object.keys(identity)) {
       if (!(GITHUB_ROLES as readonly string[]).includes(key)) {
-        throw new HostConfigRefusal(`github.identity.${key}`, `it is not a role; the roles are ${GITHUB_ROLES.join(", ")}`, source);
+        throw new HostConfigRefusal(`${at}.${key}`, `it is not a role; the roles are ${GITHUB_ROLES.join(", ")}`, source);
       }
-      roles[key as GithubRole] = readRoleIdentity(requiredObject(identity[key], `github.identity.${key}`, source), `github.identity.${key}.`, source);
+      roles[key as GithubRole] = readRoleIdentity(requiredObject(identity[key], `${at}.${key}`, source), `${at}.${key}.`, source);
     }
   }
   return Object.freeze({ identity: Object.freeze(roles) });
