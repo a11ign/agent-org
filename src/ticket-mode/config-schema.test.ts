@@ -29,7 +29,7 @@ const HOST = {
     terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}", plan: "-plan-[^/]*\\.md$", planner: { run: "plan {keys} into {dir}", state: "Planned" },
     writer: { run: "write {request} into {dir}", model: "opus", effort: "high" }, preflight: [{ name: "lint", run: "true", timeoutSeconds: 30 }],
     workingState: "In Progress", connectors: ["^mcp__linear__(get|list)_"], publish: { run: "publish {prs} into {dir}", model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] },
-    drafts: true, prReview: "a11ign:clean-code-review", reviewer: "atomic", pick: { team: "A11" }, stallMinutes: 30, updateMaxDeferHours: 2,
+    drafts: true, designTools: true, prReview: "a11ign:clean-code-review", reviewer: "atomic", pick: { team: "A11" }, stallMinutes: 30, updateMaxDeferHours: 2,
     serve: "tailscale", servePorts: { ui: 9443, terminal: 9444 },
   },
 };

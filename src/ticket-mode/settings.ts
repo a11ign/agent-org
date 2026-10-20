@@ -78,6 +78,11 @@ export type TicketSettings = Readonly<{
    */
   drafts: boolean;
   /**
+   * Whether this machine gives its workers a design tool (a connector that reads a design), so a design gate's check is done and not declined. False by default:
+   * a worker then declines such a check as "unattended worker, no design tool access". A machine fact, like `connectors`, so it stays in the host file.
+   */
+  designTools: boolean;
+  /**
    * The skill a worker runs on its whole diff before it pushes or opens a pull request, such as `"a11ign:clean-code-review"`, or null for none. When
    * it is set, the ticket hook refuses a push or a pull request until that skill has run since the worker's last commit (A11-86).
    */
@@ -338,6 +343,13 @@ function denyRules(value: unknown): readonly DenyRule[] {
  * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
  * @param home the user's home directory, for the default state directory
  */
+/** `tickets.designTools`: true when workers have a design tool, so a design gate's check is done. Absent is false. Any other value is refused by name. */
+function designToolsOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.designTools", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.drafts`: true, or false for a worker to open its pull request ready. Absent is true. Any other value is refused by name. */
 function draftsOf(value: unknown): boolean {
   if (value === undefined) return true;
@@ -455,6 +467,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     connectors: connectorPatterns(tickets.connectors),
     publish: publisherOf(tickets.publish),
     drafts: draftsOf(tickets.drafts),
+    designTools: designToolsOf(tickets.designTools),
     prReview: prReviewOf(tickets.prReview),
     reviewer: reviewerOf(tickets.reviewer),
     pick: pickOf(tickets.pick),

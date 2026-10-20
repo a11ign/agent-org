@@ -702,3 +702,15 @@ test("A11-134: a Grill run's brief grills one ticket, asks its open line and its
   assert.match(brief, /File no ticket, attach nothing, and change nothing in the tracker/);
   assert.equal(brief.includes("mcp__linear__save_issue"), false);
 });
+
+test("step 7 has a worker decline a design check by default, and do it on a machine with design tools", () => {
+  const brief = (designTools?: boolean) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", ...(designTools === undefined ? {} : { designTools }) });
+  for (const text of [brief(), brief(false)]) {
+    assert.match(text, /7\. If a design gate asks for a design check, decline it with "unattended worker, no design tool access"/);
+    assert.doesNotMatch(text, /do it: read the design's values/);
+  }
+  const done = brief(true);
+  assert.match(done, /7\. If a design gate asks for a design check, do it: read the design's values with the design tool, measure your result in the running app, look at the design node/);
+  assert.match(done, /Decline it only when a design tool call is refused, quoting the refusal in the pull request body\./);
+  assert.doesNotMatch(done, /no design tool access/);
+});

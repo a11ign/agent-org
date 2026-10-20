@@ -478,6 +478,12 @@ function commitStep(prReview: string | null): string {
   return `5. Commit with a conventional commit message. Then, BEFORE you push or open a pull request, review your whole diff: call the Skill tool with \`${prReview}\` on \`git diff <the repository's default branch>...HEAD\` and anything uncommitted. Fix every finding, re-run the repository's tests, typecheck and lint, and commit the fixes. The hook refuses a push or a pull request until the skill has run since your last commit, so after you commit fixes run it again. Stop when a run finds nothing to change.`;
 }
 
+/** Step 7 of the brief on a machine with no design tool, the default: a worker declines a design gate's check, and says so in the pull request body. */
+const DESIGN_CHECK_DECLINED = "7. If a design gate asks for a design check, decline it with \"unattended worker, no design tool access\" and say so in the pull request body.";
+
+/** Step 7 of the brief on a machine with `tickets.designTools: true`: a worker does the check, and declines it only when a design tool call is refused. */
+const DESIGN_CHECK_DONE = "7. If a design gate asks for a design check, do it: read the design's values with the design tool, measure your result in the running app, look at the design node, and fill in the check the gate gives you. Decline it only when a design tool call is refused, quoting the refusal in the pull request body.";
+
 /** Step 6 of the brief for a worker that opens its pull requests as drafts, the default. */
 function draftPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords): string {
   return openPullRequestStep(`ONE DRAFT pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords);
@@ -508,10 +514,10 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null }: {
+  connectors = [], planned = false, drafts = true, designTools = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
-  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
+  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -549,7 +555,7 @@ ${plannedText({ planned })}1. Find the cause in the code. Fix it, with a test th
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 ${commitStep(prReview)}
 ${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords)}
-7. If a design gate asks for a design check, decline it with "unattended worker, no design tool access" and say so in the pull request body.
+${designTools ? DESIGN_CHECK_DONE : DESIGN_CHECK_DECLINED}
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
 
