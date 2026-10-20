@@ -31,6 +31,16 @@ import { type PoolContext } from "./pool-context.ts";
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
 
+// A new pane's shell is not at its prompt for a moment, longer on a loaded host, and herdr refuses an agent start until it is (`agent_pane_busy`).
+const SHELL_TRY_MS = 500;
+const SHELL_TRIES = 30;
+
+/** Did herdr refuse because the pane's shell is not ready yet? PURE. */
+export function paneShellNotReady(err: unknown): boolean {
+  const stderr = (err as { stderr?: unknown } | null)?.stderr;
+  return (typeof stderr === "string" || Buffer.isBuffer(stderr)) && String(stderr).includes('"agent_pane_busy"');
+}
+
 /**
  * THE TWO DIALOGS CLAUDE CODE RAISES ON A FOLDER IT HAS NOT SEEN, and the only screens the pool answers. `--dangerously-skip-permissions` does not
  * skip them (measured 2026-10-13): a new git worktree asks whether its folder is trusted, and one under a directory whose `CLAUDE.md` imports a
@@ -64,6 +74,19 @@ async function start(ctx: PoolContext, entry: Entry, folder: string, dir: string
   return startAgent(ctx, { ...runPlace(ctx, entry), folder }, env, [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })], runId);
 }
 
+/** Run herdr's `agent start` for `args`, trying again while herdr says the pane's shell is not ready, and throw whatever else it refuses with. */
+async function startOnceShellReady(ctx: PoolContext, args: string[]): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await ctx.herdrAsync(args, START_TIMEOUT_MS);
+      return;
+    } catch (err) {
+      if (!paneShellNotReady(err) || attempt >= SHELL_TRIES) throw err;
+      await ctx.wait(SHELL_TRY_MS);
+    }
+  }
+}
+
 /**
  * Open a workspace named `place.name` in `place.folder`, with `env` in its shell, and start Claude in it with `tail` after the command. Returns
  * the workspace and its pane, or throws with herdr's reason, naming `what`, after closing anything it opened.
@@ -74,7 +97,7 @@ async function startAgent(ctx: PoolContext, place: RunPlace, env: Record<string,
   const opened = openPane(run, place.name, env, place.folder, session);
   if ("refusal" in opened) throw new Error(opened.refusal);
   try {
-    await herdrAsync(agentStartArgs(place.name, "claude", opened.pane, [...tail], session), START_TIMEOUT_MS);
+    await startOnceShellReady(ctx, agentStartArgs(place.name, "claude", opened.pane, [...tail], session));
   } catch (err) {
     // A start can outlast its timeout and still succeed: ask the listing before calling it a failure.
     const listed = readAgents(run, session)?.find((agent) => agent.label === place.name);
