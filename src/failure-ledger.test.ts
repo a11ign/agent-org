@@ -14,7 +14,7 @@ import { recordTickFailures } from "./failure-recorders.ts";
 import { handRerouteEvents, recordHandReroutes, type Change } from "./hand-fix-ledger.ts";
 import { unresolvedOwnerEvents } from "./pr-ownership.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
-import { readLanes, scopeTick } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { readLanes, scopeTick } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { scopesOf } from "./work-gate/vocabulary.ts";
 
 const NOW = Date.parse("2026-10-09T10:00:00Z");

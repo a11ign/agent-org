@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scopesOf } from "../work-gate/vocabulary.ts";
-import { readLanes, scopeTick, pullRequestsOfOthers, unreadLanes } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { readLanes, scopeTick, pullRequestsOfOthers, unreadLanes } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { readOtherScopes } from "../work-gate.ts";
 import { fileOverlapReason, lookupOpenPrFiles } from "../row-claim/file-overlap-rule.ts";
 import { homeProjectDeclaration } from "../project-config.ts";

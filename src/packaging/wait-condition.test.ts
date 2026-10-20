@@ -25,7 +25,7 @@ import { holdReasonOf, holdExcused } from "../pr-hold-state.ts";
 import { SIGNALS } from "../org-health/thresholds.ts";
 import { redPrReading, staleWaitReading, waitWithoutReasonReading } from "../org-health/overdue-readings.ts";
 import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-readings.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { redPrFacts } from "../work-gate/tick.ts";
 import { staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate/org-health.ts";

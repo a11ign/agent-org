@@ -20,7 +20,7 @@ import { acceptanceSourceOf, acceptanceSourceOfThisPullRequest, ciInputOf, prAut
 import { checkoutPullRequestMerge, installPullRequestCheckout, orgSideAcceptanceEligibility, orgSideAcceptanceVerdict, OUTSIDE_ACCEPTANCE_FLAG, outsideAcceptanceOn, shadowAcceptanceVerdict } from "./acceptance-commands.ts";
 import { INSIDE, reviewTrustOf } from "./review-trust.ts";
 import { acceptanceGateOf, greenUnarmedOrders } from "./work-gate/pr-orders/pr-gate-readings.ts";
-import { ACCEPTANCE_GATE_SWITCH_ENV, gateUnarmedOnAcceptance } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { ACCEPTANCE_GATE_SWITCH_ENV, gateUnarmedOnAcceptance } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { resolveAcceptanceSource } from "./acceptance-file.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 

@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { performActions } from "../work-gate/orders.ts";
 import { requiredWhenNeeded } from "../work-gate/pr-orders/pr-gate-readings.ts";
 

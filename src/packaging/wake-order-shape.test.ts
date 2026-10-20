@@ -29,7 +29,7 @@ import { claimedRowAmendedOrders } from "../work-gate/causes/rows-amended.ts";
 import { finishedEpicOrders } from "../work-gate/causes/rows-epics.ts";
 import { rowBranchOrders, incompleteRowOrders } from "../work-gate/causes/rows-claims.ts";
 import { diskHeadroomOrders } from "../work-gate/causes/org-health-host.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 
 const bytes = (text: string) => Buffer.byteLength(text);
 const FOLLOW_UP_BOUND = 500;

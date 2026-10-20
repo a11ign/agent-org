@@ -15,7 +15,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { holdForGithubIncident, githubIncidentOf } from "./work-gate/causes/org-health-github-incident.ts";
 import { orgHealthNow } from "./work-gate/org-health.ts";
 import { withPrOwners } from "./work-gate/pr-owners.ts";

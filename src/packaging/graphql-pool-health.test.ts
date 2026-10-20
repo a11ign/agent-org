@@ -14,7 +14,7 @@ import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-re
 import { poolFromRateLimitField } from "../api-pool.ts";
 import { OPEN_ITEMS_QUERY as ROW_OFF_BOARD_QUERY } from "../ticket-port/github-adapter.ts";
 import { readRowsOffBoard } from "../work-gate/causes/rows-off-board.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { orgHealthNow } from "../work-gate/org-health.ts";
 
 const RESET = "2026-10-04T12:57:14Z";

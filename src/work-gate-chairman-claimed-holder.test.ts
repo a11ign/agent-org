@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { readChairmanPriorityOfOffer } from "./work-gate/tick.ts";
 import { CHAIRMAN_PRIORITY_LABEL as LABEL } from "./work-gate/vocabulary.ts";
 

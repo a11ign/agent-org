@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { scopesOf } from "../work-gate/vocabulary.ts";
 import { greenUnarmedOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { performActions } from "../work-gate/orders.ts";

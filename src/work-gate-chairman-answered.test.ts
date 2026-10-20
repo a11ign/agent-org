@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { readChairmanBlocked, chairmanReadsRefused } from "./work-gate/causes/rows-chairman.ts";
 import { CHAIRMAN_LOGINS } from "./work-gate/vocabulary.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";

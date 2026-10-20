@@ -17,7 +17,7 @@ import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
 import { relaneTarget } from "../wake/exit-and-limits.ts";
 import { relaneFacts } from "../wake.ts";
 import { refusalReport } from "../wake/merge-queue-wait.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 
 const MINUTE = 60_000;
 const T0 = 1_000_000_000_000;

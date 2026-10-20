@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { budgetOf } from "./gh-conditional.ts";
 import { loadAllowlist, normaliseLine, parseTicks, repeatingLines } from "./repeating-lines.ts";
-import { tickReadingLines } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { tickReadingLines } from "./work-gate/tick/tick-decisions-and-flags.ts";
 
 const TICKS = 40;
 const TICK_MINUTES = 2;
@@ -87,7 +87,7 @@ testEach("the shipped allowlist allows a counter line, with a reason that names 
     lineCheck: (line: string | undefined) => {
       assert.equal(line, "gate-rest: 15 of 21 conditional reads answered 304", "the formatter's own line");
     },
-    writer: /src\/work-gate\/tick\/blocker-cleared-reading\.ts/,
+    writer: /src\/work-gate\/tick\/tick-decisions-and-flags\.ts/,
   },
   {
     name: "the read memo line is the gate's own line, and the shipped allowlist allows it with a reason that names its writer",

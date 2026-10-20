@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { OUTSIDE_ACCEPTANCE_FLAG, outsideAcceptanceOn, orgSideAcceptanceEligibility, shadowAcceptanceVerdict, type OrgSideVerdict } from "../acceptance-commands.ts";
-import { ACCEPTANCE_GATE_SWITCH_ENV, TREE_WIDE_GUARDS_SWITCH_ENV, acceptanceJobOf, gateUnarmedOnAcceptance } from "./tick/blocker-cleared-reading.ts";
+import { ACCEPTANCE_GATE_SWITCH_ENV, TREE_WIDE_GUARDS_SWITCH_ENV, acceptanceJobOf, gateUnarmedOnAcceptance } from "./tick/tick-decisions-and-flags.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { newestPerName } from "../newest-check-run.ts";
 

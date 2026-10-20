@@ -137,7 +137,7 @@ test("end to end: the runner hands the REAL gate's state paths its copy, and the
     writeFileSync(join(live, READS_DIR, `${tickMs}.json`), JSON.stringify({ tick: tickMs, args: { prs: [], readyRows: [] }, orders: [] }));
     // The candidate IS the real gate, wrapped only so the paths it resolved at import come back as an order the record can carry.
     const candidate = join(root, "candidate.mjs");
-    writeFileSync(candidate, `import { decide as real } from ${JSON.stringify(`${SRC}work-gate/tick/blocker-cleared-reading.ts`)};
+    writeFileSync(candidate, `import { decide as real } from ${JSON.stringify(`${SRC}work-gate/tick/tick-decisions-and-flags.ts`)};
 import { REVIEWER_STATE_DIR } from ${JSON.stringify(`${SRC}work-gate/vocabulary.ts`)};
 import { DRAIN_MARKER } from ${JSON.stringify(`${SRC}work-gate/reads/read-memo-and-exit.ts`)};
 export function decide(args) {

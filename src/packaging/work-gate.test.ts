@@ -36,7 +36,7 @@ import { deriveClosureRequirements, createClosureMemo } from "../acceptance-comm
 import { patchIdOfDiff } from "../review-verdict.ts";
 import { MAX_ROW_ORDERS_PER_TICK, comparablePrFiles, ownerOf, NOT_PICKABLE, NOT_STARTABLE, ROUTED_TO, PROMOTION_ASK_WINDOW_MS, HOUR_MS, PARKED_LABEL } from "../work-gate/vocabulary.ts";
 import { readCommitShas, readPatchId, withPatchIds, readWorktreeStamps, reviewBlocked, reviewableHead, pipelineCodeownerReviewMissing } from "../work-gate/causes/pr-reviews.ts";
-import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { checksSettledGreen, blockingChecks, anyChecksRed, conflictedPrs, conflictStateOf, reviewStateOf, REVIEW_STATE } from "../work-gate/pr-state.ts";
 import { readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, EXIT, draining, DRAIN_MARKER, GH_READS, GIT_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { readReadyRows, readPromotableRows, readClaimedRowComments, readOpenRows, readRowBranches } from "../work-gate/reads.ts";

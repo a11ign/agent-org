@@ -48,7 +48,7 @@ const { orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("../o
 const { CAUSES, JUDGMENT_CAUSES, START_CAUSES } = await import("../cause-declaration.ts");
 const { GH_READS } = await import("../work-gate/reads/read-memo-and-exit.ts");
 const { UNCLAIMABLE_AFTER_TICKS } = await import("../work-gate/causes/rows-claims.ts");
-const { decide } = await import("../work-gate/tick/blocker-cleared-reading.ts");
+const { decide } = await import("../work-gate/tick/tick-decisions-and-flags.ts");
 const { withPrOwners } = await import("../work-gate/pr-owners.ts");
 const { redPrFacts } = await import("../work-gate/tick.ts");
 const { profileFor } = await import("../worker-profile.ts");
@@ -445,7 +445,7 @@ const EXEMPT: Record<string, string> = {
   "work-gate/pr-orders/pr-gate-readings.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
   "org-health/board-truth-and-access-readings.ts": "its `CirclePr` type names the rollup field so the circle reader can carry it; it reads no verdict and counts no red PR",
   "org-retro/retro-window-and-journal-patterns.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
-  "work-gate/tick/blocker-cleared-reading.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",
+  "work-gate/tick/tick-decisions-and-flags.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",
 };
 // 3 before a11ign#5152 split `work-gate.ts`: its readers of the rollup were ONE file, which imported the decider for `redPrFacts`; they are four modules now.
 // Eleven: the readers of the rollup now sit in `work-gate/`, `org-health/` and `org-retro/` files, and four of them read pending or shadow state, not red.

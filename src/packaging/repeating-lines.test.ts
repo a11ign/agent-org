@@ -22,7 +22,7 @@ import { REPEAT_TICKS, normaliseLine, parseTicks, parseAllowlist, loadAllowlist,
 import { refusalReport } from "../wake/merge-queue-wait.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { AGED_BACKLOG_MS, agedBacklogOrders } from "../work-gate/causes/rows-backlog.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { readPromotableRows } from "../work-gate/reads.ts";
 import { connectionOfSelected, readsRowsByLabel, selectedFieldsOf } from "./rows-by-label-fixtures.ts";
 

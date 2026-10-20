@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { perPullRequestOrders } from "../work-gate/pr-orders.ts";
 import { ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders/pr-gate-readings.ts";
-import { decide, rowReviewSkillFlagOn } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide, rowReviewSkillFlagOn } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts";

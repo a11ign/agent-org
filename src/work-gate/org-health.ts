@@ -17,7 +17,7 @@ import { HOUR_MS, MAX_ROW_ORDERS_PER_TICK, scopesOf, labelsOf, sessionOf, REVIEW
 import { fleetBatchRows } from "./causes/rows-fleet-batch.ts";
 import { defaultRun, repoNow, forgetReads, readWithFirstWaveTogether } from "./reads/read-memo-and-exit.ts";
 import { shouldBeMerging } from "./causes/pr-checks.ts";
-import { dispatchedLabJobsOrSay } from "./tick/blocker-cleared-reading.ts";
+import { dispatchedLabJobsOrSay } from "./tick/tick-decisions-and-flags.ts";
 import { redPrFacts } from "./tick.ts";
 import { partitionUnclaimed } from "./causes/rows-claims.ts";
 import { openBlockers } from "./causes/rows-amended.ts";

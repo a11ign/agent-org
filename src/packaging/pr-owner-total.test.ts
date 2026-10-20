@@ -17,7 +17,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { readWorktreeStamps, stampLookup } from "../work-gate/causes/pr-reviews.ts";
 import { ownerOfPr, UNOWNED_PR_SESSION } from "../work-gate/pr-orders/pr-gate-readings.ts";

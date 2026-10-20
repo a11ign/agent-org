@@ -34,7 +34,7 @@ import { type BoardFacts, rowsOffBoard } from "./causes/rows-off-board.ts";
 import { type EmergencyPriorityOption, type OfferHierarchy, CHAIRMAN_REFUSAL_FLAG, chairmanRowAnsweredByCeo, emergencyHierarchyNow, readChairmanPriority, readEmergencyPriorityOption } from "./causes/rows-offer.ts";
 import { readOtherScopes } from "../work-gate.ts";
 import { REVIEWER_STATE_DIR, labelsOf } from "./vocabulary.ts";
-import { blockerClearedReading, cutBackFirst, decide, tickReadingLines } from "./tick/blocker-cleared-reading.ts";
+import { blockerClearedReading, cutBackFirst, decide, tickReadingLines } from "./tick/tick-decisions-and-flags.ts";
 import { restConditionalOn, tickBudget } from "../gh-conditional.ts";
 
 /**

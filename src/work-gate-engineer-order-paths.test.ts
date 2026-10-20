@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { LAUNCH_PLACEHOLDER } from "./work-gate/vocabulary.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { UNCLAIMABLE_AFTER_TICKS, claimRefusalOf, claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate/causes/rows-claims.ts";

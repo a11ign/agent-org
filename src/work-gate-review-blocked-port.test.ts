@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { REVIEW_BLOCKED_SWITCH_ENV, staleRefusalOf, withStaleRefusals, type StaleRefusalPort } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { REVIEW_BLOCKED_SWITCH_ENV, staleRefusalOf, withStaleRefusals, type StaleRefusalPort } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { reviewBlocked } from "./work-gate/causes/pr-reviews.ts";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
 import { reviewBlockedOrders } from "./work-gate/pr-orders/pr-gate-readings.ts";

@@ -45,7 +45,7 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { homeProjectDeclaration } = await import("../project-config.ts");
 const { scopesOf } = await import("../work-gate/vocabulary.ts");
-const { readLanes, scopeTick } = await import("../work-gate/tick/blocker-cleared-reading.ts");
+const { readLanes, scopeTick } = await import("../work-gate/tick/tick-decisions-and-flags.ts");
 const { ownerOfPr } = await import("../work-gate/pr-orders/pr-gate-readings.ts");
 const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
 const { deliver } = await import("../wake/fyi-queue.ts");

@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { decide as decideOnHost } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide as decideOnHost } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { withPatchIds, reviewBlocked, readEvidenceLabelledAt, withEvidenceLabelAges, AWAITING_EVIDENCE_LABEL, AWAITING_EVIDENCE_QUIET_MS } from "../work-gate/causes/pr-reviews.ts";

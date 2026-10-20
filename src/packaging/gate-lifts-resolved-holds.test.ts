@@ -16,7 +16,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WAIT_FIELDS, WAIT_MARKER, waitItemOf, staleWaits, liftableHolds } from "../wait-condition.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { staleWaitOrders, waitTickFacts, orgHealthNow } from "../work-gate/org-health.ts";
 import { liftResolvedHolds } from "../work-gate/org-health.ts";

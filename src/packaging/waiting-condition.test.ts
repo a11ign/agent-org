@@ -9,7 +9,7 @@ import { waitingOn, notBeforeDate, todayIso, describeWaiting, proseBlockers, ans
   bareAnswerLabel, ANSWER_LABEL_GRACE_MS, answersGiven, ANSWER_GIVEN_WINDOW_MS }
   from "../waiting-condition.ts";
 import { bareAnswerLabelOrders, answerGivenOrders } from "../work-gate/causes/rows-answers.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { JUDGMENT_CAUSES, CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { readLedger } from "../wake/session-endings.ts";
 import { JUDGMENT_TTL_MS } from "../wake/seat-reset.ts";

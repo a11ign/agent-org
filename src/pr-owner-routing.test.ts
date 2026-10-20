@@ -13,10 +13,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { PR_OWNER_ROUTING_FLAG } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { withholdOutsideFollowUps } from "./work-gate/pr-orders.ts";
-import { prOwnerRoutingFlagOn } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { prOwnerRoutingFlagOn } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { OUTSIDE, INSIDE, reviewTrustOf, type DeclaredIdentities } from "./review-trust.ts";
 import { CHAIRMAN_LOGINS } from "./work-gate/vocabulary.ts";
 import { emptyCanaryState, STANDARD_MACHINERY_SIGNALS } from "./org-health/fleet-build-readings.ts";

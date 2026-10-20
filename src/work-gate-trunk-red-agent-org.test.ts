@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { PRIMARY_TRUNK, readTrunkRed, trunkOfCodeRepository, trunkRedOrders } from "./trunk-red.ts";
-import { readLanes, readScopeTrunkRed, scopeTick } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { readLanes, readScopeTrunkRed, scopeTick } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { scopesOf } from "./work-gate/vocabulary.ts";
 import { stuckRowOf } from "./wake/merge-queue-wait.ts";
 

@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { orgHealthNow, fleetWaitingFacts } from "../work-gate/org-health.ts";
-import { dispatchedLabJobsOrSay } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { dispatchedLabJobsOrSay } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { dispatchedJobNames, readDispatchedLabJobs } from "../work-gate/lab-job-orders.ts";
 
 const HOUR_MS = 3_600_000;

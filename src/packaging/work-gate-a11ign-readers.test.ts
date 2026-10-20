@@ -34,7 +34,7 @@ import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import { type Declaration } from "../lib/pin-ratchet.ts";
 import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/command-classes-and-declarations.ts";
-import { decide as decideOnHost } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide as decideOnHost } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { comparablePrFiles } from "../work-gate/vocabulary.ts";
 import { blockingChecks } from "../work-gate/pr-state.ts";

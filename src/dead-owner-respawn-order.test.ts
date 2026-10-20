@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 
 type Order = { session: string; cause: string; subject?: string; causeKey: string; prompt: string; };
 type Pr = Record<string, unknown>;

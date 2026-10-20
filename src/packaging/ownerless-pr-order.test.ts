@@ -18,10 +18,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { OWNERLESS_ASK_FLAG, OWNERLESS_ASK_SESSION } from "../work-gate/pr-orders.ts";
 import { ownerOfPr } from "../work-gate/pr-orders/pr-gate-readings.ts";
-import { ownerlessAskFlagOn } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { ownerlessAskFlagOn } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
 import { DEPENDENCY_BOT_LOGIN } from "../dependency-bot-login.ts";
 import { MACHINERY_SIGNALS } from "../org-health/hold-and-rerun-readings.ts";

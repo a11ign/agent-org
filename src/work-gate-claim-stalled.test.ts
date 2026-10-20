@@ -15,7 +15,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { claimStallTick, claimStallsNow } from "./work-gate/claim-stall-tick.ts";
 import { readElsewherePrs } from "./work-gate/reads.ts";
 import { CAUSES, START_CAUSES, JUDGMENT_CAUSES } from "./cause-declaration.ts";

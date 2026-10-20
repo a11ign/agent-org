@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CHAIRMAN_PRIORITY_LABEL as LABEL, scopesOf } from "../work-gate/vocabulary.ts";
 import { readChairmanPriorityOfOffer } from "../work-gate/tick.ts";
-import { readLanes, scopeTick } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { readLanes, scopeTick } from "../work-gate/tick/tick-decisions-and-flags.ts";
 
 const CHAIRMAN = "DanBeckDev";
 const BOT = "a11ign-workers[bot]";

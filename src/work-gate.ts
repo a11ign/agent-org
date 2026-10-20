@@ -50,7 +50,7 @@ import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts";
 import { readTrunkRed } from "./trunk-red.ts";
 import { requiredWhenNeeded, ownerOfPr } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { fileOutsideIdleTriage, fileReviewGatedHuman } from "./work-gate/pr-orders.ts";
-import { prOwnerRoutingFlagOn, ownerlessUnreached, outsideSessionPrFlagOn } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { prOwnerRoutingFlagOn, ownerlessUnreached, outsideSessionPrFlagOn } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { sessionPrOutsideNow } from "./work-gate/outside-session-pr.ts";
 import { declaredIdentities, VERDICT_DELIVERY_FLAG } from "./review-trust.ts";
 import { orgHealthTogether, readSweepFact, rulingOrdersNow, waitTickFacts } from "./work-gate/org-health.ts";
@@ -89,7 +89,7 @@ import { queueEntryNoRunOrders } from "./work-gate/causes/queue-entry-no-run.ts"
 import { epicRowsOf } from "./work-gate/causes/rows-epics.ts";
 import { partitionFleetBatch } from "./work-gate/causes/rows-fleet-batch.ts";
 import { engineerShareReads } from "./work-gate/causes/rows-offer.ts";
-import { anyBlockerClearingCandidate, blockerClearedReading, decide, exitPartial, homeRowsOf, labJobRecordsOrSay, markOutageReads, otherScopeTicks, outageThisTick, promotedWhenUnblocked, pullRequestsOfOthers, readArmingOf, readHostDrift, readLanes, recordTickFailures, rowsOffBoardOrSay, unreadLanes, withEjections, withStaleRefusals } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { anyBlockerClearingCandidate, blockerClearedReading, decide, exitPartial, homeRowsOf, labJobRecordsOrSay, markOutageReads, otherScopeTicks, outageThisTick, promotedWhenUnblocked, pullRequestsOfOthers, readArmingOf, readHostDrift, readLanes, recordTickFailures, rowsOffBoardOrSay, unreadLanes, withEjections, withStaleRefusals } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { boardingPortOf, claimStallsWithFacts, closedClaimsWhenWorkerListed, ghQueueTickOrSay, offerHierarchyNow, portOf, readChairmanPriorityOfOffer, readTrackerLanes, reportClearingDrops, settleCitedRepeatingLines, settleOffBoardRows, settleOverdueLists, withClosedClaims } from "./work-gate/tick.ts";
 import { REVIEWER_STATE_DIR, type Scope, comparablePrFiles, labelsOf, scopesOf } from "./work-gate/vocabulary.ts";
 import { endGateSpan } from "./lib/spawn-census.ts";

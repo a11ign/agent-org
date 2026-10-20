@@ -18,7 +18,7 @@ import { mkdtempSync, appendFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { withPatchIds } from "../work-gate/causes/pr-reviews.ts";
 import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
