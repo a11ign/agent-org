@@ -17,7 +17,7 @@ import { shippedUnitText, shippedUnits } from "./host-units/shipped-unit-texts-a
 import { unitDrift, unitState } from "./host-units/host-drift-findings-and-notes.ts";
 import { homeHostConfig } from "./host-config.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const HOUR = 3_600_000;

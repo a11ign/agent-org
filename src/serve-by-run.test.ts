@@ -8,7 +8,7 @@
  * a literal longer than 100 bytes); a `runDecision` failure, a `stale` apply, a `held` lease and a class absent from the registry each FALL BACK, write nothing, and the seat IS
  * prompted with the original order.
  */
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";

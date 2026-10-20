@@ -29,7 +29,7 @@ import { CEO_ONE_SHOT_SPAWN_CAUSES, createCeoOneShot, ceoOneShotEnabled, withCeo
 import { startedPanes } from "./packaging/started-pane.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
 const held = STANDING.map((label) => ({ label, status: "working" }));

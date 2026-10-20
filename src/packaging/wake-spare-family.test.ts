@@ -32,7 +32,7 @@ import { labelAfterCreate } from "../pr-open.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.ts";
 import { startedPanes } from "./started-pane.ts";
-import { moduleSource } from "../lib/module-source.ts";
+import { moduleSource } from "../lib/source-text-reads.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 /** A transcript root that holds nothing: a per-row instance's order reads its own transcripts to decide `/compact` (#2688), and the default root is the

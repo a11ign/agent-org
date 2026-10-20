@@ -24,7 +24,7 @@ import { startedPanes } from "./packaging/started-pane.ts";
 import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
 import { emptyCanaryState, type CanaryState } from "./org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "./org-health.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 /** A test that is not ABOUT the clear's five-second settle does not wait it. */
 const noSettle = () => {};

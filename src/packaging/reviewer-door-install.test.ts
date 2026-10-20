@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
-import { moduleSource } from "../lib/module-source.ts";
+import { moduleSource } from "../lib/source-text-reads.ts";
 
 const { REVIEWER_DOOR_SOURCE, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorState } = await import("../host-units/gh-wrapper-and-notes.ts");
 const { driftReport, hostUnitDrift } = await import("../host-units.ts");

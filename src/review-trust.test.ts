@@ -29,7 +29,7 @@ import {
   outsideReviewerEnvironment,
   outsideVerdictBlock, postOutsideVerdict, postOutsideVerdicts, reviewTrustOf, type DeclaredIdentities, type DoorRun, type ReviewTrust,
 } from "./review-trust.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 type Order = Parameters<typeof deliver>[0][number];
 type Events = string[];

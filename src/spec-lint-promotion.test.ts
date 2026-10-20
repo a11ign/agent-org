@@ -23,7 +23,7 @@ import { SPEC_LINT_REFUSED_KIND } from "./failure-ledger.ts";
 import { promoteAndReviewRow, promoteRefusalReason, promoteRow, readSpecLintFlag, recordSpecLintRefusals, reviewPromotedSpec, specLintDeps, type SpecLintAtPromotion } from "./row-file/roadmap-without-parent-refusal.ts";
 import { SPEC_REVIEW_LABEL, SPEC_REVIEW_WAKE, type LintDeps } from "./spec-lint.ts";
 import { freshState } from "./triage-provider.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 // --- fixtures -----------------------------------------------------------------------------------------------------------------
 

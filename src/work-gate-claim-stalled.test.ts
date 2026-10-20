@@ -35,7 +35,7 @@ import {
 } from "./row-claim.ts";
 import { unknownFlags } from "./lib/cli-flags.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, commentMove, workAtRisk, fileMove, claimReading, claimFactsFrom, readClaim, RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { nudgeKey, nudgeDeliveredAt, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart, statMtime, pathExists } from "./claim-stall.ts";

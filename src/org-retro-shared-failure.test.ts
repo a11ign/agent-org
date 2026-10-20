@@ -19,7 +19,7 @@ import * as retro_2 from "./org-retro/retro-cause.ts";
 import { FAILURE_LEDGER_FILE, recordFailures } from "./failure-ledger.ts";
 import { underspecifiedReading } from "./spec-lint.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const NOW = Date.parse("2026-10-12T00:22:00Z");
 const MINUTE = 60_000;

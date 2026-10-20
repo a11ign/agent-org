@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GH_READ_TIMEOUT_MS, ghWithin, readPrs } from "./work-gate/reads/read-memo-and-exit.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const BOUND_MS = 400;
 const HUNG_FOR_S = 60;

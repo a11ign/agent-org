@@ -45,7 +45,7 @@ import { REPO } from "../project-identity.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { RESOURCES } from "../project-vocabulary.ts";
-import { moduleSource } from "../lib/module-source.ts";
+import { moduleSource } from "../lib/source-text-reads.ts";
 
 /** #1603: the packages/ rows read the project's own tracked `packages/` tree (docs/project-tree-dependency.md, row 1603). Skipped only where that tree is absent. */
 const SKIP_NO_PACKAGES = trackedTopLevelDirs().includes("packages") ? false

@@ -13,7 +13,7 @@
  * and the engineer path -- `spawnableRole`, `SPAWN_CAUSES`, `registerSpawn`, the `spare-cycles` ledger -- reads
  * exactly as it did.
  */
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, symlinkSync, readdirSync,
