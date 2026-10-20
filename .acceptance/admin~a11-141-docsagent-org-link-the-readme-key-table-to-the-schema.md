@@ -9,4 +9,4 @@ Mutation: a description was put back into the `tickets.drafts` row (`README.md:3
 
 Before this change the test fails on all 27 rows of the table, each named by its line.
 
-Consumer-declaration: the Settings page reads these explanations (`src/ticket-mode/settings-view.ts`). `settings-view.test.ts`, `settings-read.test.ts` and `settings-edit.test.ts` pass, and no key's value, reader or validation changes.
+Consumer-declaration: none -- the Settings page reads these explanations for display (`src/ticket-mode/settings-view.ts`), and no consumer repository reads a key whose value changes; `settings-view.test.ts`, `settings-read.test.ts` and `settings-edit.test.ts` pass, and no key's value, reader or validation changes.
