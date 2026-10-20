@@ -9,7 +9,7 @@ import { adopterRowKind } from "../work-gate/org-health.ts";
 import { inLane } from "../lane-ownership.ts";
 import { READY_LABEL, STATE_LABELS } from "../claim-labels.ts";
 import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE, LANE_PREFIX, LANE_ANY_LABEL, LANES_FILE_PATH } from "../project-vocabulary.ts";
-import { ALLOW_SAME_TITLE_FLAG, KIND_FLAG, KIND_LABELS, READY_FLAG, ROADMAP_FIELD, defaultRun, openRowTitled, titleFromArgv, type Tracker } from "./body-from-argv.ts";
+import { ALLOW_SAME_TITLE_FLAG, KIND_FLAG, KIND_LABELS, READY_FLAG, ROADMAP_FIELD, defaultRun, openRowTitled, titleFromArgv, type Tracker } from "./issue-body-and-region-checks.ts";
 
 /**
  * #4294: THE REFUSAL AT THE DOOR for a title an open row in the SAME tracker already carries -- the second copy of a filing run launched twice.

@@ -62,7 +62,7 @@ import { declaredRegionFiles, splitRegionEntry } from "./region-paths.ts";
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "./pr-open-region.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
-import { statedRepository } from "./row-file/body-from-argv.ts";
+import { statedRepository } from "./row-file/issue-body-and-region-checks.ts";
 import { leakRefusalReason } from "./lib/leak-patterns.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REPO } from "./project-identity.ts";

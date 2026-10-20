@@ -271,15 +271,15 @@
       "spawns": 0,
       "calls": 1
     },
-    "src/row-file/body-from-argv.ts": {
+    "src/row-file/issue-body-and-region-checks.ts": {
       "spawns": 2,
       "calls": 2
     },
-    "src/row-file/duplicate-title-refusal.ts": {
+    "src/row-file/title-kind-and-label-refusals.ts": {
       "spawns": 4,
       "calls": 3
     },
-    "src/row-file/roadmap-without-parent-refusal.ts": {
+    "src/row-file/roadmap-and-milestone-checks.ts": {
       "spawns": 12,
       "calls": 11
     },

@@ -43,7 +43,7 @@ import {
   STARTED_LABEL, WAS_READY_LABEL, parseVocabulary,
 } from "../project-vocabulary.ts";
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
-import { labelsOutOfRelease, saysOutOfRelease } from "../row-file/duplicate-title-refusal.ts";
+import { labelsOutOfRelease, saysOutOfRelease } from "../row-file/title-kind-and-label-refusals.ts";
 import { laneReason } from "../row-claim/runner-rule.ts";
 import { resourcePatternsFrom } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.ts";

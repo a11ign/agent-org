@@ -20,7 +20,7 @@ import { parseHostConfig, SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./hos
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { SPEC_LINT_REFUSED_KIND } from "./failure-ledger.ts";
-import { promoteAndReviewRow, promoteRefusalReason, promoteRow, readSpecLintFlag, recordSpecLintRefusals, reviewPromotedSpec, specLintDeps, type SpecLintAtPromotion } from "./row-file/roadmap-without-parent-refusal.ts";
+import { promoteAndReviewRow, promoteRefusalReason, promoteRow, readSpecLintFlag, recordSpecLintRefusals, reviewPromotedSpec, specLintDeps, type SpecLintAtPromotion } from "./row-file/roadmap-and-milestone-checks.ts";
 import { SPEC_REVIEW_LABEL, SPEC_REVIEW_WAKE, type LintDeps } from "./spec-lint.ts";
 import { freshState } from "./triage-provider.ts";
 import { moduleSource } from "./lib/source-text-reads.ts";

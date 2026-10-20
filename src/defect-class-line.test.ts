@@ -8,8 +8,8 @@ import { test } from "node:test";
 import { CI_BODY_REPORTS, rowLabelsFromEnv, runCiBodyReports } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { DEFECT_LABEL, classLinesIn, defectClassReport } from "./defect-class-line.ts";
 import { main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";
-import { createIssue } from "./row-file/roadmap-without-parent-refusal.ts";
-import { kindRefusal, withKindLabel } from "./row-file/duplicate-title-refusal.ts";
+import { createIssue } from "./row-file/roadmap-and-milestone-checks.ts";
+import { kindRefusal, withKindLabel } from "./row-file/title-kind-and-label-refusals.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 const EM = "—";

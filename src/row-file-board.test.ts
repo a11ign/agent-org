@@ -14,9 +14,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boardArgvRefusal, boardFromArgv, createIssue, moveTrackerStatus } from "./row-file/roadmap-without-parent-refusal.ts";
+import { boardArgvRefusal, boardFromArgv, createIssue, moveTrackerStatus } from "./row-file/roadmap-and-milestone-checks.ts";
 import { boardRow } from "./row-file.ts";
-import { fetchIssueBoardStatus, unverifiedFilingFields } from "./row-file/duplicate-title-refusal.ts";
+import { fetchIssueBoardStatus, unverifiedFilingFields } from "./row-file/title-kind-and-label-refusals.ts";
 import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";

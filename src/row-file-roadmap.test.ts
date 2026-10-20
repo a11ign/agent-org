@@ -10,9 +10,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createIssue } from "./row-file/roadmap-without-parent-refusal.ts";
-import { parentFromArgv, parentRef, roadmapFromArgv, roadmapItemsOf, roadmapFieldOf, type RoadmapItem } from "./row-file/duplicate-title-refusal.ts";
-import { withFiledBy } from "./row-file/body-from-argv.ts";
+import { createIssue } from "./row-file/roadmap-and-milestone-checks.ts";
+import { parentFromArgv, parentRef, roadmapFromArgv, roadmapItemsOf, roadmapFieldOf, type RoadmapItem } from "./row-file/title-kind-and-label-refusals.ts";
+import { withFiledBy } from "./row-file/issue-body-and-region-checks.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 const HOME = { key: "", repo: "a11ign/a11ign", board: { owner: "a11ign", number: 1 } };

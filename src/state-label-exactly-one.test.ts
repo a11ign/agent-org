@@ -37,7 +37,7 @@ const { reportStateLabels, CHECKS, invisibleRows } = await import("./ready-label
 const { SIGNALS } = await import("./org-health/thresholds.ts");
 const { stateLabelReading } = await import("./org-health/board-truth-and-access-readings.ts");
 const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-readings.ts");
-const { labelRefusal, boardingFor } = await import("./row-file/duplicate-title-refusal.ts");
+const { labelRefusal, boardingFor } = await import("./row-file/title-kind-and-label-refusals.ts");
 
 const row = (number: number, labels: string[], state?: string) => ({ number, labels, ...(state ? { state } : {}) });
 
