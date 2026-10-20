@@ -218,7 +218,10 @@ const PLANNER_SHAPE = "must be { \"run\": \"<the planning worker's instruction, 
 /** Whether the planner plans the tickets queued together in one run: its instruction names `{keys}`. One that names only `{key}` plans each alone. */
 export const plansInBatches = (planner: Planner | null): boolean => planner?.run.includes("{keys}") === true;
 
-/** A planner needs the plan pattern, which is how the board knows which tickets already have a plan. */
+/**
+ * A planner needs the plan pattern, which is how the board knows which tickets already have a plan. This is the `planner` extension point's host key: whether
+ * the skill it names is one a plugin provides is checked by `contractRows` (A11-139), not here, so this reader asks only the shape.
+ */
 function plannerOf(value: unknown, plan: string | null): Planner | null {
   if (value === undefined) return null;
   const isKeysRun = (candidate: unknown): candidate is Record<string, unknown> & { run: string } => isObject(candidate) && typeof candidate.run === "string"
@@ -282,7 +285,10 @@ function preflightOf(value: unknown): readonly Preflight[] {
   }));
 }
 
-/** `tickets.writer`: the ticket writer's instruction names both `{request}` and `{dir}`; its model and effort are one word each. Absent is null. */
+/**
+ * `tickets.writer`: the ticket writer's instruction names both `{request}` and `{dir}`; its model and effort are one word each. Absent is null. This is the
+ * `writer` extension point's host key: the skill it names is checked against a plugin's contract by `contractRows` and the doctor (A11-139), not here.
+ */
 function writerOf(value: unknown): Writer | null {
   if (value === undefined) return null;
   const isRequestRun = (candidate: unknown): candidate is Record<string, unknown> & { run: string } => isObject(candidate) && typeof candidate.run === "string"
@@ -341,7 +347,10 @@ function draftsOf(value: unknown): boolean {
 
 const PR_REVIEW_SHAPE = "must be a skill's name, `name` or `plugin:name`, such as \"a11ign:clean-code-review\"";
 
-/** `tickets.prReview`: the pre-PR review skill's name, or absent for none. Any other value is refused by name. */
+/**
+ * `tickets.prReview`: the pre-PR review skill's name, or absent for none. Any other value is refused by name. This is the `prReview` extension point's host
+ * key: whether a plugin provides the name is checked by `contractRows` (A11-139), not here.
+ */
 function prReviewOf(value: unknown): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string" || !/^[\w.-]+(:[\w.-]+)?$/.test(value)) throw new TicketSettingsRefusal("tickets.prReview", `${PR_REVIEW_SHAPE}, not ${JSON.stringify(value)}`);

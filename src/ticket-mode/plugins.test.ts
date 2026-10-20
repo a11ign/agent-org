@@ -130,6 +130,16 @@ test("a plugin with no contract, or a record that cannot be read, has no rows", 
   assert.deepEqual([unreadable.states.readable, unreadable.unreachable, unreadable.rows], [false, [], []]);
 });
 
+test("A11-139: the contract a session loads is returned with its plugin's name, and no plugin without a readable contract is among them", () => {
+  const declared = JSON.stringify({ name: "a11ign", metadata: { agentOrg: { contract: "1.0", agentOrg: ">=0.0.0 <1.0.0", provides: { writer: { skill: "a11ign:create-ticket" } }, needs: {} } } });
+  const [found] = problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: declared }).contracts;
+  assert.deepEqual([found.entry, found.name, found.contract.provides.writer?.skill], ["a11ign@m", "a11ign", "a11ign:create-ticket"]);
+  assert.deepEqual(problemsFor([{ scope: "user", installPath: CACHE }], {}).contracts, [], "no contract, so none");
+  assert.deepEqual(problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: manifestWith("2.0") }).contracts, [], "a major this agent-org does not read is checked for nothing, so it is not returned");
+  assert.deepEqual(problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: JSON.stringify({ name: "a11ign", metadata: { agentOrg: { contract: "one" } } }) }).contracts, [], "a contract that cannot be read is not returned");
+  assert.deepEqual(problemsFor([{ scope: "project", projectPath: "/work", installPath: CACHE }], { [MANIFEST]: declared }).contracts, [], "a plugin the session does not load is not read");
+});
+
 test("a host key that names a plugin tickets.plugins does not enable is a row only once a plugin declares a contract", () => {
   const host = { ...CONTRACT_HOST, planner: "Run the other:plan skill with {key} into {dir}" };
   assert.deepEqual(problemsFor([{ scope: "user", installPath: CACHE }], {}, host).rows, [], "no plugin declares a contract: checked as it always was");

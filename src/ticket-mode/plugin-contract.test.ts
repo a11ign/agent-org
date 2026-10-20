@@ -1,7 +1,8 @@
 // no-token: gh -- the manifest is handed in as text and the check is pure; nothing is read from the machine
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { type Contract, type HostFacts, contractRows, readPluginContract, skillRefs } from "./plugin-contract.ts";
+import { type Contract, type HostFacts, contractRows, hostFactsOf, readPluginContract, skillRefs } from "./plugin-contract.ts";
+import { parseTicketSettings } from "./settings.ts";
 
 const INSTALL = "/cache/a11ign/1.0.0";
 /** The contract the a11ign plugin declares, as the record's worked example gives it, with the planner's real skill. */
@@ -140,6 +141,14 @@ test("a host key that names a skill when the contract provides none at that poin
 test("a bare prReview name is compared with the plugin's own prReview skill, by its name without the prefix", () => {
   assert.deepEqual(rowsFor({}, { host: { ...HOST, prReview: "clean-code-review" } }), []);
   assert.deepEqual(kindsOf(rowsFor({}, { host: { ...HOST, prReview: "review" } })), ["skill-not-provided"]);
+});
+
+test("A11-139: the readers accept a skill name the plugin does not provide, and contractRows is the check that finds it", () => {
+  const named = (tickets: Record<string, unknown>) => hostFactsOf(parseTicketSettings({ clones: { netbox: INSTALL }, tickets: { plugins: ["a11ign@a11ign-local"], connectors: HOST.connectors, ...tickets } }));
+  const writer = named({ writer: { run: "Run the a11ign:other skill for this request: {request}, in {dir}." } });
+  assert.deepEqual(rowsFor({}, { host: writer }).map(({ kind, why }) => [kind, why]), [["skill-not-provided",
+    "tickets.writer.run names a11ign:other, which a11ign@a11ign-local does not provide as its writer skill: name a skill it provides, or remove the key."]]);
+  assert.deepEqual(kindsOf(rowsFor({}, { host: named({ prReview: "a11ign:nothing" }) })), ["skill-not-provided"]);
 });
 
 test("the plan pattern must match the plan file the planner writes, with a sample ticket's id and slug", () => {

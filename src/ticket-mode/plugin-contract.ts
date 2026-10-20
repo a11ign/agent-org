@@ -16,6 +16,9 @@ import type { TicketSettings } from "./settings.ts";
 /** The contract majors this agent-org reads. A plugin declaring any other major gets one row, and nothing else is checked. */
 export const READ_CONTRACT_MAJORS: readonly number[] = [1];
 
+/** Whether this agent-org reads `contract`, by its major. A contract it does not read is checked for nothing but its major. */
+export const readsContract = (contract: Contract): boolean => READ_CONTRACT_MAJORS.includes(Number(contract.contract.split(".")[0]));
+
 /** The extension points a contract may provide a skill for, each with the host key that names its skill. */
 export type Point = "planner" | "writer" | "prReview";
 
@@ -40,7 +43,7 @@ export type ContractRow = Readonly<{ plugin: string; kind: RowKind; why: string 
 export type HostFacts = Readonly<{ plugins: readonly string[]; connectors: readonly string[]; plan: string | null; prReview: string | null; planner: string | null; writer: string | null }>;
 
 /** Where a host key names a skill: `plugin` is null for a bare name, which only `prReview` may be. */
-type SkillRef = Readonly<{ key: Point; plugin: string | null; skill: string }>;
+export type SkillRef = Readonly<{ key: Point; plugin: string | null; skill: string }>;
 
 const NONE: ContractRead = { kind: "none" };
 const KEY_OF: Readonly<Record<Point, string>> = { prReview: "tickets.prReview", planner: "tickets.planner.run", writer: "tickets.writer.run" };
@@ -195,10 +198,16 @@ export function contractRows({ entry, name, contract, host, agentOrgVersion = ag
  */
 function skillRowsOf({ entry, name }: Readonly<{ entry: string; name: string }>, contract: Contract, host: HostFacts): ContractRow[] {
   return skillRefs(host).filter(({ plugin, key }) => plugin === name || (plugin === null && key === "prReview"))
-    .filter(({ key, skill }) => skill !== skillPart(contract.provides[key]?.skill ?? ""))
-    .map(({ key, plugin, skill }): ContractRow => ({ plugin: entry, kind: "skill-not-provided",
-      why: `${KEY_OF[key]} names ${plugin === null ? skill : `${plugin}:${skill}`}, which ${entry} does not provide as its ${key} skill: name a skill it provides, or remove the key.` }));
+    .filter((ref) => !providesSkill(contract, ref))
+    .map((ref): ContractRow => ({ plugin: entry, kind: "skill-not-provided", why: notProvidedWhy(entry, ref) }));
 }
+
+/** Whether `contract` provides, at the extension point its host key names, the skill `ref` names. A bare name is compared with its prReview skill. */
+export const providesSkill = (contract: Contract, { key, skill }: SkillRef): boolean => skill === skillPart(contract.provides[key]?.skill ?? "");
+
+/** The sentence that says a host key names a skill its plugin does not provide at that key's extension point, and the fix it ends with. */
+export const notProvidedWhy = (entry: string, { key, plugin, skill }: SkillRef): string =>
+  `${KEY_OF[key]} names ${plugin === null ? skill : `${plugin}:${skill}`}, which ${entry} does not provide as its ${key} skill: name a skill it provides, or remove the key.`;
 
 /** The plan file the planner writes, with a sample ticket's id and slug, must match `tickets.plan`. No row when the host names no plan pattern. */
 function planFileRows(entry: string, contract: Contract, host: HostFacts): ContractRow[] {
