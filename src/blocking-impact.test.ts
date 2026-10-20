@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { buildReport } from "./org-retro/readings.ts";
+import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport } from "./org-retro.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import {

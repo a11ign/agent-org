@@ -444,7 +444,7 @@ const EXEMPT: Record<string, string> = {
   "work-gate/pr-orders.ts": "the order assembly that calls the red-only logic: who is asked, not how many are red (`HOLD_RED_JOBS` is pinned equal to red-pr.ts's in org-retro.test.ts)",
   "work-gate/pr-orders/red-only-by-superseded-run.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
   "org-health/board-truth-and-access-readings.ts": "its `CirclePr` type names the rollup field so the circle reader can carry it; it reads no verdict and counts no red PR",
-  "org-retro/retro-cause.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
+  "org-retro/retro-window-and-journal-patterns.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
   "work-gate/tick/blocker-cleared-reading.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",
 };
 // 3 before a11ign#5152 split `work-gate.ts`: its readers of the rollup were ONE file, which imported the decider for `redPrFacts`; they are four modules now.

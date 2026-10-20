@@ -48,7 +48,7 @@ import { mergedPrsInWindow } from "../close-rows-sweep.ts";
 import { fetchReadyIssueNumbers } from "../board-snapshot.ts";
 import { ghReadyReader } from "../untiered-ready-rows.ts";
 import { readClosedRows } from "../trace/haiku-tier-report.ts";
-import { readMergedSince } from "../org-retro/retro-cause.ts";
+import { readMergedSince } from "../org-retro/retro-window-and-journal-patterns.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 import { closedAnswerConnection, connectionOf, readsClosedAnswerRows, readsRecentlyClosed, readsRowsByLabel, readsRowsSince, recentlyClosedConnection,
   sinceAnswer } from "./rows-by-label-fixtures.ts";

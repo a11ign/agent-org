@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as retro_0 from "../org-retro.ts";
-import * as retro_1 from "../org-retro/retro-cause.ts";
+import * as retro_1 from "../org-retro/retro-window-and-journal-patterns.ts";
 import { readsRowsSince, sinceAnswer, type FakeRow } from "./rows-by-label-fixtures.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 

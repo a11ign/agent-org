@@ -9,8 +9,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WINDOW_MS, pauseOf, pausedIntervals, readAccountLimitLog } from "./org-retro/retro-cause.ts";
-import { buildReport, idleStats } from "./org-retro/readings.ts";
+import { WINDOW_MS, pauseOf, pausedIntervals, readAccountLimitLog } from "./org-retro/retro-window-and-journal-patterns.ts";
+import { buildReport, idleStats } from "./org-retro/journal-stats-and-verdicts.ts";
 import { compareReadings, renderReport } from "./org-retro.ts";
 import { testEach } from "./lib/test-each.ts";
 

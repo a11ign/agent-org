@@ -11,8 +11,8 @@ import { test } from "node:test";
 import { STALL_STATE_FILE } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { IDLE_CLAIMANT_MINUTES, WAIT_FIELDS } from "./idle-claimant.ts";
-import { buildReport } from "./org-retro/readings.ts";
-import { readIdleClaims } from "./org-retro/retro-cause.ts";
+import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
+import { readIdleClaims } from "./org-retro/retro-window-and-journal-patterns.ts";
 import { renderReport, retrospectiveTick } from "./org-retro.ts";
 import { IDLE_CLAIM_INCIDENT_MINUTES, ROW_NOT_FINISHABLE, idleClaimIncidents, idleClaimedHours, incidentEvents, incidentSummary, type IdleClaim } from "./idle-claim-incident.ts";
 

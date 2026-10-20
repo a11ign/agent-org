@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { splitRefusals, refusalReport } from "../wake/merge-queue-wait.ts";
 import { spentSeen } from "../wake/exit-and-limits.ts";
 import { CAPACITY_WAIT_LIMIT_MS } from "../wake/ended-sessions.ts";
-import { idleStats } from "../org-retro/readings.ts";
+import { idleStats } from "../org-retro/journal-stats-and-verdicts.ts";
 
 const MINUTE = 60_000;
 const WAKE = fileURLToPath(new URL("../wake.ts", import.meta.url));

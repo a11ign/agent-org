@@ -14,7 +14,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import * as retro_0 from "./org-retro/readings.ts";
+import * as retro_0 from "./org-retro/journal-stats-and-verdicts.ts";
 import * as retro_1 from "./org-retro.ts";
 import { recordSpecLintRefusals } from "./row-file/roadmap-without-parent-refusal.ts";
 import { FAILURE_LEDGER_FILE, SPEC_LINT_REFUSED_KIND } from "./failure-ledger.ts";

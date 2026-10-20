@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { untieredReadyRows, untieredLines, ghReadyReader, hasTierDecision, ROW_LIST_LIMIT, LISTED_ROWS, untieredOffer, untieredSweepKey, parseUntieredMemory,
   UNTIERED_MEMORY_FILE } from "./untiered-ready-rows.ts";
-import { buildReport } from "./org-retro/readings.ts";
+import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport, retrospectiveTick, untieredSweepOrder } from "./org-retro.ts";
 import { PROFILES } from "./worker-profile.ts";
 import { JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";

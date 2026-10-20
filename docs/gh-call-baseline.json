@@ -187,11 +187,11 @@
       "spawns": 0,
       "calls": 5
     },
-    "src/org-retro/readings.ts": {
+    "src/org-retro/journal-stats-and-verdicts.ts": {
       "spawns": 0,
       "calls": 1
     },
-    "src/org-retro/retro-cause.ts": {
+    "src/org-retro/retro-window-and-journal-patterns.ts": {
       "spawns": 1,
       "calls": 2
     },

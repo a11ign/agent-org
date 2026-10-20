@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildReport, retroClasses } from "./org-retro/readings.ts";
+import { buildReport, retroClasses } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport } from "./org-retro.ts";
 import { CANARY_STATE_FILE } from "./org-health/claim-and-tick-readings.ts";
 import { emptyCanaryState } from "./org-health/fleet-build-readings.ts";

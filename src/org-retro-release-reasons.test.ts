@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { RELEASE_REASON_KINDS, releaseStats } from "./org-retro/readings.ts";
+import { RELEASE_REASON_KINDS, releaseStats } from "./org-retro/journal-stats-and-verdicts.ts";
 import { moduleSource } from "./lib/source-text-reads.ts";
 
 const SOURCE = moduleSource("claim-stall.ts");
