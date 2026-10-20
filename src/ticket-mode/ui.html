@@ -996,9 +996,17 @@ function settingsGroup({ group, rows }, view) {
   if (plugins) {
     section.append(el("p", { className: "hint", textContent: "Plugins each worker runs with, and whether a worker's session loads each one" }),
       el("ul", {}, ...view.plugins.map((line) => el("li", { textContent: `${line.plugin}: ${line.installed}; ${line.loads}` }))),
+      ...contractRows(view.contract ?? []),
       el("ul", {}, ...view.words.map((words) => el("li", { textContent: words }))));
   }
   return section;
+}
+/** The contract mismatches, one row each, under a label in words; the page draws none of its own (the server's check gives them). Nothing when there are none. */
+function contractRows(rows) {
+  if (rows.length === 0) return [];
+  const list = el("ul", {}, ...rows.map((row) => el("li", { textContent: `Mismatch: ${row.why}` })));
+  list.setAttribute("aria-labelledby", "contract-label");
+  return [el("p", { id: "contract-label", textContent: "Contract mismatches: what a plugin declares that this host's keys do not meet" }), list];
 }
 /** One key: its name, then in words its value, its state and where the value comes from, what the key does, and what breaks if it is wrong. */
 function settingRow(row) {

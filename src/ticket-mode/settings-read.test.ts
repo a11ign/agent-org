@@ -60,15 +60,45 @@ test("a ticket-only host, which names no primary, is a note that it declares no 
   assert.deepEqual(view.refusals.filter((r) => r.file === "project.json"), []);
 });
 
-test("the Settings page reads the same contract rows a run start refuses on, and the plugin's line says it loads", async () => {
-  const dir = tmpDir("settings-read-contract-");
+/** A plugin the session loads, whose install holds the manifest `metadata` names, and the install record that names it. */
+function pluginWithContract(dir: string, agentOrg: unknown): string {
   const install = join(dir, "install");
   mkdirSync(join(install, ".claude-plugin"), { recursive: true });
-  writeFileSync(join(install, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "a11ign", metadata: { agentOrg: { contract: "2.0", agentOrg: ">=0.0.0 <1.0.0", provides: {}, needs: {} } } }));
+  writeFileSync(join(install, ".claude-plugin", "plugin.json"), JSON.stringify(agentOrg === undefined ? { name: "a11ign" } : { name: "a11ign", metadata: { agentOrg } }));
   const record = join(dir, "installed_plugins.json");
   writeFileSync(record, JSON.stringify({ version: 2, plugins: { "a11ign@m": [{ scope: "user", installPath: install }] } }));
+  return record;
+}
+
+/** The page's view of a plugin the session loads, declaring `agentOrg`, against a host whose `tickets` keys are `tickets`. */
+function viewOfPlugin(dir: string, agentOrg: unknown, tickets: Record<string, unknown> = {}): Promise<View> {
+  const record = pluginWithContract(dir, agentOrg);
+  const settings = parseTicketSettings({ clones: { r: "/r" }, stateDir: dir, tickets: { plugins: ["a11ign@m"], ...tickets } });
+  return readSettingsView(options(dir, primaryHost(dir), { settings, pluginRecord: record }));
+}
+
+test("the Settings page reads the same contract rows a run start refuses on, and the plugin's line says it loads", async () => {
+  const dir = tmpDir("settings-read-contract-");
+  const record = pluginWithContract(dir, { contract: "2.0", agentOrg: ">=0.0.0 <1.0.0", provides: {}, needs: {} });
   const settings = parseTicketSettings({ clones: { r: "/r" }, stateDir: dir, tickets: { plugins: ["a11ign@m"] } });
   const view = await readSettingsView(options(dir, primaryHost(dir), { settings, pluginRecord: record }));
   assert.deepEqual(view.contract.map(({ plugin, kind }) => [plugin, kind]), [["a11ign@m", "contract-major"]]);
   assert.deepEqual(view.plugins.map(({ plugin, loads }) => [plugin, loads]), [["a11ign@m", "a worker's session loads it"]]);
+});
+
+
+test("a plugin's connector need that tickets.connectors does not allow is one row, naming the plugin and the key", async () => {
+  const view = await viewOfPlugin(tmpDir("settings-read-connector-"), { contract: "1.0", agentOrg: ">=0.0.0 <999.0.0", provides: {}, needs: { connectors: ["^mcp__linear__get_"] } }, { connectors: ["^mcp__other__"] });
+  assert.deepEqual(view.contract.map(({ plugin, kind }) => [plugin, kind]), [["a11ign@m", "connector-need"]]);
+  assert.match(view.contract[0].why, /^a11ign@m needs the connector tools matched by \^mcp__linear__get_, which tickets\.connectors does not allow/);
+});
+
+test("a connector need that tickets.connectors already allows is no row", async () => {
+  const view = await viewOfPlugin(tmpDir("settings-read-allowed-"), { contract: "1.0", agentOrg: ">=0.0.0 <999.0.0", provides: {}, needs: { connectors: ["^mcp__linear__get_"] } }, { connectors: ["^mcp__linear__get_"] });
+  assert.deepEqual(view.contract, [], "the host allows the connector");
+});
+
+test("a plugin with no contract has no rows", async () => {
+  const view = await viewOfPlugin(tmpDir("settings-read-no-contract-"), undefined);
+  assert.deepEqual(view.contract, [], "a plugin with no contract declares none");
 });
