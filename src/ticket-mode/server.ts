@@ -59,7 +59,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -448,7 +448,7 @@ async function settingsEditRoute(board: Board, method: string, path: string, bod
 /** The routes that act on one queued run: amend, remove, retry, approve, respond, start anyway, stop, close, dismiss, and apply or discard its edit. */
 async function queueActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { store, pool, now, wake } = board;
-  const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|start-anyway|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
+  const action = /^\/api\/queue\/([A-Za-z0-9_-]+)\/(amend|remove|retry|approve|respond|talk|start-anyway|stop|close|dismiss|apply-edit|discard-edit)$/.exec(path);
   if (method === "POST" && action) {
     const [, key, verb] = action;
     if (verb === "amend") store.set(amend(store.get(), key, validChange(body, ["model", "effort"])));
@@ -457,6 +457,8 @@ async function queueActionRoute(board: Board, method: string, path: string, body
     if (verb === "retry") store.set(retry(store.get(), key, now()));
     if (verb === "approve") store.set(approve(store.get(), key, now()));
     if (verb === "respond") store.set(respond(store.get(), key, now()));
+    // The pool's: a talk session needs a saved session to resume, and says so when there is none.
+    if (verb === "talk") pool.talk?.(key);
     // A person's override of the overlap wait, which the board records on the run and logs (A11-125).
     if (verb === "start-anyway") {
       store.set(startAnyway(store.get(), key, now()));

@@ -240,10 +240,14 @@ export type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>
  * other run has none, so an earlier worker's session is never taken for this one's.
  */
 function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }: RunRecord): Entry {
-  const ranIn = session ?? (entry.review ? entry.session : undefined);
+  const ranIn = session ?? (entry.review || entry.talk ? entry.session : undefined);
   // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, and any other
   // keeps what the run had: a review round's `reviewed` says nothing of it.
-  const { session: _earlier, working: _note, partial: _declared, ...rest } = entry;
+  const { session: _earlier, working: _note, partial: _declared, talk: _talking, talkFrom: _replaced, ...kept } = entry;
+  // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
+  const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
+  const { review: _borrowed, ...unborrowed } = kept;
+  const rest = borrowed ? unborrowed : kept;
   const partial = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" ? outcome.partial : entry.partial;
   return { ...rest, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}),
     ...(partial !== undefined ? { partial } : {}) };

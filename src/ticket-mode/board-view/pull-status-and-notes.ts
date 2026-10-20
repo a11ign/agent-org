@@ -357,7 +357,7 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
 export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
 
 /** What a person can do to a run from the board. */
-type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "dismiss" | "apply-edit" | "discard-edit" | "start-anyway";
+type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "talk" | "dismiss" | "apply-edit" | "discard-edit" | "start-anyway";
 
 /** Why a person presses Start anyway, shown as its tooltip: the run starts beside the run that holds a path it shares, and the two may conflict on it. */
 export const START_ANYWAY_TITLE = "Start this run now, beside the run that holds a path it shares: the two may conflict on that path";
@@ -409,6 +409,11 @@ export const DISCARD_EDIT_TITLE = "Drop the worker's proposed edit. The ticket i
 /** Whether a finished run holds a worker's proposed edit to its ticket's text, which a person has not applied or discarded (A11-91). */
 export const hasEdit = (entry: ViewEntry): boolean => entry.outcome?.edit !== undefined;
 
+/** Whether a finished run left nothing to talk about: it has no outcome, was stopped, concluded, or is completed or canceled. PURE. */
+function hasNothingToSay(kind: string | undefined, status: string): boolean {
+  return kind === undefined || kind === "stopped" || CONCLUDED.has(kind) || status === "completed" || status === "cancelled";
+}
+
 /**
  * The actions a run offers. A queued run can be removed, or started anyway when it is Blocked on an overlap ({@link startAnywayOffered}), and a live one stopped. A finished run that kept its workspace (parked) can be closed,
  * and only once it is closed can it be retried. Pull requests are results, and are not retried, and nor is a run that concluded with nothing more
@@ -424,12 +429,14 @@ export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: rea
   const edit: RunAction[] = hasEdit(entry) ? ["apply-edit", "discard-edit"] : [];
   if (isParked(entry)) return ["close", ...edit, ...dismiss];
   const status = runStatus(entry);
-  if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve", ...edit, ...dismiss];
-  const isHandedOffOrDone = status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined);
-  if (isHandedOffOrDone) return ["respond", ...edit, ...dismiss];
   const kind = entry.outcome?.kind;
+  // A session is worth opening for any run that ended with something to say, and for none that concluded or whose pull requests all merged.
+  const talk: RunAction[] = hasNothingToSay(kind, status) ? [] : ["talk"];
+  if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve", ...talk, ...edit, ...dismiss];
+  const isHandedOffOrDone = status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined);
+  if (isHandedOffOrDone) return ["respond", ...talk, ...edit, ...dismiss];
   const done = kind === undefined || RESULT_KINDS.has(kind) || CONCLUDED.has(kind) || status === "completed";
-  return [...(done ? [] : ["retry" as const]), ...edit, ...dismiss];
+  return [...(done ? [] : ["retry" as const]), ...talk, ...edit, ...dismiss];
 }
 
 /**

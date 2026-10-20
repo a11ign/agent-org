@@ -782,6 +782,14 @@ export function writerPrompt(dir: string, mode: WriterMode = "quick"): string {
   return `Read ${dir}/${BRIEF_FILE} and follow it.${first}`;
 }
 
+/**
+ * The first prompt of a talk session, which resumes a finished run's own session when a person opens it from the board. The agent is attended again: it says where it stands,
+ * waits, and hands the ticket back as `needs-human` meanwhile, which keeps its terminal open (the stop hook refuses a stop with no outcome).
+ */
+export function talkPrompt(ticketDir: string): string {
+  return `A person has opened this session to talk to you. You are no longer unattended: answer them, and ask them any question you need. Say in one or two sentences where you stand, then wait for what they write, and do no work until they do. Your stop is refused until an outcome file exists, so while you wait write a \`needs-human\` outcome in ${ticketDir}/${OUTCOME_FILE} whose reason is "waiting for the person in the terminal". Once the work they ask for is done, write the real outcome, as your brief says.`;
+}
+
 /** The first prompt: a pointer to the brief, short enough that no quoting or argument limit can cut it. */
 export function firstPrompt(ticketDir: string): string {
   return `Read ${ticketDir}/${BRIEF_FILE} and follow it.`;

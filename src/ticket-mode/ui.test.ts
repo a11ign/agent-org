@@ -724,9 +724,9 @@ test("a row offers only the actions its state allows, a completed run is not ret
   const buttons = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button").map((b) => b.text());
   assert.deepEqual(buttons("Q-1"), ["Remove"]);
   assert.deepEqual(buttons("R-1"), ["Stop"]);
-  assert.deepEqual(buttons("F-1"), ["Retry", "Dismiss"]);
+  assert.deepEqual(buttons("F-1"), ["Retry", "Talk to it", "Dismiss"]);
   assert.deepEqual(buttons("M-1"), ["Dismiss"]);
-  assert.ok(runRows(p).find((r) => r.text().includes("D-1"))!.text().includes("nbl-ui-netbox #12"), "the draft's pull request is linked by repo and number");
+  assert.ok(runRows(p).find((r) => r.text().includes("D-1"))!.text().includes("nbl-ui-netbox"), "the draft's pull request is linked by repo");
 });
 
 test("a draft pull request awaiting review offers Approve, titled as a person's approval, which goes to the board", async () => {
@@ -747,9 +747,9 @@ test("a review run reads as Reviewing while it works, and its reviewed pull requ
   ] });
   const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
   assert.equal(row("V-1").children[0].className, "icon st-reviewing");
-  assert.ok(row("V-1").text().includes("nbl-ui-netbox #12"), "the pull requests under review stay linked while it works");
+  assert.ok(row("V-1").text().includes("#12") && row("V-1").text().includes("nbl-ui-netbox"), "the pull requests under review stay linked while it works");
   assert.equal(row("V-2").children[0].className, "icon st-ready-to-merge");
-  assert.ok(row("V-2").text().includes("nbl-ui-netbox #12"));
+  assert.ok(row("V-2").text().includes("#12") && row("V-2").text().includes("nbl-ui-netbox"));
 });
 
 test("a live or parked run links its terminal when the machine serves one, and a parked run offers Close, which goes to the board", async () => {
@@ -760,9 +760,9 @@ test("a live or parked run links its terminal when the machine serves one, and a
   ];
   const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" }, entries: runs });
   const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
-  const link = (key: string) => row(key).all().find((n) => n.className === "terminal") as (Node_ & { href?: string; target?: string }) | undefined;
+  const link = (key: string) => row(key).all().find((n) => n.className.split(" ").includes("terminal")) as (Node_ & { href?: string; target?: string }) | undefined;
   assert.equal(link("R-1")?.href, opens("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal"), "the page's worker link, which pairs the terminal on the way");
-  assert.equal(link("R-1")?.title, "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal", "the plain address is kept as the title");
+  assert.ok(link("R-1")?.title.includes("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal"), "the plain address is kept in the title");
   assert.equal(link("R-1")?.target, "_blank", "it opens in its own tab: the terminal page refuses to be framed");
   assert.equal(link("P-1")?.href, opens("http://127.0.0.1:7318/?ws=w2&pane=w2%3Ap1&view=terminal"));
   assert.equal(link("F-1"), undefined, "a run with no workspace has no terminal");
@@ -773,7 +773,7 @@ test("a live or parked run links its terminal when the machine serves one, and a
   await settle();
   assert.ok(p.posts.some((x) => x.path === "/c/work/api/queue/P-1/close"), "Close goes to the connection the run is shown on");
   const none = await page(new Map(), { entries: runs });
-  assert.equal(runRows(none).flatMap((r) => r.all()).find((n) => n.className === "terminal"), undefined, "a machine that serves no terminal shows no link");
+  assert.equal(runRows(none).flatMap((r) => r.all()).find((n) => n.className.split(" ").includes("terminal")), undefined, "a machine that serves no terminal shows no link");
 });
 
 const PLANNING = { ...SETTINGS, plan: "-plan-[^/]*\\.md$", planner: true, choice: { model: "opus", effort: "high", planModel: "opus", planEffort: "max" } };
@@ -881,7 +881,7 @@ const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=termina
 const opens = (plain: string, connection = "work") => `/c/${connection}/terminal?link=${encodeURIComponent(plain)}`;
 const PUBLISHING = { keys: ["P-1", "P-2"], phase: "running", workspace: "w9", pane: "w9:p1" };
 const terminalOf = (p: Page, key: string) =>
-  runRows(p).find((r) => r.text().includes(key))!.all().find((n) => n.className === "terminal" && n.text() === "Open terminal") as (Node_ & { href?: string; target?: string }) | undefined;
+  runRows(p).find((r) => r.text().includes(key))!.all().find((n) => n.className.split(" ").includes("terminal") && n.text() === "Open terminal") as (Node_ & { href?: string; target?: string }) | undefined;
 
 test("each run the publish run is posting is Publishing, with the spinning ring, and cannot be ticked again", async () => {
   const p = await page(new Map(), { connections: WORK_ALONE, config: { publish: true, terminal: TERMINAL }, entries: PUBLISHABLE, publish: PUBLISHING });
@@ -943,11 +943,11 @@ test("a run Ready to merge, Published, or handed back by the board offers Respon
   const actions = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
   for (const key of ["P-1", "P-3", "H-1"]) {
     const [respond] = actions(key);
-    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review", "Dismiss"], key);
+    assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review", "Talk to it", "Dismiss"], key);
     assert.match(respond.title ?? "", /^Answer the feedback on these ready pull requests/);
     assert.ok(respond.all().some((n) => n.className === "action-icon"), "the reply icon");
   }
-  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve", "Dismiss"]);
+  assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve", "Talk to it", "Dismiss"]);
   assert.match(actions("D-1")[0].title ?? "", /^Drafts reviewed and approved/);
   actions("P-1")[0].fire("click");
   await settle();
@@ -1008,7 +1008,7 @@ test("Publish and a run's terminal link work per connection: each goes to, and l
   const storage = new Map([["ticket-mode.connection", JSON.stringify(["personal"])]]);
   const runs = [...PUBLISHABLE, entry("R-1", { phase: "running", startedAt: 5, workspace: "w1", pane: "w1:p1" })];
   const p = await page(storage, { connections: WORK_AND_PERSONAL, entries: runs, config: { publish: true, terminal: "http://127.0.0.1:50001/?ws={workspace}" } });
-  const link = runRows(p).find((r) => r.text().includes("R-1"))!.all().find((n) => n.className === "terminal") as (Node_ & { href?: string }) | undefined;
+  const link = runRows(p).find((r) => r.text().includes("R-1"))!.all().find((n) => n.className.split(" ").includes("terminal")) as (Node_ & { href?: string }) | undefined;
   assert.equal(link?.href, opens("http://127.0.0.1:50001/?ws=w1", "personal"), "the terminal address the connection's config gave, which the page's service rewrote for it, reached through that connection");
   tickFor(p, "P-1")!.fire("change");
   p.$("publish").fire("click");
@@ -1047,7 +1047,7 @@ test("a run's links that are not http addresses, as a remote board could send, a
   const p = await page(new Map(), { entries, config: { terminal: "javascript:alert(2)//{workspace}" } });
   const anchors = p.$("runs").all().filter((n) => n.tag === "a") as (Node_ & { href?: string; className?: string })[];
   assert.deepEqual(anchors.map((a) => a.href), [""], "the ticket is drawn with no address");
-  assert.equal(anchors.find((a) => a.className === "terminal"), undefined, "and its terminal is not drawn at all");
+  assert.equal(anchors.find((a) => a.className.split(" ").includes("terminal")), undefined, "and its terminal is not drawn at all");
 });
 
 test("an answer from the instance shown before a switch is dropped, so it never lands on the one chosen after it", async () => {
@@ -2063,4 +2063,21 @@ test("A11-134: Grill is disabled with its reason on a machine with no terminal, 
   assert.equal(grill.disabled, true);
   assert.equal(grill.title, "Grill needs a terminal: name tickets.terminal in the host file");
   assert.equal(rowFor(p, "T-1").all().some((n) => n.textContent === view_0.GRILL || n.textContent === view_0.NEEDS_DECISION), false);
+});
+
+test("every action on a run is an icon with a tooltip and its words kept for a screen reader, and Talk to it goes to the board", async () => {
+  const p = await page(new Map(), { entries: [entry("D-1", { phase: "finished", startedAt: 2, finishedAt: 5, outcome: { kind: "draft-pr", prs: SHIPPED } })] });
+  const buttons = runRows(p).find((r) => r.text().includes("D-1"))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
+  assert.deepEqual(buttons.map((b) => b.text()), ["Approve", "Talk to it", "Dismiss"]);
+  for (const button of buttons) {
+    assert.ok(button.className.split(" ").includes("icon-btn"), `${button.text()} is an icon button`);
+    assert.ok((button.title ?? "") !== "", `${button.text()} says what it does on hover`);
+    assert.ok(button.all().some((n) => n.className === "action-icon"), `${button.text()} has its icon`);
+    assert.ok(button.all().some((n) => n.className === "sr-only" && n.text() === button.text()), `${button.text()} keeps its words for a screen reader`);
+  }
+  assert.match(buttons[1].title ?? "", /^Open this run's own session in a terminal/);
+  buttons[1].fire("click");
+  assert.ok(p.posts.some(({ path }) => path.endsWith("/api/queue/D-1/talk")), "Talk to it goes to the board");
+  const link = runRows(p).find((r) => r.text().includes("D-1"))!.all().find((n) => n.tag === "a" && n.className === "pr-link") as (Node_ & { title?: string }) | undefined;
+  assert.match(link?.title ?? "", /on GitHub$/, "a pull request is an icon link to GitHub");
 });

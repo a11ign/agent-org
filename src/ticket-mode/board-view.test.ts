@@ -380,11 +380,11 @@ test("a run offers what its state allows: Remove queued, Stop live, Close parked
   assert.deepEqual(runActions(run("starting")), ["stop"]);
   assert.deepEqual(runActions(run("running", { workspace: "w1", pane: "w1:p1" })), ["stop"]);
   assert.deepEqual(runActions(run("finished", { ...handedBack, workspace: "w1", pane: "w1:p1" })), ["close", "dismiss"], "its workspace is still open, so no retry yet");
-  assert.deepEqual(runActions(run("finished", handedBack)), ["retry", "dismiss"]);
+  assert.deepEqual(runActions(run("finished", handedBack)), ["retry", "talk", "dismiss"]);
   const open = "https://github.com/x/y/pull/1";
   const draft = { outcome: { kind: "draft-pr", prs: [{ url: open }] }, pullStates: { [open]: "open" } };
-  assert.deepEqual(runActions(run("finished", draft)), ["approve", "dismiss"], "a draft pull request is the result: it is approved, not retried");
-  assert.deepEqual(runActions(run("finished", { ...draft, outcome: { kind: "reviewed", prs: [{ url: open }] } })), ["respond", "dismiss"], "a reviewed one answers its feedback: its pull requests are ready already");
+  assert.deepEqual(runActions(run("finished", draft)), ["approve", "talk", "dismiss"], "a draft pull request is the result: it is approved, not retried");
+  assert.deepEqual(runActions(run("finished", { ...draft, outcome: { kind: "reviewed", prs: [{ url: open }] } })), ["respond", "talk", "dismiss"], "a reviewed one answers its feedback: its pull requests are ready already");
   assert.deepEqual(runActions(run("finished", { ...draft, pullStates: { [open]: "merged" } })), ["dismiss"], "merged pull requests are done");
   assert.deepEqual(runActions(run("finished", { ...draft, trackerState: "canceled" })), ["dismiss"], "a canceled ticket is done");
   assert.deepEqual(runActions(run("finished", { outcome: { kind: "crashed" }, trackerState: "completed" })), ["dismiss"], "a completed ticket is done");
@@ -611,10 +611,10 @@ test("a reviewed run is Published once a publish run posted it, and still Comple
   assert.equal(runStatus(shipped({ published: { link: "https://slack/1" } })), "published");
   assert.equal(runStatus(shipped({ published: { link: null }, pullStates: { "https://github.com/x/a/pull/1": "merged" } })), "completed");
   assert.equal(runStatus(shipped({ handedBack: "keeps getting feedback" })), "needs-you", "the board stopped answering feedback on its own");
-  assert.deepEqual(runActions(shipped()), ["respond", "dismiss"], "ready pull requests are answered, not approved again");
-  assert.deepEqual(runActions(shipped({ published: { link: null } })), ["respond", "dismiss"]);
-  assert.deepEqual(runActions(shipped({ handedBack: "keeps getting feedback" })), ["respond", "dismiss"], "a person's Respond to review lets the board carry on");
-  assert.deepEqual(runActions(shipped({ outcome: { kind: "draft-pr", prs: [] } })), ["approve", "dismiss"], "Approve is for drafts");
+  assert.deepEqual(runActions(shipped()), ["respond", "talk", "dismiss"], "ready pull requests are answered, not approved again");
+  assert.deepEqual(runActions(shipped({ published: { link: null } })), ["respond", "talk", "dismiss"]);
+  assert.deepEqual(runActions(shipped({ handedBack: "keeps getting feedback" })), ["respond", "talk", "dismiss"], "a person's Respond to review lets the board carry on");
+  assert.deepEqual(runActions(shipped({ outcome: { kind: "draft-pr", prs: [] } })), ["approve", "talk", "dismiss"], "Approve is for drafts");
 });
 
 test("only a run Ready to merge can be ticked for Publish: not one published, parked, awaiting review, or held by the publish run under way", () => {
@@ -662,7 +662,7 @@ test("only a run Ready to merge is shown as Publishing: a draft, a live run and 
 
 test("the run's own status is Ready to merge while it is Publishing: the pool and what a run offers go by it", () => {
   assert.equal(runStatus(shipped()), "ready-to-merge");
-  assert.deepEqual(runActions(shipped()), ["respond", "dismiss"]);
+  assert.deepEqual(runActions(shipped()), ["respond", "talk", "dismiss"]);
   assert.equal(isWatched(shipped()), true, "the board still watches its pull requests");
 });
 
@@ -696,7 +696,7 @@ test("every run the publish run posts links its terminal, in the machine's templ
 test("A11-89: a run whose pull request conflicts is resumed when it is watched or parked on anything but a result, concluded or stopped run, with a pull request open", () => {
   const open = { url: "https://github.com/x/a/pull/1" };
   const parked = (outcome: Record<string, unknown>, fields: Partial<ViewEntry> = {}) => shipped({ outcome, review: [open], workspace: "w1", ...fields } as Partial<ViewEntry>);
-  for (const outcome of [{ kind: "needs-human", reason: "which colour?" }, { kind: "wrong-repo", where: "netbox" }, { kind: "no-outcome" }, { kind: "crashed", reason: "gone" }]) {
+  for (const outcome of [{ kind: "needs-human" }, { kind: "wrong-repo", where: "netbox" }, { kind: "no-outcome" }, { kind: "crashed" }]) {
     assert.equal(resumesOnConflict(parked(outcome)), true, `a parked ${outcome.kind} run`);
   }
   assert.equal(resumesOnConflict(parked({ kind: "needs-human", reason: "x" }, { workspace: undefined })), true, "a run that ended with its workspace closed");
@@ -754,11 +754,11 @@ test("a ready pull request run is awaiting review with no Approve, watched while
   const pr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
   const ready = run({ outcome: { kind: "ready-pr", prs: [pr] } });
   assert.equal(runStatus(ready), "awaiting-review");
-  assert.deepEqual(runActions(ready), ["dismiss"], "no Approve: the reviewer is the review");
+  assert.deepEqual(runActions(ready), ["talk", "dismiss"], "no Approve: the reviewer is the review");
   assert.equal(isWatched(ready), true, "its feedback is watched");
   assert.equal(isWatched(run({ outcome: { kind: "ready-pr", prs: [pr] }, pullStates: { [pr.url]: "closed" } })), false, "a closed one is not watched");
   const draft = run({ outcome: { kind: "draft-pr", prs: [pr] } });
-  assert.deepEqual(runActions(draft), ["approve", "dismiss"], "POSITIVE CONTROL: a draft run is still approved");
+  assert.deepEqual(runActions(draft), ["approve", "talk", "dismiss"], "POSITIVE CONTROL: a draft run is still approved");
   assert.equal(isWatched(draft), false);
 });
 
@@ -798,9 +798,9 @@ test("A11-91: a run holding a worker's proposed edit offers Apply and Discard, a
 
 test("a finished run being published offers no Dismiss until the publish run has ended, and a queued or live run never offers it", () => {
   const publish: ViewPublish = { keys: ["NBF-1"], phase: "running" };
-  assert.deepEqual(runActions(shipped(), publish), ["respond"], "the publish run is posting its pull requests");
-  assert.deepEqual(runActions(shipped(), { ...publish, phase: "finished" }), ["respond", "dismiss"]);
-  assert.deepEqual(runActions(shipped(), { ...publish, keys: ["NBF-2"] }), ["respond", "dismiss"], "another run's publish holds nothing here");
+  assert.deepEqual(runActions(shipped(), publish), ["respond", "talk"], "the publish run is posting its pull requests");
+  assert.deepEqual(runActions(shipped(), { ...publish, phase: "finished" }), ["respond", "talk", "dismiss"]);
+  assert.deepEqual(runActions(shipped(), { ...publish, keys: ["NBF-2"] }), ["respond", "talk", "dismiss"], "another run's publish holds nothing here");
   assert.equal(runActions(run({ phase: "queued" })).includes("dismiss"), false);
   assert.equal(runActions(run({ phase: "running", workspace: "w1" })).includes("dismiss"), false);
 });
@@ -1047,7 +1047,7 @@ test("A11-119: a verdict on the current head says so before a verdict on an earl
 
 test("A11-119: a run row names the review state of each open pull request the pool has read, and no other", () => {
   // A review run that ended needs-human keeps its pull requests in `review`, as `pullsOf` reads them for an outcome that is not a result.
-  const entry = { outcome: { kind: "needs-human", reason: "which colour?" }, review: [{ url: "https://github.com/a11ign/control/pull/119" }, { url: "https://github.com/a11ign/control/pull/120" }],
+  const entry = { outcome: { kind: "needs-human" }, review: [{ url: "https://github.com/a11ign/control/pull/119" }, { url: "https://github.com/a11ign/control/pull/120" }],
     pullStates: { "https://github.com/a11ign/control/pull/120": "merged" } } as unknown as Parameters<typeof reviewLinesOf>[0];
   assert.deepEqual(reviewLinesOf(entry, { "https://github.com/a11ign/control/pull/119": "awaiting review at 91bf0677", "https://github.com/a11ign/control/pull/120": "approved at 1" }),
     ["a11ign/control #119: awaiting review at 91bf0677"], "the merged pull request is not open, and an unread one shows no line");
@@ -1065,4 +1065,17 @@ test("A11-134: a ticket the server says holds an open decision cannot be selecte
   const held = { ...TICKETS[0], needsDecision: { kind: "decision", reason: "held" } };
   assert.equal(selectable(held, []), false);
   assert.equal(selectable(TICKETS[0], []), true);
+});
+
+test("a finished run offers Talk to it when it ended with something to say, and not when it concluded, was stopped, completed or canceled", () => {
+  const done = (outcome: ViewEntry["outcome"], fields: Partial<ViewEntry> = {}) => runActions({ ticket: { key: "NBF-1" }, phase: "finished", outcome, ...fields });
+  assert.ok(done({ kind: "needs-human" }).includes("talk"), "a question is answered in the run's own session");
+  assert.ok(done({ kind: "crashed" }).includes("talk"));
+  assert.ok(done({ kind: "draft-pr", prs: [] }).includes("talk"), "a draft a person has a problem with");
+  for (const concluded of [{ kind: "checked" }, { kind: "done" }, { kind: "stopped" }] as ViewEntry["outcome"][]) {
+    assert.equal(done(concluded).includes("talk"), false, `${concluded?.kind}: nothing to talk about`);
+  }
+  assert.equal(done({ kind: "needs-human" }, { trackerState: "canceled" }).includes("talk"), false, "a canceled ticket is done");
+  assert.equal(done({ kind: "needs-human" }, { workspace: "w1", pane: "w1:p1" }).includes("talk"), false, "a parked run's terminal is open already: it is Close, not Talk");
+  assert.equal(runActions({ ticket: { key: "NBF-1" }, phase: "running" }).includes("talk"), false, "a live run is answered where it is");
 });
