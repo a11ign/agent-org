@@ -11,7 +11,8 @@ export type ReviewWord = "approved" | "changes requested" | "dismissed";
 /**
  * What the pool read about one open pull request at its current head: the head, whether its checks have settled green, whether a reviewer is live for
  * that head, the verdict the reviewer posted on that head, the newest verdict on an earlier head, why the last start was refused (null when it was not), and
- * the verdict that is not on the pull request, as the pool says it (null when none).
+ * the verdict that is not on the pull request, as the pool says it (null when none), and the expired claim this instance took over on this head, as the pool
+ * says it (absent when it took none, A11-149).
  */
 export type PullRead = Readonly<{
   head: string;
@@ -21,6 +22,7 @@ export type PullRead = Readonly<{
   earlier: Readonly<{ head: string; word: ReviewWord }> | null;
   refusal: string | null;
   unposted: string | null;
+  tookOver?: string;
 }>;
 
 /** The first eight characters of a commit, as the board shows one. */
@@ -28,12 +30,12 @@ export const shortHead = (head: string): string => head.slice(0, 8);
 
 /**
  * The line a pull request's review state reads as. `null` read is a pull request whose state could not be read. In order: a reviewer live for the head is
- * `reviewing`; a verdict on the head is its word; a newest `changes requested` on an earlier head says the new head is not reviewed yet; checks not settled
- * say so; a refused start says why; otherwise the head is awaiting review.
+ * `reviewing`, and says the claim it took over, if it took one; a verdict on the head is its word; a newest `changes requested` on an earlier head says the
+ * new head is not reviewed yet; checks not settled say so; a refused start says why; otherwise the head is awaiting review.
  */
 export function pullReviewText(read: PullRead | null): string {
   if (read === null) return "review state not read";
-  if (read.reviewing) return "reviewing";
+  if (read.reviewing) return read.tookOver === undefined ? "reviewing" : `reviewing (${read.tookOver})`;
   if (read.verdict !== null) return read.verdict === "changes requested" ? `changes requested at ${shortHead(read.head)}` : `${read.verdict} at ${shortHead(read.head)}`;
   if (read.earlier?.word === "changes requested") return `changes requested at ${shortHead(read.earlier.head)}, new head ${shortHead(read.head)} not yet reviewed`;
   if (!read.settled) return `waiting for checks at ${shortHead(read.head)}`;

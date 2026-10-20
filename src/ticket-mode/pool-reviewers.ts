@@ -73,24 +73,29 @@ function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, url: string, head
   return attempts >= MAX_REPOST_ATTEMPTS ? surfaced(answer.refusal) : null;
 }
 
+/** What a start of a reviewer answered: the refusal that started none (null when there is none), and the expired claim it took over (null when it took none). */
+type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null }>;
+
 /**
  * Starts the reviewer for `url` at `head` (A11-119's one start path). Recorded BEFORE the start, so an instance stopped while the reviewer starts never
- * starts it again for this head; a refusal un-records it. One herdr already lists for this head is adopted, not started. Returns the port's refusal, or
- * null when there is none. A refusal is said once per `url@head`, so a sweep every few minutes does not repeat it for a pull request that stays red.
+ * starts it again for this head; a refusal un-records it. One herdr already lists for this head is adopted, not started. The port claims the head for
+ * this instance first (A11-149), so a head another instance holds is refused here. A refusal is said once per `url@head`, so a sweep every few minutes does
+ * not repeat it for a pull request that stays red.
  */
-function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string, key: string): string | null {
+function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string, key: string): StartAnswer {
   const { refusedHeads, reviewerStarted } = ctx;
   reviewerStarted.add(key);
   ctx.reviewerDropped.delete(key);
   rememberReviewers(ctx);
   const adopted = reviewer.live({ pr: url, head });
   const started = adopted ? null : reviewer.start({ pr: url, head });
-  if (started === null) return null;
+  if (started === null) return { refusal: null, tookOver: null };
   if (!("refusal" in started)) {
     // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
     rememberReviewers(ctx);
     log(`${url}: started ${started.label} for ${head.slice(0, 8)}`);
-    return null;
+    if (started.tookOver !== undefined) log(`${url}: ${started.tookOver}`);
+    return { refusal: null, tookOver: started.tookOver ?? null };
   }
   reviewerStarted.delete(key);
   ctx.reviewerDropped.add(key);
@@ -99,7 +104,16 @@ function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: s
     refusedHeads.add(key);
     log(started.refusal);
   }
-  return started.refusal;
+  return { refusal: started.refusal, tookOver: null };
+}
+
+/**
+ * The takeover the board keeps for a head (A11-149): the one this start made, else the one an earlier sweep made on the same head. The sweeps that follow find
+ * the reviewer running and start nothing, so the note is kept until the head changes.
+ */
+function tookOverOf(started: StartAnswer | null, kept: PullRead | undefined, head: string): string | undefined {
+  if (started?.tookOver) return started.tookOver;
+  return kept?.head === head ? kept.tookOver : undefined;
 }
 
 /**
@@ -124,7 +138,8 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   // does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads it open must not start a
   // reviewer for it again. A new head after requested changes has no posted review, so it is started here.
   const startable = state.settled && !posted && !reviewerStarted.has(key);
-  const refusal = startable && readPullState(url, gh) === "OPEN" ? startFor(ctx, reviewer, url, head, key) : null;
+  const started = startable && readPullState(url, gh) === "OPEN" ? startFor(ctx, reviewer, url, head, key) : null;
+  const tookOver = tookOverOf(started, pullReads.get(url), head);
   // Once its verdict is posted, the reviewer for this head closes: its workspace goes, and its checkout stays (`close`). One still working is kept
   // in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round below, and no watch reads this run until it ends.
   if (reviewVerdict(state.reviews, head) !== null && reviewer.live({ pr: url, head })) {
@@ -138,7 +153,7 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   }
   const read: PullRead = {
     head, settled: state.settled, reviewing: reviewer.live({ pr: url, head }), verdict: reviewWordAt(state.reviews, head),
-    earlier: earlierReviewWord(state.reviews, head), refusal, unposted,
+    earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }),
   };
   pullReads.set(url, read);
   return { state, unposted };

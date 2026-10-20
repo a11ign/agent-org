@@ -69,6 +69,9 @@ fi
 # ONE SPELLING WITH `attributionContext` IN review-attribution.ts. A shell writer and a JS reader cannot
 # share a constant, so `review-attribution.test.ts` reads this line and compares the two.
 ATTRIBUTION_CONTEXT_PREFIX=review/
+# THE CLAIM'S CONTEXT (A11-149): ONE SPELLING WITH `REVIEW_CLAIM_CONTEXT` in src/ticket-port/review-claim.ts. An instance's claim on a head is written under it,
+# and this door writes the verdict over it once the review posts.
+CLAIM_CONTEXT=agent-org/review
 
 n="${1:-}"; verdict="${2:-}"; file="${3:-}"
 [[ "$n" =~ ^[0-9]+$ ]] || { echo "pr-review-verdict: PR number must be digits, got '$n'" >&2; exit 2; }
@@ -169,6 +172,21 @@ attribute() {
     -f "target_url=$url" \
     -f "description=$verdict" || {
     echo "pr-review-verdict: could not record the attribution status for #$n; review posted UNATTRIBUTED (#2127)." >&2
+    return 1
+  }
+}
+
+# THE CLAIM IS SET TO THE VERDICT (A11-149). Written after the post, as the attribution is: a status under the claim's context names the verdict and the
+# instance that posted it, so every instance that sweeps this pull request reads its head as finished. Best effort, and it never fails the review: the posted
+# review is the authority every reader checks first, and a claim left to expire costs one more reviewer's lease at most. Nothing is written when no instance is
+# named (a door run by hand).
+finish_claim() {
+  [[ -n "${AGENT_ORG_INSTANCE:-}" ]] || return 0
+  gh api --method POST "repos/$REPO/statuses/$PR_HEAD" --silent \
+    -f state=success \
+    -f "context=$CLAIM_CONTEXT" \
+    -f "description=$verdict by $AGENT_ORG_INSTANCE at $(date -u +%Y-%m-%dT%H:%M:%SZ)" || {
+    echo "pr-review-verdict: could not set the claim on #$n's head to the verdict; the review is posted, and the claim expires (A11-149)." >&2
     return 1
   }
 }
@@ -403,3 +421,4 @@ refuse_second_review
 
 post_review
 attribute || true
+finish_claim || true

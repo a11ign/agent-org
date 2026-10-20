@@ -210,8 +210,15 @@ function tagCutAt(tag: string, { git, gh, repo }: { git: (args: string[]) => str
   }
 }
 
-/** `gh` with a 30 s cut and its output as text. Exported so ticket mode reads GitHub through a spawn that is already counted (`gh-call-ratchet.test.ts`). */
-export const defaultGh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
+/**
+ * `gh` run with `env` laid over this process's environment, with a 30 s cut and its output as text. Exported so ticket mode reads GitHub through a spawn that is
+ * already counted (`gh-call-ratchet.test.ts`). A reviewer's role environment (A11-149) runs through it, so a call writes as that role.
+ */
+export const ghWith = (env: Readonly<Record<string, string>> = {}) => (args: string[]): string =>
+  execFileSync("gh", args, { encoding: "utf8", env: { ...process.env, ...env }, timeout: GIT_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
+
+/** `gh` with no environment of its own, as `ghWith` runs it with none. */
+export const defaultGh = ghWith();
 
 /** READING 1, THE TOOL CHECKOUT: the release tag it sits at (`liveToolVersion`, which is the board line's reader and is CALLED, not rewritten), else "at no release" and its commit. */
 export function readToolCheckout({ tool }: { tool: string; }, { git = gitIn(tool) }: { git?: (args: string[]) => string; } = {}): RunnerFact {

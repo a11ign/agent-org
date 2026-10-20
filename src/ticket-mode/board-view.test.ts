@@ -1084,3 +1084,9 @@ test("a finished run offers Talk to it when it ended with something to say, and 
   assert.equal(done({ kind: "needs-human" }, { workspace: "w1", pane: "w1:p1" }).includes("talk"), false, "a parked run's terminal is open already: it is Close, not Talk");
   assert.equal(runActions({ ticket: { key: "NBF-1" }, phase: "running" }).includes("talk"), false, "a live run is answered where it is");
 });
+
+test("A11-149: a reviewer that took over an expired claim says so while it works, and says nothing of a head it did not take one on", () => {
+  const took = "took over the claim of pool-a, 60 min old with no verdict";
+  assert.equal(pullReviewText(read({ reviewing: true, tookOver: took })), `reviewing (${took})`);
+  assert.equal(pullReviewText(read({ reviewing: true })), "reviewing");
+});
