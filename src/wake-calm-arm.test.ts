@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addressed, deliver } from "./wake/fyi-queue.ts";
 import { claimOrdersIn, claimOrdersPath } from "./wake/merge-queue-wait.ts";
-import { ledgerLine } from "./wake/ended-sessions.ts";
-import { CONTINUATION_ESCALATE_TO } from "./wake/holds-as-fyi.ts";
+import { ledgerLine } from "./wake/session-endings.ts";
+import { CONTINUATION_ESCALATE_TO } from "./wake/fyi-delivery-and-limits.ts";
 import { armOf, ARM, CALM_FINISH_PARAGRAPH } from "./worker-profile.ts";
 import { MAX_CONTINUATIONS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 

@@ -17,13 +17,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
+import { COMPACT_THRESHOLD_TOKENS } from "../wake/fyi-delivery-and-limits.ts";
 import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
 import { spawnableRole, spareLabelForRow, engineerRoles } from "../wake/pull-request-spawn-orders.ts";
 import { withSpareInstances, route } from "../wake/exit-and-limits.ts";
 import { spareInstances } from "../wake/merge-queue-wait.ts";
 import { endFinishedSpares } from "../wake/ci-class-and-spares.ts";
-import { readSpareCycles } from "../wake/ended-sessions.ts";
+import { readSpareCycles } from "../wake/session-endings.ts";
 import { consecutiveClean } from "../wake/release-line-and-seats.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_SESSIONS, SPARE_FAMILIES }
   from "../arm-pr.ts";

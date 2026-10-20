@@ -359,7 +359,7 @@
       "spawns": 0,
       "calls": 2
     },
-    "src/wake/ended-sessions.ts": {
+    "src/wake/session-endings.ts": {
       "spawns": 0,
       "calls": 2
     },

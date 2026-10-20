@@ -49,7 +49,7 @@ const { readLanes, scopeTick } = await import("../work-gate/tick/blocker-cleared
 const { ownerOfPr } = await import("../work-gate/pr-orders/red-only-by-superseded-run.ts");
 const { lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
 const { deliver } = await import("../wake/fyi-queue.ts");
-const { noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake/ensure-reviewer-token.ts");
+const { noReviewCheckoutFor, prepareReviewCheckout, removeReviewCheckout, reviewCloneOf, linkKeyedDependencies, withReviewCheckout, repointedForReviewer, REPO_ROOT } = await import("../wake/reviewer-tokens-and-checkouts.ts");
 const { reviewerEnvironment } = await import("../wake/pull-request-spawn-orders.ts");
 
 const SESSION = "reviewer-agent-org-6";

@@ -22,8 +22,8 @@ import { engineerRoles } from "../wake/pull-request-spawn-orders.ts";
 import { spawnClaimer, consecutiveClean, cyclesReport, drainInForce } from "../wake/release-line-and-seats.ts";
 import { isSpareRole, cycleVerdict, spareInstances } from "../wake/merge-queue-wait.ts";
 import { endFinishedSpares } from "../wake/ci-class-and-spares.ts";
-import { readSpareCycles, sparePathsFrom } from "../wake/ended-sessions.ts";
-import { registerSpawn, settleAbsentInstance } from "../wake/holds-as-fyi.ts";
+import { readSpareCycles, sparePathsFrom } from "../wake/session-endings.ts";
+import { registerSpawn, settleAbsentInstance } from "../wake/fyi-delivery-and-limits.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 
 const T0 = Date.UTC(2026, 8, 25, 0, 0, 0);

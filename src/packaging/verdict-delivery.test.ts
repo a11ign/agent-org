@@ -21,7 +21,7 @@ import { DEFAULT_CANARY_OPTIONS, machineryCanaryTick, withMachineryFlag, type Ca
 import { MACHINERY_SIGNALS } from "../org-health/hold-and-rerun-readings.ts";
 import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryFlagOn, parseCanaryState } from "../org-health/fleet-build-readings.ts";
 import { OUTSIDE, outsideVerdictBlock, postOutsideVerdicts, VERDICT_DELIVERY_FLAG, type DoorRun } from "../review-trust.ts";
-import { postOutsideVerdictsOf } from "../wake/holds-as-fyi.ts";
+import { postOutsideVerdictsOf } from "../wake/fyi-delivery-and-limits.ts";
 import { conflictingIdleNow, conflictingIdlePrs, parseVerdictLedger, pullReadOf, reconcileLedgerNow, recordWrittenVerdicts, verdictUndeliveredNow, VERDICT_LEDGER_FILE, type PullRead } from "../verdict-delivery.ts";
 
 const MINUTE = 60_000;

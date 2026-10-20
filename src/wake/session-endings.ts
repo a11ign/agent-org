@@ -7,9 +7,9 @@ import { REPO } from "../project-identity.ts";
 import { roleBriefPath } from "../project-roles.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { firstLine } from "../herdr-agents.ts";
-import { reviewerPathsFrom, type CheckoutDeps } from "./ensure-reviewer-token.ts";
+import { reviewerPathsFrom, type CheckoutDeps } from "./reviewer-tokens-and-checkouts.ts";
 import { CONTEXT_PLACEHOLDER, YOU_PLACEHOLDER_BYTES, authorOf, deliver, fitBatch, isAbsent, orderHeading, readReviewerEndings, waitedFor } from "./fyi-queue.ts";
-import { readSpareRegistry, type OrderClock, type SpareCycle } from "./holds-as-fyi.ts";
+import { readSpareRegistry, type OrderClock, type SpareCycle } from "./fyi-delivery-and-limits.ts";
 import { ESCALATED, HANDOFF_STALE_MS, JUDGMENT_TTL_MS, RESET, VOIDED, declaresDecision, dropHandoffs, ledgerKeyOf, queueHandoff } from "./seat-reset.ts";
 import { defaultGh, defaultRun } from "./exit-and-limits.ts";
 

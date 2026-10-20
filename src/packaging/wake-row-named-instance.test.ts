@@ -22,9 +22,9 @@ import { spawnableRole, spareLabelForRow, engineerRoles } from "../wake/pull-req
 import { withSpareInstances } from "../wake/exit-and-limits.ts";
 import { spareInstances, isSpareRole } from "../wake/merge-queue-wait.ts";
 import { endFinishedSpares } from "../wake/ci-class-and-spares.ts";
-import { readSpareCycles, sparePathsFrom } from "../wake/ended-sessions.ts";
+import { readSpareCycles, sparePathsFrom } from "../wake/session-endings.ts";
 import { consecutiveClean, rowOfOrder } from "../wake/release-line-and-seats.ts";
-import { registerSpawn } from "../wake/holds-as-fyi.ts";
+import { registerSpawn } from "../wake/fyi-delivery-and-limits.ts";
 import { isLiveSession, familyNumber, unknownSessionLabels } from "../arm-pr.ts";
 import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
 import { labelAfterCreate } from "../pr-open.ts";

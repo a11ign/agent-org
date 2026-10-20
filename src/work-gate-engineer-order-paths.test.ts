@@ -24,7 +24,7 @@ import { worktreeTargetReason } from "./row-claim.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { addressed, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake/fyi-queue.ts";
 import { engineerRoles } from "./wake/pull-request-spawn-orders.ts";
-import { ENGINEER_BRIEF } from "./wake/ended-sessions.ts";
+import { ENGINEER_BRIEF } from "./wake/session-endings.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { SPARE_FAMILIES } from "./arm-pr.ts";
 

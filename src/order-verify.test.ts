@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ledgerLine } from "./wake/ended-sessions.ts";
+import { ledgerLine } from "./wake/session-endings.ts";
 import { wakeIdOf } from "./wake/fyi-queue.ts";
 import type { recordFailures } from "./failure-ledger.ts";
 import { deliveriesIn, ORDERS_VERIFIABLE_USE, repeatedOrdersIn, repeatedOrdersNow, verifyOrder } from "./order-verify.ts";

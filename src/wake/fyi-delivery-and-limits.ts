@@ -17,7 +17,7 @@ import { statMtime } from "../claim-stall.ts";
 import { persistentRoles } from "../project-roles.ts";
 import { SESSIONS_FILE, declaresDecision, isLeadSeat } from "./seat-reset.ts";
 import { MAX_SPAWNS_PER_TICK, isPilotOrder, isPullRequestSpawnOrder, ownRowOnly, reviewerEnvironment, rowRefOfOrder, spawnWorker, startsFresh, type ClaimRefused, type ClaimedRow, type ReviewerEntry, type SpawnClaimer, type ToolchainGate } from "./pull-request-spawn-orders.ts";
-import { isReviewerOrder, repointedForReviewer, reviewerMismatch, reviewerTarget, type ReviewerDeps } from "./ensure-reviewer-token.ts";
+import { isReviewerOrder, repointedForReviewer, reviewerMismatch, reviewerTarget, type ReviewerDeps } from "./reviewer-tokens-and-checkouts.ts";
 import { relaneTarget, routeWithFallback, type SpareInstance, withSpareInstances } from "./exit-and-limits.ts";
 
 /**

@@ -76,10 +76,10 @@ import { withBoardSnapshot, PROJECT_OWNER, PROJECT_NUMBER } from "./board-snapsh
 import { runnerReason, laneReason, drainReason, oneRowReason } from "./row-claim/runner-rule.ts";
 import { readStandIns, type LaneStandIn } from "./row-claim/lane-stand-in.ts";
 import { activeDrain } from "./wake/release-line-and-seats.ts";
-import { sparePathsFrom } from "./wake/ended-sessions.ts";
+import { sparePathsFrom } from "./wake/session-endings.ts";
 import { ledgerPathFrom } from "./wake/seat-reset.ts";
 import { isSpareRole } from "./wake/merge-queue-wait.ts";
-import { isPersistentRole, readSpareRegistry } from "./wake/holds-as-fyi.ts";
+import { isPersistentRole, readSpareRegistry } from "./wake/fyi-delivery-and-limits.ts";
 import { readWaitRef } from "./work-gate/org-health.ts";
 import { readWithFirstWaveTogether, runBatch } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readChairmanPriority, EMERGENCY_PRIORITY_LABEL, readEmergencyPriority, readEmergencyPriorityOption } from "./work-gate/causes/rows-offer.ts";

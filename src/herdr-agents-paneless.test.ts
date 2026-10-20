@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAgents, type ListedAgent } from "./herdr-agents.ts";
 import { stripClosedClaims } from "./work-gate.ts";
-import { dropUnknownHandoffs, UNKNOWN_SESSION_MS } from "./wake/ended-sessions.ts";
+import { dropUnknownHandoffs, UNKNOWN_SESSION_MS } from "./wake/session-endings.ts";
 import { queueHandoff, readHandoffs, HANDOFF_QUEUE_FILE } from "./wake/seat-reset.ts";
 import { WAKEABLE } from "./wake/exit-and-limits.ts";
 import { IDLE_STATUSES } from "./idle-claimant.ts";

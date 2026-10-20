@@ -28,7 +28,7 @@ import { profileFor } from "./worker-profile.ts";
 const BLOCK = 4096;
 const TOTAL = 1000;
 const GATE_ENTRY = fileURLToPath(new URL("./work-gate.ts", import.meta.url));
-import { SETTLE_TEST_CLOCK_ENV } from "./wake/holds-as-fyi.ts";
+import { SETTLE_TEST_CLOCK_ENV } from "./wake/fyi-delivery-and-limits.ts";
 const WAKE_ENTRY = fileURLToPath(new URL("./wake.ts", import.meta.url));
 const STUB_MODE = 0o755;
 const READ_ONLY = 0o444;

@@ -15,7 +15,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deliver } from "./wake/fyi-queue.ts";
 import { deliveryCounts, endFinishedReviewers, endSeatRuns } from "./wake/seat-reset.ts";
-import { registerReviewer, reviewerPathsFrom } from "./wake/ensure-reviewer-token.ts";
+import { registerReviewer, reviewerPathsFrom } from "./wake/reviewer-tokens-and-checkouts.ts";
 import { readReviewerRegistry } from "./work-gate/causes/org-health-reviewer-auth.ts";
 import { INSIDE } from "./review-trust.ts";
 import { startedPanes } from "./packaging/started-pane.ts";

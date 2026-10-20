@@ -18,7 +18,7 @@ import type { TrackerClaims } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { STALL_INTERVAL_MS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { STOPPED_CLAIMANT_MINUTES } from "./idle-claimant.ts";
-import { ledgerLine } from "./wake/ended-sessions.ts";
+import { ledgerLine } from "./wake/session-endings.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 const MIN = 60_000;

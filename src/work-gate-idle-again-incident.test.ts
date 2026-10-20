@@ -17,7 +17,7 @@ import { CLAIMED_WORKER_STALLED } from "./claim-stall.ts";
 import { STALL_INTERVAL_MS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
 import { IDLE_CLAIMANT_MINUTES, STOPPED_CLAIMANT_MINUTES } from "./idle-claimant.ts";
-import { ledgerLine } from "./wake/ended-sessions.ts";
+import { ledgerLine } from "./wake/session-endings.ts";
 import { WORKER_STATE_DIR } from "./worker-state.ts";
 
 const MIN = 60_000;

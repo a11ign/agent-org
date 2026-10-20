@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promptOrQueue as settlingPromptOrQueue, recordDirectDelivery, directRecordPath, DIRECT_RECORD_FILE, STANCE, EXIT,
   PROMPT_REFUSED_PREFIX } from "../prompt-session.ts";
-import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
+import { COMPACT_THRESHOLD_TOKENS } from "../wake/fyi-delivery-and-limits.ts";
 import { handoffQueuePath, readHandoffs, HANDOFF_QUEUE_FILE } from "../wake/seat-reset.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};

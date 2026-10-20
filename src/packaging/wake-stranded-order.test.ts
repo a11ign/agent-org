@@ -19,8 +19,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
-import { resolveEndedHandoffs, targetState, endedSessions, namedRefs, holderOf, deliverHandoffs as settlingDeliverHandoffs } from "../wake/ended-sessions.ts";
+import { COMPACT_THRESHOLD_TOKENS } from "../wake/fyi-delivery-and-limits.ts";
+import { resolveEndedHandoffs, targetState, endedSessions, namedRefs, holderOf, deliverHandoffs as settlingDeliverHandoffs } from "../wake/session-endings.ts";
 import { readHandoffs, handoffId, HANDOFF_STALE_MS, handoffQueuePath } from "../wake/seat-reset.ts";
 import { handoffBacklog, backlogReport, authorOf } from "../wake/fyi-queue.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */

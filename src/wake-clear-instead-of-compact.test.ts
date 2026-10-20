@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, readFileSync, rmSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareContext } from "./wake/fyi-queue.ts";
-import { stateFileVerdict, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, STATE_FILE_MAX_BYTES } from "./wake/holds-as-fyi.ts";
+import { stateFileVerdict, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, STATE_FILE_MAX_BYTES } from "./wake/fyi-delivery-and-limits.ts";
 import { orderClockIn } from "./wake/merge-queue-wait.ts";
 import { testEach } from "./lib/test-each.ts";
 

@@ -41,8 +41,8 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { deliver, spawnedPrompt, HOST_REPOS, PRIMARY_CHECKOUT } = await import("./wake/fyi-queue.ts");
 const { spawnClaimer, slugOf, spawnClaimability } = await import("./wake/release-line-and-seats.ts");
-const { registerSpawn } = await import("./wake/holds-as-fyi.ts");
-const { sparePathsFrom, readSpareCycles } = await import("./wake/ended-sessions.ts");
+const { registerSpawn } = await import("./wake/fyi-delivery-and-limits.ts");
+const { sparePathsFrom, readSpareCycles } = await import("./wake/session-endings.ts");
 const { spawnableRole, spareLabelForRow, rowRefOfOrder, WORKERS_GH_CONFIG_DIR } = await import("./wake/pull-request-spawn-orders.ts");
 const { withSpareInstances } = await import("./wake/exit-and-limits.ts");
 const { isSpareRole, spareInstances } = await import("./wake/merge-queue-wait.ts");

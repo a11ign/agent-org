@@ -169,7 +169,7 @@ const MODULES: Module[] = [
     expectedInFixture: () => FIXTURE_FACTS.owned, expectedInTree: TREE_OWNED },
   { name: "region-paths rootFilesOnMain()", file: "region-paths.ts", answer: `m.rootFilesOnMain().files.has(${JSON.stringify(FIXTURE_ROOT_FILE)})`,
     expectedInFixture: () => true, expectedInTree: false },
-  { name: "wake REPO_ROOT", file: "wake/ensure-reviewer-token.ts", answer: "m.REPO_ROOT",
+  { name: "wake REPO_ROOT", file: "wake/reviewer-tokens-and-checkouts.ts", answer: "m.REPO_ROOT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },
   { name: "work-gate REPO_CHECKOUT", file: "work-gate/reads.ts", answer: "m.REPO_CHECKOUT",
     expectedInFixture: (checkout) => checkout, expectedInTree: REPO },

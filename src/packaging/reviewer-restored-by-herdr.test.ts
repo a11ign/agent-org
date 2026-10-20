@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { endFinishedReviewers, restoredReviewers, tearDownReviewers } from "../wake/seat-reset.ts";
-import { reviewerPathsFrom } from "../wake/ensure-reviewer-token.ts";
+import { reviewerPathsFrom } from "../wake/reviewer-tokens-and-checkouts.ts";
 import { promptOnScreen, readPromptPanes, panePromptOrdersNow, PROMPT_SCREENS } from "../wake.ts";
 import { panePromptReading } from "../org-health/overdue-readings.ts";
 import { PANE_PROMPT_MINUTES, SIGNALS } from "../org-health/thresholds.ts";

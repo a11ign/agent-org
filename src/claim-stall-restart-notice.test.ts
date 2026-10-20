@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
-import { ledgerLine } from "./wake/ended-sessions.ts";
+import { ledgerLine } from "./wake/session-endings.ts";
 import { AGENT_SESSIONS_FILE, restartNoticeKey, restartNotices } from "./claim-stall.ts";
 import { type ClaimFacts, type Reading } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { readAgentSessions } from "./herdr-agents.ts";

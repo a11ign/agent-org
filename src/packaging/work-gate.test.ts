@@ -69,9 +69,9 @@ beforeEach(() => forgetRefusedReads());
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.ts` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { readLedger, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
+import { readLedger, WAKE_TTL_MS } from "../wake/session-endings.ts";
 import { addressed, deliver } from "../wake/fyi-queue.ts";
-import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
+import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
 import { escalateStuck } from "../wake/merge-queue-wait.ts";
 import { undelivered, JUDGMENT_TTL_MS, deliveryCounts } from "../wake/seat-reset.ts";
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture

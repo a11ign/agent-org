@@ -18,7 +18,7 @@ import { dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addressed, deliver } from "../wake/fyi-queue.ts";
 import { engineerRoles } from "../wake/pull-request-spawn-orders.ts";
-import { ENGINEER_BRIEF } from "../wake/ended-sessions.ts";
+import { ENGINEER_BRIEF } from "../wake/session-endings.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 import { startedPanes } from "./started-pane.ts";

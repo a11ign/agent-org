@@ -19,7 +19,7 @@ import { CENSUS_ENV, GATE_SPANS_ENV, currentCensusPhase, describeSpawn, endGateS
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { readElsewherePrs } from "./work-gate/reads.ts";
 import { claimRow } from "./row-claim.ts";
-import { instanceCacheRead } from "./wake/holds-as-fyi.ts";
+import { instanceCacheRead } from "./wake/fyi-delivery-and-limits.ts";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

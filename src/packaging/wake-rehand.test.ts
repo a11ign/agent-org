@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { undelivered, JUDGMENT_TTL_MS } from "../wake/seat-reset.ts";
-import { readLedger, ledgerLine, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
+import { readLedger, ledgerLine, WAKE_TTL_MS } from "../wake/session-endings.ts";
 import { deliver as settlingDeliver } from "../wake/fyi-queue.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};

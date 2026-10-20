@@ -32,8 +32,8 @@ import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, re
   from "../host-config.ts";
 import { handoffQueuePath, ledgerPathFrom } from "../wake/seat-reset.ts";
 import { keptClaimsPath } from "../wake/ci-class-and-spares.ts";
-import { reviewerPathsFrom } from "../wake/ensure-reviewer-token.ts";
-import { sparePathsFrom } from "../wake/ended-sessions.ts";
+import { reviewerPathsFrom } from "../wake/reviewer-tokens-and-checkouts.ts";
+import { sparePathsFrom } from "../wake/session-endings.ts";
 import { updateTool } from "../update-tool.ts";
 import { sandboxGitEnv, withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { trackedTopLevelDirs } from "../region-paths.ts";

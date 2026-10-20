@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DEFERRAL_LOG_FILE, deferralLogText, endedDeferrals, parseDeferralLog, recordEndedDeferrals } from "./deferral-log.ts";
 import { deferralAges } from "./wake/merge-queue-wait.ts";
-import { ledgerLine } from "./wake/ended-sessions.ts";
+import { ledgerLine } from "./wake/session-endings.ts";
 
 const T0 = 1_000_000_000_000;
 const MINUTE = 60_000;

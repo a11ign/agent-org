@@ -196,7 +196,7 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // English word "answer:" (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
   ...nonVocabulary("wake/fyi-queue.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
   ...nonVocabulary("wake/exit-and-limits.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
-  ...nonVocabulary("wake/holds-as-fyi.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
+  ...nonVocabulary("wake/fyi-delivery-and-limits.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
   ...nonVocabulary("wake/ci-class-and-spares.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
   ...nonVocabulary("wake/fyi-queue.ts", ['"answer:'], "prose that starts a string segment with the English word (`REFUSED_CLAIM_IS_AN_ANSWER`)"),
   // `pr-hold-state.ts` (#4970): `"blocked"` is the worker's declared STATE (`worker-state.ts`'s `DECLARED_STATES`, read by `declarationExcusesHold`), never the `blocked` label, and the leaf

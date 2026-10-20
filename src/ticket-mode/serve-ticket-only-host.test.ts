@@ -82,7 +82,7 @@ async function runWithPrimaryHost(prefix: string, code: string): Promise<{ outco
 
 /** The gate's modules, by their place under `src/`: the ones `reviewer-port.ts` loads, and nothing else loads them. */
 // The gate's modules: `wake.ts` is loaded through the four files of its directory the reviewer loader imports.
-const GATE_FILES = ["wake/ensure-reviewer-token.ts", "wake/ci-class-and-spares.ts", "wake/pull-request-spawn-orders.ts", "wake/seat-reset.ts", "review-trust.ts", "project-config.ts", "project-identity.ts", "work-gate/pr-orders.ts"];
+const GATE_FILES = ["wake/reviewer-tokens-and-checkouts.ts", "wake/ci-class-and-spares.ts", "wake/pull-request-spawn-orders.ts", "wake/seat-reset.ts", "review-trust.ts", "project-config.ts", "project-identity.ts", "work-gate/pr-orders.ts"];
 
 /**
  * A module loaded before the entry, which writes each gate module it resolves to `loads.txt` under `root`. The module itself is not changed: the

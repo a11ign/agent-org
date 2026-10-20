@@ -66,7 +66,7 @@ const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
 // costs the `no-token` promise at the top of this file nothing.
 import { addressed, deliver } from "../wake/fyi-queue.ts";
 import { escalateStuck } from "../wake/merge-queue-wait.ts";
-import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
+import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
 

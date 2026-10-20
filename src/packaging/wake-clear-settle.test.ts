@@ -25,8 +25,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver, CLEAR_SETTLE_MS } from "../wake/fyi-queue.ts";
-import { deliverHandoffs } from "../wake/ended-sessions.ts";
-import { COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
+import { deliverHandoffs } from "../wake/session-endings.ts";
+import { COMPACT_THRESHOLD_TOKENS } from "../wake/fyi-delivery-and-limits.ts";
 import { clearThenPrompt } from "../prompt-session.ts";
 import { testEach } from "../lib/test-each.ts";
 

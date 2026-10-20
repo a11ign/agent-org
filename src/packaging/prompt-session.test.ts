@@ -18,7 +18,7 @@ import { promptable, clearThenPrompt as settlingClearThenPrompt, queueable, queu
   deliveredText }
   from "../prompt-session.ts";
 import { readHandoffs } from "../wake/seat-reset.ts";
-import { handoffOrder } from "../wake/ended-sessions.ts";
+import { handoffOrder } from "../wake/session-endings.ts";
 import { addressed } from "../wake/fyi-queue.ts";
 
 import { readLoadedRules } from "./rules-files.ts";

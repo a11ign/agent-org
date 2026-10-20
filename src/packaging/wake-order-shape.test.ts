@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { addressed } from "../wake/fyi-queue.ts";
 import { resumePrompt } from "../wake/ci-class-and-spares.ts";
-import { ENGINEER_BRIEF } from "../wake/ended-sessions.ts";
+import { ENGINEER_BRIEF } from "../wake/session-endings.ts";
 import { sessionOf } from "../token-audit.ts";
 import { CALM_FINISH_PARAGRAPH } from "../worker-profile.ts";
 import { idleNudgePrompt, WAIT_FIELDS } from "../idle-claimant.ts";

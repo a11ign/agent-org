@@ -22,7 +22,7 @@ import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { withPatchIds } from "../work-gate/causes/pr-reviews.ts";
 import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
-import { readLedger, endedRuns, ledgerLine, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
+import { readLedger, endedRuns, ledgerLine, WAKE_TTL_MS } from "../wake/session-endings.ts";
 import { undelivered, RESET } from "../wake/seat-reset.ts";
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
