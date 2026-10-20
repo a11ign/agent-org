@@ -17,6 +17,7 @@ import {
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
 import { approve, completableRuns, finish, queuePublish, recordPullStates, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
+import { talk } from "./queue/talk.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
@@ -4201,4 +4202,103 @@ test("A11-134: a decision the tracker gains after a ticket is queued holds its w
   const made = setup(1, ["NBF-1"], {}, { source: trackerOf({ "NBF-1": { description: OPEN_DECISION } }) });
   await made.pool.tick();
   assertHeldForDecision(made);
+});
+
+/** A pool whose one run, NBF-1, ended with a draft pull request, as `approvedRun` has it, before anyone approves it. */
+async function draftOfNbf1(options: { transcript?: boolean } = {}) {
+  const ctx = setup(1, ["NBF-1"]);
+  const { pool, status, settings, root } = ctx;
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  const dir = ticketDir(settings, "NBF-1");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  if (options.transcript !== false) {
+    mkdirSync(join(root, "transcripts", "-Users-me-work"), { recursive: true });
+    writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
+  }
+  await pool.tick();
+  status.delete(herdrName("NBF-1"));
+  ctx.h.calls.length = 0;
+  return { ...ctx, dir };
+}
+
+test("a person who talks to a finished draft's run resumes its own session, told a person is here", async () => {
+  const { pool, h, entry, dir } = await draftOfNbf1();
+  assert.equal(entry("NBF-1").phase, "finished");
+  pool.talk("NBF-1");
+  assert.equal(entry("NBF-1").talk, true);
+  await pool.tick();
+  const start = h.calls.find((args) => args.includes("start"))!;
+  const tail = start.slice(start.indexOf("--") + 1);
+  assert.match(tail[0], /^A person has opened this session to talk to you\./);
+  assert.deepEqual(tail.slice(tail.indexOf("--resume"), tail.indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.ok(entry("NBF-1").workspace !== undefined, "its terminal is open");
+  assert.equal(existsSync(join(dir, "outcome.json")), false, "the outcome it ended on is set aside, so the stop hook asks for a new one");
+  assert.equal(existsSync(join(dir, "outcome.prev.json")), true);
+  assert.equal(h.calls.filter((args) => args.includes("create")).length, 1);
+});
+
+test("a talk session that ends on a new outcome ends the run as any run ends", async () => {
+  const { pool, status, entry, dir } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  await pool.tick();
+  await agentIs({ pool, status }, herdrName("NBF-1"), "working");
+  await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "draft-pr", prs: [approvedPr] });
+  assert.equal(entry("NBF-1").phase, "finished");
+  assert.equal(entry("NBF-1").outcome?.kind, "draft-pr");
+  assert.equal(entry("NBF-1").talk, undefined, "the finished run is no longer a talk session");
+  assert.equal(entry("NBF-1").review, undefined, "the pull requests it kept linked meanwhile do not make it a review round");
+});
+
+test("a run with no saved session cannot be talked to, and is left as it was", async () => {
+  const { pool, entry } = await draftOfNbf1({ transcript: false });
+  assert.throws(() => pool.talk("NBF-1"), /no saved session to resume/);
+  assert.equal(entry("NBF-1").talk, undefined);
+  assert.equal(entry("NBF-1").outcome?.kind, "draft-pr");
+});
+
+test("a talk session that cannot start puts the finished run back on the board as it was", async () => {
+  const { pool, h, entry } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  h.refused.add("start");
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "finished");
+  assert.equal(entry("NBF-1").outcome?.kind, "draft-pr");
+  assert.equal(entry("NBF-1").talk, undefined);
+});
+
+test("a run is talked to only once it is finished, and not while its terminal is already open", async () => {
+  const { pool, store, entry } = await draftOfNbf1();
+  const queued = store.get();
+  assert.equal(talk(queued, "NBF-9", 5), queued, "no such run");
+  pool.talk("NBF-1");
+  const talking = store.get();
+  assert.equal(talk(talking, "NBF-1", 6), talking, "a run that is not finished");
+  assert.equal(entry("NBF-1").phase, "queued");
+});
+
+test("a talk session whose agent waits for the person keeps the draft's pull requests linked, and a second press changes nothing", async () => {
+  const { pool, status, entry, dir } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  pool.talk("NBF-1");
+  assert.equal(entry("NBF-1").phase, "queued", "the second press is not an error");
+  await pool.tick();
+  await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "needs-human", reason: "waiting for the person in the terminal" });
+  assert.equal(entry("NBF-1").outcome?.kind, "needs-human");
+  assert.ok(entry("NBF-1").workspace !== undefined, "parked: its terminal stays open for the person");
+  assert.deepEqual(entry("NBF-1").review?.map((pr) => pr.url), [approvedPr.url], "the draft stays linked");
+});
+
+test("a queued talk session taken off the board puts the finished run back, and a failed start puts its outcome file back", async () => {
+  const { pool, h, entry, dir } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  await pool.remove("NBF-1");
+  assert.equal(entry("NBF-1").phase, "finished");
+  assert.equal(entry("NBF-1").outcome?.kind, "draft-pr");
+  pool.talk("NBF-1");
+  h.refused.add("start");
+  await pool.tick();
+  assert.equal(existsSync(join(dir, "outcome.json")), true, "the outcome file set aside is put back");
+  assert.equal(existsSync(join(dir, "outcome.prev.json")), false);
 });

@@ -4,7 +4,7 @@
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
-import { BRIEF_FILE, firstPrompt, PLANNING_DENY, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, workerFlags, WRITER_CREATE_TOOLS, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
+import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_CREATE_TOOLS, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
@@ -16,14 +16,15 @@ import { repoOf } from "./board-view/pull-status-and-notes.ts";
 import { worktreePath } from "./worktree.ts";
 import { type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
-// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { ticketDir } from "./ticket-paths.ts";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parsePaths } from "./overlap.ts";
 import { availableParallelism, loadavg } from "node:os";
+import { talk, talkFailed } from "./queue/talk.ts";
 import { markWriterRunning, markWriterStarting, nextStarts, writerFailed, writerOf, writerToStart } from "./queue.ts";
-import { clearRunDir, current, prepare, prepareBatch, writeBoardRunFiles } from "./pool-prepare.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles } from "./pool-prepare.ts";
 import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { needsDecision } from "./open-decisions.ts";
@@ -71,7 +72,7 @@ async function start(ctx: PoolContext, entry: Entry, folder: string, dir: string
   const env = { ...(entry.batch === undefined ? { [TICKET_ENV.key]: runId, [TICKET_ENV.branch]: entry.ticket.branch } : {}), ...(hostFile ? { [TICKET_ENV.host]: hostFile } : {}) };
   const { model, effort } = runChoice(ctx, entry);
   const cause = entry.asked ? "asked" : entry.feedback !== undefined ? "feedback" : "approved";
-  const prompt = entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause);
+  const prompt = entry.talk ? talkPrompt(dir) : entry.review === undefined ? firstPrompt(dir) : reviewPrompt(dir, cause);
   return startAgent(ctx, { ...runPlace(ctx, entry), folder }, env, [prompt, ...workerFlags({ name: runId, model, effort, addDirs: [dir], resume })], runId);
 }
 
@@ -311,7 +312,7 @@ export async function fill(ctx: PoolContext): Promise<void> {
     return;
   }
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
-  if (!batches) updateEach(ctx, store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined), leaveBatch);
+  if (!batches) updateEach(ctx, store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined && !e.talk), leaveBatch);
   const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
   // A run queued again while this pass read the blockers or the paths, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
   const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined && !pathsUnread(entry));
@@ -320,8 +321,10 @@ export async function fill(ctx: PoolContext): Promise<void> {
   // Publishing and the new-ticket writer need none of it, so they go on.
   const mayStart = starts.length === 0 || ctx.settings.preflight.length === 0 || (await ctx.gate.check()).ok;
   for (const entry of mayStart ? starts : []) {
+    // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched.
+    if (entry.talk) { await startTalk(ctx, entry); continue; }
     if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key) || rebasing.has(entry.ticket.key)) continue;
-    const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch);
+    const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch && !e.talk);
     for (const member of batch) begun.add(member.ticket.key);
     await (batch.length > 1 ? startBatch(ctx, batch) : startOne(ctx, entry));
   }
@@ -349,6 +352,50 @@ async function openDecisionHold(ctx: PoolContext, entry: Entry): Promise<string 
   return needsDecision(await current(ctx, entry.ticket))?.reason ?? null;
 }
 
+/** Open the run's workspace and start its agent there, and record the run as running. False when a person stopped it while it started. */
+async function openRun(ctx: PoolContext, entry: Entry, folder: string, dir: string, resume?: string): Promise<boolean> {
+  const { workspace, pane } = await start(ctx, entry, folder, dir, resume);
+  if (stoppedWhileStarting(ctx, entry.ticket.key, workspace)) return false;
+  update(ctx, (queue) => markRunning(queue, entry.ticket.key, workspace, pane));
+  return true;
+}
+
+/**
+ * Open a finished run's saved session in a new pane, for a person to talk to its agent. The outcome it ended on is set aside, as when a person answers a
+ * parked run, so the stop hook asks for a new one. A session that cannot start puts the finished run back on the board as it was, and says why in the log.
+ */
+async function startTalk(ctx: PoolContext, entry: Entry): Promise<void> {
+  const { now } = ctx;
+  const { key } = entry.ticket;
+  update(ctx, (queue) => markStarting(queue, key, now()));
+  try {
+    const place = runPlace(ctx, entry);
+    const resume = talkSession(ctx, entry);
+    if (resume === undefined) throw new Error(`${key} has no saved session to resume`);
+    const outcome = join(place.dir, OUTCOME_FILE);
+    if (existsSync(outcome)) renameSync(outcome, join(place.dir, PREVIOUS_OUTCOME_FILE));
+    rmSync(join(place.dir, STOP_COUNT_FILE), { force: true });
+    if (await openRun(ctx, entry, place.folder, place.dir, resume)) await settleStart(ctx, place);
+  } catch (err) {
+    // A failure after the pane opened leaves a run that is live: only one still starting goes back, and the outcome set aside is put back with it.
+    if (phaseOf(ctx, key) !== "starting") return log(`${key}: the talk session failed after it started (${messageOf(err)})`);
+    const { dir } = runPlace(ctx, entry);
+    if (existsSync(join(dir, PREVIOUS_OUTCOME_FILE)) && !existsSync(join(dir, OUTCOME_FILE))) renameSync(join(dir, PREVIOUS_OUTCOME_FILE), join(dir, OUTCOME_FILE));
+    log(`${key}: the talk session could not start (${messageOf(err)}), so the run is back on the board as it was`);
+    update(ctx, (queue) => talkFailed(queue, key));
+  }
+}
+
+/** A person asks to talk to a finished run's agent: refused, naming why, when there is no session to resume. Otherwise the session is queued, and starts on the next pass. */
+export function talkTo(ctx: PoolContext, key: string): void {
+  const { now, store } = ctx;
+  const entry = store.get().entries.find((e) => e.ticket.key === key);
+  if (entry?.talk && entry.phase === "queued") return;
+  if (entry === undefined || entry.phase !== "finished") throw new Error(`${key} has no finished run to talk to`);
+  if (talkSession(ctx, entry) === undefined) throw new Error(`${key} has no saved session to resume: its transcript is gone`);
+  update(ctx, (queue) => talk(queue, key, now()));
+}
+
 /** Start one run for one ticket, the rest of its batch, if it had one, being started already or waiting on a blocker. */
 async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
   const { now } = ctx;
@@ -370,9 +417,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
       return;
     }
     const { folder, dir, resume } = await prepare(ctx, entry);
-    const { workspace, pane } = await start(ctx, entry, folder, dir, resume);
-    if (stoppedWhileStarting(ctx, entry.ticket.key, workspace)) return;
-    update(ctx, (queue) => markRunning(queue, entry.ticket.key, workspace, pane));
+    if (!(await openRun(ctx, entry, folder, dir, resume))) return;
     if (!isPlanning(ctx, entry)) moveTicketToWorkingState(ctx, entry.ticket.key);
     await settleStart(ctx, runPlace(ctx, entry));
   } catch (err) {

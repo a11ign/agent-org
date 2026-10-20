@@ -43,6 +43,16 @@ function sessionToResume(ctx: PoolContext, entry: Entry): string | undefined {
 }
 
 /**
+ * The Claude session a talk session resumes: the one its run ended in, while its transcript is still there, or else the newest one Claude Code kept for the
+ * folder the run's agent started in, which for a batch's run is the batch's folder. Undefined when there is none.
+ */
+export function talkSession(ctx: PoolContext, entry: Entry): string | undefined {
+  const { transcripts } = ctx;
+  if (entry.session !== undefined && findTranscript(transcripts, entry.session) !== null) return entry.session;
+  return findFolderSession(transcripts, runPlace(ctx, entry).folder) ?? undefined;
+}
+
+/**
  * The ticket as the tracker has it now, so an edit made after it was queued reaches the worker. Its branch stays the one it was queued with,
  * which a retry's worktree is already on. A ticket the tracker no longer has is briefed as it was queued.
  */

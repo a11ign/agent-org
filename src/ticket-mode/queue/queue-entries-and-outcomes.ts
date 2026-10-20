@@ -197,6 +197,14 @@ export type Entry = Readonly<{
   feedback?: string;
   /** Set on a review round a person asked for with Respond to review: it answers the pull requests' current feedback. See {@link respond}. */
   asked?: boolean;
+  /**
+   * A person opened this run's saved session to talk to its agent (a draft they have a problem with, or a planner's question they will answer). The run
+   * starts again in the same session, with a prompt that says a person is here, and ends as any run does.
+   */
+  talk?: boolean;
+  /** The finished run a talk session replaced, which goes back on the board when the session cannot start. */
+  talkFrom?: Omit<Entry, "talkFrom">;
+
   /** Set on an asked round for a run the board handed back at its cap for a conflict: the conflict lines, which the round merges the base in for. */
   conflict?: string;
   /**
@@ -434,7 +442,8 @@ export function amend(queue: Queue, key: string, choice: Partial<RunChoice>): Qu
 
 /** Take a queued entry off. A live or finished one stays: stop the first, and the second is a record. */
 export function remove(queue: Queue, key: string): Queue {
-  return { ...queue, entries: queue.entries.filter((entry) => entry.ticket.key !== key || entry.phase !== "queued") };
+  // A queued talk session is not a run of its own: taking it off puts back the finished run it replaced, with its outcome and pull requests.
+  return { ...queue, entries: queue.entries.flatMap((entry): Entry[] => (entry.ticket.key !== key || entry.phase !== "queued" ? [entry] : entry.talkFrom ? [{ ...entry.talkFrom }] : [])) };
 }
 
 /**
@@ -514,6 +523,20 @@ export function reviewRound(entry: Entry, prs: readonly PullRequest[], now: numb
   const { ticket, repos, model, effort, planned, session, published, overlapOverride } = entry;
   return { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(session ? { session } : {}), ...(published ? { published } : {}),
     ...(overlapOverride ? { overlapOverride } : {}), ...carriedFields(entry), review: prs, phase: "queued", queuedAt: now };
+}
+
+/**
+ * A talk session for `entry`'s finished run, queued at `now`: the same ticket, session, batch and pull requests, so the run ends as the first one did. The run it
+ * replaces is kept as `talkFrom`, and goes back on the board if the session cannot start. PURE.
+ */
+export function talkRound(entry: Entry, now: number): Entry {
+  const { talkFrom: _earlier, ...before } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, batch, published, overlapOverride } = entry;
+  // The pull requests the finished run listed stay with the session as its `review`, so they stay linked while its agent waits for a person.
+  const review = entry.review ?? (entry.outcome && "prs" in entry.outcome ? entry.outcome.prs : undefined);
+  return { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(session ? { session } : {}), ...(batch ? { batch } : {}),
+    ...(review ? { review } : {}), ...(published ? { published } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...carriedFields(entry),
+    talk: true, talkFrom: before, phase: "queued", queuedAt: now };
 }
 
 /**

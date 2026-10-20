@@ -74,6 +74,16 @@
   .run .side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
   .run .actions { display: flex; gap: 6px; }
   .run .terminal { font-size: 12px; font-weight: 600; }
+  /* Every action and link on a run is an icon: its words stay in the page for a screen reader, and its title says what it does. */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  .run .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; text-decoration: none; }
+  .run .icon-btn:hover { background: var(--line); }
+  .run .icon-btn svg { width: 14px; height: 14px; }
+  .run .actions { align-items: center; }
+  .run .action-stop, .run .action-dismiss, .run .action-remove, .run .action-discard-edit { color: var(--muted); }
+  .run .action-approve, .run .action-apply-edit { color: var(--st-done, var(--text)); }
+  .run .pr-link { display: inline-flex; align-items: center; gap: 4px; }
+  .run .pr-link svg { width: 13px; height: 13px; }
   .empty { padding: 32px 16px; color: var(--muted); text-align: center; }
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
@@ -632,10 +642,28 @@ const ICONS = {
   "cancelled": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 12L12 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 const LABEL = Object.fromEntries(RUN_STATUSES.map(({ status, label }) => [status, label]));
-const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review", "start-anyway": "Start anyway", dismiss: "Dismiss", "apply-edit": "Apply edit", "discard-edit": "Discard edit" };
-const ACTION_TITLE = { approve: APPROVE_TITLE, respond: RESPOND_TITLE, "start-anyway": START_ANYWAY_TITLE, dismiss: DISMISS_TITLE, "apply-edit": APPLY_EDIT_TITLE, "discard-edit": DISCARD_EDIT_TITLE };
-// Respond to review carries a reply arrow, in the reviewing colour, so it reads apart from Approve.
-const ACTION_ICON = { respond: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3.5L2.5 7.5l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 7.5H9a4.5 4.5 0 0 1 4.5 4.5v.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' };
+const ACTION_LABEL = { remove: "Remove", stop: "Stop", retry: "Retry", close: "Close", approve: "Approve", respond: "Respond to review", talk: "Talk to it", "start-anyway": "Start anyway", dismiss: "Dismiss", "apply-edit": "Apply edit", "discard-edit": "Discard edit" };
+const TALK_TITLE = "Open this run's own session in a terminal and talk to its agent: it has everything it knew, and ends as it did before";
+const ACTION_TITLE = { talk: TALK_TITLE, approve: APPROVE_TITLE, respond: RESPOND_TITLE, "start-anyway": START_ANYWAY_TITLE, dismiss: DISMISS_TITLE, "apply-edit": APPLY_EDIT_TITLE, "discard-edit": DISCARD_EDIT_TITLE };
+// Every action is an icon. Respond to review carries a reply arrow, in the reviewing colour, so it reads apart from Approve.
+const ACTION_ICON = {
+  respond: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 3.5L2.5 7.5l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 7.5H9a4.5 4.5 0 0 1 4.5 4.5v.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  remove: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  stop: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5h7v7h-7z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  retry: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.8v2.7h-2.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  close: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v5.5M4.6 4.4a5 5 0 1 0 6.8 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  approve: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  talk: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v7.5h-6l-3 2.5V11h-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  'start-anyway': '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.2l7.5 4.8L5 12.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  dismiss: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  'apply-edit': '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10v10H3zM5.5 8l2 2 3-3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  'discard-edit': '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10v10H3zM5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+const LINK_ICON = {
+  terminal: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5l3.5 3.5L3 11.5M8 12h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  pull: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="4.5" cy="12.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="11.5" cy="12.5" r="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 5.1v5.8M11.5 10.9V6.5a2 2 0 0 0-2-2H8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  slack: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 7.5L14 2l-3.5 12-3-4.5zM7.5 9.5L14 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
 
 // The filter rail marks In progress, Planning, Reviewing and Publishing with a still dot: a spinner there turns for as long as any run works.
 const DOT = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>';
@@ -665,6 +693,13 @@ function proposal(edit) {
     el("pre", {}, `${edit.title ?? now.title}\n\n${edit.description ?? now.description}`));
 }
 
+/** An icon for an action or a link, from its svg. */
+function iconSpan(svg) {
+  const icon = el("span", { className: "action-icon" });
+  icon.innerHTML = svg ?? "";
+  return icon;
+}
+
 function row(e) {
   const status = shownStatus(e, state.queue.publish, state.queue.entries);
   const waits = waitsOn(e, state.queue.entries);
@@ -677,25 +712,20 @@ function row(e) {
   for (const verb of runActions(e, state.queue.publish, state.queue.entries)) {
     // Dismiss says the proposal goes with the run, when there is one (A11-91).
     const title = verb === "dismiss" && hasEdit(e) ? DISMISS_EDIT_TITLE : ACTION_TITLE[verb];
-    const b = el("button", { className: `small action-${verb}`, ...(title ? { title } : {}) });
-    if (ACTION_ICON[verb]) {
-      const icon = el("span", { className: "action-icon" });
-      icon.innerHTML = ACTION_ICON[verb];
-      b.append(icon);
-    }
-    b.append(ACTION_LABEL[verb]);
+    const b = el("button", { className: `icon-btn action-${verb}`, title: title ?? ACTION_LABEL[verb] });
+    b.append(iconSpan(ACTION_ICON[verb]), el("span", { className: "sr-only" }, ACTION_LABEL[verb]));
     b.addEventListener("click", () => call("POST", `/api/queue/${e.ticket.key}/${verb}`).then((q) => { state.queue = q; render(); }, report));
     actions.append(b);
   }
   const link = terminalLink(state.terminal, e) ?? publishTerminalLink(state.terminal, e, state.queue.publish);
-  const terminal = link && state.connection && safeHref(link) ? el("a", { className: "terminal", href: terminalOpenHref(state.connection, link), title: link, target: "_blank", rel: "noreferrer" }, "Open terminal") : null;
+  const terminal = link && state.connection && safeHref(link) ? el("a", { className: "terminal icon-btn", href: terminalOpenHref(state.connection, link), title: `Open this run's terminal (${link})`, target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.terminal), el("span", { className: "sr-only" }, "Open terminal")) : null;
   const pulls = pullsOf(e);
-  const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { href: safeHref(pr.url), target: "_blank", rel: "noreferrer" }, `${pr.repo} #${pr.url.split("/").pop()}`)])) : null;
+  const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { className: "pr-link", href: safeHref(pr.url), title: `Open ${pr.repo} #${pr.url.split("/").pop()} on GitHub`, target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.pull), `#${pr.url.split("/").pop()}`, el("span", { className: "sr-only" }, ` ${pr.repo}`))])) : null;
   const note = workingNote(e);
   const reason = e.handedBack ? e.handedBack : note && !note.stalled ? note.text : !o ? null : o.kind === "wrong-repo" ? `Belongs in: ${o.where}` : o.kind === "needs-human" || o.kind === "crashed" || o.kind === "checked" || o.kind === "done" ? o.reason : o.kind === "no-outcome" ? "Stopped without writing an outcome" : null;
   // A done run lists what the worker checked, one line per Done-when item, as the ticket's comment does (A11-91).
   const evidence = o && o.kind === "done" ? el("ul", { className: "evidence" }, ...o.evidence.map((line) => el("li", {}, line))) : null;
-  const message = e.published && e.published.link ? el("a", { className: "terminal", href: safeHref(e.published.link), target: "_blank", rel: "noreferrer" }, "Slack message") : null;
+  const message = e.published && e.published.link ? el("a", { className: "terminal icon-btn", href: safeHref(e.published.link), title: "Open the Slack message", target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.slack), el("span", { className: "sr-only" }, "Slack message")) : null;
   let tick = null;
   if (state.publishing && publishable(e, state.queue.publish)) {
     const box = el("input", { type: "checkbox", checked: state.toPublish.has(e.ticket.key) });

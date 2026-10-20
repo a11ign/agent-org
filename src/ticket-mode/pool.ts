@@ -89,7 +89,7 @@
 // each reviewer whose pull request has merged or closed: its workspaces, then its review checkout (uncommitted changes reported first), then what the pool
 // remembers of it. A pull request whose state cannot be read is asked again, and nothing is forgotten until its checkout is gone.
 
-import { ensureSession } from "./pool-start.ts";
+import { ensureSession, talkTo } from "./pool-start.ts";
 import { applyEdit, discardEdit, dismiss, remove, stop, stopWriterRun } from "./pool-actions.ts";
 import { close } from "./pool-settle.ts";
 import { reconcile, tick, watchFeedback } from "./pool-watch.ts";
@@ -114,6 +114,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     stop: (key: string) => stop(ctx, key),
     close: (key: string) => close(ctx, key),
     dismiss: (key: string) => dismiss(ctx, key),
+    talk: (key: string) => talkTo(ctx, key),
     remove: (key: string) => remove(ctx, key),
     reconcile: () => reconcile(ctx),
     ensureSession: () => ensureSession(ctx),
