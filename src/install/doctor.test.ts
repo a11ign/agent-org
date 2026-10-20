@@ -32,7 +32,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), releaseTags: () => [],
-    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, now: () => NOW,
+    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0, now: () => NOW,
     ...over,
   };
 }
@@ -59,6 +59,22 @@ test("A11-144: a provider row says where its settings came from, and a block a h
   assert.match(checks["exposure (local)"].detail, /^no block: the default, local, on loopback with ports 4747 and 4748, applies/);
   assert.match(checks["publisher (none)"].detail, /no block: the default, none, which publishes nothing, applies/);
   assert.deepEqual(Object.keys(checks).filter((name) => name.startsWith("alias ")), [], "no old key is read, so no alias row");
+});
+
+// A11-145: Codex, which the atomic reviewer runs on, is on the path and logged in.
+test("A11-145: doctor checks Codex under the atomic reviewer: on the path, and logged in; no reviewer checks nothing of it", async () => {
+  const atomic = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { reviewer: { provider: "atomic" } } } });
+  const loggedIn = byName(await diagnose(deps({ readFile: () => atomic })));
+  assert.deepEqual([loggedIn.codex.ok, loggedIn.codex.detail], [true, "/home/me/.local/bin/codex, logged in"]);
+  const missing = byName(await diagnose(deps({ readFile: () => atomic, which: (name) => (name === "codex" ? null : `/home/me/.local/bin/${name}`) })));
+  assert.equal(missing.codex.ok, false);
+  assert.equal(missing.codex.detail, "`codex` is not on PATH, so the atomic reviewer cannot run");
+  assert.equal(missing["reviewer (atomic)"].ok, false);
+  const notIn = byName(await diagnose(deps({ readFile: () => atomic, codexStatus: () => 1 })));
+  assert.equal(notIn.codex.detail, "Codex is not logged in");
+  assert.equal(notIn.codex.fix, "run `codex login`, then `agent-org doctor` again");
+  const none = byName(await diagnose(deps({ codexStatus: () => { throw new Error("must not be asked"); } })));
+  assert.equal(none.codex, undefined);
 });
 
 test("A11-144: an atomic reviewer fails when its gate does not load, and the row says so with the gate's check; no reviewer asks the gate nothing", async () => {
@@ -292,7 +308,9 @@ test("A11-90: doctor names a herdr server still inside the instance's cgroup, wi
   const inside = byName(await diagnose(deps({ isolation: () => ({ kind: "inside", cgroup: "/user.slice/agent-org-instance.service", unit: "agent-org-instance.service" }) })))["herdr scope"];
   assert.equal(inside.ok, false);
   assert.equal(inside.detail, "the herdr server for session tickets is in /user.slice/agent-org-instance.service, the same place as the instance (agent-org-instance.service): a restart of the instance interrupts every worker");
-  assert.equal(inside.fix, "restart herdr when no run is working (`herdr --session tickets server stop`; the next instance start launches it in its own scope), or add `KillMode=process` under `[Service]` in the instance unit, then `systemctl --user daemon-reload`");
+  // A11-145: the drop-in is retired, so the only fix left is to restart herdr when no run is working.
+  assert.equal(inside.fix, "restart herdr when no run is working (`herdr --session tickets server stop`; the next instance start launches it in its own scope)");
+  assert.ok(!inside.fix.includes("KillMode"), "no KillMode advice remains");
   const scope = byName(await diagnose(deps({ isolation: () => ({ kind: "outside", scope: "/user.slice/agent-org-herdr-tickets.scope" }) })))["herdr scope"];
   assert.equal(scope.ok, true);
   assert.equal(scope.detail, "the herdr server for session tickets is in /user.slice/agent-org-herdr-tickets.scope, outside the instance's cgroup");

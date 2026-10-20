@@ -67,6 +67,7 @@ function deps(checkout: string, git: (args: string[]) => string, states: Partial
     now: () => NOW,
     status: { read: () => statuses.at(-1) ?? null, write: (status) => { statuses.push(status); } },
     stackExtension: () => ({ state: "present", version: "v0.2.1" }),
+    conventions: () => ({ said: [], failed: [] }),
     out: { log: (line: string) => { said.push(line); }, error: (line: string) => { errors.push(line); } },
     ...over,
   };

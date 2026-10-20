@@ -96,6 +96,8 @@ export type DoctorDeps = Readonly<{
    * loaded.
    */
   reviewerGate: () => Promise<string | null>;
+  /** The exit status of `codex login status`, or null when it cannot run (A11-145): asked only when the reviewer is `atomic`. */
+  codexStatus: () => number | null;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
   plugins: (input: { wanted: readonly string[]; folder: string; host: HostFacts }) => PluginProblems;
   now: () => number;
@@ -372,14 +374,27 @@ function providerRow(settings: TicketSettings, block: ProviderBlock, wrapped: re
 }
 
 /**
- * The reviewer's row (A11-144), with the gate's check when the reviewer is `atomic`: the gate's modules must load, or no reviewer starts a run. With no
- * reviewer, the row says so and asks nothing.
+ * Codex, which the atomic reviewer runs on (A11-145): on the path, and logged in. Onboard installs neither, since that needs the person's account, so each
+ * failure names the one thing to do.
+ */
+function codexChecks(deps: DoctorDeps): Check[] {
+  const path = deps.which("codex");
+  if (path === null) return [failed("codex", "`codex` is not on PATH, so the atomic reviewer cannot run", "install Codex (`npm install -g @openai/codex`), then run `codex login`")];
+  const status = deps.codexStatus();
+  if (status === 0) return [ok("codex", `${path}, logged in`)];
+  return [failed("codex", status === null ? `${path} could not run \`codex login status\`` : "Codex is not logged in", "run `codex login`, then `agent-org doctor` again")];
+}
+
+/**
+ * The reviewer's row (A11-144), with the gate's check when the reviewer is `atomic`: the gate's modules must load, or no reviewer starts a run, and Codex
+ * must be installed and logged in (A11-145). With no reviewer, the row says so and asks nothing.
  */
 async function reviewerChecks(settings: TicketSettings, deps: DoctorDeps): Promise<Check[]> {
   if (settings.reviewer === null) return [providerRow(settings, "reviewer", [])];
   const refusal = await deps.reviewerGate();
   const gate = refusal === null ? ok("reviewer gate", "the gate's modules load") : failed("reviewer gate", refusal, "fix what it names: no reviewer starts while the gate does not load");
-  return [gate, providerRow(settings, "reviewer", [gate])];
+  const codex = codexChecks(deps);
+  return [gate, ...codex, providerRow(settings, "reviewer", [gate, ...codex])];
 }
 
 /**
@@ -473,10 +488,7 @@ function herdrScopeChecks(settings: TicketSettings | null, instanceState: Servic
     return [ok(name, isolation.scope === null ? `no herdr server runs for session ${session}, so a restart interrupts none`
       : `the herdr server for session ${session} is in ${isolation.scope}, outside the instance's cgroup`)];
   }
-  const restart = `restart herdr when no run is working (\`herdr --session ${session} server stop\`; the next instance start launches it in its own scope)`;
-  const fix = deps.platform === "linux"
-    ? `${restart}, or add \`KillMode=process\` under \`[Service]\` in the instance unit, then \`systemctl --user daemon-reload\``
-    : restart;
+  const fix = `restart herdr when no run is working (\`herdr --session ${session} server stop\`; the next instance start launches it in its own scope)`;
   return [failed(name, `the herdr server for session ${session} is in ${isolation.cgroup}, the same place as the instance (${isolation.unit}): a restart of the instance interrupts every worker`, fix)];
 }
 
@@ -676,26 +688,10 @@ function fixHostFile(path: string, { dryRun, now }: { dryRun: boolean; now: Date
   return { lines: [`${path}: moved, and the old file is kept at ${backup}:`, ...moves], refused: false };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
-  const { values } = parseArgs({ args: process.argv.slice(2), options: { fix: { type: "boolean" }, "dry-run": { type: "boolean" } }, strict: true });
-  if (values["dry-run"] === true && values.fix !== true) {
-    console.error("doctor: --dry-run says what --fix would move, so it needs --fix");
-    process.exit(2);
-  }
-  if (values.fix === true) {
-    const hostPath = hostFilePath(process.env, homedir(), (file) => {
-      try {
-        return readFileSync(file, "utf8");
-      } catch {
-        return null;
-      }
-    });
-    const fixed = fixHostFile(hostPath, { dryRun: values["dry-run"] === true, now: new Date() });
-    console.log(fixed.lines.join("\n"));
-    if (fixed.refused || values["dry-run"] === true) process.exit(fixed.refused ? 1 : 0);
-  }
+/** The doctor's readings of this machine, each the real one: what `agent-org doctor` asks, and what onboard asks when it ends (A11-145). */
+export function defaultDoctorDeps(): DoctorDeps {
   const services = defaultServiceDeps();
-  const checks = await diagnose({
+  return {
     env: process.env, home: homedir(),
     nodeVersion: () => {
       const result = spawnSync("node", ["--version"], { encoding: "utf8" });
@@ -740,8 +736,30 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       await port.loadReviewerGate();
       return port.reviewerRefusal();
     },
+    codexStatus: () => spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 60_000 }).status,
     now: () => Date.now(),
-  });
+  };
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
+  const { values } = parseArgs({ args: process.argv.slice(2), options: { fix: { type: "boolean" }, "dry-run": { type: "boolean" } }, strict: true });
+  if (values["dry-run"] === true && values.fix !== true) {
+    console.error("doctor: --dry-run says what --fix would move, so it needs --fix");
+    process.exit(2);
+  }
+  if (values.fix === true) {
+    const hostPath = hostFilePath(process.env, homedir(), (file) => {
+      try {
+        return readFileSync(file, "utf8");
+      } catch {
+        return null;
+      }
+    });
+    const fixed = fixHostFile(hostPath, { dryRun: values["dry-run"] === true, now: new Date() });
+    console.log(fixed.lines.join("\n"));
+    if (fixed.refused || values["dry-run"] === true) process.exit(fixed.refused ? 1 : 0);
+  }
+  const checks = await diagnose(defaultDoctorDeps());
   console.log(report(checks));
   process.exitCode = checks.every((check) => check.ok) ? 0 : 1;
 }
