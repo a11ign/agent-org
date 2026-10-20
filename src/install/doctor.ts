@@ -655,16 +655,16 @@ function answers(port: number, path = "/", { healthy = false }: { healthy?: bool
  * `doctor --fix` (A11-144): moves the host file's old keys into the provider blocks, with a backup beside it. `--dry-run` says what it would move and
  * writes nothing. Returns the lines to print, and whether the run was refused, so the caller sets the exit code.
  */
-function fixHostFile(path: string, { dryRun, now }: { dryRun: boolean; now: Date }): { lines: string[]; refused: boolean } {
+async function fixHostFile(path: string, { dryRun, now }: { dryRun: boolean; now: Date }): Promise<{ lines: string[]; refused: boolean }> {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch {
     return { lines: [`${path} cannot be read`], refused: true };
   }
-  let fix: ReturnType<typeof planHostFix>;
+  let fix: Awaited<ReturnType<typeof planHostFix>>;
   try {
-    fix = planHostFix(text);
+    fix = await planHostFix(text);
   } catch (err) {
     return { lines: [`${path} is not a host file doctor can migrate: ${(err as Error).message}`], refused: true };
   }
@@ -690,7 +690,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
         return null;
       }
     });
-    const fixed = fixHostFile(hostPath, { dryRun: values["dry-run"] === true, now: new Date() });
+    const fixed = await fixHostFile(hostPath, { dryRun: values["dry-run"] === true, now: new Date() });
     console.log(fixed.lines.join("\n"));
     if (fixed.refused || values["dry-run"] === true) process.exit(fixed.refused ? 1 : 0);
   }
