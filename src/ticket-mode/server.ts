@@ -32,6 +32,8 @@ import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue, startA
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
+import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from "./settings-edit.ts";
+import { isObject } from "./settings-verdict.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import { PRIORITIES } from "./writer.ts";
@@ -366,6 +368,39 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
   return undefined;
 }
 
+/** The file a Settings edit names: the host file or the primary project's declaration, and no other. */
+function editFileOf(value: unknown): EditFile {
+  if (value === "host.json" || value === "project.json") return value;
+  throw new Error("file must be host.json or project.json");
+}
+
+/** The changes a Settings edit names: each a key with its value, or with `remove: true`. */
+function changesOf(value: unknown): Change[] {
+  if (!Array.isArray(value)) throw new Error("changes must be a list of { key, value } or { key, remove: true }");
+  return value.map((change): Change => {
+    if (!isObject(change) || typeof change.key !== "string") throw new Error("each change names a key");
+    if (change.remove === true) return { key: change.key, remove: true };
+    if (change.value === undefined) throw new Error(`${change.key} names no value, and is not removed`);
+    return { key: change.key, value: change.value };
+  });
+}
+
+/**
+ * The Settings page's edits: a preview, a save and a restore of one file, each checked by the readers (`settings-edit.ts`). They sit beside the other
+ * writes, so they are behind the instance's key and its same-origin refusal, and a file is named here by its kind, never by a path a request gives.
+ */
+async function settingsEditRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
+  const edit = /^\/api\/settings\/(preview|save|restore)$/.exec(path);
+  if (method !== "POST" || !edit) return undefined;
+  const options = { hostPath: board.deps.hostPath ?? hostFilePath(), queuePath: board.deps.queuePath };
+  const file = editFileOf(body.file);
+  if (edit[1] === "restore") return [200, await restoreBackup(options, file)];
+  const changes = changesOf(body.changes);
+  if (edit[1] === "preview") return [200, await previewEdit(options, file, changes)];
+  const confirmed = Array.isArray(body.confirmed) ? body.confirmed.map(String) : [];
+  return [200, await saveEdit(options, file, changes, { base: String(body.base ?? ""), confirmed })];
+}
+
 /** The routes that act on one queued run: amend, remove, retry, approve, respond, start anyway, stop, close, dismiss, and apply or discard its edit. */
 async function queueActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { store, pool, now, wake } = board;
@@ -401,6 +436,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
   return (await readRoute(board, method, path, query))
     ?? (await postRoute(board, method, path, body))
     ?? (await writerRoute(board, method, path, body))
+    ?? (await settingsEditRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
     ?? [404, { error: `no route ${method} ${path}` }];
 }

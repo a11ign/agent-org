@@ -25,7 +25,10 @@ const FORWARD_MS = 30_000;
 /** The most an instance's answer may hold. The largest is a list of tickets. */
 const ANSWER_BYTES = 8 * 1024 * 1024;
 const READS = new Set(["/api/config", "/api/tickets", "/api/people", "/api/parents", "/api/pick", "/api/queue", "/api/writer", "/api/settings"]);
-const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/terminal-run", "/api/writer"]);
+const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/api/publish", "/api/paused", "/api/max", "/api/terminal-pair", "/api/terminal-run", "/api/writer",
+  "/api/settings/preview", "/api/settings/save", "/api/settings/restore"]);
+/** The Settings page's edits of a file: they change a `.agent-org` file, which only the machine that holds it may do (A11-132). */
+const SETTINGS_EDITS = new Set(["/api/settings/preview", "/api/settings/save", "/api/settings/restore"]);
 const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/;
 /** A new-ticket request's own actions: `/api/writer/<run>/stop` and `/api/writer/<run>/dismiss`. */
 const WRITER_ACTION = /^\/api\/writer\/[A-Za-z0-9_-]+\/(?:stop|dismiss)$/;
@@ -80,6 +83,8 @@ export async function proxy(connections: Connections, name: string, request: For
   const how = via(connection);
   const pathname = request.path.split("?")[0];
   if (!passedOn(request.method, pathname)) return [403, { error: `${request.method} ${pathname} is not passed on to an instance` }];
+  // A remote instance's files are edited on that machine, so nothing this page forwards changes them there.
+  if (SETTINGS_EDITS.has(pathname) && connection.kind !== "local") return [403, { error: `${name}'s settings are not changed from here: its files are edited on that machine, and this connection is ${how}` }];
   let target: Target;
   try {
     target = await connections.reach(name);

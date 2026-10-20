@@ -102,10 +102,12 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   /** Why this instance starts no run (`tickets.preflight`), as its queue answer carries it. */
   queueHeld?: { name: string; reason: string; since: number };
   /** What the instance's Settings page reads (`/api/settings`), by default an instance with nothing to describe. */
-  settings?: unknown };
+  settings?: unknown;
+  /** What the instance answers a Settings edit with (`/api/settings/preview`, `save` and `restore`), by its path and body. */
+  edits?: (path: string, body: any) => unknown };
 const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [] };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
-  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE }: PageOptions = {}) {
+  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [];
   const requested: string[] = [];
@@ -151,6 +153,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
       ...(children === undefined ? {} : { "/api/queue-children": () => children }),
       "/api/settings": () => settings,
+      ...(edits === undefined ? {} : { "/api/settings/preview": () => edits("/api/settings/preview", body), "/api/settings/save": () => edits("/api/settings/save", body), "/api/settings/restore": () => edits("/api/settings/restore", body) }),
     };
     const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}) };
     return { ok: true, json: async () => value, statusText: "" };
@@ -1862,4 +1865,128 @@ test("Back to the board returns to the card the board was showing, and focus goe
   p.location.hash = "";
   await p.hashChange();
   assert.equal(p.$("change-max").attrs.focused, "true", "focus is back on Change, which opened the page");
+});
+
+/** Settings a local instance can edit: a switch and a number, each with the input its schema entry takes. */
+const EDITABLE = {
+  refusals: [], notes: [], plugins: [], words: [],
+  groups: [
+    { group: "Publishing", rows: [{ key: "tickets.drafts", file: "host.json", group: "Publishing", value: "true", state: "default", source: "built-in default", explanation: "Whether a worker opens its pull request as a draft.", breaks: "Any value other than true or false is refused by name.", depth: 0, secret: false, input: "boolean", raw: null }] },
+    { group: "Serving and terminal", rows: [{ key: "tickets.port", file: "host.json", group: "Serving and terminal", value: "4747", state: "default", source: "built-in default", explanation: "The loopback port the instance listens on.", breaks: "A port another program holds stops the instance.", depth: 0, secret: false, input: "number", raw: "4747" }] },
+  ],
+};
+/** The reader's answer to a preview of `tickets.drafts` set to false: one change, dangerous, in force after the board restarts. */
+const PREVIEW = { file: "host.json", base: "b1", note: null, changes: [{ key: "tickets.drafts", old: "true", new: "false", changed: true, applies: "board",
+  inForce: "in force after the board restarts: ticket:serve and ticket:ui.", dangerous: "False opens each pull request ready and skips the Approve step, so a run goes straight to review." }] };
+const SAVED = { file: "host.json", backup: "/h/host.json.bak", note: null, changes: [{ ...PREVIEW.changes[0], dangerous: null }] };
+const RESTORED = { file: "host.json", changes: [{ key: "tickets.drafts", old: "false", new: "true", changed: true, applies: "board", inForce: "in force after the board restarts: ticket:serve and ticket:ui.", dangerous: null }] };
+/** The instance's answer to each Settings edit, by its path. */
+const EDITS = (path: string) => (path.endsWith("/preview") ? PREVIEW : path.endsWith("/save") ? SAVED : RESTORED);
+
+/** The row of a setting on the Settings page, by its key. */
+const rowOf = (p: Page, key: string) => p.$("settings-groups").all().find((n) => n.tag === "dl" && n.all().some((c) => c.tag === "code" && c.text() === key))!;
+/** The button in `node` that says `label`. */
+const buttonIn = (node: Node_, label: string) => node.all().find((n) => n.tag === "button" && n.text() === label)!;
+/** Let the page's fetches and their handlers run, as a person's clicks are let run. */
+const flush = async () => { for (let i = 0; i < 10; i++) await settle(); };
+/** Stage `value` for `key` on its row: its Edit, the value typed, and Stage change. */
+async function stage(p: Page, key: string, value: string) {
+  const row = rowOf(p, key);
+  buttonIn(row, "Edit").fire("click");
+  row.all().find((n) => n.tag === "select" || n.tag === "input")!.value = value;
+  buttonIn(row, "Stage change").fire("click");
+  await flush();
+}
+/** Stage `tickets.drafts` as `value` on its row, then review what the file would say. */
+async function stageDrafts(p: Page, value: string) {
+  await stage(p, "tickets.drafts", value);
+  p.$("review-changes").fire("click");
+  await flush();
+}
+
+test("A11-132: on a local instance a row's Edit stages a change, and Review shows each old and new value and whether it is in force", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS });
+  await stageDrafts(p, "false");
+  assert.equal(p.$("pending").hidden, false, "the staged change is listed");
+  assert.match(p.$("pending-list").text(), /^host\.json tickets\.drafts: true → false/);
+  assert.deepEqual(p.posts.at(-1), { path: "/api/settings/preview", body: { file: "host.json", changes: [{ key: "tickets.drafts", value: false }] } });
+  assert.match(p.$("review-files").text(), /tickets\.drafts: true → false\. in force after the board restarts: ticket:serve and ticket:ui\./);
+  assert.equal(p.posts.some((post) => post.path.endsWith("/save")), false, "reviewing saves nothing");
+});
+
+test("A11-132: a change the readers refuse shows the reader's message on the page and writes nothing", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS, refused: ["/api/settings/preview"], errors: { "/api/settings/preview": "tickets.uiPort must differ from tickets.port" } });
+  await stageDrafts(p, "false");
+  assert.equal(p.$("edit-refusal").hidden, false);
+  assert.equal(p.$("edit-refusal").text(), "tickets.uiPort must differ from tickets.port");
+  assert.equal(p.posts.some((post) => post.path.endsWith("/save")), false, "nothing is saved");
+});
+
+test("A11-132: a dangerous change is saved only by its own button, which names the key and what it can break, and the save names it as confirmed", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS });
+  await stageDrafts(p, "false");
+  const buttons = p.$("review-files").all().filter((n) => n.tag === "button");
+  assert.equal(buttons.length, 1, "one save for the file");
+  assert.match(buttons[0].text(), /^Save host\.json with tickets\.drafts, which can break: False opens each pull request ready and skips the Approve step/);
+  buttons[0].fire("click");
+  await flush();
+  assert.deepEqual(p.posts.at(-1), { path: "/api/settings/save", body: { file: "host.json", changes: [{ key: "tickets.drafts", value: false }], base: "b1", confirmed: ["tickets.drafts"] } });
+  assert.match(p.$("edit-outcome").text(), /^Saved host\.json\. tickets\.drafts: true → false\. in force after the board restarts/);
+  assert.equal(p.$("pending").hidden, true, "what was saved is no longer staged");
+});
+
+test("A11-132: Restore puts the backup back, says what it changed, and reads the file as it now is", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS });
+  const reads = p.requested.filter((path) => path === "/api/settings").length;
+  buttonIn(p.$("restores"), "Restore the backup of host.json").fire("click");
+  await flush();
+  assert.equal(p.posts.at(-1)?.path, "/api/settings/restore");
+  assert.equal(p.$("edit-outcome").text(), "Restored host.json from its backup. tickets.drafts: false → true. in force after the board restarts: ticket:serve and ticket:ui.");
+  assert.equal(p.requested.filter((path) => path === "/api/settings").length, reads + 1, "the page reads the file again");
+});
+
+test("A11-132: a remote instance offers no edit and says why in one sentence, and what is staged for one instance is cleared when another is chosen", async () => {
+  const p = await settingsPage({ connections: WORK_AND_PERSONAL, config: SETTINGS, settings: EDITABLE, edits: EDITS });
+  await stageDrafts(p, "false");
+  assert.equal(p.$("pending").hidden, false, "a change is staged on this instance");
+  await chooseInstance(p, "personal");
+  assert.equal(p.$("pending").hidden, true, "the staged change is gone");
+  assert.equal(p.$("settings-groups").all().some((n) => n.tag === "button" && n.text() === "Edit"), false, "no Edit on a remote instance");
+  assert.match(p.$("edit-note").text(), /This instance is .+\. Its files are changed on that machine, so this page offers no edit here\./);
+  assert.equal(p.$("restores").all().some((n) => n.tag === "button"), false, "no Restore on a remote instance");
+});
+
+test("A11-132: a number the page cannot read is said on its row, and nothing is sent", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS });
+  const row = rowOf(p, "tickets.port");
+  buttonIn(row, "Edit").fire("click");
+  row.all().find((n) => n.tag === "input")!.value = "abc";
+  buttonIn(row, "Stage change").fire("click");
+  await flush();
+  const problem = row.all().find((n) => n.tag === "p" && n.className === "notice")!;
+  assert.equal(problem.hidden, false);
+  assert.equal(problem.text(), "tickets.port needs a number");
+  assert.equal(p.posts.length, 0, "nothing is sent");
+});
+
+test("A11-132: a review read while another change is staged is not shown, so a save never sends a change that was not reviewed", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS, hold: { "/api/settings/preview": PREVIEW } });
+  await stage(p, "tickets.drafts", "false");
+  p.$("review-changes").fire("click");
+  await stage(p, "tickets.port", "5000");
+  p.release();
+  await flush();
+  assert.equal(p.$("review").hidden, true, "the stale review is not shown");
+  assert.equal(p.$("pending").hidden, false, "both changes are still staged");
+  assert.equal(p.posts.some((post) => post.path.endsWith("/save")), false);
+});
+
+test("A11-132: when another instance's settings cannot be read, nothing staged or restorable for the instance left stays on the page", async () => {
+  const p = await settingsPage({ connections: WORK_AND_PERSONAL, config: SETTINGS, settings: EDITABLE, edits: EDITS, refused: ["/c/personal/api/settings"] });
+  await stage(p, "tickets.drafts", "false");
+  assert.equal(p.$("pending").hidden, false, "a change is staged on this instance");
+  await chooseInstance(p, "personal");
+  assert.equal(p.$("edit-panel").hidden, true, "the panel is gone with the instance's settings");
+  assert.equal(p.$("pending-list").all().some((n) => n.tag === "li"), false, "nothing staged is listed");
+  assert.equal(p.$("restores").all().some((n) => n.tag === "button"), false, "no Restore for the instance the page left");
 });

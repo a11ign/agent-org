@@ -2,8 +2,9 @@
 // module: reads the files the Settings page describes, fresh, and hands what it read to `settings-view.ts`
 //
 // EACH FILE IS READ AND REFUSED ON ITS OWN. The host file's top level goes through `parseHostConfig`, its `tickets` block through
-// `parseTicketSettings`, and a project's declaration through `parseProjectDeclaration`. A refusal is kept as its message, which names the field, and
-// the other sections still render. A machine that declares no project (a board-only host, which names no `primary`) is a note, not an error.
+// `parseTicketSettings`, and a project's declaration through `parseProjectDeclaration` (all three in `settings-verdict.ts`, which a save uses too). A
+// refusal is kept as its message, which names the field, and the other sections still render. A machine that declares no project (a board-only host,
+// which names no `primary`) is a note, not an error.
 //
 // THE READERS ARE LOADED LAZILY. `host-config.ts` and `project-config.ts` resolve a project declaration when they are imported, and a ticket-only
 // machine has none. So they are imported inside a `try`, and never on a host file that is shaped as a ticket-only one.
@@ -12,7 +13,8 @@ import { join } from "node:path";
 import { SCHEMA, type ChoicePart } from "./config-schema.ts";
 import { pluginStates } from "./plugins.ts";
 import { ticketFolder } from "./ticket-paths.ts";
-import { HOST_FILE_ENV, parseTicketSettings, type TicketSettings } from "./settings.ts";
+import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
+import { hostLevelRefusal, isObject, isTicketOnly, type Json, projectRefusal, ticketsRefusal } from "./settings-verdict.ts";
 import { settingsView, type Section, type View } from "./settings-view.ts";
 
 /** The models and efforts the board offers, which a saved choice is held to. */
@@ -33,13 +35,11 @@ export type SettingsReadOptions = Readonly<{
   pluginRecord?: string;
 }>;
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+type ProjectConfig = typeof import("../project-config.ts");
+type Sections = Readonly<{ host: Section; tickets: Section; project: Section; notes: readonly string[]; hostWriter: Readonly<{ writerModel?: string; writerEffort?: string }>; hostRaw: Readonly<Record<string, unknown>> | null }>;
 
 /** The note a machine that names no primary gets: it is a board-only machine, and not an error. */
 const NO_PROJECT = "This machine declares no project: its host file names no primary, so no project.json is read.";
-
-type ProjectConfig = typeof import("../project-config.ts");
-type Sections = Readonly<{ host: Section; tickets: Section; project: Section; notes: readonly string[]; hostWriter: Readonly<{ writerModel?: string; writerEffort?: string }>; hostRaw: Readonly<Record<string, unknown>> | null }>;
 
 /** `project-config.ts`, loaded now, or null when it cannot be: a machine with no project declaration cannot resolve one at import. */
 async function loadProjectConfig(): Promise<ProjectConfig | null> {
@@ -50,16 +50,16 @@ async function loadProjectConfig(): Promise<ProjectConfig | null> {
   }
 }
 
-/** A declaration read by `parseProjectDeclaration`, as its section: the file's own object, and its refusal when it names one. */
-function declarationOf(path: string, parse: (text: string, source: string) => unknown): Section {
-  const text = readOrNull(path);
-  if (text === null) return { file: "project.json", raw: null, refusal: `${path}: the declaration cannot be read` };
-  try {
-    parse(text, path);
-    return { file: "project.json", raw: objectOf(text), refusal: null };
-  } catch (error) {
-    return { file: "project.json", raw: objectOf(text), refusal: refusalOf(error) };
-  }
+/**
+ * The path of the project declaration the Settings page reads and a save edits: `projectPath` when one is named (a test's), else the primary checkout's
+ * `.agent-org/project.json`. Null when this machine declares no project, so there is no file to read or to edit.
+ */
+export async function projectPathOf(options: Pick<SettingsReadOptions, "projectPath">, host: Json): Promise<string | null> {
+  if (options.projectPath === undefined && isTicketOnly(host)) return null;
+  const config = await loadProjectConfig();
+  if (config === null) return null;
+  if (options.projectPath === undefined && config.HOME_CHECKOUT === config.TICKET_ONLY_CHECKOUT) return null;
+  return options.projectPath ?? join(config.HOME_CHECKOUT, config.PROJECT_DECLARATION_PATH);
 }
 
 /** The text of a file, or null when it cannot be read. */
@@ -72,7 +72,7 @@ function readOrNull(path: string): string | null {
 }
 
 /** The parsed JSON object of `text`, or null when it is not one. */
-function objectOf(text: string | null): Record<string, unknown> | null {
+function objectOf(text: string | null): Json | null {
   if (text === null) return null;
   try {
     const parsed: unknown = JSON.parse(text);
@@ -82,11 +82,8 @@ function objectOf(text: string | null): Record<string, unknown> | null {
   }
 }
 
-/** A message a reader refused a file with, as the page shows it. */
-const refusalOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
 /** Where the number of workers comes from: the queue file when it names one, else the host file's `tickets.max`, else the built-in default. */
-function maxSource(queuePath: string, host: Record<string, unknown>): "queue.json" | "host.json" | "built-in default" {
+function maxSource(queuePath: string, host: Json): "queue.json" | "host.json" | "built-in default" {
   const queue = objectOf(readOrNull(queuePath));
   if (queue !== null && typeof queue.max === "number") return "queue.json";
   return isObject(host.tickets) && host.tickets.max !== undefined ? "host.json" : "built-in default";
@@ -99,34 +96,27 @@ function savedChoice(path: string): Partial<Record<ChoicePart, string>> {
   return { ...offered("model", MODELS), ...offered("effort", EFFORTS), ...offered("planModel", MODELS), ...offered("planEffort", EFFORTS), ...offered("writerModel", MODELS), ...offered("writerEffort", EFFORTS) };
 }
 
-/** Whether the host file is shaped as a ticket-only one: a `tickets` block and no `primary` (`isTicketOnlyRun`'s shape). */
-const isTicketOnly = (host: Record<string, unknown>): boolean => !Object.hasOwn(host, "primary") && isObject(host.tickets);
-
 /** The host file's top level, read by `parseHostConfig`, unless the file is a ticket-only one, which names no project to read it against. */
-async function hostSection(text: string, hostPath: string, host: Record<string, unknown>): Promise<Section> {
-  if (isTicketOnly(host)) return { file: "host.json", raw: host, refusal: null };
-  try {
-    const { parseHostConfig } = await import("../host-config.ts");
-    parseHostConfig(text, hostPath);
-    return { file: "host.json", raw: host, refusal: null };
-  } catch (error) {
-    return { file: "host.json", raw: host, refusal: refusalOf(error) };
-  }
+async function hostSection(text: string, hostPath: string, host: Json): Promise<Section> {
+  return { file: "host.json", raw: host, refusal: await hostLevelRefusal(text, hostPath, host) };
 }
 
 /** The project's declaration as `parseProjectDeclaration` reads it, or the note that this machine declares none. */
-async function projectSection(options: SettingsReadOptions, host: Record<string, unknown>): Promise<Readonly<{ section: Section; notes: readonly string[] }>> {
-  const none = { section: { file: "project.json", raw: null, refusal: null }, notes: [NO_PROJECT] };
-  if (options.projectPath === undefined && isTicketOnly(host)) return none;
-  const config = await loadProjectConfig();
-  if (config === null) return none;
-  if (options.projectPath === undefined && config.HOME_CHECKOUT === config.TICKET_ONLY_CHECKOUT) return none;
-  const path = options.projectPath ?? join(config.HOME_CHECKOUT, config.PROJECT_DECLARATION_PATH);
-  return { section: declarationOf(path, config.parseProjectDeclaration), notes: [] };
+async function projectSection(options: SettingsReadOptions, host: Json): Promise<Readonly<{ section: Section; notes: readonly string[] }>> {
+  const path = await projectPathOf(options, host);
+  if (path === null) return { section: { file: "project.json", raw: null, refusal: null }, notes: [NO_PROJECT] };
+  return { section: await declarationOf(path), notes: [] };
+}
+
+/** A declaration read by `parseProjectDeclaration`, as its section: the file's own object, and its refusal when it names one. */
+async function declarationOf(path: string): Promise<Section> {
+  const text = readOrNull(path);
+  if (text === null) return { file: "project.json", raw: null, refusal: `${path}: the declaration cannot be read` };
+  return { file: "project.json", raw: objectOf(text), refusal: await projectRefusal(text, path) };
 }
 
 /** The host file's text and parsed object, or the refusal that says why it cannot be read. */
-function hostFile(hostPath: string): { text: string; host: Record<string, unknown> } | { refusal: string } {
+function hostFile(hostPath: string): { text: string; host: Json } | { refusal: string } {
   const text = readOrNull(hostPath);
   if (text === null) return { refusal: `ticket mode: \`${HOST_FILE_ENV}\` names ${hostPath}, which cannot be read` };
   const host = objectOf(text);
@@ -164,21 +154,17 @@ function viewOver(options: SettingsReadOptions, sections: Sections): View {
 }
 
 /** The `tickets` block, read by `parseTicketSettings`, with the block (or none) as its raw. */
-function ticketsSection(host: Record<string, unknown>): Section {
+function ticketsSection(host: Json): Section {
   const raw = isObject(host.tickets) ? host.tickets : {};
-  try {
-    parseTicketSettings(host);
-    return { file: "host.json (tickets)", raw, refusal: null };
-  } catch (error) {
-    return { file: "host.json (tickets)", raw, refusal: refusalOf(error) };
-  }
+  return { file: "host.json (tickets)", raw, refusal: ticketsRefusal(host) };
 }
 
 /** The host file's writer model and effort, when its `tickets.writer` names them: what a choice made nowhere else falls back to. */
-function writerOfHost(host: Record<string, unknown>): Readonly<{ writerModel?: string; writerEffort?: string }> {
+function writerOfHost(host: Json): Readonly<{ writerModel?: string; writerEffort?: string }> {
   const writer = isObject(host.tickets) && isObject(host.tickets.writer) ? host.tickets.writer : {};
   return {
     ...(typeof writer.model === "string" ? { writerModel: writer.model } : {}),
     ...(typeof writer.effort === "string" ? { writerEffort: writer.effort } : {}),
   };
 }
+

@@ -167,3 +167,35 @@ test("the schema's entry for a choice the page's controls change has the built-i
   assert.deepEqual(Object.keys(choices).sort(), ["effort", "model", "planEffort", "planModel", "writerEffort", "writerModel"]);
   assert.equal(parseTicketSettings({ clones: { r: "/r" }, stateDir: "/s" }).max, DEFAULT_MAX, "the workers' default is the one the schema names");
 });
+
+/** The shortest sentence that says what a dangerous key can break. */
+const MIN_SENTENCE = 20;
+
+test("A11-132: every editable entry says when a change is in force, every entry that cannot be edited says why, and the dangerous keys are the set the plan names, each with what it can break", () => {
+  const editable = SCHEMA.filter((entry) => entry.edit.editable);
+  for (const entry of editable) {
+    assert.ok(entry.edit.editable && ["now", "board", "unit", "none"].includes(entry.edit.applies), `${entry.file} ${entry.key} says when it is in force`);
+  }
+  for (const entry of SCHEMA.filter((candidate) => !candidate.edit.editable)) {
+    assert.ok(!entry.edit.editable && entry.edit.why.length > 0, `${entry.file} ${entry.key} says why it is not editable`);
+  }
+  const dangerous = editable.flatMap((entry) => (entry.edit.editable && entry.edit.dangerous !== undefined ? [`${entry.file} ${entry.key}`] : []));
+  assert.deepEqual(dangerous.sort(), [
+    "host.json binDir", "host.json clones.<name>", "host.json events.receiver.port", "host.json events.receiver.secretPath", "host.json github.identity.<role>.keyPath",
+    "host.json github.identity.<role>.mode", "host.json home", "host.json primary", "host.json projects", "host.json stateDir", "host.json tickets.connectors",
+    "host.json tickets.deny", "host.json tickets.drafts", "host.json tickets.linearKey.path", "host.json tickets.plugins", "host.json tickets.port",
+    "host.json tickets.preflight", "host.json tickets.publish", "host.json tickets.publish.connectors", "host.json tickets.serve", "host.json tickets.servePorts",
+    "host.json tickets.uiPort", "host.json tickets.worktreeRoot", "host.json triage.keyPath", "project.json beforeTick",
+  ].sort(), "the set is pinned: change this test with the flags in config-schema.ts");
+  for (const entry of editable) {
+    if (entry.edit.editable && entry.edit.dangerous !== undefined) assert.ok(entry.edit.dangerous.length > MIN_SENTENCE, `${entry.key} says what it can break`);
+  }
+});
+
+test("A11-132: a key that is only shown is never editable as a secret's contents: the secret keys are the path keys, and the keychain is not editable", () => {
+  const secrets = SCHEMA.filter((entry) => entry.secret !== undefined);
+  for (const entry of secrets) {
+    if (entry.secret === "path") assert.equal(entry.edit.editable, true, `${entry.key} is editable as a path`);
+    if (entry.secret === "keychain") assert.equal(entry.edit.editable, false, `${entry.key} is not editable`);
+  }
+});

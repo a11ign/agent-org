@@ -857,3 +857,25 @@ test("/api/settings says a host file that cannot be read by its path, and is ref
   const [posted] = await b.api("POST", "/api/settings", { drafts: false });
   assert.equal(posted, 404, "the settings page is read-only: no route takes a POST");
 });
+
+test("A11-132: the Settings edit routes preview, save and restore one file through the readers: a refused value is the reader's message, and a file is named by its kind only", async () => {
+  const dir = tmpDir("ticket-server-edit-");
+  const hostPath = join(dir, "host.json");
+  writeFileSync(hostPath, JSON.stringify({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets: { drafts: true, max: 2 } }, null, 2));
+  const before = readFileSync(hostPath, "utf8");
+  const b = board(4747, {}, { hostPath });
+  await assert.rejects(b.api("POST", "/api/settings/preview", { file: "host.json", changes: [{ key: "tickets.port", value: "x" }] }), /tickets\.port/);
+  await assert.rejects(b.api("POST", "/api/settings/preview", { file: join(dir, "elsewhere.json"), changes: [] }), /file must be host\.json or project\.json/);
+  assert.equal(readFileSync(hostPath, "utf8"), before, "a refused preview writes nothing");
+  const [, preview] = await b.api("POST", "/api/settings/preview", { file: "host.json", changes: [{ key: "tickets.drafts", value: false }] }) as [number, { base: string; changes: { old: string; new: string }[] }];
+  assert.deepEqual(preview.changes.map(({ old, new: now }) => [old, now]), [["true", "false"]]);
+  await assert.rejects(b.api("POST", "/api/settings/save", { file: "host.json", changes: [{ key: "tickets.drafts", value: false }], base: preview.base }), /second confirmation/);
+  const [saved] = await b.api("POST", "/api/settings/save", { file: "host.json", changes: [{ key: "tickets.drafts", value: false }], base: preview.base, confirmed: ["tickets.drafts"] }) as [number, unknown];
+  assert.equal(saved, 200);
+  assert.match(readFileSync(hostPath, "utf8"), /"drafts": false/);
+  const [restored] = await b.api("POST", "/api/settings/restore", { file: "host.json" }) as [number, unknown];
+  assert.equal(restored, 200);
+  assert.equal(readFileSync(hostPath, "utf8"), before, "the restore puts the file back");
+  const [posted] = await b.api("POST", "/api/settings", { drafts: false });
+  assert.equal(posted, 404, "the read-only route takes no POST, and the edits have their own paths");
+});
