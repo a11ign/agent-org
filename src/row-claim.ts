@@ -85,7 +85,7 @@ import { readWithFirstWaveTogether, runBatch } from "./work-gate/reads/read-memo
 import { readChairmanPriority, EMERGENCY_PRIORITY_LABEL, readEmergencyPriority, readEmergencyPriorityOption } from "./work-gate/causes/rows-offer.ts";
 import { CHAIRMAN_PRIORITY_LABEL } from "./work-gate/vocabulary.ts"; // #3566, slice 4: `wake.ts` above already loads it, and it never loads this file. #4793: and the gate's own reading of whose a chairman row is. #989: and the gate's own verdict on which emergency row is honoured
 import { lookup } from "./merge-guard/lookups.ts";
-import { readJsonObject, cloneOfKey, unmetWaitingFor } from "./claim-stall/claim-stalled.ts";
+import { readJsonObject, cloneOfKey, unmetWaitingFor } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "./claim-stall.ts";
 import { inBuildReason, lookupHeldRows, lookupOtherHeldIssues } from "./row-claim/own-pr-health-rule.ts";
 import { resolveBlockedByOverride, blockedByExceptionNote } from "./row-claim/blocked-by-rule.ts";

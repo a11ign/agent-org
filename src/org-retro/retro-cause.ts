@@ -12,7 +12,7 @@ import { lookupConsumerFile } from "../closes-mismatch-check.ts";
 import { safetyCheckDenials, type SafetyCheckDenialReading } from "../safety-check-denial-incident.ts";
 import { inertOptionIncidents, type InertOptionReading, type MergedOptionPr } from "../inert-option-incident.ts";
 import { mergedRowOpenIncidents, type MergedRowOpenIncident, type NamingPr, type OpenRow } from "../merged-row-open-incident.ts";
-import { readJsonObject, STALL_STATE_FILE, type StallState } from "../claim-stall/claim-stalled.ts";
+import { readJsonObject, STALL_STATE_FILE, type StallState } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { newestPerName } from "../newest-check-run.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { readDora, READ_TIMEOUT_MS } from "../dora.ts";

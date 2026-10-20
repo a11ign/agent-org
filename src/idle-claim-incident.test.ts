@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { STALL_STATE_FILE } from "./claim-stall/claim-stalled.ts";
+import { STALL_STATE_FILE } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { IDLE_CLAIMANT_MINUTES, WAIT_FIELDS } from "./idle-claimant.ts";
 import { buildReport } from "./org-retro/readings.ts";

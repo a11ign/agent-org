@@ -3,7 +3,7 @@ import { machineryFlagOn, type CanaryState } from "../../org-health/fleet-build-
 import { MAX_TICK_GAP_MS, type BlockingOrder } from "../../blocking-impact.ts";
 import { brokenChecks } from "../../red-pr.ts";
 import { declaredWaitsOf, isItemWait, waitItemOf } from "../../wait-condition.ts";
-import { readJsonObject } from "../../claim-stall/claim-stalled.ts";
+import { readJsonObject } from "../../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../../claim-stall.ts";
 import { CONFLICT_STATE, conflictStateOf } from "../pr-state.ts";
 import { sessionOf } from "../vocabulary.ts";

@@ -10,7 +10,7 @@ import { missingTemplateFields } from "../../row-claim/template-fields-rule.ts";
 import { isRepoWideResolutionFault, recentClosesSiblings } from "../../closes-mismatch-check.ts";
 import { extractClosesDeclaration } from "../../acceptance-commands/acceptance-report-and-closure.ts";
 import { BLOCKED_LABEL, SESSION_PREFIX } from "../../project-vocabulary.ts";
-import { KEPT_CLAIMS_FILE, readJsonObject } from "../../claim-stall/claim-stalled.ts";
+import { KEPT_CLAIMS_FILE, readJsonObject } from "../../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../../claim-stall.ts";
 import { worktreeOwner } from "../../worktree-owner.ts";
 import { REPO_CHECKOUT, branchesToReplace } from "../reads.ts";

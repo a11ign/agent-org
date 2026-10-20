@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ownsPr, RUNGS } from "./pr-ownership.ts";
-import { claimFactsFrom, readClaim } from "./claim-stall/claim-stalled.ts";
+import { claimFactsFrom, readClaim } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { claimRecordComment } from "./row-claim.ts";
 
 const ROW = 3390;

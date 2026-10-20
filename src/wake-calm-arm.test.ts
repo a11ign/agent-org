@@ -16,7 +16,7 @@ import { claimOrdersIn, claimOrdersPath } from "./wake/merge-queue-wait.ts";
 import { ledgerLine } from "./wake/ended-sessions.ts";
 import { CONTINUATION_ESCALATE_TO } from "./wake/holds-as-fyi.ts";
 import { armOf, ARM, CALM_FINISH_PARAGRAPH } from "./worker-profile.ts";
-import { MAX_CONTINUATIONS } from "./claim-stall/claim-stalled.ts";
+import { MAX_CONTINUATIONS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 
 const AT = 1_791_000_000_000;
 /** An EMPTY transcript root, so a real label this file reuses is never compacted by a coincidence of a live session's own transcript. */

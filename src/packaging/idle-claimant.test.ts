@@ -18,7 +18,7 @@ import {
 } from "../idle-claimant.ts";
 import { HOLD_PREFIX } from "../pr-hold-state.ts";
 import { brokenChecks } from "../red-pr.ts";
-import { claimReading, claimFactsFrom, withRedChecks } from "../claim-stall/claim-stalled.ts";
+import { claimReading, claimFactsFrom, withRedChecks } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { claimStalledOrders, nextStallState, nudgeKey, stalledNudgeEvents } from "../claim-stall.ts";
 import { claimRecordComment } from "../row-claim.ts";
 import { AWAITING_EVIDENCE_LABEL } from "../work-gate/causes/pr-reviews.ts";

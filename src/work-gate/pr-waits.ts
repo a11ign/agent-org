@@ -7,7 +7,7 @@
 // A LEAF OF THE GATE'S BOUNDARY: it reads and writes ONE small JSON file in the state directory it is handed and nothing else, no `gh`. With no
 // directory it stamps nothing, so a caller that names none (every test but this module's own) is exactly what it was before.
 import { openBlockersOf } from "../arm-pr.ts";
-import { readJsonObject } from "../claim-stall/claim-stalled.ts";
+import { readJsonObject } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../claim-stall.ts";
 import { subjectRef } from "../review-attribution.ts";
 import { rowsNamedBy } from "./pr-owners.ts";

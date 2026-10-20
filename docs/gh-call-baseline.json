@@ -83,7 +83,7 @@
       "spawns": 3,
       "calls": 3
     },
-    "src/claim-stall/claim-stalled.ts": {
+    "src/claim-stall/stall-causes-and-claim-readings.ts": {
       "spawns": 1,
       "calls": 1
     },

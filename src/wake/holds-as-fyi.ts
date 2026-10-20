@@ -12,7 +12,7 @@ import { pauseRefusal, type AccountLimit } from "../account-limit.ts";
 import { isOneShotOrder, standInClaimer, type OrchestratorOneShot } from "../orchestrator-one-shot.ts";
 import { isCeoOneShotOrder, type CeoOneShot } from "../ceo-one-shot.ts";
 import { SPARE_FAMILIES, familyMember } from "../arm-pr.ts";
-import { CONTINUATION_CAUSES, MAX_CONTINUATIONS } from "../claim-stall/claim-stalled.ts";
+import { CONTINUATION_CAUSES, MAX_CONTINUATIONS } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { statMtime } from "../claim-stall.ts";
 import { persistentRoles } from "../project-roles.ts";
 import { SESSIONS_FILE, declaresDecision, isLeadSeat } from "./seat-reset.ts";

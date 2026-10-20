@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claimRecordComment } from "../row-claim.ts";
-import { claimFactsFrom, readClaim } from "../claim-stall/claim-stalled.ts";
+import { claimFactsFrom, readClaim } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { claimStalledOrders } from "../claim-stall.ts";
 import { readClaimedRowComments, ISSUE_LIST_COMMENT_CAP } from "../work-gate/reads.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";

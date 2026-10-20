@@ -15,7 +15,7 @@ import { declaredRowsFromBody } from "./close-rows-for-merged-pr.ts";
 import { boardTruthReading } from "./org-health/board-truth-readings.ts";
 import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
 import { SIGNALS } from "./org-health/thresholds.ts";
-import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall/claim-stalled.ts";
+import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { boardRowsOf, boardTruthFact, boardTruthNow, orgHealthNow } from "./work-gate/org-health.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

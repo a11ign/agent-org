@@ -14,7 +14,7 @@ import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { ledgerLine } from "./wake/ended-sessions.ts";
 import { AGENT_SESSIONS_FILE, restartNoticeKey, restartNotices } from "./claim-stall.ts";
-import { type ClaimFacts, type Reading } from "./claim-stall/claim-stalled.ts";
+import { type ClaimFacts, type Reading } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { readAgentSessions } from "./herdr-agents.ts";
 
 const MIN = 60_000;

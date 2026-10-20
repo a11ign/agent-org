@@ -188,7 +188,7 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("worker-stop-hook.ts", ['"blocked"'], "the declared state of a worker's blocked declaration (`DeclaredState`), not a label the hook writes"),
   // `claim-stall.ts`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
   // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
-  ...nonVocabulary("claim-stall/claim-stalled.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
+  ...nonVocabulary("claim-stall/stall-causes-and-claim-readings.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
   // `ticket-mode/board-view.ts`: `RunStatus`'s own `"blocked"` is a ticket-mode RUN's status (a queued run waiting on tickets that block it), never the `blocked` GitHub label.
   ...nonVocabulary("ticket-mode/board-view/settled-by-pulls.ts", ['"blocked"'], "a ticket-mode run's own status, not the `blocked` label"),
   // `wake.ts`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.ts`'s `why: "blocked"`

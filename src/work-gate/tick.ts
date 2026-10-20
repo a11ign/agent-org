@@ -16,7 +16,7 @@ import { withBoardSnapshot } from "../board-snapshot.ts";
 import type { TicketPort, TicketState } from "../ticket-port/port.ts";
 import { githubTicketAdapter, TRACKER } from "../ticket-port/github-adapter.ts";
 import { recordIgnoredChairmanLabels } from "../failure-recorders.ts";
-import { readJsonObject } from "../claim-stall/claim-stalled.ts";
+import { readJsonObject } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../claim-stall.ts";
 import { ownerOfPr } from "./pr-orders/red-only-by-superseded-run.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic

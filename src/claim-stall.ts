@@ -28,7 +28,7 @@ import { recordFailures, type FailureEvent, type RecordResult } from "./failure-
 import { ownsPr } from "./pr-ownership.ts";
 import { pausedNow } from "./account-limit.ts";
 import { claimRecordOf, type RowComment } from "./claim-record.ts";
-import { CLAIM_STALLED, DONE_FOOTER, INTERRUPTED_TEXT, MINUTE_MS, RESTART_RESEND_WINDOW_MS, STALL_INTERVAL_MS, THRASH_TEXT, once, prMention, readJsonObject, type ClaimFacts, type Reading, type StallState, withRedChecks } from "./claim-stall/claim-stalled.ts";
+import { CLAIM_STALLED, DONE_FOOTER, INTERRUPTED_TEXT, MINUTE_MS, RESTART_RESEND_WINDOW_MS, STALL_INTERVAL_MS, THRASH_TEXT, once, prMention, readJsonObject, type ClaimFacts, type Reading, type StallState, withRedChecks } from "./claim-stall/stall-causes-and-claim-readings.ts";
 
 /**
  * The nudge memory, from `claim-stalls.json`.

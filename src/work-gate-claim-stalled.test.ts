@@ -37,7 +37,7 @@ import { unknownFlags } from "./lib/cli-flags.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { moduleSource } from "./lib/module-source.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
-import { CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, commentMove, workAtRisk, fileMove, claimReading, claimFactsFrom, readClaim, RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit } from "./claim-stall/claim-stalled.ts";
+import { CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, commentMove, workAtRisk, fileMove, claimReading, claimFactsFrom, readClaim, RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { nudgeKey, nudgeDeliveredAt, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart, statMtime, pathExists } from "./claim-stall.ts";
 import { claimRecordOf } from "./claim-record.ts";
 import { decidedBy } from "./decided-by.ts";
@@ -121,7 +121,7 @@ type Agent = { label: string; status: string };
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
   merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "",
   // #3075: the OTHER tracked code repository's lists. Absent is a project with ONE code repository, which is every test above this line.
-  elsewhere = undefined as import("./claim-stall/claim-stalled.ts").ElsewherePrs | undefined,
+  elsewhere = undefined as import("./claim-stall/stall-causes-and-claim-readings.ts").ElsewherePrs | undefined,
   // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
   // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
   agents = null as Agent[] | null,
