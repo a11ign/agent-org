@@ -218,6 +218,18 @@ test("a provider whose block is missing says so, and says it is set by aliases w
   assert.equal(held.value, "linear", "a block the file holds keeps its own provider");
 });
 
+test("a role's App fields matter only while the role uses a GitHub App, and are not in use until they are set; the role and its mode always are", () => {
+  const host = { tickets: { providers: { codeHost: { identity: { scheduler: { mode: "user-accounts" }, reviewer: { mode: "github-apps" } } } } } };
+  const view = viewOf({ host });
+  const app = "tickets.providers.codeHost.identity";
+  assert.equal(row(view, `${app}.scheduler.appId`).inUse, false, "a user-accounts role's App id is not in use");
+  assert.equal(row(view, `${app}.reviewer.appId`).inUse, true, "a github-apps role's App id is in use");
+  assert.equal(row(view, `${app}.scheduler.mode`).inUse, true);
+  assert.equal(row(view, `${app}.scheduler`).inUse, true);
+  const stray = viewOf({ host: { tickets: { providers: { codeHost: { identity: { scheduler: { mode: "user-accounts", appId: 7 } } } } } } });
+  assert.equal(row(stray, `${app}.scheduler.appId`).inUse, true, "an App id that is set is in use, so a refusal for it is seen");
+});
+
 test("the machine's plumbing is in Machine alone, and each provider's settings are in that provider's own section", () => {
   const view = viewOf({});
   const groupOf = (key: string) => view.groups.find((group) => group.rows.some((candidate) => candidate.key === key))?.group;

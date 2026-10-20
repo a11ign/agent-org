@@ -905,11 +905,13 @@ function drawSearch() {
   const shown = new Set(searchGroups(view.groups, query).flatMap((group) => group.rows.map((row) => row.key)));
   let matching = 0;
   for (const section of sections) {
-    const hits = section.rows.filter(({ row }) => shown.has(row.key));
-    for (const { row, node } of section.rows) node.hidden = !shown.has(row.key);
-    matching += hits.length;
-    section.count.textContent = settingsCount(searching ? hits.length : section.rows.length);
-    section.node.hidden = searching && hits.length === 0 && !section.alwaysShown;
+    // A key that does not matter now is shown only by a search that finds it (its role's App fields, while the role uses no App).
+    const visible = section.rows.filter(({ row }) => shown.has(row.key) && (searching || row.inUse));
+    const visibleRows = new Set(visible.map(({ row }) => row));
+    for (const { row, node } of section.rows) node.hidden = !visibleRows.has(row);
+    matching += visible.length;
+    section.count.textContent = settingsCount(visible.length);
+    section.node.hidden = searching && visible.length === 0 && !section.alwaysShown;
     section.node.open = searching || (state.settingsSearch.open[section.group] ?? section.group !== "Machine");
   }
   $("settings-search-status").textContent = searchWords(query, matching);

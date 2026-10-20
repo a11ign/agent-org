@@ -1921,7 +1921,7 @@ test("Back to the board returns to the card the board was showing, and focus goe
 
 /** A row as the page's view gives it: its key, group and words, and whether the page changes it in place (`editable`, with its `input`, else `why`). */
 const SHOWN = (row: { key: string; group: string; explanation: string } & Record<string, unknown>) => ({ file: "host.json", value: "x", state: "enabled", source: "host.json",
-  breaks: `what breaks ${row.key}`, depth: 0, secret: false, input: null, raw: null, editable: false, why: null, alias: null, ...row });
+  breaks: `what breaks ${row.key}`, depth: 0, secret: false, input: null, raw: null, editable: false, why: null, alias: null, inUse: true, ...row });
 /** Settings in four sections, as a provider's keys sit among the machine's: Tracker and Exposure hold a provider each, Workers holds a key that is not one, and Machine holds the plumbing. */
 const GROUPED = {
   refusals: [], notes: [], plugins: [], words: [], contract: [],
@@ -2048,6 +2048,18 @@ test("Settings: the plugins' checks stay on the page during a search, and a sear
   assert.deepEqual(sectionsOf(p).map((section) => section.name), ["Conventions plugin"], "no setting matches, and the plugins' section is still there");
   assert.match(sectionNamed(p, "Conventions plugin").node.text(), /Mismatch: needs the connector tools/, "its check is said");
   assert.match(sectionNamed(p, "Conventions plugin").node.text(), /a11ign@a11ign-local: not installed/, "its plugin line is said");
+});
+
+test("Settings: a key that is not in use is hidden, and a search finds it and shows it", async () => {
+  const withApp = { ...GROUPED, groups: [...GROUPED.groups.slice(0, 2),
+    { group: "Code host", rows: [SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.mode", group: "Code host", explanation: "Whether the role acts as the person's account.", value: "user-accounts", state: "default", source: "built-in default" }),
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.appId", group: "Code host", explanation: "The App's id. Required with github-apps.", inUse: false })] }] };
+  const p = await settingsPage({ config: SETTINGS, settings: withApp });
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler.mode"], "the App's id is not drawn");
+  assert.equal(sectionNamed(p, "Code host").node.all().find((n) => n.tag === "span")!.text(), "1 setting", "the count is what is drawn");
+  await search(p, "app");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler.appId"], "a search finds it");
+  assert.equal(p.$("settings-search-status").textContent, "1 setting matches");
 });
 
 test("Settings: an editable row keeps its Edit control, and a read-only row has none", async () => {

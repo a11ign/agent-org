@@ -37,7 +37,9 @@ export type Source = "host.json" | "project.json" | "choice.json" | "queue.json"
  * an old key that is set: where its new key is, and that `agent-org doctor --fix` moves it there.
  */
 export type Row = Readonly<{ key: string; file: File; group: Group; value: string; state: State; source: Source; explanation: string; breaks: string; depth: number; secret: boolean;
-  input: Input | null; raw: string | null; editable: boolean; why: string | null; alias: string | null }>;
+  input: Input | null; raw: string | null; editable: boolean; why: string | null; alias: string | null;
+  /** Whether the key matters to the host now. False for an App's field of a role that does not use an App, until the field is set: the page hides it, and a search still finds it. */
+  inUse: boolean }>;
 export type PluginLine = Readonly<{ plugin: string; installed: string; loads: string }>;
 export type View = Readonly<{
   groups: readonly Readonly<{ group: Group; rows: readonly Row[] }>[];
@@ -102,6 +104,15 @@ const whyOf = (entry: SchemaEntry): string | null => (entry.edit.editable ? null
 /** The reason a choice or the number of workers is changed by the controls above the list, not in place. */
 const CONTROLS_ABOVE = "changed with the controls above the list, not in place";
 
+/** Whether a key matters now. A role's App fields (`appId`, `keyPath`, ...) matter only while the role's `mode` is `github-apps`; the role itself and its `mode` always do. */
+function inUseOf(entry: SchemaEntry, key: string, root: Readonly<Record<string, unknown>>): boolean {
+  const names = entry.key.split(".");
+  const role = names.indexOf("<role>");
+  const suffix = names.slice(role + 1).join(".");
+  if (role === -1 || suffix === "" || suffix === "mode") return true;
+  return valueAt(root, [...key.split(".").slice(0, role + 1), "mode"]) === "github-apps";
+}
+
 /** The text an old key shows in place of its value: its new key, with the names its `<name>` segments carry in this key, and the command that moves it. */
 function aliasText(entry: SchemaEntry, key: string): string | null {
   if (entry.aliasOf === undefined) return null;
@@ -162,7 +173,7 @@ function rowsOf(entry: SchemaEntry, input: ViewInput): Row[] {
     const source = set || aliased ? fileOf(entry) : "built-in default";
     const shown = set ? showValue({ key, value }, entry, input.exists) : (aliased ? ALIASED_VALUE : absentValue(entry, state));
     rows.push({ key, file: entry.file, group: entry.group, value: shown, state, source, explanation: entry.explanation, breaks: entry.breaks, depth: path.length - 1, secret: entry.secret !== undefined,
-      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null });
+      ...editOf(entry), raw: set ? rawOf(value) : null, alias: set ? aliasText(entry, key) : null, inUse: set || inUseOf(entry, key, root) });
     if (Array.isArray(value)) rows.push(...elementRows({ parent: entry, key, items: value, state }, input));
   }
   return rows;
@@ -179,7 +190,7 @@ function elementRows({ parent, key, items, state }: Readonly<{ parent: SchemaEnt
       const values = items.filter(isObject).map((item) => (item[field] === undefined ? "not set" : showValue({ key: fieldKey, value: item[field] }, entry, input.exists)));
       return { key: fieldKey, file: entry.file, group: entry.group, value: values.join("; ") || "none", state, source: fileOf(entry), explanation: entry.explanation,
         breaks: entry.breaks, depth: key.split(".").length, secret: entry.secret !== undefined, input: null, raw: null, editable: false, why: whyOf(entry) ?? "a list is changed as a whole",
-        alias: items.length > 0 ? aliasText(entry, fieldKey) : null };
+        alias: items.length > 0 ? aliasText(entry, fieldKey) : null, inUse: true };
     });
 }
 
@@ -189,7 +200,7 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
   const saved = input.choice.saved[part];
   const hostValue = part === "writerModel" || part === "writerEffort" ? input.choice.host[part] : undefined;
   const base = { key: entry.key, file: entry.file, group: entry.group, explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null,
-    editable: false, why: CONTROLS_ABOVE, alias: null };
+    editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true };
   if (saved !== undefined) return { ...base, value: saved, state: "enabled", source: "choice.json" };
   if (hostValue !== undefined) return { ...base, value: hostValue, state: "default", source: "host.json" };
   return { ...base, value: CHOICE_BUILT_IN[part], state: "default", source: "built-in default" };
@@ -199,7 +210,7 @@ function choiceRow(entry: SchemaEntry, input: ViewInput): Row {
 function queueRow(entry: SchemaEntry, input: ViewInput): Row {
   const { max, source } = input.queue;
   return { key: entry.key, file: entry.file, group: entry.group, value: String(max), state: source === "built-in default" ? "default" : "enabled", source,
-    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null, editable: false, why: CONTROLS_ABOVE, alias: null };
+    explanation: entry.explanation, breaks: entry.breaks, depth: 0, secret: false, input: null, raw: null, editable: false, why: CONTROLS_ABOVE, alias: null, inUse: true };
 }
 
 /** The connector pattern's name, as the text between its `^mcp__` and the next `__`, or the pattern as written when it has none. */
