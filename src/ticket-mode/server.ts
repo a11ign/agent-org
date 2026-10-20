@@ -37,6 +37,7 @@ import { isObject } from "./json-value.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import { PRIORITIES } from "./writer.ts";
+import { type NeedsDecision, needsDecision } from "./open-decisions.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN = join(HERE, "..", "bin.ts");
@@ -184,15 +185,44 @@ type Board = Readonly<{
   whoHolds: () => Promise<People>;
 }>;
 
+/**
+ * A ticket as the page is sent it: with `needsDecision` where it holds an open decision or an ungrilled screen (`open-decisions.ts`). The page is not sent
+ * a description to work it out from, so the server says it (A11-134).
+ */
+function withDecision(ticket: Ticket): Ticket & Readonly<{ needsDecision?: NeedsDecision }> {
+  const open = needsDecision(ticket);
+  return open === null ? ticket : { ...ticket, needsDecision: open };
+}
+
+/**
+ * The ticket a queue route adds: the page's copy, unless that copy still holds an open decision, which a Grill may have settled since, so the tracker is read
+ * again (A11-134). Throws when the tracker has no such ticket: `of` names the parent it is a sub-issue of, when it is one.
+ */
+async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, key: string, of?: string): Promise<Ticket> {
+  const copy = known.tickets.get(key);
+  if (copy !== undefined && needsDecision(copy) === null) return copy;
+  const fresh = await source.read(key);
+  if (fresh === null) throw new Error(of === undefined ? `no ticket ${key}` : `no ticket ${key}, a sub-issue of ${of}`);
+  return fresh;
+}
+
 /** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
 function queueView(board: Pick<Board, "store" | "pool">) {
-  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119).
-  return { ...board.store.get(), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {} };
+  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `writers`: each run as the page
+  // is sent it, without a Grill run's ticket text (A11-134).
+  const queue = board.store.get();
+  return { ...queue, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {} };
 }
 
 /** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
 function writerViewOf(run: WriterRun) {
-  return { ...run, status: writerStatus(run) };
+  return { ...shownWriter(run), status: writerStatus(run) };
+}
+
+/** A new-ticket run without its Grill's ticket text: the board keeps that text to compare, and the page is not sent it (A11-134). */
+function shownWriter(run: WriterRun): Omit<WriterRun, "startedFrom"> {
+  const { startedFrom: _startedFrom, ...shown } = run;
+  return shown;
 }
 
 /** The new-ticket requests, each with its status, as the page shows them. */
@@ -232,12 +262,12 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so a scope is not read on its own" }];
     const page = await source.scoped!(query.get("assignee") ?? "", query.get("after"));
     for (const ticket of page.tickets) known.tickets.set(ticket.key, ticket);
-    return [200, page];
+    return [200, { ...page, tickets: page.tickets.map(withDecision) }];
   }
   if (method === "GET" && path === "/api/tickets") {
     const tickets = await source.assigned();
     known.tickets = new Map(tickets.map((ticket) => [ticket.key, ticket]));
-    return [200, tickets];
+    return [200, tickets.map(withDecision)];
   }
   if (method === "GET" && path === "/api/parents") {
     // The parents of the listed tickets that are not listed themselves, so the Pick list can nest under them whatever scope it shows. One the
@@ -275,11 +305,7 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     const choice = validRunChoice(body);
     const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
     const tickets: Ticket[] = [];
-    for (const key of keys) {
-      const ticket = known.tickets.get(key) ?? await source.read(key);
-      if (ticket === null) throw new Error(`no ticket ${key}`);
-      tickets.push(ticket);
-    }
+    for (const key of keys) tickets.push(await queuedTicket(board, key));
     queueTickets(tickets, choice, { plan: body.plan === true });
     return [200, queueView(board)];
   }
@@ -296,16 +322,15 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     if (children.length === 0) throw new Error(`${key} has no open sub-issues: queue it as it is`);
     const order = childOrder(children, source.blockers ? await source.blockers(children) : null);
     const read: Ticket[] = [];
-    for (const child of order.keys) {
-      const ticket = known.tickets.get(child) ?? await source.read(child);
-      if (ticket === null) throw new Error(`no ticket ${child}, a sub-issue of ${key}`);
-      read.push(ticket);
-    }
+    for (const child of order.keys) read.push(await queuedTicket(board, child, key));
     const nested = read.filter((ticket) => (ticket.children?.length ?? 0) > 0).map((ticket) => ticket.key);
-    const tickets = read.filter((ticket) => !nested.includes(ticket.key));
+    // A sub-issue with an open decision is left out too, and named: a Grill on its own row settles it first (A11-134).
+    const undecided = read.filter((ticket) => !nested.includes(ticket.key) && needsDecision(ticket) !== null).map((ticket) => ticket.key);
+    const tickets = read.filter((ticket) => !nested.includes(ticket.key) && !undecided.includes(ticket.key));
     queueTickets(tickets, choice, { plan: body.plan === true });
     const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
-    const note = [order.note, left].filter((part) => part !== null).join("; ") || null;
+    const held = undecided.length === 0 ? null : `${undecided.join(", ")} ${undecided.length === 1 ? "holds" : "hold"} an open decision, so not queued: Grill ${undecided.length === 1 ? "it" : "them"} first`;
+    const note = [order.note, left, held].filter((part) => part !== null).join("; ") || null;
     return [200, { queue: queueView(board), keys: tickets.map((ticket) => ticket.key), note }];
   }
   if (method === "POST" && path === "/api/choice") {
@@ -354,6 +379,24 @@ async function writerRoute(board: Board, method: string, path: string, body: Jso
     const model = saved.writerModel ?? settings.writer.model;
     const effort = saved.writerEffort ?? settings.writer.effort;
     store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request, mode, form, model, effort }, now()));
+    wake();
+    return [200, writersViewOf(store.get())];
+  }
+  if (method === "POST" && path === "/api/grill-ticket") {
+    // A Grill on a ticket that holds an open decision, or a screen's behaviour to grill (A11-134): the New ticket Grill in a terminal, with the ticket on the run.
+    // The run files nothing; its answers are written into the ticket when it ends decided (`pool-board-runs.ts`).
+    if (settings.writer === null) throw new Error("this machine names no tickets.writer, so it writes no tickets: name one in the host file");
+    if (settings.terminal === null) throw new Error("Grill needs a terminal: name tickets.terminal in the host file");
+    const key = String(body.key ?? "");
+    if (!TICKET_KEY.test(key)) throw new Error(`key must be a ticket's key, such as A11-12, not ${key}`);
+    const ticket = await source.read(key);
+    if (ticket === null) throw new Error(`no ticket ${key}`);
+    if (needsDecision(ticket) === null) throw new Error(`${key} has no open decision and no screen behaviour to grill`);
+    const saved = readChoice(deps.choicePath);
+    const model = saved.writerModel ?? settings.writer.model;
+    const effort = saved.writerEffort ?? settings.writer.effort;
+    store.set(queueWriter(store.get(), { id: `w${now().toString(36)}`, request: `Grill ${key}`, mode: "grill", form: {}, model, effort, ticket: key,
+      startedFrom: ticket.description }, now()));
     wake();
     return [200, writersViewOf(store.get())];
   }

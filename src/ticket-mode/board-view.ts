@@ -55,6 +55,12 @@ export const WRITER_STATUS_LABEL: Readonly<Record<string, string>> = Object.free
 /** A priority, as the New ticket form names it. */
 export const WRITER_PRIORITY_LABEL: Readonly<Record<string, string>> = Object.freeze({ urgent: "Urgent", high: "High", medium: "Medium", low: "Low", none: "No priority" });
 
+/** The pill a ticket with an open decision shows in place of its priority, and the button that starts a Grill on it (A11-134). */
+export const NEEDS_DECISION = "Needs a decision";
+export const GRILL = "Grill";
+export const GRILL_TITLE = "Grill this ticket in a terminal: the open decisions first, then a screen's behaviour. The answers are written into the ticket, which can then be queued";
+
+
 /** The request form's values, as the page holds them: text, the chosen mode, and the optional choices, empty when none. */
 export type WriterFormValues = Readonly<{ request: string; mode: string; project?: string; repo?: string; goal?: string; priority?: string; parent?: string }>;
 

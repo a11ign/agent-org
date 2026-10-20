@@ -2041,3 +2041,26 @@ test("A11-132: when another instance's settings cannot be read, nothing staged o
   assert.equal(p.$("pending-list").all().some((n) => n.tag === "li"), false, "nothing staged is listed");
   assert.equal(p.$("restores").all().some((n) => n.tag === "button"), false, "no Restore for the instance the page left");
 });
+
+test("A11-134: a ticket with an open decision shows Needs a decision with its reason, its Select is disabled, and Grill starts the grill on it", async () => {
+  const reason = 'An open decision is still in acceptance: "- Decide whether it sorts.". Grill it to settle the decision before it is queued.';
+  const p = await page(new Map(), { config: WRITER_CONFIG, tickets: [ticketIn("D-1", { needsDecision: { kind: "decision", reason } }), ticketIn("T-1")] });
+  const row = rowFor(p, "D-1");
+  const pill = row.all().find((n) => n.className === "pill" && n.textContent === view_0.NEEDS_DECISION) as (Node_ & { title?: string }) | undefined;
+  assert.equal(pill?.title, reason, "the pill's title is the reason, naming the open line");
+  assert.equal(tickOf(p, "D-1").disabled, true, "its Select is disabled");
+  assert.equal(tickOf(p, "T-1").disabled, false);
+  const grill = row.all().find((n) => n.tag === "button" && n.textContent === view_0.GRILL)!;
+  assert.equal(grill.disabled, false);
+  grill.fire("click");
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(p.posts.filter((x) => x.path === "/api/grill-ticket").map((x) => x.body), [{ key: "D-1" }]);
+});
+
+test("A11-134: Grill is disabled with its reason on a machine with no terminal, and no pill or Grill shows on a ticket that can be queued", async () => {
+  const p = await page(new Map(), { config: { ...WRITER_CONFIG, writerGrill: false }, tickets: [ticketIn("D-1", { needsDecision: { kind: "behaviour", reason: "It changes a screen." } }), ticketIn("T-1")] });
+  const grill = rowFor(p, "D-1").all().find((n) => n.tag === "button" && n.textContent === view_0.GRILL)!;
+  assert.equal(grill.disabled, true);
+  assert.equal(grill.title, "Grill needs a terminal: name tickets.terminal in the host file");
+  assert.equal(rowFor(p, "T-1").all().some((n) => n.textContent === view_0.GRILL || n.textContent === view_0.NEEDS_DECISION), false);
+});

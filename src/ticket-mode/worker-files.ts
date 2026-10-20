@@ -13,9 +13,10 @@ import type { StackBase } from "./board-view/settled-by-pulls.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest, WriterForm, WriterMode } from "./queue/declared-remains.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
-import { MAX_CREATED, PRIORITY_NUMBER, type Priority } from "./writer.ts";
+import { DECISIONS_FILE, MAX_CREATED, PRIORITY_NUMBER, type Priority } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
+import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -129,8 +130,21 @@ const PARENT_ONLY_PLAN = "A ticket that is only a parent, an epic whose work is 
 const DONE_CHECKED_OR_NEEDS_HUMAN = [
   "Write `done` only when no code and no pull request is needed and **every Done-when item of the ticket is verified**: you ran or read what each item asks, and it holds. The `evidence` list has one line per Done-when item: what you ran or read, and what it showed (a command and its result, a link, a file and line). A prediction is not evidence: say what you saw, not what you expect. The board completes the ticket on your `done`. Never write `done` for a ticket with open sub-issues, which complete it, and never after you opened a pull request, whose merge completes the ticket.",
   "Write `checked` when you looked at what the ticket asks and nothing needs to change, but the ticket is **not finished**: a Done-when item is not verifiable by you, or the ticket is only a parent whose work is all in its child tickets (name them, so the person queues them). The ticket stays open. Say in its reason what you checked and what you found.",
-  "Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one.",
+  "Write `needs-human` only for a real question or decision that only the person can make: it asks them for an answer, and the run waits for one. A product or design decision the ticket did not settle is one of these: name the one question, and do not pick an answer.",
 ].join("\n\n");
+
+/**
+ * What a worker does with a product or design decision the ticket did not settle (A11-134). Nobody answers a worker, so it stops with the one question
+ * rather than choosing: a decision a person has not made is not a technical one. The board holds a ticket with an open decision back before any worker
+ * starts (`open-decisions.ts`), so this is for the decision a ticket implies without naming it.
+ */
+const PRODUCT_DECISIONS = "A product decision is what a person sees or does, what a control is called or does, what happens on an empty or failed state, or a trade-off between two behaviours the ticket names. A ticket that leaves one open is not yours to answer: the board holds it until a person grills it.";
+
+/**
+ * What a planner does with a decision only a person can make (A11-134). It is never recorded as one made without a person: the plan check refuses such a
+ * plan (`pool-settle.ts`), so the question goes to the person as a `QUESTION.md` instead.
+ */
+const PLANNER_DECISIONS = "A decision only a person can make (a product, design or priority decision) that the ticket does not settle ends that ticket in its `QUESTION.md`, with no plan. It is never recorded under \"Decisions made without a person\". When the work changes a screen and the ticket has no `**Behaviour:** settled` line, the `QUESTION.md` says the behaviour grill is needed. Each bullet of a plan's \"Decisions made without a person\" starts with `Technical:` or `Product:`: a `Product:` bullet is a defect, and the board refuses that plan.";
 
 /**
  * A worker's proposed edit to its ticket's own text (A11-91). The board never changes the ticket on the worker's word: a person applies the edit on the
@@ -342,6 +356,8 @@ ${instruction}
 
 ${PARENT_ONLY_PLAN}
 
+${PLANNER_DECISIONS}
+
 ${MISSING_SKILL}
 
 The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them.
@@ -415,6 +431,8 @@ ${reposText(clones)}
 ${plannerInstruction(run, keys, planDir)}
 
 ${PARENT_ONLY_PLAN}
+
+${PLANNER_DECISIONS}
 
 ${MISSING_SKILL}
 
@@ -499,7 +517,9 @@ export function briefText({ ticket, folder, ticketDir, attachments, parent = nul
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
   return `# ${ticket.key}: ${ticket.title}
 
-You are an unattended worker. Nobody will answer a question, so decide, do the work, and end by writing the outcome file below.
+You are an unattended worker. Nobody will answer you in this run. Settle no product or design decision the ticket did not settle: end with \`needs-human\`, naming the one question, and you may state your recommendation. Decide technical matters yourself.
+
+${PRODUCT_DECISIONS}
 
 ## The ticket
 
@@ -812,16 +832,75 @@ const formText = (form: WriterForm): string => {
 };
 
 /**
+ * A Grill run's brief (A11-134): the grill of one existing ticket, which the board holds back until its open decisions are settled. The run asks the person,
+ * in its terminal, each open line and, for a screen, its behaviour, and writes the answers to `decisions.md` in its folder. The board writes them into the
+ * ticket when the run ends `decided`. The run files nothing and changes nothing in the tracker.
+ */
+function grillBriefText({ ticket, dir }: { ticket: Ticket; dir: string }): string {
+  const open = openDecisionOf(ticket.description);
+  const needed = sectionsNeeded(ticket);
+  const decisions = needed.includes("Decisions")
+    ? `- **Decisions:** the open line is \`${open?.line ?? ""}\`, in ${open?.section ?? "the ticket"}. Ask the person about it, and about each other open decision in the ticket's Acceptance, Done-when and Open-check, one question at a time.`
+    : "- **Decisions:** none is open.";
+  const behaviour = needed.includes("Behaviour")
+    ? "- **Behaviour:** the ticket changes a screen. Ask the person what they see, what each control does, and what the empty and the failed states show, one question at a time."
+    : "- **Behaviour:** none is to be grilled.";
+  return `# Grill ${ticket.key}: ${ticket.title}
+
+You are a ticket writer on this machine, and a person asked for a grill on ${ticket.key}. The board holds the ticket back from a worker until the person has settled its open decisions, and this run is where they settle them.
+
+## The ticket
+
+${ticket.url}
+
+${quoted(ticket.description)}
+
+## What to settle
+
+${decisions}
+${behaviour}
+
+## The mode
+
+You are interactive: the person is in this run's terminal. Ask one question at a time, and wait for each answer before the next. To ask a question, end your turn with it: the board shows the question to the person and keeps this run until they answer. Do not write an outcome to ask a question.
+
+## What to do
+
+1. Run the \`a11ign:create-ticket\` skill's grill on ${ticket.key}, in its "grill ${ticket.key}" form, and ask only what is listed under "What to settle".
+2. Write \`${dir}/${DECISIONS_FILE}\`: a \`## Decisions\` section when a decision was open, and a \`## Behaviour\` section when the behaviour was to be grilled. Each holds each question and the person's answer, in the person's words as they confirmed them in the terminal. Write nothing else in it.
+3. Write \`${dir}/${OUTCOME_FILE}\` as the last thing you do.
+
+File no ticket, attach nothing, and change nothing in the tracker: no create, update, comment or attachment. The read-only tracker tools are yours to use. Change no repository.
+
+${MISSING_SKILL}
+
+## The outcome file
+
+Write \`${dir}/${OUTCOME_FILE}\` as the last thing you do, with exactly one of:
+
+\`\`\`json
+{ "kind": "decided", "ticket": "${ticket.key}" }
+{ "kind": "needs-human", "reason": "<the one question the person must answer before the grill can finish>" }
+\`\`\`
+
+Write \`decided\` once \`${DECISIONS_FILE}\` holds each section listed under "What to settle" that is not "none". A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+`;
+}
+
+/**
  * A new-ticket run's brief (A11-94, A11-124, A11-135): the instruction the machine configures, with the person's request, the folder and the board's mode
  * filled in, the choices the form made and where each lands, the team, the repositories it may read, and the outcome it writes last. The run runs the
  * create-ticket skill in full, in the mode the board chose, and files its own ticket and plan through the tracker's tools (`WRITER_CREATE_TOOLS`).
  * Its one prohibition is an update to a ticket it did not create. PURE.
  */
-export function writerBriefText({ run, request, mode, form, clones, dir, pickTeam }: {
+export function writerBriefText({ run, request, mode, form, clones, dir, pickTeam, ticket }: {
   run: string; request: string; mode: WriterMode; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
   /** The team `tickets.pick` lists, or null: the team a new ticket goes in when its form names no parent. */
   pickTeam: string | null;
+  /** The ticket a Grill run grills, read as it is now. A Grill run's brief is the grill of that ticket, and files nothing (A11-134). */
+  ticket?: Ticket;
 }): string {
+  if (ticket !== undefined) return grillBriefText({ ticket, dir });
   const instruction = run.replaceAll("{request}", request).replaceAll("{dir}", dir).replaceAll("{mode}", mode);
   return `# New ticket: ${request.split("\n")[0].slice(0, 120)}
 

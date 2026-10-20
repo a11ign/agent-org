@@ -10,6 +10,7 @@ import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, un
 import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
+import { productDecisionIn } from "./open-decisions.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS } from "./board-view/view-ticket.ts";
@@ -132,6 +133,11 @@ function planFiles(planDir: string): { files: string[] } | { refusal: string } {
     return !info.isFile() || !name.endsWith(".md") || info.size > PLAN_FILE_BYTES;
   });
   if (odd !== undefined) return { refusal: `the plan folder ${planDir} holds ${odd}, which is not a markdown file of 1 MB or less, so nothing was attached` };
+  // A plan that records a product decision as made without a person is refused whole, and nothing is attached: the question is the person's (A11-134).
+  for (const name of names) {
+    const bullet = productDecisionIn(readFileSync(join(planDir, name), "utf8"));
+    if (bullet !== null) return { refusal: `the plan records a product decision made without asking: ${bullet}` };
+  }
   return { files: names.map((name) => join(planDir, name)) };
 }
 

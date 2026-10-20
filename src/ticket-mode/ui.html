@@ -281,7 +281,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
+  NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
   reviewLinesOf, unlistedPulls, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
@@ -474,6 +474,36 @@ function childrenButton(t) {
 }
 
 /**
+ * The Grill button on a ticket with an open decision (A11-134): it starts the New ticket's Grill on it, in a terminal. It is disabled, with the reason, on a
+ * machine with no writer or no terminal for one.
+ */
+function grillButton(t) {
+  if (t.needsDecision === undefined) return null;
+  const reason = !state.writer ? "this machine names no tickets.writer, so it writes no tickets: name one in the host file"
+    : !state.writerGrill ? "Grill needs a terminal: name tickets.terminal in the host file" : null;
+  const button = el("button", { className: "small grill", type: "button", textContent: GRILL, title: reason ?? GRILL_TITLE, disabled: reason !== null });
+  button.addEventListener("click", (event) => { event.stopPropagation(); grillTicket(t).catch(report); });
+  return button;
+}
+
+/**
+ * Start the Grill on a ticket, as New ticket's Grill starts: a blank tab is opened in the click, the only moment a browser allows it, and pointed at the
+ * run's terminal once the run has one (A11-134). The run is listed with New ticket's runs, as "Grill <KEY>".
+ */
+async function grillTicket(t) {
+  const tab = window.open("", "_blank");
+  try {
+    const next = await call("POST", "/api/grill-ticket", { key: t.key });
+    setWriters(next);
+    report(null);
+    if (tab) openTerminalWhenReady(tab, next.runs.at(-1).id);
+  } catch (err) {
+    tab?.close();
+    report(err);
+  }
+}
+
+/**
  * Queue a parent's open sub-issues, on the footer's model and effort, planned first as the footer says. The instance reads them and their order;
  * the note it answers with, such as an order that is not the tracker's, is shown above the list.
  */
@@ -559,9 +589,11 @@ function renderPick() {
           titleCell(t, depth, { note: el("span", { className: "sub" }, ` · ${childrenNote(t)}`, childrenButton(t)) }), pill(projectOf(t)), owner(t), pill("Parent")), depth);
         return;
       }
-      const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: Boolean(taken) });
+      // A ticket with an open decision cannot be picked until a Grill settles it: its pill says so, and the reason is the pill's title (A11-134).
+      const decision = taken === undefined && t.needsDecision !== undefined ? el("span", { className: "pill", textContent: NEEDS_DECISION, title: t.needsDecision.reason }) : pill(standing);
+      const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: !free(t) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });
-      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { mark: planMark(t) }), pill(projectOf(t)), owner(t), pill(standing)), depth);
+      place(el("label", { className: `row${taken ? " taken" : ""}${nested}` }, tick, keyCell, titleCell(t, depth, { mark: planMark(t), note: grillButton(t) }), pill(projectOf(t)), owner(t), decision), depth);
     };
     for (const node of nodes) add(node, 0);
     list.append(box);
@@ -1165,9 +1197,12 @@ async function refreshWriters() {
   const next = await call("GET", "/api/writer");
   if (JSON.stringify(next.runs) === state.writersSignature) return;
   const before = new Set(state.writers.runs.flatMap((run) => run.tickets.map((ticket) => ticket.key)));
+  const grilled = new Set(state.writers.runs.filter((run) => run.ticket !== undefined && run.phase === "finished").map((run) => run.id));
   setWriters(next);
   // A run that made a ticket has put it in the tracker: Pick is read again, so the ticket shows in it.
   if (next.runs.some((run) => run.tickets.some((ticket) => !before.has(ticket.key)))) load().catch(report);
+  // A Grill that has ended may have written its answers into its ticket: Pick is read again, so the ticket shows as queueable.
+  if (next.runs.some((run) => run.ticket !== undefined && run.phase === "finished" && !grilled.has(run.id))) load().catch(report);
 }
 const actionButton = (label, title, onClick) => {
   const b = el("button", { className: "small", type: "button", textContent: label, title });

@@ -66,3 +66,8 @@ test("A11-135: Pick lists a created ticket when it is assigned, in the team or p
   assert.equal(inPickScope({ project: "Board" }, ticket), true);
   assert.equal(inPickScope({ project: "Other" }, ticket), false);
 });
+
+test("A11-134: a decided outcome names the ticket it answered, and one that names no ticket key is refused", () => {
+  assert.deepEqual(parseWriterOutcome('{ "kind": "decided", "ticket": "NBF-7" }'), { kind: "decided", ticket: "NBF-7", created: [] });
+  assert.match(parseWriterOutcome('{ "kind": "decided", "ticket": "seven" }') as string, /names no ticket key, such as A11-12/);
+});

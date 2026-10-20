@@ -10,6 +10,8 @@ import { join } from "node:path";
 
 /** The file beside a writer run's outcome where the PostToolUse hook records each ticket the run created, one JSON line each. Only the hook writes it. */
 export const CREATED_FILE = "created-issues.jsonl";
+/** The file a Grill run writes its answers to, beside its outcome: the sections the board writes into the ticket (A11-134). */
+export const DECISIONS_FILE = "decisions.md";
 /** The priorities a writer's form may name, most urgent first. */
 export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
 export type Priority = (typeof PRIORITIES)[number];
@@ -23,9 +25,10 @@ const TICKET_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 /** The longest reason a run's outcome may give. */
 const REASON_CHARS = 2000;
 
-/** How a writer run's outcome file says it ended: the keys it created, and, for a run that cannot finish, why. */
+/** How a writer run's outcome file says it ended: the keys it created, for a run that cannot finish why, or, for a Grill run, the ticket it answered (A11-134). */
 export type WriterOutcome = Readonly<{ kind: "created"; created: readonly string[] }
-  | { kind: "needs-human"; reason: string; created: readonly string[] }>;
+  | { kind: "needs-human"; reason: string; created: readonly string[] }
+  | { kind: "decided"; ticket: string; created: readonly string[] }>;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -60,6 +63,10 @@ export function parseWriterOutcome(text: string): WriterOutcome | string {
     return { kind: "needs-human", reason: outcome.reason.slice(0, REASON_CHARS), created: keys };
   }
   if (outcome.kind === "needs-human") return "its needs-human outcome gives no reason";
+  if (outcome.kind === "decided") {
+    return typeof outcome.ticket === "string" && TICKET_KEY.test(outcome.ticket) ? { kind: "decided", ticket: outcome.ticket, created: keys }
+      : "its decided outcome names no ticket key, such as A11-12";
+  }
   return `it wrote the outcome ${JSON.stringify(outcome.kind)}, which a new-ticket run cannot end on`;
 }
 

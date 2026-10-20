@@ -23,7 +23,8 @@ import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
-import { CREATED_FILE } from "./writer.ts";
+import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
+import { WRITER_FILE } from "./worker-files.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
@@ -3595,7 +3596,7 @@ test("a review the reviewer posted at its head and a person dismissed is posted,
  */
 
 const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this request: {request}, in {dir}." } };
-const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; form: { repo?: string }; model?: string; effort?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", form: { repo: "nbl-ui-netbox" } };
+const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; form: { repo?: string }; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
 function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source) {
@@ -4098,4 +4099,106 @@ test("a refusal that is not the busy one ends the waiting at once, after some bu
   assert.equal(entry("NBF-1").outcome?.kind, "crashed");
   assert.equal(shellWaits.length, 2);
   assert.equal(starts, 3);
+});
+
+/** A ticket that still holds an open decision in its Acceptance: the line the start guard names (A11-134). */
+const OPEN_DECISION = "## Acceptance\n\n### 4. Decide whether to isolate the failing ticket or keep the stall\n";
+
+/** NBF-1's work run is held for its open decision: it ends needs-human with the line, and no worker was started (A11-134). */
+function assertHeldForDecision(made: ReturnType<typeof setup>): void {
+  const outcome = made.entry("NBF-1").outcome;
+  assert.equal(outcome?.kind, "needs-human");
+  assert.match(outcome?.kind === "needs-human" ? outcome.reason : "", /Decide whether to isolate the failing ticket or keep the stall/);
+  assert.equal(made.h.calls.some((args) => args.includes("start")), false, "no worker is started");
+}
+
+test("A11-134: a work run never starts on a ticket with an open decision: it ends needs-human with the line, and no worker is started", async () => {
+  const made = setup(1, ["NBF-1"]);
+  const queue = made.store.get();
+  made.store.set({ ...queue, entries: queue.entries.map((e) => ({ ...e, ticket: { ...e.ticket, description: OPEN_DECISION } })) });
+  await made.pool.tick();
+  assertHeldForDecision(made);
+});
+
+/** NBF-1 planned by a planning run whose one plan file says `plan`, once the run is read: the plans the tracker took, and the ticket (A11-134). */
+async function plannedWith(plan: string) {
+  const { tracker, attached } = planTracker();
+  const made = setup(1, ["NBF-1"], PLANNER, { source: tracker, planFirst: ["NBF-1"] });
+  await made.pool.tick();
+  const dir = ticketDir(made.settings, "NBF-1");
+  writeFileSync(join(dir, "plan", "NBF-1-0001-plan-fit.md"), plan);
+  await endWith({ pool: made.pool, status: made.status }, dir, herdrName("NBF-1"), { kind: "planned" });
+  await settled();
+  return { attached, entry: made.entry };
+}
+
+test("A11-134: a plan that records a product decision as made without asking is refused whole: nothing is attached, and the ticket ends for a person", async () => {
+  const { attached, entry } = await plannedWith("# Fit\n\n## Decisions made without a person\n\n- Technical: the phrase list.\n- Product: the empty state says none.\n");
+  assert.deepEqual(attached, [], "nothing is attached");
+  const outcome = entry("NBF-1").outcome;
+  assert.equal(outcome?.kind === "needs-human" ? outcome.reason : "", "the plan records a product decision made without asking: - Product: the empty state says none.");
+});
+
+test("A11-134: a plan whose decisions are all Technical is attached as any plan is", async () => {
+  const { attached } = await plannedWith("# Fit\n\n## Decisions made without a person\n\n- Technical: the phrase list.\n");
+  assert.deepEqual(attached.map(({ key }) => key), ["NBF-1"]);
+});
+
+/** A Grill run on NBF-1 whose ticket says `current` now and held `startedFrom` when the Grill started, on a tracker that records each write (A11-134). */
+function grilling(current: string, startedFrom: string = current) {
+  const written: { key: string; text: { title?: string; description?: string } }[] = [];
+  const tracker: TicketSource = { ...trackerOf({ "NBF-1": { description: current } }), updateTicketText: async (key, text) => { written.push({ key, text }); } };
+  const fixture = writing({ id: "g1", request: "Grill NBF-1", mode: "grill", form: {}, ticket: "NBF-1", startedFrom }, WRITER, tracker);
+  return { ...fixture, written };
+}
+
+/** A Grill run's agent works, leaves its answers and its outcome, and goes idle: the run's outcome is read (A11-134). */
+async function grillEnds(fixture: ReturnType<typeof grilling>, outcome: Record<string, unknown>, answers?: string): Promise<void> {
+  await fixture.pool.tick();
+  await agentIs(fixture, fixture.name, "working");
+  if (answers !== undefined) writeFileSync(join(fixture.dir, DECISIONS_FILE), answers);
+  leaveOutcome(fixture.dir, outcome);
+  await agentIs(fixture, fixture.name, "idle");
+  await writerSettled();
+}
+
+const GRILLED_TEXT = "## Acceptance\n\n- Decide whether the list sorts.\n";
+
+test("A11-134: a Grill run that ends decided writes its answers under the ticket's text, with the marker that settles them, and files no ticket", async () => {
+  const fixture = grilling(GRILLED_TEXT);
+  await grillEnds(fixture, { kind: "decided", ticket: "NBF-1" }, "## Decisions\n\n**Sort?** Yes.\n");
+  assert.deepEqual(fixture.written, [{ key: "NBF-1", text: { description: `${GRILLED_TEXT.trimEnd()}\n\n## Decisions\n\n**Sort?** Yes.\n\n**Decisions:** settled` } }]);
+  assert.deepEqual([fixture.run().phase, fixture.run().failure, fixture.run().tickets, writerStatus(fixture.run())], ["finished", undefined, [], "done"]);
+  assert.equal(fixture.store.get().entries.length, 0, "no ticket is queued");
+});
+
+test("A11-134: a Grill whose ticket changed while it ran writes nothing, and the run fails saying so", async () => {
+  const fixture = grilling("## Acceptance\n\n- Decide whether the list sorts, and the rows too.\n", GRILLED_TEXT);
+  await grillEnds(fixture, { kind: "decided", ticket: "NBF-1" }, "## Decisions\n\n**Sort?** Yes.\n");
+  assert.deepEqual(fixture.written, []);
+  assert.equal(writerStatus(fixture.run()), "failed");
+  assert.match(fixture.run().failure ?? "", /NBF-1 changed while it was grilled, so nothing was written: Grill it again/);
+});
+
+test("A11-134: a Grill that answered no section the ticket still needs ends failed, naming the section", async () => {
+  const fixture = grilling(GRILLED_TEXT);
+  await grillEnds(fixture, { kind: "decided", ticket: "NBF-1" }, "## Behaviour\n\n**Empty?** Says none.\n");
+  assert.deepEqual(fixture.written, []);
+  assert.match(fixture.run().failure ?? "", /decisions\.md has no ## Decisions section, which NBF-1 still needs/);
+});
+
+test("A11-134: a Grill run's brief grills its ticket, and the run is granted no tool that files a ticket", async () => {
+  const fixture = grilling(GRILLED_TEXT);
+  await fixture.pool.tick();
+  const brief = readFileSync(join(fixture.dir, "brief.md"), "utf8");
+  assert.match(brief, /^# Grill NBF-1: Title NBF-1\n/);
+  assert.match(brief, /File no ticket, attach nothing, and change nothing in the tracker/);
+  assert.deepEqual(JSON.parse(readFileSync(join(fixture.dir, WRITER_FILE), "utf8")).tools, []);
+});
+
+test("A11-134: a decision the tracker gains after a ticket is queued holds its work run too: the run ends needs-human with the line, and no worker is started", async () => {
+  // Queued clean: the copy the queue holds has no open decision, but the tracker now says the Acceptance leaves one open.
+  const made = setup(1, ["NBF-1"], {}, { source: trackerOf({ "NBF-1": { description: OPEN_DECISION } }) });
+  await made.pool.tick();
+  assertHeldForDecision(made);
 });
