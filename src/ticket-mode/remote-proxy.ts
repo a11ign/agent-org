@@ -29,7 +29,7 @@ const WRITES = new Set(["/api/queue", "/api/queue-children", "/api/choice", "/ap
   "/api/settings/preview", "/api/settings/save", "/api/settings/restore"]);
 /** The Settings page's edits of a file: they change a `.agent-org` file, which only the machine that holds it may do (A11-132). */
 const SETTINGS_EDITS = new Set(["/api/settings/preview", "/api/settings/save", "/api/settings/restore"]);
-const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|stop|close|dismiss|apply-edit|discard-edit)$/;
+const RUN_ACTION = /^\/api\/queue\/[A-Za-z0-9_-]+\/(amend|remove|retry|approve|respond|talk|stop|close|dismiss|apply-edit|discard-edit)$/;
 /** A new-ticket request's own actions: `/api/writer/<run>/stop` and `/api/writer/<run>/dismiss`. */
 const WRITER_ACTION = /^\/api\/writer\/[A-Za-z0-9_-]+\/(?:stop|dismiss)$/;
 
