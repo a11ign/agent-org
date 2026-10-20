@@ -20,8 +20,24 @@ Two pools against one fake pull request start one reviewer; the second says whic
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-port/review-claim.test.ts src/ticket-mode/review-claim-two-pools.test.ts src/ticket-mode/reviewer-port.test.ts src/ticket-mode/review-command.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/board-view.test.ts src/ticket-port/stack-retarget.test.ts src/packaging/door-finalises-review-claim.test.ts
+A11Y_PRIVATE_TMP_BASE=/tmp/ao-private-tmp npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-port/review-claim.test.ts src/ticket-mode/review-claim-two-pools.test.ts src/ticket-mode/reviewer-port.test.ts src/ticket-mode/review-command.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/board-view.test.ts src/ticket-port/stack-retarget.test.ts src/packaging/door-finalises-review-claim.test.ts
 ```
+
+## Live check (the done-when; not part of the Acceptance block)
+
+The done-when, "with the agents host and the laptop both running, a new pull request gets exactly one review", needs two running instances on two hosts and a live reviewer on GitHub, so it cannot run inside a pull request's checks. The chairman session runs it after merge, or against this branch before merge, with these steps. Each step is a command; the pass is stated after them.
+
+1. Copy the agents host's `host.json` to `/tmp/a11-149-live/host.json` and change four keys in the copy: `tickets.instance` to `live-check`, `tickets.port` and `tickets.uiPort` to free ports, `stateDir` to `/tmp/a11-149-live/state`, and `tickets.herdrSession` to `a11-149-live`.
+2. Start the second instance against the copy: `AGENT_ORG_HOST=/tmp/a11-149-live/host.json agent-org ticket:serve` (in its own terminal, or as a unit).
+3. Open a test pull request in a scratch repository that both instances clone, with a change that has green checks.
+4. When its checks are green, count the claims on its head and the reviews on it:
+   `gh api repos/<repo>/commits/<sha>/statuses --jq '[.[]|select(.context=="agent-org/review")]|length'`
+   `gh api repos/<repo>/pulls/<n>/reviews --jq '[.[]|select(.user.login=="a11ign-reviewer")]|length'`
+5. Read both instances' logs for `started reviewer-` and `holds the review of`.
+
+**Pass:** the first count is 1 (the claim) or 2 (the claim and the finished entry); the second is 1; exactly one instance's log says `started reviewer-`, and the other's says it `holds the review of` that head.
+
+**Cleanup:** stop the second instance, close the test pull request, delete its branch, and remove `/tmp/a11-149-live`.
 
 Mutation: the protocol's "held" branch was made to return "won" for every instance (5 tests red); the door's claim write was removed (3 door tests red); the port's claim step was bypassed (2 two-pool tests red); the release calls after a refused start were removed (1 two-pool test red). Each was restored and the files compared byte for byte before the suite ran again.
 
