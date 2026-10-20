@@ -12,7 +12,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SCHEMA, type ChoicePart } from "./config-schema.ts";
-import { pluginStates } from "./plugins.ts";
+import { pluginProblems } from "./plugins.ts";
+import { hostFactsOf } from "./plugin-contract.ts";
 import { ticketFolder } from "./ticket-paths.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
 import { hostLevelRefusal, isTicketOnly, type Json, projectRefusal, refusalOf, ticketsRefusal } from "./settings-verdict.ts";
@@ -142,9 +143,10 @@ export async function readSettingsView(options: SettingsReadOptions): Promise<Vi
     hostWriter: writerOfHost(file.host), hostRaw: file.host });
 }
 
-/** The view over what was read: the sections, the choice saved, the number of workers and its source, and the plugins the board runs with. */
+/** The view over what was read: the sections, the choice saved, the number of workers and its source, and the plugins the board runs with and their contracts. */
 function viewOver(options: SettingsReadOptions, sections: Sections): View {
   const pluginRecord = options.pluginRecord === undefined ? {} : { record: options.pluginRecord };
+  const plugins = pluginProblems({ wanted: options.settings.plugins, folder: ticketFolder(options.settings, "<ticket>"), host: hostFactsOf(options.settings) }, pluginRecord);
   return settingsView({
     entries: SCHEMA,
     host: sections.host,
@@ -153,7 +155,8 @@ function viewOver(options: SettingsReadOptions, sections: Sections): View {
     notes: sections.notes,
     choice: { saved: savedChoice(options.choicePath), host: sections.hostWriter },
     queue: { max: options.queueMax, source: maxSource(options.queuePath, sections.hostRaw ?? {}) },
-    plugins: pluginStates(options.settings.plugins, ticketFolder(options.settings, "<ticket>"), pluginRecord),
+    plugins: plugins.states,
+    contract: plugins.rows,
     exists: existsSync,
   });
 }

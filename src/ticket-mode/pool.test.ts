@@ -1109,6 +1109,32 @@ test("a run whose plugin is installed only for another folder is not started, an
   assert.equal(h.calls.some((args) => args.includes("start")), false, "no worker was started");
 });
 
+/** A plugin installed for the user, whose files hold `manifest` when it is given one, and the record that names those files. */
+function installedPlugin(manifest: unknown = null): string {
+  const root = tmpDir("ticket-plugin-contract-");
+  const install = join(root, "cache", "a11ign", "1.0.0");
+  mkdirSync(join(install, ".claude-plugin"), { recursive: true });
+  if (manifest !== null) writeFileSync(join(install, ".claude-plugin", "plugin.json"), JSON.stringify(manifest));
+  const record = join(root, "installed_plugins.json");
+  writeFileSync(record, JSON.stringify({ version: 2, plugins: { "a11ign@m": [{ scope: "user", installPath: install }] } }));
+  return record;
+}
+const contractManifest = (needs: unknown) => ({ name: "a11ign", metadata: { agentOrg: { contract: "1.0", agentOrg: ">=0.0.0 <1.0.0", provides: {}, needs } } });
+
+test("a run whose plugin declares a contract the host's keys do not meet is not started, and the mismatch is named", async () => {
+  const { h, entry } = await startedRun({ plugins: ["a11ign@m"] }, { pluginRecord: installedPlugin(contractManifest({ connectors: ["^mcp__linear__get_"] })) });
+  const { outcome } = entry("NBF-1");
+  assert.deepEqual([outcome?.kind, h.calls.some((args) => args.includes("start"))], ["crashed", false], "refused before any worker started");
+  assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /^a11ign@m needs the connector tools matched by \^mcp__linear__get_, which tickets\.connectors does not allow: add the pattern to tickets\.connectors\.$/);
+});
+
+test("a run whose plugin's contract the host's keys meet starts, and so does one whose plugin declares no contract", async () => {
+  const matched = await startedRun({ plugins: ["a11ign@m"], connectors: ["^mcp__linear__get_"] }, { pluginRecord: installedPlugin(contractManifest({ connectors: ["^mcp__linear__get_"] })) });
+  assert.deepEqual([matched.entry("NBF-1").outcome, matched.h.calls.some((args) => args.includes("start"))], [undefined, true]);
+  const none = await startedRun({ plugins: ["a11ign@m"] }, { pluginRecord: installedPlugin() });
+  assert.deepEqual([none.entry("NBF-1").outcome, none.h.calls.some((args) => args.includes("start"))], [undefined, true]);
+});
+
 /** A tracker that records each ticket it is asked to move as work starts, answering with `note`, or failing with `failure`. */
 function startTracker(note: string | null = null, failure: string | null = null) {
   const moved: string[] = [];

@@ -11,6 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { agentOrgVersionDefault, type ContractRow, contractRows, type HostFacts, onPathDefault, readPluginContract } from "./plugin-contract.ts";
 
 /** Claude Code's record of which plugins are installed, for whom, and where each install's files are. */
 const INSTALLED_PLUGINS = join(homedir(), ".claude", "plugins", "installed_plugins.json");
@@ -23,8 +24,12 @@ export type PluginInstall = Readonly<{ scope: "user" | "project"; projectPath: s
 /**
  * What the record says of one plugin for a session in one folder. `loads` is true when that session gets the plugin, false when it does not, and null
  * when this cannot tell (an entry of a shape this does not know). `why` is the sentence that names the fix when `loads` is false, else null.
+ * `installPath` is the install's files, the one a session loads, when `loads` is true; else null.
  */
-export type PluginState = Readonly<{ plugin: string; installs: readonly PluginInstall[]; loads: boolean | null; why: string | null }>;
+export type PluginState = Readonly<{ plugin: string; installs: readonly PluginInstall[]; loads: boolean | null; why: string | null; installPath: string | null }>;
+
+/** A plugin the record cannot tell about: no installs known, whether it loads unknown, and nothing to say. */
+const unknownStates = (wanted: readonly string[]): PluginState[] => wanted.map((plugin) => ({ plugin, installs: [], loads: null, why: null, installPath: null }));
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -47,23 +52,23 @@ function installsOf(raw: unknown): PluginInstall[] {
   }));
 }
 
-/** Whether a session in `folder` gets `plugin`, and the sentence that names the fix when it does not. PURE, given the plugin's raw entry. */
-function reachability(plugin: string, raw: unknown, where: Readonly<{ folder: string; exists: (path: string) => boolean }>): Pick<PluginState, "loads" | "why"> {
+/** Whether a session in `folder` gets `plugin`, the sentence that names the fix when it does not, and the files it loads from. PURE, given the plugin's raw entry. */
+function reachability(plugin: string, raw: unknown, where: Readonly<{ folder: string; exists: (path: string) => boolean }>): Pick<PluginState, "loads" | "why" | "installPath"> {
   const { folder, exists } = where;
   const userInstall = `install it for every folder with \`claude plugin install ${plugin} --scope user\`.`;
-  if (raw === undefined) return { loads: false, why: `${plugin} is not installed: ${userInstall}` };
-  if (!Array.isArray(raw) || !raw.every(isObject)) return { loads: null, why: null };
+  const notLoaded = (why: string) => ({ loads: false, why, installPath: null });
+  if (raw === undefined) return notLoaded(`${plugin} is not installed: ${userInstall}`);
+  if (!Array.isArray(raw) || !raw.every(isObject)) return { loads: null, why: null, installPath: null };
   const installs = raw as Install[];
-  if (installs.length === 0) return { loads: false, why: `${plugin} is not installed: ${userInstall}` };
+  if (installs.length === 0) return notLoaded(`${plugin} is not installed: ${userInstall}`);
   const forFolder = installs.filter(({ scope, projectPath }) => scope === "user" || projectPath === folder);
   if (forFolder.length === 0) {
     const where = installs.map(({ projectPath }) => projectPath).filter((path): path is string => typeof path === "string" && path !== "");
-    return { loads: false, why: `${plugin} is installed only for ${where.length > 0 ? where.join(", ") : "another folder"}, so a worker in ${folder} runs without it: ${userInstall}` };
+    return notLoaded(`${plugin} is installed only for ${where.length > 0 ? where.join(", ") : "another folder"}, so a worker in ${folder} runs without it: ${userInstall}`);
   }
-  if (!forFolder.some(({ installPath }) => typeof installPath === "string" && exists(installPath))) {
-    return { loads: false, why: `${plugin}'s files are missing from Claude Code's plugin cache: run /plugin and update it.` };
-  }
-  return { loads: true, why: null };
+  const loaded = forFolder.map(({ installPath }) => installPath).find((path): path is string => typeof path === "string" && exists(path));
+  if (loaded === undefined) return notLoaded(`${plugin}'s files are missing from Claude Code's plugin cache: run /plugin and update it.`);
+  return { loads: true, why: null, installPath: loaded };
 }
 
 type RecordOptions = { read?: (path: string) => string; exists?: (path: string) => boolean; record?: string };
@@ -79,17 +84,54 @@ export function pluginStates(wanted: readonly string[], folder: string,
   try {
     text = read(record);
   } catch {
-    return { readable: false, plugins: wanted.map((plugin) => ({ plugin, installs: [], loads: null, why: null })) };
+    return { readable: false, plugins: unknownStates(wanted) };
   }
   const installs = installsIn(text);
-  if (installs === null) return { readable: false, plugins: wanted.map((plugin) => ({ plugin, installs: [], loads: null, why: null })) };
+  if (installs === null) return { readable: false, plugins: unknownStates(wanted) };
   return { readable: true, plugins: wanted.map((plugin) => ({ plugin, installs: installsOf(installs[plugin]), ...reachability(plugin, installs[plugin], { folder, exists }) })) };
 }
+
+/** The sentence that names the fix for each plugin that a session would not get. */
+const unreachableOf = (plugins: readonly PluginState[]): string[] => plugins.flatMap(({ loads, why }) => (loads === false && why !== null ? [why] : []));
 
 /**
  * Why a session in `folder` would not get each plugin in `wanted` that it would not, one sentence each, naming the fix. Empty when every one is
  * reachable, and when the record cannot be read: an unreadable record is no reason to refuse a run.
  */
 export function unreachablePlugins(wanted: readonly string[], folder: string, options: RecordOptions = {}): string[] {
-  return pluginStates(wanted, folder, options).plugins.flatMap(({ loads, why }) => (loads === false && why !== null ? [why] : []));
+  return unreachableOf(pluginStates(wanted, folder, options).plugins);
+}
+
+export type ProblemOptions = RecordOptions & Readonly<{
+  /** The release of agent-org this runs, as `X.Y.Z`, or null when it is no release. Defaults to the checkout's release. */
+  agentOrgVersion?: () => string | null;
+  /** Whether a command is on the path. Defaults to the instance's own path. */
+  onPath?: (command: string) => boolean;
+}>;
+
+/** What the Settings page and a run start both read of the plugins: each one's state, and the refusals and rows that stop a run. */
+export type PluginProblems = Readonly<{
+  states: Readonly<{ readable: boolean; plugins: PluginState[] }>;
+  /** The sentence for each plugin the session would not get, the same as `unreachablePlugins`. */
+  unreachable: string[];
+  /** The contract rows: one per mismatch, of each plugin the session gets with a contract, each row said once. */
+  rows: ContractRow[];
+}>;
+
+/**
+ * The plugins a session in `folder` would get, and what is wrong with them against the host's keys. A contract row is read only for a plugin the
+ * session loads: one it does not load already has its fix sentence. The same answer for the page and for a run start, so they cannot disagree.
+ */
+export function pluginProblems({ wanted, folder, host }: Readonly<{ wanted: readonly string[]; folder: string; host: HostFacts }>, options: ProblemOptions = {}): PluginProblems {
+  const states = pluginStates(wanted, folder, options);
+  const rows = states.plugins.flatMap(({ plugin, loads, installPath }) => (loads === true && installPath !== null ? contractRowsOf({ entry: plugin, installPath }, host, options) : []));
+  return { states, unreachable: unreachableOf(states.plugins), rows: [...new Map(rows.map((row) => [row.why, row])).values()] };
+}
+
+/** The rows of one installed plugin's contract: none for no contract, and one row for a contract that is present and cannot be read. */
+function contractRowsOf({ entry, installPath }: Readonly<{ entry: string; installPath: string }>, host: HostFacts, options: ProblemOptions): ContractRow[] {
+  const read = readPluginContract(installPath, { read: options.read });
+  if (read.kind === "none") return [];
+  if (read.kind === "malformed") return [{ plugin: entry, kind: "contract-malformed", why: `${entry}'s agent-org contract is malformed: ${read.why}. Fix it in the plugin's .claude-plugin/plugin.json.` }];
+  return contractRows({ entry, name: read.name, contract: read.contract, host, agentOrgVersion: options.agentOrgVersion ?? agentOrgVersionDefault, onPath: options.onPath ?? onPathDefault });
 }

@@ -1,7 +1,8 @@
 // no-token: gh -- the install record is handed in as text; nothing is read from the machine
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pluginStates, unreachablePlugins } from "./plugins.ts";
+import { pluginProblems, pluginStates, unreachablePlugins } from "./plugins.ts";
+import type { HostFacts } from "./plugin-contract.ts";
 
 const FOLDER = "/work/.tickets/NBF-1";
 /** The check against a record holding `installs` for nbl-ui, where only the paths in `cached` exist. */
@@ -68,7 +69,7 @@ test("an unreadable record is not readable, and each plugin in it is not checked
   for (const text of ["not json", JSON.stringify({ plugins: "x" })]) {
     const { readable, plugins } = pluginStates(["nbl-ui@applied-ai"], FOLDER, { read: () => text });
     assert.equal(readable, false, text);
-    assert.deepEqual(plugins, [{ plugin: "nbl-ui@applied-ai", installs: [], loads: null, why: null }]);
+    assert.deepEqual(plugins, [{ plugin: "nbl-ui@applied-ai", installs: [], loads: null, why: null, installPath: null }]);
   }
   assert.deepEqual(pluginStates(["nbl-ui@applied-ai"], FOLDER, { read: () => { throw new Error("ENOENT"); } }).readable, false);
 });
@@ -77,4 +78,61 @@ test("an entry of a shape the check does not know is not checked, and no plugin 
   const { readable, plugins } = pluginStates(["nbl-ui@applied-ai"], FOLDER, { read: () => JSON.stringify({ plugins: { "nbl-ui@applied-ai": "x" } }) });
   assert.deepEqual([readable, plugins[0].loads, plugins[0].why], [true, null, null]);
   assert.deepEqual(pluginStates([], FOLDER, { read: () => { throw new Error("never read"); } }), { readable: true, plugins: [] });
+});
+
+const RECORD = "/record.json";
+const CACHE = "/cache/a11ign/1.0.0";
+const MANIFEST = `${CACHE}/.claude-plugin/plugin.json`;
+const CONTRACT_HOST: HostFacts = { plugins: ["a11ign@m"], connectors: [], plan: null, prReview: null, planner: null, writer: null };
+/** A declared contract of `contract`, and nothing else the check looks at: its major is the only thing a test varies. */
+const manifestWith = (contract: string) => JSON.stringify({ name: "a11ign", metadata: { agentOrg: { contract, agentOrg: ">=0.0.0 <1.0.0", provides: {}, needs: {} } } });
+/** The problems for a session in FOLDER, with the record holding `installs` and the files of `files`, and nothing else on the machine read. */
+function problemsFor(installs: unknown[], files: Record<string, string>, host: HostFacts = CONTRACT_HOST) {
+  const record = JSON.stringify({ version: 2, plugins: { "a11ign@m": installs } });
+  return pluginProblems({ wanted: ["a11ign@m"], folder: FOLDER, host }, {
+    record: RECORD,
+    read: (path) => {
+      if (path === RECORD) return record;
+      if (path in files) return files[path];
+      throw new Error(`ENOENT: ${path}`);
+    },
+    exists: (path) => path === CACHE,
+  });
+}
+
+test("a session that loads a plugin reads its contract and has the rows of it; one that does not reads none and says the fix", () => {
+  const loads = problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: manifestWith("2.0") });
+  assert.deepEqual(loads.unreachable, []);
+  assert.deepEqual(loads.rows.map(({ plugin, kind }) => [plugin, kind]), [["a11ign@m", "contract-major"]]);
+
+  const elsewhere = problemsFor([{ scope: "project", projectPath: "/work", installPath: CACHE }], { [MANIFEST]: manifestWith("2.0") });
+  assert.deepEqual(elsewhere.rows, [], "a plugin the session does not load has no contract rows");
+  assert.equal(elsewhere.unreachable.length, 1);
+  assert.match(elsewhere.unreachable[0], /^a11ign@m is installed only for \/work, so a worker in .* runs without it/);
+});
+
+test("the contract is read from the files of the install a session loads, which the state names", () => {
+  const { states } = problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: manifestWith("1.0") });
+  assert.deepEqual(states.plugins.map(({ plugin, loads, installPath }) => [plugin, loads, installPath]), [["a11ign@m", true, CACHE]]);
+  assert.deepEqual(problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: manifestWith("1.0") }).rows, [], "a contract the reader reads, against the host, is no row");
+});
+
+test("a contract that is present and cannot be read is one row, which names the field and the file to fix", () => {
+  const broken = JSON.stringify({ name: "a11ign", metadata: { agentOrg: { contract: "one", agentOrg: ">=0.0.0 <1.0.0" } } });
+  const [row] = problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: broken }).rows;
+  assert.equal(row.kind, "contract-malformed");
+  assert.match(row.why, /^a11ign@m's agent-org contract is malformed: metadata\.agentOrg\.contract must be "<major>\.<minor>".*Fix it in the plugin's \.claude-plugin\/plugin\.json\.$/);
+});
+
+test("a plugin with no contract, or a record that cannot be read, has no rows", () => {
+  assert.deepEqual(problemsFor([{ scope: "user", installPath: CACHE }], {}).rows, [], "no manifest");
+  const unreadable = pluginProblems({ wanted: ["a11ign@m"], folder: FOLDER, host: CONTRACT_HOST }, { record: RECORD, read: () => { throw new Error("ENOENT"); } });
+  assert.deepEqual([unreadable.states.readable, unreadable.unreachable, unreadable.rows], [false, [], []]);
+});
+
+test("a host key that names a plugin tickets.plugins does not enable is a row only once a plugin declares a contract", () => {
+  const host = { ...CONTRACT_HOST, planner: "Run the other:plan skill with {key} into {dir}" };
+  assert.deepEqual(problemsFor([{ scope: "user", installPath: CACHE }], {}, host).rows, [], "no plugin declares a contract: checked as it always was");
+  const declared = problemsFor([{ scope: "user", installPath: CACHE }], { [MANIFEST]: manifestWith("1.0") }, host).rows;
+  assert.deepEqual(declared.map(({ plugin, kind }) => [plugin, kind]), [["other", "plugin-not-enabled"]]);
 });

@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { isPlanning, runChoice, runPlace } from "./pool-state.ts";
 import { repoOf, stackedOn } from "./board-view/settled-by-pulls.ts";
 import { STACK_BASE_FILE } from "./stack-rebase.ts";
-import { unreachablePlugins } from "./plugins.ts";
+import { pluginProblems } from "./plugins.ts";
+import { hostFactsOf } from "./plugin-contract.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { type DenyRule } from "./settings.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -100,13 +101,15 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
 
 /**
  * Make a run's folder ready, with nothing left of an earlier run in it. Throws, before making any of it, when a plugin the worker needs would
- * not load in the folder its agent starts in.
+ * not load in the folder its agent starts in, or a plugin's declared contract does not match the host's keys.
  */
 export function clearRunDir(ctx: PoolContext, folder: string, dir: string): void {
   const { deps, settings } = ctx;
-  // A worker without its plugins runs without the skills and guards its brief counts on, so it is not started at all.
-  const unreachable = unreachablePlugins(settings.plugins, folder, { record: deps.pluginRecord });
-  if (unreachable.length > 0) throw new Error(unreachable.join(" "));
+  // A worker without its plugins runs without the skills and guards its brief counts on, so it is not started at all. Nor is one whose plugin
+  // declares a contract this machine does not meet: the Settings page reads the same rows.
+  const { unreachable, rows } = pluginProblems({ wanted: settings.plugins, folder, host: hostFactsOf(settings) }, { record: deps.pluginRecord });
+  const problems = [...unreachable, ...rows.map(({ why }) => why)];
+  if (problems.length > 0) throw new Error(problems.join(" "));
   mkdirSync(dir, { recursive: true });
   // An earlier run's outcome and stop count would end this run before it began, and an earlier review or publish run's mark would lift a
   // refusal for it. An earlier run's pre-PR review log would say the skill ran on commits this run has not made (A11-86).
