@@ -3951,37 +3951,41 @@ test("preflight: nothing is asked while nothing is waiting to start", async () =
   assert.equal(asked.length, 0);
 });
 
-test("a start waits for a new pane's shell, and goes on once herdr accepts it", async () => {
+const SHELL_WAIT_MS = 500;
+const SHELL_TRIES = 30;
+
+/** A pool starting NBF-1 while herdr refuses its first `refusals` agent starts with `code`, and every wait it makes. */
+async function startRefused(refusals: number, code = "agent_pane_busy") {
   const waits: number[] = [];
-  const { pool, h, entry } = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
-  h.busy.left = 3;
-  await pool.tick();
+  const made = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
+  made.h.busy.left = refusals;
+  made.h.busy.code = code;
+  await made.pool.tick();
+  const starts = made.h.calls.filter((args) => args.includes("start")).length;
+  return { ...made, starts, shellWaits: waits.filter((ms) => ms === SHELL_WAIT_MS) };
+}
+
+test("a start waits for a new pane's shell, and goes on once herdr accepts it", async () => {
+  const { h, entry, starts, shellWaits } = await startRefused(3);
   assert.equal(entry("NBF-1").phase, "running");
-  assert.deepEqual(waits.filter((ms) => ms === 500), [500, 500, 500], "one half-second wait for each refusal");
+  assert.equal(shellWaits.length, 3, "one half-second wait for each refusal");
   assert.equal(h.calls.filter((args) => args.includes("create")).length, 1, "the same workspace is started again, not a new one");
-  assert.equal(h.calls.filter((args) => args.includes("start")).length, 4);
+  assert.equal(starts, 4);
 });
 
 test("a pane whose shell never comes up fails the run after 30 tries, and closes its workspace", async () => {
-  const waits: number[] = [];
-  const { pool, h, entry } = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
-  h.busy.left = 1000;
-  await pool.tick();
+  const { h, entry, starts, shellWaits } = await startRefused(1000);
   const outcome = entry("NBF-1").outcome;
   assert.equal(outcome?.kind, "crashed");
   assert.match(outcome?.kind === "crashed" ? outcome.reason : "", /herdr could not start Claude for NBF-1/);
-  assert.equal(h.calls.filter((args) => args.includes("start")).length, 30);
-  assert.equal(waits.length, 29);
+  assert.equal(starts, SHELL_TRIES);
+  assert.equal(shellWaits.length, SHELL_TRIES - 1);
   assert.ok(h.calls.some((args) => args.includes("close")), "the workspace it opened is closed");
 });
 
 test("any other refusal fails the start at once, without waiting", async () => {
-  const waits: number[] = [];
-  const { pool, h, entry } = setup(1, ["NBF-1"], {}, { wait: async (ms) => { waits.push(ms); } });
-  h.busy.left = 1;
-  h.busy.code = "agent_pane_not_found";
-  await pool.tick();
+  const { entry, starts, shellWaits } = await startRefused(1, "agent_pane_not_found");
   assert.equal(entry("NBF-1").outcome?.kind, "crashed");
-  assert.deepEqual(waits, []);
-  assert.equal(h.calls.filter((args) => args.includes("start")).length, 1);
+  assert.equal(shellWaits.length, 0);
+  assert.equal(starts, 1);
 });
