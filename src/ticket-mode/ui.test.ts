@@ -105,7 +105,7 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   settings?: unknown;
   /** What the instance answers a Settings edit with (`/api/settings/preview`, `save` and `restore`), by its path and body. */
   edits?: (path: string, body: any) => unknown };
-const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [] };
+const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [], contract: [] };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children,
   writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
@@ -1814,8 +1814,39 @@ test("an instance older than this page cannot describe its settings, and says so
   assert.deepEqual(p.posts.at(-1), { path: "/api/max", body: { max: 5 } }, "the controls work without the new route");
 });
 
+/** A plugin that does not meet the host's keys, as the server's check gives its rows: one for a connector the host does not allow, one for a skill it does not provide. */
+const MISMATCHED = { ...DESCRIBED, contract: [
+  { plugin: "a11ign@a11ign-local", kind: "connector-need", why: "a11ign@a11ign-local needs the connector tools matched by ^mcp__linear__get_, which tickets.connectors does not allow: add the pattern to tickets.connectors." },
+  { plugin: "a11ign@a11ign-local", kind: "skill-not-provided", why: "tickets.writer.run names a11ign:write, which a11ign@a11ign-local does not provide as its writer skill: name a skill it provides, or remove the key." },
+] };
+
+test("each contract mismatch is a row in the Plugins section, naming the plugin and the key, under a label that says what the rows are", async () => {
+  const p = await page(new Map(), { config: SETTINGS, settings: MISMATCHED });
+  await openFrom(p, "open-settings");
+  const nodes = p.$("settings-groups").all();
+  const label = nodes.find((n) => n.tag === "p" && n.text().startsWith("Contract mismatches: what a plugin declares"));
+  const list = nodes.find((n) => n.tag === "ul" && n.attrs["aria-labelledby"] !== undefined);
+  assert.ok(label, "a label says in words what the rows are");
+  assert.equal(list?.attrs["aria-labelledby"], (label as Node_ & { id: string }).id, "the rows are a list tied to that label");
+  const [connector, skill] = list!.children.map((row) => row.text());
+  assert.equal(list!.children.length, 2, "one row per mismatch");
+  assert.match(connector, /^Mismatch: a11ign@a11ign-local needs .* tickets\.connectors/, "a connector row names the plugin and the key");
+  assert.match(skill, /^Mismatch: tickets\.writer\.run names a11ign:write, which a11ign@a11ign-local does not provide/, "a skill row names the key and the plugin");
+});
+
+test("a plugin with no contract rows, and an instance that sends none, show no label and no row, and the plugin lines are as before", async () => {
+  for (const settings of [{ ...DESCRIBED, contract: [] }, DESCRIBED]) {
+    const p = await page(new Map(), { config: SETTINGS, settings });
+    await openFrom(p, "open-settings");
+    const nodes = p.$("settings-groups").all();
+    assert.equal(nodes.some((n) => n.attrs["aria-labelledby"] === "contract-label"), false, "no label for the rows");
+    assert.doesNotMatch(p.$("settings-groups").text(), /Mismatch|Contract mismatches/);
+    assert.match(p.$("settings-groups").text(), /nbl-ui@applied-ai: not installed; a worker's session does not load it/, "the plugin line is as before");
+  }
+});
+
 test("the page shows the instance it is showing: an answer that arrives after another instance is chosen is not drawn", async () => {
-  const LOCAL_ANSWER = { ...DESCRIBED, refusals: [], notes: [], plugins: [], words: [], groups: [{ group: "Workers", rows: [{ key: "LOCAL-ONLY", file: "host.json", group: "Workers", value: "1", state: "enabled", source: "host.json", explanation: "x", breaks: "y", depth: 0, secret: false }] }] };
+  const LOCAL_ANSWER = { ...DESCRIBED, contract: [], refusals: [], notes: [], plugins: [], words: [], groups: [{ group: "Workers", rows: [{ key: "LOCAL-ONLY", file: "host.json", group: "Workers", value: "1", state: "enabled", source: "host.json", explanation: "x", breaks: "y", depth: 0, secret: false }] }] };
   const p = await page(new Map(), { config: SETTINGS, settings: DESCRIBED, connections: { connections: [{ name: "local", kind: "local" }, { name: "other", kind: "ssh", ssh: "other" }], refusal: null },
     hold: { "/c/local/api/settings": LOCAL_ANSWER } });
   await openFrom(p, "open-settings");
@@ -1869,7 +1900,7 @@ test("Back to the board returns to the card the board was showing, and focus goe
 
 /** Settings a local instance can edit: a switch and a number, each with the input its schema entry takes. */
 const EDITABLE = {
-  refusals: [], notes: [], plugins: [], words: [],
+  refusals: [], notes: [], plugins: [], words: [], contract: [],
   groups: [
     { group: "Publishing", rows: [{ key: "tickets.drafts", file: "host.json", group: "Publishing", value: "true", state: "default", source: "built-in default", explanation: "Whether a worker opens its pull request as a draft.", breaks: "Any value other than true or false is refused by name.", depth: 0, secret: false, input: "boolean", raw: null }] },
     { group: "Serving and terminal", rows: [{ key: "tickets.port", file: "host.json", group: "Serving and terminal", value: "4747", state: "default", source: "built-in default", explanation: "The loopback port the instance listens on.", breaks: "A port another program holds stops the instance.", depth: 0, secret: false, input: "number", raw: "4747" }] },
