@@ -5,7 +5,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GROUPS, SCHEMA } from "./config-schema.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { settingsView, type Row, type Section, type View, type ViewInput } from "./settings-view.ts";
+import { PAGE_ORDER, settingsView, type Row, type Section, type View, type ViewInput } from "./settings-view.ts";
 import type { PluginState } from "./plugins.ts";
 
 const read = (file: string, raw: Record<string, unknown>): Section => ({ file, raw, refusal: null });
@@ -38,10 +38,11 @@ const row = (view: View, key: string): Row => {
   return found;
 };
 
-test("every group the view draws is one the page names, in the page's order", () => {
+test("every group the view draws is one the page names, in the page's order, and the page's order names each group once", () => {
+  assert.deepEqual([...PAGE_ORDER].sort(), [...GROUPS].sort(), "the page's order names every group, once");
   const view = viewOf({ host: { tickets: { reviewer: "atomic" } } });
   const order = view.groups.map((group) => group.group);
-  assert.deepEqual(order, GROUPS.filter((group) => order.includes(group)));
+  assert.deepEqual(order, PAGE_ORDER);
   for (const group of view.groups) for (const candidate of group.rows) assert.equal(candidate.group, group.group);
 });
 
@@ -176,4 +177,78 @@ test("a plugin installed only for one folder is not said to be missing from ever
   const plugins: PluginState[] = [{ plugin: "p@m", installs: [{ scope: "project", projectPath: "/work/NBF-1" }], loads: false, why: "p@m is installed only for /work/NBF-1, so a worker in <ticket> runs without it", installPath: null }];
   const [line] = viewOf({ plugins: { readable: true, plugins } }).plugins;
   assert.equal(line.loads, "only a worker in /work/NBF-1 loads it; to load it for every worker, install it for every folder with `claude plugin install p@m --scope user`.");
+});
+
+test("the rows say which keys the page changes in place, and for a key it does not, why not", () => {
+  const view = viewOf({ host: { tickets: { providers: { tracker: { provider: "linear" } } } } });
+  const provider = row(view, "tickets.providers.tracker.provider");
+  assert.deepEqual([provider.editable, provider.input], [false, null]);
+  assert.match(provider.why ?? "", /agent-org onboard/, "a provider is changed by onboard, which says why");
+  const path = row(view, "tickets.providers.tracker.key.path");
+  assert.deepEqual([path.editable, path.why], [true, null], "an editable key has no reason not to be");
+  assert.match(row(view, "tickets.providers.tracker.key").why ?? "", /tickets\.providers\.tracker\.key\.path/, "a container says which key changes it");
+});
+
+test("the choices and the number of workers, which the controls below the sections change, are read-only rows that say so", () => {
+  const view = viewOf({ host: { tickets: { max: 4 } } });
+  for (const key of ["model", "effort", "tickets.max"]) {
+    const found = row(view, key);
+    assert.deepEqual([found.editable, found.input], [false, null], `${key} is not changed in place`);
+    assert.match(found.why ?? "", /controls below the sections/, `${key} says the controls below change it`);
+  }
+});
+
+test("an old key that is set shows where its new key is, in place of its value, with the names its segments carry", () => {
+  const view = viewOf({ host: { tickets: { linearKey: { keychain: "agent-org-linear" } }, github: { identity: { scheduler: { mode: "github-apps" } } } } });
+  assert.equal(row(view, "tickets.linearKey").alias, "Alias of tickets.providers.tracker.key: run agent-org doctor --fix");
+  assert.equal(row(view, "github.identity.scheduler.mode").alias, "Alias of tickets.providers.codeHost.identity.scheduler.mode: run agent-org doctor --fix");
+  assert.equal(row(view, "github.identity.scheduler.mode").editable, false, "an alias is shown, not changed");
+});
+
+test("an old key that is not set shows no alias, and its value is as it was; an old key that is set is in use", () => {
+  const view = viewOf({ host: { tickets: {} } });
+  assert.deepEqual([row(view, "tickets.linearKey").alias ?? "no alias", row(view, "tickets.linearKey").state], ["no alias", "default"], "its built-in default still says so");
+  assert.equal(row(view, "tickets.linearKey").inUse, false, "an old key nothing sets is not in use");
+  assert.equal(row(viewOf({ host: { tickets: { linearKey: { keychain: "x" } } } }), "tickets.linearKey").inUse, true, "an old key that is set is in use");
+});
+
+test("a provider whose block is missing says so, and says it is set by aliases while an old key of its block is set", () => {
+  const missing = row(viewOf({ host: { tickets: {} } }), "tickets.providers.tracker.provider");
+  assert.deepEqual([missing.value, missing.state], ["linear", "default"]);
+  const byAlias = row(viewOf({ host: { tickets: { linearKey: { keychain: "agent-org-linear" } } } }), "tickets.providers.tracker.provider");
+  assert.deepEqual([byAlias.value, byAlias.state, byAlias.source], ["set by aliases", "enabled", "host.json"], "in force from the file, through its old key");
+  const held = row(viewOf({ host: { tickets: { providers: { tracker: { provider: "linear" } }, linearKey: { keychain: "agent-org-linear" } } } }), "tickets.providers.tracker.provider");
+  assert.equal(held.value, "linear", "a block the file holds keeps its own provider");
+});
+
+test("a role's App fields matter only while the role uses a GitHub App, and are not in use until they are set; the role and its mode always are", () => {
+  const host = { tickets: { providers: { codeHost: { identity: { scheduler: { mode: "user-accounts" }, reviewer: { mode: "github-apps" } } } } } };
+  const view = viewOf({ host });
+  const app = "tickets.providers.codeHost.identity";
+  assert.equal(row(view, `${app}.scheduler.appId`).inUse, false, "a user-accounts role's App id is not in use");
+  assert.equal(row(view, `${app}.reviewer.appId`).inUse, true, "a github-apps role's App id is in use");
+  assert.equal(row(view, `${app}.scheduler.mode`).inUse, true);
+  assert.equal(row(view, `${app}.scheduler`).inUse, true);
+  const stray = viewOf({ host: { tickets: { providers: { codeHost: { identity: { scheduler: { mode: "user-accounts", appId: 7 } } } } } } });
+  assert.equal(row(stray, `${app}.scheduler.appId`).inUse, true, "an App id that is set is in use, so a refusal for it is seen");
+});
+
+test("a role is one row that shows its mode, and its own keys sit inside it; the routing gh's keys sit inside gh", () => {
+  const view = viewOf({ host: { tickets: { providers: { codeHost: { identity: { scheduler: { mode: "github-apps" } }, gh: { workers: "/w" } } } } } });
+  const role = row(view, "tickets.providers.codeHost.identity.scheduler");
+  assert.deepEqual([role.value, role.nest], ["github-apps", null], "the role shows its mode, and sits at the top");
+  assert.equal(row(view, "tickets.providers.codeHost.identity.scheduler.mode").nest, "tickets.providers.codeHost.identity.scheduler");
+  assert.equal(row(view, "tickets.providers.codeHost.gh.workers").nest, "tickets.providers.codeHost.gh");
+  assert.equal(row(view, "tickets.providers.codeHost.gh").nest, null);
+});
+
+test("the machine's plumbing is in Machine alone, and each provider's settings are in that provider's own section", () => {
+  const view = viewOf({});
+  const groupOf = (key: string) => view.groups.find((group) => group.rows.some((candidate) => candidate.key === key))?.group;
+  for (const key of ["schema", "home", "binDir", "projects", "tool"]) assert.equal(groupOf(key), "Machine", `${key} is machine plumbing`);
+  assert.equal(groupOf("tickets.providers.tracker.provider"), "Tracker");
+  assert.equal(groupOf("tickets.providers.exposure.port"), "Exposure");
+  assert.equal(groupOf("tickets.providers.codeHost.gh.workers"), "Code host");
+  assert.equal(groupOf("tickets.providers.publish.run"), "Publisher");
+  assert.equal(groupOf("tickets.providers.reviewer.provider"), "Reviewer");
 });

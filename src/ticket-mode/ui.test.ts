@@ -8,6 +8,7 @@ import * as view_1 from "./board-view/pull-status-and-notes.ts";
 import * as view_2 from "./board-view/view-types-and-filters.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
+import * as settingsSearch from "./settings-search.ts";
 import { testEach } from "../lib/test-each.ts";
 
 /**
@@ -16,9 +17,9 @@ import { testEach } from "../lib/test-each.ts";
  * and its top-level `await` runs inside an async wrapper.
  */
 const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
-const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters|assignee-filter)\.js";$/gm;
+const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters|assignee-filter|settings-search)\.js";$/gm;
 const imported = [...MODULE.matchAll(IMPORTS)].map((m) => m[1]).sort();
-if (imported.join() !== "assignee-filter,board-view,label-filters") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js, /label-filters.js and /assignee-filter.js as this test expects`);
+if (imported.join() !== "assignee-filter,board-view,label-filters,settings-search") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js, /label-filters.js, /assignee-filter.js and /settings-search.js as this test expects`);
 const SCRIPT = `(async () => {\n${MODULE.replace(IMPORTS, "")}\n})();`;
 
 class Node_ {
@@ -165,7 +166,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, ...settingsSearch, document, fetch,
     window: { localStorage, open: browser.open, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
@@ -1884,7 +1885,7 @@ test("the Settings page has its landmarks and headings, every control has its la
   assert.match(section, /<h2 id="settings-title" tabindex="-1">Settings<\/h2>/, "its heading names it");
   const controls = section.split("\n").filter((line) => /<(select|input)\b/.test(line));
   assert.ok(controls.length >= 5, "the controls are on the page");
-  for (const line of controls) assert.match(line, /<label>[^<]*<(select|input)\b/, `a control is labelled by its wrapping label: ${line.trim()}`);
+  for (const line of controls) assert.match(line, /<label(?: class="[^"]*")?>[^<]*<(select|input)\b/, `a control is labelled by its wrapping label: ${line.trim()}`);
   assert.doesNotMatch(html, /onclick=|role="button"/, "the page uses native controls only");
   assert.match(html, /aria-labelledby", id\)|setAttribute\("aria-labelledby"/, "each group names its heading");
 });
@@ -1918,12 +1919,219 @@ test("Back to the board returns to the card the board was showing, and focus goe
   assert.equal(p.$("change-max").attrs.focused, "true", "focus is back on Change, which opened the page");
 });
 
+/** A row as the page's view gives it: its key, group and words, and whether the page changes it in place (`editable`, with its `input`, else `why`). */
+const SHOWN = (row: { key: string; group: string; explanation: string } & Record<string, unknown>) => ({ file: "host.json", value: "x", state: "enabled", source: "host.json",
+  breaks: `what breaks ${row.key}`, depth: 0, secret: false, input: null, raw: null, editable: false, why: null, alias: null, inUse: true, nest: null, ...row });
+/** Settings in four sections, as a provider's keys sit among the machine's: Tracker and Exposure hold a provider each, Workers holds a key that is not one, and Machine holds the plumbing. */
+const GROUPED = {
+  refusals: [], notes: [], plugins: [], words: [], contract: [],
+  groups: [
+    { group: "Tracker", rows: [
+      SHOWN({ key: "tickets.providers.tracker.provider", group: "Tracker", explanation: "The tracker's provider.", value: "linear", state: "default", source: "built-in default",
+        why: "choosing or switching a provider goes through agent-org onboard" }),
+      SHOWN({ key: "tickets.providers.tracker.key.path", group: "Tracker", explanation: "The file the tracker's key is in.", value: "/k/linear.key (the file is missing)", secret: true, input: "text", raw: "/k/linear.key", editable: true, why: null }),
+    ] },
+    { group: "Exposure", rows: [
+      SHOWN({ key: "tickets.providers.exposure.port", group: "Exposure", explanation: "The loopback port the instance listens on.", value: "4747", state: "default", source: "built-in default", input: "number", raw: "4747", editable: true, why: null }),
+      SHOWN({ key: "tickets.port", group: "Exposure", explanation: "The loopback port the instance listens on.", value: "4747", state: "enabled", source: "host.json", alias: "Alias of tickets.providers.exposure.port: run agent-org doctor --fix",
+        why: "an alias; move it with agent-org doctor --fix, to tickets.providers.exposure.port" }),
+    ] },
+    { group: "Workers", rows: [SHOWN({ key: "tickets.stallMinutes", group: "Workers", explanation: "How long a run may be silent before it is stalled.", value: "20" })] },
+    { group: "Machine", rows: [SHOWN({ key: "binDir", group: "Machine", explanation: "The folder the routing gh is installed in.", value: "/home/a/.local/bin" })] },
+  ],
+};
+
+/** Each section on the Settings page: its name, whether it is open, and its node. */
+const sectionsOf = (p: Page) => p.$("settings-groups").all().filter((n) => n.tag === "details" && n.className === "setting-group" && !n.hidden)
+  .map((section) => ({ name: section.all().find((n) => n.tag === "h3")!.text(), open: section.open, node: section }));
+/** The section named `name`, as the page draws it now. */
+const sectionNamed = (p: Page, name: string) => sectionsOf(p).find((section) => section.name === name)!;
+/** A person opens a section by its summary, which the browser reports as a toggle. */
+const openSection = (p: Page, name: string) => toggle(sectionNamed(p, name), true);
+/** A person opens or closes a section, which the browser reports as a toggle. */
+const toggle = (section: { node: Node_ }, open: boolean) => { section.node.open = open; section.node.fire("toggle"); };
+/** Type `query` into the Settings search, and let the page show what it leaves. */
+async function search(p: Page, query: string) {
+  p.$("settings-search").value = query;
+  p.$("settings-search").fire("input");
+  await settleAll();
+}
+/** Whether a node is drawn: it is not hidden, and no ancestor is hidden or a closed disclosure. */
+const drawn = (node: Node_): boolean => {
+  if (node.hidden) return false;
+  if (node.parent === null) return true;
+  return (node.parent.tag !== "details" || node.parent.open) && drawn(node.parent);
+};
+/** A section's count, which the summary says after its name and provider: the words that count the settings, not the provider. */
+const countWords = (section: Node_) => section.all().filter((n) => n.tag === "span").map((n) => n.text()).find((text) => /setting|set,/.test(text))!;
+/** The keys of the rows in a section that are drawn, in the order the page draws them. */
+const rowsIn = (section: Node_) => section.all().filter((n) => n.tag === "dl" && drawn(n)).map((n) => n.all().find((c) => c.tag === "code")!.text());
+
+/** The text a person sees: a closed Details shows its summary and nothing under it, and a hidden node shows nothing. */
+const visibleText = (node: Node_): string => node.hidden ? "" : node.tag === "details" && !node.open
+  ? node.children.filter((child) => child.tag === "summary").map((child) => child.text()).join("")
+  : node.textContent + node.children.map(visibleText).join("");
+
+test("Settings: every section starts closed to its summary line, in the page's order, and the summary names the provider and counts what is set", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Tracker", false], ["Exposure", false], ["Workers", false], ["Machine", false]]);
+  const summary = sectionNamed(p, "Tracker").node.all().find((n) => n.tag === "summary")!.all().filter((n) => n.tag === "span").map((n) => n.text());
+  assert.deepEqual(summary, ["provider linear", "2 settings"], "the summary names the provider and counts the settings drawn");
+});
+
+test("Settings: a section a person opens or closes is remembered in this browser, and a new page in the same browser shows it as it was left", async () => {
+  const storage = new Map<string, string>();
+  const p = await page(storage, { config: SETTINGS, settings: GROUPED });
+  await openFrom(p, "open-settings");
+  openSection(p, "Machine");
+  openSection(p, "Exposure");
+  toggle(sectionNamed(p, "Exposure"), false);
+  p.location.hash = "#/settings";
+  await p.hashChange();
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Tracker", false], ["Exposure", false], ["Workers", false], ["Machine", true]], "a redraw keeps what the person left");
+  const again = await page(storage, { config: SETTINGS, settings: GROUPED });
+  await openFrom(again, "open-settings");
+  assert.deepEqual(sectionsOf(again).map((section) => [section.name, section.open]), [["Tracker", false], ["Exposure", false], ["Workers", false], ["Machine", true]], "a new page in this browser starts as it was left");
+});
+
+test("Settings: a search shows only the sections with a match, opened, with the match's count; clearing it restores each section as the person left it", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  openSection(p, "Tracker");
+  await search(p, "port");
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Exposure", true]], "sections with no match are not drawn, and the one with a match is open");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Exposure").node), ["tickets.providers.exposure.port", "tickets.port"], "every match is shown, and nothing else");
+  assert.equal(p.$("settings-search-status").textContent, "2 settings match");
+  await search(p, "binDir");
+  assert.equal(p.$("settings-search-status").textContent, "1 setting matches");
+  assert.deepEqual(sectionsOf(p).map((section) => section.name), ["Machine"], "Machine is reachable by search even though it starts closed");
+  assert.equal(sectionNamed(p, "Machine").open, true, "a section with a match is opened");
+  await search(p, "zzz");
+  assert.equal(p.$("settings-search-status").textContent, "No setting matches");
+  assert.deepEqual(sectionsOf(p), []);
+  await search(p, "");
+  assert.equal(p.$("settings-search-status").textContent, "");
+  assert.deepEqual(sectionsOf(p).map((section) => [section.name, section.open]), [["Tracker", true], ["Exposure", false], ["Workers", false], ["Machine", false]],
+    "clearing restores each section to what the person left: Tracker, which they opened, is open");
+});
+
+test("Settings: a search does not change what the person left open, so a redraw after it is as the person left it", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  await search(p, "port");
+  await search(p, "");
+  p.location.hash = "#/settings";
+  await p.hashChange();
+  assert.equal(sectionNamed(p, "Machine").open, false, "Machine is closed as it was before the search");
+});
+
+test("Settings: a row says Editable or Read-only, what the key does and what breaks are behind its Details, and a read-only key's reason is there too", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  const port = rowOf(p, "tickets.providers.exposure.port");
+  assert.match(port.text(), /Value: 4747\. State: default\. Source: built-in default\. Editable\./);
+  const alias = rowOf(p, "tickets.port");
+  assert.match(alias.text(), /Alias of tickets\.providers\.exposure\.port: run agent-org doctor --fix\. State: enabled\. Source: host\.json\. Read-only\./, "an alias says where its key is in place of its value");
+  assert.doesNotMatch(alias.text(), /Value: 4747/, "its value text is replaced");
+  const provider = rowOf(p, "tickets.providers.tracker.provider");
+  assert.match(provider.text(), /Change the provider with agent-org onboard/, "a provider's row says where it is changed");
+  assert.equal(visibleText(p.$("settings-groups")).includes("The loopback port the instance listens on."), false, "the explanation is not visible until Details opens");
+  assert.equal(visibleText(p.$("settings-groups")).includes("If it is wrong"), false, "nor is what breaks");
+  const details = alias.all().find((n) => n.tag === "details")!;
+  details.open = true;
+  assert.match(visibleText(alias), /The loopback port the instance listens on\.[\s\S]*If it is wrong: what breaks tickets\.port[\s\S]*Read-only: an alias; move it with agent-org doctor --fix, to tickets\.providers\.exposure\.port\./,
+    "opened, the explanation, what breaks and the reason read-only are all there");
+});
+
+test("Settings: a search leaves an open Edit form and the value typed into it as they were, and a Details that is open stays open", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  const row = rowOf(p, "tickets.providers.exposure.port");
+  buttonIn(row, "Edit").fire("click");
+  row.all().find((n) => n.tag === "input")!.value = "5000";
+  row.all().find((n) => n.tag === "details")!.open = true;
+  await search(p, "port");
+  await search(p, "");
+  const again = rowOf(p, "tickets.providers.exposure.port");
+  assert.equal(again, row, "the row is the one that was drawn, not a new one");
+  assert.equal(again.all().find((n) => n.tag === "input")!.value, "5000", "the value typed is still there");
+  assert.equal(again.all().find((n) => n.tag === "form" || n.className === "edit-form")!.hidden, false, "the Edit form is still open");
+  assert.equal(again.all().find((n) => n.tag === "details")!.open, true, "the Details is still open");
+});
+
+test("Settings: the plugins' checks stay on the page during a search, and a search that leaves no setting still shows them", async () => {
+  const withChecks = { ...GROUPED, groups: [...GROUPED.groups, { group: "Conventions plugin", rows: [] }],
+    plugins: [{ plugin: "a11ign@a11ign-local", installed: "not installed", loads: "a worker's session does not load it" }],
+    contract: [{ plugin: "a11ign@a11ign-local", kind: "connector-need", why: "needs the connector tools matched by ^mcp__linear__get_, which tickets.connectors does not allow" }] };
+  const p = await settingsPage({ config: SETTINGS, settings: withChecks });
+  await search(p, "zzz");
+  assert.deepEqual(sectionsOf(p).map((section) => section.name), ["Conventions plugin"], "no setting matches, and the plugins' section is still there");
+  assert.match(sectionNamed(p, "Conventions plugin").node.text(), /Mismatch: needs the connector tools/, "its check is said");
+  assert.match(sectionNamed(p, "Conventions plugin").node.text(), /a11ign@a11ign-local: not installed/, "its plugin line is said");
+});
+
+test("Settings: a key that is not in use is hidden, and a search finds it and shows it", async () => {
+  const withApp = { ...GROUPED, groups: [...GROUPED.groups.slice(0, 2),
+    { group: "Code host", rows: [SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.mode", group: "Code host", explanation: "Whether the role acts as the person's account.", value: "user-accounts", state: "enabled", source: "host.json" }),
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.appId", group: "Code host", explanation: "The App's id. Required with github-apps.", inUse: false })] }] };
+  const p = await settingsPage({ config: SETTINGS, settings: withApp });
+  openSection(p, "Code host");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler.mode"], "the App's id is not drawn");
+  assert.equal(countWords(sectionNamed(p, "Code host").node), "1 setting", "the count is what is drawn");
+  await search(p, "app");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler.appId"], "a search finds it");
+  assert.equal(p.$("settings-search-status").textContent, "1 setting matches");
+});
+
+test("Settings: a role's settings sit in a disclosure under the role, closed until a person opens it or a search finds one of them", async () => {
+  const roleFixture = { ...GROUPED, groups: [...GROUPED.groups.slice(0, 2),
+    { group: "Code host", rows: [
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler", group: "Code host", explanation: "One role's identity.", value: "user-accounts", state: "enabled", source: "host.json" }),
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.mode", group: "Code host", explanation: "Whether the role acts as the person's account.", value: "user-accounts", state: "enabled", source: "host.json", nest: "tickets.providers.codeHost.identity.scheduler" }),
+      SHOWN({ key: "tickets.providers.codeHost.identity.scheduler.appId", group: "Code host", explanation: "The App's id. Required with github-apps.", inUse: false, nest: "tickets.providers.codeHost.identity.scheduler" }),
+    ] }] };
+  const p = await settingsPage({ config: SETTINGS, settings: roleFixture });
+  openSection(p, "Code host");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler"], "the role is drawn; its settings are not, while the disclosure is closed");
+  const nested = sectionNamed(p, "Code host").node.all().find((n) => n.tag === "details" && n.className === "setting-nested")!;
+  assert.equal(nested.all().find((n) => n.tag === "summary")!.text(), "1 setting", "the disclosure says how many settings it holds that are drawn");
+  await search(p, "acts as");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler", "tickets.providers.codeHost.identity.scheduler.mode"], "a search opens the disclosure and shows the match");
+  await search(p, "");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Code host").node), ["tickets.providers.codeHost.identity.scheduler"], "clearing the search closes it again, as the person left it");
+});
+
+/** The Show settings at their defaults checkbox, set and changed as a person does. */
+async function showDefaults(p: Page, on: boolean) {
+  p.$("settings-all").checked = on;
+  p.$("settings-all").fire("change");
+  await settleAll();
+}
+
+test("Settings: a setting at its default is not drawn until the defaults are asked for, and a search or the checkbox draws it", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  openSection(p, "Exposure");
+  openSection(p, "Tracker");
+  // GROUPED's Exposure port is at its default, and Tracker's provider line is always drawn.
+  assert.deepEqual(rowsIn(sectionNamed(p, "Exposure").node), ["tickets.port"], "the set alias is drawn, and the default port is not");
+  assert.equal(countWords(sectionNamed(p, "Exposure").node), "1 set, 1 at defaults", "the summary says what is set and what is at its defaults");
+  assert.deepEqual(rowsIn(sectionNamed(p, "Tracker").node), ["tickets.providers.tracker.provider", "tickets.providers.tracker.key.path"], "a provider's line and a set setting are drawn");
+  await showDefaults(p, true);
+  assert.ok(rowsIn(sectionNamed(p, "Exposure").node).includes("tickets.providers.exposure.port"), "the checkbox draws the defaults");
+  assert.equal(countWords(sectionNamed(p, "Exposure").node), "2 settings", "with the checkbox on, the count is every setting");
+  await showDefaults(p, false);
+  await search(p, "port");
+  assert.ok(rowsIn(sectionNamed(p, "Exposure").node).includes("tickets.providers.exposure.port"), "a search finds a default");
+});
+
+test("Settings: an editable row keeps its Edit control, and a read-only row has none", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: GROUPED });
+  assert.ok(buttonIn(rowOf(p, "tickets.providers.exposure.port"), "Edit"), "an editable row is edited in place");
+  assert.equal(rowOf(p, "tickets.port").all().some((n) => n.tag === "button"), false, "an alias is shown, not changed");
+});
+
 /** Settings a local instance can edit: a switch and a number, each with the input its schema entry takes. */
 const EDITABLE = {
   refusals: [], notes: [], plugins: [], words: [], contract: [],
   groups: [
-    { group: "Publishing", rows: [{ key: "tickets.drafts", file: "host.json", group: "Publishing", value: "true", state: "default", source: "built-in default", explanation: "Whether a worker opens its pull request as a draft.", breaks: "Any value other than true or false is refused by name.", depth: 0, secret: false, input: "boolean", raw: null }] },
-    { group: "Serving and terminal", rows: [{ key: "tickets.port", file: "host.json", group: "Serving and terminal", value: "4747", state: "default", source: "built-in default", explanation: "The loopback port the instance listens on.", breaks: "A port another program holds stops the instance.", depth: 0, secret: false, input: "number", raw: "4747" }] },
+    { group: "Publishing", rows: [{ key: "tickets.drafts", file: "host.json", group: "Publishing", value: "true", state: "default", source: "built-in default", explanation: "Whether a worker opens its pull request as a draft.", breaks: "Any value other than true or false is refused by name.", depth: 0, secret: false, input: "boolean", raw: null, editable: true, why: null, alias: null }] },
+    { group: "Serving and terminal", rows: [{ key: "tickets.port", file: "host.json", group: "Serving and terminal", value: "4747", state: "default", source: "built-in default", explanation: "The loopback port the instance listens on.", breaks: "A port another program holds stops the instance.", depth: 0, secret: false, input: "number", raw: "4747", editable: true, why: null, alias: null }] },
   ],
 };
 /** The reader's answer to a preview of `tickets.drafts` set to false: one change, dangerous, in force after the board restarts. */
@@ -2080,4 +2288,13 @@ test("every action on a run is an icon with a tooltip and its words kept for a s
   assert.ok(p.posts.some(({ path }) => path.endsWith("/api/queue/D-1/talk")), "Talk to it goes to the board");
   const link = runRows(p).find((r) => r.text().includes("D-1"))!.all().find((n) => n.tag === "a" && n.className === "pr-link") as (Node_ & { title?: string }) | undefined;
   assert.match(link?.title ?? "", /on GitHub$/, "a pull request is an icon link to GitHub");
+});
+
+test("Settings: the Changes panel is drawn only while it has something in it, and the restore buttons sit with the controls below the sections", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: EDITABLE, edits: EDITS });
+  assert.equal(p.$("edit-panel").hidden, true, "with nothing staged, saved or refused, the panel is not drawn");
+  assert.equal(p.$("restores").children.length, 1, "the restore buttons are still on the page");
+  await stage(p, "tickets.drafts", "false");
+  assert.equal(p.$("edit-panel").hidden, false, "a staged change draws the panel, where it is reviewed");
+  assert.equal(p.$("restores").children.length, 1, "and the restore buttons stay below the sections");
 });

@@ -47,6 +47,8 @@ const SCAFFOLD_DIRS_FILE = join(HERE, "..", "scaffold-dirs.ts");
 const LABEL_FILTERS = join(HERE, "label-filters.ts");
 /** The Pick view's Assignee filter, sent the same way: it imports nothing, so the browser runs it as it is. */
 const ASSIGNEE_FILTER = join(HERE, "assignee-filter.ts");
+/** The Settings page's search, sent the same way: it imports nothing, so the browser runs it as it is (A11-146). */
+const SETTINGS_SEARCH = join(HERE, "settings-search.ts");
 const COOKIE = "ticket_session";
 /** The most a pairing request may send. It is read before the request is known to be anyone's, so it is kept small. */
 const PAIR_BODY_BYTES = 1024;
@@ -182,9 +184,15 @@ export function assigneeFilterScript(read: (path: string) => string = (path) => 
   return stripTypeScriptTypes(read(ASSIGNEE_FILTER));
 }
 
+/** `settings-search.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
+export function settingsSearchScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
+  return stripTypeScriptTypes(read(SETTINGS_SEARCH));
+}
+
 /** The page's modules, by the path it imports each from. */
 const SCRIPTS: Readonly<Record<string, () => string>> = {
   "/board-view.js": () => boardViewScript(), "/label-filters.js": () => labelFiltersScript(), "/assignee-filter.js": () => assigneeFilterScript(),
+  "/settings-search.js": () => settingsSearchScript(),
 };
 
 /**
