@@ -6,7 +6,6 @@
 // NO BEHAVIOUR CHANGES, AND IT IS PROVED AT RUN TIME. `planHostFix` reads the old and the new host with the settings reader and with the strict host
 // reader, and REFUSES to write unless both read the same, with `connectors` compared as a set, since a move may list them in another order. A
 // refusal names the settings that differ. The file is backed up beside itself before the new one replaces it.
-import { parseHostConfig } from "../host-config.ts";
 import { resolveProviders, type AliasRead, type ProviderBlock } from "../ticket-mode/providers.ts";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
 import { writeAtomic } from "./write-atomic.ts";
@@ -110,9 +109,11 @@ function settingsOf(text: string): string {
 
 /**
  * The host file as the strict host reader reads it: the file the units and the `gh` wrapper are rendered from. A file that reader refuses is compared by
- * its refusal, so two files it refuses the same way read the same.
+ * its refusal, so two files it refuses the same way read the same. The reader is loaded here and not at the top of this module: loading it loads the
+ * project declaration, which a ticket-only machine has none of, so `doctor` must not load it on that host.
  */
-function hostConfigOf(text: string): string {
+async function hostConfigOf(text: string): Promise<string> {
+  const { parseHostConfig } = await import("../host-config.ts");
   try {
     return canonicalJson(parseHostConfig(text));
   } catch (err) {
@@ -120,18 +121,22 @@ function hostConfigOf(text: string): string {
   }
 }
 
+/** Whether a host file names a `primary` project, which the strict reader requires and a ticket-only host does not have (A11-144). */
+const hasPrimary = (text: string): boolean => Object.hasOwn(JSON.parse(text) as Host, "primary");
+
 /** A JSON text with each object's keys sorted, so a comparison does not depend on the order a file was written in. */
 function canonicalJson(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) => (isObject(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item));
 }
 
 /** The settings two host files read that differ, by name, or none. */
-function differences(before: string, after: string): string[] {
+async function differences(before: string, after: string): Promise<string[]> {
   // A file the ticket settings refuse has no settings to compare, so two refusals would agree by their text and prove nothing.
   if (settingsOf(before).startsWith("refused:")) return ["the host file as it is, which the ticket settings refuse, so there are no settings to keep"];
   const names = [];
   if (settingsOf(before) !== settingsOf(after)) names.push("the ticket settings");
-  if (hostConfigOf(before) !== hostConfigOf(after)) names.push("the host file's own settings (the gh wrapper's and the units')");
+  // A ticket-only host has no project for the strict reader to read, so only its ticket settings are compared there.
+  if (hasPrimary(before) && (await hostConfigOf(before)) !== (await hostConfigOf(after))) names.push("the host file's own settings (the gh wrapper's and the units')");
   return names;
 }
 
@@ -145,12 +150,12 @@ export type HostFix =
  * The move for a host file's text, or why there is none. A host with no alias to move is `nothing`, so a second run changes nothing. A move that
  * would read differently is `refused`, naming what differs, and nothing is written.
  */
-export function planHostFix(text: string): HostFix {
+export async function planHostFix(text: string): Promise<HostFix> {
   const host = JSON.parse(text) as Host;
   const { host: next, moves } = migrateHost(host);
   if (moves.length === 0) return { kind: "nothing", reason: "no key is read as an alias: the host file already names its providers" };
   const migrated = `${JSON.stringify(next, null, 2)}\n`;
-  const differing = differences(text, migrated);
+  const differing = await differences(text, migrated);
   if (differing.length > 0) return { kind: "refused", reason: `the migrated host file would read differently, in ${differing.join(" and ")}, so nothing is written` };
   return { kind: "move", text: migrated, moves, lines: lineChanges(text, migrated) };
 }

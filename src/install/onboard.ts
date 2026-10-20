@@ -169,7 +169,7 @@ function readHostText(path: string, deps: OnboardDeps): string | null {
  * The host file as an object, moved to the one shape first: an old key is moved into its provider block with a backup beside the file, exactly as
  * `doctor --fix` moves it. A file that would read differently after the move is refused, and nothing is written.
  */
-function currentHost(path: string, deps: OnboardDeps): Record<string, unknown> {
+async function currentHost(path: string, deps: OnboardDeps): Promise<Record<string, unknown>> {
   const text = readHostText(path, deps);
   if (text === null) return {};
   let parsed: unknown;
@@ -179,7 +179,7 @@ function currentHost(path: string, deps: OnboardDeps): Record<string, unknown> {
     throw new OnboardRefusal(`${path} is not valid JSON, so onboard will not write over it. Fix or move it, then run onboard again.`);
   }
   if (!isObject(parsed)) throw new OnboardRefusal(`${path} does not hold a JSON object`);
-  const fix = planHostFix(text);
+  const fix = await planHostFix(text);
   if (fix.kind === "refused") throw new OnboardRefusal(`${path}: ${fix.reason}`);
   if (fix.kind === "nothing") return parsed;
   const backup = writeHostFix(path, text, fix.text, 0o600, deps.now(), (file, body) => deps.writeFile(file, String(body)));
@@ -520,7 +520,7 @@ async function finishOnboard({ next, options, source, terminal }: Readonly<{ nex
 export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promise<string> {
   const hostFile = hostFilePath(deps.env, deps.home, (path) => readHostText(path, deps));
   const profile = options.profile === undefined ? null : await profileFor(options, deps);
-  const host = currentHost(hostFile, deps);
+  const host = await currentHost(hostFile, deps);
   const tickets = ticketsOf(host);
   const clones = await clonesOf(options, profile, host, deps);
 

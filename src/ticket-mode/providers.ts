@@ -44,7 +44,7 @@ export const DEFAULT_PROVIDER: Readonly<Record<ProviderBlock, string>> = {
 
 /** The settings each block takes, besides its `provider`. A key not listed is refused by name. */
 const SETTINGS: Readonly<Record<ProviderBlock, readonly string[]>> = {
-  tracker: ["key", "connectors", "workingState", "plannedState"],
+  tracker: ["key", "connectors", "workingState", "plannedState", "takenStates"],
   codeHost: ["identity", "gh", "stack"],
   publish: ["run", "model", "effort", "connectors"],
   reviewer: [],
@@ -182,6 +182,7 @@ function trackerOf(block: unknown, tickets: Record<string, unknown>, read: Alias
     connectors: choose({ own: own("connectors"), alias: linear.length > 0 ? found(linear, "tickets.connectors") : undefined, newAt: "tickets.providers.tracker.connectors", same: sameList }, read),
     workingState: choose({ own: own("workingState"), alias: found(tickets.workingState, "tickets.workingState"), newAt: "tickets.providers.tracker.workingState" }, read),
     plannedState: choose({ own: own("plannedState"), alias: found(planner.state, "tickets.planner.state"), newAt: "tickets.providers.tracker.plannedState" }, read),
+    takenStates: plain(own("takenStates"), "tickets.providers.tracker.takenStates"),
   };
   return reportOf(provider, settings, sourceOf(block, read));
 }

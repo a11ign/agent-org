@@ -41,7 +41,7 @@ const OPEN_CHILDREN = 'children(first: 50, filter: { state: { type: { nin: ["com
  * first page of 50, which no ticket comes near. Read with the list, in the same request. Only a group's name is read, as only its name is shown.
  */
 const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
-const ISSUE_FIELDS = `identifier title description url branchName priority state { name position } team { key } project { name summary: description } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
+const ISSUE_FIELDS = `identifier title description url branchName priority state { name position type } team { key } project { name summary: description } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -65,7 +65,7 @@ export function readLinearKey(source: KeySource, security: (args: string[]) => s
 
 type IssueNode = {
   identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;
-  state: { name: string; position: number }; team: { key: string }; project: { name: string; summary: string | null } | null; assignee: Assignee | null; parent: { identifier: string } | null;
+  state: { name: string; position: number; type: string }; team: { key: string }; project: { name: string; summary: string | null } | null; assignee: Assignee | null; parent: { identifier: string } | null;
   /** Absent from an answer to a query that did not ask for it: such a ticket is read as having none. */
   children?: { nodes: { identifier: string }[] };
   /** Absent from an answer to a query that did not ask for them: such a ticket is read as having none. */
@@ -83,7 +83,7 @@ const uploadsIn = (node: Attachments): { url: string; title: string }[] => (node
 function toTicket(node: IssueNode): Ticket {
   return Object.freeze({
     key: node.identifier, title: node.title, description: node.description ?? "", url: node.url, branch: node.branchName,
-    status: node.state.name, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, projectSummary: node.project?.summary ?? null, priority: node.priority,
+    status: node.state.name, statusType: node.state.type, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, projectSummary: node.project?.summary ?? null, priority: node.priority,
     assignee: node.assignee ?? null, parent: node.parent?.identifier ?? null,
     children: (node.children?.nodes ?? []).map(({ identifier }) => identifier),
     uploads: uploadsIn(node).map(({ title }) => title),
