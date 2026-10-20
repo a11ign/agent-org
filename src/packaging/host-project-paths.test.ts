@@ -51,9 +51,9 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, leadsListText, shippedScriptText, shippedUnitText, shippedUnits } = await import("../host-units/shipped-units.ts");
+const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, leadsListText, shippedScriptText, shippedUnitText, shippedUnits } = await import("../host-units/shipped-unit-texts-and-declarations.ts");
 const { hostUnitDrift, unclassifiedEntries } = await import("../host-units.ts");
-const { identityDrift, ownedIdentityFiles } = await import("../host-units/host-identity-drift.ts");
+const { identityDrift, ownedIdentityFiles } = await import("../host-units/host-drift-findings-and-notes.ts");
 const { HostConfigRefusal, hostConfigPath, leadsWorkspacesText, parseHostConfig, parseUnitsDeclaration, readUnitsDeclaration, renderTemplate, renderedName, templateValues } =
   await import("../host-config.ts");
 

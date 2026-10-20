@@ -19,7 +19,7 @@ import type { Fetch } from "./event-tunnel.ts";
 // the modules that resolve their project from that variable, which is why they are dynamic imports and not static ones.
 const LIVE = process.env.AGENT_ORG_HOST;
 const { PROJECT_ROOT } = await import("./packaging/host-units-project.ts");
-const { HOST_OPTIONAL_UNITS, SHIPPED_DIR, TOOL_ENTRIES, shippedUnitText, shippedUnits } = await import("./host-units/shipped-units.ts");
+const { HOST_OPTIONAL_UNITS, SHIPPED_DIR, TOOL_ENTRIES, shippedUnitText, shippedUnits } = await import("./host-units/shipped-unit-texts-and-declarations.ts");
 const { LONG_RUNNING_TEMPLATES } = await import("./host-config.ts");
 const { hostUnitsInstall, unclassifiedEntries } = await import("./host-units.ts");
 const { HostConfigRefusal, parseHostConfig, renderTemplate, templateValues } = await import("./host-config.ts");

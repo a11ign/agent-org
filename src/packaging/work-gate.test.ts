@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { shippedUnits } from "../host-units/shipped-units.ts";
+import { shippedUnits } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
@@ -4535,7 +4535,7 @@ test("#2174: no test file joins the history-requirement population without a dec
   const memo = createClosureMemo();
   const current = historyChargedTests(liveDir, { memo });
   // Positive control: the scan keeps the tests that really are charged, so an emptied population cannot pass for "none joined".
-  // host-units.test.ts imports the host-units module whose closure reaches the history code (`host-units/host-identity-drift.ts`); work-gate.test.ts no longer does.
+  // host-units.test.ts imports the host-units module whose closure reaches the history code (`host-units/host-drift-findings-and-notes.ts`); work-gate.test.ts no longer does.
   assert.ok(current.includes("host-units.test.ts"), "a test that imports host-units is in the population, and the scan dropped it");
   const { undeclared, judged } = judgePin({
     repo: TOOL_ROOT, paths: ["src"], current, declared: DECLARED_HISTORY_POPULATION,

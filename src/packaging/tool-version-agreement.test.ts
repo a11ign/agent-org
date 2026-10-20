@@ -151,7 +151,7 @@ test("(6) host:check and org-health print the same reading for the same facts --
 const { toolVersionFindings } = await import(process.argv[3]);
 const reading = JSON.parse(process.argv[4]);
 process.stdout.write(JSON.stringify({ findings: toolVersionFindings(reading), notes: toolVersionNotes(reading) }));`);
-  const asHost = (r: typeof result) => JSON.parse(spawnSync(process.execPath, [script, pathToFileURL(fileURLToPath(new URL("../host-units/gh-wrapper-and-notes.ts", import.meta.url))).href, pathToFileURL(fileURLToPath(new URL("../host-units/host-identity-drift.ts", import.meta.url))).href, JSON.stringify({ now: NOW, result: r })],
+  const asHost = (r: typeof result) => JSON.parse(spawnSync(process.execPath, [script, pathToFileURL(fileURLToPath(new URL("../host-units/gh-wrapper-and-notes.ts", import.meta.url))).href, pathToFileURL(fileURLToPath(new URL("../host-units/host-drift-findings-and-notes.ts", import.meta.url))).href, JSON.stringify({ now: NOW, result: r })],
     { env: { AGENT_ORG_HOST: HOST_FILE }, encoding: "utf8", timeout: 60_000 }).stdout);
   const host = asHost(result);
   assert.equal(host.findings.length, 1);

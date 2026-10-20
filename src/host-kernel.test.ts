@@ -13,8 +13,8 @@ import { after, describe, test } from "node:test";
 import { DRAIN_BOUND_MS, DRAIN_POLL_MS, REBOOT_ARGV, REBOOT_SERVICE, TICK_TIMER, drainedReboot, kernelFindings, kernelNotes, kernelReading, parseRelease, readBack,
   readBackOwed, rebootReport, recordStore, runPrivileged, stillOlderFinding } from "./host-kernel.ts";
 import { driftReport } from "./host-units.ts";
-import { shippedUnitText, shippedUnits } from "./host-units/shipped-units.ts";
-import { unitDrift, unitState } from "./host-units/host-identity-drift.ts";
+import { shippedUnitText, shippedUnits } from "./host-units/shipped-unit-texts-and-declarations.ts";
+import { unitDrift, unitState } from "./host-units/host-drift-findings-and-notes.ts";
 import { homeHostConfig } from "./host-config.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
 import { moduleSource } from "./lib/module-source.ts";

@@ -29,7 +29,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { shippedUnits } from "../host-units/shipped-units.ts";
+import { shippedUnits } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import { type Declaration } from "../lib/pin-ratchet.ts";

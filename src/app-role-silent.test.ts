@@ -16,7 +16,7 @@ import { tmpDir } from "./lib/tmp-fixture.ts";
 import { APP_ROLE_SILENT, APP_ROLE_SILENT_MS, appRoleSilent, appRoleSilentEvents, type LedgerSource } from "./app-role-silent.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { hostIdentityInstall, rerenderGhWrapper, tickAppRoleSilent, tickRerenderGhWrapper, wrapperIdentity } from "./host-units/gh-wrapper-and-notes.ts";
-import { shippedScriptText } from "./host-units/shipped-units.ts";
+import { shippedScriptText } from "./host-units/shipped-unit-texts-and-declarations.ts";
 
 // ---- the detector ---------------------------------------------------------------------------------------------------------------
 

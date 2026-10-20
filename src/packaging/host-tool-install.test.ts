@@ -26,8 +26,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, shippedUnitText, workTickToolForm } from "../host-units/shipped-units.ts";
-import { identityDrift, unitsSpendingGh } from "../host-units/host-identity-drift.ts";
+import { REPO_ROOT, SHIPPED_DIR, TOOL_UPDATE_EXEC, shippedUnitText, workTickToolForm } from "../host-units/shipped-unit-texts-and-declarations.ts";
+import { identityDrift, unitsSpendingGh } from "../host-units/host-drift-findings-and-notes.ts";
 import { HostConfigRefusal, homeHostConfig, parseBeforeTick, parseHostConfig, renderTemplate, stateFilePath, templateValues }
   from "../host-config.ts";
 import { handoffQueuePath, ledgerPathFrom } from "../wake/seat-reset.ts";

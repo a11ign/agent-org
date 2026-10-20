@@ -12,8 +12,8 @@ import { readAgents, herdrRun } from "../herdr-agents.ts";
 import { persistentRoles } from "../project-roles.ts";
 import { kernelNotes } from "../host-kernel.ts";
 import { GITHUB_ROLES, type GithubRole, HostConfigRefusal, homeHostConfig, roleIdentity, stateEntryPath } from "../host-config.ts";
-import { compileCacheNotes, endedOnPurpose, ghWrapperFile, hostIdentityNotes, ownedIdentityFiles, readToolVersionAgreement, seatWrapperNotes, type Finding, unitState } from "./host-identity-drift.ts";
-import { shippedUnitNames, textOf, type HostConfig } from "./shipped-units.ts";
+import { compileCacheNotes, endedOnPurpose, ghWrapperFile, hostIdentityNotes, ownedIdentityFiles, readToolVersionAgreement, seatWrapperNotes, type Finding, unitState } from "./host-drift-findings-and-notes.ts";
+import { shippedUnitNames, textOf, type HostConfig } from "./shipped-unit-texts-and-declarations.ts";
 
 /** The reading when no runner is behind: reported, never a failure, and never silent (an unreadable runner is named). @param {ReturnType<typeof readToolVersionAgreement>} reading @returns {Finding[]} */
 export function toolVersionNotes(reading: ReturnType<typeof readToolVersionAgreement>): Finding[] {

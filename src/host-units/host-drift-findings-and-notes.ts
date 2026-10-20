@@ -7,7 +7,7 @@ import { agreement, agreementReport, memoFile, readFacts } from "../lib/tool-ver
 import { SPAWNS_GH } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { homeHostConfig, stateEntryPath } from "../host-config.ts";
-import { INSTALLED_DIR, REPO_ROOT, RUNS_PACKAGE_SCRIPT, SHIPPED_DIR, binDirectory, entriesFromCommand, environmentDeclarations, execCommands, identityDeclarations, leadsDirectory, leadsListText, opaqueCommands, packageScripts, shellSpawnsGh, shippedContext, shippedHostScripts, shippedScriptText, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type HostConfig, type ShippedDeps, unitEntryPoints, unitPrefix, workersDirectory } from "./shipped-units.ts";
+import { INSTALLED_DIR, REPO_ROOT, RUNS_PACKAGE_SCRIPT, SHIPPED_DIR, binDirectory, entriesFromCommand, environmentDeclarations, execCommands, identityDeclarations, leadsDirectory, leadsListText, opaqueCommands, packageScripts, shellSpawnsGh, shippedContext, shippedHostScripts, shippedScriptText, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type HostConfig, type ShippedDeps, unitEntryPoints, unitPrefix, workersDirectory } from "./shipped-unit-texts-and-declarations.ts";
 
 /**
  * DOES STARTING THIS FILE REACH A `gh` SPAWN? Two edge kinds, because the repository uses both: local

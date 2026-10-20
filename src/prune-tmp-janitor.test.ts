@@ -58,7 +58,7 @@ const {
   classifyEntry, doomedPaths, familyOf, fixturePaths, formatDryRunReport, formatAppliedReport, pruneTmp: pruneTmpWithClaims, removeFromLeaves,
 } = await import("./prune-tmp.ts");
 const { installTmpfiles } = await import("./host-units.ts");
-const { toolForm } = await import("./host-units/shipped-units.ts");
+const { toolForm } = await import("./host-units/shipped-unit-texts-and-declarations.ts");
 const { REMOVAL_LOG_ENV } = await import("./worktree-removal.ts");
 
 // #2782: every removal writes a line, and a fixture must not write the host's log.
