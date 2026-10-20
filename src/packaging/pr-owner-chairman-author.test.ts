@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { CHAIRMAN_LOGINS } from "../work-gate/vocabulary.ts";
-import { ownerOfPr, isChairmanAuthoredPr, stalledPrOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { ownerOfPr, isChairmanAuthoredPr, stalledPrOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { sharedFileOrders } from "../work-gate/shared-file-orders.ts";
 import { unresolvedOwnerEvents } from "../pr-ownership.ts";
 

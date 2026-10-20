@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { scopesOf } from "../work-gate/vocabulary.ts";
-import { greenUnarmedOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { greenUnarmedOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { performActions } from "../work-gate/orders.ts";
 import { ledgerLine, readLedger } from "../wake/session-endings.ts";
 import { readLedgerDeliveries, stuckRowOf } from "../wake/merge-queue-wait.ts";

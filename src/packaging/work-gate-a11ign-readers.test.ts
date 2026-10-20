@@ -43,7 +43,7 @@ import { partitionUnclaimed } from "../work-gate/causes/rows-claims.ts";
 import { unclaimedBlockerClearedOrders } from "../work-gate/causes/rows-blocker-cleared.ts";
 import { answerOrders, withAnswerLabel, withoutEndedAnswerSessions } from "../work-gate/causes/rows-answers.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
-import { ownerOfPr, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { ownerOfPr, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { ANSWER_PREFIX } from "../waiting-condition.ts";
 import { reviewBlocked } from "../work-gate/causes/pr-reviews.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";

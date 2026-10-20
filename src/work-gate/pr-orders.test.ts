@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { stallReasonOf, reviewGateOf } from "./pr-orders/red-only-by-superseded-run.ts";
+import { stallReasonOf, reviewGateOf } from "./pr-orders/pr-gate-readings.ts";
 import { perPullRequestOrders, fileReviewGatedHuman, reviewGatedHumanBrief } from "./pr-orders.ts";
 import { clearedByOf, checkMarkersOf } from "./review-gate.ts";
 import { subjectRef } from "../review-attribution.ts";

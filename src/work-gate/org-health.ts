@@ -49,7 +49,7 @@ import { readRulings, unreadableLine, rulingTick } from "../ruling-record.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { readReleaseFacts, registryDistTags, remoteTagExists, splitHeldOnSatisfied, heldOnSatisfiedOrders, umbrellaEdges, umbrellaEdgeOrders } from "./held-on-satisfied-orders.ts";
 import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds, isItemWait } from "../wait-condition.ts";
-import { stallReasonOf, ownerOfPr, reviewGateOf } from "./pr-orders/red-only-by-superseded-run.ts";
+import { stallReasonOf, ownerOfPr, reviewGateOf } from "./pr-orders/pr-gate-readings.ts";
 import { reviewHeadsOf } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571

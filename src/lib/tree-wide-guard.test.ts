@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { OUTSIDE_GUARDS_FLAG, declaresTreeWideGuard, guardSweepJobOf, outsideGuardsOn, runTreeWideGuards, shadowGuardsVerdict, treeWideGuardFilesIn } from "./tree-wide-guard-org-side.ts";
 import { sandboxGitEnv } from "./git-env.ts";
 import { tmpDir } from "./tmp-fixture.ts";
-import { acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { orgSideAcceptanceEligibility, type OrgSideVerdict } from "../acceptance-commands.ts";
 import { ACCEPTANCE_GATE_SWITCH_ENV, TREE_WIDE_GUARDS_SWITCH_ENV, gateUnarmedOnAcceptance } from "../work-gate/tick/blocker-cleared-reading.ts";
 

@@ -25,7 +25,7 @@ import { REENQUEUE_EJECTED_FLAG, failedEntriesSincePush, jobFailuresOf, mergeGro
 import { readArmingOf } from "../work-gate/tick/blocker-cleared-reading.ts";
 import { type ArmingPort } from "../work-gate/vocabulary.ts";
 import { CAUSES, JUDGMENT_CAUSES } from "../cause-declaration.ts";
-import { stalledPrOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { stalledPrOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import type { Decision, ItemRef } from "../ticket-port/port.ts";
 
 const HOME = "a11ign/a11ign";

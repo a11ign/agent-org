@@ -48,7 +48,7 @@ import { holdersOf } from "./pr-hold-state.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { verifyCheckoutOf, withVerifyStamps } from "./verify-stamp.ts";
 import { readTrunkRed } from "./trunk-red.ts";
-import { requiredWhenNeeded, ownerOfPr } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { requiredWhenNeeded, ownerOfPr } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { fileOutsideIdleTriage, fileReviewGatedHuman } from "./work-gate/pr-orders.ts";
 import { prOwnerRoutingFlagOn, ownerlessUnreached, outsideSessionPrFlagOn } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { sessionPrOutsideNow } from "./work-gate/outside-session-pr.ts";

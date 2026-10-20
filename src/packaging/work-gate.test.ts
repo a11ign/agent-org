@@ -46,7 +46,7 @@ import { requiredCheckNames, readBaseTip, baseTipWhenRed, shouldBeMerging as sho
 import { partitionUnclaimed, blockersFromRows, rowBranchOrders, closesUnresolvedOrders, closesUnresolvedPrs } from "../work-gate/causes/rows-claims.ts";
 import { deadMansSwitch, cannotAskReport } from "../work-gate/causes/org-health-host.ts";
 import { hostDriftOrders, blockerClearedOrders } from "../work-gate.ts";
-import { mergeConflictOrders, ownerOfPr, redOnlyBySupersededRun, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { mergeConflictOrders, ownerOfPr, redOnlyBySupersededRun, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, epicRowsOf, doneWhenLines } from "../work-gate/causes/rows-epics.ts";
 import { fleetBatchRows, fleetBatchOrders, partitionFleetBatch, FLEET_GATED_SELECTOR } from "../work-gate/causes/rows-fleet-batch.ts";
 import { unclaimedBlockerClearedOrders, unclaimedClearings, promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS, PROMOTION_ASK_PERIOD_MS } from "../work-gate/causes/rows-blocker-cleared.ts";

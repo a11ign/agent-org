@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
-import { PR_OWNER_ROUTING_FLAG } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { PR_OWNER_ROUTING_FLAG } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { withholdOutsideFollowUps } from "./work-gate/pr-orders.ts";
 import { prOwnerRoutingFlagOn } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { OUTSIDE, INSIDE, reviewTrustOf, type DeclaredIdentities } from "./review-trust.ts";

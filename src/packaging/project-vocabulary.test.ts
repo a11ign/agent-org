@@ -224,7 +224,7 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("worker-state.ts", ['"blocked"', "`blocked`"], "the declared-state name and the `herdr` pane status, never the `blocked` label"),
   // `work-gate/pr-orders.ts`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
   // not the row `ready` label.
-  ...nonVocabulary("work-gate/pr-orders/red-only-by-superseded-run.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
+  ...nonVocabulary("work-gate/pr-orders/pr-gate-readings.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
   // `auto-arm-sweep.ts` (agent-org#1573): `run(["pr", "ready", ...])` -- the same CLI verb, for an approved draft the outside home readies before it arms.
   ...nonVocabulary("ticket-port/outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
   // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.

@@ -442,7 +442,7 @@ const EXEMPT: Record<string, string> = {
   "work-gate/causes/pr-reviews.ts": "narrows a rollup to the newest run per name to tell a PR that is still RUNNING from one that is settled, for the review-blocked order; counts no red (a11ign#5152)",
   "work-gate/causes/org-health-github-incident.ts": "reads a FAILED job's own conclusion to tell a runner that never started from a red check; it names one job's failure, not how many PRs are red (a11ign#5152)",
   "work-gate/pr-orders.ts": "the order assembly that calls the red-only logic: who is asked, not how many are red (`HOLD_RED_JOBS` is pinned equal to red-pr.ts's in org-retro.test.ts)",
-  "work-gate/pr-orders/red-only-by-superseded-run.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
+  "work-gate/pr-orders/pr-gate-readings.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
   "org-health/board-truth-and-access-readings.ts": "its `CirclePr` type names the rollup field so the circle reader can carry it; it reads no verdict and counts no red PR",
   "org-retro/retro-window-and-journal-patterns.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
   "work-gate/tick/blocker-cleared-reading.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",

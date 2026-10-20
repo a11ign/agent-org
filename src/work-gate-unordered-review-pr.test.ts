@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, CHECKLESS_QUIET_MINUTES } from "./work-gate/pr-orders.ts";
-import { reviewBlockedOrders } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { reviewBlockedOrders } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
 import { reviewBlocked } from "./work-gate/causes/pr-reviews.ts";
 

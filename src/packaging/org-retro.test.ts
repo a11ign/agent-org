@@ -21,7 +21,7 @@ import { mergedStats, RETRO_CAUSE, UNKNOWN, utcDate, readIdleClaimedHours } from
 import { isBrokenRed, isHeldRed, HOLD_OWN_JOBS } from "../red-pr.ts";
 import { readLedger as readHandFixLedger, ledgerLine as handFixLine } from "../hand-fix-ledger.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "../cause-declaration.ts";
-import { HOLD_RED_JOBS } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { HOLD_RED_JOBS } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { PROFILES } from "../worker-profile.ts";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";

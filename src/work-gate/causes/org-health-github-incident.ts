@@ -9,7 +9,7 @@ import { machineryCanaryTick, readCanaryOptions, realCanaryIo, type Suppression,
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { readClaimRefusals } from "../../org-health/claim-and-tick-readings.ts";
 import type { ReleaseRuns } from "../../org-health/sweep-readings.ts";
-import { type UnarmedFacts, hungCheckOf } from "../pr-orders/red-only-by-superseded-run.ts";
+import { type UnarmedFacts, hungCheckOf } from "../pr-orders/pr-gate-readings.ts";
 import { blockingChecks, checksSettledGreen } from "../pr-state.ts";
 import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
 import { REVIEWER_STATE_DIR } from "../vocabulary.ts";

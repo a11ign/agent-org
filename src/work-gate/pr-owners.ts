@@ -15,7 +15,7 @@ import { labelsOf, sessionOf } from "./vocabulary.ts";
 import { liveWorkspaceLabels, endedSessionLabels } from "./causes/rows-answers.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
-import { ownerOfPr } from "./pr-orders/red-only-by-superseded-run.ts";
+import { ownerOfPr } from "./pr-orders/pr-gate-readings.ts";
 
 /**
  * #2882: THE SESSION A PULL REQUEST'S OWN ROW NAMES, for a pull request that carries no `session:` label.
