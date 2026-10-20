@@ -19,7 +19,7 @@ import type { HostConfig } from "./host-config.ts";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
 import { deliver } from "./wake/fyi-queue.ts";
 import { spawnInvocation, reviewerEnvironment } from "./wake/pull-request-spawn-orders.ts";
-import { postOutsideVerdictsOf } from "./wake/holds-as-fyi.ts";
+import { postOutsideVerdictsOf } from "./wake/fyi-delivery-and-limits.ts";
 import { DEPENDENCY_BOT_LOGIN } from "./dependency-bot-login.ts";
 import { reviewerDoorPath } from "./reviewer-door-path.ts";
 import { startedPanes } from "./packaging/started-pane.ts";
@@ -29,7 +29,7 @@ import {
   outsideReviewerEnvironment,
   outsideVerdictBlock, postOutsideVerdict, postOutsideVerdicts, reviewTrustOf, type DeclaredIdentities, type DoorRun, type ReviewTrust,
 } from "./review-trust.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 type Order = Parameters<typeof deliver>[0][number];
 type Events = string[];

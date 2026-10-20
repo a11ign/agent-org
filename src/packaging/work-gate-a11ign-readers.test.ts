@@ -29,12 +29,12 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { shippedUnits } from "../host-units/shipped-units.ts";
+import { shippedUnits } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT } from "./copied-tool-fixture.ts";
 import { type Declaration } from "../lib/pin-ratchet.ts";
-import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/classification.ts";
-import { decide as decideOnHost } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/command-classes-and-declarations.ts";
+import { decide as decideOnHost } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { comparablePrFiles } from "../work-gate/vocabulary.ts";
 import { blockingChecks } from "../work-gate/pr-state.ts";
@@ -43,7 +43,7 @@ import { partitionUnclaimed } from "../work-gate/causes/rows-claims.ts";
 import { unclaimedBlockerClearedOrders } from "../work-gate/causes/rows-blocker-cleared.ts";
 import { answerOrders, withAnswerLabel, withoutEndedAnswerSessions } from "../work-gate/causes/rows-answers.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
-import { ownerOfPr, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { ownerOfPr, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { ANSWER_PREFIX } from "../waiting-condition.ts";
 import { reviewBlocked } from "../work-gate/causes/pr-reviews.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
@@ -66,7 +66,7 @@ const SKIP_FIXTURE = trackedTopLevelDirs().includes("packages") ? false
 // costs the `no-token` promise at the top of this file nothing.
 import { addressed, deliver } from "../wake/fyi-queue.ts";
 import { escalateStuck } from "../wake/merge-queue-wait.ts";
-import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
+import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
 // #2237: the decider that REFUSES a launch, so the order's named launch directory is checked against it
 // rather than read by a reviewer. Pure over an injected filesystem.
 

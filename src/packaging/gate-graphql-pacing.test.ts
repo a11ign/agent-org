@@ -33,7 +33,7 @@ import { EXIT as GATE_EXIT } from "../work-gate/reads/read-memo-and-exit.ts";
 import { offeredByShare } from "../work-gate/causes/rows-offer.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { tickLanes } from "../work-gate.ts";
-import { exitPartial, outageThisTick } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { exitPartial, outageThisTick } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { claimStallsNow } from "../work-gate/claim-stall-tick.ts";
 import { loadAllowlist, normaliseLine } from "../repeating-lines.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";

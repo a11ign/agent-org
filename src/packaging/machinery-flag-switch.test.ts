@@ -15,8 +15,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { main, FLAG_REGISTRY } from "../machinery-flag.ts";
-import { BOARD_TRUTH_PAIR_FLAG } from "../org-health/board-truth-readings.ts";
-import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
+import { BOARD_TRUTH_PAIR_FLAG } from "../org-health/board-truth-and-access-readings.ts";
+import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { emptyCanaryState, machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts"; // agent-org#1670
 import { readReenqueueState, REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG } from "../work-gate/causes/pr-ejected.ts";
@@ -28,14 +28,14 @@ import { VERDICT_DELIVERY_FLAG } from "../review-trust.ts"; // agent-org#1649
 import { SESSION_PR_OUTSIDE_FLAG } from "../work-gate/outside-session-pr.ts"; // agent-org#1667
 import { PACING_FLAG } from "../work-gate/pacing.ts";
 import { REFUSE_AUTHOR_FALLBACK_FLAG } from "../gh-author-fallback.ts";
-import { PR_OWNER_ROUTING_FLAG, ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { PR_OWNER_ROUTING_FLAG, ROW_REVIEW_SKILL_FLAG } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { QUEUE_ENTRY_NO_RUN_FLAG } from "../work-gate/causes/queue-entry-no-run.ts";
 import { RECHECK_FLAG } from "../work-gate/shared-file-orders.ts";
 import { AUTO_UNPARK_FLAG } from "../unpark-satisfied.ts";
 import { OPEN_PR_HOLD_FLAG } from "../prune-worktrees.ts";
 import { REFUSE_ASKING_ANNOUNCEMENTS_FLAG } from "../messaging/core.ts";
 import { ACCOUNT_LIMIT_FLAG } from "../account-limit.ts";
-import { SAME_HEAD_REFAIL_FLAG } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { SAME_HEAD_REFAIL_FLAG } from "../work-gate/pr-orders/pr-gate-readings.ts";
 
 const SESSION = "worker-agent-org-1061";
 const T0 = Date.parse("2026-10-12T09:00:00Z");

@@ -40,7 +40,7 @@
     },
     {
       "pattern": "^gate-rest: N of N conditional reads answered N$",
-      "reason": "src/work-gate/tick/blocker-cleared-reading.ts's tickReadingLines (row #5169), printed on EVERY tick the gate runs with the conditional-read flag on: `gate-rest: N of N conditional reads answered 304`, how many of the gate's REST list reads came back `304 Not Modified` and were answered from the kept body (the ETag cache working). It is the figure the live hour is measured from, so it repeats by design, and the count moves with the reads while normaliseLine turns every number to N. A refused read prints a different tail, which is not allowlisted."
+      "reason": "src/work-gate/tick/tick-decisions-and-flags.ts's tickReadingLines (row #5169), printed on EVERY tick the gate runs with the conditional-read flag on: `gate-rest: N of N conditional reads answered 304`, how many of the gate's REST list reads came back `304 Not Modified` and were answered from the kept body (the ETag cache working). It is the figure the live hour is measured from, so it repeats by design, and the count moves with the reads while normaliseLine turns every number to N. A refused read prints a different tail, which is not allowlisted."
     },
     {
       "pattern": "^read memo: N identical read\\(s\\) answered from memory, N distinct answer\\(s\\) held at the end of the tick\\.$",

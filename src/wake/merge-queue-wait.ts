@@ -13,12 +13,12 @@ import { readRowsByLabel, readUnlessRefused } from "../ticket-port/rows-by-label
 import { familyMember } from "../arm-pr.ts";
 import { firstLine, herdrReason } from "../herdr-agents.ts";
 import { DEFERRAL_LOG_FILE, recordEndedDeferrals } from "../deferral-log.ts";
-import { BUSY_SEAT_REFUSAL, CAPACITY_REFUSAL, CAPACITY_WAIT_LIMIT_MS, MERGE_QUEUE_WAIT_PHRASE, NO_CLEAR_FIELD } from "./ended-sessions.ts";
+import { BUSY_SEAT_REFUSAL, CAPACITY_REFUSAL, CAPACITY_WAIT_LIMIT_MS, MERGE_QUEUE_WAIT_PHRASE, NO_CLEAR_FIELD } from "./session-endings.ts";
 import { START_BUDGET_DEFERRED } from "./pull-request-spawn-orders.ts";
 import { BUSY_SEAT_DEFERRAL_MS, WAKEABLE, codeRepositoryOf, defaultRun, guardedGh, type SpareInstance } from "./exit-and-limits.ts";
 import { handoffBacklog, prepareContext, readAgent } from "./fyi-queue.ts";
 import { ESCALATED, RESET, SESSIONS_FILE, VOIDED, ledgerKeyOf, undelivered } from "./seat-reset.ts";
-import { CONTEXT_ACTION, MAX_DELIVERIES, NO_CLOCK, TRANSCRIPT_READER, newestTranscriptRead, type ClaimOrders, type HostLoad, type OrderClock } from "./holds-as-fyi.ts";
+import { CONTEXT_ACTION, MAX_DELIVERIES, NO_CLOCK, TRANSCRIPT_READER, newestTranscriptRead, type ClaimOrders, type HostLoad, type OrderClock } from "./fyi-delivery-and-limits.ts";
 
 /**
  * HOW LONG A ROW MAY WAIT FOR A PULL REQUEST IN THE MERGE QUEUE BEFORE IT IS "NOWHERE TO GO" AFTER ALL: AN HOUR. One wait was measured, not a

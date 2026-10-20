@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
-import { stallReasonOf } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { stallReasonOf } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { reviewableHead, reviewWait, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
 
 type Order = { session: string, cause: string, causeKey: string, discriminator: string, prompt: string };

@@ -21,7 +21,7 @@ import { PROJECT_ROOT } from "./host-units-project.ts"; // FIRST: makes a fixtur
 // NOT `host-units.ts`: it reaches `git log --all`, and a test file importing it joins the `history` population (`work-gate.test.ts`'s ratchet). The question is asked in `update-tool.ts` for that reason too.
 import { installPendingFindings, programsLostByMove, programsNamedBy, updateTool } from "../update-tool.ts";
 import { sandboxGitEnv, withGitSandbox, type GitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
-import { moduleSource } from "../lib/module-source.ts";
+import { moduleSource } from "../lib/source-text-reads.ts";
 
 /**
  * The gate's own `hostDriftOrders`, loaded AFTER the fixture project is given the one declaration key the gate reads at import and the fixture (made for `host-units.ts`) lacks:

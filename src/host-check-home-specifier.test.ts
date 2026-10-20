@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { missingUnitPrograms } from "./host-units.ts";
-import { programCandidates } from "./host-units/shipped-units.ts";
+import { programCandidates } from "./host-units/shipped-unit-texts-and-declarations.ts";
 
 const HOME = "/home/tester";
 const WORK = "/work/tree";

@@ -16,18 +16,18 @@ import { lookupOtherHeldIssues } from "../row-claim/own-pr-health-rule.ts";
 import { parseWorktreeList, isPrimaryWorktree, isWorkingTreeClean, mergeStatus, detachedMergeStatus } from "../prune-worktrees.ts";
 import { worktreeOwner } from "../worktree-owner.ts";
 import { familyMember } from "../arm-pr.ts";
-import { holderWorkAtRisk, workAtRisk, gitRun, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS, readJsonObject, INTERRUPTED_TEXT, INTERRUPTED_SETTLE_MS, THRASH_TEXT } from "../claim-stall/claim-stalled.ts";
+import { holderWorkAtRisk, workAtRisk, gitRun, KEPT_CLAIMS_FILE, RESTART_STATE_FILE, RESTART_RESEND_WINDOW_MS, readJsonObject, INTERRUPTED_TEXT, INTERRUPTED_SETTLE_MS, THRASH_TEXT } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { pathExists, statMtime, readHerdrRestart, paneInterrupted, paneThrashed, killedDeliveries, writeJsonObject, mergedPrMention, openPrMentions } from "../claim-stall.ts";
 import { listingIsComplete, firstLine, herdrReason } from "../herdr-agents.ts";
 import { EXIT, SESSION_ID, WAKEABLE, codeRepositoryOf, defaultGh, defaultRun, engineerEligibility, guardedGh, paneReader, redPullRequestOf, remember, rowMention, transcriptOf, type Enrichable, type SpareInstance } from "./exit-and-limits.ts";
 import { CLAIM_LANDED, ENRICH_AHEAD, ROW_CLAIM, activeDrain, cyclesReport, defaultExec, drainedRoles, enrichDecisionDeps, keyedClone, launchWorktree, refailNote, rerunRedOnServerError, settleGoneKept, type EnrichDeps, type Exec, type KeptClaim, verdictLine } from "./release-line-and-seats.ts";
-import { defaultGit, isReviewerOrder, orderPullRequestRef } from "./ensure-reviewer-token.ts";
+import { defaultGit, isReviewerOrder, orderPullRequestRef } from "./reviewer-tokens-and-checkouts.ts";
 import { PRIMARY_CHECKOUT, backlogReport, handoffBacklog, isAbsent, trackerRepositoryOf } from "./fyi-queue.ts";
 import { spawnEnvironment } from "./pull-request-spawn-orders.ts";
 import { ESCALATED, VOIDED, declaresDecision, deliveredId, handoffQueuePath, queueHandoff, readHandoffs, workspaceIdsOf } from "./seat-reset.ts";
 import { cycleVerdict, isSpareRole, readLedgerDeliveries, readTextOrNull, sessionStateOf, spareDecision, spareInstances, type SpareWorktree } from "./merge-queue-wait.ts";
-import { absentInstanceCycle, appendSpareCycle, isPersistentRole, readSpareRegistry, type SpareCycle } from "./holds-as-fyi.ts";
-import { WAKE_TTL_MS, endedSessionsAt, escalatedKeys, holderOf, readSpareCycles, resolveEndedHandoffs, sparePathsFrom } from "./ended-sessions.ts";
+import { absentInstanceCycle, appendSpareCycle, isPersistentRole, readSpareRegistry, type SpareCycle } from "./fyi-delivery-and-limits.ts";
+import { WAKE_TTL_MS, endedSessionsAt, escalatedKeys, holderOf, readSpareCycles, resolveEndedHandoffs, sparePathsFrom } from "./session-endings.ts";
 
 /**
  * `ci-failure-class` (#4632) for each settled-red order. The class and the route go in the journal line whoever chose; the ORDER's text gains them only when the PROVIDER chose, or when a rule
@@ -383,7 +383,7 @@ export function keptClaimsPath(ledgerPath: string) {
 }
 
 /** Everything a release needs from the host, every one a seam so the whole of it is tested without one. */
-export type ReleaseDeps = { run: (args: string[]) => string, exec: Exec, io: import("../claim-stall/claim-stalled.ts").HostReads, now: number, agents: { label: string, status: string }[], isSpare: (label: string) => boolean, host: { worktreesDir: string, primary: string, exists: (path: string) => boolean }, env: Record<string, string>, gh: (args: string[]) => string, warn: (line: string) => void, cycle: (cycle: SpareCycle) => void, dropInstance: (role: string) => SpareInstance | undefined, keepInstance: (role: string, row: number) => SpareInstance, remember: (row: number, kept: KeptClaim | null) => void,
+export type ReleaseDeps = { run: (args: string[]) => string, exec: Exec, io: import("../claim-stall/stall-causes-and-claim-readings.ts").HostReads, now: number, agents: { label: string, status: string }[], isSpare: (label: string) => boolean, host: { worktreesDir: string, primary: string, exists: (path: string) => boolean }, env: Record<string, string>, gh: (args: string[]) => string, warn: (line: string) => void, cycle: (cycle: SpareCycle) => void, dropInstance: (role: string) => SpareInstance | undefined, keepInstance: (role: string, row: number) => SpareInstance, remember: (row: number, kept: KeptClaim | null) => void,
   /** agent-org#834: the repository a tracker KEY declares, and the host's clone of it -- seams for a keyed request, defaulting to the live declaration and `host.json` */
   trackerRepo?: (key: string) => string | null, cloneOf?: (key: string) => { clone: string } | { refusal: string }, };
 export type ReleaseRequest = import("../claim-stall.ts").ReleaseRequest;

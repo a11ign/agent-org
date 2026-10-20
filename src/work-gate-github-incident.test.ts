@@ -17,7 +17,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { holdForGithubIncident, githubIncidentOf, githubIncidentOrder, startGithubStatus, GITHUB_STATUS_TIMEOUT_MS } from "./work-gate/causes/org-health-github-incident.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

@@ -3,12 +3,12 @@
 
 import { existsSync } from "node:fs";
 import { headsToRead, readBlockers, readHeads } from "./pool-start.ts";
-import { completableRuns, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, unsettledKeys } from "./queue/approve.ts";
-import { SETTLED, type Entry } from "./queue/declared-remains.ts";
+import { completableRuns, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, unsettledKeys } from "./queue/queue-transitions.ts";
+import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
-import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-ticket.ts";
-import { settledByPulls } from "./board-view/settled-by-pulls.ts";
+import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
+import { settledByPulls } from "./board-view/pull-status-and-notes.ts";
 import { recordClosedByBoard } from "./queue.ts";
 import { sweepRetargets } from "../ticket-port/stack-retarget.ts";
 import { afterRebase, protectStack, rebaseDue, rebaseOnto, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type RebaseResult } from "./stack-rebase.ts";

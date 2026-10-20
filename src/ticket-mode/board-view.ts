@@ -9,7 +9,7 @@
 // (`isParked`) decide what the board shows and what the pool does, so `queue.ts` and `pool.ts` import them from here rather than restating them.
 
 /** The fields of a ticket the board shows. */
-import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-ticket.ts";
+import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 
 /**
  * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a

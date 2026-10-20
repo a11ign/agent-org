@@ -35,11 +35,11 @@ import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { herdrRun } from "./herdr-agents.ts";
 import { prepareContext, handoffBacklog, waitedFor, addressed } from "./wake/fyi-queue.ts";
 import { orderClockIn } from "./wake/merge-queue-wait.ts";
-import { CONTEXT_ACTION } from "./wake/holds-as-fyi.ts";
+import { CONTEXT_ACTION } from "./wake/fyi-delivery-and-limits.ts";
 import { readAgents } from "./herdr-agents.ts";
 import { WAKEABLE } from "./wake/exit-and-limits.ts";
 import { queueHandoff, handoffQueuePath, ledgerPathFrom, readHandoffs, isLeadSeat, FYI_STALE_MS } from "./wake/seat-reset.ts";
-import { repointedForReviewer } from "./wake/ensure-reviewer-token.ts";
+import { repointedForReviewer } from "./wake/reviewer-tokens-and-checkouts.ts";
 // #2619 (child 3d of #69): the `answer:` prefix these two advisory notes name, moved to the project's
 // declared vocabulary.
 import { ANSWER_PREFIX } from "./project-vocabulary.ts";
@@ -200,7 +200,7 @@ export const PROMPT_REFUSED_PREFIX = "prompt refused: ";
  */
 export function clearThenPrompt(run: (args: string[]) => string, label: string, text: string, options: {
     sender?: string | null; sleep?: (ms: number) => void; contextRoot?: string; sessions?: string | URL;
-    clock?: import("./wake/holds-as-fyi.ts").OrderClock;
+    clock?: import("./wake/fyi-delivery-and-limits.ts").OrderClock;
 } = {}) {
   return promptWithContext(run, label, text, options).report;
 }
@@ -636,7 +636,7 @@ const CONTEXT_WORDS = Object.freeze({
 type PromptOrder = {
         run: (args: string[]) => string; label: string; text: string; agents: { label: string; status: string; }[] | null;
         path: string; stance: Stance; sender: string | null; sleep?: (ms: number) => void;
-        checkout?: import("./wake/ensure-reviewer-token.ts").CheckoutDeps; contextRoot?: string; clock?: import("./wake/holds-as-fyi.ts").OrderClock;
+        checkout?: import("./wake/reviewer-tokens-and-checkouts.ts").CheckoutDeps; contextRoot?: string; clock?: import("./wake/fyi-delivery-and-limits.ts").OrderClock;
     };
 
 /**

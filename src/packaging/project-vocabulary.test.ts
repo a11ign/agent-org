@@ -43,9 +43,9 @@ import {
   STARTED_LABEL, WAS_READY_LABEL, parseVocabulary,
 } from "../project-vocabulary.ts";
 import { HOME_CHECKOUT, ProjectDeclarationRefusal } from "../project-config.ts";
-import { labelsOutOfRelease, saysOutOfRelease } from "../row-file/duplicate-title-refusal.ts";
+import { labelsOutOfRelease, saysOutOfRelease } from "../row-file/title-kind-and-label-refusals.ts";
 import { laneReason } from "../row-claim/runner-rule.ts";
-import { resourcePatternsFrom } from "../acceptance-commands/classification.ts";
+import { resourcePatternsFrom } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { NEEDS_CHAIRMAN } from "../messaging/sources/requests.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 import {
@@ -188,15 +188,15 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("worker-stop-hook.ts", ['"blocked"'], "the declared state of a worker's blocked declaration (`DeclaredState`), not a label the hook writes"),
   // `claim-stall.ts`'s own `why: "stalled" | "blocked" | "merged"` release-reading enum: a native `blockedBy` GRAPH EDGE outcome (`blockedReading`),
   // never the `blocked` GitHub LABEL -- the same word, an unrelated fact this module invented for its own return type.
-  ...nonVocabulary("claim-stall/claim-stalled.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
+  ...nonVocabulary("claim-stall/stall-causes-and-claim-readings.ts", ['"blocked"'], "its own `why` enum: a `blockedBy` graph-edge outcome, never the `blocked` label"),
   // `ticket-mode/board-view.ts`: `RunStatus`'s own `"blocked"` is a ticket-mode RUN's status (a queued run waiting on tickets that block it), never the `blocked` GitHub label.
-  ...nonVocabulary("ticket-mode/board-view/settled-by-pulls.ts", ['"blocked"'], "a ticket-mode run's own status, not the `blocked` label"),
+  ...nonVocabulary("ticket-mode/board-view/pull-status-and-notes.ts", ['"blocked"'], "a ticket-mode run's own status, not the `blocked` label"),
   // `wake.ts`: an agent's own `herdr` STATUS (`blockedSessions`, unrelated to the `blocked` label) and `claim-stall.ts`'s `why: "blocked"`
   // consumed here (`releaseHeadline`) -- both the same non-vocabulary fact as above; plus prose that happens to start a string segment with the
   // English word "answer:" (`REFUSED_CLAIM_IS_AN_ANSWER`: "...that is an answer: report it and stop...").
   ...nonVocabulary("wake/fyi-queue.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
   ...nonVocabulary("wake/exit-and-limits.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
-  ...nonVocabulary("wake/holds-as-fyi.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
+  ...nonVocabulary("wake/fyi-delivery-and-limits.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
   ...nonVocabulary("wake/ci-class-and-spares.ts", ['"blocked"'], "an agent's `herdr` status, and `claim-stall.ts`'s `why: \"blocked\"` consumed (`releaseHeadline`)"),
   ...nonVocabulary("wake/fyi-queue.ts", ['"answer:'], "prose that starts a string segment with the English word (`REFUSED_CLAIM_IS_AN_ANSWER`)"),
   // `pr-hold-state.ts` (#4970): `"blocked"` is the worker's declared STATE (`worker-state.ts`'s `DECLARED_STATES`, read by `declarationExcusesHold`), never the `blocked` label, and the leaf
@@ -224,11 +224,11 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("worker-state.ts", ['"blocked"', "`blocked`"], "the declared-state name and the `herdr` pane status, never the `blocked` label"),
   // `work-gate/pr-orders.ts`: `{ kind: "ready", ... }` is the action kind for `gh pr ready` (GitHub's own draft -> ready-for-review CLI verb),
   // not the row `ready` label.
-  ...nonVocabulary("work-gate/pr-orders/red-only-by-superseded-run.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
+  ...nonVocabulary("work-gate/pr-orders/pr-gate-readings.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
   // `auto-arm-sweep.ts` (agent-org#1573): `run(["pr", "ready", ...])` -- the same CLI verb, for an approved draft the outside home readies before it arms.
   ...nonVocabulary("ticket-port/outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
   // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.
-  ...nonVocabulary("ticket-mode/board-view/view-ticket.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
+  ...nonVocabulary("ticket-mode/board-view/view-types-and-filters.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
   // `ticket-mode/linear.ts`: `"backlog"` and `"triage"` are Linear's own state TYPES, read to decide whether a planned ticket moves to the planner's state; never the board's `backlog` column.
   ...nonVocabulary("ticket-mode/linear.ts", ['"backlog"'], "a Linear state type, read from Linear, never the board's backlog"),
 ];

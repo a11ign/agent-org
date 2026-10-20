@@ -15,8 +15,8 @@ import {
   type ClassRepeatFact,
 } from "./class-repeat.ts";
 import { orgHealthOrders, classRepeatReadings } from "./org-health/fleet-build-readings.ts";
-import { bodyFromArgv, fileRefusalReason } from "./row-file/body-from-argv.ts";
-import { kindRefusal } from "./row-file/duplicate-title-refusal.ts";
+import { bodyFromArgv, fileRefusalReason } from "./row-file/issue-body-and-region-checks.ts";
+import { kindRefusal } from "./row-file/title-kind-and-label-refusals.ts";
 
 const NOW = Date.parse("2026-10-09T09:00:00Z");
 const MINUTE = 60_000;

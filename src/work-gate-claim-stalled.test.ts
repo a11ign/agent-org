@@ -15,14 +15,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import assert from "node:assert/strict";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { claimStallTick, claimStallsNow } from "./work-gate/claim-stall-tick.ts";
 import { readElsewherePrs } from "./work-gate/reads.ts";
 import { CAUSES, START_CAUSES, JUDGMENT_CAUSES } from "./cause-declaration.ts";
 import { GH_READS } from "./work-gate/reads/read-memo-and-exit.ts";
 import { profileFor } from "./worker-profile.ts";
-import { WAKE_TTL_MS, readLedger, handoffBatches, ledgerLine } from "./wake/ended-sessions.ts";
-import { MAX_DELIVERIES } from "./wake/holds-as-fyi.ts";
+import { WAKE_TTL_MS, readLedger, handoffBatches, ledgerLine } from "./wake/session-endings.ts";
+import { MAX_DELIVERIES } from "./wake/fyi-delivery-and-limits.ts";
 import { performRelease, readDeliveredHandoffs, recoverInterruptedWork, recoverableWork, sessionMoved, keptClaimsPath, thrashEscalationPrompt, pruneGoneKeptClaims, readKeptClaims, writeKeptClaims } from "./wake/ci-class-and-spares.ts";
 import { spawnClaimer, consecutiveClean, drainInForce, isReleaseLine, cyclesReport } from "./wake/release-line-and-seats.ts";
 import { spawnedPrompt, deliver, PRIMARY_CHECKOUT } from "./wake/fyi-queue.ts";
@@ -35,9 +35,9 @@ import {
 } from "./row-claim.ts";
 import { unknownFlags } from "./lib/cli-flags.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
-import { CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, commentMove, workAtRisk, fileMove, claimReading, claimFactsFrom, readClaim, RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit } from "./claim-stall/claim-stalled.ts";
+import { CLAIM_STALLED, STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS, INTERRUPTED_SETTLE_MS, GONE_CONFIRM_MS, commentMove, workAtRisk, fileMove, claimReading, claimFactsFrom, readClaim, RESTART_RESEND_WINDOW_MS, INTERRUPTED_TEXT, THRASH_TEXT, gitRun, gitInvocation, newestOwnCommit } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { nudgeKey, nudgeDeliveredAt, nextStallState, claimStalledOrders, paneInterrupted, paneThrashed, killedDeliveries, readHerdrRestart, statMtime, pathExists } from "./claim-stall.ts";
 import { claimRecordOf } from "./claim-record.ts";
 import { decidedBy } from "./decided-by.ts";
@@ -121,7 +121,7 @@ type Agent = { label: string; status: string };
 function tickWith(world: World, comments: Comment[], { rows = [row(2407)], memory = {} as Record<string, unknown>, prs = [] as object[],
   merged = null as object[] | null, restartAt = null as number | null, now = NOW, blockedBy = [] as number[], ledger = "",
   // #3075: the OTHER tracked code repository's lists. Absent is a project with ONE code repository, which is every test above this line.
-  elsewhere = undefined as import("./claim-stall/claim-stalled.ts").ElsewherePrs | undefined,
+  elsewhere = undefined as import("./claim-stall/stall-causes-and-claim-readings.ts").ElsewherePrs | undefined,
   // `null` by default, same as `restartAt`: the gate is asked about the row's SESSION only when a test gives a listing,
   // never against the real `herdr` on whatever host runs the suite (`agentsFor`'s own doc says why -- CI must not depend on it).
   agents = null as Agent[] | null,

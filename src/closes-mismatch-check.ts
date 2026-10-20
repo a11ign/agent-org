@@ -73,7 +73,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import { extractClosesDeclaration, closesReferences, acceptanceSourceOfThisPullRequest, prAuthorFromEnv } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { extractClosesDeclaration, closesReferences, acceptanceSourceOfThisPullRequest, prAuthorFromEnv } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { sourceLine } from "./acceptance-file.ts";
 import { parseConsumerDeclarations, valueAtKey, valueMatches, CONSUMER_DECLARATION_KEYWORD } from "./consumer-declaration.ts";
 import { REPO } from "./project-identity.ts";
@@ -130,7 +130,7 @@ export type ResolvedIssue = number | { repo?: string, number: number };
  * @param {string} [prRepo]
  * @returns {MismatchReport}
  */
-export function closesMismatchReport(declaration: import("./acceptance-commands/classification.ts").ClosesDeclaration, resolved: ResolvedIssue[] | null, body: string, prRepo: string = REPO): MismatchReport {
+export function closesMismatchReport(declaration: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesDeclaration, resolved: ResolvedIssue[] | null, body: string, prRepo: string = REPO): MismatchReport {
   if (resolved === null) {
     return { ok: null,
       reason: "could not ask GitHub which issues this PR would close (the closingIssuesReferences lookup failed)" };
@@ -286,7 +286,7 @@ export type ClaimedBranchReport =
  * @param {string} [prRepo]
  * @returns {ClaimedBranchReport}
  */
-export function claimedBranchReport(declaration: import("./acceptance-commands/classification.ts").ClosesDeclaration, head: PrHead | null, rows: ClaimedRow[] | ClaimedRows | null, prRepo: string = REPO): ClaimedBranchReport {
+export function claimedBranchReport(declaration: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesDeclaration, head: PrHead | null, rows: ClaimedRow[] | ClaimedRows | null, prRepo: string = REPO): ClaimedBranchReport {
   if (declaration.kind !== "none") return { ok: true, note: null };
   if (head === null) return { ok: null, reason: "could not read the PR's head branch, so cannot say whether it is a claimed row's" };
   if (rows === null) return { ok: null, reason: "could not read the open claimed rows' claim records" };
@@ -406,7 +406,7 @@ export type ClaimedBranchReads = { head: (prNumber: number, prRepo: string) => P
  * @param {ClaimedBranchReads} [reads]
  * @returns {{ exit: 0 | 1, lines: string[] } | null}
  */
-export function claimedBranchStep(declaration: import("./acceptance-commands/classification.ts").ClosesDeclaration, pr: { prNumber: number; prRepo: string; },
+export function claimedBranchStep(declaration: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesDeclaration, pr: { prNumber: number; prRepo: string; },
   reads: ClaimedBranchReads = { head: lookupPrHead, rows: (prRepo) => lookupClaimedRowsOfTrackers(trackerReposFor(prRepo)) }): { exit: 0 | 1; lines: string[]; } | null {
   if (declaration.kind !== "none") return null;
   return claimedBranchVerdict(claimedBranchReport(declaration, reads.head(pr.prNumber, pr.prRepo), reads.rows(pr.prRepo), pr.prRepo));
@@ -433,7 +433,7 @@ export type ConsumerDeclarationReport =
  * @param {ConsumerFileReader} read
  * @returns {ConsumerDeclarationReport}
  */
-export function consumerDeclarationReport(declaration: import("./acceptance-commands/classification.ts").ClosesDeclaration, acceptanceText: string, read: ConsumerFileReader): ConsumerDeclarationReport {
+export function consumerDeclarationReport(declaration: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesDeclaration, acceptanceText: string, read: ConsumerFileReader): ConsumerDeclarationReport {
   const { declarations, errors } = parseConsumerDeclarations(acceptanceText);
   if (declarations.length === 0 && errors.length === 0) return { ok: true, note: null };
   const unreadLine = (error: { line: number, text: string, reason: string }) => `line ${error.line} \`${error.text}\` is not a ${CONSUMER_DECLARATION_KEYWORD} line: ${error.reason}`;
@@ -503,7 +503,7 @@ export function lookupConsumerFile(repo: string, path: string, ref?: string): st
  * @param {ConsumerFileReader} [read]
  * @returns {{ exit: 0 | 1, lines: string[] } | null}
  */
-export function consumerDeclarationStep(declaration: import("./acceptance-commands/classification.ts").ClosesDeclaration, readText: () => { text: string | null; named: string; }, read: ConsumerFileReader = lookupConsumerFile): { exit: 0 | 1; lines: string[]; } | null {
+export function consumerDeclarationStep(declaration: import("./acceptance-commands/command-classes-and-declarations.ts").ClosesDeclaration, readText: () => { text: string | null; named: string; }, read: ConsumerFileReader = lookupConsumerFile): { exit: 0 | 1; lines: string[]; } | null {
   const { text, named } = readText();
   if (text === null) return { exit: 0, lines: [`CLOSES MISMATCH: skipped the consumer-declaration comparison -- ${named}, which the acceptance job's own report refuses`] };
   return consumerDeclarationVerdict(consumerDeclarationReport(declaration, text, read));

@@ -1,13 +1,13 @@
 // @ts-check
 // module: a person's actions on a run -- stop, dismiss, remove, stop a new-ticket run, and apply or discard a proposed edit
 
-import { clearEdit, dismiss as dismissFinished, isLive, proposedEdit, remove as removeQueued } from "./queue/declared-remains.ts";
+import { clearEdit, dismiss as dismissFinished, isLive, proposedEdit, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { close, end, restoreWorkingState } from "./pool-settle.ts";
 import { stopWriter, writerOf } from "./queue.ts";
 import { filedOf } from "./pool-board-runs.ts";
 import { forgetRun, update, writerPlace } from "./pool-state.ts";
 import { closedNote } from "../herdr-agents.ts";
-import { isBeingPublished, isParked } from "./board-view/settled-by-pulls.ts";
+import { isBeingPublished, isParked } from "./board-view/pull-status-and-notes.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** Stop a live run: close its workspace and keep its worktrees. */

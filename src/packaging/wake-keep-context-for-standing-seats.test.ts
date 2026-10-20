@@ -14,9 +14,9 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { deliver, prepareContext } from "../wake/fyi-queue.ts";
-import { deliverHandoffs } from "../wake/ended-sessions.ts";
+import { deliverHandoffs } from "../wake/session-endings.ts";
 import { clearBeforeOrder, orderClockIn } from "../wake/merge-queue-wait.ts";
-import { keepsContext, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, COMPACT_THRESHOLD_TOKENS } from "../wake/holds-as-fyi.ts";
+import { keepsContext, CONTEXT_ACTION, KEEP_WITHIN_MS, KEEP_FILL_TOKENS, COMPACT_THRESHOLD_TOKENS } from "../wake/fyi-delivery-and-limits.ts";
 import { clearThenPrompt, promptWithContext, promptOrQueue, queueOrLose } from "../prompt-session.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 

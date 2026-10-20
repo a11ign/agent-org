@@ -9,10 +9,10 @@ import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PROJECT_ROOT } from "./host-units-project.ts";
-import { HOST_OPTIONAL_UNITS, SHIPPED_DIR, TOOL_ENTRIES, shippedUnitText, shippedUnits, toolForm } from "../host-units/shipped-units.ts";
+import { HOST_OPTIONAL_UNITS, SHIPPED_DIR, TOOL_ENTRIES, shippedUnitText, shippedUnits, toolForm } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { LONG_RUNNING_TEMPLATES } from "../host-config.ts";
 import { hostUnitsInstall, unclassifiedEntries } from "../host-units.ts";
-import { orphanedUnits } from "../host-units/host-identity-drift.ts";
+import { orphanedUnits } from "../host-units/host-drift-findings-and-notes.ts";
 import { HostConfigRefusal, parseHostConfig, renderTemplate, stateEntryPath, templateValues } from "../host-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 

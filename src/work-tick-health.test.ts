@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { HEARTBEAT_COMMENT_ID, writeHeartbeat } from "./work-tick.ts";
 import { SIGNALS } from "./org-health/thresholds.ts";
 import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
-import { tickRecordReading, tickWallReading } from "./org-health/claim-refusal.ts";
+import { tickRecordReading, tickWallReading } from "./org-health/claim-and-tick-readings.ts";
 import { tickHealthFooter } from "./trace/trace.ts";
 import { createRow } from "./ticket-port/approved-unqueued-reads.ts";
 import { ORG_HEALTH_CLASSES } from "./work-gate/org-health-suppression.ts";

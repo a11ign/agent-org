@@ -71,9 +71,9 @@ import { AUTHOR_FALLBACK_MS } from "./gh-author-fallback.ts";
 import { ACCOUNT_LIMIT_FLAG, pauseRecorded } from "./account-limit-record.ts";
 import { MAX_REASON_CHARS, MS_PER_HOUR, MS_PER_MINUTE, OFFERED_TO, isoOf } from "./org-health/thresholds.ts";
 import { STANDARD_MACHINERY_SIGNALS, machineryFlagOn, parseCanaryState, type CanarySample, type CanaryState, type FlagRecord, type SignalReading } from "./org-health/fleet-build-readings.ts";
-import { CANARY_STATE_FILE, type ClaimRefusal } from "./org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE, type ClaimRefusal } from "./org-health/claim-and-tick-readings.ts";
 import type { ReleaseRuns } from "./org-health/sweep-readings.ts";
-import { MACHINERY_SIGNALS, SESSION_PR_OUTSIDE_MINUTES } from "./org-health/hold-count.ts";
+import { MACHINERY_SIGNALS, SESSION_PR_OUTSIDE_MINUTES } from "./org-health/hold-and-rerun-readings.ts";
 
 /** The key of `host.json` that carries the options; read as raw JSON so a host that never set it is unchanged. */
 export const CANARY_OPTIONS_KEY = "machineryCanary";

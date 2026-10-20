@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { claimStallTick } from "./claim-stall-tick.ts";
 import { claimRecordComment } from "../row-claim.ts";
 import { recordStalledNudges } from "../claim-stall.ts";
-import { STALL_UNTOLD_RELEASE_MS } from "../claim-stall/claim-stalled.ts";
+import { STALL_UNTOLD_RELEASE_MS } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger } from "../failure-ledger.ts";
 import { STOPPED_CLAIMANT_MINUTES } from "../idle-claimant.ts";
 import type { WaitFacts } from "../wait-condition.ts";

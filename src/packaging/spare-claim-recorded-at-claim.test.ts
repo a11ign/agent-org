@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { sparePathsFrom } from "../wake/ended-sessions.ts";
+import { sparePathsFrom } from "../wake/session-endings.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 

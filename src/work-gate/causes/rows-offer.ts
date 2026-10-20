@@ -10,7 +10,7 @@ import { REPO } from "../../project-identity.ts";
 import { homeProjectDeclaration } from "../../project-config.ts";
 import { SESSION_PREFIX } from "../../project-vocabulary.ts";
 import { recordEmergencyPriority } from "../../failure-recorders.ts";
-import { readJsonObject } from "../../claim-stall/claim-stalled.ts";
+import { readJsonObject } from "../../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../../claim-stall.ts";
 import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
 import { commentsSince } from "../../ticket-port/comments-since.ts";

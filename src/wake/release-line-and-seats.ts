@@ -24,14 +24,14 @@ import { readAgents, listingIsComplete, absentSeats, REFUSAL_EXCERPT, firstLine,
 import { persistentEntries, type PersistentEntry } from "../project-roles.ts";
 import { liveToolVersion } from "../lib/tool-version.ts";
 import { readState as readSelftestState, selftestPaths, worthAChild } from "../messaging/selftest.ts";
-import type { SpareCycle } from "./holds-as-fyi.ts";
+import type { SpareCycle } from "./fyi-delivery-and-limits.ts";
 import { SESSIONS_FILE, handoffQueuePath, ledgerPathFrom, queueHandoff } from "./seat-reset.ts";
 import { EXIT, defaultGh, defaultRun, guardedGh, route, rowMention, type RowRef } from "./exit-and-limits.ts";
 import { START_BUDGET_MS, rowRefOfOrder, spawnEnvironment, startBudgetOf, type ClaimRefused, type ClaimedRow, type SpawnClaimer, type ToolchainGate } from "./pull-request-spawn-orders.ts";
-import { MERGE_QUEUE_WAIT_PHRASE, readSpareCycles, settle } from "./ended-sessions.ts";
+import { MERGE_QUEUE_WAIT_PHRASE, readSpareCycles, settle } from "./session-endings.ts";
 import { HOST_REPOS, PRIMARY_CHECKOUT, trackerRepositoryOf } from "./fyi-queue.ts";
 import { rowComments } from "./merge-queue-wait.ts";
-import { reviewCloneOf } from "./ensure-reviewer-token.ts";
+import { reviewCloneOf } from "./reviewer-tokens-and-checkouts.ts";
 
 /**
  * The current run of clean cycles, read from the ledger -- THE FUNCTION #1950's 20 IS READ FROM.

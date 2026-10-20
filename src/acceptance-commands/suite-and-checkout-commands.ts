@@ -8,7 +8,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { HostConfigRefusal, homeHostConfig } from "../host-config.ts";
 import { ACCEPTANCE_FIELD } from "../project-vocabulary.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
-import { ENV_ASSIGNMENT, LEADING_CD, SUITE_COMMAND, SUITE_SCRIPTS, handRunDeclaration, isDeclarationLine, isFile, isSectionHeaderLine, needsToken, stripLeadingCd, testFileRequirements, type JobCapabilities, type Section, unmetRequirements } from "./classification.ts";
+import { ENV_ASSIGNMENT, LEADING_CD, SUITE_COMMAND, SUITE_SCRIPTS, handRunDeclaration, isDeclarationLine, isFile, isSectionHeaderLine, needsToken, stripLeadingCd, testFileRequirements, type JobCapabilities, type Section, unmetRequirements } from "./command-classes-and-declarations.ts";
 
 /**
  * A COMMAND THAT RUNS THE WHOLE SUITE, which the capability gate could not see until 2026-09-09.

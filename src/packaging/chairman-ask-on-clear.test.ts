@@ -22,7 +22,7 @@ import { parseWaits, conditionHolds, versionAtLeast, waitItemOf } from "../wait-
 import { requestEvent } from "../messaging/sources/requests.ts";
 import { readFileSync } from "node:fs";
 import { workGateSource } from "../lib/work-gate-source.ts";
-import { moduleSource } from "../lib/module-source.ts";
+import { moduleSource } from "../lib/source-text-reads.ts";
 
 const NOW = Date.parse("2026-10-07T21:00:00Z");
 const FLEET = "@a11ign/screenreader-fleet";

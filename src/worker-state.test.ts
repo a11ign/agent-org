@@ -18,7 +18,7 @@ import { claimRecordComment } from "./row-claim.ts";
 import { ANSWER_PREFIX, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { COMMANDS } from "./commands.ts";
 import { STOPPED_CLAIMANT_MINUTES, VERIFIED_CLOSE_MINUTES, verifiedCloseOrder } from "./idle-claimant.ts";
-import { readClaim, type ClaimFacts } from "./claim-stall/claim-stalled.ts";
+import { readClaim, type ClaimFacts } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { TRACKER } from "./ticket-port/github-adapter.ts";
 import type { BlockerWriter, ItemRef } from "./ticket-port/port.ts";
 import {

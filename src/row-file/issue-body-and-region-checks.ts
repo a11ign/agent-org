@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { acceptancePathsReason, extractAcceptanceSection, handRunAcceptanceReason, labFetchPathReason } from "../acceptance-commands/suite-and-checkout-commands.ts";
-import { classifyCommand } from "../acceptance-commands/unmet-command-closure-requirements.ts";
-import { jobCapabilities, unmetClosureRequirements } from "../acceptance-commands/classification.ts";
+import { classifyCommand } from "../acceptance-commands/acceptance-report-and-closure.ts";
+import { jobCapabilities, unmetClosureRequirements } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { leakRefusalReason } from "../lib/leak-patterns.ts";
 import { bareRstestRunReason, missingTemplateFields, wholeSuiteAcceptanceReason } from "../row-claim/template-fields-rule.ts";
@@ -9,7 +9,7 @@ import { waitingLanguageWarning } from "../row-claim/waiting-language-rule.ts";
 import { DEFECT_LABEL } from "../defect-class-line.ts";
 import { declaredRegionFiles, declaresNoCommit, directoryReservations, extractLabeledSection, regionPathTokens, slashlessDirectoryEntries, splitRegionEntry, unrecognisedRegionPaths } from "../region-paths.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
-import { cloneOfKey } from "../claim-stall/claim-stalled.ts";
+import { cloneOfKey } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { builtInCheckoutOf } from "../built-in-checkout.ts";
 import { readUnlessRefused } from "../ticket-port/rows-by-label.ts";

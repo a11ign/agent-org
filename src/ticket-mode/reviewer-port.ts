@@ -20,7 +20,7 @@ import type { ReviewWord } from "./board-view/pull-review-state.ts";
 
 /** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
 type GateModules = {
-  wake: typeof import("../wake/ensure-reviewer-token.ts") & typeof import("../wake/ci-class-and-spares.ts") & typeof import("../wake/pull-request-spawn-orders.ts") & typeof import("../wake/seat-reset.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
+  wake: typeof import("../wake/reviewer-tokens-and-checkouts.ts") & typeof import("../wake/ci-class-and-spares.ts") & typeof import("../wake/pull-request-spawn-orders.ts") & typeof import("../wake/seat-reset.ts"); trust: typeof import("../review-trust.ts"); config: typeof import("../project-config.ts");
   identity: typeof import("../project-identity.ts"); orders: typeof import("../work-gate/pr-orders.ts"); doorPath: typeof import("../reviewer-door-path.ts"); host: typeof import("../host-config.ts");
 };
 
@@ -36,7 +36,7 @@ export async function loadReviewerGate(): Promise<void> {
   if (gate !== null) return;
   // The host file's module is read only once the gate's own modules have loaded: it is one of them (`pull-request-spawn-orders` imports it), so
   // it is already loaded then, and a host with no `primary` keeps the refusal the declaration names, not this one.
-  gate = await Promise.all([import("../wake/ensure-reviewer-token.ts"), import("../wake/ci-class-and-spares.ts"), import("../wake/pull-request-spawn-orders.ts"), import("../wake/seat-reset.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
+  gate = await Promise.all([import("../wake/reviewer-tokens-and-checkouts.ts"), import("../wake/ci-class-and-spares.ts"), import("../wake/pull-request-spawn-orders.ts"), import("../wake/seat-reset.ts"), import("../review-trust.ts"), import("../project-config.ts"), import("../project-identity.ts"), import("../work-gate/pr-orders.ts"), import("../reviewer-door-path.ts")]).then(
     async ([tokens, withCiFailure, spawnOrder, reset, trust, config, identity, orders, doorPath]) => ({ ok: true as const, modules: { wake: { ...tokens, ...withCiFailure, ...spawnOrder, ...reset }, trust, config, identity, orders, doorPath, host: await import("../host-config.ts") } }),
     (refusal: unknown) => ({ ok: false as const, refusal }),
   );
@@ -453,8 +453,8 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
   removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync,
   checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor, clones = {} }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
-  spawn?: typeof import("../wake/ensure-reviewer-token.ts").spawnReviewer; checkout?: typeof import("../wake/ensure-reviewer-token.ts").prepareReviewCheckout; heads?: Map<string, string>;
-  removeCheckout?: typeof import("../wake/ensure-reviewer-token.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
+  spawn?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").spawnReviewer; checkout?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").prepareReviewCheckout; heads?: Map<string, string>;
+  removeCheckout?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
   /** Where a seat's reviewer keeps its checkout, which holds the verdict file it wrote. */
   checkoutOf?: (label: string) => string;
   /** Mints the reviewer's token in a checkout: the reason it could not, or null when it has one. */

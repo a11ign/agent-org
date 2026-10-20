@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { SHADOW_READS_DIR, SHADOW_WINDOW_MARKER, parseShadowRecord, tapShadowReads } from "../shadow-reads.ts";
 
 const FIRST_TICK = 1_790_000_000_000;

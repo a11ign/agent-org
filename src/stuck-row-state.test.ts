@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 import assert from "node:assert/strict";
 import { escalateStuck, ESCALATION_LABEL } from "./wake/merge-queue-wait.ts";
-import { MAX_DELIVERIES } from "./wake/holds-as-fyi.ts";
+import { MAX_DELIVERIES } from "./wake/fyi-delivery-and-limits.ts";
 
 const SHA = "0123abcd";
 const KEY = `worker-4727/trunk-red/pr-agent-org#56/${SHA}`;

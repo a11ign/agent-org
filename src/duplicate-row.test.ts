@@ -14,7 +14,7 @@ import { DUPLICATE_SIMILARITY } from "./board-truth-audit.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { freshState } from "./triage-provider.ts";
 import { appendDistinctFrom, candidatesFor, CANDIDATE_OVERLAP, distinctFromOf, DISTINCT_FROM_FLAG, duplicateRowCheck, MAX_CANDIDATES } from "./duplicate-row.ts";
-import { withFiledBy } from "./row-file/body-from-argv.ts";
+import { withFiledBy } from "./row-file/issue-body-and-region-checks.ts";
 
 const TITLE = "A decision document sizes assessing a multi-step task with actions between steps and a report per step, and names the first row (#4084 outcome 12)";
 const TWIN = TITLE;

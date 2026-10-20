@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { productRegionsOf } from "../work-gate/causes/rows-offer.ts";
 import { adopterRowKind, milestoneClockFact } from "../work-gate/org-health.ts";
-import { primaryMilestoneRefusal } from "../row-file/roadmap-without-parent-refusal.ts";
+import { primaryMilestoneRefusal } from "../row-file/roadmap-and-milestone-checks.ts";
 import { parseProjectDeclaration, ProjectDeclarationRefusal } from "../project-config.ts";
 import { measureRepository } from "../dora.ts";
 import { isShipped } from "../release-behind-main.ts";

@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { ORDER_STALL_MINUTES, SIGNALS } from "../org-health/thresholds.ts";
 import { orderStallReading } from "../org-health/overdue-readings.ts";
 import { BUSY_SEAT_DEFERRAL_MS } from "../wake/exit-and-limits.ts";
-import { CAPACITY_WAIT_LIMIT_MS } from "../wake/ended-sessions.ts";
+import { CAPACITY_WAIT_LIMIT_MS } from "../wake/session-endings.ts";
 import { refusalReport, deferralAges, stalledOrdersOf } from "../wake/merge-queue-wait.ts";
 import { handoffBacklog } from "../wake/fyi-queue.ts";
 import { orderStallOrdersNow } from "../wake.ts";

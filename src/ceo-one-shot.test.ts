@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { deliver } from "./wake/fyi-queue.ts";
 import { spawnableRole, type ClaimedRow, type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { SPAWN_CAUSES } from "./wake/exit-and-limits.ts";
-import { fleetOrLabAcceptance } from "./acceptance-commands/classification.ts";
+import { fleetOrLabAcceptance } from "./acceptance-commands/command-classes-and-declarations.ts";
 import { RESOURCES } from "./project-vocabulary.ts";
 import { laneReason } from "./row-claim/runner-rule.ts";
 import { readStandIns, writeStandIn } from "./row-claim/lane-stand-in.ts";
@@ -29,7 +29,7 @@ import { CEO_ONE_SHOT_SPAWN_CAUSES, createCeoOneShot, ceoOneShotEnabled, withCeo
 import { startedPanes } from "./packaging/started-pane.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 import { trackedTopLevelDirs } from "./region-paths.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const STANDING = ["worker-capture", "worker-judge", "worker-tooling"];
 const held = STANDING.map((label) => ({ label, status: "working" }));

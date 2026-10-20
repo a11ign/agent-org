@@ -13,7 +13,7 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scopesOf } from "./work-gate/vocabulary.ts";
-import { scopeTick } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { scopeTick } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { withScopedPrOwners, resolverDefectOf } from "./work-gate/pr-owners.ts";
 import { fileResolverDefects } from "./work-gate/causes/org-health-resolver-defects.ts";
 import { sendToGitHub, unstampableRefusal, main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";

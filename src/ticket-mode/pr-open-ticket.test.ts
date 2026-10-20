@@ -18,7 +18,7 @@ import { parseTicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
-import { CI_BODY_REPORTS } from "../acceptance-commands/unmet-command-closure-requirements.ts";
+import { CI_BODY_REPORTS } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { main, runFromCli, EXIT_NOTHING_SENT, sendToGitHub } from "../pr-open.ts";
 
 const KEY = "A11-74";

@@ -16,7 +16,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "wake-spawn-brief-absent-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));

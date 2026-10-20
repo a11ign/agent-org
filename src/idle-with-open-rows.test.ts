@@ -38,7 +38,7 @@ process.env.PATH = `${join(SCRATCH, "fakebin")}:${process.env.PATH}`;
 
 const { idleWithOpenRowsReading, idleLine, IDLE_REASONS } = await import("./idle-with-open-rows.ts");
 const { SIGNALS } = await import("./org-health/thresholds.ts");
-const { idleWithOpenRowsSignal } = await import("./org-health/board-truth-readings.ts");
+const { idleWithOpenRowsSignal } = await import("./org-health/board-truth-and-access-readings.ts");
 const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-readings.ts");
 const { orgHealthNow, engineerSeats } = await import("./work-gate/org-health.ts");
 

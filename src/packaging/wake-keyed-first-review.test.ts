@@ -38,9 +38,9 @@ process.env.AGENT_ORG_HOST = HOST_FILE;
 
 const { homeProjectDeclaration } = await import("../project-config.ts");
 const { scopesOf } = await import("../work-gate/vocabulary.ts");
-const { readLanes, scopeTick } = await import("../work-gate/tick/blocker-cleared-reading.ts");
+const { readLanes, scopeTick } = await import("../work-gate/tick/tick-decisions-and-flags.ts");
 const { deliver } = await import("../wake/fyi-queue.ts");
-const { linkKeyedDependencies } = await import("../wake/ensure-reviewer-token.ts");
+const { linkKeyedDependencies } = await import("../wake/reviewer-tokens-and-checkouts.ts");
 
 // --- (1) THE DEPENDENCY REMEDY ----------------------------------------------------------------------------------------------------
 

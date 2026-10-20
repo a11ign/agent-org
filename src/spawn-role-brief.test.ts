@@ -14,10 +14,10 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addressed } from "./wake/fyi-queue.ts";
-import { ENGINEER_BRIEF } from "./wake/ended-sessions.ts";
+import { ENGINEER_BRIEF } from "./wake/session-endings.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { SPAWN_BRIEF_ROLES, engineerBriefSentence, briefRoleSentence } from "./spawn-role-brief.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const ORDER = { session: "engineers", prompt: "claim row 1 as `<you>`", cause: "ready-row-unclaimed" };
 const SPAWNED = { row: 828, branch: "agent/a-spawned-seat-828", worktree: "/tmp/wt-828", launchDir: "/tmp/wt-828" };

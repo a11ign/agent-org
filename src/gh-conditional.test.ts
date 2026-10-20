@@ -15,7 +15,7 @@ import { budgetLine, budgetOf, conditionalGate, meteredBatch, meteredRun, partit
 import { readValidators, saveValidators, type Validated } from "./trace/publish.ts";
 import { KEPT_READ_MAX_AGE_MS, defaultRun, holdTickBudget, readPrs, readWithFirstWaveTogether, runBatch, standingFor, useConditionalSource } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readOpenRows } from "./work-gate/reads.ts";
-import { CAUSE_SHARE, CUT_BACK_FROM, cutBackFirst, readLanes, tickReadingLines } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { CAUSE_SHARE, CUT_BACK_FROM, cutBackFirst, readLanes, tickReadingLines } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { readTrackerLanes } from "./work-gate/tick.ts";
 
 const ETAG = 'W/"abc123"';

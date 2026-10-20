@@ -1,7 +1,7 @@
 // @ts-check
 // module: the pool's shared lookups -- where a run lives, whether it is planning, and the queue's updates for a run
 
-import { type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WriterRun } from "./queue/declared-remains.ts";
+import { type Entry, type Outcome, type PublishRun, type Queue, type RunChoice, type WriterRun } from "./queue/queue-entries-and-outcomes.ts";
 import { batchDir, batchFolder, publishDir, publishFolder, type RunPlace } from "./pool-paths.ts";
 import { herdrName } from "./pool-herdr.ts";
 import { ticketDir, ticketFolder, writerDir, writerFolder } from "./ticket-paths.ts";

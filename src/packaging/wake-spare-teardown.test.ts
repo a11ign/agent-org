@@ -20,8 +20,8 @@ import { spareRoles, spareInstances, spareDecision, cycleVerdict, SPARE_CLAIM_BO
 import { consecutiveClean } from "../wake/release-line-and-seats.ts";
 import { endFinishedSpares, spareWorktrees } from "../wake/ci-class-and-spares.ts";
 import { spawnEnvironment, WORKERS_GH_CONFIG_DIR } from "../wake/pull-request-spawn-orders.ts";
-import { readSpareCycles, sparePathsFrom } from "../wake/ended-sessions.ts";
-import { registerSpawn } from "../wake/holds-as-fyi.ts";
+import { readSpareCycles, sparePathsFrom } from "../wake/session-endings.ts";
+import { registerSpawn } from "../wake/fyi-delivery-and-limits.ts";
 import { PRIMARY_CHECKOUT } from "../wake/fyi-queue.ts";
 import { startedPanes, STUB_STARTED_PANE } from "./started-pane.ts";
 import { hostConfigPath } from "../host-config.ts"; // #850: the pane carries the host the gate resolved

@@ -22,10 +22,10 @@ import { emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../org-health.ts";
 import { CLOSED_UNDER_HALF_FILE, CLOSED_UNDER_HALF_FLAG, closedUnderHalfOrders, rowsClosedUnderOpenHalf } from "../work-gate/causes/rows-closed-under-half.ts";
 import { REENQUEUE_EJECTED_FLAG, failedEntriesSincePush, jobFailuresOf, mergeGroupGreenSince, ownershipOfFailure, requeueEjected, type EjectionEvidence } from "../work-gate/causes/pr-ejected.ts";
-import { readArmingOf } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { readArmingOf } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { type ArmingPort } from "../work-gate/vocabulary.ts";
 import { CAUSES, JUDGMENT_CAUSES } from "../cause-declaration.ts";
-import { stalledPrOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { stalledPrOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import type { Decision, ItemRef } from "../ticket-port/port.ts";
 
 const HOME = "a11ign/a11ign";

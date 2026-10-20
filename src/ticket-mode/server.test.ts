@@ -6,12 +6,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { markPublishRunning, markPublishStarting } from "./queue/approve.ts";
+import { markPublishRunning, markPublishStarting } from "./queue/queue-transitions.ts";
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
-import { remove as removeQueued } from "./queue/declared-remains.ts";
+import { remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
-import type { Outcome } from "./queue/declared-remains.ts";
+import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import type { View } from "./settings-view.ts";
 

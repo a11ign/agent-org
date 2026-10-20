@@ -28,7 +28,7 @@ import assert from "node:assert/strict";
 import { statusContradictions, statusCensus, vocabularyDrift, RESTING_STATUS, WRITTEN_STATUSES }
   from "../board-status-health.ts";
 import { readFileSync } from "node:fs";
-import { moduleSource } from "../lib/module-source.ts";
+import { moduleSource } from "../lib/source-text-reads.ts";
 
 /** The shape the real query returns, with the numbers this row measured. */
 const REAL_SHAPE = [

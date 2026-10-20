@@ -2,7 +2,7 @@ import { subjectRef } from "../../review-attribution.ts";
 import { machineryFlagOn, type CanaryState } from "../../org-health/fleet-build-readings.ts";
 import type { BlockingOrder } from "../../blocking-impact.ts";
 import { closedRowsOf } from "../../merge-guard.ts";
-import { readJsonObject } from "../../claim-stall/claim-stalled.ts";
+import { readJsonObject } from "../../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../../claim-stall.ts";
 import { OPEN_ROWS_LIMIT } from "../reads/read-memo-and-exit.ts";
 

@@ -35,7 +35,7 @@ import { labelsOf, HOUR_MS } from "./vocabulary.ts";
 import { conflictStateOf, CONFLICT_STATE, reviewStateOf, checksSettledGreen, blockingChecks, REVIEW_STATE } from "./pr-state.ts";
 import { reviewableHead, reviewWait, awaitingEvidence, AWAITING_EVIDENCE_LABEL, AWAITING_EVIDENCE_QUIET_HOURS, AWAITING_EVIDENCE_QUIET_MS } from "./causes/pr-reviews.ts";
 import { verdictAmong } from "../review-verdict.ts";
-import { CAUSE_OF_STALL, DEAD_OWNER_FALLBACK, DEPENDENCY_BOT_WORKER_CAUSES, DEPENDENCY_BOT_WORKER_SESSION, MS_PER_MINUTE, REVIEW_CAUSES, STALL_REASON, UNOWNED_PR_SESSION, approvedAtHead, failingChecksOrder, failingRunStartedAt, hungCheckOf, isChairmanAuthoredPr, ownerOfPr, ownershipOf, reviewGateOf, reviewerRoleFile, settledVerdictOrder, stallReasonOf, type ReviewHeads } from "./pr-orders/red-only-by-superseded-run.ts";
+import { CAUSE_OF_STALL, DEAD_OWNER_FALLBACK, DEPENDENCY_BOT_WORKER_CAUSES, DEPENDENCY_BOT_WORKER_SESSION, MS_PER_MINUTE, REVIEW_CAUSES, STALL_REASON, UNOWNED_PR_SESSION, approvedAtHead, failingChecksOrder, failingRunStartedAt, hungCheckOf, isChairmanAuthoredPr, ownerOfPr, ownershipOf, reviewGateOf, reviewerRoleFile, settledVerdictOrder, stallReasonOf, type ReviewHeads } from "./pr-orders/pr-gate-readings.ts";
 
 /**
  * agent-org#1325: WITH THE FLAG ON, an OUTSIDE pull request (`reviewTrustOf`) and one the chairman authored keep only the orders that ask a reviewer

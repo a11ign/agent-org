@@ -15,8 +15,8 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeJsonObject } from "./claim-stall.ts";
-import { BOARD_TRUTH_PAIR_FLAG } from "./org-health/board-truth-readings.ts";
-import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { BOARD_TRUTH_PAIR_FLAG } from "./org-health/board-truth-and-access-readings.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-and-tick-readings.ts";
 import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState, machineryFlagOn, parseCanaryState, type CanaryState, type FlagRecord } from "./org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "./org-health.ts";
 import { CHAIN_WAIT_FLAG } from "./work-gate/causes/org-health-chain-wait.ts";
@@ -32,7 +32,7 @@ import { REFUSE_ASKING_ANNOUNCEMENTS_FLAG } from "./messaging/core.ts";
 import { PACING_FLAG } from "./work-gate/pacing.ts";
 import { OWNERLESS_ASK_FLAG } from "./work-gate/pr-orders.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { PR_OWNER_ROUTING_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { PR_OWNER_ROUTING_FLAG, ROW_REVIEW_SKILL_FLAG, SAME_HEAD_REFAIL_FLAG } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { SESSION_PR_OUTSIDE_FLAG } from "./work-gate/outside-session-pr.ts"; // agent-org#1667
 import { ACCOUNT_LIMIT_FLAG } from "./account-limit.ts";
 import { REFUSE_AUTHOR_FALLBACK_FLAG } from "./gh-author-fallback.ts";

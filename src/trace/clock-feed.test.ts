@@ -40,7 +40,7 @@ process.chdir(PROJECT);
 const { overdueReading } = await import("../org-health/overdue-readings.ts");
 const { overdueFacts } = await import("../work-gate/org-health.ts");
 const { claimRecordComment } = await import("../row-claim.ts");
-const { mergedStats, median } = await import("../org-retro/retro-cause.ts");
+const { mergedStats, median } = await import("../org-retro/retro-window-and-journal-patterns.ts");
 const { agedBacklogOrders } = await import("../work-gate/causes/rows-backlog.ts");
 
 const REPO = "a11ign/a11ign";

@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveEndedHandoffs } from "./wake/ended-sessions.ts";
+import { resolveEndedHandoffs } from "./wake/session-endings.ts";
 import { handoffId } from "./wake/seat-reset.ts";
 
 const HOUR = 3_600_000;

@@ -11,7 +11,7 @@
 // the row's OWN Done-when, which must pass; case 6 breaks the wiring by reading a body the classifier refuses and requires `createIssue` to say so.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createIssue } from "./row-file/roadmap-without-parent-refusal.ts";
+import { createIssue } from "./row-file/roadmap-and-milestone-checks.ts";
 import { doneWhenItems, liveCheckItems, unfinishableItems, unsplitDoneWhenRefusal } from "./unsplit-done-when.ts";
 
 const NOW = new Date("2026-10-09T20:40:00Z");

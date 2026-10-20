@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { escalateStuck, ESCALATION_LABEL } from "../wake/merge-queue-wait.ts";
 import { deliver } from "../wake/fyi-queue.ts";
-import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
+import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../project-vocabulary.ts";
 import { ANSWER_PREFIX } from "../waiting-condition.ts";
 import { answerOrders, rowsOwingAnswers } from "../work-gate/causes/rows-answers.ts";

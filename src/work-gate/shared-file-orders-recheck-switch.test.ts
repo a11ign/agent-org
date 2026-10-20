@@ -27,7 +27,7 @@ import { main as machineryFlag } from "../machinery-flag.ts";
 import { perPullRequestOrders } from "./pr-orders.ts";
 import { readReenqueueState } from "./causes/pr-ejected.ts";
 import { RECHECK_FLAG, sharedFileOrders } from "./shared-file-orders.ts";
-import { decide, recheckFlagOn } from "./tick/blocker-cleared-reading.ts";
+import { decide, recheckFlagOn } from "./tick/tick-decisions-and-flags.ts";
 
 type Order = { session: string; cause: string; subject: string; prompt: string; causeKey: string };
 type Pr = { number: number; files: { path: string }[]; changedFiles: number; labels: { name: string }[]; body: string; comments: unknown[]; headRefName: string;
@@ -104,7 +104,7 @@ function releasesFromChild(stateDir: string, scratch: string): number {
     `const prs = JSON.parse(readFileSync(prsFile, "utf8"));`,
     `process.stdout.write(JSON.stringify(decide({ prs, readyRows: [], nowMs: ${NOW} }).map((order) => order.prompt)));`,
   ].join("\n"));
-  const out = execFileSync(process.execPath, [script, pathToFileURL(join(import.meta.dirname, "tick", "blocker-cleared-reading.ts")).href, prsFile], {
+  const out = execFileSync(process.execPath, [script, pathToFileURL(join(import.meta.dirname, "tick", "tick-decisions-and-flags.ts")).href, prsFile], {
     encoding: "utf8", env: { ...process.env, [SHADOW_STATE_DIR_ENV]: stateDir }, stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
   return (JSON.parse(out) as string[]).filter((prompt) => RELEASE.test(prompt)).length;
 }

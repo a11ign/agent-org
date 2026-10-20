@@ -25,10 +25,10 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { toolNodeModules } from "./tool-node-modules.ts";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 
-const { hostIdentityDrift, ownedIdentityFiles } = await import("../host-units/host-identity-drift.ts");
+const { hostIdentityDrift, ownedIdentityFiles } = await import("../host-units/host-drift-findings-and-notes.ts");
 const { hostIdentityInstall } = await import("../host-units/gh-wrapper-and-notes.ts");
 const { hostUnitDrift } = await import("../host-units.ts");
-const { shippedScriptText } = await import("../host-units/shipped-units.ts");
+const { shippedScriptText } = await import("../host-units/shipped-unit-texts-and-declarations.ts");
 const { homeHostConfig } = await import("../host-config.ts");
 
 const HOST_VARIABLE = "AGENT_ORG_HOST";

@@ -1,7 +1,7 @@
 // @ts-check
 // module: the runs the board starts for itself -- how a new-ticket run and a publish run finish
 
-import { type PublishRun, type WriterRun, type WriterTicket } from "./queue/declared-remains.ts";
+import { type PublishRun, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { CREATED_FILE, DECISIONS_FILE, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
 import { sectionsNeeded, settledDescription } from "./open-decisions.ts";
@@ -12,9 +12,9 @@ import { forgetRun, messageOf, publishPlace, update, writerPlace, writerAgentRun
 import { writerEnded, writerWaiting } from "./queue.ts";
 import { QUESTION_CHARS } from "./pool-outcome.ts";
 import { closedNote } from "../herdr-agents.ts";
-import { publishDone, publishFailed } from "./queue/approve.ts";
+import { publishDone, publishFailed } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { hasPlan } from "./board-view/view-ticket.ts";
+import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ASKED_FILE, OUTCOME_FILE, WAITING_FILE } from "./worker-files.ts";

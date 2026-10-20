@@ -13,7 +13,7 @@ import {
   BLAST_MAX_FILES, BLAST_MAX_OVERLAP, blastRadiusGate, blastRadiusVerdict, declaresSweep, ghBlastReads, measureBlastRadius, sweepVerdict,
   type BlastReads, type OpenPr, type OpenRow,
 } from "./blast-radius.ts";
-import { createIssue } from "./row-file/roadmap-without-parent-refusal.ts";
+import { createIssue } from "./row-file/roadmap-and-milestone-checks.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 
 const regionOf = (...entries: string[]) => `## What it is\nx\n\n## Region\n\n\`\`\`\n${entries.join("\n")}\n\`\`\`\n\n## Acceptance\n\n\`\`\`\nnpx rstest run src/x.test.ts\n\`\`\`\n\n## Open-check\n\nn/a\n`;

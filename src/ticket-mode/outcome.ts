@@ -1,7 +1,7 @@
 // @ts-check
 // module: the shape of a worker's outcome file -- what the Stop hook checks before a worker may stop, what the pool reads from it, and the examples the brief shows
 
-import { declaredRemains, type ProposedEdit, type PullRequest, type WrittenOutcome } from "./queue/declared-remains.ts";
+import { declaredRemains, type ProposedEdit, type PullRequest, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 
 /** Every kind a worker's outcome file may name: the run kinds' outcomes, and the publish and new-ticket runs' own (A11-118). */
 export const OUTCOME_KINDS = ["ready-pr", "draft-pr", "done", "checked", "wrong-repo", "needs-human", "working", "planned", "reviewed", "published", "drafted"] as const;

@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // A plain `.mjs`, and `scripts/**` IS in the typecheck program (#189), so this resolves and is checked.
 import { extractAcceptanceSection } from "../acceptance-commands/suite-and-checkout-commands.ts";
-import { acceptanceReport } from "../acceptance-commands/unmet-command-closure-requirements.ts";
+import { acceptanceReport } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 
 // #929: THIS GUARD READS ONLY `scripts`, `.github/PULL_REQUEST_TEMPLATE.md`, so a diff that cannot reach it need not run this file.

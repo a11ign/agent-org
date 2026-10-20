@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { rowKind, productRegionsOf, productShare, offeredByShare, recordEngineerStarts, PRODUCT_SHARE_WINDOW, PRODUCT_SHARE_FLOOR, ENGINEER_STARTS_FILE } from "../work-gate/causes/rows-offer.ts";
 
 const DECLARATION = {

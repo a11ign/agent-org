@@ -14,12 +14,12 @@ import { test } from "node:test";
 import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { claimRecordComment } from "./row-claim.ts";
 import { CLAIMED_WORKER_STALLED, recordStalledNudges, stalledNudgeEvents } from "./claim-stall.ts";
-import { STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS } from "./claim-stall/claim-stalled.ts";
+import { STALL_INTERVAL_MS, STALL_UNTOLD_RELEASE_MS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
 import { IDLE_CLAIMANT_MINUTES, STOPPED_CLAIMANT_MINUTES, WAIT_FIELDS, idleClaimantReading, isStoppedHolder, stoppedNudgePrompt } from "./idle-claimant.ts";
 import { FLAG_REGISTRY } from "./machinery-flag.ts";
-import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-and-tick-readings.ts";
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-10T09:00:00Z");

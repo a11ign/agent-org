@@ -5,7 +5,7 @@ import { loadLanes, inLane, MANAGERS_APP_LOGINS } from "../../lane-ownership.ts"
 import { holdersOf } from "../../pr-hold-state.ts";
 import { decidedBy } from "../../decided-by.ts";
 import { worktreeOwner } from "../../worktree-owner.ts";
-import { HOLD_RED_JOBS, reviewGateOf } from "../pr-orders/red-only-by-superseded-run.ts";
+import { HOLD_RED_JOBS, reviewGateOf } from "../pr-orders/pr-gate-readings.ts";
 import { checkMarkersOf } from "../review-gate.ts";
 import { BLOCKING_REVIEW_STATES, REVIEW_STATE, blockingChecks, checksSettledGreen, draftCandidates, mergeCandidates, reviewStateOf } from "../pr-state.ts";
 import { PROJECT_GIT } from "../reads.ts";

@@ -18,7 +18,7 @@ const FIXTURE = fileURLToPath(new URL("./packaging/fixtures/row-claim-file-overl
 const host = JSON.parse(readFileSync(fileURLToPath(new URL("./packaging/fixtures/host-units/host.json", import.meta.url)), "utf8"));
 writeFileSync(join(SETUP, "host.json"), JSON.stringify({ ...host, projects: [{ id: "fixture", checkout: FIXTURE }] }));
 process.env.AGENT_ORG_HOST ??= join(SETUP, "host.json");
-const { absentRegionTopDirReason } = await import("./row-file/body-from-argv.ts");
+const { absentRegionTopDirReason } = await import("./row-file/issue-body-and-region-checks.ts");
 
 const CODE = [
   { key: "", repo: "a11ign/agent-org" },

@@ -38,7 +38,7 @@ process.chdir(PROJECT);
 
 const { partitionUnclaimed, rowBranchOrders } = await import("./work-gate/causes/rows-claims.ts");
 const { readBranchPrs, readBranchPrsOfUnclaimed, branchesToReplace } = await import("./work-gate/reads.ts");
-const { decide } = await import("./work-gate/tick/blocker-cleared-reading.ts");
+const { decide } = await import("./work-gate/tick/tick-decisions-and-flags.ts");
 const { spawnClaimer } = await import("./wake/release-line-and-seats.ts");
 const { spawnableRole } = await import("./wake/pull-request-spawn-orders.ts");
 const { spawnedPrompt } = await import("./wake/fyi-queue.ts");

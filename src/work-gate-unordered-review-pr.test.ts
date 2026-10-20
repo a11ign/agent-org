@@ -11,8 +11,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, CHECKLESS_QUIET_MINUTES } from "./work-gate/pr-orders.ts";
-import { reviewBlockedOrders } from "./work-gate/pr-orders/red-only-by-superseded-run.ts";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { reviewBlockedOrders } from "./work-gate/pr-orders/pr-gate-readings.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { reviewBlocked } from "./work-gate/causes/pr-reviews.ts";
 
 type Order = { session: string, fallback?: string, fallbackPrompt?: string, cause: string, causeKey: string, discriminator: string, prompt: string };

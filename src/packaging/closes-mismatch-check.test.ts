@@ -21,7 +21,7 @@ import {
   closesMismatchReport, findClosingPhrase, isRepoWideResolutionFault, recentClosesSiblings, refusal,
   mismatchVerdict, REPO_WIDE_WARNING,
 } from "../closes-mismatch-check.ts";
-import type { ClosesDeclaration } from "../acceptance-commands/classification.ts";
+import type { ClosesDeclaration } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 const NONE: ClosesDeclaration = { kind: "none", reason: "docs-only change" };

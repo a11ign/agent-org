@@ -28,7 +28,7 @@
  *      `rows-since.ts` (a marker that is tested in BOTH directions), and the new `rows-since.ts` reader answers a `run` that refuses every search argv, pages to the
  *      first row before its window, REFUSES a window longer than its pages, and sits under the one refusal memory.
  */
-import { moduleSource } from "../lib/module-source.ts";
+import { moduleSource } from "../lib/source-text-reads.ts";
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -48,7 +48,7 @@ import { mergedPrsInWindow } from "../close-rows-sweep.ts";
 import { fetchReadyIssueNumbers } from "../board-snapshot.ts";
 import { ghReadyReader } from "../untiered-ready-rows.ts";
 import { readClosedRows } from "../trace/haiku-tier-report.ts";
-import { readMergedSince } from "../org-retro/retro-cause.ts";
+import { readMergedSince } from "../org-retro/retro-window-and-journal-patterns.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 import { closedAnswerConnection, connectionOf, readsClosedAnswerRows, readsRecentlyClosed, readsRowsByLabel, readsRowsSince, recentlyClosedConnection,
   sinceAnswer } from "./rows-by-label-fixtures.ts";

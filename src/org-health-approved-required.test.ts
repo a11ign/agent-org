@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { APPROVED_REQUIRED_FLAG, APPROVED_REQUIRED_MINUTES, APPROVED_REQUIRED_SIGNAL, approvedRequiredReading, approvedRequiredReadings, type ApprovedRequiredPr } from "./org-health/hold-count.ts";
+import { APPROVED_REQUIRED_FLAG, APPROVED_REQUIRED_MINUTES, APPROVED_REQUIRED_SIGNAL, approvedRequiredReading, approvedRequiredReadings, type ApprovedRequiredPr } from "./org-health/hold-and-rerun-readings.ts";
 import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
 import { type Reading } from "./org-health/thresholds.ts";
 

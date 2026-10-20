@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FailureEntry } from "./failure-ledger.ts";
 import { CORRECTION_KIND, correctionsLine, correctionsPerDay } from "./found-by-chairman.ts";
-import { buildReport } from "./org-retro/readings.ts";
+import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport } from "./org-retro.ts";
 
 // A run on 2026-10-09 reads the seven whole UTC days 2026-10-02 .. 2026-10-08.

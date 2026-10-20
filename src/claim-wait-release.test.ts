@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { claimReading, WAIT_RELEASE_KINDS, type ClaimFacts, type Reading } from "./claim-stall/claim-stalled.ts";
+import { claimReading, WAIT_RELEASE_KINDS, type ClaimFacts, type Reading } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
 
 const MIN = 60_000;

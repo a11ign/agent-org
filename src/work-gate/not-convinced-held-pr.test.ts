@@ -12,7 +12,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide } from "./tick/blocker-cleared-reading.ts";
+import { decide } from "./tick/tick-decisions-and-flags.ts";
 import { withClosingRowOwners } from "./pr-owners.ts";
 
 type Fixture = Record<string, any>;

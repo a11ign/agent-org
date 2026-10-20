@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { outcomeExamples } from "./outcome.ts";
-import type { WriterMode } from "./queue/declared-remains.ts";
+import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
 

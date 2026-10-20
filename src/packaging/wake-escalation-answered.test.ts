@@ -18,9 +18,9 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { escalateStuck } from "../wake/merge-queue-wait.ts";
-import { escalatedKeys } from "../wake/ended-sessions.ts";
+import { escalatedKeys } from "../wake/session-endings.ts";
 import { deliveryCounts, ledgerKeyOf, ESCALATED, RESET } from "../wake/seat-reset.ts";
-import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
+import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
 
 const WAKE_ENTRY = fileURLToPath(new URL("../wake.ts", import.meta.url));
 const STUB_MODE = 0o755;

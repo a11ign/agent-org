@@ -17,7 +17,7 @@ import { HOUR_MS, MAX_ROW_ORDERS_PER_TICK, scopesOf, labelsOf, sessionOf, REVIEW
 import { fleetBatchRows } from "./causes/rows-fleet-batch.ts";
 import { defaultRun, repoNow, forgetReads, readWithFirstWaveTogether } from "./reads/read-memo-and-exit.ts";
 import { shouldBeMerging } from "./causes/pr-checks.ts";
-import { dispatchedLabJobsOrSay } from "./tick/blocker-cleared-reading.ts";
+import { dispatchedLabJobsOrSay } from "./tick/tick-decisions-and-flags.ts";
 import { redPrFacts } from "./tick.ts";
 import { partitionUnclaimed } from "./causes/rows-claims.ts";
 import { openBlockers } from "./causes/rows-amended.ts";
@@ -40,7 +40,7 @@ import { ANSWER_PREFIX, NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX, LANE_PREFIX } from
 import { FLEET_IDLE_HOURS, PRIMARY_MILESTONE_LINE, SIGNALS, MILESTONE_CLOCK_MINUTES } from "../org-health/thresholds.ts";
 import { readLatestMerge, primaryStandingSince, readTeamAccess, readReleaseRuns, readReleaseFailures, type SweepFact } from "../org-health/sweep-readings.ts";
 import { orgHealthTick, readFleetBuildIncidents, milestoneClockReading, orgHealthOrders } from "../org-health/fleet-build-readings.ts";
-import { shelvedCircles } from "../org-health/board-truth-readings.ts";
+import { shelvedCircles } from "../org-health/board-truth-and-access-readings.ts";
 import { declaredClosedRows } from "../row-claim/file-overlap-rule.ts";
 import { holdersOf, holdExcused } from "../pr-hold-state.ts";
 import { withoutHold } from "../red-pr.ts";
@@ -49,7 +49,7 @@ import { readRulings, unreadableLine, rulingTick } from "../ruling-record.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { readReleaseFacts, registryDistTags, remoteTagExists, splitHeldOnSatisfied, heldOnSatisfiedOrders, umbrellaEdges, umbrellaEdgeOrders } from "./held-on-satisfied-orders.ts";
 import { referencesOf, releaseReferencesOf, waitItemOf, staleWaits, bareWaits, manualWaits, parseWaits, liftableHolds, isItemWait } from "../wait-condition.ts";
-import { stallReasonOf, ownerOfPr, reviewGateOf } from "./pr-orders/red-only-by-superseded-run.ts";
+import { stallReasonOf, ownerOfPr, reviewGateOf } from "./pr-orders/pr-gate-readings.ts";
 import { reviewHeadsOf } from "./pr-orders.ts";
 import { claimedScopesOf, scopeAddedReadings, scopeAddedOrders } from "./scope-added-orders.ts"; // #4759
 import { idleHoldIncidents, idleHoldOrders } from "./idle-hold-incidents.ts"; // #571
@@ -493,8 +493,8 @@ export function reviewGatedFacts(prs: any[], decided: { cause: string; subject: 
 /** `orgHealthNow`'s seams for a test or the gate: each read or write this tick makes, which a caller that does not ask leaves OMITTED or `undefined`. */
 type OrgHealthIo = {
   now?: number; lastMergedAt?: () => number | { at: number; repo: string; } | null; readCaptures?: (now: number) => ReturnType<typeof readFleetCaptures>;
-  log?: (line: string) => void; readCopies?: () => null; readRefusals?: () => import("../org-health/claim-refusal.ts").ClaimRefusal[] | null; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
-  release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health/board-truth-readings.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
+  log?: (line: string) => void; readCopies?: () => null; readRefusals?: () => import("../org-health/claim-and-tick-readings.ts").ClaimRefusal[] | null; readLabJobs?: () => string[] | null; readWaits?: typeof waitTickFacts;
+  release?: typeof releaseHoldViaModule; readHolderAgents?: typeof readAgents; readToolAgreement?: typeof import("../org-health/board-truth-and-access-readings.ts").readToolAgreement; readNodeStrips?: typeof import("../node-strips-types.ts").readNodeStrips;
   readMilestoneMoves?: typeof readMilestoneMoves;
   /** a11ign#5681: the board offers this tick made, handed to the canary (`orgHealthTick`); OMITTED is "does not ask" */
   onBoardTruthOffers?: (count: number | null) => void;
@@ -504,7 +504,7 @@ type OrgHealthIo = {
   readFleetBuildIncident?: () => import("../org-health/fleet-build-readings.ts").FleetBuildIncident[] | null | undefined;
   readReleaseBehind?: () => import("../release-behind-main.ts").RepoFact[] | null | undefined;
   readClassRepeat?: () => import("../class-repeat.ts").ClassRepeatFact | null | undefined;
-  teamAccess?: () => import("../org-health/board-truth-readings.ts").TeamAccessFact | undefined;
+  teamAccess?: () => import("../org-health/board-truth-and-access-readings.ts").TeamAccessFact | undefined;
   readBoardTruth?: (input: BoardTruthInput) => ReturnType<typeof boardTruthAudit> | null | undefined;
   /** agent-org#1135: the flags the code ships against the declarations; OMITTED is "does not ask", so only the live gate (`work-gate.ts`) reads the project's files */
   readFlagSwitches?: () => import("../flag-switch-ledger.ts").FlagLedger | null | undefined;
@@ -515,7 +515,7 @@ type OrgHealthIo = {
   /** agent-org#1418: each declared repository's last whole read; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) asks, on a webhook host */
   readSweeps?: () => SweepFact | undefined;
   /** agent-org#1667: the named classed-OUTSIDE pull requests for the `session-pr-classed-outside` reading; OMITTED is "does not ask", and only the live gate (`work-gate.ts`) hands it over */
-  readSessionPrOutside?: () => import("../org-health/hold-count.ts").SessionPrOutsideFact | undefined;
+  readSessionPrOutside?: () => import("../org-health/hold-and-rerun-readings.ts").SessionPrOutsideFact | undefined;
 };
 
 /**
@@ -541,7 +541,7 @@ type OrgHealthIo = {
  *           and the gate's call site passes the real one, so no test reaches a remote; `readWaits` (#2996) is the test's seam for the
  *           referenced items, so nothing here needs a token; `release` (#3364) is its seam for the hold release, so nothing here runs `pr-hold.ts`
  */
-export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools }: { prsRead: any[] | null; keyedPrsRead?: any[]; readyRead: any[] | null; openRowsRead: any[] | null; claimedComments?: any[] | null; decideArgs: any; decided: any[]; held?: { subject: string; }[]; pools?: import("../org-health/claim-refusal.ts").PoolReading[]; },
+export function orgHealthNow({ prsRead, keyedPrsRead = [], readyRead, openRowsRead, claimedComments, decideArgs, decided, held, pools }: { prsRead: any[] | null; keyedPrsRead?: any[]; readyRead: any[] | null; openRowsRead: any[] | null; claimedComments?: any[] | null; decideArgs: any; decided: any[]; held?: { subject: string; }[]; pools?: import("../org-health/claim-and-tick-readings.ts").PoolReading[]; },
   io: OrgHealthIo = {}) {
   const { now = Date.now(), lastMergedAt = () => readLatestMerge(defaultRun, mergeRepositories()), readCaptures = (at) => readFleetCaptures({ now: at }), log, readCopies, readRefusals, onBoardTruthOffers,
     readLabJobs = dispatchedLabJobsOrSay, readWaits = waitTickFacts, release, readHolderAgents = readAgents, readToolAgreement = () => undefined, readNodeStrips = () => undefined, readReleaseRuns = () => undefined, readReleaseFailures = () => undefined, raiseReleaseIncidents = () => {}, readFleetBuildIncident = () => undefined, readReleaseBehind = () => undefined, readClassRepeat = () => undefined,
@@ -996,7 +996,7 @@ function withoutHeld(prs: any[], held: { subject: string; }[] | undefined) {
 }
 
 /** #3533: THE FACT, OR NOTHING. `undefined` is a caller that does not ask (and a host that declares no tool): the key is then left out, and `orgHealthReadings` reads an omitted one as silent. */
-const toolAgreementFact = (read: ReturnType<typeof import("../org-health/board-truth-readings.ts").readToolAgreement>): { toolAgreement?: { now: number; result: any; } | null; } => (read === undefined ? {} : { toolAgreement: read });
+const toolAgreementFact = (read: ReturnType<typeof import("../org-health/board-truth-and-access-readings.ts").readToolAgreement>): { toolAgreement?: { now: number; result: any; } | null; } => (read === undefined ? {} : { toolAgreement: read });
 
 /** THE FACT, OR NOTHING: `undefined` is a caller that does not ask (silent, the key left out), and `null` a refused read, which the signal says is unknown. */
 const factOrNothing = <K extends string, T>(key: K, read: T | undefined): Partial<Record<K, T>> =>

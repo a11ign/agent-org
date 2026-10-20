@@ -10,9 +10,9 @@ import { join } from "node:path";
 import { OUTSIDE_GUARDS_FLAG, declaresTreeWideGuard, guardSweepJobOf, outsideGuardsOn, runTreeWideGuards, shadowGuardsVerdict, treeWideGuardFilesIn } from "./tree-wide-guard-org-side.ts";
 import { sandboxGitEnv } from "./git-env.ts";
 import { tmpDir } from "./tmp-fixture.ts";
-import { acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { acceptanceGateOf, firstRefusalOf, treeWideGuardVerdict } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { orgSideAcceptanceEligibility, type OrgSideVerdict } from "../acceptance-commands.ts";
-import { ACCEPTANCE_GATE_SWITCH_ENV, TREE_WIDE_GUARDS_SWITCH_ENV, gateUnarmedOnAcceptance } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { ACCEPTANCE_GATE_SWITCH_ENV, TREE_WIDE_GUARDS_SWITCH_ENV, gateUnarmedOnAcceptance } from "../work-gate/tick/tick-decisions-and-flags.ts";
 
 const MARKED = `import { test } from "node:test";\nimport { declareTreeWideGuard } from "@a11ign/toolchain/lib/tree-wide-guard";\ndeclareTreeWideGuard();\ntest("x", () => {});\n`;
 const HEAD = "1111111111111111111111111111111111111111";

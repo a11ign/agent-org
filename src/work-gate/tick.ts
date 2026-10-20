@@ -16,9 +16,9 @@ import { withBoardSnapshot } from "../board-snapshot.ts";
 import type { TicketPort, TicketState } from "../ticket-port/port.ts";
 import { githubTicketAdapter, TRACKER } from "../ticket-port/github-adapter.ts";
 import { recordIgnoredChairmanLabels } from "../failure-recorders.ts";
-import { readJsonObject } from "../claim-stall/claim-stalled.ts";
+import { readJsonObject } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../claim-stall.ts";
-import { ownerOfPr } from "./pr-orders/red-only-by-superseded-run.ts";
+import { ownerOfPr } from "./pr-orders/pr-gate-readings.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { classAndKeyOf as orgHealthClassAndKey } from "./org-health-suppression.ts";
 import { TABLE_ROW as STANDING_ROW } from "../board-truth-audit.ts";
@@ -34,7 +34,7 @@ import { type BoardFacts, rowsOffBoard } from "./causes/rows-off-board.ts";
 import { type EmergencyPriorityOption, type OfferHierarchy, CHAIRMAN_REFUSAL_FLAG, chairmanRowAnsweredByCeo, emergencyHierarchyNow, readChairmanPriority, readEmergencyPriorityOption } from "./causes/rows-offer.ts";
 import { readOtherScopes } from "../work-gate.ts";
 import { REVIEWER_STATE_DIR, labelsOf } from "./vocabulary.ts";
-import { blockerClearedReading, cutBackFirst, decide, tickReadingLines } from "./tick/blocker-cleared-reading.ts";
+import { blockerClearedReading, cutBackFirst, decide, tickReadingLines } from "./tick/tick-decisions-and-flags.ts";
 import { restConditionalOn, tickBudget } from "../gh-conditional.ts";
 
 /**

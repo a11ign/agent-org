@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders, CHECKLESS_QUIET_MINUTES } from "./work-gate/pr-orders.ts";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 
 type Order = { session: string, fallback?: string, cause: string, causeKey: string, discriminator: string, prompt: string };
 type Pr = Record<string, unknown>;

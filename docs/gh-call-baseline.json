@@ -83,7 +83,7 @@
       "spawns": 3,
       "calls": 3
     },
-    "src/claim-stall/claim-stalled.ts": {
+    "src/claim-stall/stall-causes-and-claim-readings.ts": {
       "spawns": 1,
       "calls": 1
     },
@@ -135,7 +135,7 @@
       "spawns": 1,
       "calls": 1
     },
-    "src/host-units/host-identity-drift.ts": {
+    "src/host-units/host-drift-findings-and-notes.ts": {
       "spawns": 1,
       "calls": 0
     },
@@ -187,11 +187,11 @@
       "spawns": 0,
       "calls": 5
     },
-    "src/org-retro/readings.ts": {
+    "src/org-retro/journal-stats-and-verdicts.ts": {
       "spawns": 0,
       "calls": 1
     },
-    "src/org-retro/retro-cause.ts": {
+    "src/org-retro/retro-window-and-journal-patterns.ts": {
       "spawns": 1,
       "calls": 2
     },
@@ -271,15 +271,15 @@
       "spawns": 0,
       "calls": 1
     },
-    "src/row-file/body-from-argv.ts": {
+    "src/row-file/issue-body-and-region-checks.ts": {
       "spawns": 2,
       "calls": 2
     },
-    "src/row-file/duplicate-title-refusal.ts": {
+    "src/row-file/title-kind-and-label-refusals.ts": {
       "spawns": 4,
       "calls": 3
     },
-    "src/row-file/roadmap-without-parent-refusal.ts": {
+    "src/row-file/roadmap-and-milestone-checks.ts": {
       "spawns": 12,
       "calls": 11
     },
@@ -359,7 +359,7 @@
       "spawns": 0,
       "calls": 2
     },
-    "src/wake/ended-sessions.ts": {
+    "src/wake/session-endings.ts": {
       "spawns": 0,
       "calls": 2
     },

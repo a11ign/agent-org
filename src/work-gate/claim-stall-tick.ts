@@ -15,7 +15,7 @@ import { openBlockers } from "./causes/rows-amended.ts";
 import { withChecksPending } from "./reads/read-memo-and-exit.ts";
 import { familyNumber } from "../arm-pr.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
-import { gitRun, readJsonObject, STALL_STATE_FILE, claimFactsFrom, readClaim, readLabelEvents, Unreadable, withRedChecks } from "../claim-stall/claim-stalled.ts";
+import { gitRun, readJsonObject, STALL_STATE_FILE, claimFactsFrom, readClaim, readLabelEvents, Unreadable, withRedChecks } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { pathExists, statMtime, readStallState, writeStallState, writeJsonObject, nextStallState, claimStalledOrders, readHerdrRestart, nudgeDeliveredAt, nudgeKey, closedClaimOrders, restartNotices, recordStalledNudges, AGENT_SESSIONS_FILE } from "../claim-stall.ts";
 import { subjectMention, subjectRef } from "../review-attribution.ts";
 import { claimRecordOf } from "../claim-record.ts";
@@ -28,7 +28,7 @@ import { declaredWaitsOf, waitItemOf, conditionHolds, type WaitFacts } from "../
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { WORKER_STATE_DIR, readDeclarations, lastDeliveredTo, declarationReading } from "../worker-state.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
-import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { DEFAULT_CANARY_OPTIONS } from "../org-health.ts";
 import { machineryFlagOn, parseCanaryState, type CanaryState } from "../org-health/fleet-build-readings.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -38,7 +38,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
  * was added; without it a hand-started engineer inherits the previous holder's merged pull request. #612 reads the same history for the stall clock,
  * so without it a hand-started engineer is nudged at its first tick.
  */
-export const LIVE_HOST_READS: import("../claim-stall/claim-stalled.ts").HostReads = { git: gitRun, exists: pathExists, mtime: statMtime,
+export const LIVE_HOST_READS: import("../claim-stall/stall-causes-and-claim-readings.ts").HostReads = { git: gitRun, exists: pathExists, mtime: statMtime,
   labelEvents: (row: number) => readLabelEvents(row, homeProjectDeclaration().tracker[0].repo) };
 
 /**
@@ -148,9 +148,9 @@ export type OnClaimFacts = (facts: ClaimFactsOfTick | null) => void;
 export type TrackerClaims = { key: string; repo: string; rows: any[] | null; claimedComments: any[] | null };
 
 /** A row's label history in ONE NAMED tracker: `io.labelEvents` is the home tracker's alone, and for another tracker's row number it would read the home row's. */
-export type LabelEventsOf = (row: number, repo: string) => ReturnType<NonNullable<import("../claim-stall/claim-stalled.ts").HostReads["labelEvents"]>>;
+export type LabelEventsOf = (row: number, repo: string) => ReturnType<NonNullable<import("../claim-stall/stall-causes-and-claim-readings.ts").HostReads["labelEvents"]>>;
 
-function movesOf(facts: import("../claim-stall/claim-stalled.ts").ClaimFacts): ClaimMoves {
+function movesOf(facts: import("../claim-stall/stall-causes-and-claim-readings.ts").ClaimFacts): ClaimMoves {
   return { claimedAt: facts.claimedAt, comment: facts.comment, commit: facts.commit(), push: facts.push(),
     // #3569: the fields `idleClaimantReading` reads a holder's wait from (a review, a check, an approval, a hold), already on `ownPrs` -- no new read.
     openPrs: (facts.ownPrs ?? []).map((pr: any) => ({ createdAt: pr.createdAt, labels: pr.labels, number: pr.number, repoKey: pr.repoKey,
@@ -164,7 +164,7 @@ function movesOf(facts: import("../claim-stall/claim-stalled.ts").ClaimFacts): C
  * build itself read git: its reading is `holding` (agent-org#1083), and a missing move is "not read", never "no commit".
  * @param {{ readings: { facts: ClaimFacts }[], skipped: Map<number, string> }} home @returns {ClaimFactsOfTick}
  */
-function movesOfTick(home: { readings: { facts: import("../claim-stall/claim-stalled.ts").ClaimFacts; }[]; skipped: Map<number, string>; }): ClaimFactsOfTick {
+function movesOfTick(home: { readings: { facts: import("../claim-stall/stall-causes-and-claim-readings.ts").ClaimFacts; }[]; skipped: Map<number, string>; }): ClaimFactsOfTick {
   const moves = new Map<number, ClaimMoves>();
   const skipped = new Map(home.skipped);
   for (const { facts } of home.readings) {
@@ -204,7 +204,7 @@ function movesOfTick(home: { readings: { facts: import("../claim-stall/claim-sta
 export function claimStallTick({ io = LIVE_HOST_READS, repo = REPO_CHECKOUT, now = Date.now(),
   stateDir = REVIEWER_STATE_DIR, log = (line) => process.stderr.write(line), read = readStallState, write = writeStallState, ...inputs }: {
         rows: any[]; claimedComments: any[] | null; openPrs: any[]; mergedPrs: any[] | null;
-        elsewhere?: import("../claim-stall/claim-stalled.ts").ElsewherePrs; io?: import("../claim-stall/claim-stalled.ts").HostReads; repo?: string; now?: number; restartAt?: number | null;
+        elsewhere?: import("../claim-stall/stall-causes-and-claim-readings.ts").ElsewherePrs; io?: import("../claim-stall/stall-causes-and-claim-readings.ts").HostReads; repo?: string; now?: number; restartAt?: number | null;
         agents?: { label: string; status: string; }[] | null; agentSessions?: Map<string, string> | null;
         stateDir?: string; log?: (line: string) => void; ledger?: () => string;
         read?: typeof readStallState; write?: typeof writeStallState; onFacts?: OnClaimFacts; record?: typeof recordStalledNudges;
@@ -235,8 +235,8 @@ function trackerUnits(trackers: TrackerClaims[], log: (line: string) => void) {
 /** `evaluateClaims`'s inputs: the rows and their comments, the reads and seams, and the home tracker's facts. */
 type EvaluateClaimsInputs = {
   rows: any[]; claimedComments: any[] | null; openPrs: any[]; mergedPrs: any[] | null; restartAt?: number | null;
-  elsewhere?: import("../claim-stall/claim-stalled.ts").ElsewherePrs; agents?: { label: string; status: string; }[] | null; agentSessions?: Map<string, string> | null;
-  ledger?: () => string; io: import("../claim-stall/claim-stalled.ts").HostReads; repo: string; now: number; stateDir: string;
+  elsewhere?: import("../claim-stall/stall-causes-and-claim-readings.ts").ElsewherePrs; agents?: { label: string; status: string; }[] | null; agentSessions?: Map<string, string> | null;
+  ledger?: () => string; io: import("../claim-stall/stall-causes-and-claim-readings.ts").HostReads; repo: string; now: number; stateDir: string;
   log: (line: string) => void; read: typeof readStallState; write: typeof writeStallState; onFacts?: OnClaimFacts; record?: typeof recordStalledNudges;
   trackers?: TrackerClaims[]; labelEventsOf?: LabelEventsOf; waitFacts?: WaitFacts | null;
 };
@@ -286,7 +286,7 @@ function evaluateClaims({ rows, claimedComments, openPrs, mergedPrs, elsewhere, 
     if (unit.held.length > 0) log(`claim-stall: tracker \`${key}\` (${trackerRepo}): ${unit.held.length} claimed rows, ${read.readings.length} evaluated.\n`);
     return { unit, ...read };
   });
-  const after: import("../claim-stall/claim-stalled.ts").StallState = { ...(homeUnread ? homeBefore : nextStallState(homeBefore, home.readings, now)) };
+  const after: import("../claim-stall/stall-causes-and-claim-readings.ts").StallState = { ...(homeUnread ? homeBefore : nextStallState(homeBefore, home.readings, now)) };
   for (const unit of units) {
     const prefix = `${unit.tracker.key}#`;
     const mine = others.find((o) => o.unit === unit);
@@ -436,17 +436,17 @@ function rowsPerSession(held: any[]): Map<string, number> {
 
 function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now, restart, agents, before, log, ledger, declarations, key, trackerRepo, heldBy, waitFacts, watching }: {
         held: any[]; byRow: Map<number, any[]>; openPrs: any[]; mergedPrs: any[] | null;
-        elsewhere?: import("../claim-stall/claim-stalled.ts").ElsewherePrs; io: import("../claim-stall/claim-stalled.ts").HostReads; repo: string; now: number; restart: number | null;
+        elsewhere?: import("../claim-stall/stall-causes-and-claim-readings.ts").ElsewherePrs; io: import("../claim-stall/stall-causes-and-claim-readings.ts").HostReads; repo: string; now: number; restart: number | null;
         agents: { label: string; status: string; }[] | null;
-        before: import("../claim-stall/claim-stalled.ts").StallState; log: (line: string) => void; ledger: () => string; declarations: ReturnType<typeof readDeclarations>;
+        before: import("../claim-stall/stall-causes-and-claim-readings.ts").StallState; log: (line: string) => void; ledger: () => string; declarations: ReturnType<typeof readDeclarations>;
         /** the tracker's declared key (`""` is the home tracker's), its `owner/repo`, and how many claimed rows each session holds across every tracker read */
         key: string; trackerRepo: string; heldBy: Map<string, number>;
         /** #1183: the home repository's wait facts (`null` for another tracker, whose bare `#n` are not these), read against each row's body `Waiting-for:` */
         waitFacts: WaitFacts | null;
         /** the machinery flags the canary is still watching at this tick (`canaryWatching`), `null` when its file could not be read */
         watching: ReadonlySet<string> | null;
-    }): { readings: { facts: import("../claim-stall/claim-stalled.ts").ClaimFacts; reading: import("../claim-stall/claim-stalled.ts").Reading; }[]; skipped: Map<number, string>; closes: import("../claim-stall.ts").StallOrder[]; } {
-  const readings: { facts: import("../claim-stall/claim-stalled.ts").ClaimFacts; reading: import("../claim-stall/claim-stalled.ts").Reading; }[] = [];
+    }): { readings: { facts: import("../claim-stall/stall-causes-and-claim-readings.ts").ClaimFacts; reading: import("../claim-stall/stall-causes-and-claim-readings.ts").Reading; }[]; skipped: Map<number, string>; closes: import("../claim-stall.ts").StallOrder[]; } {
+  const readings: { facts: import("../claim-stall/stall-causes-and-claim-readings.ts").ClaimFacts; reading: import("../claim-stall/stall-causes-and-claim-readings.ts").Reading; }[] = [];
   // the rows whose facts could not be built, with the reason `claimFactsFrom` gave (#3451)
   const skipped: Map<number, string> = new Map();
   // (agent-org#1536) the rows whose holder is idle since its own VERIFIED note, ordered closed to `product-manager` (`verifiedCloseOf`)
@@ -496,7 +496,7 @@ function readClaims({ held, byRow, openPrs, mergedPrs, elsewhere, io, repo, now,
  * has it -- `idleClaimantReading` on the same facts and herdr's listing. `idleSince` is the row's last move, as `org-health.ts` gives it, so an idle holder's run
  * is at least that long. A holder that is busy, waiting on a declared field, or whose listing could not be read is not idle, and its row is not ordered closed.
  */
-function verifiedCloseOf({ row, labels, session, facts, comments, agents, now }: { row: number; labels: string[]; session: string; facts: import("../claim-stall/claim-stalled.ts").ClaimFacts;
+function verifiedCloseOf({ row, labels, session, facts, comments, agents, now }: { row: number; labels: string[]; session: string; facts: import("../claim-stall/stall-causes-and-claim-readings.ts").ClaimFacts;
   comments: any[]; agents: { label: string; status: string; }[] | null; now: number; }): VerifiedCloseOrder | null {
   // a commit or push git will not answer for is not a move that can be dated, so the row is not ordered closed this tick (as `movesOfTick` skips it)
   let lastMove: number;
@@ -529,7 +529,7 @@ function verifiedCloseOrderOf(close: VerifiedCloseOrder, { session, subject, now
  * the tick its session was first found gone, and the tick it was first found idle (#2999). A memory written for ANOTHER session is nobody's.
  * `key` is the row's tracker: the delivery is looked up under the key the order carried (`scopedCauseKey`), not under the home tracker's spelling of it.
  */
-function rememberedFor({ entry, session, row, ledger, key }: { entry: import("../claim-stall/claim-stalled.ts").StallState[string] | undefined; session: string; row: number; ledger: () => string; key: string; }) {
+function rememberedFor({ entry, session, row, ledger, key }: { entry: import("../claim-stall/stall-causes-and-claim-readings.ts").StallState[string] | undefined; session: string; row: number; ledger: () => string; key: string; }) {
   const remembered = entry?.session === session ? entry : undefined;
   // agent-org#743: `nudges` is how many unanswered nudges this stall has had, absent for the first
   const nudge = remembered?.nudgedAt !== undefined ? { nudgedAt: remembered.nudgedAt, idle: remembered.idle === true,

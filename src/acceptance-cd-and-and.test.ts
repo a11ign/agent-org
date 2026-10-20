@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { testFileArgumentsResolve } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { testFileArgumentsResolve } from "./acceptance-commands/acceptance-report-and-closure.ts";
 
 // This file by absolute path: CI runs the suite from the project root, where a cwd-relative `src/...` is no file.
 const THIS_FILE = fileURLToPath(import.meta.url);

@@ -15,7 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { answerOrders } from "../work-gate/causes/rows-answers.ts";
 import { JUDGMENT_CAUSES } from "../cause-declaration.ts";
-import { readLedger, ledgerLine, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
+import { readLedger, ledgerLine, WAKE_TTL_MS } from "../wake/session-endings.ts";
 import { undelivered, JUDGMENT_TTL_MS } from "../wake/seat-reset.ts";
 
 const MINUTE = 60_000;

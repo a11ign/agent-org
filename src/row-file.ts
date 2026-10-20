@@ -99,9 +99,9 @@ import { homeProjectDeclaration } from "./project-config.ts";
 import { loadLanes } from "./lane-ownership.ts";
 import { DISTINCT_FROM_FLAG, duplicateRowCheck } from "./duplicate-row.ts";
 import { homeHostConfig, stateEntryPath } from "./host-config.ts";
-import { ALLOW_SAME_TITLE_FLAG, KIND_FLAG, KNOWN_GH_ISSUE_CREATE_FLAGS, READY_FLAG, ROADMAP_FLAG, TRACKER_FLAG, bodyFromArgv, defaultRun, titleFromArgv } from "./row-file/body-from-argv.ts";
-import { fetchIssueBoardStatus } from "./row-file/duplicate-title-refusal.ts";
-import { BOARD_FLAG, PROMOTE_FLAG, boardArgvRefusal, boardExisting, chooseTracker, createIssue, ensureLabelsOn, moveTrackerStatus, promoteAndReviewRow } from "./row-file/roadmap-without-parent-refusal.ts";
+import { ALLOW_SAME_TITLE_FLAG, KIND_FLAG, KNOWN_GH_ISSUE_CREATE_FLAGS, READY_FLAG, ROADMAP_FLAG, TRACKER_FLAG, bodyFromArgv, defaultRun, titleFromArgv } from "./row-file/issue-body-and-region-checks.ts";
+import { fetchIssueBoardStatus } from "./row-file/title-kind-and-label-refusals.ts";
+import { BOARD_FLAG, PROMOTE_FLAG, boardArgvRefusal, boardExisting, chooseTracker, createIssue, ensureLabelsOn, moveTrackerStatus, promoteAndReviewRow } from "./row-file/roadmap-and-milestone-checks.ts";
 
 /**
  * #3330: the CLI's board path. Exit 1 is REFUSED with nothing changed; exit 2 is something written and not

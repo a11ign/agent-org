@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { COMPACT_THRESHOLD_TOKENS, isPersistentRole, keepsContext } from "./wake/holds-as-fyi.ts";
+import { COMPACT_THRESHOLD_TOKENS, isPersistentRole, keepsContext } from "./wake/fyi-delivery-and-limits.ts";
 import { DRAINED_SEEN, PERSISTENT_SEEN, engineerEligibility, route } from "./wake/exit-and-limits.ts";
 import { clearBeforeOrder } from "./wake/merge-queue-wait.ts";
 import { persistentRoles } from "./project-roles.ts";

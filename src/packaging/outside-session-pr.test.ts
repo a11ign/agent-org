@@ -15,11 +15,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
-import { outsideSessionPrFlagOn } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
+import { outsideSessionPrFlagOn } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { SESSION_PR_OUTSIDE_FLAG, classedOutsideSessionPrs, onlyNoAcceptanceRun, sessionPrOutsideNow, sessionPrVerdictWakes } from "../work-gate/outside-session-pr.ts";
 import { FLAG_REGISTRY } from "../machinery-flag.ts";
-import { MACHINERY_SIGNALS, SESSION_PR_OUTSIDE_MINUTES, sessionPrOutsideReading, sessionPrOutsideReadings } from "../org-health/hold-count.ts";
+import { MACHINERY_SIGNALS, SESSION_PR_OUTSIDE_MINUTES, sessionPrOutsideReading, sessionPrOutsideReadings } from "../org-health/hold-and-rerun-readings.ts";
 import { STANDARD_MACHINERY_SIGNALS, emptyCanaryState } from "../org-health/fleet-build-readings.ts";
 import { machineryValues, withMachineryFlag } from "../org-health.ts";
 import { OUTSIDE, INSIDE, reviewTrustOf, type DeclaredIdentities } from "../review-trust.ts";

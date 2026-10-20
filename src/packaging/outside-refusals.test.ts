@@ -14,9 +14,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OUTSIDE_REFUSALS_FLAG, outsideRefusalsOn, type DeliberateRefusal } from "../deliberate-refusal.ts";
-import { MAX_REFUSAL_SHADOWS_PER_TICK, REFUSALS_JOB, REFUSALS_SHADOW_FILE, refusalsJobVerdict, settleOutsideRefusals } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { MAX_REFUSAL_SHADOWS_PER_TICK, REFUSALS_JOB, REFUSALS_SHADOW_FILE, refusalsJobVerdict, settleOutsideRefusals } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { ORG_LOGINS } from "../messaging/sources/readers.ts";
-import { readArmingOf } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { readArmingOf } from "../work-gate/tick/tick-decisions-and-flags.ts";
 
 const REPO = "owner/project";
 const dir = mkdtempSync(join(tmpdir(), "outside-refusals-"));

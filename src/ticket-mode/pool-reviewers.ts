@@ -9,8 +9,8 @@
 
 import { earlierReviewWord, openPullUrlsOf, readPullState, readReviewState, readReviewerMemory, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
-import { type Entry } from "./queue/declared-remains.ts";
-import { recordVerdictNotPosted } from "./queue/approve.ts";
+import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { recordVerdictNotPosted } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { type PullRead, pullReviewText } from "./board-view/pull-review-state.ts";
 

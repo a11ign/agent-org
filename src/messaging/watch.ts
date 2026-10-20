@@ -66,7 +66,7 @@ import { createWatchReaders, hostFiles } from "./watch-list.ts";
 import { walkPosition } from "./walk.ts";
 import { FAILURE_LEDGER_FILE, recordFailures, type FailureEvent } from "../failure-ledger.ts";
 import { readUnitsDeclaration, stateEntryPath } from "../host-config.ts";
-import { CANARY_STATE_FILE } from "../org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { machineryFlagOn, parseCanaryState } from "../org-health/fleet-build-readings.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { readAgents } from "../herdr-agents.ts";

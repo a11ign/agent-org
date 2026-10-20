@@ -8,7 +8,7 @@ import { stateEntryPath } from "../host-config.ts";
 import { roleBriefPath } from "../project-roles.ts";
 import { listingIsComplete, firstLine } from "../herdr-agents.ts";
 import { seatRunKeys } from "../seat-retire-reset.ts";
-import { REVIEWER_DEAD_AFTER_TICKS, hasNoAgent, removeReviewCheckout, reviewerPathsFrom } from "./ensure-reviewer-token.ts";
+import { REVIEWER_DEAD_AFTER_TICKS, hasNoAgent, removeReviewCheckout, reviewerPathsFrom } from "./reviewer-tokens-and-checkouts.ts";
 import { WAKEABLE, codeRepositoryOf, defaultGh, defaultRun } from "./exit-and-limits.ts";
 
 /**

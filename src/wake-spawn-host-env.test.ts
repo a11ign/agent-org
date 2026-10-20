@@ -22,7 +22,7 @@ import { spawnEnvironment, whyNoHost } from "./wake/pull-request-spawn-orders.ts
 import { hostConfigPath, HOST_CONFIG_ENV, HOST_DECLARATION_PATH } from "./host-config.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { engineerBriefSentence, briefRoleSentence } from "./spawn-role-brief.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 /** Run `body` with `AGENT_ORG_HOST` set to `value`, or ABSENT when `value` is `undefined`; the caller's own value is put back. */
 function withHostVariable<T>(value: string | undefined, body: () => T): T {

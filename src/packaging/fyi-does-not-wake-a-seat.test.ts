@@ -20,7 +20,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { FYI_STALE_MS, handoffQueuePath, isLeadSeat, readHandoffs } from "../wake/seat-reset.ts";
 import { foldFyis, retireRiddenFyis, ridingGateOrders } from "../wake/fyi-queue.ts";
-import { holdsAsFyi, SETTLE_TEST_CLOCK_ENV } from "../wake/holds-as-fyi.ts";
+import { holdsAsFyi, SETTLE_TEST_CLOCK_ENV } from "../wake/fyi-delivery-and-limits.ts";
 import { EXIT, STANCE, directRecordPath, promptOrQueue } from "../prompt-session.ts";
 import { startedPanes } from "./started-pane.ts";
 

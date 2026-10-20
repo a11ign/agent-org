@@ -14,8 +14,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
-import { ownerOfPr } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
+import { ownerOfPr } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { unresolvedOwnerEvents } from "../pr-ownership.ts";
 import { testEach } from "../lib/test-each.ts";
 

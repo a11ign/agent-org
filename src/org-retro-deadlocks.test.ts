@@ -12,7 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildReport } from "./org-retro/readings.ts";
+import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport } from "./org-retro.ts";
 
 const NOW = Date.parse("2026-10-12T00:22:00Z");

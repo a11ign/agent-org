@@ -31,7 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SWEEP_WAIT_ENV } from "../auto-arm-sweep.ts";
-import { laneLabelsFor } from "../row-file/duplicate-title-refusal.ts";
+import { laneLabelsFor } from "../row-file/title-kind-and-label-refusals.ts";
 import { laneAuthorshipRefusal, ownsReviewOnlyLane, reviewOnlyPathsIn, authorshipVerdict, ROLE_LOGIN, APP_ROLE_LANE_OWNER } from "../lane-ownership.ts";
 import { GITHUB_ROLES } from "../app-token.ts";
 import { runArmPr, EXIT, deliberateMarker } from "../arm-pr.ts";

@@ -12,10 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHILD_QUESTIONS, CLAIM_FRESH_MS, DUPLICATE_SIMILARITY, QUESTIONS, TABLE_ROW, boardTruthAudit, boardTruthTable, closesOf, postDaysTable, readBoardFacts, similarity, wordsOf } from "./board-truth-audit.ts";
 import { declaredRowsFromBody } from "./close-rows-for-merged-pr.ts";
-import { boardTruthReading } from "./org-health/board-truth-readings.ts";
+import { boardTruthReading } from "./org-health/board-truth-and-access-readings.ts";
 import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
 import { SIGNALS } from "./org-health/thresholds.ts";
-import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall/claim-stalled.ts";
+import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { boardRowsOf, boardTruthFact, boardTruthNow, orgHealthNow } from "./work-gate/org-health.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 

@@ -27,7 +27,7 @@ import { parse as parseYaml } from "yaml";
 import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.ts";
 import { shouldBeMerging } from "../work-gate/causes/pr-checks.ts";
 import { readUnarmed } from "../work-gate/reads.ts";
-import { greenUnarmedOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { greenUnarmedOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { CAUSES } from "../cause-declaration.ts";
 
 const WORKFLOWS = join(HOME_CHECKOUT, ".github/workflows");

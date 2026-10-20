@@ -23,7 +23,7 @@ import { homeProjectDeclaration } from "./project-config.ts";
 import { BATCH_MAX_CALLS, readWithFirstWaveTogether, runBatch } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readElsewherePrs } from "./work-gate/reads.ts";
 import { readOtherScopes } from "./work-gate.ts";
-import { readScopeTrunkRed } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { readScopeTrunkRed } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { scopesOf } from "./work-gate/vocabulary.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
 

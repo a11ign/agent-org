@@ -17,15 +17,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { scopesOf } from "../work-gate/vocabulary.ts";
-import { greenUnarmedOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { greenUnarmedOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { performActions } from "../work-gate/orders.ts";
-import { ledgerLine, readLedger } from "../wake/ended-sessions.ts";
+import { ledgerLine, readLedger } from "../wake/session-endings.ts";
 import { readLedgerDeliveries, stuckRowOf } from "../wake/merge-queue-wait.ts";
-import { reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewCheckoutFor, isReviewerOrder, liveReviewers } from "../wake/ensure-reviewer-token.ts";
+import { reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewCheckoutFor, isReviewerOrder, liveReviewers } from "../wake/reviewer-tokens-and-checkouts.ts";
 import { rowOfOrder } from "../wake/release-line-and-seats.ts";
-import { isPerRowInstance } from "../wake/holds-as-fyi.ts";
+import { isPerRowInstance } from "../wake/fyi-delivery-and-limits.ts";
 import { codeRepositoryOf } from "../wake/exit-and-limits.ts";
 import { connectionOf, readsRowsByLabel, type FakeRow } from "./rows-by-label-fixtures.ts";
 import { parityOwner, reviewerSeat, reviewerInstance, reviewerInstanceNumber, seatName, subjectRef, subjectMention }

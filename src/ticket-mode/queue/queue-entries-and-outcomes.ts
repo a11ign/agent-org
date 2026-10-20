@@ -1,5 +1,5 @@
-import { CONCLUDED, openPulls, RESULT_KINDS, type StackBaseRecord } from "../board-view/view-ticket.ts";
-import { isBeingPublished, isParked } from "../board-view/settled-by-pulls.ts";
+import { CONCLUDED, openPulls, RESULT_KINDS, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import { needsDecision } from "../open-decisions.ts";

@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
-import { ownerOfPr, isAutomationWriterPr, stalledPrOrders } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { ownerOfPr, isAutomationWriterPr, stalledPrOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { unresolvedOwnerEvents } from "../pr-ownership.ts";
 
 const WRITER = "octo-sts";

@@ -36,7 +36,7 @@ export const ROW_OFF_BOARD_GRACE_MS = 5 * 60_000;
  * agent-org#484: THE FIRST CONSUMER OF THE TICKET PORT. It asks the tracker only through `OpenItemsReader` (`ticket-port/port.ts`), and the GitHub adapter
  * holds the query, the paging and the Project 1 test that used to live here; the facts it returns are unchanged.
  */
-export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, pools: import("../../org-health/claim-refusal.ts").PoolReading[] = []): BoardFacts[] | null {
+export function readRowsOffBoard(run: (args: string[]) => string = defaultRun, pools: import("../../org-health/claim-and-tick-readings.ts").PoolReading[] = []): BoardFacts[] | null {
   const reader: OpenItemsReader = githubTicketAdapter({ run, scope: repoNow() });
   const items = reader.readOpenItems({ onBudget: (budget) => pools.push(budget) });
   return items === null ? null : items.map(({ ref, title, openedAtMs, onBoard }) => ({ number: ref.id, title, createdMs: openedAtMs, onBoard }));

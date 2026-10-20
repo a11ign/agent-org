@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { unwaitedStockRows, unwaitedLines, ghTrackerReader, UNWAITED_AFTER_MS, ROW_LIST_LIMIT } from "./unwaited-stock-rows.ts";
-import { buildReport, NUMBERS, undeclaredDirections } from "./org-retro/readings.ts";
+import { buildReport, NUMBERS, undeclaredDirections } from "./org-retro/journal-stats-and-verdicts.ts";
 import { renderReport } from "./org-retro.ts";
 
 const HOUR = 60 * 60 * 1000;

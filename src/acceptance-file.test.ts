@@ -18,7 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { checkBody, main, standingAgainstRegion, EXIT_NOTHING_SENT } from "./pr-open.ts";
-import { runCiBodyReports } from "./acceptance-commands/unmet-command-closure-requirements.ts";
+import { runCiBodyReports } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { BODY_EXEMPT_AUTHORS, acceptanceFileForBranch, isAcceptancePath, isBodyExemptAuthor, resolveAcceptanceSource, sectionsTextOf, sourceLine } from "./acceptance-file.ts";
 import { isOwned } from "./owned-path-signoff.ts";
 import { fileOverlapReason } from "./row-claim/file-overlap-rule.ts";

@@ -34,8 +34,8 @@ import { newestConclusion } from "../newest-check-run.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { queueEjectionOf, ejectionQueryArgs, armedFromApi } from "../pr-armed-state.ts";
 import { readEjections } from "../work-gate/causes/pr-ejected.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
-import { stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
+import { stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { thrownBy } from "../lib/thrown-by.ts";
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.ts");

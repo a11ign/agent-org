@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deliver } from "./wake/fyi-queue.ts";
-import { deliverHandoffs } from "./wake/ended-sessions.ts";
+import { deliverHandoffs } from "./wake/session-endings.ts";
 import { relaneTarget } from "./wake/exit-and-limits.ts";
 
 const NO_TRANSCRIPTS = "/nonexistent/a11y-3568-no-transcripts";

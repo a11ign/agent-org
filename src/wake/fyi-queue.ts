@@ -19,9 +19,9 @@ import { SPARE_FAMILIES, familyMember } from "../arm-pr.ts";
 import { firstLine, herdrReason, closedNote } from "../herdr-agents.ts";
 import { isAbsentReviewerSeat } from "../seat-retire-reset.ts";
 import { FYI_STALE_MS, HANDOFF_STALE_MS, SESSIONS_FILE, declaresDecision, dropHandoffs, isLeadSeat, staleHandoffs, undelivered } from "./seat-reset.ts";
-import { CLEAR_TIMEOUT_MS, CONTEXT_ACTION, CONTINUATION_ESCALATE_TO, MAX_DELIVERIES, NO_CLOCK, continuationOf, endedSeatLine, engineerStarts, escalatedContinuation, holdsAsFyi, isPerRowInstance, keepsContext, overThreshold, postOutsideVerdictsOf, recentOrderAction, recordCapped, registerSpawn, sleepSync, targetFor, type ClaimOrders, type HostLoad, type LaunchFacts, type OrderClock, whyUnavailable } from "./holds-as-fyi.ts";
+import { CLEAR_TIMEOUT_MS, CONTEXT_ACTION, CONTINUATION_ESCALATE_TO, MAX_DELIVERIES, NO_CLOCK, continuationOf, endedSeatLine, engineerStarts, escalatedContinuation, holdsAsFyi, isPerRowInstance, keepsContext, overThreshold, postOutsideVerdictsOf, recentOrderAction, recordCapped, registerSpawn, sleepSync, targetFor, type ClaimOrders, type HostLoad, type LaunchFacts, type OrderClock, whyUnavailable } from "./fyi-delivery-and-limits.ts";
 import { ENGINEER_BRIEF_ABSOLUTE, engineerRoles, spawnEnvironment, startBudgetOf, type ClaimRefused, type ClaimedRow, type SpawnClaimer, type ToolchainGate } from "./pull-request-spawn-orders.ts";
-import { isReviewerOrder, registerReviewer, type ReviewerDeps } from "./ensure-reviewer-token.ts";
+import { isReviewerOrder, registerReviewer, type ReviewerDeps } from "./reviewer-tokens-and-checkouts.ts";
 import { defaultRun, rowMention } from "./exit-and-limits.ts";
 
 /**

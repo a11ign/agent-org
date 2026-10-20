@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { claimRecordComment } from "./row-claim.ts";
-import { claimFactsFrom, readClaim, readLabelEvents, sessionLabelAddedAt, type HostReads, type MergedPr, type Reading } from "./claim-stall/claim-stalled.ts";
+import { claimFactsFrom, readClaim, readLabelEvents, sessionLabelAddedAt, type HostReads, type MergedPr, type Reading } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
 import { LIVE_HOST_READS } from "./work-gate/claim-stall-tick.ts";
 import type { LabelEvent } from "./claim-provenance.ts";

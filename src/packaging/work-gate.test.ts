@@ -28,15 +28,15 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { shippedUnits } from "../host-units/shipped-units.ts";
+import { shippedUnits } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
-import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/classification.ts";
+import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
 import { MAX_ROW_ORDERS_PER_TICK, comparablePrFiles, ownerOf, NOT_PICKABLE, NOT_STARTABLE, ROUTED_TO, PROMOTION_ASK_WINDOW_MS, HOUR_MS, PARKED_LABEL } from "../work-gate/vocabulary.ts";
 import { readCommitShas, readPatchId, withPatchIds, readWorktreeStamps, reviewBlocked, reviewableHead, pipelineCodeownerReviewMissing } from "../work-gate/causes/pr-reviews.ts";
-import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { checksSettledGreen, blockingChecks, anyChecksRed, conflictedPrs, conflictStateOf, reviewStateOf, REVIEW_STATE } from "../work-gate/pr-state.ts";
 import { readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, EXIT, draining, DRAIN_MARKER, GH_READS, GIT_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { readReadyRows, readPromotableRows, readClaimedRowComments, readOpenRows, readRowBranches } from "../work-gate/reads.ts";
@@ -46,7 +46,7 @@ import { requiredCheckNames, readBaseTip, baseTipWhenRed, shouldBeMerging as sho
 import { partitionUnclaimed, blockersFromRows, rowBranchOrders, closesUnresolvedOrders, closesUnresolvedPrs } from "../work-gate/causes/rows-claims.ts";
 import { deadMansSwitch, cannotAskReport } from "../work-gate/causes/org-health-host.ts";
 import { hostDriftOrders, blockerClearedOrders } from "../work-gate.ts";
-import { mergeConflictOrders, ownerOfPr, redOnlyBySupersededRun, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { mergeConflictOrders, ownerOfPr, redOnlyBySupersededRun, reviewBlockedOrders, HOLD_RED_JOBS } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { unfiledEpics, epicOrders, finishedEpics, finishedEpicOrders, epicRowsOf, doneWhenLines } from "../work-gate/causes/rows-epics.ts";
 import { fleetBatchRows, fleetBatchOrders, partitionFleetBatch, FLEET_GATED_SELECTOR } from "../work-gate/causes/rows-fleet-batch.ts";
 import { unclaimedBlockerClearedOrders, unclaimedClearings, promotionAskWindow, readRecentlyClosed, PROMOTION_ASK_OFFSETS_MS, PROMOTION_ASK_PERIOD_MS } from "../work-gate/causes/rows-blocker-cleared.ts";
@@ -69,9 +69,9 @@ beforeEach(() => forgetRefusedReads());
 // can assert what the membership BUYS rather than only that the name is in the list. `wake.ts` runs
 // nothing on import (its `main()` is behind an `import.meta.url` guard) and these three are pure, so this
 // costs the `no-token` promise at the top of this file nothing.
-import { readLedger, WAKE_TTL_MS } from "../wake/ended-sessions.ts";
+import { readLedger, WAKE_TTL_MS } from "../wake/session-endings.ts";
 import { addressed, deliver } from "../wake/fyi-queue.ts";
-import { MAX_DELIVERIES } from "../wake/holds-as-fyi.ts";
+import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
 import { escalateStuck } from "../wake/merge-queue-wait.ts";
 import { undelivered, JUDGMENT_TTL_MS, deliveryCounts } from "../wake/seat-reset.ts";
 // Each check carries a NAME because the caller narrows with newestPerName, which keys on it -- a fixture
@@ -4535,7 +4535,7 @@ test("#2174: no test file joins the history-requirement population without a dec
   const memo = createClosureMemo();
   const current = historyChargedTests(liveDir, { memo });
   // Positive control: the scan keeps the tests that really are charged, so an emptied population cannot pass for "none joined".
-  // host-units.test.ts imports the host-units module whose closure reaches the history code (`host-units/host-identity-drift.ts`); work-gate.test.ts no longer does.
+  // host-units.test.ts imports the host-units module whose closure reaches the history code (`host-units/host-drift-findings-and-notes.ts`); work-gate.test.ts no longer does.
   assert.ok(current.includes("host-units.test.ts"), "a test that imports host-units is in the population, and the scan dropped it");
   const { undeclared, judged } = judgePin({
     repo: TOOL_ROOT, paths: ["src"], current, declared: DECLARED_HISTORY_POPULATION,

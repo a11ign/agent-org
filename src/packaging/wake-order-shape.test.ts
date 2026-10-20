@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { addressed } from "../wake/fyi-queue.ts";
 import { resumePrompt } from "../wake/ci-class-and-spares.ts";
-import { ENGINEER_BRIEF } from "../wake/ended-sessions.ts";
+import { ENGINEER_BRIEF } from "../wake/session-endings.ts";
 import { sessionOf } from "../token-audit.ts";
 import { CALM_FINISH_PARAGRAPH } from "../worker-profile.ts";
 import { idleNudgePrompt, WAIT_FIELDS } from "../idle-claimant.ts";
@@ -29,7 +29,7 @@ import { claimedRowAmendedOrders } from "../work-gate/causes/rows-amended.ts";
 import { finishedEpicOrders } from "../work-gate/causes/rows-epics.ts";
 import { rowBranchOrders, incompleteRowOrders } from "../work-gate/causes/rows-claims.ts";
 import { diskHeadroomOrders } from "../work-gate/causes/org-health-host.ts";
-import { decide } from "../work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 
 const bytes = (text: string) => Buffer.byteLength(text);
 const FOLLOW_UP_BOUND = 500;

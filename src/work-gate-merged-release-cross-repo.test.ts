@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { claimRecordComment } from "./row-claim.ts";
 import { performRelease } from "./wake/ci-class-and-spares.ts";
-import { claimFactsFrom, readClaim, holderWorkAtRisk, workAtRiskInPrRepo, cloneOfKey } from "./claim-stall/claim-stalled.ts";
+import { claimFactsFrom, readClaim, holderWorkAtRisk, workAtRiskInPrRepo, cloneOfKey } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
 
 const CLAIMED_AT = Date.parse("2026-10-04T10:37:40Z");
@@ -70,7 +70,7 @@ function host(world: World = {}) {
 }
 
 const NO_AGENTS = null;
-const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: import("./claim-stall/claim-stalled.ts").MergedPr[] } = {}) => {
+const readingOf = (world: World = {}, input: { open?: object[]; elsewhereOpen?: object[]; merged?: import("./claim-stall/stall-causes-and-claim-readings.ts").MergedPr[] } = {}) => {
   const h = host(world);
   const facts = claimFactsFrom({ row: 3390, session: "worker-3390", waiting: null, blockedBy: [], comments: [comment], openPrs: input.open ?? [],
     mergedPrs: [], elsewhere: { open: input.elsewhereOpen ?? [], merged: input.merged ?? [PR_134] }, repo: REPO, trackerRepo: "a11ign/a11ign", sessionRows: 1 }, h.io);

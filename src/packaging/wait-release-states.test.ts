@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WAIT_STATES, parseWaits, conditionHolds, doneWhenCount, namedDoneWhens, umbrellaEdge, waitItemOf, releaseReferencesOf } from "../wait-condition.ts";
 import { readReleaseFacts, remoteTagExists } from "../work-gate/held-on-satisfied-orders.ts";
-import { blockedByNumbers, blockedByRefusal } from "../row-file/body-from-argv.ts";
+import { blockedByNumbers, blockedByRefusal } from "../row-file/issue-body-and-region-checks.ts";
 import { newUmbrellaEdges, UMBRELLA_EDGE_REFUSED_FROM } from "../ready-label-audit.ts";
 
 const wait = (text: string) => parseWaits(`Waiting-for: ${text}`)[0];

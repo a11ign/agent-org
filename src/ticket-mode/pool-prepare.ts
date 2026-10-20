@@ -2,14 +2,14 @@
 // module: a run's files, written before its agent starts -- its brief, its refusals and connectors, and its settings file
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { type Entry } from "./queue/declared-remains.ts";
+import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { isPlanning, runChoice, runPlace } from "./pool-state.ts";
-import { repoOf, stackedOn } from "./board-view/settled-by-pulls.ts";
+import { repoOf, stackedOn } from "./board-view/pull-status-and-notes.ts";
 import { STACK_BASE_FILE } from "./stack-rebase.ts";
 import { pluginProblems } from "./plugins.ts";
 import { hostFactsOf } from "./plugin-contract.ts";

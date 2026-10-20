@@ -53,15 +53,15 @@ import { claimRecordOf } from "./claim-record.ts";
 import { readAgents, firstLine } from "./herdr-agents.ts";
 import { persistentRoles } from "./project-roles.ts";
 import { drainNow, escalationMemory, exitCannotAsk, keptClaimsPath, memoised, performReleases, poolEligibility, poolEngineerReason, printCycles, pruneGoneKeptClaims, readKeptClaims, settleEndedOrders, type Escalation, withCiFailureClass, withReviewDepth, workspaceIdOf, writeKeptClaims } from "./wake/ci-class-and-spares.ts";
-import { CONTEXT_ACTION, MAX_DELIVERIES, TRANSCRIPT_READER, newestTranscriptRead, registerSpawn, settleAbsentInstance, type LaunchFacts } from "./wake/holds-as-fyi.ts";
+import { CONTEXT_ACTION, MAX_DELIVERIES, TRANSCRIPT_READER, newestTranscriptRead, registerSpawn, settleAbsentInstance, type LaunchFacts } from "./wake/fyi-delivery-and-limits.ts";
 import { claimOrdersIn, claimOrdersPath, deferralAges, escalateStuck, instanceCounts, orderClockIn, readDeferralHistory, readHostLoad, readLedgerDeliveries, readTextOrNull, refusalReport, stalledOrdersOf, startBudgetDeferrals } from "./wake/merge-queue-wait.ts";
 import { START_BUDGET_MS, reviewerAppOf, rosterFrom, spawnEnvironment, spawnWorker, type ClaimedRow, type ReviewerEntry, type SpawnClaimer } from "./wake/pull-request-spawn-orders.ts";
 import { EXIT, SPAWN_CAUSES, defaultGh, defaultRun, guardedGh, limitMenuTick, unavailableReason } from "./wake/exit-and-limits.ts";
 import { HOST_REPOS, PRIMARY_CHECKOUT, backlogReport, deliver, dropExpiredFyis, foldFyis, handoffBacklog, promptTarget, retireRiddenFyis, ridingGateOrders, staleReport, trackerRepositoryOf, wakeIdOf } from "./wake/fyi-queue.ts";
 import { layoutUnder, readRowForTier, rebuildCheckOn, routesForStarts, sayClaimRefusal, sayToolchainRefusal, spawnClaimability, spawnClaimer, type RouteKey, withOneShotLanes, worktreeToolchainReason } from "./wake/release-line-and-seats.ts";
 import { RESET, VOIDED, deliveryCounts, handoffQueuePath, isLeadSeat, ledgerPathFrom, nothingToDeliver, parseOrders, readHandoffs, undelivered } from "./wake/seat-reset.ts";
-import { WAKE_TTL_MS, deliverHandoffs, dropUnknownHandoffs, endedRuns, holderOf, ledgerLine, readLedger, sparePathsFrom } from "./wake/ended-sessions.ts";
-import { refreshLiveReviewerTokens, registerReviewer, reviewerPathsFrom, reviewerTokenMinter } from "./wake/ensure-reviewer-token.ts";
+import { WAKE_TTL_MS, deliverHandoffs, dropUnknownHandoffs, endedRuns, holderOf, ledgerLine, readLedger, sparePathsFrom } from "./wake/session-endings.ts";
+import { refreshLiveReviewerTokens, registerReviewer, reviewerPathsFrom, reviewerTokenMinter } from "./wake/reviewer-tokens-and-checkouts.ts";
 
 /**
  * WHICH OF THE LIVE HAIKU STARTS HAVE REACHED A CAP, from the claim-orders record and a read of each one's transcript. Pure given those reads: `counts` is the seam

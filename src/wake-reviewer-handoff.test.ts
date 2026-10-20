@@ -12,8 +12,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { deliver } from "./wake/fyi-queue.ts";
-import { deliverHandoffs } from "./wake/ended-sessions.ts";
-import { reviewerMismatch } from "./wake/ensure-reviewer-token.ts";
+import { deliverHandoffs } from "./wake/session-endings.ts";
+import { reviewerMismatch } from "./wake/reviewer-tokens-and-checkouts.ts";
 import { handoffId } from "./wake/seat-reset.ts";
 
 const agents = (spec: Record<string, string>) => Object.entries(spec).map(([label, status]) => ({ label, status }));

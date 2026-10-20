@@ -14,7 +14,7 @@ import { rs } from "@rstest/core";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { blockerClearedOrders } from "./work-gate.ts";
-import { blockerClearedReading, decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { blockerClearedReading, decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { readRecentlyClosed, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate/causes/rows-blocker-cleared.ts";
 import { claimRecordComment } from "./row-claim.ts";

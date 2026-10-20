@@ -13,13 +13,13 @@ import { test } from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import * as retro_0 from "./org-retro/readings.ts";
+import * as retro_0 from "./org-retro/journal-stats-and-verdicts.ts";
 import * as retro_1 from "./org-retro.ts";
-import * as retro_2 from "./org-retro/retro-cause.ts";
+import * as retro_2 from "./org-retro/retro-window-and-journal-patterns.ts";
 import { FAILURE_LEDGER_FILE, recordFailures } from "./failure-ledger.ts";
 import { underspecifiedReading } from "./spec-lint.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
-import { moduleSource } from "./lib/module-source.ts";
+import { moduleSource } from "./lib/source-text-reads.ts";
 
 const NOW = Date.parse("2026-10-12T00:22:00Z");
 const MINUTE = 60_000;

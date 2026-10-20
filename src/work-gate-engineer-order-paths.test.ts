@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decide } from "./work-gate/tick/blocker-cleared-reading.ts";
+import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { LAUNCH_PLACEHOLDER } from "./work-gate/vocabulary.ts";
 import { CAUSES, JUDGMENT_CAUSES, START_CAUSES } from "./cause-declaration.ts";
 import { UNCLAIMABLE_AFTER_TICKS, claimRefusalOf, claimRefusalStreaksNow, nextRefusalStreaks, unclaimableRowOrders } from "./work-gate/causes/rows-claims.ts";
@@ -24,7 +24,7 @@ import { worktreeTargetReason } from "./row-claim.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { addressed, launchAdvice, HOST_REPOS, PRIMARY_CHECKOUT } from "./wake/fyi-queue.ts";
 import { engineerRoles } from "./wake/pull-request-spawn-orders.ts";
-import { ENGINEER_BRIEF } from "./wake/ended-sessions.ts";
+import { ENGINEER_BRIEF } from "./wake/session-endings.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { SPARE_FAMILIES } from "./arm-pr.ts";
 

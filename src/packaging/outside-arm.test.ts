@@ -20,7 +20,7 @@ import { parse as parseYaml } from "yaml";
 import { OUTSIDE_ARM_FLAG, outsideArmOn } from "../arm-pr.ts";
 import { outsideArmListArgs, outsideArmPass, outsideArmVerdict, openPullRequestsQueryArgs, type OutsideArmPr } from "../auto-arm-sweep.ts";
 import { armedQueryArgs } from "../pr-armed-state.ts";
-import { settleOutsideArm } from "../work-gate/pr-orders/red-only-by-superseded-run.ts";
+import { settleOutsideArm } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { loadLanes, ownsReviewOnlyLane, type Lane } from "../lane-ownership.ts";
 

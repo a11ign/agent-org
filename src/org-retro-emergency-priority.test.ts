@@ -15,7 +15,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import * as retro_0 from "./org-retro/readings.ts";
+import * as retro_0 from "./org-retro/journal-stats-and-verdicts.ts";
 import * as retro_1 from "./org-retro.ts";
 import { EMERGENCY_PRIORITY_NOT_HONOURED_KIND, EMERGENCY_PRIORITY_USED_KIND, FAILURE_LEDGER_FILE, SPEC_LINT_REFUSED_KIND, recordFailure } from "./failure-ledger.ts";
 import { underspecifiedReading } from "./spec-lint.ts";

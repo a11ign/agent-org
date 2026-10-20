@@ -20,9 +20,9 @@ import assert from "node:assert/strict";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { main as machineryFlag } from "../machinery-flag.ts";
 import { perPullRequestOrders } from "./pr-orders.ts";
-import { SAME_HEAD_REFAIL_FLAG } from "./pr-orders/red-only-by-superseded-run.ts";
+import { SAME_HEAD_REFAIL_FLAG } from "./pr-orders/pr-gate-readings.ts";
 import { readReenqueueState } from "./causes/pr-ejected.ts";
-import { decide, sameHeadRefailFlagOn } from "./tick/blocker-cleared-reading.ts";
+import { decide, sameHeadRefailFlagOn } from "./tick/tick-decisions-and-flags.ts";
 
 type Order = { session: string; cause: string; causeKey: string; prompt: string };
 

@@ -28,7 +28,7 @@ import { sandboxGitEnv } from "./lib/git-env.ts";
 import { hostConfigPath, stateEntryPath } from "./host-config.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { CLAIM_LABEL, READY_LABEL } from "./claim-labels.ts";
-import { CANARY_STATE_FILE } from "./org-health/claim-refusal.ts";
+import { CANARY_STATE_FILE } from "./org-health/claim-and-tick-readings.ts";
 import { emptyCanaryState, parseCanaryState, type CanaryState } from "./org-health/fleet-build-readings.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // the owed rows are read through the port, so this leaf spawns nothing (`gh-call-ratchet.test.ts`)
 import { defaultRun } from "./work-gate/reads/read-memo-and-exit.ts"; // the gate's one runner: metered, and an identical read answered once
