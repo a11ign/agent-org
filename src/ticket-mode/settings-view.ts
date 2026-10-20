@@ -9,6 +9,8 @@
 // queue's number of workers and the plugin install record. This module imports no reader, so a ticket-only machine with no project loads it.
 import type { ChoicePart, File, Group, Input, SchemaEntry } from "./config-schema.ts";
 import { GROUPS } from "./config-schema.ts";
+/** The order the page draws its sections in: the three providers the chairman sees first, then the rest, with the machine's plumbing last (A11-146). */
+export const PAGE_ORDER: readonly Group[] = ["Tracker", "Exposure", "Code host", "Publisher", "Reviewer", "Conventions plugin", "Workers", "Events", "Project", "Machine"];
 import type { PluginInstall, PluginState } from "./plugins.ts";
 import type { ContractRow } from "./plugin-contract.ts";
 import { isObject, valueAt } from "./json-value.ts";
@@ -283,7 +285,7 @@ export function settingsView(input: ViewInput): View {
     return rowsOf(entry, input);
   });
   // Every group, in the page's order, even one with no rows: the plugins and connectors are drawn in one of them, and the page skips the rest when empty.
-  const groups = GROUPS.map((group) => ({ group, rows: rows.filter((row) => row.group === group) }));
+  const groups = PAGE_ORDER.map((group) => ({ group, rows: rows.filter((row) => row.group === group) }));
   return { groups, refusals, notes: input.notes, plugins: pluginLines(input), contract: input.contract ?? [], words: wordsOf(input.tickets.refusal === null ? input.tickets.raw : null) };
 }
 

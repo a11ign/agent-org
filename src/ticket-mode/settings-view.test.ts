@@ -5,7 +5,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GROUPS, SCHEMA } from "./config-schema.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { settingsView, type Row, type Section, type View, type ViewInput } from "./settings-view.ts";
+import { PAGE_ORDER, settingsView, type Row, type Section, type View, type ViewInput } from "./settings-view.ts";
 import type { PluginState } from "./plugins.ts";
 
 const read = (file: string, raw: Record<string, unknown>): Section => ({ file, raw, refusal: null });
@@ -38,10 +38,11 @@ const row = (view: View, key: string): Row => {
   return found;
 };
 
-test("every group the view draws is one the page names, in the page's order", () => {
+test("every group the view draws is one the page names, in the page's order, and the page's order names each group once", () => {
+  assert.deepEqual([...PAGE_ORDER].sort(), [...GROUPS].sort(), "the page's order names every group, once");
   const view = viewOf({ host: { tickets: { reviewer: "atomic" } } });
   const order = view.groups.map((group) => group.group);
-  assert.deepEqual(order, GROUPS.filter((group) => order.includes(group)));
+  assert.deepEqual(order, PAGE_ORDER);
   for (const group of view.groups) for (const candidate of group.rows) assert.equal(candidate.group, group.group);
 });
 

@@ -334,7 +334,7 @@ const state = {
   settingsShown: false, opener: "open-settings", boardHash: "",
   // The Settings search (A11-146): the query typed, the sections the person last left open or closed (by name; `Machine` starts closed), and the view last read,
   // which a query is applied to without reading the instance again. Kept across a redraw, so a save does not close what was open.
-  settingsSearch: { query: "", all: false, open: {}, view: null, sections: [] },
+  settingsSearch: { query: "", all: false, open: recall(storage, "ticket-mode.settings-open"), view: null, sections: [] },
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
   pick: "assigned to you", empty: null,
   // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
@@ -923,13 +923,13 @@ function drawSearch() {
       const inside = nested.items.filter(({ row }) => visibleRows.has(row)).length;
       nested.node.hidden = inside === 0;
       nested.summary.textContent = settingsCount(inside);
-      nested.node.open = searching || (state.settingsSearch.open[nested.parent] ?? false);
+      nested.node.open = searching || state.settingsSearch.open.has(nested.parent);
     }
     matching += visible.length;
     const atDefaults = section.rows.filter(({ row }) => row.inUse && !visibleRows.has(row)).length;
     section.count.textContent = searching || atDefaults === 0 ? settingsCount(visible.length) : `${visible.length} set, ${atDefaults} at defaults`;
     section.node.hidden = searching && visible.length === 0 && !section.alwaysShown;
-    section.node.open = searching || (state.settingsSearch.open[section.group] ?? section.group !== "Machine");
+    section.node.open = searching || state.settingsSearch.open.has(section.group);
   }
   $("settings-search-status").textContent = searchWords(query, matching);
 }
@@ -1124,6 +1124,12 @@ function showEditRefusal(err) {
   $("edit-refusal").hidden = false;
 }
 const settingsCount = (n) => `${n} setting${n === 1 ? "" : "s"}`;
+/** Whether a section, or a role's or routing block, is open: remembered in this browser, and every one starts closed. */
+function setOpened(key, open) {
+  if (open) state.settingsSearch.open.add(key);
+  else state.settingsSearch.open.delete(key);
+  remember(storage, "ticket-mode.settings-open", state.settingsSearch.open);
+}
 /** One section, built once for the view: a disclosure whose summary names the group and counts its settings. `Machine` starts closed. The plugins and connectors are
  * said in their section whatever a search leaves, since they are checks and not settings. Returns what drawSearch needs, or null for a section with nothing to say. */
 function settingsGroup({ group, rows }, view) {
@@ -1141,14 +1147,17 @@ function settingsGroup({ group, rows }, view) {
     const summary = el("summary", {});
     const node = el("details", { className: "setting-nested" }, summary, ...items.map((child) => child.node));
     // A person's open or closed choice for a nested block is kept, as a section's is.
-    node.addEventListener("toggle", () => { if (state.settingsSearch.query === "") state.settingsSearch.open[item.row.key] = node.open; });
+    node.addEventListener("toggle", () => { if (state.settingsSearch.query === "") setOpened(item.row.key, node.open); });
     nested.push({ parent: item.row.key, node, summary, items });
     return [item.node, node];
   });
-  const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: group }), count), ...children);
+  // The summary line is the section on the first screen: its name, its provider, and what is set (drawSearch writes the count).
+  const provider = rows.find((row) => /^tickets\.providers\.[^.]+\.provider$/.test(row.key));
+  const providerWords = el("span", { className: "hint", textContent: provider ? `provider ${provider.value}` : "" });
+  const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: group }), providerWords, count), ...children);
   section.setAttribute("aria-labelledby", id);
   // Only a choice made while nothing is searched is kept: a search's own opening of a section is not the person's.
-  section.addEventListener("toggle", () => { if (state.settingsSearch.query === "") state.settingsSearch.open[group] = section.open; });
+  section.addEventListener("toggle", () => { if (state.settingsSearch.query === "") setOpened(group, section.open); });
   if (plugins) {
     section.append(el("p", { className: "hint", textContent: "Plugins each worker runs with, and whether a worker's session loads each one" }),
       el("ul", {}, ...view.plugins.map((line) => el("li", { textContent: `${line.plugin}: ${line.installed}; ${line.loads}` }))),
