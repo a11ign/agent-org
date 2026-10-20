@@ -28,7 +28,7 @@ import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
 import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
-import { deferralPath, readDeferral } from "./plugin-install.ts";
+import { deferralPath, readDeferral, type Deferral } from "./plugin-install.ts";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
@@ -90,8 +90,8 @@ export type DoctorDeps = Readonly<{
   isolation: (session: string) => Isolation;
   /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
   updateStatus: () => StatusFile;
-  /** What a conventions plugin refresh that a live run held back says, since when, or null when none waits (A11-145). */
-  pluginRefresh: () => string | null;
+  /** The record of a conventions plugin refresh that a live run held back: none, a wait, or a record that cannot be read (A11-145). */
+  pluginRefresh: () => Deferral;
   /** The release tags this checkout holds, with no network (A11-90). */
   releaseTags: () => string[];
   /**
@@ -498,8 +498,10 @@ function herdrScopeChecks(settings: TicketSettings | null, instanceState: Servic
 
 /** The conventions plugin refresh a live run held back (A11-145): one row while it waits, said as it is, since a wait is not a failure. */
 function pluginRefreshChecks(deps: DoctorDeps): Check[] {
-  const waiting = deps.pluginRefresh();
-  return waiting === null ? [] : [ok("plugin refresh", `the conventions plugin refresh has waited since ${waiting}, and runs at the next update with no run live`)];
+  const state = deps.pluginRefresh();
+  if (state.kind === "none") return [];
+  if (state.kind === "unreadable") return [failed("plugin refresh", state.why, "run `agent-org update` once no run is live: a refresh that runs removes the record")];
+  return [ok("plugin refresh", `the conventions plugin refresh has waited since ${state.since}, with ${state.live} ${state.live === 1 ? "run" : "runs"} live, and runs at the next update with no run live`)];
 }
 
 /** The hour the hourly update has to move a deferred install in, beyond `tickets.updateMaxDeferHours`, before `doctor` calls it late (A11-90). */
@@ -739,10 +741,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     platform: process.platform,
     isolation: (session) => hostIsolation(services, session),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
-    pluginRefresh: () => {
-      const waiting = readDeferral(deferralPath(process.env, homedir()));
-      return waiting === null ? null : `${waiting.since}, with ${waiting.live} ${waiting.live === 1 ? "run" : "runs"} live`;
-    },
+    pluginRefresh: () => readDeferral(deferralPath(process.env, homedir())),
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewerGate: async () => {

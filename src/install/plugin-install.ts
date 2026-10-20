@@ -12,9 +12,9 @@
 //
 // Every program runs through the `Run` seam, so a test sees each command and answers it; none is run here.
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { agentOrgHome, readOrNull, type Env } from "./paths.ts";
+import { agentOrgHome, type Env } from "./paths.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { pluginStates, type PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
@@ -173,21 +173,30 @@ export const runProgram: Run = (file, args) => {
 /** Where a held-back refresh is recorded, beside the update status file, for `doctor` to say so. */
 export const deferralPath = (env: Env, home: string): string => join(agentOrgHome(env, home), "plugins-deferred.json");
 
-/** The refresh a live run held back: since when (kept from the first deferral), and how many runs were live, or null when none is recorded. */
-export function readDeferral(path: string): Readonly<{ since: string; live: number }> | null {
-  const text = readOrNull(path);
-  if (text === null) return null;
+/**
+ * What the record says of a held-back refresh: none, a wait since a time with a number of live runs, or a record that cannot be read. An unreadable record is
+ * never taken for none: `doctor` fails on it, so a corrupt file cannot hide a wait.
+ */
+export type Deferral = Readonly<{ kind: "none" }> | Readonly<{ kind: "waiting"; since: string; live: number }> | Readonly<{ kind: "unreadable"; why: string }>;
+
+export function readDeferral(path: string): Deferral {
+  if (!existsSync(path)) return { kind: "none" };
+  let record: unknown;
   try {
-    const record: unknown = JSON.parse(text);
-    return isObject(record) && typeof record.since === "string" && typeof record.live === "number" ? { since: record.since, live: record.live } : null;
-  } catch {
-    return null;
+    record = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    return { kind: "unreadable", why: `${path} cannot be read: ${(err as Error).message}` };
   }
+  return isObject(record) && typeof record.since === "string" && typeof record.live === "number"
+    ? { kind: "waiting", since: record.since, live: record.live }
+    : { kind: "unreadable", why: `${path} does not hold a since time and a live count` };
 }
 
 /** Records the held-back refresh, keeping the time of the first deferral, so `doctor` can say how long it has waited. */
 export function writeDeferral(path: string, live: number, now: Date): void {
-  writeAtomic(path, `${JSON.stringify({ since: readDeferral(path)?.since ?? now.toISOString(), live })}\n`, 0o600);
+  const prior = readDeferral(path);
+  const since = prior.kind === "waiting" ? prior.since : now.toISOString();
+  writeAtomic(path, `${JSON.stringify({ since, live })}\n`, 0o600);
 }
 
 /** Removes the record once the refresh has run, so `doctor` says nothing of a deferral that is over. */

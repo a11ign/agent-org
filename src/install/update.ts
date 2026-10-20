@@ -35,7 +35,7 @@ import { loadQueue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { readAgents, herdrRun } from "../herdr-agents.ts";
 import { pinnedPnpm } from "./pnpm.ts";
-import { clearDeferral, deferralPath, runProgram, stateOfRecord, updateConventions, writeDeferral, type ConventionsUpdate } from "./plugin-install.ts";
+import { clearDeferral, deferralPath, runProgram, stateOfRecord, updateConventions, writeDeferral, type ConventionsUpdate, type Run } from "./plugin-install.ts";
 import { hostIsolation, midToolCall, readUpdateStatus, restartDecision, updateStatusPath, writeUpdateStatus, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
 
 export type Channel = "release" | "main";
@@ -71,6 +71,24 @@ export type UpdateDeps = Readonly<{
 }>;
 
 export class UpdateRefusal extends Error {}
+
+/**
+ * The production wiring of the conventions refresh (A11-145): the plugins of `settings` are refreshed through `claude`, and a wait is recorded under the
+ * agent-org home of `home`. A host with no conventions plugin has nothing to wait for, so it records nothing for doctor to say. Exported so the wiring is
+ * tested with a fake `claude`, not only the update around it.
+ */
+export function conventionsWiring(settings: Pick<TicketSettings, "plugins"> | null, env: NodeJS.ProcessEnv, home: string, run: Run = runProgram): Pick<UpdateDeps, "conventions" | "conventionsDeferral"> {
+  const record = deferralPath(env, home);
+  return {
+    conventions: () => (settings === null ? { said: [], failed: [] } : updateConventions(settings.plugins, { run, stateOf: stateOfRecord(home, { record: join(home, ".claude", "plugins", "installed_plugins.json") }) })),
+    conventionsDeferral: {
+      defer: (live) => {
+        if (settings !== null && settings.plugins.length > 0) writeDeferral(record, live, new Date());
+      },
+      clear: () => clearDeferral(record),
+    },
+  };
+}
 
 /**
  * Move the checkout and restart what ran, unless the running instance has a live run and `force` is not given: then nothing moves, and it says so.
@@ -330,14 +348,7 @@ function defaultUpdateDeps(): UpdateDeps {
       write: (status) => writeUpdateStatus(statusPath, status),
     },
     stackExtension: () => ensureStackExtension(asAccount(defaultGh, workerAccount(readOrNull(hostFilePath(process.env)), process.env))),
-    conventions: () => (settings === null ? { said: [], failed: [] } : updateConventions(settings.plugins, { run: runProgram, stateOf: stateOfRecord(homedir()) })),
-    conventionsDeferral: {
-      // A host with no conventions plugin has nothing to wait for, so it records nothing for doctor to say.
-      defer: (live) => {
-        if (settings !== null && settings.plugins.length > 0) writeDeferral(deferralPath(process.env, homedir()), live, new Date());
-      },
-      clear: () => clearDeferral(deferralPath(process.env, homedir())),
-    },
+    ...conventionsWiring(settings, process.env, homedir()),
     out: console,
   };
 }

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { clearDeferral, installConventions, marketplacesOf, pluginVersion, readDeferral, type Run, updateConventions, writeDeferral } from "./plugin-install.ts";
 import { join } from "node:path";
+import { writeFileSync } from "node:fs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
@@ -154,14 +155,16 @@ test("a plugin's version is read from its manifest, and is null when it cannot b
   assert.equal(pluginVersion(null, () => ""), null);
 });
 
-// A11-145: a refresh a live run held back is recorded once, keeping the first time it waited, and cleared when the refresh runs.
-test("A11-145: a held-back refresh is recorded with the time it first waited, and the record is cleared when the refresh runs", () => {
+// A11-145: a refresh a live run held back is recorded once, keeping the first time it waited; an unreadable record is never taken for none.
+test("A11-145: a held-back refresh is recorded with the time it first waited, a record that cannot be read is said so, and clearing it leaves none", () => {
   const dir = tmpDir("deferral-");
   const path = join(dir, "plugins-deferred.json");
-  assert.equal(readDeferral(path), null);
+  assert.deepEqual(readDeferral(path), { kind: "none" });
   writeDeferral(path, 2, new Date("2026-10-20T10:00:00.000Z"));
   writeDeferral(path, 1, new Date("2026-10-20T11:00:00.000Z"));
-  assert.deepEqual(readDeferral(path), { since: "2026-10-20T10:00:00.000Z", live: 1 });
+  assert.deepEqual(readDeferral(path), { kind: "waiting", since: "2026-10-20T10:00:00.000Z", live: 1 });
+  writeFileSync(path, "{ not json");
+  assert.equal(readDeferral(path).kind, "unreadable");
   clearDeferral(path);
-  assert.equal(readDeferral(path), null);
+  assert.deepEqual(readDeferral(path), { kind: "none" });
 });

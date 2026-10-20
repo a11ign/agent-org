@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ServiceName, ServiceState } from "./service.ts";
-import { dependencyInstalls, readLiveRuns, update, type UpdateDeps } from "./update.ts";
+import { conventionsWiring, dependencyInstalls, readLiveRuns, update, type UpdateDeps } from "./update.ts";
+import { deferralPath, readDeferral } from "./plugin-install.ts";
 import { pinnedPnpm } from "./pnpm.ts";
 import { midToolCall, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
 
@@ -386,4 +387,24 @@ test("A11-145: a live run holds the conventions refresh back and records it; wit
   const idle = deps(checkout, git, { instance: "running" }, 0, { conventions, conventionsDeferral });
   update({ version: undefined, channel: "release" }, idle.deps);
   assert.deepEqual([refreshed, cleared], [["refreshed"], ["cleared"]], "the refresh runs once none is live, and the record is cleared");
+});
+
+// A11-145: the production wiring of the refresh runs claude for a GitHub-sourced plugin, and records and clears the wait under the agent-org home.
+test("A11-145: the production conventions wiring refreshes a GitHub-sourced plugin through claude, and records and clears a wait in the agent-org home", () => {
+  const home = tmpDir("wiring-");
+  const calls: string[] = [];
+  const run = (file: string, args: string[]) => {
+    calls.push([file, ...args].join(" "));
+    const line = args.join(" ");
+    const stdout = line === "plugin marketplace list --json" ? JSON.stringify([{ name: "example-marketplace", source: "github", repo: "example-org/example-plugin" }]) : "";
+    return { status: 0, stdout, stderr: "" };
+  };
+  const wiring = conventionsWiring({ plugins: ["example@example-marketplace"] }, {}, home, run);
+  wiring.conventionsDeferral.defer(2);
+  const recorded = readDeferral(deferralPath({}, home));
+  assert.deepEqual([recorded.kind, recorded.kind === "waiting" ? recorded.live : 0], ["waiting", 2]);
+  assert.deepEqual(wiring.conventions(), { said: [], failed: [] });
+  assert.deepEqual(calls, ["claude plugin marketplace list --json", "claude plugin marketplace update example-marketplace", "claude plugin update example@example-marketplace"]);
+  wiring.conventionsDeferral.clear();
+  assert.deepEqual(readDeferral(deferralPath({}, home)), { kind: "none" });
 });

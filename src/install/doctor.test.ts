@@ -31,7 +31,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
-    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => null, releaseTags: () => [],
+    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0, now: () => NOW,
     ...over,
   };
@@ -647,10 +647,13 @@ test("A11-140: a plugin that does not load, or does not match, makes the run fai
   assert.deepEqual([notLoading.every((check) => check.ok), mismatched.every((check) => check.ok), fine.every((check) => check.ok)], [false, false, true]);
 });
 
-// A11-145: a conventions plugin refresh a live run held back is said, and no row shows when none waits.
-test("A11-145: doctor says a conventions plugin refresh that a live run held back, and shows no row when none waits", async () => {
-  const waiting = byName(await diagnose(deps({ pluginRefresh: () => "2026-10-20T10:00:00.000Z, with 2 runs live" })));
+// A11-145: a conventions plugin refresh a live run held back is said; a record that cannot be read fails its row, so a corrupt file cannot hide a wait.
+test("A11-145: doctor says a conventions plugin refresh that a live run held back, fails a record it cannot read, and shows no row when none waits", async () => {
+  const waiting = byName(await diagnose(deps({ pluginRefresh: () => ({ kind: "waiting", since: "2026-10-20T10:00:00.000Z", live: 2 }) })));
   assert.equal(waiting["plugin refresh"].ok, true);
   assert.equal(waiting["plugin refresh"].detail, "the conventions plugin refresh has waited since 2026-10-20T10:00:00.000Z, with 2 runs live, and runs at the next update with no run live");
+  const unreadable = byName(await diagnose(deps({ pluginRefresh: () => ({ kind: "unreadable", why: "/home/me/.agent-org/plugins-deferred.json cannot be read: Unexpected token" }) })));
+  assert.equal(unreadable["plugin refresh"].ok, false);
+  assert.equal(unreadable["plugin refresh"].fix, "run `agent-org update` once no run is live: a refresh that runs removes the record");
   assert.equal(byName(await diagnose(deps()))["plugin refresh"], undefined);
 });

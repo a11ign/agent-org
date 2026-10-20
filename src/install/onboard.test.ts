@@ -406,7 +406,7 @@ function greenDoctor(home: string): DoctorDeps {
     mcpList: () => "linear: https://mcp.linear.app/mcp (HTTP) - Connected\n", pnpmVersion: () => "10.34.5",
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }), ghAs: () => listedGh(), originOf: () => null, platform: "linux",
-    isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => null, releaseTags: () => [],
+    isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewerGate: async () => null, codexStatus: () => 0, now: () => Date.now(),
   };
