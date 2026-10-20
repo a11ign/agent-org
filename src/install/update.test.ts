@@ -21,6 +21,7 @@ function installed() {
   mkdirSync(work);
   const git = gitIn(work);
   git(["init", "--quiet", "--initial-branch=main"]);
+  git(["config", "gc.auto", "0"]);
   const commit = (label: string, tag?: string) => {
     writeFileSync(join(work, "version.txt"), `${label}\n`);
     git(["add", "-A"]);
@@ -29,7 +30,8 @@ function installed() {
   };
   commit("v0.1.0", "v0.1.0");
   const checkout = join(root, "agent-org");
-  gitIn(root)(["clone", "--quiet", work, checkout]);
+  // No auto-maintenance: the clone's `gc --auto` can detach and write into the folder after the test has returned (#2606 in the other fixtures).
+  gitIn(root)(["clone", "--quiet", "-c", "gc.auto=0", "-c", "maintenance.auto=false", work, checkout]);
   gitIn(checkout)(["checkout", "--quiet", "--detach", "refs/tags/v0.1.0"]);
   commit("v0.2.0", "v0.2.0");
   commit("v0.10.0", "v0.10.0");
