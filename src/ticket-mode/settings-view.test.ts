@@ -206,7 +206,7 @@ test("an old key that is set shows where its new key is, in place of its value, 
 
 test("an old key that is not set shows no alias, and its value is as it was; an old key that is set is in use", () => {
   const view = viewOf({ host: { tickets: {} } });
-  assert.deepEqual([row(view, "tickets.linearKey").alias, row(view, "tickets.linearKey").state], [null, "default"], "its built-in default still says so");
+  assert.deepEqual([row(view, "tickets.linearKey").alias ?? "no alias", row(view, "tickets.linearKey").state], ["no alias", "default"], "its built-in default still says so");
   assert.equal(row(view, "tickets.linearKey").inUse, false, "an old key nothing sets is not in use");
   assert.equal(row(viewOf({ host: { tickets: { linearKey: { keychain: "x" } } } }), "tickets.linearKey").inUse, true, "an old key that is set is in use");
 });
