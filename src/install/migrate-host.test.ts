@@ -139,6 +139,13 @@ test("a line the move removes and adds is named, so the dry run shows the change
   assert.ok(fix.lines.some((line) => line.startsWith("- ") && line.includes("linearKey")), "the old key's line is removed");
 });
 
+/** The environment a `doctor` child runs with: the host file it names, and no ticket run (`AGENT_ORG_TICKET` unset), as a plain shell has it. */
+function plainDoctorEnv(host: string): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env, AGENT_ORG_HOST: host };
+  delete env.AGENT_ORG_TICKET;
+  return env;
+}
+
 /** A ticket-only machine's host file, as the chairman's work Mac holds it: the clones and the tickets, and no `primary` (A11-144). */
 const TICKET_ONLY_FILE = { clones: { "nbl-ui-netbox": "/home/agent/repos/nbl-ui-netbox" }, tickets: { linearKey: { keychain: "agent-org-linear" }, port: 4800 } };
 
@@ -151,8 +158,7 @@ test("A11-144: doctor and doctor --fix run on a ticket-only host with no primary
   // The project declaration is loaded at import when a host file names no ticket run (`AGENT_ORG_TICKET` unset): a `doctor` that loads it refuses here.
   const host = join(tmpDir("doctor-ticket-only-"), "host.json");
   writeFileSync(host, JSON.stringify(TICKET_ONLY_FILE, null, 2));
-  const env: Record<string, string | undefined> = { ...process.env, AGENT_ORG_HOST: host };
-  delete env.AGENT_ORG_TICKET;
+  const env = plainDoctorEnv(host);
   const doctor = fileURLToPath(new URL("./doctor.ts", import.meta.url));
   const fix = spawnSync(process.execPath, [doctor, "--fix", "--dry-run"], { env, encoding: "utf8" });
   assert.equal(fix.status, 0, fix.stderr);
@@ -169,8 +175,7 @@ test("A11-144: doctor --fix, then doctor, on a copy of each host shape leaves no
   for (const [name, file] of [["ticket-only", TICKET_ONLY_FILE], ["agents", AGENTS_HOST]] as const) {
     const host = join(tmpDir("doctor-copy-"), "host.json");
     writeFileSync(host, JSON.stringify(file, null, 2));
-    const env: Record<string, string | undefined> = { ...process.env, AGENT_ORG_HOST: host };
-    delete env.AGENT_ORG_TICKET;
+    const env = plainDoctorEnv(host);
     const fix = spawnSync(process.execPath, [doctor, "--fix"], { env, encoding: "utf8", timeout: 120_000 });
     assert.match(fix.stdout, /moved, and the old file is kept at/, `${name}: ${fix.stdout}${fix.stderr}`);
     const plain = spawnSync(process.execPath, [doctor], { env, encoding: "utf8", timeout: 120_000 });
