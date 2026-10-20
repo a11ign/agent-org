@@ -30,7 +30,8 @@ import { loadReviewerGate } from "./reviewer-port.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/declared-remains.ts";
 import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/approve.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
-import { plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
+import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
+import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import { PRIORITIES } from "./writer.ts";
@@ -46,13 +47,13 @@ export const FEEDBACK_MS = 180_000;
 const TERMINAL_PAIR_MS = 5_000;
 /** How long a reading of who holds the open tickets stands. */
 const PEOPLE_FRESH_MS = 300_000;
-const MODELS = ["opus", "sonnet", "haiku"];
-const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 export type BoardDeps = Readonly<{
   settings: TicketSettings;
   source: TicketSource;
   key: string;
+  /** The host file the Settings page reads, fresh on each request: `AGENT_ORG_HOST`'s file when unset. */
+  hostPath?: string;
   queuePath: string;
   choicePath: string;
   pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun"> & Partial<Pick<ReturnType<typeof createPool>, "held">>;
@@ -207,6 +208,11 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
       pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
       writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
       writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
+  }
+  if (method === "GET" && path === "/api/settings") {
+    // The read-only Settings page: each file read fresh, so a refusal names its field, and the instance's own queue and choice (A11-131).
+    return [200, await readSettingsView({ hostPath: deps.hostPath ?? hostFilePath(), settings, queuePath: deps.queuePath, queueMax: store.get().max,
+      choicePath: deps.choicePath, ...(deps.poolDeps?.pluginRecord === undefined ? {} : { pluginRecord: deps.poolDeps.pluginRecord }) })];
   }
   if (method === "GET" && path === "/api/pick") {
     // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot

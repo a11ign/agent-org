@@ -455,9 +455,14 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   });
 }
 
+/** The host file the settings are read from: the one `$AGENT_ORG_HOST` names, or `~/.agent-org/host.json` when it is unset or empty. */
+export function hostFilePath(env: Record<string, string | undefined> = process.env, home: string = homedir()): string {
+  return env[HOST_FILE_ENV] || join(home, ".agent-org", "host.json");
+}
+
 /** The settings from the file `$AGENT_ORG_HOST` names, or from `~/.agent-org/host.json` when it is unset or empty. REFUSES naming the file when it cannot be read. */
 export function readTicketSettings(env: Record<string, string | undefined> = process.env, read: (path: string) => string = (path) => readFileSync(path, "utf8"), home: string = homedir()): TicketSettings {
-  const path = env[HOST_FILE_ENV] || join(home, ".agent-org", "host.json");
+  const path = hostFilePath(env, home);
   let text: string;
   try {
     text = read(path);
