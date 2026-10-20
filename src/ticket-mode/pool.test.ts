@@ -4302,3 +4302,12 @@ test("a queued talk session taken off the board puts the finished run back, and 
   assert.equal(existsSync(join(dir, "outcome.json")), true, "the outcome file set aside is put back");
   assert.equal(existsSync(join(dir, "outcome.prev.json")), false);
 });
+
+test("a worker's brief has it do a design check on a machine with tickets.designTools, and decline it otherwise", async () => {
+  const declined = await startedRun();
+  assert.match(readFileSync(join(declined.dir, "brief.md"), "utf8"), /decline it with "unattended worker, no design tool access"/);
+  const allowed = await startedRun({ designTools: true });
+  const brief = readFileSync(join(allowed.dir, "brief.md"), "utf8");
+  assert.match(brief, /If a design gate asks for a design check, do it/);
+  assert.doesNotMatch(brief, /no design tool access/);
+});

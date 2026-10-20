@@ -59,6 +59,8 @@ Each row below states the reason from the code. The starting positions in the ep
 | `writer` | plugin, model and effort stay | `run` names the writer skill (`writerOf`, `settings.ts:286-294`). The plugin declares the skill, which removes the text matching in `doctor.ts:180-193`. Model and effort are machine tuning (`settings.ts:293`) and stay. |
 | `prReview` | plugin, chosen by name | The host keeps the choice of skill name (`settings.ts:345-349`), and the gate matches that name (`hook.ts:385-388`). The plugin declares which skills it provides, so the choice can be checked. |
 
+**More keys outside the ten.** `tickets.drafts` and `tickets.designTools` are machine facts, so they stay in `host.json` under rule 1. `designTools` says whether this machine gives workers a design tool, which decides whether step 7 of the brief has a worker do a design gate's check or decline it. Allowing the tool itself is `connectors`, which widens what a worker may call, so rule 3 keeps it out of a plugin's hands, and a plugin's declared connector need points at `tickets.connectors`, not at this key.
+
 **A key outside the ten: `tickets.plan`.** It is not one of the ten, but it moves with `planner`. The plugin declares the plan-file name its planning skill writes (`plan-attachment.md:11`). The host keeps `plan` as the value its reader uses (`settings.ts:208-214`), and the check in section 6 compares the two. Its meaning does not change.
 
 ## 4. The options, compared against the failures

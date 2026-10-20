@@ -103,7 +103,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
     const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
-      notes, connectors, planned: entry.planned === true, drafts: settings.drafts, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS }));
+      notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS }));
   }
   writeRunFiles(ctx, entry, folder, dir);
   return { folder, dir, ...(resume ? { resume } : {}) };
