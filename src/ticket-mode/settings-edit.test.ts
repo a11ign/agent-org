@@ -215,6 +215,15 @@ test("a save keeps prose keys, their order and the CRLF line ends of a file that
   assert.deepEqual(Object.keys(JSON.parse(after).tickets), ["_note", "port", "uiPort", "drafts", "stallMinutes"]);
 });
 
+test("a restore names a key that holds a dot, such as a repository called .github, with the value it had and the value it returns to", async () => {
+  const { hostPath, options } = setup((folder) => hostWith(folder).replace("\"nbl-ui-netbox\": \"/r/netbox\"", "\"nbl-ui-netbox\": \"/r/netbox\", \".github\": \"/r/github\""));
+  const change = [{ key: "clones..github", value: "/r/other" }];
+  const preview = await previewEdit(options, "host.json", change);
+  await saveEdit(options, "host.json", change, { base: preview.base, confirmed: ["clones..github"] });
+  const restored = await restoreBackup(options, "host.json");
+  assert.deepEqual(restored.changes.map(({ key, old, new: now }) => ({ key, old, new: now })), [{ key: "clones..github", old: "/r/other", new: "/r/github" }]);
+});
+
 test("a symbolic link to the host file is kept as a link, and the file it names is the one replaced, with its backup beside it", async () => {
   const { dir, hostPath, options } = setup();
   const link = join(dir, "link.json");

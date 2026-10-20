@@ -10,6 +10,7 @@
 import type { ChoicePart, File, Group, Input, SchemaEntry } from "./config-schema.ts";
 import { GROUPS } from "./config-schema.ts";
 import type { PluginInstall, PluginState } from "./plugins.ts";
+import { isObject, valueAt } from "./json-value.ts";
 
 export type Section = Readonly<{ file: string; raw: Readonly<Record<string, unknown>> | null; refusal: string | null }>;
 export type ViewInput = Readonly<{
@@ -43,18 +44,6 @@ const CHOICE_BUILT_IN: Readonly<Record<ChoicePart, string>> = { model: "opus", e
 
 /** Which section reads a host.json key: ticket mode reads its block and the few top-level keys it shares with the board. */
 const TICKET_READ = /^(tickets(\.|$)|clones(\.|$)|stateDir$|binDir$)/;
-
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** The value at `path` in `root`, or undefined: one step per segment, never through a list. */
-function valueAt(root: unknown, path: readonly string[]): unknown {
-  let at = root;
-  for (const part of path) {
-    if (!isObject(at)) return undefined;
-    at = at[part];
-  }
-  return at;
-}
 
 /** The keys an entry stands for: its `<name>` segments are filled from the keys the file holds at that place. */
 function concreteKeys(key: string, root: Readonly<Record<string, unknown>> | null): string[] {

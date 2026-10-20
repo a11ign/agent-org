@@ -20,7 +20,8 @@ import { isDeepStrictEqual } from "node:util";
 import { type Applies, SCHEMA, type SchemaEntry } from "./config-schema.ts";
 import { type Edit as JsonEdit, spliceJson } from "./json-edit.ts";
 import { projectPathOf } from "./settings-read.ts";
-import { hostLevelRefusal, isObject, type Json, projectRefusal, ticketsRefusal } from "./settings-verdict.ts";
+import { hostLevelRefusal, type Json, projectRefusal, ticketsRefusal } from "./settings-verdict.ts";
+import { isObject, valueAt } from "./json-value.ts";
 
 /** The files a save may change: the machine's host file and the primary project's declaration. */
 export type EditFile = "host.json" | "project.json";
@@ -172,11 +173,6 @@ async function locate(options: EditOptions, file: EditFile, fs: FileSystem): Pro
   return { path, text: fs.readFile(path) };
 }
 
-/** The value at a dotted key in a parsed file, or undefined: one step per segment, never through a list. */
-function valueAt(root: Json, key: string): unknown {
-  return key.split(".").reduce<unknown>((at, segment) => (isObject(at) ? at[segment] : undefined), root);
-}
-
 /** The readers' verdict on a file's text, as the page shows it: null when they accept it. */
 async function verdictOf(file: EditFile, text: string, path: string, hostPath: string): Promise<string | null> {
   if (file === "project.json") return projectRefusal(text, path);
@@ -194,7 +190,7 @@ async function planned(options: EditOptions, file: EditFile, changes: readonly C
     const { entry, path } = resolve(file, change.key);
     const applies: Applies = entry.key === "tickets.max" && queueOwnsMax(options, fs) ? "none" : entry.edit.applies;
     const edit: JsonEdit = "remove" in change ? { path, remove: true } : { path, value: change.value };
-    const was = valueAt(current, path.join("."));
+    const was = valueAt(current, path);
     const changed = "remove" in change ? was !== undefined : !isDeepStrictEqual(was, change.value);
     const shown: ChangeShown = { key: change.key, old: wordsOf(entry, was, fs), new: "remove" in change ? removedWords(entry) : wordsOf(entry, change.value, fs),
       changed, applies, inForce: inForceOf(entry.edit, applies), dangerous: entry.edit.dangerous ?? null };
@@ -253,13 +249,13 @@ export async function saveEdit(options: EditOptions, file: EditFile, changes: re
   return { file, changes: plan.changes, backup, note: file === "project.json" ? PROJECT_NOTE : null };
 }
 
-/** The keys that differ between two parsed files, as dotted paths: a list or a value is one key, an object's keys are read one by one. */
-function changedKeys(before: unknown, after: unknown, at: string[] = []): string[] {
+/** The paths that differ between two parsed files: a list or a value is one key, an object's keys are read one by one. A path is kept as its segments, since a key may hold a dot. */
+function changedPaths(before: unknown, after: unknown, at: string[] = []): string[][] {
   if (isObject(before) && isObject(after)) {
     const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
-    return keys.flatMap((key) => changedKeys(before[key], after[key], [...at, key]));
+    return keys.flatMap((key) => changedPaths(before[key], after[key], [...at, key]));
   }
-  return isDeepStrictEqual(before, after) ? [] : [at.join(".")];
+  return isDeepStrictEqual(before, after) ? [] : [at];
 }
 
 /** Restore the backup: the backup's text must pass the readers, and the file and its backup swap, so a restore can itself be undone. */
@@ -273,13 +269,14 @@ export async function restoreBackup(options: EditOptions, file: EditFile): Promi
   if (refusal !== null) throw new SettingsEditRefusal(`the backup is refused by the readers, so it is not restored: ${refusal}`);
   const before = objectOfText(current.text, current.path);
   const after = objectOfText(text, backup);
-  const changes = changedKeys(before, after).map((key): ChangeShown => {
+  const changes = changedPaths(before, after).map((path): ChangeShown => {
+    const key = path.join(".");
     // A key this page does not describe is said to need the board restarted: the page cannot say when it is read.
     const described = SCHEMA.filter((entry) => entry.file === file && patternOf(entry.key).pattern.test(key)).sort((a, b) => patternOf(b.key).literal - patternOf(a.key).literal)[0];
     const editable = described?.edit.editable === true ? described.edit : undefined;
     const applies: Applies = editable?.applies ?? "board";
-    const was = valueAt(before, key);
-    const value = valueAt(after, key);
+    const was = valueAt(before, path);
+    const value = valueAt(after, path);
     return { key, old: described === undefined ? (JSON.stringify(was) ?? "not set") : wordsOf(described, was, fs),
       new: described === undefined ? (JSON.stringify(value) ?? "not set") : wordsOf(described, value, fs), applies,
       inForce: editable === undefined ? "in force after the board restarts: ticket:serve and ticket:ui, since this page does not change the key." : inForceOf(editable, applies),

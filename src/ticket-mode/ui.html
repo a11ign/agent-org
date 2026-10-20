@@ -812,9 +812,8 @@ const editable = () => !state.connection || state.connection.kind === "local";
 const changeWords = (c) => `${c.key}: ${c.old} → ${c.new}. ${c.inForce}`;
 /** Nothing is staged, reviewed or said about an instance the page has left. */
 function clearEdits(chosen) {
-  edits.version += 1;
   edits.pending.clear();
-  edits.reviewed = null;
+  stagingChanged();
   edits.forConnection = chosen ? chosen.name : null;
   $("pending-list").replaceChildren();
   $("review-files").replaceChildren();
@@ -825,6 +824,13 @@ function clearEdits(chosen) {
 /** Whether the rows and staged changes on the page were read from the instance now chosen: a change to the instance the page has left is refused. */
 const sameInstance = () => edits.forConnection === (state.connection ? state.connection.name : null);
 const OUT_OF_DATE = "This instance changed since these settings were read: open Settings again.";
+/** What is staged has moved on: a review read before now is not shown, and one still in flight is dropped when it lands. */
+function stagingChanged() {
+  edits.version += 1;
+  edits.reviewed = null;
+}
+/** An action on the staged changes, made only for the instance they were read from. Always answers a promise, as the actions are asked for it. */
+const forThisInstance = (action) => async (...args) => (sameInstance() ? action(...args) : showEditRefusal(OUT_OF_DATE));
 /** Shows the edit panel for a local instance, with what is staged, the restores, and a line for a remote one. */
 function drawEdits(view) {
   const local = editable();
@@ -877,26 +883,24 @@ function valueOf(row, text) {
   return text;
 }
 /** A change staged on its row, with what it was and what it will be, until it is saved or taken back. */
-function stageChange(row, body) {
-  if (!sameInstance()) return showEditRefusal(OUT_OF_DATE);
+function stageChangeHere(row, body) {
   const becomes = "remove" in body ? "returned to its default" : (typeof body.value === "string" ? body.value : JSON.stringify(body.value));
-  edits.version += 1;
+  stagingChanged();
   edits.pending.set(`${row.file}|${row.key}`, { file: row.file, key: row.key, old: row.value, becomes, body });
-  edits.reviewed = null;
   renderPending();
 }
+const stageChange = forThisInstance(stageChangeHere);
 function renderPending() {
   const staged = [...edits.pending.entries()];
   $("pending").hidden = !editable() || staged.length === 0;
   $("pending-list").replaceChildren(...staged.map(([id, change]) => {
     const undo = el("button", { type: "button", textContent: "Take back" });
-    undo.addEventListener("click", () => { edits.version += 1; edits.pending.delete(id); edits.reviewed = null; renderPending(); renderReview(); });
+    undo.addEventListener("click", () => { edits.pending.delete(id); stagingChanged(); renderPending(); renderReview(); });
     return el("li", {}, el("span", { textContent: `${change.file} ${change.key}: ${change.old} → ${change.becomes}` }), " ", undo);
   }));
 }
 /** Each file's changes as the readers would leave it: the old and new value and when it is in force, the dangerous ones named, and the save. */
-async function reviewChanges() {
-  if (!sameInstance()) return showEditRefusal(OUT_OF_DATE);
+async function reviewChangesHere() {
   const version = edits.version;
   const files = [...new Set([...edits.pending.values()].map((change) => change.file))];
   const reviewed = {};
@@ -919,6 +923,7 @@ async function reviewChanges() {
   edits.reviewed = reviewed;
   renderReview();
 }
+const reviewChanges = forThisInstance(reviewChangesHere);
 /** The staged changes of one file, with their ids. */
 const stagedOf = (file) => [...edits.pending.entries()].filter(([, change]) => change.file === file);
 function renderReview() {
@@ -939,14 +944,13 @@ function reviewOf(file, entry) {
   return el("section", { className: "review-file" }, el("h4", { textContent: `${file}: the change, as the readers accept it` }), el("ul", {}, ...lines), ...notes, save);
 }
 /** A save of one file: the readers check the text again on the instance, and the dangerous keys it is sent with are the ones the page named. */
-async function saveFile(file, { ids, changes, preview }) {
-  if (!sameInstance()) return showEditRefusal(OUT_OF_DATE);
+async function saveFileHere(file, { ids, changes, preview }) {
   const confirmed = preview.changes.filter((c) => c.dangerous !== null && c.changed).map((c) => c.key);
   try {
     const answer = await call("POST", "/api/settings/save", { file, changes, base: preview.base, confirmed });
     // Only what was sent is taken off the staged list: a change staged while the save was in flight stays staged.
     for (const id of ids) edits.pending.delete(id);
-    edits.reviewed = null;
+    stagingChanged();
     $("edit-refusal").hidden = true;
     $("edit-outcome").textContent = `Saved ${file}. ${answer.changes.map(changeWords).join(" ")}`;
     await drawSettings();
@@ -955,6 +959,7 @@ async function saveFile(file, { ids, changes, preview }) {
     showEditRefusal(err);
   }
 }
+const saveFile = forThisInstance(saveFileHere);
 /** The restore buttons: one per file this machine has, which swap the file with its backup. */
 function restoreButtons(view) {
   const files = ["host.json", ...(projectDeclared(view) ? ["project.json"] : [])];
@@ -964,8 +969,7 @@ function restoreButtons(view) {
     return button;
   });
 }
-async function restoreFile(file) {
-  if (!sameInstance()) return showEditRefusal(OUT_OF_DATE);
+async function restoreFileHere(file) {
   try {
     const answer = await call("POST", "/api/settings/restore", { file });
     edits.reviewed = null;
@@ -977,6 +981,7 @@ async function restoreFile(file) {
     showEditRefusal(err);
   }
 }
+const restoreFile = forThisInstance(restoreFileHere);
 function showEditRefusal(err) {
   $("edit-outcome").textContent = "";
   $("edit-refusal").textContent = String(err.message || err);
@@ -1014,10 +1019,13 @@ function showRoute() {
   $("pick").hidden = settings || state.tab !== "pick";
   $("board").hidden = settings || state.tab !== "board";
   $("queue-bar").hidden = settings || state.tab !== "pick";
-  // Focus goes to the title when the page opens, and back to the control that opened it when the board returns (the dialog did this for us).
-  if (settings) $("settings-title").focus?.();
-  if (!settings && state.settingsShown) $(state.opener).focus?.();
+  moveFocus(settings);
   state.settingsShown = settings;
+}
+// Focus goes to the title when the page opens, and back to the control that opened it when the board returns (the dialog did this for us).
+function moveFocus(settings) {
+  if (settings) $("settings-title").focus?.();
+  else if (state.settingsShown) $(state.opener).focus?.();
 }
 
 // The dialog's own line, where its outcome is seen: the page's error line sits behind the dialog.

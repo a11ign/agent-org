@@ -6,10 +6,9 @@
 // refused is the value a save refuses, with the same words. The readers are loaded lazily, as `settings-read.ts` loads them, because `host-config.ts`
 // and `project-config.ts` resolve a project declaration at import and a ticket-only machine has none.
 import { parseTicketSettings } from "./settings.ts";
+import { isObject } from "./json-value.ts";
 
 export type Json = Record<string, unknown>;
-
-export const isObject = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A message a reader refused a file with, as the page shows it. */
 export const refusalOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));

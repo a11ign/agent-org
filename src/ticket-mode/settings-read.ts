@@ -7,14 +7,16 @@
 // which names no `primary`) is a note, not an error.
 //
 // THE READERS ARE LOADED LAZILY. `host-config.ts` and `project-config.ts` resolve a project declaration when they are imported, and a ticket-only
-// machine has none. So they are imported inside a `try`, and never on a host file that is shaped as a ticket-only one.
+// machine has none. So they are imported only where the host file is not shaped as a ticket-only one. A project that cannot be resolved on any other
+// machine is a refusal of the project section, never the note of a machine that declares none.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { SCHEMA, type ChoicePart } from "./config-schema.ts";
 import { pluginStates } from "./plugins.ts";
 import { ticketFolder } from "./ticket-paths.ts";
 import { HOST_FILE_ENV, type TicketSettings } from "./settings.ts";
-import { hostLevelRefusal, isObject, isTicketOnly, type Json, projectRefusal, ticketsRefusal } from "./settings-verdict.ts";
+import { hostLevelRefusal, isTicketOnly, type Json, projectRefusal, refusalOf, ticketsRefusal } from "./settings-verdict.ts";
+import { isObject } from "./json-value.ts";
 import { settingsView, type Section, type View } from "./settings-view.ts";
 
 /** The models and efforts the board offers, which a saved choice is held to. */
@@ -33,31 +35,26 @@ export type SettingsReadOptions = Readonly<{
   choicePath: string;
   /** Claude Code's install record, when it is not the default one. */
   pluginRecord?: string;
+  /** Loads `project-config.ts`: the default is the import. A test passes one that fails, to see the failure is shown and not hidden. */
+  loadProject?: () => Promise<ProjectConfig>;
 }>;
 
-type ProjectConfig = typeof import("../project-config.ts");
+export type ProjectConfig = typeof import("../project-config.ts");
 type Sections = Readonly<{ host: Section; tickets: Section; project: Section; notes: readonly string[]; hostWriter: Readonly<{ writerModel?: string; writerEffort?: string }>; hostRaw: Readonly<Record<string, unknown>> | null }>;
 
 /** The note a machine that names no primary gets: it is a board-only machine, and not an error. */
 const NO_PROJECT = "This machine declares no project: its host file names no primary, so no project.json is read.";
 
-/** `project-config.ts`, loaded now, or null when it cannot be: a machine with no project declaration cannot resolve one at import. */
-async function loadProjectConfig(): Promise<ProjectConfig | null> {
-  try {
-    return await import("../project-config.ts");
-  } catch {
-    return null;
-  }
-}
+/** `project-config.ts`, loaded now. Its import resolves the project of this process, and a machine whose project cannot be resolved refuses here. */
+const loadProjectConfigModule = (): Promise<ProjectConfig> => import("../project-config.ts");
 
 /**
  * The path of the project declaration the Settings page reads and a save edits: `projectPath` when one is named (a test's), else the primary checkout's
- * `.agent-org/project.json`. Null when this machine declares no project, so there is no file to read or to edit.
+ * `.agent-org/project.json`. Null when this machine declares no project, so there is no file to read or to edit. Throws when the project cannot be resolved.
  */
-export async function projectPathOf(options: Pick<SettingsReadOptions, "projectPath">, host: Json): Promise<string | null> {
+export async function projectPathOf(options: Pick<SettingsReadOptions, "projectPath" | "loadProject">, host: Json): Promise<string | null> {
   if (options.projectPath === undefined && isTicketOnly(host)) return null;
-  const config = await loadProjectConfig();
-  if (config === null) return null;
+  const config = await (options.loadProject ?? loadProjectConfigModule)();
   if (options.projectPath === undefined && config.HOME_CHECKOUT === config.TICKET_ONLY_CHECKOUT) return null;
   return options.projectPath ?? join(config.HOME_CHECKOUT, config.PROJECT_DECLARATION_PATH);
 }
@@ -101,9 +98,17 @@ async function hostSection(text: string, hostPath: string, host: Json): Promise<
   return { file: "host.json", raw: host, refusal: await hostLevelRefusal(text, hostPath, host) };
 }
 
-/** The project's declaration as `parseProjectDeclaration` reads it, or the note that this machine declares none. */
+/**
+ * The project's declaration as `parseProjectDeclaration` reads it. The note that this machine declares no project is for a ticket-only host, and for a
+ * process with no project checkout to read. Any other failure to resolve or read the project is a refusal of the project section, which says why.
+ */
 async function projectSection(options: SettingsReadOptions, host: Json): Promise<Readonly<{ section: Section; notes: readonly string[] }>> {
-  const path = await projectPathOf(options, host);
+  let path: string | null;
+  try {
+    path = await projectPathOf(options, host);
+  } catch (error) {
+    return { section: { file: "project.json", raw: null, refusal: refusalOf(error) }, notes: [] };
+  }
   if (path === null) return { section: { file: "project.json", raw: null, refusal: null }, notes: [NO_PROJECT] };
   return { section: await declarationOf(path), notes: [] };
 }

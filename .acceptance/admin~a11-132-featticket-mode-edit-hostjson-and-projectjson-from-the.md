@@ -2,6 +2,7 @@ The Settings page edits a value the schema describes in `host.json` (its `ticket
 
 Acceptance:
 ```bash
+mkdir -p "$HOME/.cache/a11ign/tmp"
 test -n "$AGENT_ORG_HOST" || { echo "set AGENT_ORG_HOST to a host declaration whose primary checkout is a project, as CI's suite job does"; exit 1; }
 pnpm exec rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/json-edit.test.ts src/ticket-mode/settings-edit.test.ts src/ticket-mode/config-schema.test.ts src/ticket-mode/settings-view.test.ts src/ticket-mode/server.test.ts src/ticket-mode/remote-proxy.test.ts src/ticket-mode/ui.test.ts src/ticket-mode/settings.test.ts src/packaging/project-config.test.ts
 npm run typecheck

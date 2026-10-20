@@ -33,7 +33,7 @@ import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./qu
 import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from "./settings-edit.ts";
-import { isObject } from "./settings-verdict.ts";
+import { isObject } from "./json-value.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import { PRIORITIES } from "./writer.ts";
