@@ -197,7 +197,8 @@ function entryOf(plugin: CatalogPlugin, input: HealthInput, context: PlanContext
   const enabled = named && report.enabled;
   const checks = input.checks[plugin.name] ?? [];
   // The messaging key the reader or the loader refused fails the plugin it names, in the words doctor's row has.
-  const failure = (plugin.concern === "messaging" && enabled ? input.messagingFailure ?? null : null) ?? failureOf(plugin, input, checks);
+  const refusedKey = plugin.concern === "messaging" && enabled ? input.messagingFailure : null;
+  const failure = refusedKey ?? failureOf(plugin, input, checks);
   const secrets = secretsOf(plugin, report);
   const state: HealthState = failure !== null ? "failed" : enabled ? "enabled" : named ? "disabled" : "not installed";
   return { name: plugin.name, concern: plugin.concern, version: input.version, contract: plugin.contract, where: whereOf(plugin), description: plugin.description, state, installed, enabled,
