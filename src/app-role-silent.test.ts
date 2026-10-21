@@ -253,6 +253,19 @@ test("#790 NEGATIVE: a wrapper that differs in a line that is not identity is le
   assert.doesNotMatch(h.text(), /# hand-edited/);
 });
 
+test("A11-160: a wrapper whose identity agrees but whose programs are where an older tool kept them is re-rendered by the tick, and one that declares no App is not", () => {
+  const h = installed(["workers"]);
+  const old = h.text().replace(/\/plugins\/github\/app-token\.ts/, "/src/app-token.ts").replace(/\/plugins\/github\/author-flag\.ts/, "/src/gh-author-fallback.ts");
+  assert.notEqual(old, h.text(), "the control: the copy names the old programs");
+  writeFileSync(h.target, old);
+  assert.equal(rerenderGhWrapper({ host: h.host(["workers"]) }), h.target, "the minter the copy runs is gone, so every mint would fail until somebody re-ran the installer");
+  assert.equal(h.text(), wrapperText(h.host(["workers"])));
+  const none = installed([]);
+  const oldNone = none.text().replace(/\/plugins\/github\/app-token\.ts/, "/src/app-token.ts");
+  writeFileSync(none.target, oldNone);
+  assert.equal(rerenderGhWrapper({ host: none.host([]) }), null, "a host with no App runs neither program, so there is nothing to mend");
+});
+
 test("#790 + A11-84: SWITCHING A ROLE TO `user-accounts` AND BACK: the tick REFUSES to drop the app, and `host:install --allow-no-apps` takes the switch (the scratch host.json is the test's, never the live one)", () => {
   const h = installed(["workers"]);
   const seen: string[] = [`declared workers: ${rolesLine(h.text())}`];

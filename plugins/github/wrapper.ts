@@ -102,6 +102,9 @@ export function wrapperIdentity(text: string): string | null {
   return roles === undefined || declared === undefined ? null : `${roles}\n${declared}`;
 }
 
+/** The programs a rendered wrapper runs, as the paths it defaults them to: the minter and the authoring switch's script. */
+const programsOf = (text: string): string => [...text.matchAll(WRAPPER_SCRIPT_DEFAULTS)].map(([, path]) => path).join("\n");
+
 /**
  * The first path a rendered wrapper defaults into `/tmp`, or `null`: the scratch-checkout wrapper the incident's copy was (`/tmp/claude-1000/...`). It is the system
  * `/tmp` and not `os.tmpdir()`, because a test run's own temporary directory is a fixture's, and every such fixture renders from one.
@@ -179,7 +182,10 @@ export function createWrapper(deps: Pick<PluginDeps, "exec" | "readFile" | "env"
       const wanted = expected === null ? null : wrapperIdentity(expected);
       if (wanted === null) return false;
       const has = wrapperIdentity(installed);
-      return !(has === wanted || (has === null && appRoles(inputs).length === 0));
+      if (has === null && appRoles(inputs).length === 0) return false;
+      if (has !== wanted) return true;
+      // The identity agrees. A host that declares Apps also needs the programs the copy runs to be where the host keeps them: a tool that moved them leaves a copy whose mint and authoring switch run nothing.
+      return appRoles(inputs).length > 0 && programsOf(installed) !== programsOf(expected!);
     },
     mintFailure(inputs, role) {
       const app = inputs.identity[role];

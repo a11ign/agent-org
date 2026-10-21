@@ -416,7 +416,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const instance = await serviceChecks("instance", settings?.port ?? 4747, instanceState, deps);
   const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
   const plugins = pluginsOf(settings, deps);
-  const place: HostPlaceReading = noProject ? { kind: "no-project" } : await deps.hostPlace();
+  const place: HostPlaceReading = noProject ? { kind: "no-project" } : await deps.hostPlace().catch((cause: unknown): HostPlaceReading => ({ kind: "unreadable", reason: String((cause as Error)?.message ?? cause).split("\n")[0] }));
   const terminal = await terminalChecks(settings, deps);
   const health = await pluginHealthOf(settings, deps, place);
   const sections = settings === null ? hostlessSections(health) : pluginSections(settings, health, { terminal }, deps);

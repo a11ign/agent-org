@@ -220,9 +220,9 @@ export type ProbeRequest = Readonly<{ host: string; port: number; tls: boolean; 
 
 /**
  * Where the machine keeps what a code host's routing wrapper is rendered from, as the host file declares it (code host contract 1.3): the place, or why there is none. `no-project` is a host file that read and
- * declares no primary project: a machine that runs only the ticket board installs no wrapper. `unreadable` is a host file the reader refused, which is never a pass.
+ * declares no primary project: a machine that runs only the ticket board installs no wrapper. `unreadable` is a host file the reader refused, which is never a pass. `skipped` is a caller that runs no machine probes (the Settings page, which would mint an App token on every load): the code host reports no wrapper rows.
  */
-export type HostPlaceReading = Readonly<{ kind: "place"; place: HostPlace }> | Readonly<{ kind: "no-project" }> | Readonly<{ kind: "unreadable"; reason: string }>;
+export type HostPlaceReading = Readonly<{ kind: "place"; place: HostPlace }> | Readonly<{ kind: "no-project" }> | Readonly<{ kind: "unreadable"; reason: string }> | Readonly<{ kind: "skipped" }>;
 
 /**
  * What a plugin is given by core to do its work: every runtime helper reaches it here, because it imports core's types only. `fetch` and `exec` are the two seams a plugin's I/O goes

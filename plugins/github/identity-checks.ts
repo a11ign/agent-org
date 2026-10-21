@@ -10,6 +10,8 @@ import { appsOfSettings, appRolesOf, createWrapper, inputsOfSettings, MINTER, pr
 const ok = (name: string, detail: string): PluginCheck => ({ name, ok: true, detail, fix: null });
 const failed = (name: string, detail: string, fix: string): PluginCheck => ({ name, ok: false, detail, fix });
 
+/** The fix for a wrapper that could not be checked: the checks read the host file the tool's own checkout resolves. */
+const FROM_THE_TOOLS_CHECKOUT = "run `agent-org doctor` from the checkout that host.json's `tool` names";
 const REINSTALL = "run `agent-org host:install`, which renders the wrapper from host.json and writes it, or start the instance, which re-renders it";
 
 /** The installed file's text, or null when there is none (or it cannot be read). */
@@ -45,7 +47,8 @@ function rolesRow(declared: readonly string[], installed: string | null): Plugin
  */
 export async function wrapperChecks(settings: PluginSettings, deps: PluginDeps): Promise<PluginCheck[]> {
   const reading = await deps.place();
-  if (reading.kind === "unreadable") return [failed("gh wrapper", `cannot be checked: ${reading.reason}`, "run `agent-org doctor` from the checkout that host.json's `tool` names")];
+  if (reading.kind === "skipped") return [];
+  if (reading.kind === "unreadable") return [failed("gh wrapper", `cannot be checked: ${reading.reason}`, FROM_THE_TOOLS_CHECKOUT)];
   if (reading.kind === "no-project") {
     return [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper"),
       ...appsOfSettings(settings).map(({ role, app }) => mintRow(role, probeMint(deps, MINTER, role, app)))];
@@ -62,6 +65,6 @@ export async function wrapperChecks(settings: PluginSettings, deps: PluginDeps):
       ...appRolesOf(inputs).map((role) => mintRow(role, wrapper.mintFailure(inputs, role))),
     ];
   } catch (cause) {
-    return [failed("gh wrapper", `cannot be checked: ${String((cause as Error)?.message ?? cause).split("\n")[0]}`, "run `agent-org doctor` from the checkout that host.json's `tool` names")];
+    return [failed("gh wrapper", `cannot be checked: ${String((cause as Error)?.message ?? cause).split("\n")[0]}`, FROM_THE_TOOLS_CHECKOUT)];
   }
 }

@@ -90,6 +90,10 @@ test("a ticket-only host installs no wrapper, and its declared Apps are still as
   assert.equal((await wrapperChecks(settingsOf(), deps({ kind: "no-project" }, null))).length, 1, "a ticket-only host that declares no App has only the one row, as it always had");
 });
 
+test("a caller that runs no machine probes gets no wrapper rows", async () => {
+  assert.deepEqual(await wrapperChecks(settingsOf("reviewer"), deps({ kind: "skipped" }, null)), []);
+});
+
 test("a host the reader refused is a wrapper that could not be checked, and never a pass", async () => {
   const rows = await wrapperChecks(settingsOf("workers"), deps({ kind: "unreadable", reason: "field `primary` REFUSED: it is missing" }, null));
   assert.deepEqual(rows.map(({ name, ok, detail }) => [name, ok, detail]), [["gh wrapper", false, "cannot be checked: field `primary` REFUSED: it is missing"]]);

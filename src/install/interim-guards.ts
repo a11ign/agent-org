@@ -4,7 +4,7 @@
 // `keep-herdr.conf` drop-in, `KillMode=process`, which kept herdr alive across an instance restart before herdr had its own scope (A11-90).
 //
 // A GUARD IS REMOVED ONLY WHEN ITS REPLACEMENT HOLDS, and the check is read here, never assumed: the watchdog's replacement is the start-time wrapper check,
-// proven by the installed wrapper being the one the host file declares (`ghWrapperReport`); the drop-in's is herdr's own scope, proven by the herdr server of
+// proven by the installed wrapper being the one the host file declares (`ghWrapperDivergence`, asked of the code host plugin's wrapper); the drop-in's is herdr's own scope, proven by the herdr server of
 // the instance's session being outside the instance's cgroup (`hostIsolation`). A guard whose replacement is not proven is left, with a sentence saying what
 // to do. Nothing here stops herdr or touches a running worker, and only Linux with systemd has either guard.
 import { join } from "node:path";

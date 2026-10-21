@@ -74,6 +74,9 @@ test("the identity block is the roles line and the app_declared() body, and it m
   assert.equal(wrapper.identityStale(inputsOf([]), "#!/bin/sh\nexec /usr/bin/gh\n"), false, "a copy from before #4900 on a host with no App behaves the same: nothing to take effect");
   assert.equal(wrapper.identityStale(inputsOf(["workers"]), "#!/bin/sh\nexec /usr/bin/gh\n"), true, "and on a host with one it is mended");
   assert.equal(wrapperWith(NO_PROGRAM, () => { throw new Error("ENOENT"); }).identityStale(inputsOf(["workers"]), one), false, "an unreadable shipped copy is nothing to write");
+  const moved = textFor(["workers"], { ...PLACE, tool: "/opt/older-tool" });
+  assert.equal(wrapper.identityStale(inputsOf(["workers"]), moved), true, "the same declaration with its programs where an older tool kept them is stale: they would run nothing");
+  assert.equal(wrapper.identityStale(inputsOf([]), textFor([], { ...PLACE, tool: "/opt/older-tool" })), false, "but a host with no App runs none of them, so a moved tool is nothing to mend");
 });
 
 // ---- the writing rules, each with its control -------------------------------------------------------------------------------------------

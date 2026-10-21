@@ -537,6 +537,13 @@ test("doctor does not skip the gh wrapper check on a host file that is not accep
   }
 });
 
+test("doctor says a gh wrapper is not a pass when reading the host's place throws, and still prints the rest of the report", async () => {
+  const checks = await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, hostPlace: async () => { throw new Error("field `primary` REFUSED: it is missing\nsecond line"); } }));
+  const row = byName(checks)["gh wrapper"];
+  assert.deepEqual([row.ok, row.detail], [false, "cannot be checked: field `primary` REFUSED: it is missing"]);
+  assert.ok(checks.some((check) => check.name === "pairing"), "the report goes on");
+});
+
 test("doctor says a gh wrapper it could not check is not a pass", async () => {
   const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, hostPlace: async () => ({ kind: "unreadable", reason: "ENOENT: host.json" }) })));
   assert.equal(checks["gh wrapper"].ok, false);
