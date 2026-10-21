@@ -1,22 +1,37 @@
 // @ts-check
-// module: the reviewer contract, version 1.0 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 1.1 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+//
+// 1.1 (A11-156): `start` and `reprompt` take a `ReviewBrief`, what the pool knows of the ticket behind the pull request, and a re-review of a head that already has a block starts through `start` too.
 //
 // A TYPE FILE: it imports nothing at run time. The atomic reviewer (`plugins/atomic-reviewer`, A11-161) implements it; `ticket-mode/reviewer-port.ts` re-exports these types,
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.0";
+export const REVIEWER_CONTRACT_VERSION = "1.1";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
+
+/** A reply to a review that asked for changes: who wrote it, where it can be read, and what it says. */
+export type ReviewerReply = Readonly<{ author: string; url: string; text: string }>;
+
+/**
+ * What the pool tells a reviewer beyond the pull request (A11-156). `doneWhen` is the ticket's Done-when section, both parts, or null when the pool holds no ticket for the pull request (one a person
+ * opened, or a run since removed): then the pull request body is the only copy of the contract the reviewer has. `rereview` is present when the head already has this reviewer's review that asked for
+ * changes and a trusted account has replied to it with no new commit: the reviewer reads the replies, and its approval names the standing review.
+ */
+export type ReviewBrief = Readonly<{ doneWhen: string | null; rereview?: Readonly<{ replies: readonly ReviewerReply[] }> }>;
 
 /**
  * The port: start a reviewer for a ready pull request at its head, or refuse naming why; say whether one is live for that head; close it once its
  * verdict is posted; retire a pull request's reviewer once it has merged or closed; and list the pull requests whose reviewer workspaces the session holds.
  */
 export type ReviewerPort = Readonly<{
-  /** Starts a reviewer, once the head is claimed for this instance. `tookOver` says which expired claim was taken over, when one was (A11-149). */
-  start(ref: ReviewerRef): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }>;
+  /**
+   * Starts a reviewer, once the head is claimed for this instance. `tookOver` says which expired claim was taken over, when one was (A11-149). With `brief.rereview`, the head's standing review
+   * is not the end of its claim: the reviewer is started again for the same head (A11-156).
+   */
+  start(ref: ReviewerRef, brief?: ReviewBrief): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }>;
   live(ref: ReviewerRef): boolean;
   close(ref: ReviewerRef): CloseAnswer;
   retire(pr: string): RetireAnswer;
@@ -28,7 +43,7 @@ export type ReviewerPort = Readonly<{
   /** Posts a verdict file through the verdict door for `ref`, minting the reviewer's token first (A11-83). */
   repostVerdict(ref: ReviewerRef, file: string): RepostAnswer;
   /** Sends the reviewer its verdict prompt again, for a reviewer that ended without writing a verdict file (A11-83). */
-  reprompt(ref: ReviewerRef): PromptAnswer;
+  reprompt(ref: ReviewerRef, brief?: ReviewBrief): PromptAnswer;
 }>;
 
 /** Where a reviewer stands: `working` while its turn runs, `ended` when it has finished its turn (or its agent has exited), `gone` when herdr lists none for its head. */

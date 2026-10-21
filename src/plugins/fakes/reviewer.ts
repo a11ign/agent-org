@@ -3,7 +3,7 @@
 //
 // IT STARTS NOTHING: a reviewer is a record of a head. A test sets the verdict file a reviewer wrote and how its turn stands (`wrote`, `turn`), makes the host refuse
 // (`refuseWith`), and reads what the pool did (`started`, `closed`, `retired`, `reposted`, `reprompted`).
-import type { Reviewer, ReviewerPort, ReviewerRef, ReviewerSettled } from "../contracts/reviewer.ts";
+import type { ReviewBrief, Reviewer, ReviewerPort, ReviewerRef, ReviewerSettled } from "../contracts/reviewer.ts";
 
 const key = ({ pr, head }: ReviewerRef): string => `${pr}@${head}`;
 
@@ -12,6 +12,8 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
   let loaded = false;
   const live = new Map<string, { label: string; turn: ReviewerSettled; file: string | null }>();
   const started: ReviewerRef[] = [];
+  /** The brief each start and each reprompt was given, in order (A11-156): what the pool told the reviewer of the ticket and of the replies. */
+  const briefs: (ReviewBrief | undefined)[] = [];
   const closed: ReviewerRef[] = [];
   const retired: string[] = [];
   const reposted: { ref: ReviewerRef; file: string }[] = [];
@@ -26,9 +28,10 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       if (!loaded) throw new Error("the reviewer is not loaded: load() runs before a pool with reviewers is made");
       return refusal;
     },
-    start(ref) {
+    start(ref, brief) {
       if (refusal !== null) return { refusal };
       started.push(ref);
+      briefs.push(brief);
       live.set(key(ref), { label: `fake-reviewer-${started.length}`, turn: "working", file: null });
       return { label: entryOf(ref)!.label };
     },
@@ -53,8 +56,9 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       reposted.push({ ref, file });
       return entryOf(ref) === undefined ? { refusal: `no reviewer for ${ref.pr}`, final: false } : { posted: true };
     },
-    reprompt(ref) {
+    reprompt(ref, brief) {
       reprompted.push(ref);
+      briefs.push(brief);
       return entryOf(ref) === undefined ? { refusal: `no reviewer for ${ref.pr}` } : { prompted: true };
     },
   };
@@ -71,7 +75,7 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
       entry.turn = "ended";
       entry.file = file;
     },
-    started, closed, retired, reposted, reprompted,
+    started, briefs, closed, retired, reposted, reprompted,
   });
 }
 

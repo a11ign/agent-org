@@ -358,6 +358,9 @@ export function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"
   return { head8: head.slice(0, 8), key: typeof patch === "string" ? patch.slice(0, 8) : head.slice(0, 8), all: equivalentHeads(pr), wait };
 }
 
+/** The reviewer role file a pull request's reviewer reads, which the gate's prompt names; ticket mode's re-review brief names the same file (A11-156). */
+export { reviewerRoleFile };
+
 /** The fields a reviewer reads a pull request by: its head, its reviews and author, and the rollup `settledGreenOf` reads. */
 export const REVIEW_PULL_FIELDS = "headRefOid,reviews,author,isCrossRepository,isDraft,statusCheckRollup";
 

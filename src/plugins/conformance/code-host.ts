@@ -11,7 +11,7 @@ import { type Conditional, type ConformanceResult, expect, hasFunctions, isObjec
 export type CodeHostProbe = Readonly<{ pull: string; repository: string; missing: string; self: string; change?: ChangeRef }>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
-const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readChange", "requestReview", "armMerge", "subscribe"] as const;
+const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readChange", "requestReview", "armMerge", "subscribe"] as const;
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
 
 const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
@@ -29,6 +29,13 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
   },
   "readPullFeedback answers null for a pull request it cannot read": ({ host, probe }) => {
     expect(host.readPullFeedback(probe.missing, probe.self) === null, "readPullFeedback must answer null for what it cannot read: null is never 'no feedback'");
+  },
+  "readReplies answers a list of replies, and null for a pull request it cannot read": ({ host, probe }) => {
+    const replies = host.readReplies(probe.pull, { since: 0, authors: [probe.self] });
+    expect(Array.isArray(replies) && replies.every((reply) => isString(reply.author) && isString(reply.url) && isString(reply.text) && Number.isFinite(reply.at)), `readReplies(${probe.pull}) must be a list of { author, at, url, text }`);
+    expect(replies.every((reply) => reply.author === probe.self), "readReplies must return only the accounts it is asked for");
+    expect(host.readReplies(probe.pull, { since: 0, authors: [] })?.length === 0, "readReplies of no accounts must be an empty list, never a reply of a stranger's");
+    expect(host.readReplies(probe.missing, { since: 0, authors: [probe.self] }) === null, "readReplies must answer null for what it cannot read: null is never 'no replies'");
   },
   "readPullState names the state or answers null": ({ host, probe }) => {
     expect(PULL_STATES.includes(String(host.readPullState(probe.pull))), `readPullState(${probe.pull}) must be OPEN, MERGED or CLOSED`);

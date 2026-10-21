@@ -3,12 +3,12 @@
 //
 // IT HOLDS PULL REQUESTS AND NOTHING ELSE, and answers `null` for one it was never given, as a host does that cannot read it. A test seeds a pull request (`seedPull`),
 // moves its head or its checks, and reads what the board asked of it (`calls`) and did to it (`armed`, `reviewRequests`, `retargets`). Every read is synchronous, as the contract's are.
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, PullFeedback, RetargetRequest, ReviewState } from "../contracts/code-host.ts";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, PullFeedback, Reply, RetargetRequest, ReviewState } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
   repository: string; number: number; state: "open" | "merged" | "closed"; base: string; head: string; files: string[];
-  feedback: Partial<PullFeedback>; reviews: ReviewState["reviews"]; settled: boolean; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
+  feedback: Partial<PullFeedback>; replies: readonly Reply[]; reviews: ReviewState["reviews"]; settled: boolean; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
 };
 
 const HOST = "fake";
@@ -20,7 +20,7 @@ type Pulls = Map<string, FakePull>;
 type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref?: ChangeRef }>; handler: (event: CodeHostEvent) => void };
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
-function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, calls: string[]): Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readReviewState" | "readPullState" | "openPullUrlsOf" | "readChange"> {
+function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, calls: string[]): Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readReplies" | "readReviewState" | "readPullState" | "openPullUrlsOf" | "readChange"> {
   return {
     readOwnLogin() {
       calls.push("readOwnLogin");
@@ -36,6 +36,12 @@ function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, 
       const approvedAtHead = pull.reviews.some((review) => review.commit === pull.head && review.state === "APPROVED" && !ignored(review.author));
       return { state: pull.state, feedbackAt: null, failing: [], failures: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
         base: pull.base, files: pull.files, filesComplete: true, ...pull.feedback, authors };
+    },
+    readReplies(url, { since, authors }) {
+      calls.push(`readReplies ${url}`);
+      const pull = pulls.get(url);
+      // Only the accounts the caller names, and only what was posted after the time: the contract's own filter, so a test seeds every reply and the fake keeps the right ones.
+      return pull === undefined ? null : pull.replies.filter((reply) => reply.at > since && authors.includes(reply.author)).sort((a, b) => a.at - b.at);
     },
     readReviewState(url) {
       calls.push(`readReviewState ${url}`);
@@ -127,7 +133,7 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
     /** Hold a pull request, open at head `head-<number>` on `main` unless a test says otherwise. Returns its address and its change ref. */
     seedPull(repository: string, number: number, over: Partial<FakePull> = {}) {
       const url = fakePullUrl(repository, number);
-      pulls.set(url, { repository, number, state: "open", base: "main", head: `head-${number}`, files: [], feedback: {}, reviews: [], settled: true, trust: "inside", merge: { armed: false, mergeable: true }, ...over });
+      pulls.set(url, { repository, number, state: "open", base: "main", head: `head-${number}`, files: [], feedback: {}, replies: [], reviews: [], settled: true, trust: "inside", merge: { armed: false, mergeable: true }, ...over });
       return { url, ref: { host: HOST, id: url } };
     },
     pullAt: (url: string): FakePull | undefined => pulls.get(url),

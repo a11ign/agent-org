@@ -16,7 +16,7 @@ import type { Reviewer } from "../plugins/contracts/reviewer.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { defaultGit, type Git } from "./worktree.ts";
-import { reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
+import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
 
 export type PoolDeps = Readonly<{
@@ -114,6 +114,8 @@ export type PoolContext = Readonly<{
   reviewerStarted: Set<string>;
   reviewerResumed: ReviewerMemory["resumed"];
   reviewerReposts: ReviewerMemory["reposts"];
+  /** The `url@head` keys a reply to a block earned a re-review of, once each (A11-156). */
+  reviewerRereviewed: ReviewerMemory["rereviewed"];
   closing: Map<string, ReviewerRef>;
   /** What the pool last read of each open pull request's review, by its url (A11-119): what the board shows, and the sweep's own memory of a verdict not posted. */
   pullReads: Map<string, PullRead>;
@@ -166,7 +168,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const reviewerFile = reviewerMemoryPath(settings.stateDir);
   const remembered = reviewerOn ? readReviewerMemory(reviewerFile) : undefined;
   if (remembered?.unreadable) log(`${reviewerFile} cannot be read, so the reviewers started before this restart are not remembered`);
-  const reviewerMemory: ReviewerMemory = remembered?.memory ?? { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map() };
+  const reviewerMemory: ReviewerMemory = remembered?.memory ?? noReviewerMemory();
   // The heads the reviewer plugin keeps are the ones it was given at activation: the pool fills them from its memory file, so a restart reads a reviewer as live.
   if (deps.reviewerHeads !== undefined) {
     for (const [label, head] of reviewerMemory.heads) deps.reviewerHeads.set(label, head);
@@ -180,7 +182,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** Whether reviews are on, or required and off, or neither (A11-161). */
   const reviewerState = reviewerStateOf(settings, gateRefusal);
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
-  const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts } = reviewerMemory;
+  const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts, rereviewed: reviewerRereviewed } = reviewerMemory;
   /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */
   const closing = new Map<string, ReviewerRef>();
   /** The last read of each open pull request's review, and the refusals said, for the board and the sweep (A11-119). */
@@ -196,6 +198,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
-    reviewerReposts, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
+    reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };
 }
