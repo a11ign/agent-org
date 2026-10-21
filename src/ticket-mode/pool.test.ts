@@ -30,8 +30,13 @@ import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
 import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
-/** The tracker a pool is built over by default: the tracker contract's in-memory fake, holding no ticket (A11-159). */
-const source: TicketSource = createFakeTracker();
+/**
+ * The tracker a pool is built over by default: the tracker contract's in-memory fake (A11-159), holding no ticket, with the operations the contract requires and its keywords. The fake's
+ * optional reads (`blockers`, `projectSummaries`) are left out: with them a start goes on in the background after a test has ended and writes into the state folder the test removed, and
+ * the tests that exercise those reads name them (`{ ...source, blockers }`).
+ */
+const fake = createFakeTracker();
+const source: TicketSource = { assigned: fake.assigned, read: fake.read, download: fake.download, keywords: fake.keywords };
 
 /** A herdr that opens workspaces and starts agents, and reports each label's status from `status`. A verb in `refused` fails as herdr does. */
 function herdr(status: Map<string, string>, screen: { text: string } = { text: "" }) {
