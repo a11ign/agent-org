@@ -310,7 +310,7 @@
 import {
   NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
-  reviewLinesOf, unlistedPulls, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, rebaseNote, reasonOf, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  reviewLinesOf, unlistedPulls, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -771,6 +771,7 @@ function row(e) {
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       rebaseNote(e) ? el("div", { className: "meta" }, rebaseNote(e)) : null,
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
+      e.sessionNote ? el("div", { className: "meta" }, e.sessionNote) : null,
       startedAnyway ? el("div", { className: "meta" }, startedAnyway) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
       reason ? el("div", { className: "meta" }, reason) : null,
@@ -782,6 +783,7 @@ function row(e) {
       o && o.edit ? proposal(o.edit) : null,
       verdictNote(e) ? el("div", { className: "waiting" }, verdictNote(e)) : null,
       retargetNote(e) ? el("div", { className: "waiting" }, retargetNote(e)) : null,
+      checkNote(e) ? el("div", { className: "waiting" }, checkNote(e)) : null,
       note && note.stalled ? el("div", { className: "waiting stalled" }, note.text) : null,
       isParked(e) ? el("div", { className: "waiting" }, "Still open: answer the agent in its terminal and the run carries on") : null),
     el("div", { className: "side" }, tick, terminal, message, prs, actions));

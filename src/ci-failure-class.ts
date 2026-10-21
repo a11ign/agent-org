@@ -16,6 +16,10 @@ import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL } from "./project-vocabulary.ts";
 import { boardFiledRow } from "./ticket-port/board-filed-row.ts"; // #5405: the card is added only when it is not on the board yet; #1369 shares this write with the outside-idle triage row
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5039
 import { decide, MAX_STATE_BYTES, type DecisionDeps, type Question } from "./decision-provider.ts";
+import { CI_CLASS, ERROR_LINE, FAILING_ASSERTION, LOG_LINES_KEPT, LOG_TIMESTAMP, NOT_THE_FAILURE, rateLimitOrLostRunner, READS_OUTSIDE, withoutColour } from "./ci-log-lines.ts";
+
+// The log readers every consumer of this file has always imported from it live in `ci-log-lines.ts`, a leaf that reads no project declaration (A11-154).
+export { CI_CLASS, ERROR_LINE, LOG_TIMESTAMP, NOT_THE_FAILURE, rateLimitOrLostRunner, READS_OUTSIDE };
 
 export const CI_FAILURE_CLASSES = Object.freeze(["own-defect", "flaky", "another-repository-changed", "infrastructure", "stale-merge-ref"] as const);
 export type CiFailureClass = (typeof CI_FAILURE_CLASSES)[number];
@@ -29,8 +33,6 @@ const MAX_LINE_CHARS = 160;
 const FACTS_HEADROOM_BYTES = 512;
 const QUESTION = "class";
 const INSTRUCTIONS = "A pull request's CI check is red. From the failing test's error lines and the facts, which class is the failure?";
-// The escape character is what an ANSI control sequence starts with; this is ECMA-48's whole CSI form (colour `ESC[31;1m`, and `ESC[?25l` too)
-const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 /** What is known about one red check. The four booleans are computed in code; `rerunAlready` is whether this run was already rerun once. */
 type CiFailureFacts = {
@@ -101,7 +103,7 @@ export function trimErrorLines(lines: readonly string[]): string[] {
   const kept: string[] = [];
   let bytes = FACTS_HEADROOM_BYTES;
   for (const raw of lines) {
-    const line = raw.replace(ANSI, "").trim().slice(0, MAX_LINE_CHARS);
+    const line = withoutColour(raw).trim().slice(0, MAX_LINE_CHARS);
     if (line === "") continue;
     bytes += Buffer.byteLength(JSON.stringify(line)) + 1;
     if (kept.length >= MAX_ERROR_LINES || bytes > MAX_STATE_BYTES) break;
@@ -164,19 +166,6 @@ type RedPullRequest = { repo: string; number: number; head8: string };
 const SAME_TIME_MS = 6 * 60 * 60 * 1000;
 const RUNS_LISTED = 50;
 const MAIN_RUNS_LISTED = 10;
-const LOG_LINES_KEPT = 200;
-/** A line of a job log worth quoting: an error, a failed assertion or test. The log's own noise (the checkout, the cache, `##[group]`) is not. */
-// No word boundaries: `AssertionError` and `TypeError` are the lines that matter, and a boundary after `error` would skip both.
-export const ERROR_LINE = /error|errno|fail|assert|not ok|exception|timed? ?out|rate limit|cancell?ed|\u2716|\u2717/i;
-const RATE_LIMIT_OR_RUNNER_LOST = /rate limit|runner has received a shutdown signal|lost communication with the server|hosted runner .* lost|runner .* (?:was|has been) (?:lost|terminated)/i;
-// #1166: the lines that say a TEST failed. `##[error]` is deliberately not one: the runner's own lost-runner message is an `##[error]` line.
-const FAILING_ASSERTION = /AssertionError|^\s*(?:not ok\b|FAIL\b|✖|✗)/;
-/**
- * #1166 (a11ign#928, chairman): `assertionsOnly` reads the rate-limit and lost-runner text from the FAILING ASSERTION lines when a failing assertion is named, so a passing test that prints
- * "rate limit" beside a real failure is the test's output and not the cause. Shipped ON (a11ign#5216, the switch row filed beside #1166); the explicit OFF, passed as the `flags` argument of
- * {@link readCiFailure}, is today's classifier, which reads the whole log.
- */
-export const CI_CLASS: { readonly assertionsOnly: boolean } = Object.freeze({ assertionsOnly: true });
 const MAX_ASSERTIONS_NAMED = 5;
 /**
  * agent-org#1185: THE FAILING ASSERTION LINES of a failure, for the order a same-head re-fail sends. Only the lines that say a TEST failed ({@link FAILING_ASSERTION}), so a passing
@@ -186,8 +175,6 @@ export function failingAssertionLines(errorLines: readonly string[]): string[] {
   const named = errorLines.filter((line) => FAILING_ASSERTION.test(line));
   return (named.length > 0 ? named : errorLines.filter((line) => !NOT_THE_FAILURE.test(line))).slice(0, MAX_ASSERTIONS_NAMED).map((line) => line.trim());
 }
-/** A network failure by its signature: also what `work-gate/causes/pr-ejected.ts` reads an install step's log by (agent-org#1647). */
-export const READS_OUTSIDE = /\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED)\b|getaddrinfo|could not resolve host|unable to access '?https?:/i;
 const RED_CONCLUSIONS = new Set(["failure", "timed_out"]);
 const RUN_AND_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
 // agent-org#1524: the acceptance gate's own words when the merge commit it checked out has no parents, so the diff cannot be read. Both lines it prints say "could not read the diff".
@@ -213,15 +200,6 @@ function redOnOtherPrsNow(runs: readonly WorkflowRun[], { workflow, branch, now 
 const ROLL_UP_CHECK = /(^|[\s/])gate$/i;
 
 /**
- * IS THE RATE-LIMIT OR LOST-RUNNER TEXT THE CAUSE OF THIS RED CHECK (#1166). With `assertionsOnly` and a failing assertion named, only those lines are read: the text a passing test
- * prints is not the runner's. With none named the whole log is read, as today, which is the runner that was lost before any assertion ran.
- */
-export function rateLimitOrLostRunner(log: string, { assertionsOnly }: { assertionsOnly: boolean }): boolean {
-  const asserted = log.split("\n").filter((line) => FAILING_ASSERTION.test(line));
-  return RATE_LIMIT_OR_RUNNER_LOST.test(assertionsOnly && asserted.length > 0 ? asserted.join("\n") : log);
-}
-
-/**
  * THE FACTS OF ONE RED PULL REQUEST, or `null` when they could not be read or there is nothing red at the head the order names (the head moved, or the red check is not an Actions job).
  * The first failing check that is not the roll-up `gate` is the one classified (the roll-up's log names no cause, #5151): a pull request with several red checks is told about the first,
  * and the order's own text still lists them all.
@@ -242,7 +220,7 @@ export function readCiFailure({ repo, number, head8 }: RedPullRequest, gh: Gh, n
   const workflow = String(run.name ?? "");
   // An Actions log carries colour codes, and `gh api` exits 1 on any terminal escape sequence unless told to allow it: without the flag this read never returned and no class was ever asked
   // (#767). The escapes are stripped HERE, once, so a coloured `##[error]` is matched by `ERROR_LINE` and `RATE_LIMIT_OR_RUNNER_LOST` as the plain line it is.
-  const log = gh(["api", `repos/${repo}/actions/jobs/${ids[2]}/logs`, "--allow-escape-sequences"]).replace(ANSI, "");
+  const log = withoutColour(gh(["api", `repos/${repo}/actions/jobs/${ids[2]}/logs`, "--allow-escape-sequences"]));
   const errorLines = log.split("\n").filter((line) => ERROR_LINE.test(line)).slice(-LOG_LINES_KEPT);
   const onMain: WorkflowRun[] = json(gh, `repos/${repo}/actions/runs?branch=main&per_page=${MAIN_RUNS_LISTED}`)?.workflow_runs ?? [];
   const failing: WorkflowRun[] = json(gh, `repos/${repo}/actions/runs?status=failure&event=pull_request&per_page=${RUNS_LISTED}`)?.workflow_runs ?? [];
@@ -309,11 +287,8 @@ const SETUP_STEP = /^(set up|setup|install|initialize containers|complete job|po
 const AGGREGATOR_CHECK = /(^|[\s/])gate$/i;
 const AGGREGATOR_STEP = /^every job (?:that )?ran\b/i;
 const AGGREGATOR_LINE = /##\[group\]Run for result in|\ba job reported\b|\breported '[^']*', not success/;
-/** Lines that match {@link ERROR_LINE} and are not the failure: a package manager's warning, a command echoed by the runner, and the exit code every failed step ends on. */
-export const NOT_THE_FAILURE = /^(?:WARN\b|warn(?:ing)?\b|##\[(?:group|endgroup|command|warning)\]|##\[error\]Process completed with exit code)/i;
 /** What a test runner prints for the test that failed, which names the file: rstest/vitest `FAIL file > name`, TAP `not ok`. */
 const TEST_FAILURE = /^(?:##\[error\]|FAIL\b|not ok\b)/;
-export const LOG_TIMESTAMP = /^\d{4}-\d\d-\d\dT[\d:.]+Z\s*/;
 const FILE_WINDOW_LINES = 30;
 const SOURCE_FILE = /((?:[\w@.-]+\/)*[\w@.-]+\.(?:tsx?|mts|cts|jsx?|mjs|cjs|py|rb|go|rs|sh|ya?ml|json))\b/;
 /** An OPEN incident row older than this with no claim is named in the gate's log (#1557). It does NOT release its holds: a hold waits for the row to close. */
@@ -333,7 +308,7 @@ export type RedPr = { ref: string; repo: string; number: number; checks: RedChec
 /** `file` is the source file the failure names (`null` when the log names none): it decides whether a match is outside the PR's diff, so it is part of the key unless the step is setup. */
 export type FailureSignature = { check: string; step: string; line: string; file: string | null };
 
-const normalise = (line: string): string => SIGNATURE_NOISE.reduce((text, [pattern, to]) => text.replace(pattern, to), line.replace(ANSI, "")).trim().slice(0, MAX_LINE_CHARS);
+const normalise = (line: string): string => SIGNATURE_NOISE.reduce((text, [pattern, to]) => text.replace(pattern, to), withoutColour(line)).trim().slice(0, MAX_LINE_CHARS);
 const isSetup = (signature: FailureSignature): boolean => SETUP_STEP.test(signature.step);
 /** The key two failures share when they are the same failure. A setup step's file is incidental (a path in an npm error), so only another step's file is part of it. */
 const signatureKey = (signature: FailureSignature): string =>
@@ -372,7 +347,7 @@ export function readSignature(check: RedCheck, run: Run): FailureSignature | nul
     const job = JSON.parse(run(["api", `repos/${repo}/actions/jobs/${ids[2]}`]));
     const step = (job?.steps ?? []).find((s: { conclusion?: string }) => s.conclusion === "failure");
     if (step === undefined || AGGREGATOR_STEP.test(String(step.name))) return null;
-    const lines = run(["api", `repos/${repo}/actions/jobs/${ids[2]}/logs`, "--allow-escape-sequences"]).replace(ANSI, "").split("\n");
+    const lines = withoutColour(run(["api", `repos/${repo}/actions/jobs/${ids[2]}/logs`, "--allow-escape-sequences"])).split("\n");
     const at = failureLine(lines);
     if (at < 0 || AGGREGATOR_LINE.test(lines[at])) return null;
     return { check: check.name, step: String(step.name), line: normalise(lines[at]), file: failingFile(lines, at) };

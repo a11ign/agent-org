@@ -6,7 +6,7 @@ import * as boardView_1 from "./board-view/pull-status-and-notes.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 import { overrideNote, START_ANYWAY_TITLE, rebaseNote, settledByPulls, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
-import { reasonOf } from "./board-view/run-reason.ts";
+import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls } from "./board-view.ts";
 import { pullReviewText, type PullRead } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
@@ -517,7 +517,7 @@ test("a blocker with an open pull request in the run's planned repository is sta
   const notStarted = { key: "NBF-4", state: "unstarted", status: "Todo", branch: "nbf-4", pulls: {} };
   const waiting = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable, otherRepo, merged, notStarted] });
   assert.deepEqual(stackedOn(waiting, [waiting]), [{ key: "NBF-1", url: draft, repo: "nbl-ui-netbox", branch: "nbf-1-fit", head: null }]);
-  assert.deepEqual(waitsOn(waiting, [waiting]).map((b) => b.key), ["NBF-2", "NBF-3", "NBF-4"], "another repository's, a merged-only or no pull request still holds it");
+  assert.deepEqual(waitsOn(waiting, [waiting]).map((b) => b.key), ["NBF-2", "NBF-4"], "another repository's or no pull request still holds it; NBF-3's merged, so it holds nothing (A11-154)");
   const onlyStackable = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [stackable] });
   assert.equal(runStatus(onlyStackable, [onlyStackable]), "queued", "a run stacked on every blocker it has is ready to start");
   const unplanned = run({ ticket: { key: "NBF-9" }, phase: "queued", blockers: [stackable] });
@@ -562,7 +562,7 @@ test("A11-77: a blocker the planner said to wait on to merge is never stacked on
   const completed = { ...waiting, blockers: [{ ...stackable, state: "completed" }] };
   assert.equal(runStatus(completed, [completed]), "queued", "a blocker the tracker completed still lets go");
   const unmarked = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", blockers: [{ ...stackable, pulls: { [draft]: "merged" } }] });
-  assert.deepEqual(waitsOn(unmarked, [unmarked]).map((b) => b.key), ["NBF-1"], "without the mark a merged pull request alone is no reason to start: the tracker decides, as before");
+  assert.deepEqual(waitsOn(unmarked, [unmarked]), [], "marked or not, a merged pull request lets the run go, whatever state its ticket is in (A11-154)");
   const mixed = run({ ticket: { key: "NBF-9" }, phase: "queued", plannedRepo: "nbl-ui-netbox", waitMerged: ["NBF-1"],
     blockers: [stackable, { key: "NBF-2", state: "started", status: "In Review", branch: "nbf-2", pulls: { [other]: "open" } }, { ...stackable, key: "NBF-3", branch: "nbf-3", pulls: {} }] });
   assert.deepEqual(stackedOn(mixed, [mixed]).map((b) => b.key), ["NBF-2"], "a blocker the planner did not mark is still stacked on");
@@ -641,7 +641,7 @@ test("A11-116: a blocker not pushed, canceled, or in a run with no repository ho
   const noRepo = waitingFor({ ...stackable, head: "b".repeat(40) }, { projectRepo: null });
   assert.equal(waitNote(noRepo, [noRepo]), "Waits for NBF-1: no repository is planned for this ticket, so it cannot stack");
   const merged = waitingFor({ ...stackable, pulls: { "https://github.com/acme/agent-org/pull/3": "merged" } });
-  assert.equal(waitNote(merged, [merged]), "Waits for NBF-1 to complete in the tracker", "its pull requests merged: the tracker decides");
+  assert.equal(waitNote(merged, [merged]), null, "its pull requests merged: nothing holds the run, though the tracker has NBF-1 In Progress (A11-154)");
   const marked = waitingFor({ ...stackable, head: "b".repeat(40) }, { waitMerged: ["NBF-1"] });
   assert.deepEqual(stackedOn(marked, [marked]), [], "a blocker the planner said to wait on to merge is never stacked on, pushed or not");
   assert.equal(waitNote(marked, [marked]), "Waits for NBF-1 to merge");
@@ -824,7 +824,7 @@ test("a ready pull request run is awaiting review with no Approve, watched while
   const pr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/1" };
   const ready = run({ outcome: { kind: "ready-pr", prs: [pr] } });
   assert.equal(runStatus(ready), "awaiting-review");
-  assert.deepEqual(runActions(ready), ["talk", "dismiss"], "no Approve: the reviewer is the review");
+  assert.deepEqual(runActions(ready), ["respond", "talk", "dismiss"], "no Approve: the reviewer is the review; Respond answers its pull request's feedback (A11-154)");
   assert.equal(isWatched(ready), true, "its feedback is watched");
   assert.equal(isWatched(run({ outcome: { kind: "ready-pr", prs: [pr] }, pullStates: { [pr.url]: "closed" } })), false, "a closed one is not watched");
   const draft = run({ outcome: { kind: "draft-pr", prs: [pr] } });
@@ -1154,4 +1154,91 @@ test("A11-149: a reviewer that took over an expired claim says so while it works
   const took = "took over the claim of pool-a, 60 min old with no verdict";
   assert.equal(pullReviewText(read({ reviewing: true, tookOver: took })), `reviewing (${took})`);
   assert.equal(pullReviewText(read({ reviewing: true })), "reviewing");
+});
+
+const OPEN_PR = { repo: "agent-org", url: "https://github.com/a11ign/agent-org/pull/1802" };
+/** A finished run whose pull request is open: a result kind lists it in its outcome, and any other kind (a round that ended needs-human or crashed) keeps it as the round's `review`. */
+const withOpenPull = (fields: Partial<ViewEntry>): ViewEntry => run({ pullStates: { [OPEN_PR.url]: "open" }, review: [OPEN_PR], ...fields });
+
+test("A11-154: a blocker lets go once its pull requests have merged, whatever state its ticket is in, and a canceled one never does", () => {
+  const pulls = { "https://github.com/a11ign/agent-org/pull/1800": "merged" };
+  const blocker = { key: "A11-144", state: "started", status: "In Progress", pulls };
+  const waiting = (blockers: ViewEntry["blockers"], fields: Partial<ViewEntry> = {}) => run({ ticket: { key: "A11-145" }, phase: "queued", ...fields, blockers });
+  const started = waiting([blocker]);
+  assert.deepEqual(waitsOn(started, [started]), [], "its pull request merged while its ticket is still In Progress (it said Refs)");
+  assert.equal(runStatus(started, [started]), "queued");
+  const marked = waiting([blocker], { waitMerged: ["A11-144"] });
+  assert.deepEqual(waitsOn(marked, [marked]), [], "a blocker the planner marked to wait on lets go on its merge too");
+  const withOpen = waiting([{ ...blocker, pulls: { ...pulls, "https://github.com/a11ign/agent-org/pull/1801": "open" } }]);
+  assert.deepEqual(waitsOn(withOpen, [withOpen]).map((b) => b.key), ["A11-144"], "one merged and one still open holds the run");
+  const noPull = waiting([{ ...blocker, pulls: {} }]);
+  assert.deepEqual(waitsOn(noPull, [noPull]).map((b) => b.key), ["A11-144"], "no pull request is no merge");
+  for (const state of ["canceled", "duplicate"]) {
+    const gone = waiting([{ ...blocker, state }]);
+    assert.deepEqual(waitsOn(gone, [gone]).map((b) => b.key), ["A11-144"], `a ${state} blocker never lets go, though its pull request merged`);
+  }
+  const stackable = waiting([{ ...blocker, branch: "a11-144-x", head: "b".repeat(40) }], { plannedRepo: "agent-org" });
+  assert.deepEqual(stackedOn(stackable, [stackable]), [], "and the run is not stacked on a branch whose work is on the default branch");
+});
+
+test("A11-154: Respond is offered on every finished run with an open pull request, whatever its outcome, and on no other", () => {
+  for (const outcome of [
+    { kind: "needs-human", reason: "which colour?" }, { kind: "crashed", reason: "herdr found no agent" }, { kind: "no-outcome" }, { kind: "wrong-repo", where: "a11ign/control" },
+    { kind: "ready-pr", prs: [OPEN_PR] }, { kind: "reviewed", prs: [OPEN_PR] },
+  ] as const) {
+    const entry = withOpenPull({ outcome: outcome as ViewEntry["outcome"] });
+    assert.ok(runActions(entry).includes("respond"), `${outcome.kind} with a pull request open`);
+    assert.equal(runActions(entry)[0], "respond", `${outcome.kind}: first among the actions`);
+  }
+  const crashed = withOpenPull({ outcome: { kind: "crashed", reason: "x" } });
+  assert.deepEqual(runActions(crashed), ["respond", "retry", "talk", "dismiss"], "Retry stays beside it for a run that did not end well");
+  const parked = withOpenPull({ workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human", reason: "which colour?" } });
+  assert.deepEqual(runActions(parked), ["close", "respond", "dismiss"], "a parked run offers it too: Respond closes the workspace first");
+  const draft = withOpenPull({ outcome: { kind: "draft-pr", prs: [OPEN_PR] } });
+  assert.deepEqual(runActions(draft), ["approve", "talk", "dismiss"], "a draft keeps its Approve, which is how Respond acts on it");
+  assert.ok(!runActions(run({ outcome: { kind: "needs-human", reason: "x" } })).includes("respond"), "no pull request, nothing to respond to");
+  for (const outcome of [{ kind: "checked", reason: "nothing to do" }, { kind: "stopped" }] as const) {
+    assert.ok(!runActions(withOpenPull({ outcome })).includes("respond"), `${outcome.kind}: nothing for a worker to answer`);
+  }
+  const merged = run({ pullStates: { [OPEN_PR.url]: "merged" }, review: [OPEN_PR], outcome: { kind: "needs-human", reason: "x" } });
+  assert.ok(!runActions(merged).includes("respond"), "a merged pull request is not open");
+  for (const trackerState of ["completed", "canceled"]) {
+    const settled = withOpenPull({ trackerState, outcome: { kind: "needs-human", reason: "x" } });
+    assert.ok(!runActions(settled).includes("respond"), `the tracker ${trackerState} the ticket`);
+  }
+});
+
+test("A11-154: a run the board handed back reads Needs you whatever its outcome ended on, and one it did not stays as its outcome says", () => {
+  const handed = "The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped. Respond to review starts another.";
+  for (const outcome of [{ kind: "ready-pr", prs: [OPEN_PR] }, { kind: "reviewed", prs: [OPEN_PR] }, { kind: "needs-human", reason: "x" }, { kind: "crashed", reason: "x" }] as const) {
+    assert.equal(runStatus(withOpenPull({ outcome: outcome as ViewEntry["outcome"], handedBack: handed })), "needs-you", `${outcome.kind}, handed back`);
+    assert.ok(runActions(withOpenPull({ outcome: outcome as ViewEntry["outcome"], handedBack: handed })).includes("respond"), `${outcome.kind}: Respond starts another round`);
+  }
+  assert.equal(runStatus(withOpenPull({ outcome: { kind: "ready-pr", prs: [OPEN_PR] } })), "awaiting-review", "a ready run not handed back still awaits its review");
+  assert.equal(runStatus(withOpenPull({ outcome: { kind: "reviewed", prs: [OPEN_PR] }, handedBack: undefined })), "ready-to-merge");
+  assert.equal(runStatus(run({ pullStates: { [OPEN_PR.url]: "merged" }, outcome: { kind: "reviewed", prs: [OPEN_PR] }, handedBack: handed })), "completed", "a merge settles it, handed back or not");
+  assert.equal(runStatus(withOpenPull({ trackerState: "completed", outcome: { kind: "reviewed", prs: [OPEN_PR] }, handedBack: handed })), "completed", "and so does the tracker");
+});
+
+test("A11-154: a queued round held back by a working Talk session is Blocked with its wait note, offers no Start anyway, and the line for rerun checks names them", () => {
+  const waitingRound = run({ phase: "queued", review: [OPEN_PR], sessionWait: "Waits for the Talk session in w3 to end" });
+  assert.equal(runStatus(waitingRound, [waitingRound]), "blocked");
+  assert.equal(waitNote(waitingRound, [waitingRound]), "Waits for the Talk session in w3 to end");
+  assert.deepEqual(runActions(waitingRound, undefined, [waitingRound]), ["remove"]);
+  const free = run({ phase: "queued", review: [OPEN_PR] });
+  assert.equal(runStatus(free, [free]), "queued", "POSITIVE CONTROL: the same round with no hold starts");
+  const reran = withOpenPull({ checkHeads: { [OPEN_PR.url]: { head: "1a2b3c4d5e6f", step: "rerun", note: "Reran test on 1a2b3c4d: a runner was lost" } } });
+  assert.equal(checkNote(reran), "Reran test on 1a2b3c4d: a runner was lost");
+  assert.equal(checkNote({ ...reran, phase: "running" }), null, "a run in a round says nothing of the last one's");
+  assert.equal(checkNote(withOpenPull({ checkHeads: { [OPEN_PR.url]: { head: "1a2b3c4d5e6f", step: "round" } } })), null, "a head answered by a round has no line");
+  assert.equal(reasonOf({ ...reran, handedBack: "Reran test on 1a2b3c4d: a runner was lost" }).line, null, "the card says the line once");
+});
+
+test("A11-154: a parked run the board handed back keeps its question one click away, and a rerun note goes with the pull request", () => {
+  const parked = withOpenPull({ outcome: { kind: "needs-human", reason: "which colour?" }, handedBack: "The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped." });
+  assert.deepEqual(reasonOf(parked), { line: parked.handedBack, question: "which colour?" });
+  assert.deepEqual(reasonOf(withOpenPull({ outcome: { kind: "needs-human", reason: "which colour?" } })), { line: "which colour?", question: null }, "a run not handed back says its question as the line");
+  const note = { [OPEN_PR.url]: { head: "1a2b3c4d5e6f", step: "rerun" as const, note: "Reran test on 1a2b3c4d: a runner was lost" } };
+  assert.equal(checkNote(withOpenPull({ checkHeads: note })), "Reran test on 1a2b3c4d: a runner was lost");
+  assert.equal(checkNote(run({ checkHeads: note, pullStates: { [OPEN_PR.url]: "merged" }, review: [OPEN_PR] })), null, "a merged pull request has no checks to say anything of");
 });

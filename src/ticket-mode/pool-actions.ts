@@ -8,6 +8,7 @@ import { filedOf } from "./pool-board-runs.ts";
 import { forgetRun, update, writerPlace } from "./pool-state.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { isBeingPublished, isParked } from "./board-view/pull-status-and-notes.ts";
+import { respond as respondQueued, unpark } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** Stop a live run: close its workspace and keep its worktrees. */
@@ -15,6 +16,20 @@ export function stop(ctx: PoolContext, key: string): void {
   const { store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key && isLive(e));
   if (entry !== undefined) end(ctx, entry, { kind: "stopped" });
+}
+
+/**
+ * A person pressed Respond to review (A11-154): a round that answers the run's open pull requests is queued, whatever its outcome ended on. A run whose workspace
+ * is still open (parked) has it closed first, because a second workspace would take the same herdr name. Throws, naming why, when Respond cannot act, and
+ * nothing is closed then: the refusal is asked of the queue as if the workspace were closed already. A workspace herdr will not close leaves the run parked.
+ */
+export function respond(ctx: PoolContext, key: string): void {
+  const { now, store } = ctx;
+  const entry = store.get().entries.find((e) => e.ticket.key === key);
+  const parked = entry !== undefined && isParked(entry);
+  respondQueued(parked ? unpark(store.get(), key) : store.get(), key, now());
+  if (parked) close(ctx, key);
+  update(ctx, (queue) => respondQueued(queue, key, now()));
 }
 
 /**

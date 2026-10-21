@@ -15,13 +15,13 @@ export function settledByPulls(entry: ViewEntry): RunStatus | null {
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
- * the queue itself, once its run is completed, which its pull requests merging is enough for. A blocker the planner said to wait on to merge
- * (`waitMerged`) also lets go once its pull requests have merged ({@link pullsMerged}). A canceled or duplicate blocker never lets go: the
- * work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
+ * the queue itself, once its run is completed, which its pull requests merging is enough for. Any blocker also lets go once its pull requests have
+ * merged ({@link pullsMerged}), whatever state its ticket is in: a ticket whose pull request said `Refs` stays In Progress after the merge (A11-154).
+ * A canceled or duplicate blocker never lets go: the work it promised will not come, so a person decides. Waiting is not on order: an unblocked run queued later starts first. A blocker the run can
  * be stacked on ({@link stackedOn}) does not hold it back.
  */
 export function waitsOn(entry: ViewEntry, entries: readonly ViewEntry[]): ViewBlocker[] {
-  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(entry, blocker, entries) && stackBaseOf(entry, blocker) === null);
+  return (entry.blockers ?? []).filter((blocker) => !isDoneFor(blocker, entries) && stackBaseOf(entry, blocker) === null);
 }
 
 /** Whether the planner said the run waits for this blocker to merge, rather than stacking on it: its key is in the run's `waitMerged`. */
@@ -36,8 +36,8 @@ function isDone(blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean {
 
 /**
  * Whether a blocker's pull requests have merged: at least one has, and none is still open. Linear completes a ticket on a merge only where its
- * team's workflow says so, so a run the planner held until the merge must not wait on the tracker's word alone. A canceled or duplicate blocker
- * never lets go, whatever its pull requests did.
+ * team's workflow says so, and not at all for a pull request that says `Refs`, so a run must not wait on the tracker's word alone. A canceled or
+ * duplicate blocker never lets go, whatever its pull requests did.
  */
 function pullsMerged(blocker: ViewBlocker): boolean {
   if (blocker.state === "canceled" || blocker.state === "duplicate") return false;
@@ -45,9 +45,8 @@ function pullsMerged(blocker: ViewBlocker): boolean {
   return states.includes("merged") && !states.includes("open");
 }
 
-/** Whether a blocker is done for a run: {@link isDone}, and, for one the run waits on to merge, once its pull requests have merged ({@link pullsMerged}). */
-const isDoneFor = (entry: ViewEntry, blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean =>
-  isDone(blocker, entries) || (waitsToMerge(entry, blocker) && pullsMerged(blocker));
+/** Whether a blocker is done for a run: {@link isDone}, or its pull requests have merged ({@link pullsMerged}), whatever its ticket's state says. */
+const isDoneFor = (blocker: ViewBlocker, entries: readonly ViewEntry[]): boolean => isDone(blocker, entries) || pullsMerged(blocker);
 
 /** The repository and number of a GitHub pull request, from its URL's `/<owner>/<repo>/pull/<n>`, or null for any other URL. PURE. */
 function parsePull(url: string): Readonly<{ repo: string; number: string }> | null {
@@ -90,7 +89,7 @@ export function stackBaseOf(entry: ViewEntry, blocker: ViewBlocker): StackBase |
 export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): StackBase[] {
   if (entry.phase === "finished") return [];
   return (entry.blockers ?? []).flatMap((blocker) => {
-    const base = isDoneFor(entry, blocker, entries) ? null : stackBaseOf(entry, blocker);
+    const base = isDoneFor(blocker, entries) ? null : stackBaseOf(entry, blocker);
     return base === null ? [] : [base];
   });
 }
@@ -101,10 +100,9 @@ export function stackedOn(entry: ViewEntry, entries: readonly ViewEntry[]): Stac
  */
 export const stackNote = (bases: readonly StackBase[]): string => `Stacked on ${bases.map(({ key, url, branch }) => (url === null ? `${key} (branch \`${branch}\`, no pull request yet)` : `${key} #${parsePull(url)?.number ?? url}`)).join(", ")}`;
 
-/** Why a run waits for one blocker it cannot stack on, as {@link waitNote} says it: a canceled blocker is a person's decision, and one whose pull requests merged waits for the tracker. PURE. */
+/** Why a run waits for one blocker it cannot stack on, as {@link waitNote} says it: a canceled blocker is a person's decision. A blocker whose pull requests merged holds nothing ({@link isDoneFor}). PURE. */
 function blockerWait(entry: ViewEntry, blocker: ViewBlocker): string {
   if (blocker.state === "canceled" || blocker.state === "duplicate") return `${blocker.key} was ${blocker.state === "canceled" ? "canceled" : "marked a duplicate"}: a person decides`;
-  if (pullsMerged(blocker)) return `Waits for ${blocker.key} to complete in the tracker`;
   if (repoOf(entry) === null) return `Waits for ${blocker.key}: no repository is planned for this ticket, so it cannot stack`;
   return `Waits for ${blocker.key} to push its branch`;
 }
@@ -115,6 +113,7 @@ function blockerWait(entry: ViewEntry, blocker: ViewBlocker): string {
  */
 export function waitNote(entry: ViewEntry, entries: readonly ViewEntry[]): string | null {
   const plan = entry.pathsFailure === undefined ? [] : [`Waits: its plan could not be downloaded (${entry.pathsFailure}); the board asks again on every pass`];
+  if (entry.sessionWait !== undefined) plan.push(entry.sessionWait);
   const waits = waitsOn(entry, entries);
   const merging = waits.filter((blocker) => waitsToMerge(entry, blocker)).map(({ key }) => key);
   if (merging.length > 0) return [...plan, `Waits for ${merging.join(", ")} to merge`].join("; ");
@@ -279,9 +278,11 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const settled = settledByPulls(entry);
   if (settled !== null) return settled;
+  // The board stopped answering a run's red checks or feedback on its own and handed it to a person, whatever the run ended on (A11-154): Respond starts again.
+  if (entry.handedBack !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";
   if (kind === "draft-pr" || kind === "ready-pr") return "awaiting-review";
-  if (kind === "reviewed") return entry.handedBack !== undefined ? "needs-you" : entry.published ? "published" : "ready-to-merge";
+  if (kind === "reviewed") return entry.published ? "published" : "ready-to-merge";
   if (kind === "needs-human" && pullAnswer(entry) !== null) return "awaiting-review";
   if (HANDED_BACK.has(kind)) return "needs-you";
   if (kind === "checked") return "checked";
@@ -391,8 +392,9 @@ export const START_ANYWAY_TITLE = "Start this run now, beside the run that holds
 const startAnywayOffered = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>
   entry.phase === "queued" && unblockedByTicket(entry, entries) && overlapWait(entry, entries) !== null;
 
-/** Whether a queued run waits on no ticket that blocks it, and its plan could be read, so an overlap alone may hold it. PURE. */
-const unblockedByTicket = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean => entry.pathsFailure === undefined && waitsOn(entry, entries).length === 0;
+/** Whether a queued run waits on no ticket that blocks it, its plan could be read, and no session holds it back, so an overlap alone may hold it. PURE. */
+const unblockedByTicket = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>
+  entry.pathsFailure === undefined && entry.sessionWait === undefined && waitsOn(entry, entries).length === 0;
 
 /** Whether a queued run is held back: by a ticket that blocks it, by a path another run holds, or by a plan that could not be downloaded. PURE. */
 const queuedHeld = (entry: ViewEntry, entries: readonly ViewEntry[]): boolean =>
@@ -413,8 +415,8 @@ export function overrideNote(entry: ViewEntry): string | null {
 /** Why a person presses Approve, shown as its tooltip: the drafts are reviewed. */
 export const APPROVE_TITLE = "Drafts reviewed and approved: mark the pull requests ready, then see them through their checks and review";
 
-/** Why a person presses Respond to review, shown as its tooltip: the pull requests are ready, and have feedback to answer. */
-export const RESPOND_TITLE = "Answer the feedback on these ready pull requests now: their reviews, comments and failing checks";
+/** Why a person presses Respond to review, shown as its tooltip: the pull requests are open, and have feedback to answer. */
+export const RESPOND_TITLE = "Answer the feedback on these pull requests now: their reviews, comments and failing checks";
 
 /** Why a person presses Dismiss, shown as its tooltip: only the board's record goes. */
 export const DISMISS_TITLE = "Take this run off the board, closing its workspace if it is open. The ticket, its branch and its pull requests are left as they are";
@@ -436,11 +438,19 @@ function hasNothingToSay(kind: string | undefined, status: string): boolean {
   return kind === undefined || kind === "stopped" || CONCLUDED.has(kind) || status === "completed" || status === "cancelled";
 }
 
+/** Whether a finished run offers Respond to review: a pull request is open, its tracker and pull requests have not settled it, and it did not conclude or get stopped (A11-154). PURE. */
+function respondOffered(entry: ViewEntry, status: string): boolean {
+  const kind = entry.outcome?.kind ?? "";
+  const settled = status === "completed" || status === "cancelled";
+  return openPulls(entry).length > 0 && !settled && !CONCLUDED.has(kind) && kind !== "stopped";
+}
+
 /**
  * The actions a run offers. A queued run can be removed, or started anyway when it is Blocked on an overlap ({@link startAnywayOffered}), and a live one stopped. A finished run that kept its workspace (parked) can be closed,
  * and only once it is closed can it be retried. Pull requests are results, and are not retried, and nor is a run that concluded with nothing more
- * to do ({@link CONCLUDED}). Drafts awaiting review offer Approve, which marks them ready. Ready ones (Ready to merge, Published, or handed back
- * after the board's own rounds) offer Respond to review, which answers their feedback now. EVERY FINISHED RUN OFFERS DISMISS, last, a parked one
+ * to do ({@link CONCLUDED}). Drafts awaiting review offer Approve, which marks them ready. Every other finished run with a pull request still open, that
+ * its tracker has not completed or canceled and whose pull requests have not all merged or closed, offers Respond to review, which answers their feedback now:
+ * whatever its outcome was, and a parked one too, whose workspace Respond closes first (A11-154). EVERY FINISHED RUN OFFERS DISMISS, last, a parked one
  * too, so no run stays on the board for ever: it takes the run off the board and closes its workspace if one is open. A run the publish run under
  * way is posting is the exception: `queue.ts`'s `dismiss` keeps it until it has posted, so it is not offered there either.
  */
@@ -449,16 +459,15 @@ export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: rea
   if (entry.phase !== "finished") return ["stop"];
   const dismiss: RunAction[] = isBeingPublished(entry, publish) ? [] : ["dismiss"];
   const edit: RunAction[] = hasEdit(entry) ? ["apply-edit", "discard-edit"] : [];
-  if (isParked(entry)) return ["close", ...edit, ...dismiss];
   const status = runStatus(entry);
   const kind = entry.outcome?.kind;
+  const respond: RunAction[] = respondOffered(entry, status) ? ["respond"] : [];
+  if (isParked(entry)) return ["close", ...respond, ...edit, ...dismiss];
   // A session is worth opening for any run that ended with something to say, and for none that concluded or whose pull requests all merged.
   const talk: RunAction[] = hasNothingToSay(kind, status) ? [] : ["talk"];
-  if (status === "awaiting-review" && entry.outcome?.kind === "draft-pr") return ["approve", ...talk, ...edit, ...dismiss];
-  const isHandedOffOrDone = status === "ready-to-merge" || status === "published" || (status === "needs-you" && entry.handedBack !== undefined);
-  if (isHandedOffOrDone) return ["respond", ...talk, ...edit, ...dismiss];
+  if (status === "awaiting-review" && kind === "draft-pr") return ["approve", ...talk, ...edit, ...dismiss];
   const done = kind === undefined || RESULT_KINDS.has(kind) || CONCLUDED.has(kind) || status === "completed";
-  return [...(done ? [] : ["retry" as const]), ...talk, ...edit, ...dismiss];
+  return [...respond, ...(done ? [] : ["retry" as const]), ...talk, ...edit, ...dismiss];
 }
 
 /**

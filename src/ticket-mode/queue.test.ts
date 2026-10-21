@@ -6,7 +6,8 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
-import { approve, conflictRound, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
+import { approve, checkRound, conflictRound, holdForSession, recordCheckHeads, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
+import { talk } from "./queue/talk.ts";
 import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
 import type { Blocker, Ticket } from "./source.ts";
@@ -460,16 +461,49 @@ test("a publish run holds a slot while it is live, starts while workers are paus
   assert.deepEqual(loadQueue(path, 3).publish, done.publish, "the publish run survives a restart of the board");
 });
 
-test("Respond to review queues a round now on a run Ready to merge or Published, resuming the worker, and leaves drafts, parked and merged runs alone", () => {
+test("Respond to review queues a round now on a run Ready to merge or Published, resuming the worker", () => {
   const published = { link: "https://slack/1", at: 4 };
   const queue = respond(readyToMerge({ published, rounds: 2 }), "A", 9);
   assert.deepEqual(keys(queue), ["B", "A"]);
   assert.deepEqual(a(queue), { ticket: ticket("A"), repos: [], model: "opus", effort: "high", session: "s1", published, review: [pr], phase: "queued", queuedAt: 9, asked: true });
+});
+
+test("A11-154: Respond to review queues a round on a finished run with a pull request open whatever its outcome ended on, resuming the worker", () => {
+  const open = { review: [pr], pullStates: { [pr.url]: "open" } };
+  for (const outcome of [
+    { kind: "needs-human", reason: "which colour?" }, { kind: "crashed", reason: "herdr finds no agent in its workspace" }, { kind: "no-outcome" }, { kind: "wrong-repo", where: "a11ign/control" },
+    { kind: "ready-pr", prs: [pr] }, { kind: "reviewed", prs: [pr] },
+  ] as const) {
+    const asked = a(respond(endedWith(outcome, open), "A", 9));
+    assert.deepEqual([asked.phase, asked.review, asked.session, asked.asked, asked.outcome], ["queued", [pr], "s1", true, undefined], outcome.kind);
+  }
+});
+
+test("A11-154: Respond to review on a run whose pull requests are drafts approves them, marking them ready and starting the same round", () => {
+  const draft = endedWith({ kind: "draft-pr", prs: [pr] }, { pullStates: { [pr.url]: "open" } });
+  assert.deepEqual(respond(draft, "A", 9), approve(draft, "A", 9));
+  assert.deepEqual([a(respond(draft, "A", 9)).phase, a(respond(draft, "A", 9)).review], ["queued", [pr]]);
+});
+
+test("A11-154: Respond to review that cannot act throws the reason, and changes nothing", () => {
   const live = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
-  for (const [why, q] of [
-    ["a draft", endedWith({ kind: "draft-pr", prs: [pr] })], ["parked", park(live, "A", { kind: "no-outcome" }, 3)], ["live", live],
-    ["holding a workspace", readyToMerge({ workspace: "w1" })], ["merged", readyToMerge({ pullStates: { [pr.url]: "merged" } })], ["completed in the tracker", recordTrackerStates(readyToMerge(), new Map([["A", "completed"]]))],
-  ] as const) assert.deepEqual(respond(q, "A", 9), q, why);
+  const queued = respond(readyToMerge(), "A", 9);
+  const refused: [string, Queue, RegExp][] = [
+    ["a run not on the board", readyToMerge(), /Z is not on the board/],
+    ["a run still running", live, /A is still running/],
+    ["a run not yet run", enqueue(emptyQueue(3), [ticket("A")], choice, 1), /A has not run yet/],
+    ["a round already queued", queued, /a round is already queued for A/],
+    ["a talk session already queued", talk(readyToMerge(), "A", 9), /a talk session is already queued for A/],
+    ["no pull request open", endedWith({ kind: "needs-human", reason: "x" }), /A has no pull request open/],
+    ["a merged pull request", readyToMerge({ pullStates: { [pr.url]: "merged" } }), /A has no pull request open/],
+    ["completed in the tracker", recordTrackerStates(readyToMerge(), new Map([["A", "completed"]])), /A's ticket is completed in the tracker, so there is nothing to respond to/],
+    ["canceled in the tracker", recordTrackerStates(readyToMerge(), new Map([["A", "canceled"]])), /A's ticket is closed in the tracker/],
+    ["a workspace still open", readyToMerge({ workspace: "w1" }), /A's workspace is open/],
+  ];
+  for (const [why, queue, reason] of refused) {
+    const key = why === "a run not on the board" ? "Z" : "A";
+    assert.throws(() => respond(queue, key, 9), reason, why);
+  }
 });
 
 test("A11-125: Respond to review on a run the board handed back at its cap for a conflict carries the conflict lines, and a retry keeps them while no other round does", () => {
@@ -940,4 +974,89 @@ test("A11-134: the queue refuses a ticket with an open decision, naming its line
   const settled = { ...open, description: `${open.description}\n**Decisions:** settled\n` };
   assert.deepEqual(keys(enqueue(emptyQueue(2), [settled], choice, 1)), ["A"]);
   assert.throws(() => enqueue(emptyQueue(2), [{ ...ticket("B"), description: "**Screen:** yes\n" }], choice, 1), /B: It changes a screen, and its behaviour is not grilled yet/);
+});
+
+const ANSWERED = { [pr.url]: { head: "h1", step: "round" as const } };
+
+test("A11-154: a round started on red checks records the head it answers, and the round, its end and a retried round all carry it", () => {
+  const queue = feedbackRound(readyToMerge(), "A", "test failed on the head commit", 9, ANSWERED);
+  assert.deepEqual([a(queue).phase, a(queue).rounds, a(queue).checkHeads], ["queued", 1, ANSWERED]);
+  const running = markRunning(markStarting(queue, "A", 10), "A", "w2", "w2:p1");
+  const ended = finish(running, "A", { kind: "reviewed", prs: [pr] }, 11);
+  assert.deepEqual(a(ended).checkHeads, ANSWERED, "a head that stays red after its round is not answered twice");
+  const crashed = finish(running, "A", { kind: "crashed", reason: "x" }, 11);
+  assert.deepEqual(a(retry(crashed, "A", 12)).checkHeads, ANSWERED, "a retried round still knows the head");
+  assert.deepEqual(a(respond(ended, "A", 12)).checkHeads, ANSWERED, "so does the round a person asks for");
+  assert.equal(a(feedbackRound(readyToMerge(), "A", "review feedback", 9)).checkHeads, undefined, "a round that answers no check records none");
+});
+
+test("A11-154: red checks wake a run that ended needs-human, crashed or with no outcome, as they wake a run Ready to merge, and no other", () => {
+  const open = { review: [pr], pullStates: { [pr.url]: "open" } };
+  for (const outcome of [{ kind: "needs-human", reason: "which colour?" }, { kind: "crashed", reason: "x" }, { kind: "no-outcome" }, { kind: "wrong-repo", where: "a11ign/control" }] as const) {
+    const queue = checkRound(endedWith(outcome, open), "A", "test failed on the head commit", 9, ANSWERED);
+    assert.deepEqual([a(queue).phase, a(queue).rounds, a(queue).feedback, a(queue).checkHeads, a(queue).session], ["queued", 1, "test failed on the head commit", ANSWERED, "s1"], outcome.kind);
+  }
+  const parked = checkRound(parkedOn({ kind: "needs-human", reason: "which colour?" }), "A", "test failed on the head commit", 9, ANSWERED);
+  assert.deepEqual([a(parked).phase, a(parked).workspace], ["queued", undefined], "a parked run's round holds no workspace (the pool closed it)");
+  for (const [why, queue] of [
+    ["stopped", endedWith({ kind: "stopped" }, open)], ["checked", endedWith({ kind: "checked", reason: "nothing to do" }, open)], ["a draft", endedWith({ kind: "draft-pr", prs: [pr] }, open)],
+    ["merged", endedWith({ kind: "needs-human", reason: "x" }, { review: [pr], pullStates: { [pr.url]: "merged" } })],
+    ["completed in the tracker", endedWith({ kind: "needs-human", reason: "x" }, { ...open, trackerState: "completed" })], ["live", markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1")],
+  ] as const) assert.deepEqual(checkRound(queue, "A", "f", 9, ANSWERED), queue, why);
+});
+
+test("A11-154: at the cap on the board's own rounds, red checks hand a run of any outcome to a person, who answers with Respond to review", () => {
+  const open = { review: [pr], pullStates: { [pr.url]: "open" }, rounds: MAX_FEEDBACK_ROUNDS };
+  for (const outcome of [{ kind: "needs-human", reason: "x" }, { kind: "crashed", reason: "x" }, { kind: "ready-pr", prs: [pr] }] as const) {
+    const handed = checkRound(endedWith(outcome, open), "A", "test failed on the head commit", 9, ANSWERED);
+    assert.deepEqual([a(handed).phase, a(handed).rounds, a(handed).checkHeads], ["finished", MAX_FEEDBACK_ROUNDS, ANSWERED], `${outcome.kind}: no round, and the head is answered`);
+    assert.match(a(handed).handedBack ?? "", /board answered 3 rounds on its own and stopped\. Respond to review starts another\. The latest: test failed on the head commit/, outcome.kind);
+    assert.equal(runStatus(a(handed)), "needs-you", `${outcome.kind}: reads Needs you`);
+    const asked = a(respond(handed, "A", 10));
+    assert.deepEqual([asked.phase, asked.rounds, asked.handedBack, asked.asked], ["queued", undefined, undefined, true], `${outcome.kind}: Respond starts the count again`);
+  }
+  assert.equal(a(conflictRound(endedWith({ kind: "needs-human", reason: "x" }, open), "A", "a conflict line", 9)).handedBack, undefined, "a conflict alone still hands nothing back");
+});
+
+test("A11-154: what a rerun or a name for a person records is kept for the finished run only", () => {
+  const heads = { [pr.url]: { head: "h1", step: "rerun" as const, note: "Reran test on h1: a runner was lost" } };
+  assert.deepEqual(a(recordCheckHeads(readyToMerge(), "A", heads)).checkHeads, heads);
+  const running = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  assert.deepEqual(recordCheckHeads(running, "A", heads), running, "a run that is not finished records none");
+});
+
+test("A11-154: a queued round a working Talk session holds back is not started and holds no slot, and is started once the hold is lifted", () => {
+  const round = respond(readyToMerge(), "A", 9);
+  const resumed = resumeQueue(round);
+  assert.ok(nextStarts(resumed, 1, 8).some((e) => e.ticket.key === "A"), "POSITIVE CONTROL: with no hold it starts");
+  const held = holdForSession(resumed, "A", "Waits for the Talk session in w3 to end");
+  assert.equal(a(held).sessionWait, "Waits for the Talk session in w3 to end");
+  assert.ok(!nextStarts(held, 1, 8).some((e) => e.ticket.key === "A"), "it waits");
+  const ahead = (queue: Queue): Queue => ({ ...queue, max: 1, entries: [a(queue), ...queue.entries.filter((e) => e.ticket.key !== "A")] });
+  assert.deepEqual(nextStarts(ahead(resumed), 1, 8).map((e) => e.ticket.key), ["A"], "POSITIVE CONTROL: first in the queue and free, it takes the one slot");
+  assert.deepEqual(nextStarts(ahead(held), 1, 8).map((e) => e.ticket.key), ["B"], "held, it takes no slot another run could use");
+  const released = holdForSession(held, "A", undefined);
+  assert.equal(a(released).sessionWait, undefined);
+  assert.ok(nextStarts(released, 1, 8).some((e) => e.ticket.key === "A"), "and starts once the hold is lifted");
+  const closed = holdForSession(released, "A", undefined, "Closed the Talk session in w3 before this round");
+  assert.equal(a(closed).sessionNote, "Closed the Talk session in w3 before this round");
+  assert.equal(a(holdForSession(closed, "A", undefined)).sessionNote, "Closed the Talk session in w3 before this round", "a pass that closes nothing keeps what an earlier one said");
+  const started = markStarting(holdForSession(resumed, "A", "Waits for the Talk session in w3 to end"), "A", 30);
+  assert.deepEqual([a(started).sessionWait, a(started).phase], [undefined, "starting"], "a run that starts holds no wait");
+  const ended = finish(markRunning(markStarting(closed, "A", 30), "A", "w4", "w4:p1"), "A", { kind: "reviewed", prs: [pr] }, 31);
+  assert.equal(a(ended).sessionNote, undefined, "the note is the round's, and goes when it ends");
+  const finished = readyToMerge();
+  assert.deepEqual(holdForSession(finished, "A", "x"), finished, "a run that is not queued is left alone");
+});
+
+test("A11-154: a hand-back goes when the run is answered in its terminal and ends again, and Respond is refused on a run that concluded or was stopped", () => {
+  const handed = checkRound(parkedOn({ kind: "needs-human", reason: "which colour?" }, { rounds: MAX_FEEDBACK_ROUNDS }), "A", "test failed", 9, ANSWERED);
+  assert.match(a(handed).handedBack ?? "", /keep getting feedback/);
+  const resumed = markResumed(handed, "A");
+  assert.deepEqual([a(resumed).phase, a(resumed).handedBack], ["running", undefined], "the person answered the agent: the hand-back is spent");
+  const ended = finish(resumed, "A", { kind: "ready-pr", prs: [pr] }, 20);
+  assert.deepEqual([a(ended).handedBack, runStatus(a(ended))], [undefined, "awaiting-review"], "so the run reads what it ended on");
+  const open = { review: [pr], pullStates: { [pr.url]: "open" } };
+  assert.throws(() => respond(endedWith({ kind: "checked", reason: "nothing to do" }, open), "A", 9), /A concluded \(checked\): there is nothing for a worker to answer/);
+  assert.throws(() => respond(endedWith({ kind: "stopped" }, open), "A", 9), /A was stopped/);
 });

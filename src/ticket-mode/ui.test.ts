@@ -959,16 +959,18 @@ test("a publish run that has no pane yet, or a machine that serves no terminal, 
   assert.equal(terminalOf(none, "P-1"), undefined);
 });
 
-test("a run Ready to merge, Published, or handed back by the board offers Respond to review with its reply icon, and a draft offers Approve alone", async () => {
+test("a run Ready to merge, Published, handed back by the board, or ended needs-human with a pull request open offers Respond to review with its reply icon, and a draft offers Approve alone", async () => {
   const p = await page(new Map(), { entries: [...PUBLISHABLE,
-    entry("H-1", { phase: "finished", startedAt: 2, finishedAt: 5, outcome: { kind: "reviewed", prs: SHIPPED }, handedBack: "keeps getting feedback" })] });
+    entry("H-1", { phase: "finished", startedAt: 2, finishedAt: 5, outcome: { kind: "reviewed", prs: SHIPPED }, handedBack: "keeps getting feedback" }),
+    entry("N-1", { phase: "finished", startedAt: 2, finishedAt: 5, outcome: { kind: "needs-human", reason: "which colour?" }, review: SHIPPED, pullStates: { [SHIPPED[0].url]: "open" } })] });
   const actions = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.tag === "button") as (Node_ & { title?: string })[];
   for (const key of ["P-1", "P-3", "H-1"]) {
     const [respond] = actions(key);
     assert.deepEqual(actions(key).map((b) => b.text()), ["Respond to review", "Talk to it", "Dismiss"], key);
-    assert.match(respond.title ?? "", /^Answer the feedback on these ready pull requests/);
+    assert.match(respond.title ?? "", /^Answer the feedback on these pull requests/);
     assert.ok(respond.all().some((n) => n.className === "action-icon"), "the reply icon");
   }
+  assert.deepEqual(actions("N-1").map((b) => b.text()), ["Respond to review", "Retry", "Talk to it", "Dismiss"], "a needs-human run with a pull request open is answered too (A11-154)");
   assert.deepEqual(actions("D-1").map((b) => b.text()), ["Approve", "Talk to it", "Dismiss"]);
   assert.match(actions("D-1")[0].title ?? "", /^Drafts reviewed and approved/);
   actions("P-1")[0].fire("click");
@@ -1441,6 +1443,24 @@ test("A11-106: a finished run's stacked pull request note is shown in its row as
   const row = (key: string) => runRows(p).find((r) => r.text().includes(key))!;
   assert.equal(row("S-1").all().filter((n) => n.className === "waiting" && n.text() === note).length, 1, "the note is a waiting line of its run");
   assert.equal(row("S-2").all().some((n) => n.className === "waiting" && n.text().startsWith("Needs retarget")), false, "a run with no note shows none");
+});
+
+test("A11-154: a run's rerun checks and the Talk session the board closed before its round are shown in its row, and a queued round says what it waits for", async () => {
+  const rerun = "Reran test on 1a2b3c4d: a runner was lost or a rate limit was hit";
+  const closed = "Closed the Talk session in w9 before this round";
+  const waiting = "Waits for the Talk session in w3 to end";
+  const pr = { repo: "agent-org", url: "https://github.com/a11ign/agent-org/pull/1802" };
+  const p = await page(new Map(), { entries: [
+    entry("C-1", { phase: "finished", startedAt: 2, finishedAt: 7, outcome: { kind: "ready-pr", prs: [pr] }, checkHeads: { [pr.url]: { head: "1a2b3c4d5e6f", step: "rerun", note: rerun } } }),
+    entry("C-2", { phase: "running", startedAt: 3, review: [pr], sessionNote: closed }),
+    entry("C-3", { phase: "queued", review: [pr], sessionWait: waiting }),
+    entry("C-4", { phase: "finished", startedAt: 2, finishedAt: 9, outcome: { kind: "ready-pr", prs: [pr] } }),
+  ] });
+  const lines = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.className === "waiting" || n.className === "meta").map((n) => n.text());
+  assert.ok(lines("C-1").includes(rerun), "the rerun is a line of its run");
+  assert.ok(lines("C-2").includes(closed), "so is the leftover the board closed");
+  assert.ok(lines("C-3").includes(waiting), "and a held round says what it waits for");
+  assert.ok(![rerun, closed, waiting].some((text) => lines("C-4").includes(text)), "a run with none shows none");
 });
 
 // The Assignee filter (A11-108): Dan Beck is the signed-in person. Ana Ruiz and Dan have two open tickets each, Ben Park one, and M-3 nobody.

@@ -2,10 +2,11 @@
 // module: watching the runs -- each run's status from herdr, what its outcome settles, and the tick that drives a pass
 
 import { herdrReason, readAgents } from "../herdr-agents.ts";
+import { herdrRefusal } from "./pool-herdr.ts";
 import { log, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
 import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, settle } from "./pool-settle.ts";
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
-import { conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
+import { checkRound, conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordCheckHeads, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
 import { join } from "node:path";
 import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
@@ -22,6 +23,7 @@ import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
 const PUBLISH_LIMIT_MS = 30 * 60_000;
@@ -123,6 +125,7 @@ function watchParked(ctx: PoolContext, status: ReadonlyMap<string, string>): voi
     if (seen === undefined) {
       if (missedAgain(ctx, name)) {
         misses.delete(name);
+        closeLeftWorkspace(ctx, entry);
         updateEach(ctx, runMembers(ctx, entry), unpark);
       }
       continue;
@@ -137,6 +140,20 @@ function watchParked(ctx: PoolContext, status: ReadonlyMap<string, string>): voi
       markLive(ctx, entry);
       settle(ctx, store.get().entries.find((e) => e.ticket.key === entry.ticket.key) ?? entry, fresh);
     }
+  }
+}
+
+/**
+ * Close the workspace of a parked run herdr no longer lists an agent for, by its id, as it is unparked (A11-154): left open, it would keep the run's herdr name and Claude session,
+ * and the round that starts next would open beside it. A workspace that is gone already is no refusal worth saying; any other is logged, and the run is unparked as it was.
+ */
+function closeLeftWorkspace(ctx: PoolContext, entry: Entry): void {
+  const { herdr, settings } = ctx;
+  if (entry.workspace === undefined) return;
+  try {
+    herdr(["--session", settings.herdrSession, "workspace", "close", entry.workspace]);
+  } catch (err) {
+    if (!herdrRefusal(err).includes("workspace_not_found")) log(`${entry.ticket.key}: its workspace ${entry.workspace} could not be closed as the run was unparked (${herdrRefusal(err)})`);
   }
 }
 
@@ -387,11 +404,12 @@ export async function tick(ctx: PoolContext): Promise<void> {
 
 /**
  * Read the open pull requests of each finished run, and queue a review round for each run whose pull requests got new feedback since its last
- * round ended: a review, a comment or an inline comment by anyone but the workers' account, or a check that failed since then, or a pull request
- * that conflicts with its base. A watched run gets all of that. A parked run the board does not watch gets its conflict alone (A11-89,
- * {@link resumesOnConflict}): its workspace is closed, then a round is queued, so a question it parked on is not answered by a new comment.
- * Every finished run's read records the files its open pull requests change, which is its footprint while it is held (a draft too). A run whose
- * pull request could not be read is asked again next time, and one merged or closed since is left alone.
+ * round ended: a review, a comment or an inline comment by anyone but the workers' account, or a pull request that conflicts with its base; or a check that is
+ * red at a head the board has not answered, once for each head, with the failing checks and their log lines (A11-154, {@link answerChecks}). A watched run gets all of
+ * that. Any other run {@link resumesOnConflict} names, such as one parked on a question, one that ended needs-human, and one that crashed, gets its conflict and its red
+ * checks alone (A11-89): its workspace is closed, then a round is queued, so a question it parked on is not answered by a new comment. A check that failed for an
+ * infrastructure reason is rerun first, and named, and no worker gets it. Every finished run's read records the files its open pull requests change, which is its
+ * footprint while it is held (a draft too). A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
  */
 export function watchFeedback(ctx: PoolContext): void {
   const { feedbackGh, gh, now, store } = ctx;
@@ -418,18 +436,26 @@ export function watchFeedback(ctx: PoolContext): void {
     recordHeads(ctx, entry, open);
     clearResolvedConflict(ctx, entry, open);
     if (!resumesOnConflict(entry)) continue;
+    const checks = answerChecks(ctx, entry, open);
     if (isWatched(entry)) {
       // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
-      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
+      const lines = [feedbackSince(readable, entry.finishedAt ?? 0), checks.feedback, ...reviewerLines(ctx, entry, openPulls(entry).map((pr) => pr.url))]
         .filter((line): line is string => line !== null);
-      if (lines.length === 0) continue;
-      update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now()));
-      queued = true;
+      if (lines.length === 0) recordWithoutRound(ctx, entry, checks);
+      else {
+        update(ctx, (queue) => feedbackRound(queue, entry.ticket.key, lines.join("\n"), now(), checks.heads));
+        queued = true;
+      }
       continue;
     }
-    if (resumeParked(ctx, entry, readable)) queued = true;
+    if (resumeUnwatched(ctx, entry, readable, checks)) queued = true;
   }
   if (queued) void tick(ctx);
+}
+
+/** Record the reruns and the names the pass over a run's red checks made when it queued no round ({@link CheckAnswer.withoutRound}). Written only when they changed. */
+function recordWithoutRound(ctx: PoolContext, entry: Entry, checks: CheckAnswer): void {
+  if (JSON.stringify(checks.withoutRound) !== JSON.stringify(entry.checkHeads ?? {})) update(ctx, (queue) => recordCheckHeads(queue, entry.ticket.key, checks.withoutRound));
 }
 
 /**
@@ -460,21 +486,32 @@ function clearResolvedConflict(ctx: PoolContext, entry: Entry, open: readonly { 
 }
 
 /**
- * Resume a parked run, one `watchFeedback` found a conflict on (A11-89): only a conflict wakes it, and only while the cap leaves a round. Its
- * workspace is closed first, because a second workspace would take the same herdr name (`queue.ts` `retry`). Refused, the run stays parked and
- * the next watch asks again. Returns whether a round was queued.
+ * Resume a run the board does not watch, one `watchFeedback` found a conflict or red checks on (A11-89, A11-154): only those wake it. A conflict needs a round left, and queues
+ * nothing at the cap; red checks at the cap hand the run to a person, whatever it ended on, and close nothing. Its workspace is closed first, because a second workspace would take
+ * the same herdr name (`queue.ts` `retry`). Refused, the run stays parked and the next watch asks again. Returns whether a round was queued.
  */
-function resumeParked(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[]): boolean {
+function resumeUnwatched(ctx: PoolContext, entry: Entry, readable: readonly { url: string; read: PullFeedback }[], checks: CheckAnswer): boolean {
   const { now } = ctx;
-  const conflicts = conflictLines(readable);
-  if (conflicts === null || !roundsLeft(entry)) return false;
-  try {
-    close(ctx, entry.ticket.key);
-  } catch (err) {
-    log(`${entry.ticket.key}: its workspace could not be closed, so the conflict round was not started (${err instanceof Error ? err.message : String(err)})`);
+  const key = entry.ticket.key;
+  const lines = [conflictLines(readable), checks.feedback].filter((line): line is string => line !== null);
+  const feedback = lines.join("\n");
+  if (lines.length === 0) {
+    recordWithoutRound(ctx, entry, checks);
     return false;
   }
-  update(ctx, (queue) => conflictRound(queue, entry.ticket.key, conflicts, now()));
+  if (!roundsLeft(entry)) {
+    if (checks.feedback !== null) update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads));
+    else recordWithoutRound(ctx, entry, checks);
+    return false;
+  }
+  try {
+    close(ctx, key);
+  } catch (err) {
+    log(`${key}: its workspace could not be closed, so the ${checks.feedback === null ? "conflict" : "red checks"} round was not started (${err instanceof Error ? err.message : String(err)})`);
+    recordWithoutRound(ctx, entry, checks);
+    return false;
+  }
+  update(ctx, (queue) => checkRound(queue, key, feedback, now(), checks.heads));
   return true;
 }
 

@@ -3,6 +3,10 @@
 // names no `gh` and spawns nothing: `ticket-port.test.ts` (#484) holds the port to that, and the spawn stays with whoever owns the runner.
 // Which checks are red is `red-pr.ts`'s to decide (#2956), so this file asks it.
 import { brokenChecks } from "../red-pr.ts";
+import { isAtLeastAsNew } from "../newest-check-run.ts";
+
+/** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
+export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
 
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{
@@ -13,6 +17,11 @@ export type PullFeedback = Readonly<{
   authors: readonly string[];
   /** The checks failing on the head commit, by name: its required ones, or every one where none is required. */
   failing: readonly string[];
+  /**
+   * Every check failing on the head commit, counted or not, with the address of its job's page (`detailsUrl`), or null for a check that has none, such as a commit status: where its
+   * log is read (A11-154). `failing` is the ones the board answers; this also lists a job behind a required roll-up that failed.
+   */
+  failures: readonly FailingCheck[];
   /** When the newest of those failing checks finished. */
   failedAt: number | null;
   /** Whether it conflicts with its base: GitHub says `CONFLICTING` or `DIRTY`. `UNKNOWN` (still being computed) is not a conflict. */
@@ -92,16 +101,25 @@ const time = (value: string | null | undefined): number | null => {
 };
 
 /**
- * Each check on the head commit, newest per name, that failed, as `red-pr.ts` decides it. A pull request with required checks counts only those.
- * One with none counts every check, because then nothing tells a gate from the rest, and the worker is told to leave every check passing. A
- * commit status is read as a check run: its context is its name, its failure its conclusion, and its time its completion.
+ * Each check on the head commit, newest per name, that failed, as `red-pr.ts` decides it. `counted` says whether the board answers it: a pull request with required checks counts only
+ * those, and one with none counts every check, because then nothing tells a gate from the rest, and the worker is told to leave every check passing. A check that is not counted
+ * is still listed, so a round can name the job behind a roll-up that failed. A commit status is read as a check run: its context is its name, its failure its conclusion, and
+ * its time its completion.
  */
-function failingChecks(contexts: readonly Check[]): { name: string; at: number | null }[] {
-  const counted = contexts.some((check) => check.isRequired === true) ? contexts.filter((check) => check.isRequired === true) : contexts;
-  const asRuns = counted.map((check) => (check.__typename === "StatusContext"
+function failingChecks(contexts: readonly Check[]): { name: string; at: number | null; detailsUrl: string | null; counted: boolean }[] {
+  const nameOf = (check: Check): string => (check.__typename === "StatusContext" ? check.context : check.name) ?? "";
+  const required = new Set(contexts.filter((check) => check.isRequired === true).map(nameOf));
+  const asRuns = contexts.map((check) => (check.__typename === "StatusContext"
     ? { name: check.context ?? "", conclusion: FAILED_STATUSES.has(check.state ?? "") ? "FAILURE" : check.state, completedAt: check.createdAt }
     : check));
-  return brokenChecks({ statusCheckRollup: asRuns, labels: [] }).map(({ name, failedAt }) => ({ name, at: Number.isNaN(failedAt) ? null : failedAt }));
+  return brokenChecks({ statusCheckRollup: asRuns, labels: [] }).map(({ name, failedAt }) =>
+    ({ name, at: Number.isNaN(failedAt) ? null : failedAt, detailsUrl: detailsUrlOf(asRuns, name), counted: required.size === 0 || required.has(name) }));
+}
+
+/** The details address of the newest run of the check `name`, as `brokenChecks` reads the newest of each name, or null when it has none. */
+function detailsUrlOf(runs: readonly Check[], name: string): string | null {
+  const newest = runs.filter((run) => run.name === name).reduce<Check | null>((latest, run) => (latest === null || isAtLeastAsNew(run, latest) ? run : latest), null);
+  return typeof newest?.detailsUrl === "string" ? newest.detailsUrl : null;
 }
 
 /**
@@ -177,13 +195,15 @@ function feedbackOf(pr: Record<string, any>, self: string): Omit<PullFeedback, "
   ];
   // The branch's own head, which a review's commit is compared with: the commits connection can lag the ref by a few seconds after a push.
   const head = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-  const failing = failingChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []);
+  const red = failingChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []);
+  const failing = red.filter(({ counted }) => counted);
   const newest = (times: (number | null)[]): number | null => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);
   return {
     state: pr.state === "MERGED" ? "merged" : pr.state === "CLOSED" ? "closed" : "open",
     feedbackAt: newest(items.map(({ at }) => at)),
     authors: [...new Set(items.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).map(({ author }) => author))],
     failing: failing.map(({ name }) => name),
+    failures: red.map(({ name, detailsUrl }) => ({ name, detailsUrl })),
     failedAt: newest(failing.map(({ at }) => at)),
     conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
     mergeable: pr.mergeable === "MERGEABLE",

@@ -61,6 +61,9 @@ const RED_CONCLUSIONS = new Set(["failure", "timed_out"]);
 const ROLL_UP_CHECK = /(^|[\s/])gate$/i;
 const RUN_AND_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
 
+/** Whether a check is the roll-up `gate`, which reports other jobs' results and names no cause of its own (A11-154). PURE. */
+export const isRollUpCheck = (name: string): boolean => ROLL_UP_CHECK.test(name);
+
 /**
  * THE RUN A RED PULL REQUEST'S CLASSIFIED CHECK BELONGS TO: the first failing check that is not the roll-up `gate`, else the first failing one, as `readCiFailure` picks it.
  * `null` when the head is no longer the one named (`head8`), when nothing is red, or when the red check is not an Actions job. Reads only, and throws on an unreadable answer.
@@ -72,6 +75,20 @@ export function redRunOfHead(repo: string, number: string | number, head8: strin
   const red = reds.find((check) => !ROLL_UP_CHECK.test(String(check.name ?? ""))) ?? reds[0];
   const ids = RUN_AND_JOB.exec(String(red?.details_url ?? ""));
   return red === undefined || ids === null ? null : { runId: Number(ids[1]), conclusion: red.conclusion ?? null };
+}
+
+/** The Actions job a check's details address names: its repository (`owner/name`), workflow run and job. `null` for any other address, a commit status's included. PURE. */
+export function jobOfDetails(detailsUrl: string): { repo: string; runId: number; jobId: number } | null {
+  const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)\/job\/(\d+)/.exec(detailsUrl);
+  return match === null ? null : { repo: match[1], runId: Number(match[2]), jobId: Number(match[3]) };
+}
+
+/**
+ * The log of one Actions job, its colour codes included: `gh api` exits 1 on a terminal escape sequence unless told to allow it (#767), so the caller strips them.
+ * Throws when the log could not be read (A11-154).
+ */
+export function jobLogOf(repo: string, jobId: string | number, run: Run): string {
+  return run(["api", `repos/${repo}/actions/jobs/${jobId}/logs`, "--allow-escape-sequences"]);
 }
 
 /** THE WRITE (agent-org#1217): rerun the failed jobs of one workflow run. A refused rerun THROWS, so a caller cannot read it as done. */
