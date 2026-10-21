@@ -6,8 +6,9 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
-import { approve, conflictRound, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths } from "./queue/queue-transitions.ts";
+import { approve, conflictRound, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
 import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
+import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
 import type { Blocker, Ticket } from "./source.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -248,6 +249,47 @@ test("finish drops the workspace and pane, and markResumed makes a parked run li
 });
 
 const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
+
+test("A11-153: the board completes the ticket of a merged run whatever kind its outcome was, except one declared partial or already closed by the board", () => {
+  const merged = (fields: Record<string, unknown>) => ({ review: [pr], pullStates: { [pr.url]: "merged" as const }, trackerState: "started", ...fields });
+  const withOutcome = (outcome: Parameters<typeof finish>[2], fields: Record<string, unknown> = {}) => {
+    const queue = markRunning(markStarting(enqueue(emptyQueue(3), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+    const ended = finish(queue, "A", outcome, 3);
+    return { ...ended, entries: ended.entries.map((e) => ({ ...e, ...merged(fields) })) };
+  };
+  for (const outcome of [{ kind: "needs-human" as const, reason: "q" }, { kind: "crashed" as const, reason: "x" }, { kind: "stopped" as const }]) {
+    assert.deepEqual(completableRuns(withOutcome(outcome)).map((e) => e.ticket.key), ["A"], `${outcome.kind}: its merged pull request completes the ticket`);
+  }
+  assert.deepEqual(completableRuns(withOutcome({ kind: "needs-human", reason: "q" }, { partial: "the settings page" })), [], "a partial run's ticket is left open");
+  assert.deepEqual(completableRuns(withOutcome({ kind: "needs-human", reason: "q" }, { closedByBoard: true })), [], "once closed by the board it is not closed again");
+  assert.deepEqual(completableRuns(withOutcome({ kind: "needs-human", reason: "q" }, { pullStates: { [pr.url]: "open" } })), [], "an open pull request completes nothing");
+  assert.deepEqual(completableRuns(withOutcome({ kind: "needs-human", reason: "q" }, { trackerState: "completed" })), [], "a ticket the tracker finished is left alone");
+  assert.deepEqual(unsettledKeys(withOutcome({ kind: "needs-human", reason: "q" })), [], "a merged needs-human run is settled, so the tracker is not asked about it again");
+});
+
+test("A11-153: a run's outcome heads are kept on top of each other, its current heads replace each other, and agent-org's own push moves only the heads it pushed over", () => {
+  const second = { repo: "app", url: "https://github.com/x/app/pull/2" };
+  const queue = endedWith({ kind: "needs-human", reason: "q" }, { review: [pr, second] });
+  const recorded = recordOutcomeHeads(recordOutcomeHeads(queue, "A", { [pr.url]: "h1" }), "A", { [second.url]: "k1" });
+  assert.deepEqual(recorded.entries[0].outcomeHeads, { [pr.url]: "h1", [second.url]: "k1" });
+  const read = recordPullHeads(recordPullHeads(recorded, "A", { [pr.url]: { head: "h1", approved: false } }), "A", { [pr.url]: { head: "h2", approved: true } });
+  assert.deepEqual(read.entries[0].pullHeads, { [pr.url]: { head: "h2", approved: true } });
+  assert.deepEqual(moveOutcomeHeads(recorded, "A", "h1", "h3").entries[0].outcomeHeads, { [pr.url]: "h3", [second.url]: "k1" });
+  assert.deepEqual(moveOutcomeHeads(queue, "A", "h1", "h3"), queue, "a run with none recorded is left as it is");
+  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("B")], choice, 1), "B", 2), "B", "w1", "w1:p1");
+  assert.deepEqual(recordOutcomeHeads(running, "B", { [pr.url]: "h1" }), running, "only a finished run records them");
+});
+
+test("A11-153: markResumed and a new end drop a run's heads, since the round that follows records its own", () => {
+  const running = markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 1), "A", 2), "A", "w1", "w1:p1");
+  const parked = park(running, "A", { kind: "needs-human", reason: "q" }, 5);
+  const withHeads = recordPullHeads(recordOutcomeHeads(parked, "A", { [pr.url]: "h1" }), "A", { [pr.url]: { head: "h2", approved: false } });
+  assert.deepEqual([withHeads.entries[0].outcomeHeads, withHeads.entries[0].pullHeads !== undefined], [{ [pr.url]: "h1" }, true]);
+  const [resumed] = markResumed(withHeads, "A").entries;
+  assert.deepEqual([resumed.outcomeHeads, resumed.pullHeads], [undefined, undefined]);
+  const [ended] = finish(withHeads, "A", { kind: "needs-human", reason: "again" }, 9).entries;
+  assert.deepEqual([ended.outcomeHeads, ended.pullHeads], [undefined, undefined]);
+});
 
 /** A queue whose one run, A, ended with `outcome` after a worker in session `s1`. */
 function endedWith(outcome: Parameters<typeof finish>[2], fields: Record<string, unknown> = {}): Queue {

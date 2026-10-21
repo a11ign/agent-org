@@ -110,7 +110,8 @@ test("A11-150: a blocker's branch that moved is merged into the run's branch and
   const ticketBefore = gitSync(worktree, ["rev-parse", "HEAD"]);
   const head = moveBlocker(seed, "one\ntwo\n");
   const result = await mergeBaseIn({ git: defaultGit, worktree, own: "ticket", base });
-  assert.deepEqual(result, { ok: true, from: base.sha, to: head, moved: true });
+  assert.deepEqual(result, { ok: true, from: base.sha, to: head, moved: true, pushed: { from: ticketBefore, to: gitSync(origin, ["rev-parse", "refs/heads/ticket"]) } },
+    "A11-153: the merge says which commit the run's branch moved from and to, as the remote now holds it");
   assert.equal(gitSync(worktree, ["rev-parse", "HEAD^1"]), ticketBefore, "the run's own commit is the first parent");
   assert.equal(gitSync(worktree, ["rev-parse", "HEAD^2"]), head, "the blocker's new head is merged in");
   assert.equal(gitSync(origin, ["rev-parse", "refs/heads/ticket"]), gitSync(worktree, ["rev-parse", "HEAD"]), "the run's own branch is pushed");

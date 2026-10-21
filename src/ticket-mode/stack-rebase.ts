@@ -91,9 +91,10 @@ export async function releaseStack(git: Git, clone: string, ref: string): Promis
 
 /**
  * The result of merging a blocker's branch into a run's branch: the commit the stack was at and the commit it is at now, or why it was not made. `conflict`
- * lists the files a merge left unmerged, which the run's worker resolves; any other failure (a fetch, a refused push) is tried again on the next sweep.
+ * lists the files a merge left unmerged, which the run's worker resolves; any other failure (a fetch, a refused push) is tried again on the next sweep. A merge
+ * that pushed says which commit the run's branch moved from and to (`pushed`), so a pull request's head moving with it is not read as a person's push (A11-153).
  */
-export type MergeResult = Readonly<{ ok: true; from: string; to: string; moved: boolean }> | Readonly<{ ok: false; reason: string; conflict?: readonly string[] }>;
+export type MergeResult = Readonly<{ ok: true; from: string; to: string; moved: boolean; pushed?: Readonly<{ from: string; to: string }> }> | Readonly<{ ok: false; reason: string; conflict?: readonly string[] }>;
 
 /**
  * Merge the blocker's branch, `base.branch` on the remote, into the run's branch, `own`, in `worktree`, and push the run's own branch to `own` plainly: no
@@ -121,14 +122,15 @@ export async function mergeBaseIn({ git, worktree, own, base }: {
     await git(worktree, ["merge", "--abort"]).catch(() => undefined);
     return files.length > 0 ? { ok: false, reason: `conflicted in ${files.join(", ")}`, conflict: files } : { ok: false, reason: `could not be merged: ${firstLine(err)}` };
   }
-  if ((await git(worktree, ["rev-parse", "HEAD"])).trim() === before) return { ok: true, from: base.sha, to, moved: false };
+  const merged = (await git(worktree, ["rev-parse", "HEAD"])).trim();
+  if (merged === before) return { ok: true, from: base.sha, to, moved: false };
   try {
     await git(worktree, ["push", "origin", `HEAD:${own}`]);
   } catch (err) {
     await git(worktree, ["reset", "--hard", before]).catch(() => undefined);
     return { ok: false, reason: `was refused by the remote: ${firstLine(err)}` };
   }
-  return { ok: true, from: base.sha, to, moved: true };
+  return { ok: true, from: base.sha, to, moved: true, pushed: { from: before, to: merged } };
 }
 
 /**
