@@ -7,6 +7,7 @@ import * as view_0 from "./board-view.ts";
 import * as view_1 from "./board-view/pull-status-and-notes.ts";
 import * as view_2 from "./board-view/view-types-and-filters.ts";
 import * as view_3 from "./board-view/run-reason.ts";
+import * as view_4 from "./board-view/pull-review-state.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -170,7 +171,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
     window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } }, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
@@ -2581,4 +2582,40 @@ test("A11-163: plugins read from a host file the reader refuses are shown with t
   const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: { ...PLUGINS, note: "the host file is refused, so the plugins are shown as their defaults: tickets.port must be a number" } });
   assert.match(pluginsNode(p).text(), /the host file is refused, so the plugins are shown as their defaults/);
   assert.deepEqual(buttonsIn(pluginRow(p, "tailscale")).map((button) => button.text()), [], "nothing is offered over defaults the file does not hold");
+});
+
+// A11-161: what the board says when the reviewer is off and when the publisher is. The words are the ticket's, exactly.
+test("A11-161: the banner \"Reviews are required and the reviewer is off\" is drawn only when reviews are required and the reviewer is off: not for a running reviewer, and not for none that is not required", async () => {
+  for (const [reviewer, shown] of [["off-required", true], ["on", false], ["none", false], [undefined, false]] as const) {
+    const p = await page(new Map(), { config: reviewer === undefined ? {} : { reviewer } });
+    assert.equal(p.$("reviewer-off-note").hidden, !shown, String(reviewer));
+    assert.equal(p.$("reviewer-off-note").textContent, shown ? "Reviews are required and the reviewer is off" : "", String(reviewer));
+  }
+});
+
+test("A11-161: each open pull request's line says \"waiting on the reviewer (off)\" or \"awaiting your review\", as the pool worded it, with no \"Pull requests\" section when every pull request belongs to a run", async () => {
+  const url = "https://github.com/a11ign/control/pull/119";
+  const review = [{ url, repo: "a11ign/control" }];
+  const finished = (extra: Record<string, unknown> = {}) => entry("N-1", { phase: "finished", finishedAt: 7, outcome: { kind: "ready-pr", prs: review }, ...extra });
+  const off = await page(new Map(), { config: { reviewer: "off-required" }, entries: [finished()], pulls: { [url]: "waiting on the reviewer (off)" } });
+  assert.ok(off.$("runs").text().includes("a11ign/control #119: waiting on the reviewer (off)"));
+  assert.equal(off.$("pull-requests").hidden, true, "the run lists it, so it is not listed twice");
+  const people = await page(new Map(), { config: { reviewer: "none" }, entries: [finished()], pulls: { [url]: "awaiting your review" } });
+  assert.ok(people.$("runs").text().includes("a11ign/control #119: awaiting your review"));
+  assert.equal(people.$("pull-requests").hidden, true, "nothing extra is shown anywhere");
+  assert.equal(people.$("reviewer-off-note").hidden, true, "no banner");
+});
+
+test("A11-161: with the publisher installed and switched off the Publish buttons and ticks are hidden and each run Ready to merge says \"publishing off\"; with none, or with it on, the line is not there", async () => {
+  const off = await page(new Map(), { config: { publish: false, publisher: "off" }, entries: PUBLISHABLE });
+  assert.equal(off.$("publish").hidden, true, "the button is hidden");
+  assert.equal(tickFor(off, "P-1"), undefined, "and so are the ticks");
+  const ready = runRows(off).filter((row) => row.text().includes("publishing off"));
+  assert.deepEqual(ready.map((row) => ["P-1", "P-2"].some((key) => row.text().includes(key))), [true, true], "the runs that are Ready to merge say it, once each");
+  assert.equal(ready.every((row) => row.text().split("publishing off").length === 2), true, "in one line each");
+  assert.equal(runRows(off).find((row) => row.text().includes("P-3"))!.text().includes("publishing off"), false, "a published run does not");
+  for (const config of [{ publish: false, publisher: "none" }, { publish: true, publisher: "on" }, {}]) {
+    const p = await page(new Map(), { config, entries: PUBLISHABLE });
+    assert.equal(p.$("runs").text().includes("publishing off"), false, JSON.stringify(config));
+  }
 });

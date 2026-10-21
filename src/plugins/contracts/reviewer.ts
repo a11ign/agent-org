@@ -1,8 +1,8 @@
 // @ts-check
 // module: the reviewer contract, version 1.0 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
 //
-// A TYPE FILE: it imports nothing at run time. The atomic reviewer (`ticket-mode/reviewer-port.ts`) implements it; `reviewer-port.ts` re-exports these types,
-// so no caller changed when the contract moved.
+// A TYPE FILE: it imports nothing at run time. The atomic reviewer (`plugins/atomic-reviewer`, A11-161) implements it; `ticket-mode/reviewer-port.ts` re-exports these types,
+// so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
 export const REVIEWER_CONTRACT_VERSION = "1.0";
@@ -56,8 +56,8 @@ export type RetireAnswer = Readonly<{ retired: true; report: string | null }> | 
 
 /**
  * A reviewer plugin: the port the pool holds, and the two calls before it. `load` prepares whatever the reviewer needs on this host and keeps a refusal rather
- * than throwing it (today `loadReviewerGate`); `refusal` says why the reviewer cannot start here, or is null when it can (today `reviewerRefusal`), and
- * needs `load` first.
+ * than throwing it (the atomic reviewer's reads the gate's modules); `refusal` says why the reviewer cannot start here, or is null when it can (the atomic reviewer cannot on a host with
+ * no `primary`), and needs `load` first.
  */
 export type Reviewer = ReviewerPort & Readonly<{
   load(): Promise<void>;

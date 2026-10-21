@@ -25,6 +25,34 @@ export type PullRead = Readonly<{
   tookOver?: string;
 }>;
 
+/** What each open pull request's line says on a machine where reviews are required and the reviewer is off (A11-161). */
+export const REVIEWER_OFF_LINE = "waiting on the reviewer (off)";
+
+/** What each of a run's open pull requests says on a machine that is not required to have a reviewer and has none: people review there (A11-161). */
+export const AWAITING_PERSON_LINE = "awaiting your review";
+
+/** The banner the board shows while reviews are required and the reviewer is off (A11-161). */
+export const REVIEWER_OFF_BANNER = "Reviews are required and the reviewer is off";
+
+/**
+ * The banner the board shows, or null: only a machine where reviews are required and the reviewer is off has one (`off-required`, A11-161). Where they are not required and there is none
+ * (`none`), nothing extra is shown anywhere. `reviewer` is `/api/config`'s `reviewer` state, absent from an instance that does not send it.
+ */
+export function reviewerBanner(reviewer: string | undefined): string | null {
+  return reviewer === "off-required" ? REVIEWER_OFF_BANNER : null;
+}
+
+/** What a run that is Ready to merge says when its machine's publisher is installed and disabled (A11-161). */
+export const PUBLISHING_OFF_LINE = "publishing off";
+
+/**
+ * The one line a run says about publishing: "publishing off" for a run that is Ready to merge on a machine whose publisher is installed and disabled (`off`). A machine with no publisher (`none`)
+ * shows nothing extra, and one whose publisher is on has its Publish controls instead. `publisher` is `/api/config`'s `publisher` state.
+ */
+export function publishingOffLine(status: string, publisher: string | undefined): string | null {
+  return publisher === "off" && status === "ready-to-merge" ? PUBLISHING_OFF_LINE : null;
+}
+
 /** The first eight characters of a commit, as the board shows one. */
 export const shortHead = (head: string): string => head.slice(0, 8);
 

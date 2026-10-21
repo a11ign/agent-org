@@ -244,6 +244,7 @@
       <button class="primary" id="publish" type="button" hidden></button>
       <span id="publish-note" class="hint" role="status"></span>
     </div>
+    <div id="reviewer-off-note" class="notice" role="status" hidden></div>
     <div class="runs">
       <nav class="filters" id="filters" aria-label="Filter runs by status"></nav>
       <div class="run-list" id="runs"></div>
@@ -322,7 +323,7 @@
 import {
   NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
-  reviewLinesOf, unlistedPulls, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  reviewLinesOf, unlistedPulls, reviewerBanner, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -364,6 +365,8 @@ const state = {
   scopes: false, held: null, read: new Set(), reading: null, loads: 0,
   // Whether this machine publishes (the host file's `tickets.publish`), and the runs ticked for the next Publish.
   publishing: false, toPublish: new Set(),
+  // The reviewer and the publisher as the board says them (`/api/config`): `reviewer` is on, off-required or none, and `publisher` is on, off (installed and disabled) or none (A11-161).
+  reviewer: "none", publisher: "none",
   // The model and effort the settings give a ticket queued from now on, and the parts the Pick footer chose otherwise for the next batch only.
   choice: { model: "", effort: "", planModel: "", planEffort: "", writerModel: "", writerEffort: "" }, batch: {},
   // Whether this board plans a ticket with no plan before it runs: the machine names a planner and its tracker takes plans.
@@ -787,6 +790,7 @@ function row(e) {
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       rebaseNote(e) ? el("div", { className: "meta" }, rebaseNote(e)) : null,
       mergeNote ? el("div", { className: "meta" }, mergeNote) : null,
+      publishingOffLine(status, state.publisher) ? el("div", { className: "meta" }, publishingOffLine(status, state.publisher)) : null,
       e.sessionNote ? el("div", { className: "meta" }, e.sessionNote) : null,
       startedAnyway ? el("div", { className: "meta" }, startedAnyway) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
@@ -827,6 +831,9 @@ function renderBoard() {
   $("pull-requests").replaceChildren(...(unlisted.length > 0 ? [el("h2", {}, "Pull requests"), ...unlisted.map((pr) => el("div", { className: "run" },
     el("div", { className: "title" }, el("a", { href: safeHref(pr.url), target: "_blank", rel: "noreferrer" }, pr.label)), el("div", { className: "meta" }, pr.text)))] : []));
   $("max-note").textContent = workersLabel(state.queue.max);
+  const banner = reviewerBanner(state.reviewer);
+  $("reviewer-off-note").hidden = banner === null;
+  $("reviewer-off-note").textContent = banner ?? "";
   $("publish").hidden = !state.publishing;
   $("publish").textContent = publishLabel(state.toPublish.size);
   $("publish").disabled = state.toPublish.size === 0;
@@ -1620,6 +1627,8 @@ function setup(config) {
   for (const id of ["effort", "batch-effort", "planEffort"]) $(id).replaceChildren(...config.efforts.map((x) => el("option", { value: x, textContent: x })));
   state.planner = config.planner === true;
   state.publishing = config.publish === true;
+  state.reviewer = config.reviewer ?? "none";
+  state.publisher = config.publisher ?? "none";
   state.writer = config.writer === true;
   // The writer's options are the same choices, and its first clears the choice: its label names the host file's value in force.
   const hostWriter = config.writerDefault ?? { model: "", effort: "" };

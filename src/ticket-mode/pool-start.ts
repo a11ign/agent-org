@@ -4,7 +4,7 @@
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
-import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
+import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
@@ -564,24 +564,25 @@ async function readGrilled(source: Pick<TicketSource, "read">, key: string): Pro
 }
 
 /**
- * Start the queued publish run: its brief, its mark for the hook naming the connectors only it may call, and its settings file, then its
- * agent, on the publish model and effort. A start that fails ends it failed, saying why, and its runs stay as they were.
+ * Start the queued publish run: its brief, its mark for the hook naming the connectors only it may call, and its settings file, then its agent, on the publish model and effort. The brief, the
+ * connectors and the agent are the enabled publisher plugin's (A11-161); the run's instruction is the host file's, which the reader validated. A start that fails ends it failed, saying why,
+ * and its runs stay as they were.
  */
 async function startPublish(ctx: PoolContext): Promise<void> {
-  const { now, settings, store } = ctx;
+  const { now, publisher, settings, store } = ctx;
   const queued = store.get().publish;
-  const publisher = settings.publish;
   if (queued === undefined) return;
   update(ctx, (queue) => markPublishStarting(queue, now()));
   try {
-    if (publisher === null) throw new Error("this machine names no tickets.publish");
+    if (publisher === undefined || settings.publish === null) throw new Error("this machine names no tickets.publish");
     const place = publishPlace(ctx, queued);
+    const { model, effort } = publisher.agent();
     clearRunDir(ctx, place.folder, place.dir);
     rmSync(join(place.dir, PUBLISHED_FILE), { force: true });
-    writeFileSync(join(place.dir, BRIEF_FILE), publishBriefText({ dir: place.dir, prs: queued.prs, run: publisher.run }));
-    writeFileSync(join(place.dir, PUBLISH_FILE), `${JSON.stringify({ connectors: publisher.connectors })}\n`);
-    writeBoardRunFiles(ctx, place, { deny: settings.deny, readDirs: [], model: publisher.model });
-    const tail = [firstPrompt(place.dir), ...workerFlags({ name: `publish-${queued.id}`, model: publisher.model, effort: publisher.effort, addDirs: [place.dir] })];
+    writeFileSync(join(place.dir, BRIEF_FILE), publisher.briefText({ dir: place.dir, prs: queued.prs, run: settings.publish.run }));
+    writeFileSync(join(place.dir, PUBLISH_FILE), `${JSON.stringify({ connectors: publisher.connectors() })}\n`);
+    writeBoardRunFiles(ctx, place, { deny: settings.deny, readDirs: [], model });
+    const tail = [firstPrompt(place.dir), ...workerFlags({ name: `publish-${queued.id}`, model, effort, addDirs: [place.dir] })];
     const { workspace, pane } = await startAgent(ctx, place, {}, tail, "the publish run");
     update(ctx, (queue) => markPublishRunning(queue, workspace, pane));
     await settleStart(ctx, place);

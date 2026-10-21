@@ -28,6 +28,11 @@ import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { gateReviewJudge, loadReviewerGate } from "./reviewer-port.ts";
+import { publisherStateOf, reviewerStateOf } from "./concern-states.ts";
+import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
+import { claimantOf } from "./settings.ts";
+import { defaultHerdr } from "./pool-herdr.ts";
+import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
@@ -66,7 +71,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk" | "reviewerState">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -274,7 +279,7 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     // `pickDefault` is the Assignee filter's first choice: the key's own tickets, or every open one. `pickOpen` is what Anyone reads as in the count.
     // `viewer` is the key's person, or null while the tracker cannot say: an instance that sends it names assignees, one that does not is older.
     return [200, { models: MODELS, efforts: EFFORTS, choice: readChoice(deps.choicePath), max: store.get().max, terminal: await board.terminalAddress(), plan: settings.plan, planner: plans,
-      publish: settings.publish !== null, pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
+      publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
       pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
       writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
       writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
@@ -698,17 +703,28 @@ async function serve(): Promise<void> {
   // `--no-open` opened no browser when the instance served the page. It is still taken, so a script that passes it keeps working.
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:serve" });
   const settings = readTicketSettings();
-  // The gate's modules load only for an instance that starts reviewers, and before its pool is made, which reads them (`reviewer-port.ts`).
-  if (startsReviewers(settings)) await loadReviewerGate();
+  // The gate's modules load only for an instance that starts reviewers or must say its open pull requests wait on one (reviews required), and before its pool is made, which reads them
+  // (`reviewer-port.ts`). A reviewer plugin's own `load()` is asked below, which reads the same gate.
+  if (startsReviewers(settings) || settings.reviewerRequired) await loadReviewerGate();
   // A11-84: the routing wrapper is checked, and re-rendered when it has diverged, before the pool is made (see `checkGhWrapperAtStart`).
   checkGhWrapperAtStart();
   // The tracker and the code host are the enabled plugins' (`plugins/linear` and `plugins/github`, unless the host file names others): a plugin the loader refuses refuses the start, by name.
-  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge }));
+  // The reviewer plugin is given the board's collaborators: its herdr session, the code host it reads every pull request through (activated beside it, so asked when used) and the heads the pool
+  // remembers its reviewers by.
+  const reviewerHeads = new Map<string, string>();
+  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads });
+  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }));
+  activated(active);
   const source = active.tracker();
   const codeHost = active.codeHost();
+  const publisher = active.publisher() ?? undefined;
+  const reviewer = active.reviewer() ?? undefined;
+  // The reviewer reads the gate before the pool is made, which asks it why it cannot start here (a host with no `primary`): `load` keeps that refusal rather than throwing it.
+  if (reviewer !== undefined && startsReviewers(settings)) await reviewer.load();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const board = createBoard({ settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure() });
+  const board = createBoard({ settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(),
+    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads } });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();

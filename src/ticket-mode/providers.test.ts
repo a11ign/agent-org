@@ -166,8 +166,8 @@ test("a block's settings are read in their own place: the tracker's connectors, 
 
 // A11-158: a block is an agent-org plugin's config. `provider` names a plugin of the registry, `enabled` switches it, and the rules of the registry are the reader's.
 const NO_PACKAGES = { directories: () => [], text: () => null, isFile: () => false };
-/** The built-ins and fakes, with no pin, so a fake may be enabled; and `pins` for a test of the pin. */
-const unpinned = (): Catalog => buildCatalog({ root: "/none", files: NO_PACKAGES, pins: {} });
+/** The fakes alone: no bundled package, so a fake may be named. */
+const unpinned = (): Catalog => buildCatalog({ root: "/none", files: NO_PACKAGES });
 const refusalOf = (host: Record<string, unknown>, catalog?: Catalog): TicketSettingsRefusal => {
   try {
     resolveProviders(host, catalog);
@@ -218,7 +218,7 @@ test("A11-158: a disabled plugin's settings are still validated, so `enable` can
 });
 
 test("A11-158: a plugin that implements a contract major this agent-org does not read is refused by name at start, when its block enables it", () => {
-  const catalog = buildCatalog({ root: "/none", files: NO_PACKAGES, pins: {} });
+  const catalog = buildCatalog({ root: "/none", files: NO_PACKAGES });
   const unread = { ...catalog, plugins: catalog.plugins.map((plugin) => (plugin.name === "fake-tracker" ? { ...plugin, contract: "2.0" } : plugin)) };
   const refused = refusalOf({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } }, unread);
   assert.equal(refused.field, "tickets.providers.tracker.provider");
@@ -228,21 +228,17 @@ test("A11-158: a plugin that implements a contract major this agent-org does not
   assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "the same plugin at a major it reads is accepted");
 });
 
-test("A11-158: while core runs a concern's built-in, any other plugin enabled for it is refused, naming the plugin, the built-in and the ticket that moves it", () => {
-  const refused = refusalOf({ tickets: { providers: { reviewer: { provider: "fake-reviewer" } } } });
-  assert.equal(refused.field, "tickets.providers.reviewer.provider");
-  assert.match(refused.message, /is refused: fake-reviewer is a reviewer plugin, but this release runs the reviewer in core as atomic until A11-161: name "atomic"/);
-  assert.equal(resolveProviders({ tickets: { providers: { exposure: { provider: "fake-exposure" } } } }).blocks.exposure.provider, "fake-exposure", "the exposure has no pin since A11-162: local and tailscale are bundled packages, and a fake is refused when a person installs or enables it, and at start");
-  assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "no pin, no refusal");
-  assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } }).blocks.tracker.provider, "fake-tracker", "the tracker has no pin since A11-159: linear is a bundled package, and a fake is refused when a person installs or enables it, and at start");
-  assert.equal(resolveProviders({ tickets: { providers: { publish: { provider: "fake-publisher", enabled: false } } } }).blocks.publish.enabled, false, "a disabled plugin is not run, so the pin has nothing to refuse");
-  assert.equal(resolveProviders({ tickets: { providers: { codeHost: { provider: "fake-codeHost" } } } }).blocks.codeHost.provider, "fake-codeHost", "the code host has no pin since A11-160: github is a bundled package, and a fake is refused at start");
+test("A11-161: no concern is pinned to core any more: a fake is named by a block, and a person's install or enable refuses it, as does the start", () => {
+  for (const [block, provider] of [["reviewer", "fake-reviewer"], ["publish", "fake-publisher"], ["exposure", "fake-exposure"], ["tracker", "fake-tracker"], ["codeHost", "fake-codeHost"]] as const) {
+    assert.equal(resolveProviders({ tickets: { providers: { [block]: { provider } } } }).blocks[block].provider, provider, `${block}: the reader refuses no plugin of the concern for being another than a built-in; core has none`);
+  }
+  assert.equal(resolveProviders({ tickets: { providers: { publish: { provider: "fake-publisher", enabled: false } } } }).blocks.publish.enabled, false, "a disabled plugin is not run");
 });
 
 test("A11-158: a plugin of another concern, and one the registry does not hold, are refused by name listing what the block may name", () => {
   const wrongConcern = refusalOf({ tickets: { providers: { tracker: { provider: "slack" } } } });
   assert.equal(wrongConcern.field, "tickets.providers.tracker.provider");
-  assert.match(wrongConcern.message, /must be one of "linear", not "slack"/, "the fake is pinned off, so it is not offered");
+  assert.match(wrongConcern.message, /must be one of "linear", not "slack"/, "a fake runs no host, so it is not offered");
   assert.match(refusalOf({ tickets: { providers: { publish: { provider: "jira" } } } }).message, /must be one of "slack", "none", not "jira"/);
 });
 

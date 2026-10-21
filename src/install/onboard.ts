@@ -34,7 +34,6 @@
 // App's key is copied and never printed.
 //
 // IT ENDS BY DIAGNOSING: the same checks `agent-org doctor` runs are printed, so the person sees whether the machine is ready.
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
@@ -42,13 +41,15 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { type BlockReport, DEFAULT_PROVIDER, isActive, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
+import { type BlockReport, DEFAULT_PROVIDER, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
 import { realExec, realMode, realProbe } from "../plugins/active.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { corePolicy } from "../plugins/policy.ts";
+import { publishingHelpers } from "../plugins/publishing-helpers.ts";
+import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import type { Catalog, PluginDeps, PluginSettings } from "../plugins/manifest.ts";
 import { readPluginContract, type Contract } from "../ticket-mode/plugin-contract.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
@@ -114,8 +115,6 @@ export type OnboardDeps = Readonly<{
   run: (file: string, args: string[], env?: Env) => RunResult;
   /** The first executable called `name` on PATH, or null. */
   which: (name: string) => string | null;
-  /** The exit status of `codex login status`, or null when it cannot run. */
-  codexStatus: () => number | null;
   /** The GitHub CLI as `account` (A11-106): the gh stack extension is listed and installed through it. */
   ghAs: (account: Account) => ProgramRunner;
   /** Which replacements of the interim guards hold, read now (A11-145). */
@@ -337,16 +336,6 @@ function setUpChromium(deps: OnboardDeps): boolean {
   return problems.length === 0;
 }
 
-/** The lines of Codex the atomic reviewer needs, each with whether it is done already (A11-145). Onboard installs and logs in to neither. */
-function codexChecklist(deps: OnboardDeps): string[] {
-  const installed = deps.which("codex") !== null;
-  const loggedIn = installed && deps.codexStatus() === 0;
-  return [
-    installed ? "Codex is installed: done" : "install Codex, which the atomic reviewer runs on: `npm install -g @openai/codex`",
-    loggedIn ? "Codex is logged in: done" : "log in to Codex: `codex login`, with the account the reviewer should use",
-  ];
-}
-
 /** The conventions plugin's install, as onboard runs it: from its repository, for every session, and read back (`plugin-install.ts`). */
 function installPlugin(conventions: NonNullable<Profile["conventions"]>, deps: OnboardDeps): ConventionsStep {
   return installConventions({ plugin: conventions.plugin, repo: conventions.marketplace }, {
@@ -477,7 +466,8 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
   const providers = plannedProviders({ host, tickets, planned, catalog: deps.catalog() });
   const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
   const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
-    exec: deps.exec, readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy() };
+    exec: deps.exec, readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy(),
+    publishing: publishingHelpers(), reviewing: gateHelpers() };
   const result = await deps.loadPlugins(providers, pluginDeps);
   const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));
   const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));
@@ -505,8 +495,6 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
 
 /** What onboard does once the host file is written: Codex, the guards, the services, and the doctor's report. */
 async function finishOnboard({ next, options, terminal }: Readonly<{ next: Record<string, unknown>; options: OnboardOptions; terminal: boolean }>, deps: OnboardDeps) {
-  const written = resolveProviders(next, deps.catalog()).blocks;
-  if (isActive(written.reviewer) && written.reviewer.provider === "atomic") for (const line of codexChecklist(deps)) deps.out.log(line);
   const guards = await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements });
   for (const line of guards) deps.out.log(line);
   if (options.start) deps.out.log(await deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })));
@@ -632,7 +620,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       herdrPlugins: () => readOrNull(join(herdrConfigDir(process.env, home), "plugins.json")),
       run: runProgram,
       which: (name) => whichOn(name, process.env),
-      codexStatus: () => spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 60_000 }).status,
       ghAs: (account) => asAccount(defaultGh, account),
       replacements: () => replacementsNow(process.env, home),
       diagnose: () => diagnose(defaultDoctorDeps()),

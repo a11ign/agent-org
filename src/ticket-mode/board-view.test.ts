@@ -8,7 +8,7 @@ import { overrideNote, START_ANYWAY_TITLE, rebaseNote, settledByPulls, repoLabel
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls } from "./board-view.ts";
-import { pullReviewText, type PullRead } from "./board-view/pull-review-state.ts";
+import { AWAITING_PERSON_LINE, publishingOffLine, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
 import { CHANGESET_SCAFFOLD, SCAFFOLD_DIRS } from "../scaffold-dirs.ts";
@@ -1241,4 +1241,22 @@ test("A11-154: a parked run the board handed back keeps its question one click a
   const note = { [OPEN_PR.url]: { head: "1a2b3c4d5e6f", step: "rerun" as const, note: "Reran test on 1a2b3c4d: a runner was lost" } };
   assert.equal(checkNote(withOpenPull({ checkHeads: note })), "Reran test on 1a2b3c4d: a runner was lost");
   assert.equal(checkNote(run({ checkHeads: note, pullStates: { [OPEN_PR.url]: "merged" }, review: [OPEN_PR] })), null, "a merged pull request has no checks to say anything of");
+});
+
+// A11-161: what the board says when the reviewer is off and when the publisher is. The words are the ticket's, exactly.
+test("A11-161: the words the board says of a reviewer that is off, and of a machine where people review, are the ticket's exactly", () => {
+  assert.equal(REVIEWER_OFF_BANNER, "Reviews are required and the reviewer is off");
+  assert.equal(REVIEWER_OFF_LINE, "waiting on the reviewer (off)");
+  assert.equal(AWAITING_PERSON_LINE, "awaiting your review");
+});
+
+test("A11-161: the banner is the reviewer's only when reviews are required and it is off: not for a reviewer that is on, not for none that is not required, and not for an instance that sends no state", () => {
+  assert.equal(reviewerBanner("off-required"), "Reviews are required and the reviewer is off");
+  for (const state of ["on", "none", undefined]) assert.equal(reviewerBanner(state), null, String(state));
+});
+
+test("A11-161: a run says \"publishing off\" only when it is Ready to merge on a machine whose publisher is installed and switched off", () => {
+  assert.equal(publishingOffLine("ready-to-merge", "off"), "publishing off");
+  for (const status of ["published", "working", "needs-you", "awaiting-review", "publishing"]) assert.equal(publishingOffLine(status, "off"), null, status);
+  for (const publisher of ["on", "none", undefined]) assert.equal(publishingOffLine("ready-to-merge", publisher), null, String(publisher));
 });

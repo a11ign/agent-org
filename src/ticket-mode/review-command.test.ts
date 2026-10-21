@@ -1,8 +1,11 @@
 // no-token: gh -- the reviewer port and the pull request's state are injected; nothing starts and nothing reaches GitHub or herdr.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reviewOnDemand } from "./review-command.ts";
-import { atomicReviewerPort, loadReviewerGate, type ReviewerPort, type ReviewState } from "./reviewer-port.ts";
+import { reviewerToStart, reviewOnDemand } from "./review-command.ts";
+import { resolveProviders } from "./providers.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
+import { createFakeReviewer } from "../plugins/fakes/reviewer.ts";
+import type { ReviewerPort, ReviewState } from "./reviewer-port.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 const URL = "https://github.com/a11ign/control/pull/119";
@@ -108,61 +111,23 @@ test("an address that is not a pull request is refused before anything is asked,
   assert.deepEqual(calls, []);
 });
 
-test("ticket:review starts the reviewer for a repository the host clones and the project does not declare, with no entry in project.json", async () => {
-  await loadReviewerGate();
-  // The pull request, and the head's statuses: a claim is read and written as one tab-separated line per status, as `claimEntriesOf` reads them.
-  const statuses: string[] = [];
-  const gh = (args: string[]) => {
-    if (args.some((arg) => arg.includes("/statuses"))) {
-      if (!args.includes("POST")) return statuses.join("");
-      statuses.push(`${statuses.length + 1}\t${new Date().toISOString()}\t${args.find((arg) => arg.startsWith("description="))!.slice("description=".length)}\n`);
-      return "";
-    }
-    throw new Error(`unexpected gh ${args.join(" ")}`);
-  };
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, codeHost: pluginPull(),
-    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }) });
-  const r = reviewOnDemand({ url: "https://github.com/a11ign/plugin/pull/7", port, readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /started reviewer-plugin-7 for .*a11ign\/plugin\/pull\/7 at 3aeaba9b/);
+// A11-161: `ticket:review` starts the reviewer the machine has enabled, and nothing when it has none.
+const providersOf = (reviewer: Record<string, unknown> | undefined) => resolveProviders({ tickets: reviewer === undefined ? {} : { providers: { reviewer } } });
+
+test("A11-161: ticket:review with no reviewer plugin enabled starts nothing and refuses by name: install for none, enable for one that is switched off", async () => {
+  const none = await reviewerToStart({ reviewer: () => null }, providersOf(undefined), defaultCatalog());
+  assert.deepEqual(none, { refusal: "ticket:review: this machine has no reviewer, so none is started: run `agent-org plugin install atomic`" });
+  const disabled = await reviewerToStart({ reviewer: () => null }, providersOf({ provider: "atomic", enabled: false }), defaultCatalog());
+  assert.deepEqual(disabled, { refusal: "ticket:review: this machine has no reviewer, so none is started: run `agent-org plugin enable atomic`" });
 });
 
-/**
- * A port over a `gh` that holds `claim` on the head (a status line under the claim's context, as `claimEntriesOf` reads it) and answers the pull request
- * as `HEAD` with green checks, the way the tickets' reviewer reads it. A claim written through `claimGh` lands on the same statuses.
- */
-function portHolding(statuses: string[], spawned: string[]) {
-  const gh = (args: string[]) => {
-    if (args.some((arg) => arg.includes("/statuses"))) {
-      if (!args.includes("POST")) return statuses.join("");
-      statuses.push(`${statuses.length + 1}\t${new Date().toISOString()}\t${args.find((arg) => arg.startsWith("description="))!.slice("description=".length)}\n`);
-      return "";
-    }
-    throw new Error(`unexpected gh ${args.join(" ")}`);
-  };
-  return atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, codeHost: pluginPull(),
-    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
-}
-
-/** `ticket:review` for the plugin's pull request, with a claim by `instance` written `minutesOld` minutes ago on its head: what it answers, and what it started. */
-async function reviewWithClaimBy(instance: string, minutesOld: number) {
-  await loadReviewerGate();
-  const spawned: string[] = [];
-  const since = new Date(Date.now() - minutesOld * 60_000).toISOString();
-  const r = reviewOnDemand({ url: PLUGIN, port: portHolding([`1\t${since}\tclaimed by ${instance} at ${since}, lease 60 min\n`], spawned), readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
-  return { r, spawned, since };
-}
-
-test("A11-149: ticket:review refuses a head another instance holds, names the holder, and starts nothing", async () => {
-  const { r, spawned } = await reviewWithClaimBy("laptop", 5);
-  assert.equal(r.code, 1, r.out);
-  assert.match(r.out, /another instance \(`laptop`\) holds the review of https:\/\/github\.com\/a11ign\/plugin\/pull\/7 at 3aeaba9b since /);
-  assert.deepEqual(spawned, [], "no reviewer is started");
-});
-
-test("A11-149: ticket:review takes over a claim past its lease with no verdict, and says whose and how old", async () => {
-  const { r, spawned } = await reviewWithClaimBy("laptop", 61);
-  assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /started reviewer-plugin-7 for .* at 3aeaba9b; took over the claim of laptop, 61 min old with no verdict; its verdict posts/);
-  assert.deepEqual(spawned, ["reviewer-plugin-7"]);
+test("A11-161: ticket:review loads the enabled reviewer and starts it, and a reviewer that cannot start on this host is refused with the reason it gives", async () => {
+  const fake = createFakeReviewer();
+  const chosen = await reviewerToStart({ reviewer: () => fake }, providersOf({ provider: "atomic" }), defaultCatalog());
+  assert.ok("reviewer" in chosen && chosen.reviewer === fake);
+  assert.equal(fake.refusal(), null, "it was loaded: refusal() answers only after load()");
+  const refusing = createFakeReviewer("/.agent-org/project.json: the declaration cannot be read");
+  assert.deepEqual(await reviewerToStart({ reviewer: () => refusing }, providersOf({ provider: "atomic" }), defaultCatalog()),
+    { refusal: "ticket:review: the reviewer does not load on this host: /.agent-org/project.json: the declaration cannot be read" });
+  assert.deepEqual(refusing.started, [], "nothing is started");
 });

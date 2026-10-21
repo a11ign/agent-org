@@ -1,0 +1,82 @@
+{
+  "name": "@agent-org/plugin-slack",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The Slack publisher: announces the pull requests a person chose, through a publish run that posts to Slack with the post-pr-to-slack skill.",
+  "type": "module",
+  "agentOrg": {
+    "concern": "publisher",
+    "contract": "1.1",
+    "description": "Slack: announces the pull requests a person chose, through a publish run.",
+    "entry": "index.ts",
+    "settings": {
+      "run": {
+        "key": "tickets.providers.publish.run",
+        "file": "host.json",
+        "group": "Publisher",
+        "type": "text naming {prs} and {dir}",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The publish run's instruction, with {prs} filled in with the ticked runs' open pull requests, one per line, and {dir} with its folder. NBL's: Run the post-pr-to-slack skill on these pull requests, all in one go: {prs}. Then write {dir}/published.json, with its Slack send tool in tickets.providers.publish.connectors.",
+        "breaks": "Without both placeholders it is refused by name.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board",
+          "dangerous": "This is the publish run: a wrong instruction lets it act outside the machine or in the person's accounts."
+        }
+      },
+      "model": {
+        "key": "tickets.providers.publish.model",
+        "file": "host.json",
+        "group": "Publisher",
+        "type": "one word",
+        "absent": "default",
+        "default": "haiku",
+        "explanation": "The model the publish run runs on.",
+        "breaks": "A name the runner does not know fails the publish run.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board"
+        }
+      },
+      "effort": {
+        "key": "tickets.providers.publish.effort",
+        "file": "host.json",
+        "group": "Publisher",
+        "type": "one word",
+        "absent": "default",
+        "default": "low",
+        "explanation": "The effort the publish run runs with.",
+        "breaks": "An effort the runner does not know fails the publish run.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board"
+        }
+      },
+      "connectors": {
+        "key": "tickets.providers.publish.connectors",
+        "file": "host.json",
+        "group": "Publisher",
+        "type": "list of patterns starting ^mcp__",
+        "absent": "default",
+        "default": "none",
+        "explanation": "Connector tools the publish run alone may call, beside tickets.connectors. Such as Slack's send.",
+        "breaks": "A pattern not starting ^mcp__ is refused by name.",
+        "edit": {
+          "editable": true,
+          "input": "json",
+          "applies": "board",
+          "dangerous": "The publish run may call these connector tools, so a broad pattern lets it act in the person's connected accounts."
+        }
+      }
+    },
+    "tooling": {
+      "skills": [
+        "post-pr-to-slack"
+      ]
+    }
+  }
+}

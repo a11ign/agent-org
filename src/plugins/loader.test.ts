@@ -19,7 +19,7 @@ function checkout(concerns: Readonly<Record<string, string>>, contract = "1.0"):
 }
 
 /** The catalog of a checkout with no pins, so a bundled plugin may be enabled; and the imports a loader makes, recorded. */
-const catalogOf = (concerns: Record<string, string>, contract?: string) => buildCatalog({ root: ROOT, files: checkout(concerns, contract), pins: {} });
+const catalogOf = (concerns: Record<string, string>, contract?: string) => buildCatalog({ root: ROOT, files: checkout(concerns, contract) });
 const host = (providers: Record<string, unknown>) => ({ tickets: { providers } });
 
 function moduleOf(create: PluginModule["create"] = () => ({})): PluginModule {
@@ -54,9 +54,9 @@ test("a disabled plugin's code is never imported, though its block names it and 
   assert.deepEqual(result, { loaded: [], unbuilt: [], refusals: [] });
 });
 
-test("a built-in is skipped, since core runs it, and so is a fake", async () => {
-  const catalog = buildCatalog({ root: ROOT, files: checkout({}), pins: {} });
-  const providers = resolveProviders(host({ publish: { provider: "slack" }, reviewer: { provider: "fake-reviewer" }, exposure: { provider: "fake-exposure" } }), catalog);
+test("a fake is skipped: it runs no host", async () => {
+  const catalog = buildCatalog({ root: ROOT, files: checkout({}) });
+  const providers = resolveProviders(host({ publish: { provider: "fake-publisher" }, reviewer: { provider: "fake-reviewer" }, exposure: { provider: "fake-exposure" } }), catalog);
   const { urls, importModule } = recorder({});
   assert.deepEqual(await loadEnabled(providers, catalog, DEPS, importModule), { loaded: [], unbuilt: [], refusals: [] });
   assert.deepEqual(urls, []);

@@ -1,10 +1,10 @@
 # Bundled agent-org plugins
 
 Each directory here is one **agent-org plugin**: a code module behind one of the six versioned contracts (`src/plugins/contracts/`): tracker, code host, publisher,
-reviewer, exposure and messaging. It is not a Claude plugin (`tickets.plugins` lists those). The directory's name is the plugin's name. The first is `linear` (the tracker, A11-159),
+reviewer, exposure and messaging. It is not a Claude plugin (`tickets.plugins` lists those). The directory's name is the plugin's name, unless its manifest's `agentOrg.name` gives another (`plugins/atomic-reviewer` is the plugin `atomic`, the name live host files use, so none is migrated). The first is `linear` (the tracker, A11-159),
 the second is `github` (the code host, A11-160: ticket mode's reads of a pull request move in step by step, and the rest of the GitHub calls follow, so that `plugins/github` is the only place the
 repository starts a `gh` process). A11-162 adds the two exposures, `local` (the concern's default: the board on loopback only) and `tailscale` (the board and the worker terminal on the tailnet, which is
-the only place the repository runs `tailscale`), and `telegram` (messaging: the only place `api.telegram.org` is called); A11-161 adds the rest.
+the only place the repository runs `tailscale`), and `telegram` (messaging: the only place `api.telegram.org` is called). A11-161 adds the last two, `slack` (the publisher) and `atomic` (the reviewer): no concern's code is built into core any more, and "none" is the absence of an enabled plugin.
 
 | Plugin | Concern | What it is |
 | --- | --- | --- |
@@ -13,6 +13,8 @@ the only place the repository runs `tailscale`), and `telegram` (messaging: the 
 | `local` | exposure | serves nothing: the board listens on `127.0.0.1`; refuses `serve` by name |
 | `tailscale` | exposure | `tailscale serve` for the page and the terminal, never Funnel; a path open to the internet for the event receiver (contract 1.1) |
 | `telegram` | messaging | Telegram: asks and announcements for the chairman, configured in `project.json`'s `messaging` key |
+| `slack` | publisher | Slack: announces the pull requests a person chose, through a publish run (the `post-pr-to-slack` skill); the plugin makes no Slack call, and builds the run's brief, names its connectors, model and effort and reads its outcome (contract 1.1) |
+| `atomic` (`plugins/atomic-reviewer`) | reviewer | The gate's codex reviewer, started for each ready pull request in the tickets' herdr session; its port, seats, claims and verdict files are the plugin's, and the gate it drives stays core's |
 
 A plugin is a directory with a `package.json`, found by the registry; it is not a member of a pnpm workspace. This repository has no `pnpm-workspace.yaml`: its layout check
 (`@a11ign/toolchain`'s `layout-check`, ADR 0043 Decision 7) requires one package at the root and no workspace file, and nothing needs the workspace, since a host links no plugin
@@ -27,7 +29,7 @@ plugins/<name>/
   *.test.ts        the plugin's tests, including its concern's contract suite
 ```
 
-**`package.json`'s `agentOrg` field** is read without importing any code, so a disabled plugin's code is never loaded:
+**`package.json`'s `agentOrg` field** is read without importing any code, so a disabled plugin's code is never loaded. `name` is optional: absent, the plugin is named for its directory; present, it is the plugin's name (lower-case letters, digits and hyphens), and a name another plugin has is refused by name:
 
 ```json
 {
@@ -36,6 +38,7 @@ plugins/<name>/
   "version": "0.0.0",
   "type": "module",
   "agentOrg": {
+    "name": "example",
     "concern": "tracker",
     "contract": "1.1",
     "description": "One sentence: what the plugin is for.",
@@ -63,13 +66,19 @@ install command and these, and no Install button.
 may also export `keep(settings, deps)`, what `agent-org update` keeps true on the machine at every update (the code host keeps its stacking extension present): safe to repeat, no prompt, never
 throws. It imports core with `import type` only: every runtime helper arrives in `deps` (`fetch`; `exec`, which runs a program with an optional `env` laid over this process's, and a `timeoutMs`;
 `readFile`, `mode`, the host's `clones`, the board's `pick` scope, and `policy`, which is what core decides about what a code host reports: which check is red, which run of one is newer, and how
-a reviewer judges a pull request; an onboard step also has the prompts). `src/plugins/fakes/deps.ts` is the deps a test gives it.
+a reviewer judges a pull request; `publishing`, the publish protocol a publisher builds its run's brief and reads its outcome with (`briefText`, `result`), which stays core's and says nothing of a chat service; `reviewing`,
+what a reviewer needs of core, below; an onboard step also has the prompts). `src/plugins/fakes/deps.ts` is the deps a test gives it.
 
 It may also export `release(settings, deps)`, what the plugin must take off the machine before it stops being the enabled plugin of its concern (the Tailscale exposure removes this board's `tailscale serve`
 entries). `agent-org plugin` calls it while the plugin is still the enabled one, after the readers accepted the change and before the host file is written, on a switch (`enable <name>` of another plugin of the
 concern), `disable`, `uninstall` and `install --replace`; `{ ok: false, detail }` refuses the change by name and nothing is written, and it must be safe to repeat and never prompt. A messaging plugin may export `pair`, its
 step of `agent-org messaging:pair` (a provider cannot be built before there is a chairman to pair, so it is not on the provider). `deps` also carries `probe` (a GET of a host and port: what an exposure's doctor
 rows ask) and, for a messaging plugin, `deps.messaging`: the secret by reference, the fetch that cannot leak it and the chairman's ids, which a plugin cannot import.
+
+**`deps.reviewing`** is how a reviewer plugin reaches THE GATE, which stays core's because the org's own reviewer shares it (`wake/*`, `review-trust.ts`, `work-gate/pr-orders.ts`, `project-config.ts`, the door path and `host-config.ts`): `loadGate()` reads its modules and keeps a refusal
+(a host with no `primary` cannot load them) rather than throwing it, `gateRefusal()` says it and `gate()` is the modules, which throw it. Beside them are the functions the atomic reviewer calls (seat names, the herdr listing, the claim on a head, the verdict reader, `ghWith`), and `board()`: the board's
+collaborators (its herdr session and runner, the activated code host, the instance's claimant name, and the head each seat's reviewer was started for), which a process that is not a board does not have, and which refuses by name when a reviewer asks. A reviewer built at activation asks the gate only when it
+is used, and `refusal()` after `load()` says whether it can start here: the pool starts none while it does.
 
 A plugin may also bring a command: `src/commands.ts` can name its program by a path inside the plugin (`../plugins/github/stack-live-check-command.ts`).
 

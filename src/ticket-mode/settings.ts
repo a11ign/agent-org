@@ -104,8 +104,14 @@ export type TicketSettings = Readonly<{
    * it is set, the ticket hook refuses a push or a pull request until that skill has run since the worker's last commit (A11-86).
    */
   prReview: string | null;
-  /** The reviewer this machine starts for each ready pull request: `"atomic"` for the gate's codex reviewer, or null for none. */
-  reviewer: Reviewer | null;
+  /** The name of the reviewer plugin this machine starts for each ready pull request (`"atomic"` is the gate's codex reviewer), or null for none: the block names none, or its plugin is disabled. */
+  reviewer: string | null;
+  /**
+   * Whether this machine's pull requests wait for the reviewer (A11-161): `tickets.providers.reviewer.required`, else true when the block (or the old `tickets.reviewer`) names a reviewer
+   * plugin, enabled or not, and false when it names none or there is no block. The work instance, where people review, has no reviewer and is not required; the personal one runs
+   * the atomic reviewer and is.
+   */
+  reviewerRequired: boolean;
   /** Which tickets the Pick view lists. `"assigned"` by default. */
   pick: PickScope;
   /**
@@ -130,9 +136,6 @@ export type TicketSettings = Readonly<{
  * key's person is in a team and often a project, so a machine whose tickets are moved in, or shared out, names one of those.
  */
 export type PickScope = "assigned" | Readonly<{ team: string }> | Readonly<{ project: string }>;
-
-/** The reviewers a machine may start for a ready pull request. */
-export type Reviewer = "atomic";
 
 /** What a publish run is told, on what, and which connectors it alone may call. */
 export type Publisher = Readonly<{
@@ -350,6 +353,12 @@ function publisherOf(publish: BlockReport): Publisher | null {
   return isActive(publish) ? publisher : null;
 }
 
+/** Whether this machine's pull requests wait for the reviewer: the block's `required` (already checked to be true or false), else whether the block names a reviewer plugin at all. */
+function reviewerRequiredOf(reviewer: BlockReport): boolean {
+  const { value } = settingOf(reviewer, "required");
+  return typeof value === "boolean" ? value : reviewer.provider !== "none";
+}
+
 /** The settings of a publisher that names a plugin, refused by name when its run is not one. */
 function publisherSettingsOf(publish: BlockReport): Publisher {
   const run = settingOf(publish, "run");
@@ -564,7 +573,8 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     designTools: designToolsOf(tickets.designTools),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
-    reviewer: reviewer.provider === "atomic" && reviewer.enabled ? "atomic" : null,
+    reviewer: isActive(reviewer) ? reviewer.provider : null,
+    reviewerRequired: reviewerRequiredOf(reviewer),
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),

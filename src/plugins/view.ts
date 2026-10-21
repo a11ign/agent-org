@@ -3,6 +3,7 @@
 //
 // PURE. The caller passes the resolved blocks, the catalog and what the project says of messaging; nothing is read here. No secret is ever in a view: a setting is shown
 // as the key it was read from, and a key's file only by its path.
+import { basename } from "node:path";
 import { isActive, type BlockReport, type Providers } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, CONCERNS, type Concern } from "./concerns.ts";
 import type { Catalog, CatalogPlugin } from "./manifest.ts";
@@ -36,8 +37,8 @@ export function sourceWords(providers: Providers, block: keyof Providers["blocks
   return `from aliases (${aliases.map(({ old }) => old).join(", ")})`;
 }
 
-/** Where a plugin's code lives, in the words `list` gives. */
-export const whereOf = (plugin: CatalogPlugin): string => (plugin.where === "bundled" ? `plugins/${plugin.name}` : plugin.where === "core" ? `core, until ${plugin.movedBy}` : "fake");
+/** Where a plugin's code lives, in the words `list` gives: its folder under `plugins/`, which is not always its name (`plugins/atomic-reviewer` is `atomic`). */
+export const whereOf = (plugin: CatalogPlugin): string => (plugin.dir === null ? "fake" : `plugins/${basename(plugin.dir)}`);
 
 function stateOf(plugin: CatalogPlugin, report: BlockReport): PluginState {
   if (report.provider !== plugin.name) return "available";
@@ -45,7 +46,7 @@ function stateOf(plugin: CatalogPlugin, report: BlockReport): PluginState {
 }
 
 function viewOfPlugin(plugin: CatalogPlugin, report: BlockReport, catalog: Catalog): PluginView {
-  return { name: plugin.name, state: stateOf(plugin, report), contract: plugin.contract, where: whereOf(plugin), description: plugin.description, refusal: enableRefusal(plugin, catalog) ?? fakeRefusal(plugin) };
+  return { name: plugin.name, state: stateOf(plugin, report), contract: plugin.contract, where: whereOf(plugin), description: plugin.description, refusal: enableRefusal(plugin) ?? fakeRefusal(plugin) };
 }
 
 function viewOfBlock(concern: Concern, providers: Providers, catalog: Catalog): ConcernView {
@@ -61,7 +62,7 @@ function viewOfMessaging(catalog: Catalog, messaging: MessagingState): ConcernVi
   const source = named === null ? messaging.why : "configured in project.json's messaging key";
   const plugins = pluginsOfConcern(catalog, "messaging").map((plugin): PluginView => ({
     name: plugin.name, state: plugin.name !== named ? "available" : enabled ? "enabled" : "disabled", contract: plugin.contract, where: whereOf(plugin), description: plugin.description,
-    refusal: enableRefusal(plugin, catalog) ?? fakeRefusal(plugin),
+    refusal: enableRefusal(plugin) ?? fakeRefusal(plugin),
   }));
   return { concern: "messaging", label: CONCERN_LABEL.messaging, enabled: enabled ? named : null, source, plugins, note: null };
 }

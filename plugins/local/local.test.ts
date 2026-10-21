@@ -34,7 +34,7 @@ test("it answers no name, no hosts, no origins, no ports and no terminal address
 test("the registry finds the plugin as the bundled exposure local, and the manifest brings port, uiPort and terminal, which tailscale declares too", () => {
   const plugin = pluginNamed(defaultCatalog(), "local");
   assert.ok(plugin !== undefined);
-  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry, plugin.movedBy], ["exposure", "bundled", "1.1", "index.ts", null]);
+  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry], ["exposure", "bundled", "1.1", "index.ts"]);
   assert.deepEqual(Object.keys(plugin.settings), ["port", "uiPort", "terminal"]);
   const shared = pluginNamed(defaultCatalog(), "tailscale")!;
   for (const name of ["port", "uiPort", "terminal"]) assert.deepEqual(plugin.settings[name], shared.settings[name], `${name} is described once, and the same for both exposures`);

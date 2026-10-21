@@ -11,7 +11,8 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import type { ChromiumReport } from "./chromium.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
-import type { Catalog, CatalogPlugin } from "../plugins/manifest.ts";
+import type { Catalog, CatalogPlugin, ReviewerHelpers } from "../plugins/manifest.ts";
+import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
 import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
@@ -37,15 +38,22 @@ const ghFake = (listing = GH_LISTING, stacks: (repo: string) => Answer = () => (
  * The programs the Linear plugin's checks run, as the doctor tests see them (A11-159): `security` prints `key` (or fails, for null), and `claude mcp list` prints `mcp` (or cannot run,
  * for null). Any other program cannot start.
  */
-function execOf({ key = KEY, mcp = MCP_LIST, gh = ghFake(), origin = null }: { key?: string | null; mcp?: string | null; gh?: (args: readonly string[]) => Answer; origin?: string | null } = {}): DoctorDeps["exec"] {
+function execOf({ key = KEY, mcp = MCP_LIST, gh = ghFake(), origin = null, codex = "/home/me/.local/bin/codex", codexStatus = 0 }: { key?: string | null; mcp?: string | null; gh?: (args: readonly string[]) => Answer; origin?: string | null;
+  /** Where `which codex` finds Codex, or null for none; and the exit status of `codex login status`, or null for a Codex that cannot run it (A11-161: the atomic reviewer's checks run both). */
+  codex?: string | null; codexStatus?: number | null } = {}): DoctorDeps["exec"] {
   return (file, args) => {
     if (file === "gh") return gh(args);
+    if (file === "which" && args[0] === "codex") return codex === null ? { status: 1, stdout: "", stderr: "" } : { status: 0, stdout: `${codex}\n`, stderr: "" };
+    if (file === "codex" && args.join(" ") === "login status") return { status: codexStatus, stdout: "", stderr: "" };
     if (file === "git" && args.includes("get-url")) return origin === null ? { status: 1, stdout: "", stderr: "no origin" } : { status: 0, stdout: `${origin}\n`, stderr: "" };
     if (file === "security" && args[0] === "find-generic-password") return key === null ? { status: 44, stdout: "", stderr: "could not be found" } : { status: 0, stdout: `${key}\n`, stderr: "" };
     if (file === "claude" && args.join(" ") === "mcp list") return mcp === null ? { status: null, stdout: "", stderr: "claude: command not found" } : { status: 0, stdout: mcp, stderr: "" };
     return { status: null, stdout: "", stderr: `${file} cannot start` };
   };
 }
+
+/** The reviewer's helpers as a doctor test sees them: the gate loads (or refuses with `refusal`), and no module is read. */
+const gateLoads = (refusal: string | null = null): ReviewerHelpers => ({ ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => refusal });
 
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
@@ -57,7 +65,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
-    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0,
+    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     ...over,
   };
@@ -117,32 +125,35 @@ test("A11-144: a provider row says where its settings came from, and a block a h
   assert.deepEqual(Object.keys(checks).filter((name) => name.startsWith("alias ")), [], "no old key is read, so no alias row");
 });
 
-// A11-145: Codex, which the atomic reviewer runs on, is on the path and logged in.
+// A11-145, A11-161: Codex, which the atomic reviewer runs on, is on the path and logged in. The reviewer plugin's checks run `which codex` and `codex login status` through the exec seam.
 test("A11-145: doctor checks Codex under the atomic reviewer: on the path, and logged in; no reviewer checks nothing of it", async () => {
   const atomic = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { reviewer: { provider: "atomic" } } } });
   const loggedIn = byName(await diagnose(deps({ readFile: () => atomic })));
   assert.deepEqual([loggedIn.codex.ok, loggedIn.codex.detail], [true, "/home/me/.local/bin/codex, logged in"]);
-  const missing = byName(await diagnose(deps({ readFile: () => atomic, which: (name) => (name === "codex" ? null : `/home/me/.local/bin/${name}`) })));
+  const missing = byName(await diagnose(deps({ readFile: () => atomic, exec: execOf({ codex: null }) })));
   assert.equal(missing.codex.ok, false);
   assert.equal(missing.codex.detail, "`codex` is not on PATH, so the atomic reviewer cannot run");
   assert.equal(missing["reviewer (atomic)"].ok, false);
-  const notIn = byName(await diagnose(deps({ readFile: () => atomic, codexStatus: () => 1 })));
+  const notIn = byName(await diagnose(deps({ readFile: () => atomic, exec: execOf({ codexStatus: 1 }) })));
   assert.equal(notIn.codex.detail, "Codex is not logged in");
   assert.equal(notIn.codex.fix, "run `codex login`, then `agent-org doctor` again");
-  const none = byName(await diagnose(deps({ codexStatus: () => { throw new Error("must not be asked"); } })));
+  const asked: string[] = [];
+  const base = execOf();
+  const none = byName(await diagnose(deps({ exec: (file, args, options) => { if (file === "codex" || file === "which") asked.push(file); return base(file, args, options); } })));
   assert.equal(none.codex, undefined);
+  assert.deepEqual(asked, [], "no reviewer, so Codex is not asked for");
 });
 
 test("A11-144: an atomic reviewer fails when its gate does not load, and the row says so with the gate's check; no reviewer asks the gate nothing", async () => {
   const atomic = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { reviewer: { provider: "atomic" } } } });
-  const refused = byName(await diagnose(deps({ readFile: () => atomic, reviewerGate: async () => "the gate's modules do not load" })));
+  const refused = byName(await diagnose(deps({ readFile: () => atomic, reviewing: gateLoads("the gate's modules do not load") })));
   assert.equal(refused["reviewer gate"].ok, false);
   assert.equal(refused["reviewer (atomic)"].ok, false);
   assert.equal(refused["reviewer (atomic)"].detail, "from tickets.providers.reviewer: the gate's modules do not load");
   const loads = byName(await diagnose(deps({ readFile: () => atomic })));
   assert.equal(loads["reviewer (atomic)"].ok, true);
   let asked = false;
-  const none = byName(await diagnose(deps({ reviewerGate: async () => { asked = true; return "x"; } })));
+  const none = byName(await diagnose(deps({ reviewing: { ...gateLoads(), loadGate: async () => { asked = true; } } })));
   assert.equal(none["reviewer (none)"].ok, true);
   assert.equal(asked, false, "no reviewer, so no gate is loaded");
 });
@@ -761,13 +772,13 @@ test("A11-145: doctor says a conventions plugin refresh that a live run held bac
 
 // A11-158: agent-org plugins. The doctor names each plugin and whether it is disabled, says what the registry refused and which plugin implements a contract major agent-org does not read,
 // runs the doctor checks of an enabled bundled plugin, and says what the project's messaging key holds.
-const PUBLISH = { provider: "slack", run: "post {prs} into {dir}" };
+const PUBLISH = { provider: "slack", run: "post {prs} into {dir}", connectors: ["^mcp__chat__send"] };
 const hostWithProviders = (providers: Record<string, unknown>): string => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { ...JSON.parse(HOST).tickets.providers, ...providers } } });
 
-/** The catalog a test reads: the built-ins and fakes, `plugins` in place of the fake of the same name, and the pins `pins` names (none by default, so a fake may be enabled). */
-function catalogWith(plugins: readonly CatalogPlugin[], pins: Catalog["pins"] = {}, refusals: Catalog["refusals"] = []): Catalog {
+/** The catalog a test reads: this checkout's plugins and the fakes, with `plugins` in place of the one of the same name. */
+function catalogWith(plugins: readonly CatalogPlugin[], refusals: Catalog["refusals"] = []): Catalog {
   const base = fakeAgentOrgPlugins().catalog();
-  return { plugins: [...base.plugins.filter(({ name }) => !plugins.some((plugin) => plugin.name === name)), ...plugins], refusals, pins };
+  return { plugins: [...base.plugins.filter(({ name }) => !plugins.some((plugin) => plugin.name === name)), ...plugins], refusals };
 }
 /** A row's verdict, and its detail and fix where the test names them (text must match whole, a pattern must match). */
 function assertRow(checks: Record<string, Check>, name: string, expected: Readonly<{ ok: boolean; detail?: string | RegExp; fix?: string | RegExp }>): void {
@@ -789,12 +800,12 @@ test("A11-158: a disabled publisher is named as disabled, says what the board do
   assert.equal(disabled["publisher (slack)"], undefined, "the enabled row is not also there");
   const enabled = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: PUBLISH }) })));
   assert.equal(enabled["publisher (slack)"].ok, true);
-  assert.equal(enabled["publisher (slack)"].detail, "from tickets.providers.publish");
+  assert.equal(enabled["publisher (slack)"].detail, "from tickets.providers.publish, and its checks pass");
 });
 
 test("A11-158: a plugin that implements a contract major agent-org does not read fails its own row, naming it and the fix, when no block enables it", async () => {
-  // A fake is never listed, so the plugin that implements the unread major is a built-in of the catalog.
-  const unread = fakeOf("fake-tracker", { contract: "2.0", where: "core", movedBy: "A11-999" });
+  // A fake is never listed, so the plugin that implements the unread major is a bundled one of the catalog.
+  const unread = fakeOf("fake-tracker", { contract: "2.0", where: "bundled", dir: "/checkout/plugins/far-future" });
   const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
   assertRow(checks, "plugin fake-tracker", { ok: false, detail: "plugin fake-tracker implements tracker contract 2.0; this agent-org reads tracker 1.x: update agent-org, or use a plugin of a major it reads", fix: /update agent-org/ });
   assertRow(checks, "tracker (linear)", { ok: true });
@@ -810,7 +821,7 @@ test("A11-158: a block that enables a plugin of an unread contract major fails t
 
 test("A11-158: a package the registry refused is a failed row naming it", async () => {
   const refusals = [{ plugin: "linear-tools", why: "plugin linear-tools: package.json declares dependencies (left-pad), which a host's install does not install" }];
-  const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([], {}, refusals) }) })));
+  const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([], refusals) }) })));
   assert.equal(checks["plugin linear-tools"].ok, false);
   assert.equal(checks["plugin linear-tools"].detail, refusals[0].why);
 });
@@ -961,7 +972,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
 test("A11-163: a disabled plugin's section says what the board does without it, and a concern with none says none", async () => {
   const host = hostWithProviders({ publish: { ...PUBLISH, enabled: false } });
   const lines = linesOf(await diagnose(deps({ readFile: () => host })));
-  const at = lines.indexOf("publisher: slack (disabled, contract 1.0, core, until A11-161)");
+  const at = lines.indexOf("publisher: slack (disabled, contract 1.1, plugins/slack)");
   assert.notEqual(at, -1);
   assert.equal(lines[at + 1], "  ok    publisher (slack, disabled): disabled: publishes nothing");
   assert.ok(lines.includes("reviewer: none"));
@@ -985,10 +996,10 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
 });
 
 test("A11-163: what the registry refused, and a plugin that implements a major this release does not read, are failed sections too", async () => {
-  const unread = fakeOf("fake-tracker", { contract: "2.0", where: "core", movedBy: "A11-999" });
+  const unread = fakeOf("fake-tracker", { contract: "2.0", where: "bundled", dir: "/checkout/plugins/far-future" });
   const refusals = [{ plugin: "linear-tools", why: "plugin linear-tools: package.json declares dependencies (left-pad), which a host's install does not install" }];
-  const lines = linesOf(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread], {}, refusals) }) })));
-  const unreadAt = lines.indexOf("tracker: fake-tracker (failed, contract 2.0, core, until A11-999)");
+  const lines = linesOf(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread], refusals) }) })));
+  const unreadAt = lines.indexOf("tracker: fake-tracker (failed, contract 2.0, plugins/far-future)");
   assert.notEqual(unreadAt, -1);
   assert.match(lines[unreadAt + 1], /^ {2}FAIL {2}plugin fake-tracker: plugin fake-tracker implements tracker contract 2\.0/);
   const refusedAt = lines.indexOf("refused by the registry");
@@ -1015,7 +1026,7 @@ test("A11-163: a messaging key that names a plugin the registry does not hold is
 });
 
 test("A11-163: a concern no plugin runs keeps its row when another plugin of it failed to load", async () => {
-  const unread = fakeOf("fake-reviewer", { contract: "2.0", where: "core", movedBy: "A11-999" });
+  const unread = fakeOf("fake-reviewer", { contract: "2.0", where: "bundled", dir: "/checkout/plugins/far-future" });
   const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
   assertRow(checks, "plugin fake-reviewer", { ok: false });
   assertRow(checks, "reviewer (none)", { ok: true });
@@ -1029,4 +1040,28 @@ test("A11-163: a host file the reader refuses still shows the messaging rows, as
   assert.equal(checks["host file"].ok, false);
   assertRow(checks, "telegram token file", { ok: false });
   assertRow(checks, "messaging (telegram)", { ok: false, fix: "chmod 600 the token" });
+});
+
+// A11-161: reviews required, and no reviewer to do them. The reviewer's section fails, naming the command that puts one back; a machine that does not require one says nothing more.
+test("A11-161: with reviews required and the reviewer switched off, the reviewer section fails with `agent-org plugin enable atomic`; with none installed it says `agent-org plugin install atomic`", async () => {
+  const disabled = byName(await diagnose(deps({ readFile: () => hostWithProviders({ reviewer: { provider: "atomic", enabled: false } }) })));
+  assertRow(disabled, "reviewer (atomic, disabled)", { ok: false, detail: "reviews are required and the reviewer is off: starts no reviewer", fix: "agent-org plugin enable atomic" });
+  const none = byName(await diagnose(deps({ readFile: () => hostWithProviders({ reviewer: { provider: "none", required: true } }) })));
+  assertRow(none, "reviewer (none)", { ok: false, detail: "reviews are required and the reviewer is off: starts no reviewer", fix: "agent-org plugin install atomic" });
+  assert.equal(disabled["host file"].ok, true, "the host file itself reads");
+});
+
+test("A11-161: a machine that does not require a reviewer passes with none or with it switched off, and says it starts none", async () => {
+  const none = byName(await diagnose(deps()));
+  assertRow(none, "reviewer (none)", { ok: true, detail: /starts no reviewer/ });
+  const people = byName(await diagnose(deps({ readFile: () => hostWithProviders({ reviewer: { provider: "atomic", enabled: false, required: false } }) })));
+  assertRow(people, "reviewer (atomic, disabled)", { ok: true, detail: "disabled: starts no reviewer" });
+  const enabled = byName(await diagnose(deps({ readFile: () => hostWithProviders({ reviewer: { provider: "atomic" } }) })));
+  assertRow(enabled, "reviewer (atomic)", { ok: true });
+});
+
+test("A11-161: reviews required with a reviewer that is on is not the failure: it is the reviewer's own checks that decide (its gate, Codex)", async () => {
+  const refusing = byName(await diagnose(deps({ readFile: () => hostWithProviders({ reviewer: { provider: "atomic", required: true } }), reviewing: gateLoads("the gate's modules do not load") })));
+  assertRow(refusing, "reviewer (atomic)", { ok: false, detail: /the gate's modules do not load/ });
+  assert.equal(refusing["reviewer (atomic)"].fix, "fix what it names: no reviewer starts while the gate does not load", "the fix is the gate's, not the enable command: the reviewer is enabled");
 });

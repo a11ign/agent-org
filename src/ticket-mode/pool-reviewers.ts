@@ -12,7 +12,8 @@ import { log, messageOf, update } from "./pool-state.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { type PullRead, pullReviewText } from "./board-view/pull-review-state.ts";
+import { AWAITING_PERSON_LINE, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
+import { openPulls } from "./board-view/view-types-and-filters.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -211,7 +212,7 @@ function adoptRememberedReviewers(ctx: PoolContext): void {
  */
 export function reviewNewHeads(ctx: PoolContext): void {
   const { codeHost, pullReads, reviewer, settings } = ctx;
-  if (reviewer === undefined) return;
+  if (reviewer === undefined) return listWhileOff(ctx);
   adoptRememberedReviewers(ctx);
   const listed = new Set<string>();
   let unlisted = false;
@@ -238,9 +239,56 @@ export function reviewNewHeads(ctx: PoolContext): void {
   if (!unlisted) for (const url of [...pullReads.keys()]) if (!listed.has(url)) pullReads.delete(url);
 }
 
-/** The review state of each open pull request the pool has read, as the board words it, by its url (A11-119). */
+/** The key under which a sweep remembers it said the open pull requests cannot be listed (it shares `refusedHeads`, whose keys are `url@head`, so it can name no head). */
+const UNLISTABLE = "unlistable";
+
+/**
+ * WITH REVIEWS REQUIRED AND THE REVIEWER OFF (A11-161), the sweep still lists the open pull requests of the repositories the org holds, through the code host, so each shows "waiting on the
+ * reviewer (off)": it reads no review and starts nothing. It lists only what the gate names (`reviewedRepositoriesOf`): where the gate does not load (the reason a reviewer may be off) it says so
+ * once, and the runs' own pull requests still show the line from the queue (`pullReviewsOf`). Does nothing when reviews are not required: nothing extra is shown anywhere.
+ */
+function listWhileOff(ctx: PoolContext): void {
+  const { codeHost, offPulls, settings } = ctx;
+  if (ctx.reviewerState !== "off-required") return;
+  let repositories: string[];
+  try {
+    repositories = reviewedRepositoriesOf(settings.clones);
+  } catch (err) {
+    // Said once, not on every sweep: the gate that does not load does not load the next time either.
+    if (!ctx.refusedHeads.has(UNLISTABLE)) log(`reviews are required and the reviewer is off, and the open pull requests cannot be listed for the board: ${messageOf(err).split("\n")[0]}`);
+    ctx.refusedHeads.add(UNLISTABLE);
+    return;
+  }
+  const listed = new Set<string>();
+  let unlisted = false;
+  for (const repository of repositories) {
+    const urls = codeHost.openPullUrlsOf(repository);
+    if (urls === null) {
+      unlisted = true;
+      log(`${repository}: its open pull requests could not be listed, so the board looks again on the next sweep`);
+      continue;
+    }
+    for (const url of urls) listed.add(url);
+  }
+  // A repository that could not be listed keeps what it showed until the next sweep reads it.
+  if (!unlisted) offPulls.clear();
+  for (const url of listed) offPulls.add(url);
+}
+
+/** The line each of the queue's runs' open pull requests reads as, with no read of GitHub: `text` for each. */
+const queueLines = (ctx: PoolContext, text: string): [string, string][] => ctx.store.get().entries.flatMap((entry) => openPulls(entry).map(({ url }): [string, string] => [url, text]));
+
+/**
+ * The review line of each open pull request, by its url, as the board words it (A11-119, A11-161). With a reviewer on, the review state the pool read. With reviews required and the reviewer
+ * off, "waiting on the reviewer (off)" for each pull request the sweep listed and each of a run's. With no reviewer and no requirement, "awaiting your review" for each of a run's open pull
+ * requests, and nothing else: people review there.
+ */
 export function pullReviewsOf(ctx: PoolContext): Record<string, string> {
-  return Object.fromEntries([...ctx.pullReads].map(([url, read]) => [url, pullReviewText(read)]));
+  switch (ctx.reviewerState) {
+    case "on": return Object.fromEntries([...ctx.pullReads].map(([url, read]) => [url, pullReviewText(read)]));
+    case "off-required": return Object.fromEntries([...[...ctx.offPulls].map((url): [string, string] => [url, REVIEWER_OFF_LINE]), ...queueLines(ctx, REVIEWER_OFF_LINE)]);
+    case "none": return Object.fromEntries(queueLines(ctx, AWAITING_PERSON_LINE));
+  }
 }
 
 /**

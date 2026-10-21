@@ -3,7 +3,7 @@
 //
 // IT STARTS NOTHING: a reviewer is a record of a head. A test sets the verdict file a reviewer wrote and how its turn stands (`wrote`, `turn`), makes the host refuse
 // (`refuseWith`), and reads what the pool did (`started`, `closed`, `retired`, `reposted`, `reprompted`).
-import type { Reviewer, ReviewerRef, ReviewerSettled } from "../contracts/reviewer.ts";
+import type { Reviewer, ReviewerPort, ReviewerRef, ReviewerSettled } from "../contracts/reviewer.ts";
 
 const key = ({ pr, head }: ReviewerRef): string => `${pr}@${head}`;
 
@@ -73,4 +73,12 @@ export function createFakeReviewer(refusalOfHost: string | null = null) {
     },
     started, closed, retired, reposted, reprompted,
   });
+}
+
+/**
+ * A port a test wrote by hand, as a loaded reviewer that can start here (or, with `refusal`, one that cannot): a pool is given a `Reviewer`, and a test of one pool behaviour needs only the
+ * port's answers, not the fake's record of what it did.
+ */
+export function reviewerOver(port: ReviewerPort, refusal: string | null = null): Reviewer {
+  return { ...port, load: async () => undefined, refusal: () => refusal };
 }

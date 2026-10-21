@@ -27,8 +27,11 @@ import { type ConcernEntry, type PluginEntry, type PluginHealth, sectionHeader, 
 import { readPluginHealth, toolVersionOf } from "../plugins/health-read.ts";
 import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import { messagingChecksOfFile, messagingStateOfFile } from "../plugins/messaging-state.ts";
-import type { Catalog, PluginDeps, ProbeRequest } from "../plugins/manifest.ts";
+import type { Catalog, PluginDeps, ProbeRequest, ReviewerHelpers } from "../plugins/manifest.ts";
 import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
+import { publishingHelpers } from "../plugins/publishing-helpers.ts";
+import { gateHelpers } from "../plugins/reviewing-gate.ts";
+import { enableReviewerCommand } from "../ticket-mode/concern-states.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -98,12 +101,10 @@ export type DoctorDeps = Readonly<{
   /** The release tags this checkout holds, with no network (A11-90). */
   releaseTags: () => string[];
   /**
-   * The reviewer gate's refusal, or null when its modules load (A11-144): asked only when the reviewer is `atomic`. A test injects one, so no module is
-   * loaded.
+   * What a reviewer plugin's checks ask of core (A11-161): the gate's loader, and its refusal when its modules do not load (A11-144). Asked only of an enabled reviewer, so a machine with none
+   * loads no gate. A test injects one, so no module is loaded.
    */
-  reviewerGate: () => Promise<string | null>;
-  /** The exit status of `codex login status`, or null when it cannot run (A11-145): asked only when the reviewer is `atomic`. */
-  codexStatus: () => number | null;
+  reviewing: ReviewerHelpers;
   /** The Chromium builds this machine has, read now: each build is a check, and `ticket:capture` needs both (A11-151). */
   chromium: () => ChromiumReport;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
@@ -290,37 +291,18 @@ const WITHOUT_PLUGIN: Readonly<Record<ProviderBlock, string>> = {
  * One check per provider (A11-144), named for it and its plugin and whether the plugin is disabled (A11-158), ok when every check it summarises passes. Its detail says where its settings came
  * from, so a block a machine does not have is said to take the default, and a disabled plugin says what the board does without it.
  */
-function providerRow(settings: TicketSettings, block: ProviderBlock, wrapped: readonly Check[]): Check {
+function providerRow(settings: TicketSettings, block: ProviderBlock, wrapped: readonly Check[], catalog: Catalog): Check {
   const { provider, enabled } = settings.providers.blocks[block];
   const name = `${PROVIDER_LABEL[block]} (${provider}${enabled || provider === "none" ? "" : ", disabled"})`;
+  // Reviews required and no reviewer to do them (none, or switched off) is a failure that names the command that puts one back (A11-161); not required, the machine says nothing more of it.
+  if (block === "reviewer" && settings.reviewer === null && settings.reviewerRequired) {
+    return failed(name, `reviews are required and the reviewer is off: ${WITHOUT_PLUGIN[block]}`, enableReviewerCommand(settings.providers, catalog));
+  }
   if (!enabled && provider !== "none") return ok(name, `disabled: ${WITHOUT_PLUGIN[block]}`);
   const source = sourceWords(settings.providers, block);
   const failing = wrapped.filter((check) => !check.ok);
   if (failing.length === 0) return ok(name, wrapped.length === 0 ? source : `${source}, and its checks pass`);
   return failed(name, `${source}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises");
-}
-
-/**
- * Codex, which the atomic reviewer runs on (A11-145): on the path, and logged in. Onboard installs neither, since that needs the person's account, so each
- * failure names the one thing to do.
- */
-function codexChecks(deps: DoctorDeps): Check[] {
-  const path = deps.which("codex");
-  if (path === null) return [failed("codex", "`codex` is not on PATH, so the atomic reviewer cannot run", "install Codex (`npm install -g @openai/codex`), then run `codex login`")];
-  const status = deps.codexStatus();
-  if (status === 0) return [ok("codex", `${path}, logged in`)];
-  return [failed("codex", status === null ? `${path} could not run \`codex login status\`` : "Codex is not logged in", "run `codex login`, then `agent-org doctor` again")];
-}
-
-/**
- * What the reviewer adds to its section (A11-144): with the `atomic` reviewer, the gate's check (its modules must load, or no reviewer starts a run) and Codex, which must be
- * installed and logged in (A11-145). With no reviewer, nothing is asked.
- */
-async function reviewerExtras(settings: TicketSettings, deps: DoctorDeps): Promise<Check[]> {
-  if (settings.reviewer === null) return [];
-  const refusal = await deps.reviewerGate();
-  const gate = refusal === null ? ok("reviewer gate", "the gate's modules load") : failed("reviewer gate", refusal, "fix what it names: no reviewer starts while the gate does not load");
-  return [gate, ...codexChecks(deps)];
 }
 
 const pluginFailed = (plugin: string, why: string, fix: string): Check => failed(`plugin ${plugin}`, why, fix);
@@ -349,7 +331,7 @@ function hostText(deps: DoctorDeps): string | null {
 async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps): Promise<PluginHealth> {
   const { catalog, load, messaging, messagingChecks } = deps.agentOrgPlugins;
   const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
-    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy() };
+    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(), publishing: publishingHelpers(), reviewing: deps.reviewing };
   return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
     version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });
 }
@@ -421,14 +403,13 @@ function hostlessSections(health: PluginHealth): Check[] {
 }
 
 /** Every plugin section, in the order tracker, code host, publisher, reviewer, exposure, messaging, then what the registry refused. */
-async function pluginSections(settings: TicketSettings, health: PluginHealth, { gh, terminal }: Machine, deps: DoctorDeps): Promise<Check[]> {
-  const summarise = (block: ProviderBlock, machine: readonly Check[] = []) => (_entry: PluginEntry | undefined, rows: readonly Check[]): Check[] => [providerRow(settings, block, [...machine, ...rows])];
-  const extras = await reviewerExtras(settings, deps);
+function pluginSections(settings: TicketSettings, health: PluginHealth, { gh, terminal }: Machine, deps: DoctorDeps): Check[] {
+  const summarise = (block: ProviderBlock, machine: readonly Check[] = []) => (_entry: PluginEntry | undefined, rows: readonly Check[]): Check[] => [providerRow(settings, block, [...machine, ...rows], deps.agentOrgPlugins.catalog())];
   return [
     ...concernSections(concernOf(health, "tracker"), summarise("tracker")),
     ...concernSections(concernOf(health, "codeHost"), summarise("codeHost", gh)),
     ...concernSections(concernOf(health, "publisher"), summarise("publish")),
-    ...concernSections(concernOf(health, "reviewer"), (entry, rows) => [...extras, ...summarise("reviewer", extras)(entry, rows)]),
+    ...concernSections(concernOf(health, "reviewer"), summarise("reviewer")),
     ...concernSections(concernOf(health, "exposure"), summarise("exposure", terminal)),
     ...messagingSections(health),
     ...registrySection(health),
@@ -457,7 +438,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const gh = noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper());
   const terminal = await terminalChecks(settings, deps);
   const health = await pluginHealthOf(settings, deps);
-  const sections = settings === null ? hostlessSections(health) : await pluginSections(settings, health, { gh, terminal }, deps);
+  const sections = settings === null ? hostlessSections(health) : pluginSections(settings, health, { gh, terminal }, deps);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -729,12 +710,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     pluginRefresh: () => readDeferral(deferralPath(process.env, homedir())),
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
-    reviewerGate: async () => {
-      const port = await import("../ticket-mode/reviewer-port.ts");
-      await port.loadReviewerGate();
-      return port.reviewerRefusal();
-    },
-    codexStatus: () => spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 60_000 }).status,
+    reviewing: gateHelpers(),
     chromium: () => chromiumReport(),
     agentOrgPlugins: {
       catalog: defaultCatalog,

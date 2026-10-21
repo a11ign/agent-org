@@ -4,7 +4,8 @@
 // THE LOADER IS ASYNC AND THE CONTRACTS ARE NOT. A plugin's entry module is imported with `import()`, but the tracker contract's `TicketSource` is used by code that already holds
 // one (`createBoard`'s `ctx.source`). So an entry that needs a plugin awaits `activatePlugins` once, at its start, and asks the result for the implementation: `ticket:serve`
 // for the board (its tracker and its code host), `pr:open` for the tracker it reads, `ticket:review` for the code host alone, and nothing else on a call path. A
-// plugin's refusal refuses the start by name, as a refused host file does. A11-162 and A11-161 add the accessor of each concern they move to this module.
+// plugin's refusal refuses the start by name, as a refused host file does. Each concern has its accessor here (A11-159, A11-162, A11-161); the publisher and the reviewer are optional, and
+// an accessor answers null for one that is "none": no enabled plugin.
 //
 // MEMOIZED PER PROCESS: the second call returns the first's result, whatever it is given. A test calls `forgetActivation`.
 import { spawnSync } from "node:child_process";
@@ -12,15 +13,19 @@ import { readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { PROVIDER_BLOCKS, type ProviderBlock } from "./concerns.ts";
-import type { Providers } from "../ticket-mode/providers.ts";
+import { isActive, type Providers } from "../ticket-mode/providers.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { CodeHost } from "./contracts/code-host.ts";
 import type { Exposure } from "./contracts/exposure.ts";
+import type { Publisher } from "./contracts/publisher.ts";
+import type { Reviewer } from "./contracts/reviewer.ts";
 import type { TicketSource } from "./contracts/tracker.ts";
 import { type ImportModule, loadDefault, loadEnabled } from "./loader.ts";
-import type { Catalog, CodeHostPolicy, ExecOptions, ExecResult, LoadedPlugin, PluginDeps, ProbeRequest } from "./manifest.ts";
+import type { Catalog, CodeHostPolicy, ExecOptions, ExecResult, LoadedPlugin, PluginDeps, ProbeRequest, ReviewerHelpers } from "./manifest.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { corePolicy } from "./policy.ts";
+import { publishingHelpers } from "./publishing-helpers.ts";
+import { gateHelpers } from "./reviewing-gate.ts";
 
 /** A plugin that cannot run the host, or a concern with nothing to run it: the start is refused with the reason, naming the concern and the plugin. */
 export class PluginActivationRefusal extends Error {}
@@ -37,6 +42,13 @@ export type Active = Readonly<{
    * loopback needs nothing installed. REFUSES when the exposure block names a plugin with no code to run on a host (a fake), and when this activation did not build the exposure.
    */
   exposure(): Exposure;
+  /**
+   * The enabled publisher plugin's implementation, or null when there is none: the block names `none`, or its plugin is disabled (A11-161). REFUSES when the block is on and names a plugin
+   * with no code to run on a host (a fake), and when this activation did not build the publisher.
+   */
+  publisher(): Publisher | null;
+  /** The enabled reviewer plugin's implementation, or null when there is none (A11-161). Refuses as {@link Active.publisher} does. */
+  reviewer(): Reviewer | null;
 }>;
 
 const refused = (message: string): never => {
@@ -48,6 +60,19 @@ function implementationOf<Implementation>(providers: Providers, loaded: readonly
   const { provider } = providers.blocks[concern];
   const plugin = loaded.find(({ plugin: candidate }) => candidate.concern === concern);
   if (plugin === undefined) return refused(`the ${label} is ${provider}, which has no code to run on a host: name a bundled ${label} plugin in tickets.providers.${concern} (\`agent-org plugin list\`)`);
+  return plugin.implementation as Implementation;
+}
+
+/**
+ * The implementation of the enabled plugin of an OPTIONAL concern (the publisher, the reviewer), or null when the block is none or disabled: "none" is the absence of an enabled plugin. The
+ * refusal names the block and the plugin it holds, as {@link implementationOf} does.
+ */
+function optionalImplementationOf<Implementation>(providers: Providers, loaded: readonly LoadedPlugin[], block: "publish" | "reviewer", blocks: readonly ProviderBlock[], label: string): Implementation | null {
+  const report = providers.blocks[block];
+  if (!isActive(report)) return null;
+  if (!blocks.includes(block)) return refused(`the ${label} was not built by this process: it asked for the other plugins only`);
+  const plugin = loaded.find(({ plugin: candidate }) => candidate.name === report.provider);
+  if (plugin === undefined) return refused(`the ${label} is ${report.provider}, which has no code to run on a host: name a bundled ${label} plugin in tickets.providers.${block} (\`agent-org plugin list\`)`);
   return plugin.implementation as Implementation;
 }
 
@@ -72,6 +97,8 @@ export async function loadActive(providers: Providers, catalog: Catalog, deps: P
       return refused(blocks.includes("exposure") ? `the exposure is ${provider}, which has no code to run on a host: name a bundled exposure plugin in tickets.providers.exposure (\`agent-org plugin list\`)`
         : "the exposure was not built by this process: it asked for the other plugins only");
     },
+    publisher: () => optionalImplementationOf<Publisher>(providers, loaded, "publish", blocks, "publisher"),
+    reviewer: () => optionalImplementationOf<Reviewer>(providers, loaded, "reviewer", blocks, "reviewer"),
   };
 }
 
@@ -135,9 +162,11 @@ export function realProbe({ host, port, tls, servername, hostHeader, timeoutMs }
 }
 
 /**
- * The deps core gives a plugin on this machine: the real `fetch`, programs and files. `pick` is the board's `tickets.pick`, `clones` the host's checkouts, and `review` how a reviewer
- * judges a pull request, which only a process that loaded the gate can give (`corePolicy` says what the others do).
+ * The deps core gives a plugin on this machine: the real `fetch`, programs and files. `pick` is the board's `tickets.pick`, `clones` the host's checkouts, `review` how a reviewer
+ * judges a pull request, which only a process that loaded the gate can give (`corePolicy` says what the others do), and `reviewing` the reviewer's helpers with the board's collaborators
+ * (a process that is not a board gives none, and a reviewer that asks for them is refused by name).
  */
-export function realPluginDeps({ env, stateDir, pick, clones = {}, review }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"] }>): PluginDeps {
-  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), exec: realExec, readFile: (path) => readFileSync(path, "utf8"), mode: realMode, probe: realProbe, messaging: messagingHelpers() };
+export function realPluginDeps({ env, stateDir, pick, clones = {}, review, reviewing }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"]; reviewing?: ReviewerHelpers }>): PluginDeps {
+  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), exec: realExec, readFile: (path) => readFileSync(path, "utf8"), mode: realMode, probe: realProbe, messaging: messagingHelpers(),
+    publishing: publishingHelpers(), reviewing: reviewing ?? gateHelpers() };
 }

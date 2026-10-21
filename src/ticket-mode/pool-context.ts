@@ -7,13 +7,16 @@ import { join } from "node:path";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { type HookCommand } from "./worker-files.ts";
 import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
-import { type TicketSettings, HOST_FILE_ENV, claimantOf, plansInBatches } from "./settings.ts";
+import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.ts";
 import { type TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
+import { type ReviewerState, reviewerStateOf } from "./concern-states.ts";
+import type { Publisher } from "../plugins/contracts/publisher.ts";
+import type { Reviewer } from "../plugins/contracts/reviewer.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { defaultGit, type Git } from "./worktree.ts";
-import { atomicReviewerPort, reviewerMemoryPath, reviewerRefusal, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
+import { reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
 
 export type PoolDeps = Readonly<{
@@ -42,8 +45,21 @@ export type PoolDeps = Readonly<{
   gh?: (args: string[]) => string;
   /** `git` in a clone or worktree, for the heads of stacked blockers' branches and the rebase of a stacked run (A11-116). */
   git?: Git;
-  /** The reviewer a machine with `tickets.reviewer: "atomic"` starts for each ready head; ignored on a machine that names none. */
-  reviewerPort?: ReviewerPort;
+  /**
+   * The enabled publisher plugin (A11-161): what the publish run is told, which connectors it may call, what it runs on and how its outcome reads. Absent when the machine has none, which is
+   * "none": the board starts no publish run.
+   */
+  publisher?: Publisher;
+  /**
+   * The enabled reviewer plugin, loaded (`load()` has run), which starts a reviewer for each ready head (A11-161). Absent when the machine has none, which is "none": no reviewer starts. It is
+   * also ignored on a machine whose `drafts` is on, and one whose reviewer refuses to start here (`refusal()`).
+   */
+  reviewer?: Reviewer;
+  /**
+   * The head each seat's reviewer was started for, by seat label, which the reviewer plugin was given when it was built (`deps.reviewing`): the pool fills it from its memory file and the
+   * reviewer keeps it. Absent: the pool's own, which no reviewer shares.
+   */
+  reviewerHeads?: Map<string, string>;
   /** Runs one `tickets.preflight` command; a shell by default. A test injects one so no process runs. */
   preflight?: PreflightExec;
 }>;
@@ -51,7 +67,7 @@ export type PoolDeps = Readonly<{
 /** The pool holds the queue through these two, so the server stays its one writer. */
 export type QueueStore = Readonly<{ get: () => Queue; set: (queue: Queue) => void }>;
 
-/** Whether a machine with these settings starts reviewers: `tickets.reviewer` is set and `drafts` is off. Only such an instance loads the gate (`reviewer-port.ts`). */
+/** Whether a machine with these settings starts reviewers: a reviewer plugin is active (`settings.reviewer`) and `drafts` is off. Only such an instance loads the gate (`reviewer-port.ts`). */
 export const startsReviewers = (settings: TicketSettings): boolean => settings.reviewer !== null && !settings.drafts;
 
 /** What the pool's parts share: its store, deps and seams, and the state it keeps between passes. Built once by {@link newPoolContext}. */
@@ -89,6 +105,12 @@ export type PoolContext = Readonly<{
   reviewerFile: string;
   reviewerMemory: ReviewerMemory;
   reviewer: ReviewerPort | undefined;
+  /** The reviewer plugin was asked about and is off, or on (A11-161): what the board says of reviews. */
+  reviewerState: ReviewerState;
+  /** The open pull requests listed while the reviewer is off and reviews are required: each reads "waiting on the reviewer (off)", with no read of its review (A11-161). */
+  offPulls: Set<string>;
+  /** The enabled publisher plugin, or undefined when there is none (A11-161). */
+  publisher: Publisher | undefined;
   reviewerStarted: Set<string>;
   reviewerResumed: ReviewerMemory["resumed"];
   reviewerReposts: ReviewerMemory["reposts"];
@@ -145,11 +167,18 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const remembered = reviewerOn ? readReviewerMemory(reviewerFile) : undefined;
   if (remembered?.unreadable) log(`${reviewerFile} cannot be read, so the reviewers started before this restart are not remembered`);
   const reviewerMemory: ReviewerMemory = remembered?.memory ?? { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map() };
-  /** A machine that asks for reviewers on a host the gate does not load on (no `primary`) starts none: said once here, and no reviewer is ever read. */
-  const gateRefusal = reviewerOn ? reviewerRefusal() : null;
+  // The heads the reviewer plugin keeps are the ones it was given at activation: the pool fills them from its memory file, so a restart reads a reviewer as live.
+  if (deps.reviewerHeads !== undefined) {
+    for (const [label, head] of reviewerMemory.heads) deps.reviewerHeads.set(label, head);
+    reviewerMemory.heads = deps.reviewerHeads;
+  }
+  /** A reviewer that refuses to start here (the gate does not load on a host with no `primary`) starts none: said once here, and no reviewer is ever read. */
+  const gateRefusal = reviewerOn ? deps.reviewer?.refusal() ?? null : null;
   if (gateRefusal !== null) log(`tickets.reviewer is set, but no reviewer starts: ${gateRefusal}`);
-  /** The reviewer a machine with `tickets.reviewer` starts for each settled head: the atomic one unless the caller injected another. */
-  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, codeHost, heads: reviewerMemory.heads, clones: settings.clones, instance: claimantOf(settings) });
+  /** The reviewer a machine with a reviewer plugin starts for each settled head: the plugin's, loaded before this pool is made. */
+  const reviewer: ReviewerPort | undefined = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewer;
+  /** Whether reviews are on, or required and off, or neither (A11-161). */
+  const reviewerState = reviewerStateOf(settings, gateRefusal);
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
   const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts } = reviewerMemory;
   /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */
@@ -166,7 +195,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const finishing = new Set<string>();
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
-    startedHere, attaching, pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerStarted, reviewerResumed,
+    startedHere, attaching, pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };
 }

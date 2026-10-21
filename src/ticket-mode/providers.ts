@@ -43,8 +43,17 @@ export const DEFAULT_PROVIDER: Readonly<Record<ProviderBlock, string>> = {
   exposure: "local",
 };
 
-/** The settings a publisher takes, which only the `slack` provider reads. */
+/** The settings a publisher takes, which a publisher plugin declares (`slack`'s manifest holds their schema entries): the reader validates them whichever plugin is named. */
 const PUBLISH_SETTINGS = ["run", "model", "effort", "connectors"] as const;
+
+/**
+ * The settings of a block that are CORE'S, valid under any provider of its concern, `none` included: the concern's own, not a plugin's (A11-161). The reviewer block's `required` says whether
+ * this machine's pull requests wait for the reviewer, and a machine with no reviewer plugin still holds it.
+ */
+const CONCERN_SETTINGS: Readonly<Partial<Record<ProviderBlock, readonly string[]>>> = { reviewer: ["required"] };
+
+/** The settings of a block that are its concern's, valid under any plugin of it and under `none`: the reviewer's `required`. */
+export const concernSettingsOf = (block: ProviderBlock): readonly string[] => CONCERN_SETTINGS[block] ?? [];
 
 /** Where a block's settings came from: the block itself, an alias, or no key at all, which is the provider's default. */
 export type Source = "block" | "aliases" | "default";
@@ -130,18 +139,18 @@ function blocksOf(tickets: Record<string, unknown>): Record<string, unknown> {
   return providers;
 }
 
-/** The plugins a block may name, as the refusal lists them: the catalog's plugins of its concern that the pin lets run, never a fake (it runs no host), and `none` where a concern may have no plugin. */
+/** The plugins a block may name, as the refusal lists them: the catalog's plugins of its concern, never a fake (it runs no host), and `none` where a concern may have no plugin. */
 export function choosable(block: ProviderBlock, catalog: Catalog): string[] {
   const concern = CONCERN_OF_BLOCK[block];
-  const pin = catalog.pins[concern];
-  const names = pluginsOfConcern(catalog, concern).filter(({ where }) => where !== "fake").map(({ name }) => name).filter((name) => pin === undefined || pin.runs.includes(name));
+  const names = pluginsOfConcern(catalog, concern).filter(({ where }) => where !== "fake").map(({ name }) => name);
   return concern === "publisher" || concern === "reviewer" ? [...names, "none"] : names;
 }
 
-/** The settings a plugin takes besides `provider` and `enabled`. `none` takes the union of its concern's, so a stray one is refused as not applying (`publishOf`), not as unknown. */
+/** The settings a plugin takes besides `provider` and `enabled`: its own, and its concern's (`CONCERN_SETTINGS`). `none` takes the union of its concern's plugins', so a stray one is refused as not applying (`publishOf`), not as unknown. */
 function declaredSettings(block: ProviderBlock, provider: string, catalog: Catalog): string[] {
-  if (provider !== "none") return blockSettings(pluginNamed(catalog, provider) ?? { settings: {} });
-  return [...new Set(pluginsOfConcern(catalog, CONCERN_OF_BLOCK[block]).flatMap((plugin) => blockSettings(plugin)))];
+  const own = provider !== "none" ? blockSettings(pluginNamed(catalog, provider) ?? { settings: {} })
+    : [...new Set(pluginsOfConcern(catalog, CONCERN_OF_BLOCK[block]).flatMap((plugin) => blockSettings(plugin)))];
+  return [...own, ...concernSettingsOf(block)];
 }
 
 /** `enabled` of a block: absent is true, anything but true or false is refused by name, and the tracker and the code host may not be disabled. */
@@ -169,14 +178,13 @@ function providerOf(block: ProviderBlock, value: unknown, catalog: Catalog): Nam
     throw new TicketSettingsRefusal(`${at}.provider`, `is required: name the block's provider, one of ${quoted(names)}, as onboard does`);
   }
   const plugin = typeof provider === "string" ? pluginNamed(catalog, provider) : undefined;
-  // A plugin of this concern that the pin keeps off the list is still named here, so the pin's own refusal below says why.
   const namable = typeof provider === "string" && (names.includes(provider) || plugin?.concern === CONCERN_OF_BLOCK[block]);
   if (!namable) {
     const refused = catalog.refusals.find(({ plugin: refusedName }) => refusedName === provider);
     throw new TicketSettingsRefusal(`${at}.provider`, refused === undefined ? `must be one of ${quoted(names)}, not ${JSON.stringify(provider)}` : `names a plugin that was refused: ${refused.why}`);
   }
   const enabled = enabledOf(block, value, provider);
-  const refusal = enabled && plugin !== undefined ? enableRefusal(plugin, catalog) : null;
+  const refusal = enabled && plugin !== undefined ? enableRefusal(plugin) : null;
   if (refusal !== null) throw new TicketSettingsRefusal(`${at}.provider`, `is refused: ${refusal}`);
   const allowed = declaredSettings(block, provider, catalog);
   for (const key of Object.keys(value)) {
@@ -277,20 +285,28 @@ function fieldsOf(source: Record<string, unknown>, prefix: string): Record<strin
   return Object.fromEntries(PUBLISH_SETTINGS.map((name) => [name, { value: source[name], at: `${prefix}.${name}` }]));
 }
 
+/** The reviewer's `required`: a true or false the block holds, or none. Refused by name for any other value. */
+function requiredOf(block: unknown): Setting {
+  const required = ownOf(block, "reviewer", "required") ?? { value: undefined, at: "tickets.providers.reviewer.required" };
+  if (required.value !== undefined && typeof required.value !== "boolean") throw new TicketSettingsRefusal(required.at, `must be true or false, not ${JSON.stringify(required.value)}`);
+  return required;
+}
+
 function reviewerOf(block: unknown, tickets: Record<string, unknown>, read: AliasRead[], catalog: Catalog): BlockReport {
   const named = providerOf("reviewer", block, catalog);
   const alias = tickets.reviewer;
   if (alias !== undefined && alias !== "atomic") throw new TicketSettingsRefusal("tickets.reviewer", `must be "atomic" or absent, not ${JSON.stringify(alias)}`);
+  const settings = { required: requiredOf(block) };
   if (named === undefined) {
-    if (alias === undefined) return reportOf(defaultNamed("reviewer"), {}, "default");
+    if (alias === undefined) return reportOf(defaultNamed("reviewer"), settings, "default");
     read.push({ old: "tickets.reviewer", new: "tickets.providers.reviewer", stale: false });
-    return reportOf({ provider: "atomic", enabled: true }, {}, "aliases");
+    return reportOf({ provider: "atomic", enabled: true }, settings, "aliases");
   }
   if (alias !== undefined) {
     if (named.provider !== "atomic") throw new TicketSettingsRefusal("tickets.reviewer", "is set, but tickets.providers.reviewer names provider none: remove one of them");
     read.push({ old: "tickets.reviewer", new: "tickets.providers.reviewer", stale: true });
   }
-  return reportOf(named, {}, sourceOf(block, read));
+  return reportOf(named, settings, sourceOf(block, read));
 }
 
 function exposureOf(block: unknown, tickets: Record<string, unknown>, read: AliasRead[], catalog: Catalog): BlockReport {

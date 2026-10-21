@@ -328,6 +328,12 @@ function stoppedWithoutOutcome(run: WriterRun, seen: string): boolean {
   return seen === "done" || (seen === "idle" && run.seenWorking === true);
 }
 
+/**
+ * How a publish run ended, as the publisher plugin reads its outcome (A11-161). A run that was started before the publisher was switched off still ends, and is read by core's own protocol,
+ * which every publisher shares: nothing of a chat service is in it.
+ */
+const readPublishResult = ({ publisher }: PoolContext, outcomeText: string, dir: string) => (publisher === undefined ? publishResult(outcomeText, dir) : publisher.result(outcomeText, dir));
+
 /** The publish run's status, from the same listing as the ticket runs': it ends once its outcome file is there and its agent is idle or done. */
 function watchPublish(ctx: PoolContext, status: ReadonlyMap<string, string>): void {
   const { misses, now, startedHere, store } = ctx;
@@ -346,7 +352,7 @@ function watchPublish(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
   if (!["working", "idle", "done"].includes(seen) && answerStartDialog(ctx, place)) return;
   update(ctx, (queue) => observePublish(queue, seen));
   const outcomePath = join(place.dir, OUTCOME_FILE);
-  if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) endPublish(ctx, publish, publishResult(readFileSync(outcomePath, "utf8"), place.dir));
+  if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) endPublish(ctx, publish, readPublishResult(ctx, readFileSync(outcomePath, "utf8"), place.dir));
   else if (seen === "done" || (seen === "idle" && store.get().publish?.seenWorking === true)) endPublish(ctx, publish, { failure: "it stopped without writing an outcome" });
 }
 

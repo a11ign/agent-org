@@ -186,7 +186,7 @@ function controlsOf(plugin: CatalogPlugin, flags: Readonly<{ installed: boolean;
     offer("uninstall", refusalOf(() => planUninstall(name, context)));
     confirm.uninstall = `Uninstall ${name}? Its block is removed, with its settings, so the ${CONCERN_LABEL[plugin.concern]} takes its default.`;
   } else if (!flags.secrets) {
-    const refusal = enableRefusal(plugin, context.catalog) ?? refusalOf(() => planInstallOrSwitch(name, context));
+    const refusal = enableRefusal(plugin) ?? refusalOf(() => planInstallOrSwitch(name, context));
     offer("install", refusal);
     const replacement = refusal === null ? replacementOf(name, context) : null;
     if (replacement !== null) {
