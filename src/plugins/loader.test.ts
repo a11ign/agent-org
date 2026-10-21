@@ -56,7 +56,7 @@ test("a disabled plugin's code is never imported, though its block names it and 
 
 test("a built-in is skipped, since core runs it, and so is a fake", async () => {
   const catalog = buildCatalog({ root: ROOT, files: checkout({}), pins: {} });
-  const providers = resolveProviders(host({ publish: { provider: "slack" }, reviewer: { provider: "fake-reviewer" }, exposure: { provider: "tailscale" } }), catalog);
+  const providers = resolveProviders(host({ publish: { provider: "slack" }, reviewer: { provider: "fake-reviewer" }, exposure: { provider: "fake-exposure" } }), catalog);
   const { urls, importModule } = recorder({});
   assert.deepEqual(await loadEnabled(providers, catalog, DEPS, importModule), { loaded: [], unbuilt: [], refusals: [] });
   assert.deepEqual(urls, []);
@@ -98,11 +98,11 @@ test("a plugin whose create throws is one refusal naming it", async () => {
 
 test("A11-160: importing the enabled plugins imports their entries and builds none: create is never called, a disabled plugin and a built-in are not read, and a refused one is named", async () => {
   const catalog = catalogOf({ "my-tracker": "tracker", "off-publisher": "publisher", "bad-reviewer": "reviewer" });
-  const providers = resolveProviders(host({ tracker: { provider: "my-tracker" }, publish: { provider: "off-publisher", enabled: false }, reviewer: { provider: "bad-reviewer" }, exposure: { provider: "tailscale" } }), catalog);
+  const providers = resolveProviders(host({ tracker: { provider: "my-tracker" }, publish: { provider: "off-publisher", enabled: false }, reviewer: { provider: "bad-reviewer" } }), catalog);
   let built = 0;
   const { urls, importModule } = recorder({ [urlOf("my-tracker")]: moduleOf(() => { built += 1; return "the tracker"; }), [urlOf("bad-reviewer")]: { create: () => ({}) } });
   const result = await importEnabled(providers, catalog, importModule);
-  assert.deepEqual(urls, [urlOf("my-tracker"), urlOf("bad-reviewer")], "the disabled publisher and the built-in exposure are not read");
+  assert.deepEqual(urls, [urlOf("my-tracker"), urlOf("bad-reviewer")], "the disabled publisher and the exposure that is not enabled by name are not read");
   assert.equal(built, 0, "nothing is built: a tracker's key is not read to ask what it keeps");
   assert.deepEqual(result.modules.map(({ plugin }) => plugin.name), ["my-tracker"]);
   assert.deepEqual(result.refusals, [{ plugin: "bad-reviewer", concern: "reviewer", why: "plugin bad-reviewer: index.ts must export create, doctorChecks and onboardSteps" }]);

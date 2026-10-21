@@ -116,18 +116,20 @@ function toolingOf(declared: unknown, concern: Concern): Tooling | string {
 const isSchemaEntry = (value: unknown): value is SchemaEntry => isObject(value) && ["key", "type", "explanation", "breaks"].every((field) => typeof value[field] === "string") && isObject(value.edit);
 
 /**
- * The settings a manifest declares, each keyed `tickets.providers.<block>.<name>`, or the reason one is wrong. Messaging has no block, so it declares none. A name with a dot
- * (`key.path`) is a part of the setting before the dot, which the Settings page draws as a row of its own: it must follow a setting the manifest declares, and it is not a setting of
- * the block (`blockSettings`).
+ * The settings a manifest declares, each keyed `tickets.providers.<block>.<name>`, or the reason one is wrong. Messaging has no block: its settings are keys of the project's `messaging`
+ * (`messaging.<name>` in `project.json`), and a messaging manifest says so (A11-162). A name with a dot (`key.path`) is a part of the setting before the dot, which the Settings page draws
+ * as a row of its own: it must follow a setting the manifest declares, and it is not a setting of the block (`blockSettings`).
  */
 function settingsOf(concern: Concern, declared: unknown): Readonly<Record<string, SchemaEntry>> | string {
   if (declared === undefined) return {};
   if (!isObject(declared)) return "agentOrg.settings must be an object of settings by name";
   const block = blockOf(concern);
-  if (block === null && Object.keys(declared).length > 0) return `agentOrg.settings must be empty: ${concern} is configured in project.json, not in a provider block`;
+  const keyPrefix = block === null ? "messaging" : `tickets.providers.${block}`;
+  const file = block === null ? "project.json" : "host.json";
   for (const [name, entry] of Object.entries(declared)) {
     if (!isSchemaEntry(entry)) return `agentOrg.settings.${name} must be a schema entry with a key, type, explanation, breaks and edit`;
-    if (entry.key !== `tickets.providers.${block}.${name}`) return `agentOrg.settings.${name}.key must be tickets.providers.${block}.${name}, not ${JSON.stringify(entry.key)}`;
+    if (entry.key !== `${keyPrefix}.${name}`) return `agentOrg.settings.${name}.key must be ${keyPrefix}.${name}, not ${JSON.stringify(entry.key)}`;
+    if (entry.file !== file) return `agentOrg.settings.${name}.file must be ${file}: ${concern} is configured there, not in ${JSON.stringify(entry.file)}`;
     // A part of a list's items (`gh.leadsWorkspaces[].id`) is a part of the list (`gh.leadsWorkspaces`).
     const parent = name.includes(".") ? name.slice(0, name.lastIndexOf(".")).replace(/\[\]$/, "") : null;
     if (parent !== null && !(parent in declared)) return `agentOrg.settings.${name} is a part of ${parent}, which the manifest does not declare`;

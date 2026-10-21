@@ -5,6 +5,9 @@
 // code and Linear's endpoints and tool names). It reads the TypeScript syntax tree, so a comment or prose that names Linear is not a finding. A plugin's name used as a value
 // (`"linear"`) is not a Linear call and is not one either. There is NO allow-list for core: a new finding is fixed by moving the code into the plugin.
 //
+// A11-162 ADDS TWO MORE VOCABULARIES TO IT: Tailscale's (the `tailscale` command run by a program-running call, and tailnet host names ending `.ts.net`) and Telegram's (`api.telegram.org`).
+// They are the plugins' own: `plugins/tailscale` runs the command and `plugins/telegram` calls the API, and a name used as a value (`"tailscale"` in the exposure block's `provider`) is not a call.
+//
 // THE OTHER HALF OF THE BOUNDARY (ADR 0001): a plugin imports core's types only. A runtime import of a file outside the plugin's folder is a finding.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -18,6 +21,17 @@ const PLUGINS = join(REPO, "plugins");
 
 /** Linear's API hosts and its MCP's tool names: the vocabulary only the Linear plugin speaks. */
 const LINEAR = /api\.linear\.app|uploads\.linear\.app|mcp\.linear\.app|mcp__linear__|mcp__claude_ai_Linear__/;
+
+/** A tailnet host name (`<machine>.<tailnet>.ts.net`): the vocabulary only the Tailscale plugin speaks. */
+const TAILNET = /\.ts\.net\b/;
+
+/** Telegram's Bot API host: the vocabulary only the Telegram plugin speaks. */
+const TELEGRAM = /api\.telegram\.org/;
+
+/** The vocabularies a plugin owns, by what core's finding says. */
+const VOCABULARIES: readonly Readonly<{ pattern: RegExp; names: string }>[] = [
+  { pattern: LINEAR, names: "Linear's API or MCP" }, { pattern: TAILNET, names: "a tailnet host" }, { pattern: TELEGRAM, names: "Telegram's API" },
+];
 
 type Found = Readonly<{ specifier: string; typeOnly: boolean; at: string }>;
 
@@ -45,24 +59,53 @@ function literalText(node: ts.Node): string | null {
   return ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node) ? node.text : null;
 }
 
-/** Every string, template and regular-expression literal of `source` that names Linear's API or MCP. Comments are not read. */
-function linearLiterals(source: string): string[] {
+/** Every string, template and regular-expression literal of `source` that matches `pattern`. Comments are not read. */
+function literalsMatching(source: string, pattern: RegExp): string[] {
   const out: string[] = [];
   const file = ts.createSourceFile("x.ts", source, ts.ScriptTarget.Latest, true);
   const visit = (node: ts.Node) => {
     const text = literalText(node);
-    if (text !== null && LINEAR.test(text)) out.push(`line ${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${text.slice(0, 60)}`);
+    if (text !== null && pattern.test(text)) out.push(`line ${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${text.slice(0, 60)}`);
     ts.forEachChild(node, visit);
   };
   visit(file);
   return out;
 }
 
-/** What is wrong with a CORE file (under `src/` or `scripts/`): it imports a file of `plugins/`, or names Linear's API or MCP. `path` is absolute. */
+/** The name of the function or method a call is made to (`spawnSync`, `deps.run` -> `run`), or null for a call of anything else. */
+function calleeName(call: ts.CallExpression): string | null {
+  if (ts.isIdentifier(call.expression)) return call.expression.text;
+  return ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : null;
+}
+
+/** Whether a node is a call whose first argument is the string `text`. */
+function callsWithFirstArgument(node: ts.Node, text: string): node is ts.CallExpression {
+  if (!ts.isCallExpression(node) || node.arguments.length === 0) return false;
+  const [first] = node.arguments;
+  return ts.isStringLiteralLike(first) && first.text === text;
+}
+
+/** The calls that run a program whose first argument is the `tailscale` command: `spawnSync("tailscale", ...)`, `execFileSync(...)`, `run(...)`, `which(...)`. A name used as a value is not one. */
+function tailscaleSpawns(source: string): string[] {
+  const out: string[] = [];
+  const file = ts.createSourceFile("x.ts", source, ts.ScriptTarget.Latest, true);
+  const visit = (node: ts.Node) => {
+    if (callsWithFirstArgument(node, "tailscale")) {
+      const callee = calleeName(node);
+      if (callee !== null && /spawn|exec|run|which/i.test(callee)) out.push(`line ${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${callee}("tailscale", ...)`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return out;
+}
+
+/** What is wrong with a CORE file (under `src/` or `scripts/`): it imports a file of `plugins/`, names a plugin's vocabulary (Linear's API or MCP, a tailnet host, Telegram's API) or runs `tailscale`. `path` is absolute. */
 export function coreFindings(path: string, source: string): string[] {
   const reachesPlugins = (specifier: string) => specifier.startsWith(".") && `${resolve(dirname(path), specifier)}${sep}`.startsWith(`${PLUGINS}${sep}`);
   const imports = importsOf(source).filter(({ specifier }) => reachesPlugins(specifier)).map(({ specifier, at }) => `${at}: imports ${specifier}, a plugin's code`);
-  return [...imports, ...linearLiterals(source).map((literal) => `names Linear's API or MCP at ${literal}`)];
+  const vocabulary = VOCABULARIES.flatMap(({ pattern, names }) => literalsMatching(source, pattern).map((literal) => `names ${names} at ${literal}`));
+  return [...imports, ...vocabulary, ...tailscaleSpawns(source).map((call) => `runs the tailscale command at ${call}`)];
 }
 
 /** What is wrong with a PLUGIN file: it imports, at run time, a file outside its own folder. `path` is absolute. */
@@ -79,7 +122,7 @@ const isSource = (name: string) => /\.(ts|mjs)$/.test(name) && !/\.test\.(ts|mjs
 const walk = (dir: string): string[] => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && isSource(entry.name))
   .map((entry) => join(entry.parentPath, entry.name)).filter((path) => !path.split(sep).includes("node_modules")).sort();
 
-test("core imports no plugin's code and names no Linear endpoint or MCP tool: not a file of src/ or scripts/", () => {
+test("core imports no plugin's code, names no Linear endpoint or MCP tool, no tailnet host and no Telegram endpoint, and runs no tailscale: not a file of src/ or scripts/", () => {
   const files = [...walk(join(REPO, "src")), ...walk(join(REPO, "scripts"))];
   assert.ok(files.some((file) => file.endsWith(join("ticket-mode", "server.ts"))) && files.some((file) => file.endsWith(join("plugins", "registry.ts"))), "the walk sees core: an empty walk would pass for the wrong reason");
   const findings = files.flatMap((file) => coreFindings(file, readFileSync(file, "utf8")).map((finding) => `${relative(REPO, file)} ${finding}`));
@@ -94,8 +137,17 @@ test("a plugin imports core's types only: not a runtime import of a file outside
 });
 
 test("the Linear plugin is where Linear's endpoints and tool names are: the walk finds them there", () => {
-  const found = walk(join(PLUGINS, "linear")).filter((file) => linearLiterals(readFileSync(file, "utf8")).length > 0).map((file) => relative(PLUGINS, file));
+  const found = walk(join(PLUGINS, "linear")).filter((file) => literalsMatching(readFileSync(file, "utf8"), LINEAR).length > 0).map((file) => relative(PLUGINS, file));
   assert.ok(found.includes(join("linear", "linear.ts")), "linear.ts names api.linear.app");
+});
+
+test("A11-162: the Tailscale plugin is where the tailscale command is run, and the Telegram plugin is where the Bot API is called: the walk finds them there", () => {
+  const spawning = walk(join(PLUGINS, "tailscale")).filter((file) => tailscaleSpawns(readFileSync(file, "utf8")).length > 0).map((file) => relative(PLUGINS, file));
+  assert.ok(spawning.includes(join("tailscale", "exposure.ts")) && spawning.includes(join("tailscale", "checks.ts")), `exposure.ts and checks.ts run tailscale through deps.exec: ${spawning.join(", ")}`);
+  const calling = walk(join(PLUGINS, "telegram")).filter((file) => literalsMatching(readFileSync(file, "utf8"), TELEGRAM).length > 0).map((file) => relative(PLUGINS, file));
+  assert.ok(calling.includes(join("telegram", "send.ts")), "send.ts names api.telegram.org");
+  const tailnet = walk(join(PLUGINS, "tailscale")).filter((file) => literalsMatching(readFileSync(file, "utf8"), TAILNET).length > 0).map((file) => relative(PLUGINS, file));
+  assert.ok(tailnet.length > 0, "and the stand-in names a tailnet host, which is why it lives with the plugin and not in core");
 });
 
 test("NEGATIVE CONTROL: a core file that names a Linear URL or tool, or imports the plugin, is reported by file name (twin: prose and a plugin's name are not)", () => {
@@ -115,4 +167,16 @@ test("NEGATIVE CONTROL: a plugin file that imports core's code at run time is re
   assert.deepEqual(pluginFindings(plugin, 'import { escapeRegExp } from "../../src/lib/escape-regexp.ts";\n'), ["line 1: imports ../../src/lib/escape-regexp.ts at run time, outside its folder: a plugin imports core's types only"]);
   assert.deepEqual(pluginFindings(plugin, 'const lib = await import("../../src/lib/escape-regexp.ts");\n'), ["line 1: imports ../../src/lib/escape-regexp.ts at run time, outside its folder: a plugin imports core's types only"]);
   assert.deepEqual(pluginFindings(plugin, 'import type { Ticket } from "../../src/plugins/contracts/tracker.ts";\nimport { keySource } from "./key.ts";\nimport { readFileSync } from "node:fs";\n'), []);
+});
+
+test("A11-162 NEGATIVE CONTROL: a core file that runs tailscale, or names a tailnet host or Telegram's API, is reported (twin: a name used as a value, prose and a comment are not)", () => {
+  const core = join(REPO, "src", "ticket-mode", "fixture.ts");
+  assert.deepEqual(coreFindings(core, 'import { spawnSync } from "node:child_process";\nspawnSync("tailscale", ["status", "--json"]);\n'), ['runs the tailscale command at line 2: spawnSync("tailscale", ...)']);
+  assert.deepEqual(coreFindings(core, 'execFileSync("tailscale", ["serve", "status", "--json"], { encoding: "utf8" });\n'), ['runs the tailscale command at line 1: execFileSync("tailscale", ...)']);
+  assert.deepEqual(coreFindings(core, 'const run = (file: string) => file;\ndeps.run("tailscale", args);\nwhich("tailscale");\n'), ['runs the tailscale command at line 2: run("tailscale", ...)', 'runs the tailscale command at line 3: which("tailscale", ...)']);
+  assert.deepEqual(coreFindings(core, 'export const host = `https://agents.tail1234.ts.net:9443/`;\n'), ["names a tailnet host at line 1: https://agents.tail1234.ts.net:9443/"]);
+  assert.deepEqual(coreFindings(core, 'export const api = "https://api.telegram.org";\n'), ["names Telegram's API at line 1: https://api.telegram.org"]);
+  assert.deepEqual(coreFindings(core, '// tailscale serve publishes agents.tail1234.ts.net, and api.telegram.org answers the bot\nexport const provider = "tailscale";\nconst same = provider !== "tailscale";\nexport const names = ["local", "tailscale", "telegram"].includes(provider);\n'), [],
+    "prose, a comment, and the plugin's name as a value (the exposure block's provider) are not a call");
+  assert.deepEqual(coreFindings(core, 'import { createTelegramProvider } from "../../plugins/telegram/send.ts";\n'), ["line 1: imports ../../plugins/telegram/send.ts, a plugin's code"]);
 });

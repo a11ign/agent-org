@@ -21,7 +21,7 @@ import { type Applies, type SchemaEntry } from "./config-schema.ts";
 import { defaultSchema } from "../plugins/schema.ts";
 import { type Edit as JsonEdit, spliceJson } from "./json-edit.ts";
 import { projectPathOf } from "./settings-read.ts";
-import { hostLevelRefusal, type Json, projectRefusal, ticketsRefusal } from "./settings-verdict.ts";
+import { hostLevelRefusal, type Json, messagingRefusal, projectRefusal, ticketsRefusal } from "./settings-verdict.ts";
 import { isObject, valueAt } from "./json-value.ts";
 
 /** The files a save may change: the machine's host file and the primary project's declaration. */
@@ -107,12 +107,25 @@ function patternOf(schemaKey: string): Readonly<{ pattern: RegExp; literal: numb
 /** A plugin's block, or one of its top-level keys: `provider`, `enabled` or a setting. The only keys `agent-org plugin` may write that the page may not. */
 const PLUGIN_KEY = /^tickets\.providers\.(?:tracker|codeHost|publish|reviewer|exposure)(?:\.[A-Za-z]+)?$/;
 
+/** The `messaging` key of a project's declaration, or one of its top-level keys: `provider`, `enabled` or a setting of the messaging plugin (A11-162). Written by `agent-org plugin` only. */
+const MESSAGING_KEY = /^messaging(?:\.[A-Za-z]+)?$/;
+
 /** The edit a plugin key has for the CLI: its own when the page may edit it, else a JSON value read when the board starts. */
 const PLUGIN_EDIT: Extract<SchemaEntry["edit"], { editable: true }> = { editable: true, input: "json", applies: "board" };
 
+/** The edit a messaging key has: the listener and the watcher read the project's declaration when they start, and they are units. */
+const MESSAGING_EDIT: Extract<SchemaEntry["edit"], { editable: true }> = { editable: true, input: "json", applies: "unit", unit: "the units that run messaging:listen and messaging:watch" };
+
 /** An entry for a plugin key the schema does not describe (a bundled plugin's own setting), so the CLI can write it. */
-const pluginEntry = (key: string): SchemaEntry => ({ key, file: "host.json", group: "Machine", type: "a JSON value", absent: "unset", default: null,
-  explanation: "A setting of an agent-org plugin.", breaks: "The reader refuses a value its plugin does not take, by name.", edit: PLUGIN_EDIT });
+const pluginEntry = (key: string, file: EditFile): SchemaEntry => ({ key, file, group: file === "project.json" ? "Project" : "Machine", type: "a JSON value", absent: "unset", default: null,
+  explanation: "A setting of an agent-org plugin.", breaks: "The reader refuses a value its plugin does not take, by name.", edit: file === "project.json" ? MESSAGING_EDIT : PLUGIN_EDIT });
+
+/**
+ * What must restart for a change to a key of the exposure block that `agent-org plugin` makes (A11-162): the instance, the page and the terminal each read where the board is served, and the
+ * terminal service is started on loopback or given its entry by the same command that starts the others. The Settings page keeps each entry's own words, which the plugin declares.
+ */
+const EXPOSURE_KEY = /^tickets\.providers\.exposure(?:\.|$)/;
+const EXPOSURE_IN_FORCE = "in force after the instance, the page and the terminal restart: run `agent-org start instance`, `agent-org start ui` and `agent-org start terminal`.";
 
 /**
  * The schema entry a change's key names, and the path it sets in the file, with a `<name>` filled from the key. A key may match two entries (`routing.guidance.<route>`
@@ -125,12 +138,12 @@ function resolve(options: EditOptions, file: EditFile, key: string): Readonly<{ 
     const match = pattern.exec(key);
     return match === null ? [] : [{ entry, literal, name: match[1] }];
   }).sort((a, b) => b.literal - a.literal);
-  const forPlugin = options.plugins === true && file === "host.json" && PLUGIN_KEY.test(key);
-  const best = matched[0] ?? (forPlugin ? { entry: pluginEntry(key), literal: 0, name: "" } : undefined);
+  const forPlugin = options.plugins === true && ((file === "host.json" && PLUGIN_KEY.test(key)) || (file === "project.json" && MESSAGING_KEY.test(key)));
+  const best = matched[0] ?? (forPlugin ? { entry: pluginEntry(key, file), literal: 0, name: "" } : undefined);
   if (best === undefined) throw new SettingsEditRefusal(`${key} is not a key this page describes in ${file}`);
   if (!best.entry.edit.editable) {
     if (!forPlugin) throw new SettingsEditRefusal(`${key} cannot be changed from this page: ${best.entry.edit.why}`);
-    return { entry: { ...best.entry, edit: PLUGIN_EDIT } as Editable, path: key.split(".") };
+    return { entry: { ...best.entry, edit: file === "project.json" ? MESSAGING_EDIT : PLUGIN_EDIT } as Editable, path: key.split(".") };
   }
   const segments = best.entry.key.split(".");
   const at = segments.findIndex((segment) => PLACEHOLDER.test(segment));
@@ -194,9 +207,9 @@ async function locate(options: EditOptions, file: EditFile, fs: FileSystem): Pro
   return { path, text: fs.readFile(path) };
 }
 
-/** The readers' verdict on a file's text, as the page shows it: null when they accept it. */
-async function verdictOf(file: EditFile, text: string, path: string, hostPath: string): Promise<string | null> {
-  if (file === "project.json") return projectRefusal(text, path);
+/** The readers' verdict on a file's text, as the page shows it: null when they accept it. The project's `messaging` key is judged only for `agent-org plugin`, which writes it (A11-162): the page never touched it, and a key it left alone does not refuse its other saves. */
+async function verdictOf(file: EditFile, text: string, path: string, hostPath: string, judge: (text: string, path: string) => Promise<string | null> = async () => null): Promise<string | null> {
+  if (file === "project.json") return (await projectRefusal(text, path)) ?? judge(text, path);
   const host = objectOfText(text, hostPath);
   return (await hostLevelRefusal(text, hostPath, host)) ?? ticketsRefusal(host);
 }
@@ -214,11 +227,11 @@ async function planned(options: EditOptions, file: EditFile, changes: readonly C
     const was = valueAt(current, path);
     const changed = "remove" in change ? was !== undefined : !isDeepStrictEqual(was, change.value);
     const shown: ChangeShown = { key: change.key, old: wordsOf(entry, was, fs), new: "remove" in change ? removedWords(entry) : wordsOf(entry, change.value, fs),
-      changed, applies, inForce: inForceOf(entry.edit, applies), dangerous: entry.edit.dangerous ?? null };
+      changed, applies, inForce: options.plugins === true && EXPOSURE_KEY.test(change.key) ? EXPOSURE_IN_FORCE : inForceOf(entry.edit, applies), dangerous: entry.edit.dangerous ?? null };
     return { change, edit, shown };
   });
   const next = spliceJson(located.text, resolved.map((r) => r.edit));
-  const refusal = await verdictOf(file, next, located.path, options.hostPath);
+  const refusal = await verdictOf(file, next, located.path, options.hostPath, options.plugins === true ? messagingRefusal : undefined);
   if (refusal !== null) throw new SettingsEditRefusal(refusal);
   // A dangerous key asks for its confirmation only when its value changes: a save that leaves it as it is changes nothing it could break.
   return { ...located, base, next, changes: resolved.map((r) => r.shown), dangerous: resolved.filter((r) => r.shown.dangerous !== null && r.shown.changed) };

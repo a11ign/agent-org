@@ -1,14 +1,17 @@
 // a11ign/a11ign#5197: THE LAST MILE OF THE EVENT FEED -- the two host steps no unit can take, and the reading that says whether the feed is live.
 //
-//   node src/event-tunnel.ts up           serve the receiver's loopback port at `events.publicUrl` over Tailscale Funnel (the unit's ExecStart)
-//   node src/event-tunnel.ts down         take that one path off Funnel (the unit's ExecStop)
+//   node src/event-tunnel.ts up           serve the receiver's loopback port at `events.publicUrl`'s path, open to the internet, through the exposure plugin (the unit's ExecStart)
+//   node src/event-tunnel.ts down         take that one path off the internet (the unit's ExecStop)
 //   node src/event-tunnel.ts register     create the webhook secret file if absent, then set the scheduler App's webhook URL and secret
 //   node src/event-tunnel.ts deliveries   print the App's recent deliveries (id, event, action, status), never a payload or a secret
 //
 // THE UNIT is `host/event-tunnel.service.in` (owned by `host-units.ts`, shipped for `events.tunnel: "tailscale-funnel"`) and runs `up` and `down`; the receiver is `event-receiver.ts`.
 // `up` and `down` touch ONE path on port 443 and never `reset` or an unscoped `off`: the node's other serve mounts (the trace pages, tailnet-only on 8443) are not this file's.
 //
-// BOTH READ FIRST (`tailscale serve status --json`, which needs no root) and change nothing when the path is already in the state asked for, and both READ AFTER and fail when it is not.
+// THE EXPOSURE PLUGIN DOES THE SERVING (A11-162): this file runs no `tailscale`. It asks the exposure the host file enables to serve the path open to the internet (contract 1.1), and a
+// host on `local` refuses by name: "the events tunnel needs an exposure that serves to the internet".
+//
+// BOTH READ FIRST (what the exposure holds at the path, which needs no root) and change nothing when the path is already in the state asked for, and both READ AFTER and fail when it is not.
 // Why: tailscaled refuses a non-root change to the serve config whenever the config being sent holds a FILE-PATH handler anywhere in it, new or not (`ipn/localapi/serve.go`,
 // `HasPathHandler`), and the node's trace pages are exactly one. A mount applied once by root therefore stays, and a oneshot that re-ran `tailscale funnel` at every login would fail
 // against a path that is already correctly served. The read-after is the other half: a `down` that was refused must not leave the unit `inactive` over a path that is still public.
@@ -21,12 +24,13 @@
 //
 // A DELIVERY READ answers "is the feed live" from GitHub's side (`GET /app/hook/deliveries`): a `ping` is answered 200 by the receiver and, by design, never queued, so its proof is its
 // status here and the receiver's heartbeat, while a `pull_request` is proven by its `deliveryId` in the queue.
-import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { GITHUB_API, appJwt } from "./app-token.ts";
+import type { Exposure } from "./plugins/contracts/exposure.ts";
+import { hostExposure } from "./plugins/host-exposure.ts";
 
 const SECRET_BYTES = 32;
 const SECRET_FILE_MODE = 0o600;
@@ -105,38 +109,37 @@ export async function recentDeliveries(call: Call, { count = DELIVERIES_PER_PAGE
 export const deliveryLine = (delivery: Delivery) =>
   `${delivery.deliveredAt} ${delivery.guid} ${delivery.event}${delivery.action === null ? "" : `.${delivery.action}`} ${delivery.statusCode} ${delivery.status}${delivery.redelivery ? " (redelivery)" : ""}`;
 
-const FUNNEL_PORT = "443";
-
-/** The `tailscale` arguments that mount (`up`) or remove (`down`) the receiver's path. `--yes` because nobody is at the terminal to answer Funnel's first-time prompt. */
-export function funnelArguments({ publicUrl, port }: { publicUrl: string, port: number }): { up: string[], down: string[] } {
-  const path = `--set-path=${new URL(publicUrl).pathname}`;
-  return {
-    up: ["funnel", "--bg", "--yes", `--https=${FUNNEL_PORT}`, path, `http://127.0.0.1:${port}`],
-    down: ["funnel", "--yes", `--https=${FUNNEL_PORT}`, path, "off"],
-  };
-}
+/** The one HTTPS port Funnel serves, which the event feed's public address is on. */
+const FUNNEL_PORT = 443;
 
 type Mount = { publicUrl: string, port: number };
 
-/** Whether `tailscale serve status --json` shows the receiver's loopback port proxied at the funnel path AND the host's port 443 open to the internet (`AllowFunnel` is per host:port, not per path). */
-export function pathIsServed(status: unknown, { publicUrl, port }: Mount): boolean {
-  const { hostname, pathname } = new URL(publicUrl);
-  const hostPort = `${hostname}:${FUNNEL_PORT}`;
-  const { Web: web, AllowFunnel: funnel } = (status ?? {}) as { Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>, AllowFunnel?: Record<string, boolean> };
-  const proxy = web?.[hostPort]?.Handlers?.[pathname]?.Proxy;
-  return funnel?.[hostPort] === true && proxy?.replace(/\/$/, "") === `http://127.0.0.1:${port}`;
+/** The path the receiver is served at: `events.publicUrl`'s. */
+const pathOf = ({ publicUrl }: Mount): string => new URL(publicUrl).pathname;
+
+/** Whether the exposure holds the receiver's loopback port at the funnel path AND has the port open to the internet (the exposure's internet is per port, not per path). */
+export function pathIsServed(exposure: Pick<Exposure, "portState">, mount: Mount): boolean {
+  const state = exposure.portState(FUNNEL_PORT, mount.port, { path: pathOf(mount) });
+  return state.kind === "ours" && state.funnel;
+}
+
+/** What a refusal to serve the path means: an exposure that serves nothing cannot reach the internet, and any other has its own reason. */
+function failureOf(exposure: Pick<Exposure, "ports">, command: "up" | "down", path: string, why: string): EventTunnelFailure {
+  if (exposure.ports() === null) return new EventTunnelFailure(`the events tunnel needs an exposure that serves to the internet: ${why}`);
+  return new EventTunnelFailure(`the exposure could not ${command === "up" ? "serve" : "remove"} ${path}: ${why}`);
 }
 
 /** Moves the path to the state `command` names, or says it is already there. Throws when the state afterwards is not the one asked for, so a refused change is never reported as done. */
-export function changeFunnel(command: "up" | "down", mount: Mount, deps: { out: (line: string) => unknown, run: (args: string[]) => void, readStatus: () => unknown }): void {
-  const { out, run, readStatus } = deps;
+export function changeFunnel(command: "up" | "down", mount: Mount, deps: { out: (line: string) => unknown, exposure: Pick<Exposure, "portState" | "serve" | "unserve" | "ports"> }): void {
+  const { out, exposure } = deps;
   const wanted = command === "up";
-  if (pathIsServed(readStatus(), mount) === wanted) return void out(`${new URL(mount.publicUrl).pathname} is already ${wanted ? "served" : "off"}: nothing to change`);
-  const args = funnelArguments(mount)[command];
-  out(`tailscale ${args.join(" ")}`);
-  run(args);
-  if (pathIsServed(readStatus(), mount) !== wanted) {
-    throw new EventTunnelFailure(`\`tailscale ${args.slice(0, 1)}\` returned and ${new URL(mount.publicUrl).pathname} is still ${wanted ? "NOT served" : "served"}: \`tailscale serve status --json\` says so`);
+  const path = pathOf(mount);
+  if (pathIsServed(exposure, mount) === wanted) return void out(`${path} is already ${wanted ? "served" : "off"}${exposure.ports() === null && !wanted ? " as far as this exposure can tell (it serves on loopback only: a path an earlier exposure opened is that exposure's to remove)" : ""}: nothing to change`);
+  out(`${wanted ? "serve" : "unserve"} ${path} on port ${FUNNEL_PORT}, open to the internet`);
+  const result = wanted ? exposure.serve(FUNNEL_PORT, mount.port, { path, funnel: true }) : exposure.unserve(FUNNEL_PORT, { path, funnel: true });
+  if (result.status !== 0) throw failureOf(exposure, command, path, result.refusal ?? (result.stderr || `exit ${result.status}`));
+  if (pathIsServed(exposure, mount) !== wanted) {
+    throw new EventTunnelFailure(`the exposure returned and ${path} is still ${wanted ? "NOT served" : "served"}: what it holds at the path says so`);
   }
 }
 
@@ -166,19 +169,8 @@ export function funnelFacts(host: Parameters<typeof declaredTunnel>[0]): { publi
   return { publicUrl: events.publicUrl, port: events.receiver.port };
 }
 
-const realRun = (args: string[]) => { execFileSync("tailscale", args, { stdio: "inherit", timeout: REQUEST_TIMEOUT_MS * 2 }); };
-
-const realReadStatus = (): unknown => {
-  const text = execFileSync("tailscale", ["serve", "status", "--json"], { encoding: "utf8", timeout: REQUEST_TIMEOUT_MS }).trim();
-  try {
-    return text === "" ? {} : JSON.parse(text);
-  } catch (cause) {
-    throw new EventTunnelFailure("`tailscale serve status --json` did not answer JSON", { cause });
-  }
-};
-
-export async function main(argv: string[], deps: { out?: (line: string) => unknown, fetch?: Fetch, now?: () => number, run?: (args: string[]) => void, readStatus?: () => unknown } = {}): Promise<number> {
-  const { out = (line: string) => process.stdout.write(`${line}\n`), fetch = realFetch, now = () => Math.floor(Date.now() / 1000), run = realRun, readStatus = realReadStatus } = deps;
+export async function main(argv: string[], deps: { out?: (line: string) => unknown, fetch?: Fetch, now?: () => number, exposure?: () => Promise<Exposure> } = {}): Promise<number> {
+  const { out = (line: string) => process.stdout.write(`${line}\n`), fetch = realFetch, now = () => Math.floor(Date.now() / 1000), exposure = hostExposure } = deps;
   const [command] = argv;
   const isUnknownCommand = command !== "register" && command !== "deliveries" && command !== "up" && command !== "down";
   if (isUnknownCommand) {
@@ -189,7 +181,8 @@ export async function main(argv: string[], deps: { out?: (line: string) => unkno
     const { homeHostConfig } = await import("./host-config.ts");
     const host = homeHostConfig() as Parameters<typeof declaredTunnel>[0];
     if (command === "up" || command === "down") {
-      changeFunnel(command, funnelFacts(host), { out, run, readStatus });
+      const mount = funnelFacts(host);
+      changeFunnel(command, mount, { out, exposure: await exposure() });
       return 0;
     }
     const { app, publicUrl, secretPath } = declaredTunnel(host);

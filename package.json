@@ -53,7 +53,7 @@
     "messaging:listen": "node src/messaging/listen.ts",
     "messaging:chats": "node src/messaging/chats.ts",
     "messaging:watch": "node src/messaging/watch.ts",
-    "messaging:pair": "node src/messaging/providers/telegram/pair.ts",
+    "messaging:pair": "node src/messaging/pair.ts",
     "ruling:record": "node src/ruling-record.ts",
     "messaging:measure": "node src/messaging/measure.ts",
     "chairman:reply": "node src/messaging/reply-cli.ts",

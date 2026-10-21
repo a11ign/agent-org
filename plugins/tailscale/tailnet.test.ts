@@ -1,7 +1,9 @@
 // no-token: none -- pure functions over strings, and a stand-in for `tailscale` that answers from a list; no tailscale runs
+//
+// MOVED WHOLE FROM `src/ticket-mode/tailnet.test.ts` (A11-162) with the module it tests, and added to: a path under a port, and a funnel, are the contract 1.1 additions.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cachedTailnetName, parseServeStatus, parseStatus, portState, readTailnetName, refused, removeArgv, serveArgv, serveStatusArgv, statusArgv, TAILSCALE_MISSING, tailnetHosts, tailnetOrigins, tailnetTerminal, type TailscaleResult } from "./tailnet.ts";
+import { cachedTailnetName, parseServeStatus, parseStatus, pathState, portState, readTailnetName, refused, removeArgv, serveArgv, serveStatusArgv, statusArgv, TAILSCALE_MISSING, tailnetHosts, tailnetOrigins, tailnetTerminal, type TailscaleResult } from "./tailnet.ts";
 
 const status = (over: Record<string, unknown> = {}) => JSON.stringify({ BackendState: "Running", Self: { DNSName: "agents.tail1234.ts.net.", TailscaleIPs: ["100.64.0.7", "fd7a::7"] }, ...over });
 
@@ -122,4 +124,28 @@ test("the name is read once it is read, and asked again no sooner than ten secon
   clock = 1_000_000;
   assert.equal(await name(), "agents.tail1234.ts.net");
   assert.equal(asked, 2, "a name found once is kept, and is not read again");
+});
+
+test("a path under a port, and a funnel, are built for that one path and nothing else; the board's own builders still name neither", () => {
+  assert.deepEqual(serveArgv(443, 8787, { path: "/webhook", funnel: true }), ["funnel", "--bg", "--yes", "--https=443", "--set-path=/webhook", "http://127.0.0.1:8787"]);
+  assert.deepEqual(removeArgv(443, { path: "/webhook", funnel: true }), ["funnel", "--yes", "--https=443", "--set-path=/webhook", "off"]);
+  assert.deepEqual(serveArgv(8443, 8788, { path: "/pages" }), ["serve", "--bg", "--https=8443", "--set-path=/pages", "http://127.0.0.1:8788"]);
+  assert.deepEqual(removeArgv(8443, { path: "/pages" }), ["serve", "--https=8443", "--set-path=/pages", "off"]);
+  for (const argv of [serveArgv(9443, 4748), removeArgv(9443)]) assert.ok(!argv.some((word) => /funnel|set-path/.test(word)), `${argv.join(" ")} names a path or funnel`);
+});
+
+test("one path of a tailnet port is free, the receiver's own (a trailing slash on the target is the same target), or another handler, and Funnel is the port's", () => {
+  const name = "agents.tail1234.ts.net";
+  const entries = parseServeStatus(AGENTS_HOST);
+  assert.ok(entries);
+  assert.deepEqual(pathState(entries, name, 443, 8787, "/webhook"), { kind: "ours", proxy: "http://127.0.0.1:8787", funnel: true });
+  assert.deepEqual(pathState(entries, name, 443, 9100, "/webhook"), { kind: "foreign", proxy: "http://127.0.0.1:8787", funnel: true }, "another loopback port behind the path");
+  assert.deepEqual(pathState(entries, name, 443, 8787, "/other"), { kind: "free", proxy: null, funnel: true }, "Funnel is on for the port, whatever path is asked");
+  assert.deepEqual(pathState(entries, name, 8443, 8788, "/"), { kind: "ours", proxy: "http://127.0.0.1:8788", funnel: false });
+  const slashed = parseServeStatus(JSON.stringify({ Web: { [`${name}:443`]: { Handlers: { "/webhook": { Proxy: "http://127.0.0.1:8787/" } } } }, AllowFunnel: { [`${name}:443`]: true } }));
+  assert.ok(slashed);
+  assert.equal(pathState(slashed, name, 443, 8787, "/webhook").kind, "ours");
+  const filePath = parseServeStatus(JSON.stringify({ Web: { [`${name}:443`]: { Handlers: { "/webhook": { Path: "/var/www" } } } } }));
+  assert.ok(filePath);
+  assert.deepEqual(pathState(filePath, name, 443, 8787, "/webhook"), { kind: "foreign", proxy: null, funnel: false }, "a file-path handler is not the receiver");
 });

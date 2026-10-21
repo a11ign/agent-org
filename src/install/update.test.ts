@@ -468,5 +468,6 @@ test("A11-160: a plugin that cannot be imported, and a keep that throws, are sai
   assert.deepEqual(said.map(({ ok, detail }) => [ok, detail]), [
     [false, "the tracker plugin linear was refused: cannot import"],
     [false, "the github plugin could not be kept up: gh exploded"],
-  ]);
+    [false, "the local plugin could not be kept up: gh exploded"],
+  ], "and the exposure the host enables is imported to ask what it keeps too");
 });

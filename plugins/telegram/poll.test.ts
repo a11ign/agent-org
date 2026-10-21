@@ -20,15 +20,19 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { acquireLock, ListenerLockHeld, main, processStart, EXIT } from "../../listen.ts";
-import { createInbound } from "../../inbound.ts";
-import { createLedger, readLedgerLines } from "../../ledger.ts";
-import { runProviderConformance } from "../../provider-contract.ts";
-import { createSecret } from "../../secret.ts";
+import { acquireLock, ListenerLockHeld, main, processStart, EXIT } from "../../src/messaging/listen.ts";
+import { createInbound } from "../../src/messaging/inbound.ts";
+import { createLedger, readLedgerLines } from "../../src/messaging/ledger.ts";
+import { createOffsetStore } from "../../src/messaging/offsets.ts";
+import { runProviderConformance } from "../../src/messaging/provider-contract.ts";
+import { createSecret, redactingFetch } from "../../src/messaging/secret.ts";
 import {
-  ALLOWED_UPDATES, BACKOFF_CEILING_MS, BACKOFF_INITIAL_MS, createOffsetStore, createTelegramPollingProvider, LONG_POLL_SECONDS, nextBackoff,
+  ALLOWED_UPDATES, BACKOFF_CEILING_MS, BACKOFF_INITIAL_MS, createTelegramPollingProvider as create, LONG_POLL_SECONDS, nextBackoff,
   nextCursor, PollConflictError, runListener,
 } from "./poll.ts";
+
+/** The polling provider, with the core's `redactingFetch` that a plugin is given in `deps.messaging` (A11-162). */
+const createTelegramPollingProvider = (options: Omit<Parameters<typeof create>[0], "redactingFetch">) => create({ ...options, redactingFetch });
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
@@ -37,8 +41,8 @@ const GROUP_ID = -1001234;
 const CHANNEL_ID = -1005678;
 const MS = 1000;
 const PASSWORD_LINE = "password: hunter2";
-// The tool's OWN unit template (`host/` at this repository's root, `src/messaging/providers/telegram` up four), not a project file.
-const UNIT = fileURLToPath(new URL("../../../../host/chairman-listen.service.in", import.meta.url));
+// The tool's OWN unit template (`host/` at this repository's root, `plugins/telegram` up two), not a project file.
+const UNIT = fileURLToPath(new URL("../../host/chairman-listen.service.in", import.meta.url));
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-poll-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));

@@ -1,14 +1,13 @@
 // @ts-check
-// module: what ticket mode does with Tailscale -- the board's page and the worker terminal served on the tailnet with `tailscale serve`, never Funnel
+// module: what the Tailscale plugin does with Tailscale's CLI -- the board's page and the worker terminal served on the tailnet with `tailscale serve`, never Funnel (A11-162: moved from
+// `src/ticket-mode/tailnet.ts`, whole)
 //
-// TAILNET ONLY, BY WHAT IT BUILDS. Every serve command this module builds names one HTTPS port it serves, and the one that removes an entry names that
-// port with `off`. Nothing here builds a `funnel` argument, and nothing resets the whole serve config: the agents host serves other things (a Funnel on
-// :443 for `/webhook`, a plain serve on :8443), and no command names them. `portState` reads what a port carries, so the caller refuses a port that is
-// public or taken, and the caller runs every command.
+// TAILNET ONLY, BY WHAT THE BOARD'S OWN ENTRIES BUILD. Every serve command `serveArgv` builds for the board names one HTTPS port it serves, and the one that removes an entry names that
+// port with `off`. The board's builders name no `funnel` argument, and nothing resets the whole serve config: the agents host serves other things (a Funnel on :443 for `/webhook`, a
+// plain serve on :8443), and no command names them. A caller that asks for a path open to the internet (the event receiver's, contract 1.1) says so with `funnel: true`, and gets a
+// `funnel` command for that one path. `portState` reads what a port carries, so the caller refuses a port that is public or taken, and the caller runs every command.
 //
-// PURE: what tailscale answers is passed in as text. The one function that runs tailscale, `runTailscale`, is used only by the page's and the
-// instance's own service, and tests never reach it.
-import { spawnSync } from "node:child_process";
+// PURE: what tailscale answers is passed in as text. The plugin runs tailscale through `deps.exec` (`exposure.ts`), so a test never reaches a real one.
 
 export type TailscaleResult = Readonly<{ status: number | null; stdout: string; stderr: string }>;
 export type TailscaleRun = (args: string[]) => TailscaleResult;
@@ -66,19 +65,33 @@ export function cachedTailnetName(read: () => Promise<string | null>, now: () =>
   };
 }
 
-/** Runs `tailscale` with `args`, as the caller's own process does. `status` is null when it cannot start (not on PATH). */
-export function runTailscale(args: string[]): TailscaleResult {
-  const result = spawnSync("tailscale", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 });
-  if (result.error) return { status: null, stdout: "", stderr: result.error.message };
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
-}
+/** The tailnet HTTPS ports the page and the terminal are served on when `tailnetPorts` names none (A11-144). */
+export const TAILNET_PORT_DEFAULTS = Object.freeze({ ui: 9443, terminal: 9444 });
+
+/** How long one `tailscale` call may take. */
+export const TAILSCALE_MS = 20_000;
 
 export const statusArgv = (): string[] => ["status", "--json"];
 export const serveStatusArgv = (): string[] => ["serve", "status", "--json"];
-/** Serves `http://127.0.0.1:<local>` on the tailnet's HTTPS `port`, in the background. */
-export const serveArgv = (port: number, local: number): string[] => ["serve", "--bg", `--https=${port}`, `http://127.0.0.1:${local}`];
-/** Removes the one entry on the tailnet's HTTPS `port`, and no other. */
-export const removeArgv = (port: number): string[] => ["serve", `--https=${port}`, "off"];
+
+/** A path under a port, as the caller names it (`/webhook`) and the `--set-path` flag takes it. */
+const pathFlag = (path: string): string => `--set-path=${path}`;
+
+/**
+ * Serves `http://127.0.0.1:<local>` on the tailnet's HTTPS `port`, in the background. With a `path` it serves that path only; with `funnel` it is `tailscale funnel`, open to the internet
+ * (`--yes` because nobody is at the terminal to answer Funnel's first-time prompt). The board's own call names neither.
+ */
+export function serveArgv(port: number, local: number, { path, funnel = false }: Readonly<{ path?: string; funnel?: boolean }> = {}): string[] {
+  const target = `http://127.0.0.1:${local}`;
+  const place = path === undefined ? [] : [pathFlag(path)];
+  return funnel ? ["funnel", "--bg", "--yes", `--https=${port}`, ...place, target] : ["serve", "--bg", `--https=${port}`, ...place, target];
+}
+
+/** Removes the one entry on the tailnet's HTTPS `port` (or one `path` of it), and no other. */
+export function removeArgv(port: number, { path, funnel = false }: Readonly<{ path?: string; funnel?: boolean }> = {}): string[] {
+  const place = path === undefined ? [] : [pathFlag(path)];
+  return funnel ? ["funnel", "--yes", `--https=${port}`, ...place, "off"] : ["serve", `--https=${port}`, ...place, "off"];
+}
 
 /** The proxy target a served port of this board is given: the loopback service on `local`. */
 export const proxyOf = (local: number) => `http://127.0.0.1:${local}`;
@@ -131,6 +144,20 @@ export function portState(status: ServeStatus, name: string, port: number, local
   const root = proxyOfHandler(handlers["/"]);
   const ours = Object.keys(handlers).length === 1 && root === proxyOf(local);
   return Object.freeze({ kind: ours ? "ours" : "foreign", proxy: root, funnel });
+}
+
+/**
+ * What one `path` of a tailnet port carries, against the loopback service that should be behind it: nothing (`free`), a proxy to `local` (`ours`), or another handler (`foreign`). `funnel` is
+ * whether Funnel is on for the PORT (Funnel is per host and port, not per path).
+ */
+export function pathState(status: ServeStatus, name: string, port: number, local: number, path: string): PortState {
+  const key = `${name}:${port}`;
+  const flag = status.funnel[key];
+  const funnel = flag !== undefined && flag !== false;
+  const handler = handlersOf(status.web[key])[path];
+  if (handler === undefined) return Object.freeze({ kind: "free", proxy: null, funnel });
+  const proxy = proxyOfHandler(handler);
+  return Object.freeze({ kind: proxy?.replace(/\/$/, "") === proxyOf(local) ? "ours" : "foreign", proxy, funnel });
 }
 
 /**

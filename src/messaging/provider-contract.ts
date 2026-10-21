@@ -45,14 +45,33 @@
  */
 export type MessagingCapabilities = { silent?: boolean; buttons?: boolean; replies?: boolean; conversation?: boolean; maxText?: number; ratePerSecond?: number; destinations?: number; edit?: boolean; pin?: boolean };
 
-/** The messaging contract's provider (A11-158): the shape `runProviderConformance` checks, written as a type. `poll`, `edit` and `pin` are opt-in. */
+/**
+ * What a provider that listens is given to run its inbound loop (messaging contract 1.1, A11-162): the core's `inbound` (`handle` writes the ledger line and says what to do with an
+ * update), the offset store the provider asks from and moves, the chairman's ids, what to do with an update the core forwards, the clock, a signal that ends the loop and a log. It
+ * RETURNS when `signal` aborts and THROWS an error that carries `refusal: true` for a failure restarting cannot mend (two pollers on one bot), and whatever else cannot be retried past.
+ */
+export type ListenOptions = Readonly<{
+  inbound: { handle: (update: unknown) => any };
+  offsets: { read: () => number | undefined; write: (offset: number) => void };
+  chairman: { userId: number; chatId: number };
+  onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void;
+  sleep: (ms: number) => Promise<void>;
+  signal?: AbortSignal;
+  log?: (line: string) => void;
+}>;
+
+/** The messaging contract's provider (A11-158): the shape `runProviderConformance` checks, written as a type. `poll`, `edit` and `pin` are opt-in, and so are the two of 1.1 (A11-162). */
 export interface MessagingProvider {
   id: string;
   capabilities: MessagingCapabilities;
   send(message: { text: string; silent?: boolean; actions?: unknown[]; replyTo?: string; audience?: string }): Promise<{ messageRef: string; silent: boolean; audience: string }>;
-  poll?(cursor: number | undefined, signal?: AbortSignal): Promise<{ updates: Record<string, any>[]; cursor: number }>;
+  poll?(cursor: number | undefined, signal?: AbortSignal): Promise<{ updates: Record<string, any>[]; cursor: number | undefined }>;
   edit?(request: { messageRef: string; text: string; audience?: string }): Promise<{ messageRef: string; unchanged: boolean }>;
   pin?(request: { messageRef: string; audience?: string }): Promise<{ messageRef: string }>;
+  /** 1.1. Takes the buttons off a message the chairman answered, so they cannot be pressed twice. Present on a provider that draws buttons. */
+  clearKeyboard?(messageRef: string): Promise<void>;
+  /** 1.1. Runs the inbound loop (see {@link ListenOptions}). Present on a provider created for conversation. */
+  listen?(options: ListenOptions): Promise<void>;
 }
 
 const CONTRACT_TEXT = "conformance probe";

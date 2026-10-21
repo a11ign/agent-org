@@ -42,16 +42,15 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-import { MessagingConfigRefusal, PROJECT_FILE, readMessagingConfig } from "./config.ts";
-import type { MessagingOn } from "./config.ts";
+import { MessagingConfigRefusal, type MessagingOn, PROJECT_FILE, readMessagingConfig } from "./config.ts";
 import { requestActions, snoozedUntil, walkActions } from "./answers.ts";
 import { REFUSE_ASKING_ANNOUNCEMENTS_FLAG, createMessenger } from "./core.ts";
 import { createLedger, describeError, foldLedger } from "./ledger.ts";
 import type { KeyRecord } from "./ledger.ts";
 import type { Readers } from "./placeholders.ts";
-import { createTelegramProvider } from "./providers/telegram/send.ts";
-import { readSecretFile, SecretFileRefusal } from "./secret.ts";
-import { accountIsDeclared, defaultLedgerPath, readAnnouncementsChatId, readChairman, trackerRepo } from "./state.ts";
+import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.ts";
+import { SecretFileRefusal } from "./secret.ts";
+import { type ProviderFactory, pluginProviders } from "./plugin.ts";
 import { observeEmergencyUses } from "./sources/emergency-priority.ts";
 import { observeIncidents } from "./sources/incidents.ts";
 import { createReaders } from "./sources/readers.ts";
@@ -522,17 +521,6 @@ function canaryFlagOn(name: string, err: (line: string) => void): boolean {
   }
 }
 
-/**
- * The Telegram provider for a `messaging` key that is on: the token, the chairman's chat id and, when `announcementsFile` is declared, the channel's are read HERE,
- * at the moment of building, so a file that has gone wrong since `messaging:check` is refused on the run that needed it. `listen.ts` reads the first two the same
- * way. The channel is GIVEN to the provider here and nowhere else in `messaging:watch`: without it every announcement still lands in the chairman's chat (#603).
- */
-function telegramProvider(config: MessagingOn, { fetch: fetchImpl, log }: { fetch: typeof fetch; log: (line: string) => void; }) {
-  const token = readSecretFile(config.tokenFile);
-  const { chatId } = readChairman(config.chairmanFile);
-  return createTelegramProvider({ token, chatId, announcementsChatId: readAnnouncementsChatId(config.announcementsFile), fetch: fetchImpl, log });
-}
-
 /** The provider, or null after saying why it could not be built (the line names the file and never holds a secret). */
 async function buildProvider({ config, providers, fetch: fetchImpl, err }: { config: MessagingOn; providers: Record<string, (config: any, context: any) => any>; fetch: typeof fetch; err: (line: string) => void; }): Promise<unknown | null> {
   try {
@@ -551,7 +539,7 @@ async function buildProvider({ config, providers, fetch: fetchImpl, err }: { con
 const DEFAULT_DEPS = () => ({
   root: HOME_CHECKOUT, env: process.env, home: homedir(), now: Date.now, github: undefined as any, readers: undefined as any,
   watchReaders: undefined as Readers | undefined,
-  providers: { telegram: telegramProvider } as Record<string, (config: any, context: { fetch: typeof fetch; log: (line: string) => void }) => any>, fetch: globalThis.fetch,
+  providers: pluginProviders() as Record<string, ProviderFactory>, fetch: globalThis.fetch,
   out: (line: string) => console.log(line), err: (line: string) => console.error(line),
 });
 

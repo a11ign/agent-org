@@ -7,10 +7,12 @@
 // only for an enabled plugin. The plugin's name is its package's directory name.
 //
 // A PLUGIN IMPORTS CORE'S TYPES ONLY (ADR 0001). Every runtime helper reaches it through `create(settings, deps)`.
+import type { Secret } from "../messaging/secret.ts";
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { Concern } from "./concerns.ts";
 import type { ReviewTrust } from "./contracts/code-host.ts";
+import type { MessagingPair } from "./contracts/messaging.ts";
 import type { TrackerWriting } from "./contracts/tracker.ts";
 
 /** One doctor row a plugin reports: its name, whether it passed, what it found and, when it failed, the one thing to do. The same shape as `Check` in `install/doctor.ts`, which a plugin may not import. */
@@ -85,6 +87,26 @@ export type CodeHostPolicy = Readonly<{
   review(): ReviewJudge;
 }>;
 
+/** `redactingFetch` of `src/messaging/secret.ts`: a fetch whose failures cannot carry the secret. */
+export type RedactingFetch = <F extends (...args: any[]) => Promise<any>>(fetchImpl: F, secret: Secret) => F;
+
+/**
+ * What a messaging plugin needs of core at run time, since it imports core's types only (A11-162): the secret by reference (a file read only when its mode is 0600 and its owner is the
+ * running user), the fetch that cannot leak it, the chairman's ids, the announcements channel, and an injected clock. Each is the module's own function; a test of a plugin gives the same.
+ */
+export type MessagingHelpers = Readonly<{
+  redactingFetch: RedactingFetch;
+  readSecretFile: (path: string) => Secret;
+  secretFileProblem: (path: string) => string | null;
+  readChairman: (path: string) => { userId: number; chatId: number };
+  readAnnouncementsChatId: (path: string | null) => number | undefined;
+  /** The wait a provider takes between retries and between the parts of a long message; the real clock unless a caller injects one. */
+  sleep?: (ms: number) => Promise<void>;
+}>;
+
+/** What a plugin asks `probe` to GET: `/` of `host:port`, over TLS when `tls`, naming `servername` in the handshake and `hostHeader` in the request when they are given, within `timeoutMs`. */
+export type ProbeRequest = Readonly<{ host: string; port: number; tls: boolean; servername?: string; hostHeader?: string; timeoutMs: number }>;
+
 /**
  * What a plugin is given by core to do its work: every runtime helper reaches it here, because it imports core's types only. `fetch` and `exec` are the two seams a plugin's I/O goes
  * through (a test injects each); `readFile` and `mode` read a file's text and permission bits (null when it cannot be read); `pick` is the board's `tickets.pick` scope, which a tracker
@@ -102,11 +124,15 @@ export type PluginDeps = Readonly<{
   exec: (file: string, args: readonly string[], options?: ExecOptions) => ExecResult;
   readFile: (path: string) => string;
   mode: (path: string) => number | null;
+  /** GETs `/` of a host and port (an exposure's doctor check asks whether a served port answers): the status, or null when nothing answered. A fake answers null. */
+  probe: (request: ProbeRequest) => Promise<number | null>;
   pick: PickScope;
   /** The host's checkouts by repository name (`host.json`'s `clones`), which a code host asks the remote of. Empty on a host that names none. */
   clones: Readonly<Record<string, string>>;
   /** What core decides about what a code host reports (A11-160). */
   policy: CodeHostPolicy;
+  /** What a messaging plugin needs of core (A11-162). */
+  messaging: MessagingHelpers;
 }>;
 
 /** What an onboard step is given besides the plugin's deps: the prompts and the machine's facts, and the flags onboard was started with that name this plugin's settings. */
@@ -142,13 +168,21 @@ export type OnboardStep = Readonly<{ name: string; explain: string; run(settings
 /**
  * The code half: what a bundled plugin's entry module exports. `create` returns the concern's contract implementation. `keep` is optional: what `agent-org update` keeps true for the
  * plugin on this machine, each result said as it is (an empty `detail` says nothing, and `ok: false` is said as an error). It runs at every update, so it must be safe to repeat, and
- * must neither prompt nor throw (A11-160: the code host keeps its stacking extension present).
+ * must neither prompt nor throw (A11-160: the code host keeps its stacking extension present). `release` is optional too (A11-162): what the plugin must take off the machine before it stops
+ * being the enabled plugin of its concern (the Tailscale exposure removes this board's entries from the tailnet). `agent-org plugin` calls it while the plugin is still enabled, before
+ * the host file changes, on a switch to another plugin, on `disable` and on `uninstall`; `ok: false` refuses the change with `detail` as the reason, and nothing is written. It is
+ * safe to repeat, and never prompts.
  */
 export type PluginModule = Readonly<{
   create(settings: PluginSettings, deps: PluginDeps): unknown;
   doctorChecks(settings: PluginSettings, deps: PluginDeps): readonly PluginCheck[] | Promise<readonly PluginCheck[]>;
   onboardSteps: readonly OnboardStep[];
   keep?(settings: PluginSettings, deps: PluginDeps): readonly StepResult[];
+  release?(settings: PluginSettings, deps: PluginDeps): StepResult;
+  /** The inverse of `release` (A11-162), called with what `release` answered when the change it was for is refused AFTER it ran: the plugin is put back on the machine, so the host file still naming it is true. */
+  restore?(settings: PluginSettings, deps: PluginDeps, released: StepResult): StepResult;
+  /** A messaging plugin's own step of `messaging:pair` (messaging contract 1.1): the one-time code, and the chairman file written once it comes back right. */
+  pair?: MessagingPair;
 }>;
 
 /** A plugin that was loaded: the plugin, the implementation `create` returned, and its doctor rows and onboard steps. */

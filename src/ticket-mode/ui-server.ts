@@ -28,11 +28,13 @@ import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { browserSessions, browserSessionsPath, SESSION_SECONDS, type BrowserSessions } from "./browser-sessions.ts";
 import { createConnections, readConnections, type Connections, type ConnectionsRead } from "./connections.ts";
-import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
+import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
+import type { Exposure } from "../plugins/contracts/exposure.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
+import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json, type Served } from "./local-http.ts";
 import { createPairing, PAIR_MINUTES, type Pairing } from "./pairing.ts";
 import { proxy, type Forward } from "./remote-proxy.ts";
 import { readTicketSettings } from "./settings.ts";
-import { cachedTailnetName, readTailnetName, runTailscale, type Tailnet } from "./tailnet.ts";
 import type { TerminalRun } from "./terminal-pair.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -154,10 +156,10 @@ export type UiDeps = Readonly<{
   connections: Connections;
   forward?: Forward;
   /**
-   * The tailnet the page is served on, when `tickets.serve` names one: its HTTPS port, and this machine's MagicDNS name, asked only for a `Host`
-   * that is not this server's own loopback, and null while it cannot be read.
+   * The exposure plugin that serves the page (A11-162): the name it answers to and the `Host` and `Origin` values under it, asked only for a `Host` that is not this server's own
+   * loopback, so a hostile one costs no call. Absent, or an exposure that serves nothing, the page answers on loopback only.
    */
-  tailnet?: Readonly<{ port: number; name: () => Promise<string | null> }>;
+  exposure?: Exposure;
 }>;
 
 /**
@@ -228,6 +230,18 @@ async function pairBrowser(request: IncomingMessage, response: ServerResponse, p
   sendJson(response, 200, { paired: true }, { "Set-Cookie": `${COOKIE}=${sessions.open()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}` });
 }
 
+/** The `Host` and `Origin` values the exposure answers to for a request. The name is asked only for a `Host` that is not this server's loopback, so a hostile one costs no call. */
+async function servedFor(exposure: Exposure | undefined, request: IncomingMessage, port: number): Promise<Served | undefined> {
+  const ports = exposure?.ports() ?? null;
+  if (exposure === undefined || ports === null) return undefined;
+  const host = String(request.headers.host ?? "");
+  if (host === `127.0.0.1:${port}` || host === `localhost:${port}`) return undefined;
+  const name = await exposure.machineName();
+  if (name === null) return undefined;
+  const address = { name, port: ports.ui };
+  return { hosts: exposure.hosts(address), origins: exposure.origins(address) };
+}
+
 /** The request handler, with every dependency named, so a test drives it without a socket. */
 export function createUi(deps: UiDeps) {
   const { port, key, sessions, read, connections } = deps;
@@ -271,17 +285,8 @@ export function createUi(deps: UiDeps) {
     response.end();
   }
 
-  /** The tailnet a request may name. The name is asked only for a `Host` that is not this server's loopback, so a hostile one costs no tailscale call. */
-  async function tailnetFor(request: IncomingMessage): Promise<Tailnet | undefined> {
-    if (deps.tailnet === undefined) return undefined;
-    const host = String(request.headers.host ?? "");
-    if (host === `127.0.0.1:${port}` || host === `localhost:${port}`) return undefined;
-    const name = await deps.tailnet.name();
-    return name === null ? undefined : { name, port: deps.tailnet.port };
-  }
-
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const refused = refusal(request, port, await tailnetFor(request));
+    const refused = refusal(request, port, await servedFor(deps.exposure, request, port));
     if (refused !== null) return sendJson(response, 403, { error: refused });
     const url = new URL(request.url ?? "/", `http://127.0.0.1:${port}`);
     const by = pairedBy(request, key, sessions);
@@ -310,9 +315,11 @@ export function createUi(deps: UiDeps) {
   return { handle };
 }
 
-function serve(): void {
+async function serve(): Promise<void> {
   refuseUnknownFlags(["--no-open"], { entry: import.meta.url, command: "agent-org ticket:ui" });
   const settings = readTicketSettings();
+  // The page is served by the enabled exposure plugin (`plugins/local`, unless the host file names another); it builds that and nothing else, so it reads no tracker key.
+  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones }), undefined, ["exposure"]);
   const log = (line: string) => process.stderr.write(`ticket:ui: ${line}\n`);
   const keyPath = boardKeyPath(settings.stateDir);
   const read = readConnections();
@@ -320,8 +327,7 @@ function serve(): void {
   if (read.refusal !== null) log(read.refusal);
   const connections = createConnections(read.connections, { local: { port: settings.port, keyPath } });
   const pairing = createPairing();
-  const tailnet = settings.serve === null ? undefined : { port: settings.serve.ui, name: cachedTailnetName(async () => readTailnetName(runTailscale)) };
-  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections, tailnet });
+  const ui = createUi({ port: settings.uiPort, key: boardKey(keyPath), sessions: browserSessions(browserSessionsPath(settings.stateDir)), pairing, read, connections, exposure: active.exposure() });
   // Every tunnel this service opened ends with it.
   process.on("exit", () => connections.close());
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
@@ -345,10 +351,8 @@ function serve(): void {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
-  try {
-    serve();
-  } catch (err) {
+  serve().catch((err) => {
     process.stderr.write(`ticket:ui: ${String((err as Error)?.message ?? err)}\n`);
     process.exit(1);
-  }
+  });
 }

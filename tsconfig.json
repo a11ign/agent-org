@@ -56,9 +56,6 @@
     "src/messaging/listen.test.ts",
     "src/messaging/measure.test.ts",
     "src/messaging/placeholders.test.ts",
-    "src/messaging/providers/telegram/pair.test.ts",
-    "src/messaging/providers/telegram/poll.test.ts",
-    "src/messaging/providers/telegram/send.test.ts",
     "src/messaging/record.test.ts",
     "src/messaging/reply-cli.test.ts",
     "src/messaging/reply.test.ts",
@@ -74,6 +71,10 @@
     "src/messaging/walk.test.ts",
     "src/messaging/watch-buttons.test.ts",
     "src/messaging/watch-list.test.ts",
-    "src/messaging/watch-provider.test.ts"
+    "src/messaging/watch-provider.test.ts",
+    // The three Telegram tests above, moved with the provider into its plugin (A11-162): the same untyped fixtures, in their new place. Fix a file, delete its line.
+    "plugins/telegram/pair.test.ts",
+    "plugins/telegram/poll.test.ts",
+    "plugins/telegram/send.test.ts"
   ]
 }

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 
-import { DEFAULT_SUMMARY, MessagingConfigRefusal, parseMessagingConfig, readMessagingConfig } from "./config.ts";
+import { DEFAULT_SUMMARY, knownProviders, MessagingConfigRefusal, parseMessagingConfig, readMessagingConfig } from "./config.ts";
 import { runMessagingCheck } from "./check.ts";
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-config-"));
@@ -118,14 +118,36 @@ describe("summary is opt-in, its field defaults and its refusals (done-when 4)",
   test("an unknown summary key is refused (a typo is not a silent default)", () => refusedAt(documentWith({ ...VALID, summary: { time: "08:00" } }), /^messaging\.summary\.time$/));
 });
 
+describe("A11-162: the providers are the messaging plugins of the registry, and `enabled` is the plugin's switch", () => {
+  test("the known providers are read from the catalog: the bundled telegram, and no fake, which runs nothing", () => {
+    assert.deepEqual(knownProviders(), ["telegram"]);
+    assert.throws(() => parse(documentWith({ ...VALID, provider: "fake-messaging" })), /`fake-messaging` is not a provider \(known: telegram\)/);
+  });
+
+  test("`enabled` absent is on, true is on, and false is off with every setting kept for the next `enable`: the switch and the settings are different things", () => {
+    assert.equal(parse(documentWith(VALID)).enabled, true);
+    assert.equal(parse(documentWith({ ...VALID, enabled: true })).enabled, true);
+    assert.deepEqual(parse(documentWith({ ...VALID, enabled: false })), { enabled: false }, "off carries nothing a caller could construct from");
+  });
+
+  test("a switched-off key is still read in full: a malformed one is refused by name, so `enable` cannot turn on a key the reader would refuse", () => {
+    refusedAt(documentWith({ ...VALID, enabled: false, tokenFile: "/etc/shadow" }), /^messaging\.tokenFile$/);
+    refusedAt(documentWith({ ...VALID, enabled: false, summary: { at: "8:00" } }), /^messaging\.summary\.at$/);
+  });
+
+  for (const enabled of ["false", 0, null, "yes"]) {
+    test(`enabled ${JSON.stringify(enabled)} is refused by name: only true or false is a switch`, () => refusedAt(documentWith({ ...VALID, enabled }), /^messaging\.enabled$/));
+  }
+});
+
 describe("a malformed key is a NAMED refusal, never a silent off", () => {
   for (const [label, messaging] of ([["null", null], ["a string", "on"], ["an array", []], ["true", true]] as [string, unknown][])) {
     test(`the key being ${label}`, () => refusedAt(documentWith(messaging), /^messaging$/));
   }
 
   test("an empty object is refused for its missing provider, not read as off", () => refusedAt(documentWith({}), /^messaging\.provider$/));
-  test("an unknown provider is refused by name", () => {
-    assert.throws(() => parse(documentWith({ ...VALID, provider: "carrier-pigeon" })), /carrier-pigeon/);
+  test("an unknown provider is refused by name, with the messaging plugins the registry holds", () => {
+    assert.throws(() => parse(documentWith({ ...VALID, provider: "carrier-pigeon" })), /`carrier-pigeon` is not a provider \(known: telegram\)/);
   });
   test("a misspelt key is refused, naming it", () => refusedAt(documentWith({ ...VALID, tokenfile: "x" }), /^messaging\.tokenfile$/));
   test("a missing tokenFile is refused", () => refusedAt(documentWith({ provider: "telegram", chairmanFile: VALID.chairmanFile }), /^messaging\.tokenFile$/));

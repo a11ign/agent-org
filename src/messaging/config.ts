@@ -7,6 +7,9 @@
 // a chairman who typed `"tokenfile"` and was told nothing is a chairman who believes the summary is coming at 08:00 and it never does.
 // For the same reason an unknown key refuses (an underscore-prefixed one is prose, as everywhere in this file) and `null` is not absent.
 //
+// **`enabled` IS THE PLUGIN'S SWITCH (A11-162).** The `messaging` key holds the settings of an agent-org plugin (`provider`, and its own settings), so it takes `enabled` as a provider block does:
+// absent is true, `false` keeps every setting and reads as OFF, and anything else is refused by name. `agent-org plugin disable` writes it.
+//
 // **THE PATHS ARE REFERENCES.** `tokenFile`, `chairmanFile` and `announcementsFile` name files under `~/.config/agent-org/` and are returned resolved; the
 // content is `secret.ts`'s business and is never read here. A path that climbs out of that directory is refused, so the key cannot be
 // pointed at `/etc/shadow` and have the secret reader's error describe it.
@@ -22,16 +25,17 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
+import { defaultCatalog, pluginsOfConcern } from "../plugins/registry.ts";
 
 export const PROJECT_FILE = ".agent-org/project.json";
 /** Where a secret reference may point, relative to the home directory. */
 export const SECRET_DIRECTORY = ".config/agent-org";
-/** The providers a configuration may name. A provider's own module is a later row; naming one here is what lets it be refused by name. */
-export const KNOWN_PROVIDERS = Object.freeze(["telegram"]);
+/** The providers a configuration may name: the messaging plugins the registry holds that run on a host (a fake runs none), read from the catalog (A11-162). */
+export const knownProviders = (): readonly string[] => pluginsOfConcern(defaultCatalog(), "messaging").filter(({ where }) => where !== "fake").map(({ name }) => name);
 /** The field defaults of a summary that is DECLARED. It is not what an absent `summary` key means: that is no summary at all. */
 export const DEFAULT_SUMMARY = Object.freeze({ at: "08:00", timezone: "Europe/London" });
 
-const ALLOWED_KEYS = new Set(["provider", "tokenFile", "chairmanFile", "announcementsFile", "summary", "milestones"]);
+const ALLOWED_KEYS = new Set(["provider", "enabled", "tokenFile", "chairmanFile", "announcementsFile", "summary", "milestones"]);
 const ALLOWED_SUMMARY_KEYS = new Set(["at", "timezone"]);
 const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -65,8 +69,9 @@ function readProvider(provider: unknown, source: string): string {
   if (typeof provider !== "string" || provider === "") {
     throw new MessagingConfigRefusal("messaging.provider", `it must be a non-empty string, not ${describe(provider)}`, source);
   }
-  if (!KNOWN_PROVIDERS.includes(provider)) {
-    throw new MessagingConfigRefusal("messaging.provider", `\`${provider}\` is not a provider (known: ${KNOWN_PROVIDERS.join(", ")})`, source);
+  const known = knownProviders();
+  if (!known.includes(provider)) {
+    throw new MessagingConfigRefusal("messaging.provider", `\`${provider}\` is not a provider (known: ${known.join(", ")})`, source);
   }
   return provider;
 }
@@ -157,7 +162,11 @@ export function parseMessagingConfig(parsed: unknown, { home = homedir(), source
   if (!isObject(key)) throw new MessagingConfigRefusal("messaging", `it must be an object, not ${describe(key)}`, source);
   const holder = key;
   refuseUnknownKeys(holder, ALLOWED_KEYS, "messaging", source);
-  return {
+  if (holder.enabled !== undefined && typeof holder.enabled !== "boolean") {
+    throw new MessagingConfigRefusal("messaging.enabled", `it must be true or false, not ${describe(holder.enabled)}`, source);
+  }
+  // A key that is switched off is read in full first, so a malformed one is still refused by name, and the plugin's settings are kept for `enable`.
+  const config: MessagingOn = {
     enabled: true,
     provider: readProvider(holder.provider, source),
     tokenFile: readSecretReference(holder.tokenFile, "messaging.tokenFile", home, source),
@@ -166,6 +175,7 @@ export function parseMessagingConfig(parsed: unknown, { home = homedir(), source
     summary: readSummary(holder.summary, source),
     milestones: readMilestonesPath(holder.milestones, root, source),
   };
+  return holder.enabled === false ? { enabled: false } : config;
 }
 
 /**

@@ -15,8 +15,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { request } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
+import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { delimiter, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -24,13 +24,12 @@ import { parseTicketSettings, type TicketSettings } from "../ticket-mode/setting
 import { PROVIDER_BLOCKS, type ProviderBlock, type Providers, providersOfText } from "../ticket-mode/providers.ts";
 import { blockOf } from "../plugins/concerns.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
-import { messagingStateOfFile } from "../plugins/messaging-state.ts";
-import type { Catalog, PluginDeps } from "../plugins/manifest.ts";
+import { messagingChecksOfFile, messagingStateOfFile } from "../plugins/messaging-state.ts";
+import type { Catalog, PluginDeps, ProbeRequest } from "../plugins/manifest.ts";
 import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { readsConcernContract, unreadMajorRefusal } from "../plugins/version.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
-import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
 import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
@@ -44,7 +43,7 @@ import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type S
 import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
-import { realExec } from "../plugins/active.ts";
+import { realExec, realProbe } from "../plugins/active.ts";
 import { corePolicy } from "../plugins/policy.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -80,10 +79,8 @@ export type DoctorDeps = Readonly<{
   exec: PluginDeps["exec"];
   /** What `--version` the pinned pnpm prints, run as install and update run it, or null when it cannot run. */
   pnpmVersion: () => string | null;
-  /** `tailscale` with `args`: its status is null when it cannot start. Asked only when `tickets.serve` puts the board on the tailnet. */
-  tailscale: (args: string[]) => TailscaleResult;
-  /** Whether the tailnet address `ip` answers HTTPS for `name` on `port`. */
-  tailnetAnswers: (ip: string, name: string, port: number) => Promise<boolean>;
+  /** GETs `/` of a host and port for a plugin's checks (an exposure asks whether a served port answers): the status, or null when nothing answered. */
+  probe: (request: ProbeRequest) => Promise<number | null>;
   /** The installed `gh` wrapper and each declared role's mint (A11-84). Loaded by the caller, so this file stays import-light. */
   ghWrapper: () => Promise<GhWrapperReport>;
   platform: NodeJS.Platform;
@@ -114,6 +111,8 @@ export type DoctorDeps = Readonly<{
     catalog: () => Catalog;
     load: (providers: Providers, catalog: Catalog, deps: PluginDeps, blocks?: readonly ProviderBlock[]) => Promise<LoadResult>;
     messaging: () => Promise<MessagingState>;
+    /** The rows the enabled messaging plugin declares, for the files the project's `messaging` key resolves to (A11-162). THROWS the reader's or the loader's refusal. */
+    messagingChecks: () => Promise<readonly Check[]>;
   }>;
   now: () => number;
 }>;
@@ -361,7 +360,7 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
       rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
     }
   }
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode,
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
     pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy() };
   const loaded = await load(providers, catalog, pluginDeps, blocks);
   // A plugin whose module imported but whose `create` threw has checks of its own, which say why (a key that cannot be read) with the fix: its refusal is a row only when none of them fails.
@@ -385,11 +384,26 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
   return { byBlock, rows };
 }
 
-/** The messaging row (A11-158): what the project's `messaging` key says, since messaging is configured in `project.json` until A11-162 moves it. */
-async function messagingRow(deps: DoctorDeps): Promise<Check> {
+/**
+ * The messaging rows (A11-158, A11-162): what the project's `messaging` key says, and for a plugin that is on, the checks it declares, which its row summarises. Messaging is configured in
+ * `project.json`'s `messaging` key (not a provider block), so the plugin's rows are asked for the files that key resolves to. A key the messaging reader refuses is the row's failure.
+ */
+async function messagingRows(deps: DoctorDeps): Promise<Check[]> {
   const state = await deps.agentOrgPlugins.messaging();
-  return state.provider === null ? ok("messaging (none)", state.why)
-    : ok(`messaging (${state.provider})`, "configured in project.json's messaging key, which agent-org plugin shows and does not write until A11-162 moves it");
+  if (state.provider === null) return [ok("messaging (none)", state.why)];
+  const { provider } = state;
+  if (!state.enabled) return [ok(`messaging (${provider}, disabled)`, "disabled: nothing is sent to the chairman and nothing is asked, and its settings are kept for `agent-org plugin enable`")];
+  let checks: Check[];
+  try {
+    checks = [...await deps.agentOrgPlugins.messagingChecks()];
+  } catch (error) {
+    checks = [failed(`plugin ${provider}`, (error as Error).message, "fix the messaging key of project.json: `agent-org messaging:check` says what is wrong with it")];
+  }
+  const failing = checks.filter((check) => !check.ok);
+  const name = `messaging (${provider})`;
+  const where = "configured in project.json's messaging key";
+  return [...checks, failing.length === 0 ? ok(name, checks.length === 0 ? where : `${where}, and its checks pass`)
+    : failed(name, `${where}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises")];
 }
 
 /**
@@ -413,11 +427,10 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const plugins = pluginsOf(settings, deps);
   const gh = noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper());
   const terminal = await terminalChecks(settings, deps);
-  const tailnet = await tailnetChecks(settings, deps);
   const extra = await pluginRows(settings, deps);
   const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...extra.byBlock.codeHost])];
   const tracker = settings === null ? [] : [providerRow(settings, "tracker", extra.byBlock.tracker)];
-  const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...tailnet, ...extra.byBlock.exposure])];
+  const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...extra.byBlock.exposure])];
   const publisher = settings === null ? [] : [providerRow(settings, "publish", extra.byBlock.publish)];
   const reviewer = settings === null ? [] : await reviewerChecks(settings, deps, extra.byBlock.reviewer);
   return [
@@ -443,12 +456,13 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...herdrScopeChecks(settings, instanceState, deps),
     ...ui,
     ...terminal,
-    ...tailnet,
+    // The exposure plugin's own rows (for Tailscale: its entries, Funnel and whether each port answers), then the exposure's row that summarises them.
+    ...extra.byBlock.exposure,
     ...exposure,
     ...publisher,
     ...reviewer,
-    ...extra.rows.filter((row) => !extra.byBlock.tracker.includes(row) && !extra.byBlock.codeHost.includes(row)),
-    await messagingRow(deps),
+    ...extra.rows.filter((row) => !extra.byBlock.tracker.includes(row) && !extra.byBlock.codeHost.includes(row) && !extra.byBlock.exposure.includes(row)),
+    ...await messagingRows(deps),
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
@@ -543,62 +557,6 @@ function updateLagCheck(maxDeferHours: number, deps: DoctorDeps): Check {
   return deps.now() - waitedSince > limit
     ? failed(name, `${detail}; the hourly update should have moved it by now`, "run `agent-org update` (with `--force` to restart a live run too), then check `agent-org status auto-update`")
     : ok(name, detail);
-}
-
-/** The checks of one port `tickets.serve` puts on the tailnet: its entry, that it is not on Funnel, and that it answers under the machine's name. */
-async function servedChecks(served: { service: string; port: number; local: number }, tailnet: { name: string; ip: string | null }, entries: ServeStatus, deps: DoctorDeps): Promise<Check[]> {
-  const { service, port, local } = served;
-  const { name, ip } = tailnet;
-  const state = portState(entries, name, port, local);
-  const url = `https://${name}:${port}/`;
-  const setting = `tickets.servePorts.${service}`;
-  const entry = state.kind === "ours" ? ok(`${service} tailnet entry`, `${url} serves 127.0.0.1:${local}`)
-    : state.kind === "free" ? failed(`${service} tailnet entry`, `nothing serves port ${port} on the tailnet`, `run \`agent-org start ${service}\``)
-      : failed(`${service} tailnet entry`, `port ${port} serves ${state.proxy ?? "another entry"} instead`, `set \`${setting}\` to a port nothing serves, then run \`agent-org start ${service}\``);
-  const only = state.funnel
-    ? failed(`${service} tailnet only`, `Funnel is on for port ${port}, which makes it public`, `turn Funnel off for port ${port} with \`tailscale funnel --https=${port} off\`, which leaves the other entries alone`)
-    : ok(`${service} tailnet only`, `port ${port} is not on Funnel`);
-  const answers = ip === null ? false : await deps.tailnetAnswers(ip, name, port);
-  const answering = answers ? ok(`${service} tailnet answering`, `${url} answers`)
-    : failed(`${service} tailnet answering`, `nothing answers ${url}`, state.kind === "ours" ? `read the service's log, then run \`agent-org start ${service}\` to restart it` : `run \`agent-org start ${service}\``);
-  return [entry, only, answering];
-}
-
-/**
- * With `tickets.serve` set, the tailnet is checked as the board uses it: this machine is Running with a DNS name, and each served port has its entry,
- * is not on Funnel, and answers under the name. With it absent, no check is added, so the list is exactly today's.
- */
-async function tailnetChecks(settings: TicketSettings | null, deps: DoctorDeps): Promise<Check[]> {
-  if (settings === null || settings.serve === null) return [];
-  const status = deps.tailscale(statusArgv());
-  const self = status.status === 0 ? parseStatus(status.stdout) : null;
-  if (self === null || !self.running || self.name === null) {
-    if (status.status === null) return [failed("tailscale", "tailscale is not on PATH", "install Tailscale, then run `tailscale up`")];
-    const detail = self === null ? "`tailscale status --json` did not answer" : self.running ? "this machine has no DNS name" : `Tailscale is ${self.state}, not Running`;
-    return [failed("tailscale", detail, "run `sudo tailscale up`, and turn MagicDNS on in the admin console")];
-  }
-  const serve = deps.tailscale(serveStatusArgv());
-  const entries = serve.status === 0 ? parseServeStatus(serve.stdout) : null;
-  if (entries === null) return [ok("tailscale", `Running as ${self.name}`), failed("tailscale serve", "`tailscale serve status --json` did not answer", "run `sudo tailscale up`, then `agent-org doctor` again")];
-  const local = loopbackPort(settings.terminal) ?? DEFAULT_TERMINAL_PORT;
-  return [
-    ok("tailscale", `Running as ${self.name}`),
-    ...await servedChecks({ service: "ui", port: settings.serve.ui, local: settings.uiPort }, { name: self.name, ip: self.ip }, entries, deps),
-    ...await servedChecks({ service: "terminal", port: settings.serve.terminal, local }, { name: self.name, ip: self.ip }, entries, deps),
-  ];
-}
-
-/** Whether the tailnet address `ip` answers HTTPS under its MagicDNS `name` on `port`: any status under 500, since a stopped service behind serve answers 502. */
-function tailnetAnswers(ip: string, name: string, port: number): Promise<boolean> {
-  return new Promise((done) => {
-    const call = httpsRequest({ host: ip, port, servername: name, path: "/", method: "GET", headers: { Host: tailnetHosts({ name, port })[0] }, timeout: ANSWER_TIMEOUT_MS }, (response) => {
-      response.resume();
-      done((response.statusCode ?? 500) < 500);
-    });
-    call.on("timeout", () => call.destroy());
-    call.on("error", () => done(false));
-    call.end();
-  });
 }
 
 /** Whether `name` is registered, and loads: a unit systemd refuses is said with the line it refused. */
@@ -728,8 +686,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       const result = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });
       return result.status === 0 ? result.stdout.trim() : null;
     },
-    tailscale: (args) => runTailscale(args),
-    tailnetAnswers,
+    probe: realProbe,
     ghWrapper: async () => {
       try {
         const { ghWrapperReport } = await import("../host-units/gh-wrapper-and-notes.ts");
@@ -755,6 +712,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       catalog: defaultCatalog,
       load: (providers, catalog, pluginDeps, blocks) => loadEnabled(providers, catalog, pluginDeps, undefined, blocks),
       messaging: () => messagingStateOfFile(hostFilePath(process.env, homedir(), readOrNull)),
+      messagingChecks: () => messagingChecksOfFile(hostFilePath(process.env, homedir(), readOrNull), { env: process.env, home: homedir() }),
     },
     now: () => Date.now(),
   };

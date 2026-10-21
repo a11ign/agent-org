@@ -36,13 +36,15 @@ import { HOME_CHECKOUT } from "../project-config.ts";
 import { ANSWER_PREFIX } from "../project-vocabulary.ts";
 import { createAnswers } from "./answers.ts";
 import type { Answered, GithubWriter } from "./answers.ts";
-import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
+import { MessagingConfigRefusal, type MessagingOn, readMessagingConfig } from "./config.ts";
 import { createConverse, notReached } from "./converse.ts";
 import { createGithubWriter } from "./github-writer.ts";
 import { createInbound } from "./inbound.ts";
 import { createLedger, describeError } from "./ledger.ts";
-import { createOffsetStore, createTelegramPollingProvider, PollConflictError, runListener } from "./providers/telegram/poll.ts";
-import { readSecretFile, SecretFileRefusal } from "./secret.ts";
+import { createOffsetStore } from "./offsets.ts";
+import { messagingListener } from "./plugin.ts";
+import type { MessagingProvider } from "./provider-contract.ts";
+import { SecretFileRefusal } from "./secret.ts";
 import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.ts";
 import type { Readers } from "./placeholders.ts";
 import { createWatchReaders, hostFiles } from "./watch-list.ts";
@@ -218,6 +220,11 @@ export function tellingWhenUndelivered({ ledger, send, converse }: {
   };
 }
 
+/** The forwarder's `clearKeyboard` for a provider: the provider's own (messaging contract 1.1), and nothing to do for one without it, which draws no keyboards. */
+export function clearKeyboardOf(provider: Pick<MessagingProvider, "clearKeyboard">): (messageRef: string) => Promise<void> {
+  return async (messageRef) => { await provider.clearKeyboard?.(messageRef); };
+}
+
 /**
  * What the listener does with an accepted value: it answers a request on its row and tells the chairman what happened, and hands anything else to
  * `converse`. `send` speaks to the chairman's chat, so a reply needs no chat id, and a button press is NOT answered again here: `runListener` stops
@@ -270,25 +277,26 @@ export async function verifyingReaders({ root, now, err }: { root: string; now: 
   }
 }
 
-async function listen(deps: Parameters<typeof main>[0], config: { tokenFile: string; chairmanFile: string; }): Promise<void> {
+async function listen(deps: Parameters<typeof main>[0], config: MessagingOn): Promise<void> {
   const { root, home, now, fetch: fetchImpl, sleep, err, signal, onForward, converse, github, readers } = { ...DEFAULT_DEPS(), ...deps };
   const chairman = readChairman(config.chairmanFile);
-  const token = readSecretFile(config.tokenFile);
   const state = stateDirectory(home);
   const lock = acquireLock(join(state, LOCK_FILE));
   try {
     const ledger = createLedger({ path: defaultLedgerPath(home), now });
     const inbound = createInbound({ ledger, chairman });
-    const provider = createTelegramPollingProvider({ token, chatId: chairman.chatId, fetch: fetchImpl, sleep, log: err });
+    // The listening provider of the plugin the project names (A11-162): it reads the token and the chairman's chat id as the listener always did, and not the announcements channel.
+    const provider = await messagingListener(config, { fetch: fetchImpl, sleep, log: err });
     const send = (message: { text: string; replyTo?: string; }) => provider.send(message);
     // The queue is `prompt:session`'s own, at the path it and the gate resolve from no `--ledger`: a message for the liaison lands where the liaison's next wake reads it.
     const conversation = createConverse({ chairman, ledger, send, now });
     // `explain` and `stuck` order the liaison through the one module that queues (`converse.ts`); nothing else here can.
     const verifying = readers ?? (github === undefined ? await verifyingReaders({ root, now, err }) : undefined);
     const answers = createAnswers({ ledger, github: github ?? createGithubWriter(), chairman, answerLabel: ANSWER_LABEL, now, readers: verifying, orders: { liaison: (order) => conversation.orderLiaison(order) } });
-    await runListener({
-      provider, inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(signal),
-      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err, clearKeyboard: (ref) => provider.clearKeyboard(ref) }),
+    if (provider.listen === undefined) throw new Error(`messaging.provider ${config.provider} cannot listen: its plugin offers no inbound loop`);
+    await provider.listen({
+      inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(signal),
+      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err, clearKeyboard: clearKeyboardOf(provider) }),
     });
   } finally {
     lock.release();
@@ -297,8 +305,9 @@ async function listen(deps: Parameters<typeof main>[0], config: { tokenFile: str
 
 /** The exit code: a refusal that restarting cannot mend is `refused`, anything else `failed`. */
 function exitCodeFor(error: unknown): number {
+  // A provider says a failure restarting cannot mend with `refusal: true` (messaging contract 1.1): two pollers on one bot is one.
   const isRefusal = error instanceof MessagingConfigRefusal || error instanceof SecretFileRefusal || error instanceof ListenerLockHeld
-    || error instanceof PollConflictError;
+    || (error as { refusal?: unknown } | null)?.refusal === true;
   return isRefusal ? EXIT.refused : EXIT.failed;
 }
 

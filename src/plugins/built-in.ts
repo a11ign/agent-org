@@ -1,10 +1,11 @@
 // @ts-check
-// module: today's providers as catalog entries, and the pin that keeps core on them until each concern moves (A11-158, A11-159)
+// module: today's providers as catalog entries, and the pin that keeps core on them until each concern moves (A11-158, A11-159, A11-160, A11-162)
 //
 // A BUILT-IN IS A PLUGIN WHOSE CODE STILL LIVES IN CORE. A live host names `github`, `slack` and the rest in its host file, and no host file is migrated
 // (A11-157 Decision 7), so the catalog must know them. Each row names the ticket that moves its code into `plugins/<name>`; that ticket deletes the row and its concern's
 // pin. The settings each declares are exactly what `providers.ts` read for its block before the catalog, described by the entries of `config-schema.ts`. The tracker has no row
-// since A11-159: `linear` is the bundled package `plugins/linear`, and the catalog finds it there. The code host has none since A11-160: `github` is `plugins/github`.
+// since A11-159: `linear` is the bundled package `plugins/linear`, and the catalog finds it there. The code host has none since A11-160: `github` is `plugins/github`. The exposure and
+// messaging have none since A11-162: `local`, `tailscale` and `telegram` are `plugins/local`, `plugins/tailscale` and `plugins/telegram`.
 //
 // THE PIN. Core still runs the built-in of each concern that has a row, wired unconditionally. A host file that
 // enabled a fake while core ran GitHub would say one thing and do another, so while a concern is pinned the reader refuses any other plugin enabled for it, naming the
@@ -28,14 +29,9 @@ export const CONTRACT_VERSIONS: Readonly<Record<Concern, string>> = {
 
 type Row = Readonly<{ name: string; concern: Concern; description: string; settings: readonly string[]; movedBy: string }>;
 
-const EXPOSURE_SETTINGS = ["port", "uiPort", "terminal", "tailnetPorts"] as const;
-
 const ROWS: readonly Row[] = [
   { name: "slack", concern: "publisher", description: "Slack: announces the pull requests a person chose, through a publish run.", settings: ["run", "model", "effort", "connectors"], movedBy: "A11-161" },
   { name: "atomic", concern: "reviewer", description: "The gate's codex reviewer, started for each ready pull request.", settings: [], movedBy: "A11-161" },
-  { name: "local", concern: "exposure", description: "Serves the board on loopback only.", settings: EXPOSURE_SETTINGS, movedBy: "A11-162" },
-  { name: "tailscale", concern: "exposure", description: "Serves the board and the worker terminal on the tailnet.", settings: EXPOSURE_SETTINGS, movedBy: "A11-162" },
-  { name: "telegram", concern: "messaging", description: "Telegram: asks and announcements for the chairman. Configured in project.json's messaging key.", settings: [], movedBy: "A11-162" },
 ];
 
 /** The schema entry of a block's own setting, as the Settings page describes it. A setting with no entry is a drift the schema test names. */
@@ -65,5 +61,4 @@ export const FAKES: readonly CatalogPlugin[] = Object.freeze(CONCERNS.map((conce
 export const CORE_RUNS: Readonly<Partial<Record<Concern, Pin>>> = Object.freeze({
   publisher: { runs: ["slack"], until: "A11-161" },
   reviewer: { runs: ["atomic"], until: "A11-161" },
-  exposure: { runs: ["local", "tailscale"], until: "A11-162" },
 });

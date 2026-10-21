@@ -4,7 +4,8 @@
 //
 // a11ign/a11ign#5197: THE LAST MILE OF THE EVENT FEED. Five things are pinned, each by running the code and not by reading it:
 //   1. THE DECLARATION: `events.tunnel` and `events.publicUrl` read back, are refused BY FIELD NAME, and a host that names neither reads as it always did;
-//   2. THE UNIT: it ships for `tailscale-funnel` only (with the receiver it exposes, even on a `poll` host), and renders the one funnel path and the loopback port;
+//   2. THE UNIT: it ships for `tailscale-funnel` only (with the receiver it exposes, even on a `poll` host), and renders the one funnel path and the loopback port; the funnel itself is the
+//      EXPOSURE PLUGIN'S (A11-162): this file asks it for the one path, and a host on `local` is refused by name;
 //   3. THE SECRET: created once at mode 600, never replaced, never in an output or a failure;
 //   4. THE REGISTRATION and THE DELIVERY READ: exactly the call GitHub documents, by an App JWT, and a refusal that does not echo a secret;
 //   5. THE LIVE HOST: when `AGENT_ORG_HOST` names the real declaration (the row's Acceptance does), that declaration is flagged and its unit renders.
@@ -24,7 +25,8 @@ const { LONG_RUNNING_TEMPLATES } = await import("./host-config.ts");
 const { hostUnitsInstall, unclassifiedEntries } = await import("./host-units.ts");
 const { HostConfigRefusal, parseHostConfig, renderTemplate, templateValues } = await import("./host-config.ts");
 const { tmpDir } = await import("./lib/tmp-fixture.ts");
-const { EventTunnelFailure, SUBSCRIBED_EVENTS, changeFunnel, declaredTunnel, deliveryLine, ensureSecretFile, funnelArguments, main, pathIsServed, recentDeliveries, registerWebhook } = await import("./event-tunnel.ts");
+const { EventTunnelFailure, SUBSCRIBED_EVENTS, changeFunnel, declaredTunnel, deliveryLine, ensureSecretFile, main, pathIsServed, recentDeliveries, registerWebhook } = await import("./event-tunnel.ts");
+const { createFakeExposure } = await import("./plugins/fakes/exposure.ts");
 
 const TEMPLATE = "event-tunnel.service.in";
 const UNIT = "a11ign-event-tunnel.service";
@@ -100,23 +102,14 @@ test("#5197: the template is classified, long-running, and keyed on the HOST dec
   assert.deepEqual(unclassifiedEntries({ shippedDir: SHIPPED_DIR, projectUnitsDir: null, units: UNITS, host: hostWith(FUNNEL) }), []);
 });
 
-test("#5197: the unit runs `up` and `down` of the tool's own file, and the funnel arguments serve ONE path to the declared loopback port", () => {
+test("#5197: the unit runs `up` and `down` of the tool's own file", () => {
   const text = unitText(UNIT, FUNNEL);
   assert.doesNotMatch(text, /@@/, "no placeholder is left");
   assert.match(text, /^ExecStart=%h\/\.local\/bin\/node packages\/agent-org\/src\/event-tunnel\.ts up$/m);
   assert.match(text, /^ExecStop=-%h\/\.local\/bin\/node packages\/agent-org\/src\/event-tunnel\.ts down$/m, "stopping takes the path off, and an already-removed path is not a failure of the stop");
-  assert.deepEqual(funnelArguments({ publicUrl: PUBLIC_URL, port: 8787 }), {
-    up: ["funnel", "--bg", "--yes", "--https=443", "--set-path=/webhook", "http://127.0.0.1:8787"],
-    down: ["funnel", "--yes", "--https=443", "--set-path=/webhook", "off"],
-  });
-  assert.deepEqual(funnelArguments({ publicUrl: "https://agents.example.ts.net/github/events", port: 9100 }).up.slice(-2), ["--set-path=/github/events", "http://127.0.0.1:9100"], "the values are read, not typed");
   assert.match(text, /^Type=oneshot$/m);
   assert.match(text, /^RemainAfterExit=yes$/m, "`is-active` answers 'is the path served'");
   assert.match(text, /^Wants=a11ign-event-receiver\.service$/m);
-  for (const args of Object.values(funnelArguments({ publicUrl: PUBLIC_URL, port: 8787 }))) {
-    assert.ok(!args.includes("reset") && !args.some((arg) => /--https=(8443|10000)/.test(arg)), "the trace pages' mount and every other serve entry are left alone");
-    assert.ok(args.some((arg) => arg.startsWith("--set-path=")), "and no call is unscoped: each names the one path");
-  }
   assert.match(text, /^Environment=NODE_COMPILE_CACHE=%h\/\.cache\/node-compile-cache$/m);
   assert.match(text, /^Environment=GH_CONFIG_DIR=.+\/gh$/m);
   assert.match(unitText(RECEIVER_UNIT, FUNNEL), /^ExecStart=.*event-receiver\.ts --port 8787 --secret-file \/home\/h\/\.config\/agent-org\/webhook-secret --queue /m, "and the receiver renders for a poll host that opens the funnel");
@@ -251,78 +244,83 @@ test("#5197: the command refuses an unknown subcommand with usage, and a host th
   assert.equal(await main(["register"], { out: (line) => { refused.push(line); }, fetch }), 1, "the fixture host declares no funnel");
   assert.match(refused.join("\n"), /event-tunnel: /);
   assert.deepEqual(asked, [], "and nothing was sent to GitHub");
-  const ran: string[][] = [];
-  assert.equal(await main(["up"], { out: () => undefined, run: (args) => { ran.push(args); } }), 1, "`up` on a host that declares no funnel refuses, and runs no `tailscale`");
-  assert.deepEqual(ran, []);
+  const exposure = createFakeExposure("agents.example.ts.net");
+  assert.equal(await main(["up"], { out: () => undefined, exposure: async () => exposure }), 1, "`up` on a host that declares no funnel refuses, and asks the exposure nothing");
+  assert.deepEqual(exposure.calls, []);
 });
 
-// What `tailscale serve status --json` prints for a node that serves the receiver at its funnel path AND keeps the trace pages (a file-path handler) on 8443.
-const SERVED = {
-  TCP: { "443": { HTTPS: true }, "8443": { HTTPS: true } },
-  Web: {
-    "agents.example.ts.net:443": { Handlers: { "/webhook": { Proxy: "http://127.0.0.1:8787" } } },
-    "agents.example.ts.net:8443": { Handlers: { "/": { Path: "/home/h/.cache/a11ign/trace-pages" } } },
-  },
-  AllowFunnel: { "agents.example.ts.net:443": true },
-};
 const MOUNT = { publicUrl: PUBLIC_URL, port: 8787 };
-const TRACE_PAGES_ONLY = { TCP: SERVED.TCP, Web: { "agents.example.ts.net:8443": SERVED.Web["agents.example.ts.net:8443"] } };
+const NAME = "agents.example.ts.net";
 
-test("#5197: the path counts as served only when the loopback port is proxied at it AND the host's 443 is open to the internet", () => {
-  assert.equal(pathIsServed(SERVED, MOUNT), true, "POSITIVE CONTROL: the whole shape reads as served, so each refusal below is its own field's doing");
-  assert.equal(pathIsServed(TRACE_PAGES_ONLY, MOUNT), false, "the trace pages alone are not the receiver");
-  assert.equal(pathIsServed({}, MOUNT), false, "an empty serve config");
-  assert.equal(pathIsServed(null, MOUNT), false);
-  assert.equal(pathIsServed({ ...SERVED, AllowFunnel: {} }, MOUNT), false, "proxied but tailnet-only is NOT exposed to GitHub");
-  assert.equal(pathIsServed({ ...SERVED, AllowFunnel: { "agents.example.ts.net:443": false } }, MOUNT), false);
-  assert.equal(pathIsServed(SERVED, { ...MOUNT, port: 9100 }), false, "a different loopback port is a different mount");
-  assert.equal(pathIsServed(SERVED, { ...MOUNT, publicUrl: "https://agents.example.ts.net/other" }), false, "a different path is a different mount");
-  assert.equal(pathIsServed(SERVED, { ...MOUNT, publicUrl: "https://other.example.ts.net/webhook" }), false, "a different host is a different mount");
-  const filePath = { ...SERVED, Web: { "agents.example.ts.net:443": { Handlers: { "/webhook": { Path: "/srv/files" } } } } };
-  assert.equal(pathIsServed(filePath, MOUNT), false, "a file-path handler at the same path is not the receiver");
-  const slashed = { ...SERVED, Web: { "agents.example.ts.net:443": { Handlers: { "/webhook": { Proxy: "http://127.0.0.1:8787/" } } } } };
-  assert.equal(pathIsServed(slashed, MOUNT), true, "a trailing slash on the stored target is the same target");
+/** An exposure that serves the receiver at its funnel path, open to the internet, and the trace pages on 8443 (which are not the receiver's). */
+function serving() {
+  const exposure = createFakeExposure(NAME);
+  exposure.serve(443, 8787, { path: "/webhook", funnel: true });
+  exposure.serve(8443, 8788);
+  exposure.calls.length = 0;
+  return exposure;
+}
+
+test("#5197: the path counts as served only when the exposure holds the loopback port at it AND has the port open to the internet", () => {
+  assert.equal(pathIsServed(serving(), MOUNT), true, "POSITIVE CONTROL: the whole shape reads as served, so each refusal below is its own field's doing");
+  const pagesOnly = createFakeExposure(NAME);
+  pagesOnly.serve(8443, 8788);
+  assert.equal(pathIsServed(pagesOnly, MOUNT), false, "the trace pages alone are not the receiver");
+  assert.equal(pathIsServed(createFakeExposure(NAME), MOUNT), false, "nothing served");
+  const tailnetOnly = createFakeExposure(NAME);
+  tailnetOnly.serve(443, 8787, { path: "/webhook" });
+  assert.equal(pathIsServed(tailnetOnly, MOUNT), false, "proxied but tailnet-only is NOT exposed to GitHub");
+  assert.equal(pathIsServed(serving(), { ...MOUNT, port: 9100 }), false, "a different loopback port is a different mount");
+  assert.equal(pathIsServed(serving(), { ...MOUNT, publicUrl: "https://agents.example.ts.net/other" }), false, "a different path is a different mount");
+  assert.equal(pathIsServed(createFakeExposure(), MOUNT), false, "an exposure that serves nothing holds nothing");
 });
 
 test("#5197: `up` and `down` read first and change nothing when the path is already as asked, and read after and refuse when it is not", () => {
-  const harness = (statuses: unknown[], { runFails = false }: { runFails?: boolean } = {}) => {
-    const ran: string[][] = [];
+  const harness = (exposure: ReturnType<typeof createFakeExposure>) => {
     const out: string[] = [];
-    const queue = [...statuses];
-    return {
-      ran, out,
-      deps: {
-        out: (line: string) => { out.push(line); },
-        run: (args: string[]) => { ran.push(args); if (runFails) throw new Error("Command failed: tailscale funnel: 401 Unauthorized"); },
-        readStatus: () => queue.shift(),
-      },
-    };
+    return { out, deps: { out: (line: string) => { out.push(line); }, exposure } };
   };
-  const unchanged = harness([SERVED]);
+  const unchanged = harness(serving());
   changeFunnel("up", MOUNT, unchanged.deps);
-  assert.deepEqual(unchanged.ran, [], "already served: `tailscale funnel` is NOT run, so a path mounted once by root keeps the unit active as the agent");
+  assert.deepEqual(unchanged.deps.exposure.calls, [], "already served: the exposure is NOT asked to serve, so a path mounted once by root keeps the unit active as the agent");
   assert.match(unchanged.out.join("\n"), /already served/);
 
-  const mounted = harness([TRACE_PAGES_ONLY, SERVED]);
+  const empty = createFakeExposure(NAME);
+  const mounted = harness(empty);
   changeFunnel("up", MOUNT, mounted.deps);
-  assert.deepEqual(mounted.ran, [funnelArguments(MOUNT).up], "POSITIVE CONTROL: not served, so `up` runs exactly the one scoped command");
+  assert.deepEqual(empty.calls, ["serve 443/webhook funnel"], "POSITIVE CONTROL: not served, so `up` asks for exactly the one scoped path, open to the internet");
+  assert.equal(pathIsServed(empty, MOUNT), true);
 
-  const refusedAfter = harness([TRACE_PAGES_ONLY, TRACE_PAGES_ONLY]);
+  const ignoring = createFakeExposure(NAME);
+  const refusedAfter = harness(Object.assign(ignoring, { serve: (): { status: number; stdout: string; stderr: string } => ({ status: 0, stdout: "", stderr: "" }) }));
   assert.throws(() => changeFunnel("up", MOUNT, refusedAfter.deps), /is still NOT served/, "a command that returned and left the path unmounted is a failure, not a success");
 
-  const cannot = harness([TRACE_PAGES_ONLY], { runFails: true });
-  assert.throws(() => changeFunnel("up", MOUNT, cannot.deps), /401 Unauthorized/, "tailscaled's refusal reaches the unit's journal and is not swallowed");
+  const cannot = createFakeExposure(NAME);
+  const refusing = harness(Object.assign(cannot, { serve: () => ({ status: 1, stdout: "", stderr: "401 Unauthorized", refusal: "401 Unauthorized" }) }));
+  assert.throws(() => changeFunnel("up", MOUNT, refusing.deps), /the exposure could not serve \/webhook: 401 Unauthorized/, "the exposure's refusal reaches the unit's journal and is not swallowed");
 
-  const gone = harness([TRACE_PAGES_ONLY]);
+  const gone = harness(createFakeExposure(NAME));
   changeFunnel("down", MOUNT, gone.deps);
-  assert.deepEqual(gone.ran, [], "already off: `down` runs nothing");
+  assert.deepEqual(gone.deps.exposure.calls, [], "already off: `down` asks for nothing");
 
-  const removed = harness([SERVED, TRACE_PAGES_ONLY]);
+  const removed = harness(serving());
   changeFunnel("down", MOUNT, removed.deps);
-  assert.deepEqual(removed.ran, [funnelArguments(MOUNT).down]);
+  assert.deepEqual(removed.deps.exposure.calls, ["unserve 443/webhook"]);
+  assert.equal(pathIsServed(removed.deps.exposure, MOUNT), false);
+  assert.deepEqual(removed.deps.exposure.served(), [`${NAME}:8443`], "and the trace pages are left alone");
 
-  const stillPublic = harness([SERVED, SERVED]);
-  assert.throws(() => changeFunnel("down", MOUNT, stillPublic.deps), /is still served/, "a stop that left the path public says so rather than reporting the unit down over it");
+  const stillPublic = serving();
+  assert.throws(() => changeFunnel("down", MOUNT, harness(Object.assign(stillPublic, { unserve: () => ({ status: 0, stdout: "", stderr: "" }) })).deps), /is still served/, "a stop that left the path public says so rather than reporting the unit down over it");
+});
+
+test("#5197: under an exposure that serves nothing (`local`), `up` is refused by name and `down` finds nothing to remove", async () => {
+  const local = createFakeExposure();
+  const out: string[] = [];
+  assert.throws(() => changeFunnel("up", MOUNT, { out: (line) => { out.push(line); }, exposure: local }),
+    (error: unknown) => error instanceof EventTunnelFailure && error.message === "event-tunnel: the events tunnel needs an exposure that serves to the internet: fake exposure: serve 443: this exposure serves on loopback only");
+  changeFunnel("down", MOUNT, { out: (line) => { out.push(line); }, exposure: local });
+  assert.match(out.join("\n"), /\/webhook is already off as far as this exposure can tell \(it serves on loopback only: a path an earlier exposure opened is that exposure's to remove\): nothing to change/,
+    "and says it cannot tell, rather than that the path is off, since a Funnel path a tailscale exposure opened stays public until it is removed");
 });
 
 test("#5197: the chairman's subscription list is the ten the row names", () => {
@@ -348,6 +346,8 @@ test("#5197: the REAL host declaration opens the funnel and its unit renders", {
   const text = shippedUnitText(`${prefix}event-tunnel.service`, { host: real, units: { prefix, boardReportWorkflow: "board-report.yml", own: [] }, projectUnitsDir: null }) ?? "";
   assert.match(text, /^ExecStart=%h\/\.local\/bin\/node (?:packages\/agent-org\/)?src\/event-tunnel\.ts up$/m, "the unit renders from the live declaration (in the tool's form on a host that names a `tool`)");
   const { publicUrl, receiver } = real.events as { publicUrl: string, receiver: { port: number } };
-  assert.ok(funnelArguments({ publicUrl, port: receiver.port }).up.includes(`http://127.0.0.1:${receiver.port}`), "and `up` serves the declared loopback port");
+  const exposure = createFakeExposure("agents.example.ts.net");
+  changeFunnel("up", { publicUrl, port: receiver.port }, { out: () => undefined, exposure });
+  assert.equal(exposure.entries.get(`443${new URL(publicUrl).pathname}`)?.local, receiver.port, "and `up` serves the declared loopback port");
   assert.doesNotMatch(text, /@@/);
 });

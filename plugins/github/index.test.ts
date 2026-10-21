@@ -75,6 +75,6 @@ test("github is the only code host: disabling it is refused by name, and importi
     return import(url);
   });
   assert.deepEqual(imported.refusals, []);
-  assert.deepEqual(imported.modules.map(({ plugin }) => plugin.name).sort(), ["github", "linear"]);
-  assert.equal(created, 2);
+  assert.deepEqual(imported.modules.map(({ plugin }) => plugin.name).sort(), ["github", "linear", "local"], "the default host also enables the bundled exposure (A11-162), which an update imports to ask what it keeps");
+  assert.equal(created, 3);
 });

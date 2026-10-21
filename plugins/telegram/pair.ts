@@ -16,12 +16,9 @@
 import { randomInt, timingSafeEqual } from "node:crypto";
 import { closeSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
-import { pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
 
-import { MessagingConfigRefusal, readMessagingConfig } from "../../config.ts";
-import { readSecretFile, redactingFetch } from "../../secret.ts";
-import type { Secret } from "../../secret.ts";
+import type { Secret } from "../../src/messaging/secret.ts";
+import type { RedactingFetch } from "../../src/plugins/manifest.ts";
 import { TELEGRAM_API } from "./send.ts";
 
 export const PAIRING_TTL_MS = 10 * 60 * 1000;
@@ -110,7 +107,7 @@ export function writeChairmanFile(path: string, { userId, chatId }: { userId: nu
 }
 
 /** One `getUpdates` call. */
-function updatesFrom({ token, fetch: fetchImpl, apiBase, signal }: { token: Secret; fetch: typeof fetch; apiBase: string; signal?: AbortSignal; }): (offset: number | undefined, timeoutSeconds: number) => Promise<any[]> {
+function updatesFrom({ token, fetch: fetchImpl, apiBase, signal, redactingFetch }: { token: Secret; fetch: typeof fetch; apiBase: string; signal?: AbortSignal; redactingFetch: RedactingFetch; }): (offset: number | undefined, timeoutSeconds: number) => Promise<any[]> {
   const guarded = redactingFetch(fetchImpl, token);
   return async (offset, timeoutSeconds) => {
     const body = { timeout: timeoutSeconds, allowed_updates: ["message"], ...(offset === undefined ? {} : { offset }) };
@@ -148,12 +145,12 @@ function judgeBatch(batch: any[], session: ReturnType<typeof createPairingSessio
 
 export async function runPairing(options: {
         token: Secret; chairmanFile: string; fetch?: typeof fetch; now?: () => number;
-        sleep?: (ms: number) => Promise<void>; print?: (line: string) => void; code?: string; ttlMs?: number; apiBase?: string; signal?: AbortSignal;
+        sleep?: (ms: number) => Promise<void>; print?: (line: string) => void; code?: string; ttlMs?: number; apiBase?: string; signal?: AbortSignal; redactingFetch: RedactingFetch;
     }): Promise<{ paired: true; userId: number; chatId: number; } | { paired: false; reason: string; }> {
   const { token, chairmanFile, fetch: fetchImpl = globalThis.fetch, now = Date.now, sleep = defaultSleep, print = defaultPrint,
-    code = generateCode(), ttlMs = PAIRING_TTL_MS, apiBase = TELEGRAM_API, signal } = options;
+    code = generateCode(), ttlMs = PAIRING_TTL_MS, apiBase = TELEGRAM_API, signal, redactingFetch } = options;
   const session = createPairingSession({ code, now, ttlMs });
-  const getUpdates = updatesFrom({ token, fetch: fetchImpl, apiBase, signal });
+  const getUpdates = updatesFrom({ token, fetch: fetchImpl, apiBase, signal, redactingFetch });
   print(`Send this to your bot within ${Math.round(ttlMs / (MS_PER_SECOND * 60))} minutes, from your own private chat with it:\n\n  /pair ${code}\n`);
   let offset: number | undefined;
   while (!session.expired() && signal?.aborted !== true) {
@@ -179,59 +176,4 @@ function defaultSleep(ms: number): Promise<void> {
 
 function defaultPrint(line: string) {
   process.stdout.write(`${line}\n`);
-}
-
-export const EXIT = Object.freeze({ paired: 0, notPaired: 1, refused: 2 });
-
-export const USAGE = [
-  "usage: messaging:pair [--root=<dir>]",
-  "  Prints a one-time code; send `/pair <code>` to the bot from your private chat with it within 10 minutes, and the chairman file is written.",
-  "  --root=<dir>  the project root (default: the current directory)",
-  "  -h, --help    print this and exit: nothing is read and no request is made",
-].join("\n");
-
-/**
- * THE FLAGS ARE READ BEFORE ANYTHING ELSE (a11ign/agent-org#513): `--help` once started the poll, and Telegram answered the listener's next `getUpdates` with a 409.
- * Strict, so a flag this command does not have is refused by name and never ignored.
- */
-function readFlags(argv: string[]): { help: boolean; root: string; } | { refusal: string; } {
-  try {
-    const { values } = parseArgs({ args: argv, options: { root: { type: "string" }, help: { type: "boolean", short: "h" } } });
-    return { help: values.help === true, root: values.root ?? process.cwd() };
-  } catch (error) {
-    if (!(error instanceof TypeError)) throw error;
-    return { refusal: error.message };
-  }
-}
-
-/** The exit code: 0 paired, 1 not, 2 refused to start (a flag it does not have). */
-export async function main(argv: string[], { fetch: fetchImpl, home, out = defaultPrint, err = (line) => { process.stderr.write(`${line}\n`); } }: {
-  fetch?: typeof fetch; home?: string; out?: (line: string) => void; err?: (line: string) => void;
-} = {}): Promise<number> {
-  const flags = readFlags(argv);
-  if ("refusal" in flags) {
-    err(`messaging:pair: ${flags.refusal}\n${USAGE}`);
-    return EXIT.refused;
-  }
-  if (flags.help) {
-    out(USAGE);
-    return EXIT.paired;
-  }
-  try {
-    const config = readMessagingConfig(flags.root, { home });
-    if (!config.enabled) {
-      out("messaging: OFF (no `messaging` key in .agent-org/project.json); there is nothing to pair");
-      return EXIT.notPaired;
-    }
-    const result = await runPairing({ token: readSecretFile(config.tokenFile), chairmanFile: config.chairmanFile, fetch: fetchImpl, print: out });
-    return result.paired ? EXIT.paired : EXIT.notPaired;
-  } catch (error) {
-    if (!(error instanceof Error)) throw error;
-    err(`messaging:pair: ${error instanceof MessagingConfigRefusal ? "MALFORMED -- " : ""}${error.message}`);
-    return EXIT.notPaired;
-  }
-}
-
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = await main(process.argv.slice(2));
 }

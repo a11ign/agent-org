@@ -103,7 +103,7 @@ function instanceOrigin(name: string, value: unknown): string {
     url = null;
   }
   if (url === null || (url.protocol !== "https:" && url.protocol !== "http:")) {
-    throw new Error(`connection ${name}: https must be the instance's address, such as "https://agents.example.ts.net"`);
+    throw new Error(`connection ${name}: https must be the instance's address, such as "https://agents.example.com"`);
   }
   const hasExtraParts = url.username !== "" || url.password !== "" || url.pathname !== "/" || url.search !== "" || url.hash !== "";
   if (hasExtraParts) {

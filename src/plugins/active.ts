@@ -9,13 +9,17 @@
 // MEMOIZED PER PROCESS: the second call returns the first's result, whatever it is given. A test calls `forgetActivation`.
 import { spawnSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
-import type { ProviderBlock } from "./concerns.ts";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { PROVIDER_BLOCKS, type ProviderBlock } from "./concerns.ts";
 import type { Providers } from "../ticket-mode/providers.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { CodeHost } from "./contracts/code-host.ts";
+import type { Exposure } from "./contracts/exposure.ts";
 import type { TicketSource } from "./contracts/tracker.ts";
-import { type ImportModule, loadEnabled } from "./loader.ts";
-import type { Catalog, CodeHostPolicy, ExecOptions, ExecResult, LoadedPlugin, PluginDeps } from "./manifest.ts";
+import { type ImportModule, loadDefault, loadEnabled } from "./loader.ts";
+import type { Catalog, CodeHostPolicy, ExecOptions, ExecResult, LoadedPlugin, PluginDeps, ProbeRequest } from "./manifest.ts";
+import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { corePolicy } from "./policy.ts";
 
 /** A plugin that cannot run the host, or a concern with nothing to run it: the start is refused with the reason, naming the concern and the plugin. */
@@ -28,6 +32,11 @@ export type Active = Readonly<{
   tracker(): TicketSource;
   /** The enabled code host plugin's implementation. REFUSES when the code host block names a plugin with no code to run on a host (a fake). */
   codeHost(): CodeHost;
+  /**
+   * The enabled exposure plugin's implementation, or the concern's default (`local`) when the block is disabled or names none: an exposure always resolves, since serving on
+   * loopback needs nothing installed. REFUSES when the exposure block names a plugin with no code to run on a host (a fake), and when this activation did not build the exposure.
+   */
+  exposure(): Exposure;
 }>;
 
 const refused = (message: string): never => {
@@ -43,10 +52,27 @@ function implementationOf<Implementation>(providers: Providers, loaded: readonly
 }
 
 /** Loads the bundled plugins `providers` enables and answers their implementations. REFUSES, naming each plugin, any the loader refuses. Not memoized: see {@link activatePlugins}. */
-export async function loadActive(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule, blocks?: readonly ProviderBlock[]): Promise<Active> {
-  const { loaded, refusals } = await loadEnabled(providers, catalog, deps, importModule, blocks);
+export async function loadActive(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule, blocks: readonly ProviderBlock[] = PROVIDER_BLOCKS): Promise<Active> {
+  const { loaded: enabled, refusals } = await loadEnabled(providers, catalog, deps, importModule, blocks);
   if (refusals.length > 0) return refused(refusals.map(({ plugin, concern, why }) => `the ${concern} plugin ${plugin} was refused: ${why}`).join("; "));
-  return { loaded, tracker: () => implementationOf<TicketSource>(providers, loaded, "tracker", "tracker"), codeHost: () => implementationOf<CodeHost>(providers, loaded, "codeHost", "code host") };
+  // An exposure always resolves: a block that is switched off runs the concern's default, so the readers never ask whether there is one. A block that is on and names a plugin with
+  // no code to run (a fake) is not defaulted: the host file would say one thing while core did another, and `exposure()` refuses it by name.
+  const needsDefault = blocks.includes("exposure") && !providers.blocks.exposure.enabled;
+  const fallback = needsDefault ? await loadDefault("exposure", providers, catalog, deps, importModule) : null;
+  if (fallback?.refusal !== undefined) return refused(`the exposure plugin ${fallback.refusal.plugin} was refused: ${fallback.refusal.why}`);
+  const loaded = fallback?.loaded === undefined ? enabled : [...enabled, fallback.loaded];
+  return {
+    loaded,
+    tracker: () => implementationOf<TicketSource>(providers, loaded, "tracker", "tracker"),
+    codeHost: () => implementationOf<CodeHost>(providers, loaded, "codeHost", "code host"),
+    exposure: () => {
+      const { provider } = providers.blocks.exposure;
+      const plugin = loaded.find(({ plugin: candidate }) => candidate.concern === "exposure");
+      if (plugin !== undefined) return plugin.implementation as Exposure;
+      return refused(blocks.includes("exposure") ? `the exposure is ${provider}, which has no code to run on a host: name a bundled exposure plugin in tickets.providers.exposure (\`agent-org plugin list\`)`
+        : "the exposure was not built by this process: it asked for the other plugins only");
+    },
+  };
 }
 
 let activation: Promise<Active> | null = null;
@@ -92,9 +118,26 @@ export function realMode(path: string): number | null {
 }
 
 /**
+ * GETs `/` of `host:port` for real: the status, or null when nothing answered within the time (a refused connection, a failed handshake, a timeout). `servername` and `hostHeader` let a
+ * plugin reach a machine by its address and still name it, as a browser does by its name.
+ */
+export function realProbe({ host, port, tls, servername, hostHeader, timeoutMs }: ProbeRequest): Promise<number | null> {
+  return new Promise((done) => {
+    const options = { host, port, path: "/", method: "GET", timeout: timeoutMs, ...(servername === undefined ? {} : { servername }), ...(hostHeader === undefined ? {} : { headers: { Host: hostHeader } }) };
+    const call = (tls ? httpsRequest : httpRequest)(options, (response) => {
+      response.resume();
+      done(response.statusCode ?? null);
+    });
+    call.on("timeout", () => call.destroy());
+    call.on("error", () => done(null));
+    call.end();
+  });
+}
+
+/**
  * The deps core gives a plugin on this machine: the real `fetch`, programs and files. `pick` is the board's `tickets.pick`, `clones` the host's checkouts, and `review` how a reviewer
  * judges a pull request, which only a process that loaded the gate can give (`corePolicy` says what the others do).
  */
 export function realPluginDeps({ env, stateDir, pick, clones = {}, review }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"] }>): PluginDeps {
-  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), exec: realExec, readFile: (path) => readFileSync(path, "utf8"), mode: realMode };
+  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), exec: realExec, readFile: (path) => readFileSync(path, "utf8"), mode: realMode, probe: realProbe, messaging: messagingHelpers() };
 }

@@ -10,18 +10,27 @@
 //   agent-org plugin enable <name>        agent-org plugin disable <name>        agent-org plugin uninstall <name>
 //   agent-org plugin config <name> [key ...] [key=value ...] [--unset key ...] [--confirm]
 //
-// EVERY WRITE GOES THROUGH THE SETTINGS PAGE'S OWN PATH (`settings-edit.ts`): the change is spliced into the host file's text, so the person's `_` notes and layout stay; the readers
-// judge the text that would be written, so nothing they refuse is written; and `host.json.bak` is left beside the file. A key the schema marks dangerous needs `--confirm`.
+// EVERY WRITE GOES THROUGH THE SETTINGS PAGE'S OWN PATH (`settings-edit.ts`): the change is spliced into the host file's text (or, for messaging, the project's `project.json`), so the
+// person's `_` notes and layout stay; the readers judge the text that would be written, so nothing they refuse is written; and `host.json.bak` is left beside the file. A key the
+// schema marks dangerous needs `--confirm`.
+//
+// A PLUGIN IS RELEASED BEFORE IT IS SWITCHED OFF (A11-162). `enable <name>` of a plugin of a concern whose block names another one switches the block, and that switch, `disable`,
+// `uninstall` and `install --replace` take what the plugin it leaves put on the machine off it first: the plugin's `release` runs while it is still the enabled one, after the readers
+// have accepted the change and before the file is written. A release that cannot (Tailscale is not running) refuses the change, so the file and the machine never disagree.
 // A SECRET IS NEVER PRINTED: a setting that names a key file shows its path, and no file is read.
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { hostFilePath, readOrNull } from "../install/paths.ts";
 import { resolveProviders, type Providers } from "../ticket-mode/providers.ts";
-import { type Change, previewEdit, saveEdit, SettingsEditRefusal } from "../ticket-mode/settings-edit.ts";
+import { type Change, type ChangeShown, type EditFile, previewEdit, saveEdit, SettingsEditRefusal } from "../ticket-mode/settings-edit.ts";
 import { TicketSettingsRefusal } from "../ticket-mode/settings-refusal.ts";
-import type { Catalog } from "./manifest.ts";
+import { realPluginDeps } from "./active.ts";
+import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
+import type { ImportModule } from "./loader.ts";
+import type { Catalog, CatalogPlugin, PluginModule, PluginSettings, StepResult } from "./manifest.ts";
 import { configLines, type Plan, type PlanContext, planConfig, planDisable, planEnable, planInstall, PluginCommandRefusal, planUninstall } from "./manage.ts";
 import { messagingStateOf } from "./messaging-state.ts";
 import { defaultCatalog } from "./registry.ts";
@@ -40,6 +49,14 @@ const USAGE_TEXT = [
   "       agent-org plugin config <name> [key ...] [key=value ...] [--unset key ...] [--confirm]",
 ].join("\n");
 
+/** A plugin that is about to stop being the enabled one of its concern, loaded: the name it answers to on this machine (null when it has none), and its release. */
+export type Outgoing = Readonly<{
+  machineName: string | null;
+  release: () => StepResult;
+  /** Puts back what `release` removed, when the change is refused after it ran. Absent for a plugin that has none to put back. */
+  restore?: (released: StepResult) => StepResult;
+}>;
+
 /** What the command reads and writes: the host file, the catalog and where its words go. A test passes a scratch file and its own catalog. */
 export type PluginCliDeps = Readonly<{
   hostPath: string;
@@ -48,6 +65,8 @@ export type PluginCliDeps = Readonly<{
   error: (line: string) => void;
   /** The project's declaration, when it is not the primary's (a test's). */
   projectPath?: string;
+  /** Loads a plugin that a change switches off, given the settings it has. The default imports its module and builds it for this machine; a test passes its own. */
+  outgoing?: (plugin: CatalogPlugin, settings: PluginSettings) => Promise<Outgoing>;
 }>;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -78,16 +97,104 @@ function providersOf(host: Record<string, unknown>, catalog: Catalog): Providers
   }
 }
 
-/** Writes a plan through the page's path, and says what changed. A refusal of the readers or of a dangerous key is thrown as a command refusal. */
+/** The plugin's module and implementation, loaded for this machine to release what it put there. A plugin whose code is not a bundled module has nothing to release. */
+export async function loadOutgoing(plugin: CatalogPlugin, settings: PluginSettings, importModule: ImportModule = (url) => import(url)): Promise<Outgoing> {
+  if (plugin.where !== "bundled" || plugin.dir === null || plugin.entry === null) return { machineName: null, release: () => ({ ok: true, detail: "" }) };
+  if (!readsConcernContract(plugin.concern, plugin.contract)) throw new PluginCommandRefusal(unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract));
+  const module = (await importModule(pathToFileURL(join(plugin.dir, plugin.entry)).href)) as PluginModule;
+  const deps = realPluginDeps({ env: process.env, stateDir: join(homedir(), ".local", "state", "agent-org"), pick: "assigned" });
+  // A plugin with nothing to release holds nothing on the machine, so it is not built (a messaging plugin would read its secret files for it) and has no name to give.
+  let machineName: string | null = null;
+  if (module.release !== undefined) {
+    try {
+      const implementation = module.create(settings, deps) as { machineName?: () => Promise<string | null> };
+      machineName = typeof implementation.machineName === "function" ? await implementation.machineName() : null;
+    } catch {
+      // A plugin that cannot be built has no name to give, and its release says why it cannot run.
+    }
+  }
+  return { machineName, restore: (released) => module.restore?.(settings, deps, released) ?? { ok: true, detail: "" }, release: () => {
+    try {
+      return module.release?.(settings, deps) ?? { ok: true, detail: "" };
+    } catch (error) {
+      // A plugin whose settings it cannot be built from cannot say what it holds, so the change is refused with its words, not crashed.
+      return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+    }
+  } };
+}
+
+/** Whether a `terminal` template names `machineName`, the machine the plugin it was written for answered to: the plugin's own address, which the next plugin cannot serve. */
+function namesMachine(address: string, machineName: string | null): boolean {
+  if (machineName === null) return false;
+  try {
+    return new URL(address.replace(/\{[a-z]+\}/g, "x")).hostname === machineName;
+  } catch {
+    return false;
+  }
+}
+
+/** The changes of a plan, with the `terminal` a switch drops when it names the machine of the plugin the switch leaves. */
+function withoutOwnTerminal(plan: Plan, outgoing: Outgoing | null): readonly Change[] {
+  const own = plan.ownTerminal;
+  if (own === undefined || outgoing === null || !namesMachine(own.address, outgoing.machineName)) return plan.changes;
+  return plan.changes.filter((change) => change.key !== own.key);
+}
+
+/** Refuses a change to a dangerous key that `--confirm` does not name, as `saveEdit` would, BEFORE anything is released: a write that is going to be refused must not take the board off the tailnet first. */
+function refuseUnconfirmed(shown: readonly ChangeShown[], confirmed: readonly string[]): void {
+  const unconfirmed = shown.find(({ dangerous, changed, key }) => dangerous !== null && changed && !confirmed.includes(key));
+  if (unconfirmed !== undefined) throw new SettingsEditRefusal(`${unconfirmed.key} is dangerous and needs a second confirmation that names it. It can break this: ${unconfirmed.dangerous}`);
+}
+
+/** Releases the plugin a change leaves, now that the readers have accepted the change. REFUSES, with the plugin's words, when it cannot. */
+function releasePlugin(plan: Plan, outgoing: Outgoing | null): StepResult | null {
+  if (outgoing === null) return null;
+  const released = outgoing.release();
+  if (!released.ok) throw new PluginCommandRefusal(`${plan.leaves?.plugin.name} could not be released, so nothing was changed: ${released.detail}`);
+  return released;
+}
+
+/** Whether a release took anything off the machine: one that said nothing took nothing, so there is nothing to put back. */
+const removedSomething = (released: StepResult | null): released is StepResult => released !== null && released.detail !== "";
+
+/** Puts the released plugin back, and says whether it could: a plugin without a `restore` has nothing to put back, and one that throws is a plugin that could not. */
+function putBack(outgoing: Outgoing | null, released: StepResult): StepResult {
+  try {
+    return outgoing?.restore?.(released) ?? { ok: true, detail: "" };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Saves the change; when the save fails AFTER a release (the file changed since the readers looked, or could not be written), the plugin is put back and the refusal says so, so the file and the machine agree. */
+async function saveOrRestore(save: () => ReturnType<typeof saveEdit>, plan: Plan, outgoing: Outgoing | null, released: StepResult | null): ReturnType<typeof saveEdit> {
+  try {
+    return await save();
+  } catch (error) {
+    if (!removedSomething(released)) throw error;
+    const back = putBack(outgoing, released);
+    const why = error instanceof Error ? error.message : String(error);
+    throw new SettingsEditRefusal(`${why}. ${plan.leaves?.plugin.name} had been released, so ${back.ok ? "it was put back" : "it could NOT be put back"}${back.detail === "" ? "" : `: ${back.detail}`}`);
+  }
+}
+
+/** Writes a plan through the page's path, and says what changed. A refusal of the readers, of a release or of a dangerous key is thrown as a command refusal. */
 async function write(plan: Plan, deps: PluginCliDeps, confirmed: readonly string[]): Promise<void> {
   if (plan.changes.length === 0) {
     deps.log(plan.said);
     return;
   }
   const options = { hostPath: deps.hostPath, projectPath: deps.projectPath, plugins: true } as const;
+  const file: EditFile = plan.file ?? "host.json";
+  const outgoing = plan.leaves === undefined ? null : await (deps.outgoing ?? loadOutgoing)(plan.leaves.plugin, plan.leaves.settings);
+  const changes = withoutOwnTerminal(plan, outgoing);
   try {
-    const preview = await previewEdit(options, "host.json", plan.changes);
-    const saved = await saveEdit(options, "host.json", plan.changes, { base: preview.base, confirmed });
+    const preview = await previewEdit(options, file, changes);
+    refuseUnconfirmed(preview.changes, confirmed);
+    const released = releasePlugin(plan, outgoing);
+    const saved = await saveOrRestore(() => saveEdit(options, file, changes, { base: preview.base, confirmed }), plan, outgoing, released);
+    if (released !== null && released.detail !== "") deps.log(released.detail);
+    if (changes.length < plan.changes.length) deps.log(`dropped ${plan.ownTerminal?.key}, which named ${plan.leaves?.plugin.name}'s own address (${plan.ownTerminal?.address})`);
     deps.log(plan.said);
     for (const change of saved.changes) deps.log(`  ${change.key}: ${change.old} -> ${change.new}${change.changed ? "" : " (unchanged)"}`);
     for (const inForce of new Set(saved.changes.map((change) => change.inForce))) deps.log(`  ${inForce}`);
@@ -156,8 +263,8 @@ export async function runPlugin(argv: readonly string[], deps: PluginCliDeps): P
   const call: Invocation = { name, rest, sets: values.set ?? [], unsets: values.unset ?? [], replace: values.replace === true, confirm: values.confirm === true };
   try {
     const host = readHost(deps.hostPath);
-    const context: PlanContext = { providers: providersOf(host, deps.catalog), catalog: deps.catalog };
-    if (command === "list") deps.log(formatList(viewConcerns(context.providers, deps.catalog, await messagingStateOf(host, deps.projectPath)), deps.catalog));
+    const context: PlanContext = { providers: providersOf(host, deps.catalog), catalog: deps.catalog, messaging: await messagingStateOf(host, deps.projectPath) };
+    if (command === "list") deps.log(formatList(viewConcerns(context.providers, deps.catalog, context.messaging), deps.catalog));
     else if (command === "config") await configure(call, context, deps);
     else await change(command, call, context, deps);
     return OK;

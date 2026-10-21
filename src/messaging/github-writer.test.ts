@@ -1,6 +1,6 @@
 // @ts-check
 // THE GITHUB WRITER AND THE WIRING (a11ign/a11ign#3062 done-whens 2 and 3): `createGithubWriter` against a fixture `gh` that records its argv, and
-// a stream of updates through the REAL inbound core, the real answers, the real writer and `listen.ts`'s forwarder, with a fake Telegram.
+// a stream of updates through the REAL inbound core, the real answers, the real writer and `listen.ts`'s forwarder, with the in-memory provider's listen loop.
 // Nothing here reaches a network or runs `gh`.
 //
 // POSITIVE CONTROLS: "resolves when the label is absent" is also what a writer that swallows every failure reports, so the same call with a
@@ -19,7 +19,7 @@ import { createInbound } from "./inbound.ts";
 import { createLedger, deliveryLine, STATUS } from "./ledger.ts";
 import { createConverse } from "./converse.ts";
 import { createForwarder } from "./listen.ts";
-import { runListener } from "./providers/telegram/poll.ts";
+import { createFakeProvider } from "./fake-provider.ts";
 import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.ts";
 
 const REPO = "a11ign/a11ign";
@@ -172,21 +172,9 @@ async function listen(stream: any[], consumer: (parts: { ledger: any; say: (text
   const consume = consumer({ ledger, say: (text) => events.push(text) });
   // The forwarder's converse port reports nothing, and the real `converse` reports an outcome: the wrapper drops it, as the forwarder does.
   const onForward = createForwarder({ answers, send, converse: async (accepted) => { await consume(accepted); }, log: (line) => events.push(`log ${line}`) });
-  const stop = new AbortController();
-  let served = false;
-  const provider = {
-    /** @param {number | undefined} cursor */
-    async poll(cursor: number | undefined) {
-      if (served) { stop.abort(); return { updates: [], cursor }; }
-      served = true;
-      return { updates: stream, cursor: 4 };
-    },
-    async answerCallbackQuery() {}, async leaveChat() {}, async deleteMessage() {}, async send() {},
-  };
-  await runListener({
-    provider: /** @type {any} */ (provider), inbound: createInbound({ ledger, chairman: CHAIRMAN }), offsets: { path: "", read: () => undefined, write: () => {} },
-    chairman: CHAIRMAN, onForward, sleep: async () => {}, signal: stop.signal,
-  });
+  const provider = createFakeProvider();
+  stream.forEach((update) => provider.receive(update));
+  await provider.listen({ inbound: createInbound({ ledger, chairman: CHAIRMAN }), offsets: { read: () => undefined, write: () => {} }, chairman: CHAIRMAN, onForward, sleep: async () => {} });
   return { events, rows };
 }
 

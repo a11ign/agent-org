@@ -423,7 +423,7 @@ const SHARED_HELPERS = ["defaultLedgerPath", "accountIsDeclared", "trackerRepo",
 
 describe("done-when 4: the command reaches no provider but the configured one, and no reader but `createGhReaders`", () => {
   const ALLOWED_IMPORTS = new Set(["node:child_process", "node:fs", "node:os", "node:path", "node:url", "node:util", "../lib/tick-completion.ts", "./config.ts", "./ledger.ts", "./placeholders.ts",
-    "./providers/telegram/send.ts", "./reply.ts", "./secret.ts", "./state.ts"]);
+    "./plugin.ts", "./reply.ts", "./secret.ts", "./state.ts"]);
 
   /** @param {string} source @returns {string[]} what breaks the done-when, one string per rule broken */
   function scanProblems(source: string): string[] {

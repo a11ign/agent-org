@@ -199,13 +199,10 @@ export async function askProfile({ ask }: ProfileAnswers, repos: readonly Profil
   }));
 }
 
-/** The tailnet ports `exposure: tailscale` serves the board and the terminal on when a profile names none: the ports A11-144 defaults to. */
-const TAILNET_PORTS = Object.freeze({ ui: 9443, terminal: 9444 });
-
 /**
  * The provider blocks a profile names, as the host file holds them, and the two keys that sit beside them: `pick` (under `tickets`) and the reviewer App's
- * identity. A profile's block is copied as it is, so the host reader checks each setting under the name the profile wrote; a tailscale exposure with no
- * ports takes the defaults, written out. PURE.
+ * identity. A profile's block is copied as it is, so the host reader checks each setting under the name the profile wrote; a plugin's own defaults (a tailscale
+ * exposure's ports) are written by that plugin's onboard step (A11-162). PURE.
  */
 export function providerBlocksOf(profile: Profile): Readonly<{
   tracker: Record<string, unknown>; codeHost: Record<string, unknown>; publish: Record<string, unknown>; reviewer: Record<string, unknown>; exposure: Record<string, unknown>;
@@ -213,6 +210,5 @@ export function providerBlocksOf(profile: Profile): Readonly<{
 }> {
   const { pick, ...tracker } = profile.tracker;
   const { reviewerApp, ...codeHost } = profile.codeHost;
-  const exposure = profile.exposure.provider === "tailscale" ? { tailnetPorts: { ...TAILNET_PORTS }, ...profile.exposure } : profile.exposure;
-  return { tracker, codeHost, publish: profile.publish, reviewer: profile.reviewer, exposure, pick, reviewerApp: reviewerApp as ReviewerApp | undefined };
+  return { tracker, codeHost, publish: profile.publish, reviewer: profile.reviewer, exposure: profile.exposure, pick, reviewerApp: reviewerApp as ReviewerApp | undefined };
 }

@@ -5,23 +5,25 @@
 // refused. A secret is compared in time that does not depend on where it differs. A body is read up to a limit, and must be a JSON object.
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { tailnetHosts, tailnetOrigins, type Tailnet } from "./tailnet.ts";
 
 export type Json = Record<string, unknown>;
 
 /** The most an API request may send. The largest is a queue of ticket keys. */
 export const API_BODY_BYTES = 64 * 1024;
 
+/** The `Host` and `Origin` values the exposure plugin answers to besides this server's loopback: its `hosts` and `origins` for the board's address (none for a loopback-only exposure). */
+export type Served = Readonly<{ hosts: readonly string[]; origins: readonly string[] }>;
+
 /**
- * Why a request is refused before it is read, or `null`. PURE over the request's headers, this server's port and, when the page is served on the
- * tailnet, that tailnet: its `Host` and `Origin` may also name it, and nothing else does.
+ * Why a request is refused before it is read, or `null`. PURE over the request's headers, this server's port and, when the exposure serves the page under a name, the `Host` and
+ * `Origin` values it answers to: those may also name it, and nothing else does.
  */
-export function refusal(request: Pick<IncomingMessage, "headers" | "method">, port: number, tailnet?: Tailnet): string | null {
+export function refusal(request: Pick<IncomingMessage, "headers" | "method">, port: number, served?: Served): string | null {
   const loopback = [`127.0.0.1:${port}`, `localhost:${port}`];
-  const hosts = [...loopback, ...(tailnet === undefined ? [] : tailnetHosts(tailnet))];
+  const hosts = [...loopback, ...(served?.hosts ?? [])];
   if (!hosts.includes(String(request.headers.host ?? ""))) return "this server answers only to its own host";
   const origin = request.headers.origin;
-  const origins = [...loopback.map((host) => `http://${host}`), ...(tailnet === undefined ? [] : tailnetOrigins(tailnet))];
+  const origins = [...loopback.map((host) => `http://${host}`), ...(served?.origins ?? [])];
   if (request.method !== "GET" && origin !== undefined && !origins.includes(String(origin))) return "a write from another origin";
   return null;
 }

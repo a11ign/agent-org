@@ -32,8 +32,15 @@
 // throws is scrubbed again by the secret's own value. A failure the HTTP layer reports is described by its status and Telegram's own
 // `description`, which is Telegram's text and not the request's.
 
-import { AUDIENCE, AUDIENCES } from "../../provider-contract.ts";
-import { redactingFetch } from "../../secret.ts";
+import type { Secret } from "../../src/messaging/secret.ts";
+import type { RedactingFetch } from "../../src/plugins/manifest.ts";
+
+/**
+ * The two destinations of a message, as the messaging contract names them. They are the contract's own words (`AUDIENCE` in `src/messaging/provider-contract.ts`), written out here because
+ * a plugin imports core's types only; the contract suite sends to each of core's audiences and fails a provider that does not honour it, so the two cannot drift unseen.
+ */
+const AUDIENCE = Object.freeze({ ask: "ask", announcement: "announcement" });
+const AUDIENCES: readonly string[] = Object.freeze(Object.values(AUDIENCE));
 
 export const TELEGRAM_API = "https://api.telegram.org";
 export const TELEGRAM_MAX_MESSAGE = 4096;
@@ -144,7 +151,7 @@ function knownAudience(audience: string | undefined): string {
 
 /** What the HTTP calls of one provider share: the token, the fetch, the endpoint, the deadline, the pause between retries and the log. */
 type Wire = {
-  token: import("../../secret.ts").Secret; guardedFetch: ReturnType<typeof redactingFetch>; apiBase: string;
+  token: Secret; guardedFetch: typeof fetch; apiBase: string;
   deadline: (ms: number) => AbortSignal; sleep: (ms: number) => Promise<void>; note: (line: string) => void;
 };
 
@@ -212,9 +219,9 @@ function refused({ note }: Wire, error: TelegramSendError, { retried }: { retrie
 }
 
 /** `deadline` is the request's clock, injected like `sleep` */
-export function createTelegramProvider({ token, chatId, announcementsChatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout }: {
-        token: import("../../secret.ts").Secret; chatId: number | string; announcementsChatId?: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
-        log?: (line: string) => void; apiBase?: string; deadline?: (ms: number) => AbortSignal;
+export function createTelegramProvider({ token, chatId, announcementsChatId, fetch: fetchImpl = globalThis.fetch, sleep = defaultSleep, log = defaultLog, apiBase = TELEGRAM_API, deadline = AbortSignal.timeout, redactingFetch }: {
+        token: Secret; chatId: number | string; announcementsChatId?: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
+        log?: (line: string) => void; apiBase?: string; deadline?: (ms: number) => AbortSignal; redactingFetch: RedactingFetch;
     }) {
   if (typeof token?.reveal !== "function") throw new TypeError("createTelegramProvider: token must be a Secret (createSecret / readSecretFile)");
   if (chatId === undefined || chatId === null || chatId === "") throw new TypeError("createTelegramProvider: chatId is required");

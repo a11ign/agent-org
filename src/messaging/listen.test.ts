@@ -23,12 +23,12 @@ import { fileURLToPath } from "node:url";
 const HOST_FILE = join(homedir(), "repos", "a11y-witness", ".agent-org", "host.json");
 if (!process.env.AGENT_ORG_HOST && existsSync(HOST_FILE)) process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT, USAGE } = await import("./listen.ts");
+const { clearKeyboardOf, createForwarder, tellingWhenUndelivered, main, verifyingReaders, EXIT, USAGE } = await import("./listen.ts");
 const { createConverse, notReached } = await import("./converse.ts");
 const { createInbound } = await import("./inbound.ts");
 const { createLedger, readLedgerLines } = await import("./ledger.ts");
 const { createFakeProvider } = await import("./fake-provider.ts");
-const { createOffsetStore, runListener } = await import("./providers/telegram/poll.ts");
+const { createOffsetStore } = await import("./offsets.ts");
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 /** The message id of a request the organisation sent: a reply to it is an answer, and a reply to anything else is conversation. */
@@ -312,23 +312,14 @@ async function run(/** @type {string[]} */ texts: string[]) {
   const { ledger, inbound, path } = core();
   const queue = recordingQueue();
   const toAnswers: Record<string,any>[] = /** @type {Record<string, any>[]} */ ([]);
-  const controller = new AbortController();
-  const wire = /** @type {{ sent: Record<string, any>[], deleted: Record<string, any>[] }} */ ({ sent: [], deleted: [] });
-  const provider = {
-    poll: async () => { controller.abort(); return { updates: texts.map((text, index) => messageUpdate(300 + index, text)), cursor: 400 }; },
-    send: async (/** @type {Record<string, any>} */ message: Record<string, any>) => { wire.sent.push(message); return { messageRef: `ref-${wire.sent.length}` }; },
-    deleteMessage: async (/** @type {Record<string, any>} */ target: Record<string, any>) => { wire.deleted.push(target); },
-    answerCallbackQuery: async () => {}, leaveChat: async () => {},
-  };
+  const provider = createFakeProvider();
+  texts.forEach((text, index) => provider.receive(messageUpdate(300 + index, text)));
   const send = (/** @type {{ text: string, replyTo?: string }} */ message: { text: string; replyTo?: string; }) => provider.send(message);
   const conversation = createConverse({ chairman: CHAIRMAN, ledger, send, queue: queue.port, queuePath: "/nowhere/queue.jsonl", agents: () => [{ label: "liaison", status: "idle" }] });
   const answers = { answer: /** @param {Record<string, any>} accepted @returns {Promise<any>} a deliberately partial `Answered` */ async (accepted: Record<string, any>): Promise<any> => { toAnswers.push(accepted); return { action: "not-an-answer" }; } };
   const offsets = { path: "/nowhere/offset", read: () => undefined, write: () => {} };
-  await runListener({
-    provider: /** @type {any} */ (provider), inbound, offsets, chairman: CHAIRMAN, sleep: async () => {}, signal: controller.signal,
-    onForward: createForwarder({ answers, send, converse: async (accepted) => { await conversation.forward(accepted); }, log: () => {} }),
-  });
-  return { queue: queue.calls, toAnswers, wire, ledgerText: readFileSync(path, "utf8") };
+  await provider.listen({ inbound, offsets, chairman: CHAIRMAN, sleep: async () => {}, onForward: createForwarder({ answers, send, converse: async (accepted) => { await conversation.forward(accepted); }, log: () => {} }) });
+  return { queue: queue.calls, toAnswers, wire: { sent: provider.sent, deleted: provider.deleted }, ledgerText: readFileSync(path, "utf8") };
 }
 
 describe("#3442: a credential reaches neither the queue, the answers path, the ledger nor a quote, read end to end over recording ports", () => {
@@ -426,8 +417,15 @@ describe("a message that can no longer be answered has its keyboard taken off (a
     assert.match(logged.join("\n"), /could not take the keyboard off message 501: message to edit not found/);
   });
 
-  test("the program wires both: the provider's clearKeyboard to the forwarder, and the liaison's order to the answers", () => {
-    assert.match(SOURCE, /clearKeyboard: \(ref\) => provider\.clearKeyboard\(ref\)/);
+  test("the program takes a keyboard off through the provider's own clearKeyboard (messaging contract 1.1), and a provider without one has no keyboard to clear", async () => {
+    const cleared: string[] = [];
+    await clearKeyboardOf({ clearKeyboard: async (ref: string) => { cleared.push(ref); } })("501");
+    assert.deepEqual(cleared, ["501"], "the positive control: the provider that offers it was asked");
+    await assert.doesNotReject(() => clearKeyboardOf({})("501"));
+    await assert.rejects(() => clearKeyboardOf({ clearKeyboard: async () => { throw new Error("message to edit not found"); } })("501"), /message to edit not found/, "its failure reaches the forwarder, which logs it and still replies");
+  });
+
+  test("the program wires the liaison's order to the answers", () => {
     assert.match(SOURCE, /orders: \{ liaison: \(order\) => conversation\.orderLiaison\(order\) \}/);
   });
 });

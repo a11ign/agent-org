@@ -18,16 +18,17 @@ test("the settings each built-in declares are exactly what its block took before
   const declared = Object.fromEntries(BUILT_IN.map(({ name, settings }) => [name, Object.keys(settings)]));
   assert.deepEqual(declared, {
     slack: ["run", "model", "effort", "connectors"], atomic: [],
-    local: ["port", "uiPort", "terminal", "tailnetPorts"], tailscale: ["port", "uiPort", "terminal", "tailnetPorts"], telegram: [],
   });
+  assert.equal(BUILT_IN.some(({ concern }) => concern === "exposure" || concern === "messaging"), false, "local, tailscale and telegram are bundled packages since A11-162: the catalog finds them in plugins/");
 });
 
-test("every concern has a contract version and a fake, and every built-in concern a pin: not messaging, which has no block to pin, and not the tracker or the code host, which A11-159 and A11-160 moved into plugins/linear and plugins/github", () => {
-  assert.deepEqual(CONCERNS.map((concern) => CONTRACT_VERSIONS[concern]), ["1.1", "1.1", "1.0", "1.0", "1.0", "1.0"]);
+test("every concern has a contract version and a fake, and every built-in concern a pin: only the publisher and the reviewer, which A11-161 moves: the tracker, the code host, the exposure and messaging are bundled packages", () => {
+  assert.deepEqual(CONCERNS.map((concern) => CONTRACT_VERSIONS[concern]), ["1.1", "1.1", "1.0", "1.0", "1.1", "1.1"]);
   assert.deepEqual(FAKES.map(({ concern }) => concern), [...CONCERNS]);
   assert.deepEqual(Object.keys(CORE_RUNS), CONCERNS.filter((concern) => blockOf(concern) !== null && BUILT_IN.some((plugin) => plugin.concern === concern)));
   assert.equal(BUILT_IN.some(({ concern }) => concern === "tracker"), false, "the tracker has no built-in row: linear is a bundled package");
   assert.equal(BUILT_IN.some(({ concern }) => concern === "codeHost"), false, "the code host has no built-in row: github is a bundled package");
+  assert.deepEqual(Object.keys(CORE_RUNS), ["publisher", "reviewer"], "the exposure is no longer pinned: any exposure plugin of the catalog may be enabled");
   for (const [concern, pin] of Object.entries(CORE_RUNS)) {
     const names = BUILT_IN.filter((plugin) => plugin.concern === concern).map(({ name }) => name);
     assert.deepEqual(pin?.runs, names, `core runs every built-in of ${concern}, and only those`);

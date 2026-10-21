@@ -1,6 +1,6 @@
 // @ts-check
 // BUTTONS FROM THE WATCHER'S SIDE (a11ign/a11ign#3423): what `runWatch` hands the provider, what `later` does to the next tick, and the whole loop from a drawn
-// button to the press that answers it, over the REAL Telegram provider (a fetch that records the wire), the real inbound and the real answers.
+// button to the press that answers it, over the in-memory provider (the Telegram wire shape of the keyboard is `plugins/telegram`'s own test), the real inbound and the real answers.
 //
 // POSITIVE CONTROLS: every "no reminder" below sits beside the same timeline with no press, where the reminder IS sent; and the keyboard assertions beside a request
 // that has no options, where Approve is drawn instead, so neither is a source that draws nothing.
@@ -15,8 +15,6 @@ import { actionData, createInbound } from "./inbound.ts";
 import { createAnswers, requestActions } from "./answers.ts";
 import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, readLedgerLines } from "./ledger.ts";
-import { createSecret } from "./secret.ts";
-import { createTelegramProvider } from "./providers/telegram/send.ts";
 import { NEEDS_CHAIRMAN } from "./sources/requests.ts";
 import { runWatch } from "./watch.ts";
 
@@ -166,27 +164,19 @@ describe("later holds the reminders back for 24 hours, and not longer", () => {
   });
 });
 
-describe("the whole loop, over the real Telegram provider: drawn, pressed, answered", () => {
-  test("the keyboard on the wire is what the inbound accepts, and a press on it resolves the request", async () => {
-    /** @type {Record<string, any>[]} */
-    const wire: Record<string, any>[] = [];
-    const fetchImpl = /** @type {typeof fetch} */ (/** @type {unknown} */ (async (/** @type {string} */ url: string, /** @type {{ body: string }} */ init: { body: string; }) => {
-      wire.push({ url, body: JSON.parse(init.body) });
-      return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: 700 } }), headers: { get: () => null } };
-    }));
-    const real = createTelegramProvider({ token: createSecret("123456789:AAFk3x9Q-test_token_value_ZZ"), chatId: CHAIRMAN.chatId, fetch: fetchImpl, log: () => {}, sleep: async () => {} });
-    // One request on the wire is what this test counts, so it runs without the asks' record: its pinned list is a message of its own (a11ign/a11ign#4745).
-    const provider = { ...real, capabilities: { ...real.capabilities, edit: false, pin: false } };
+describe("the whole loop, over the in-memory provider: drawn, pressed, answered", () => {
+  test("the buttons the provider was given are what the inbound accepts, and a press on them resolves the request", async () => {
+    const provider = numericProvider();
     const w = watcher({ rows: [row(true)], provider });
     await w.pass();
-    assert.equal(wire.length, 1);
-    const keyboard = wire[0].body.reply_markup.inline_keyboard;
-    assert.deepEqual(keyboard.map((/** @type {any[]} */ buttons: any[]) => buttons[0].callback_data), ["ans:A", "ans:B", "act:explain", "act:later"]);
+    assert.equal(provider.sent.length, 1);
+    const buttons = provider.sent[0].actions as { label: string; data: string }[];
+    assert.deepEqual(buttons.map((button) => button.data), ["ans:A", "ans:B", "act:explain", "act:later"]);
 
     const github = rowWriter();
-    const result = await listener(w, github).press(keyboard[0][0].callback_data, 1);
+    const result = await listener(w, github).press(buttons[0].data, 1);
     assert.equal(result.reason, "answered");
-    assert.equal(result.clearKeyboard, "700");
+    assert.equal(result.clearKeyboard, "501");
     const steps = w.lines().filter((line) => line.direction === "answer" && ["comment", "remove-label", "set-answer"].includes(line.step)).map((line) => line.step);
     assert.deepEqual(steps, ["comment", "remove-label", "set-answer"], "the ledger's answer lines");
   });

@@ -36,9 +36,9 @@ import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings }
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from "./settings-edit.ts";
 import { isObject } from "./json-value.ts";
-import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
+import type { Exposure } from "../plugins/contracts/exposure.ts";
 import { PRIORITIES } from "./writer.ts";
 import { type NeedsDecision, needsDecision } from "./open-decisions.ts";
 
@@ -67,11 +67,19 @@ export type BoardDeps = Readonly<{
   pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
-  /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
-  tailnet?: () => Promise<string | null>;
+  /**
+   * The enabled exposure plugin (A11-162), which says the name this machine answers to and the terminal's address under it. Only the terminal's address and its pairing ask, and an
+   * exposure that serves nothing (`local`) is never asked for a name.
+   */
+  exposure?: Exposure;
   /** The worker terminal's pairing code, minted for a paired browser following a worker link (A11-93). Default: herdr web ui's own, on loopback. */
   mintTerminal?: () => Promise<TerminalMint>;
 }>;
+
+/** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
+async function servedName(exposure: Exposure | undefined): Promise<string | null> {
+  return exposure === undefined || exposure.ports() === null ? null : exposure.machineName();
+}
 
 /** Whether the request carries the instance's key in its `x-ticket-token` header. A cookie is never read. */
 export function holdsKey(request: Pick<IncomingMessage, "headers">, key: string): boolean {
@@ -321,8 +329,8 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
   if (method === "POST" && path === "/api/terminal-pair") {
     // Minted here, on the terminal's own machine, and handed to the page's service only for a paired browser that follows a worker link (A11-93).
     if (deps.mintTerminal !== undefined) return [200, await deps.mintTerminal()];
-    const tailnetName = settings.serve === null || deps.tailnet === undefined ? null : await deps.tailnet();
-    return [200, await mintTerminalCode(settings, localTerminalPort(settings.terminal, tailnetName), { home: homedir(), read: readOrNull, request: fetch, timeoutMs: TERMINAL_PAIR_MS })];
+    const machineName = await servedName(deps.exposure);
+    return [200, await mintTerminalCode(settings, localTerminalPort(settings.terminal, machineName), { home: homedir(), read: readOrNull, request: fetch, timeoutMs: TERMINAL_PAIR_MS })];
   }
   if (method === "POST" && path === "/api/terminal-run") return [200, await terminalRunFor(board, body)];
   if (method === "POST" && path === "/api/queue") {
@@ -549,17 +557,18 @@ export function createBoard(deps: BoardDeps) {
   }
 
   /**
-   * The terminal address the page is handed. Served on the tailnet, it is the tailnet's address unless the stored one names another machine. When the
-   * name cannot be read, the stored address is handed over, and the reason is logged once.
+   * The terminal address the page is handed. Served under a name by the exposure, it is the exposure's address unless the stored one names another machine. When the exposure serves
+   * the terminal and cannot name this machine, the stored address is handed over, and the reason is logged once.
    */
   async function terminalAddress(): Promise<string | null> {
-    if (settings.serve === null) return settings.terminal;
-    const name = deps.tailnet === undefined ? null : await deps.tailnet();
+    const ports = deps.exposure?.ports() ?? null;
+    if (deps.exposure === undefined || ports === null) return settings.terminal;
+    const name = await deps.exposure.machineName();
     if (name === null && !warnedNoName) {
       warnedNoName = true;
-      process.stderr.write("ticket:serve: the tailnet name cannot be read from `tailscale status --json`, so the board is handed the stored terminal address\n");
+      process.stderr.write("ticket:serve: the exposure cannot name this machine (is it running?), so the board is handed the stored terminal address\n");
     }
-    return effectiveTerminal(settings.terminal, name === null ? null : tailnetTerminal({ name, port: settings.serve.terminal }));
+    return effectiveTerminal(settings.terminal, name === null ? null : deps.exposure.terminal({ name, port: ports.terminal }));
   }
 
   const wake = () => { void pool.tick(); };
@@ -674,8 +683,7 @@ async function serve(): Promise<void> {
   const codeHost = active.codeHost();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
-  const tailnet = settings.serve === null ? undefined : cachedTailnetName(async () => readTailnetName(runTailscale));
-  const board = createBoard({ settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), tailnet });
+  const board = createBoard({ settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure() });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();
