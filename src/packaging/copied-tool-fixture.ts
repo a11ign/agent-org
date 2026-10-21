@@ -63,6 +63,11 @@ export function installedToolchain(): string {
   return realpathSync(join(dirname(createRequire(import.meta.url).resolve("@a11ign/toolchain/lib/git-env")), "..", ".."));
 }
 
+/** The directory of the `playwright-core` this checkout resolves: an offline install of the tool is given it, as it is given the toolchain (ticket A11-151). */
+export function installedPlaywrightCore(): string {
+  return realpathSync(dirname(createRequire(import.meta.url).resolve("playwright-core/package.json")));
+}
+
 function copyInto(target: string, source: string): void {
   mkdirSync(dirname(target), { recursive: true });
   copyFileSync(source, target);
