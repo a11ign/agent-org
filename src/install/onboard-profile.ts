@@ -6,7 +6,15 @@
 //
 // Each block of the profile names its provider, as `tickets.providers` does (A11-144), and carries that provider's settings beside it, so onboard copies
 // the block into the host file and the host reader checks it there. What onboard adds is what the profile cannot hold: the key's place, the App's key file.
+//
+// A BLOCK'S PROVIDER IS AN AGENT-ORG PLUGIN OF ITS CONCERN (A11-163): any bundled plugin the registry holds for it, not a fake and not one core is pinned off, plus `none` for a
+// publisher or reviewer. The list is the catalog's, not a list written here, so a plugin that is added to the registry can be named by a profile with no change to this file. A profile
+// keeps schema 1 and its block shape, so one saved before still reads. Messaging is no profile key: it is configured in a project's `project.json`, which a ticket-only laptop has none of.
 import { isAbsolute, join } from "node:path";
+import type { ProviderBlock } from "../plugins/concerns.ts";
+import type { Catalog } from "../plugins/manifest.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
+import { choosable } from "../ticket-mode/providers.ts";
 import { agentOrgHome, type Env } from "./paths.ts";
 
 export const PROFILE_SCHEMA = 1;
@@ -37,15 +45,6 @@ export type Profile = Readonly<{
 /** A profile that is not one onboard can use, refused by the field it names. */
 export class ProfileRefusal extends Error {}
 
-/** The providers each block names, as `providers.ts` names them: a profile naming another is refused here, with the ones it takes. */
-const PROVIDERS: Readonly<Record<"tracker" | "codeHost" | "publish" | "reviewer" | "exposure", readonly string[]>> = {
-  tracker: ["linear"],
-  codeHost: ["github"],
-  publish: ["none", "slack"],
-  reviewer: ["atomic", "none"],
-  exposure: ["local", "tailscale"],
-};
-
 const TOP_KEYS = ["schema", "tracker", "codeHost", "publish", "reviewer", "exposure", "conventions", "repos", "notes"] as const;
 const PROFILE_NAME = /^[A-Za-z0-9._-]+$/;
 const PLUGIN = /^[\w.-]+@[\w.-]+$/;
@@ -67,6 +66,9 @@ export function profilePathOf(profile: string, env: Env, home: string): string {
 
 /** The profile's text, as a person can copy it: two-space JSON, with no secret in it. */
 export const profileText = (profile: Profile): string => `${JSON.stringify(profile, null, 2)}\n`;
+
+/** The plugins a profile's block may name: the catalog's for the block's concern (`providers.ts` names the same), and `none` where a concern may have no plugin. */
+const providersOf = (name: ProviderBlock, catalog: Catalog): readonly string[] => choosable(name, catalog);
 
 function block(value: unknown, field: string, providers: readonly string[]): ProfileBlock {
   if (!isObject(value)) throw new ProfileRefusal(`${field} must be an object with a provider, such as { "provider": "${providers[0]}" }`);
@@ -99,8 +101,8 @@ function reviewerAppOf(value: unknown): ReviewerApp | undefined {
 }
 
 /** The code host's block, with its reviewer App checked when it names one. */
-function codeHostOf(value: unknown): ProfileBlock {
-  const checked = block(value, "codeHost", PROVIDERS.codeHost);
+function codeHostOf(value: unknown, catalog: Catalog): ProfileBlock {
+  const checked = block(value, "codeHost", providersOf("codeHost", catalog));
   reviewerAppOf(checked.reviewerApp);
   return checked;
 }
@@ -131,7 +133,7 @@ function notesOf(value: unknown): Profile["notes"] {
  * The profile, from its text. Refused by the field it names: an unknown key, a provider that is not one of its concern's, and a repository with no
  * name or path. PURE: the caller reads the file, and names it in the refusal it prints.
  */
-export function parseProfile(text: string): Profile {
+export function parseProfile(text: string, catalog: Catalog = defaultCatalog()): Profile {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -146,16 +148,19 @@ export function parseProfile(text: string): Profile {
   if (!Array.isArray(parsed.repos) || parsed.repos.length === 0) throw new ProfileRefusal("repos must list at least one repository, as { \"name\", \"remote\", \"path\" }");
   return {
     schema: PROFILE_SCHEMA,
-    tracker: block(parsed.tracker, "tracker", PROVIDERS.tracker),
-    codeHost: codeHostOf(parsed.codeHost),
-    publish: block(parsed.publish, "publish", PROVIDERS.publish),
-    reviewer: block(parsed.reviewer, "reviewer", PROVIDERS.reviewer),
-    exposure: block(parsed.exposure, "exposure", PROVIDERS.exposure),
+    tracker: block(parsed.tracker, "tracker", providersOf("tracker", catalog)),
+    codeHost: codeHostOf(parsed.codeHost, catalog),
+    publish: block(parsed.publish, "publish", providersOf("publish", catalog)),
+    reviewer: block(parsed.reviewer, "reviewer", providersOf("reviewer", catalog)),
+    exposure: block(parsed.exposure, "exposure", providersOf("exposure", catalog)),
     ...(parsed.conventions === undefined ? {} : { conventions: conventionsOf(parsed.conventions) }),
     repos: parsed.repos.map(repoOf),
     ...(parsed.notes === undefined ? {} : { notes: notesOf(parsed.notes) }),
   };
 }
+
+/** The plugins a question offers for a block, as the question words them: the catalog's, in its order, `none` last. */
+const choicesOf = (name: ProviderBlock, catalog: Catalog): string => providersOf(name, catalog).join(" or ");
 
 /** The questions onboard asks when a profile is absent, with the answer each takes by default. */
 export type ProfileAnswers = Readonly<{ ask: (question: string) => Promise<string> }>;
@@ -165,17 +170,17 @@ export type ProfileAnswers = Readonly<{ ask: (question: string) => Promise<strin
  * reviewer and its GitHub App's identity, the exposure. Each question says its default and takes it on an empty answer. The App's key is NOT asked here:
  * it is a secret, asked for when the host file is written.
  */
-export async function askProfile({ ask }: ProfileAnswers, repos: readonly ProfileRepo[]): Promise<Profile> {
+export async function askProfile({ ask }: ProfileAnswers, repos: readonly ProfileRepo[], catalog: Catalog = defaultCatalog()): Promise<Profile> {
   const answer = async (question: string, fallback: string) => {
     const text = (await ask(`${question} [${fallback}]: `)).trim();
     return text === "" ? fallback : text;
   };
   const team = await answer("Team key whose tickets the Pick view lists, such as A11 (or \"assigned\" for only the ones assigned to you)", "assigned");
   const plugin = await answer("Conventions plugin as name@marketplace (or \"none\")", "none");
-  const reviewer = await answer("Reviewer: atomic (Codex) or none", "atomic");
+  const reviewer = await answer(`Reviewer: ${choicesOf("reviewer", catalog)}`, "atomic");
   const publisher = await answer("Publisher: none", "none");
   if (publisher !== "none") throw new ProfileRefusal("publish: onboard asks only for none; a Slack publisher is written into the profile file by hand, with its run");
-  const exposure = await answer("Exposure: local (loopback) or tailscale", "local");
+  const exposure = await answer(`Exposure: ${choicesOf("exposure", catalog)}`, "local");
   // The App is asked for only when a slug is given: the verdict posts through it, and an empty slug leaves that to a later profile.
   const slug = reviewer === "atomic" ? await answer("The reviewer's GitHub App slug, as its page on GitHub names it (or an empty line to set it later)", "") : "";
   const reviewerApp = slug === "" ? undefined : {
@@ -196,7 +201,7 @@ export async function askProfile({ ask }: ProfileAnswers, repos: readonly Profil
     exposure: { provider: exposure },
     ...(conventions === undefined ? {} : { conventions }),
     repos,
-  }));
+  }), catalog);
 }
 
 /**

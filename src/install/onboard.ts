@@ -43,7 +43,7 @@ import { Writable } from "node:stream";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_PROVIDER, isActive, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
-import { blockOf, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
+import { blockOf, CONCERN_LABEL, CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
 import { realExec, realMode, realProbe } from "../plugins/active.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
@@ -213,7 +213,7 @@ async function profileFor(options: OnboardOptions, deps: OnboardDeps): Promise<P
   const path = profilePathOf(options.profile ?? "", deps.env, deps.home);
   if (deps.exists(path)) {
     try {
-      return parseProfile(deps.readFile(path));
+      return parseProfile(deps.readFile(path), deps.catalog());
     } catch (err) {
       if (err instanceof ProfileRefusal) throw new OnboardRefusal(`${path}: ${err.message}`);
       throw err;
@@ -224,7 +224,7 @@ async function profileFor(options: OnboardOptions, deps: OnboardDeps): Promise<P
   }
   const repos = options.repos.length > 0 ? options.repos : await askRepositories(deps);
   const pairs = repos.map((text) => parseRepo(text, deps));
-  const profile = await askProfile({ ask: deps.ask }, pairs.map(([name, repoPath]) => ({ name, path: repoPath })));
+  const profile = await askProfile({ ask: deps.ask }, pairs.map(([name, repoPath]) => ({ name, path: repoPath })), deps.catalog());
   deps.writeFile(path, profileText(profile));
   deps.out.log(`wrote the answers to ${path}, mode 600: a copy of it sets up another machine, and holds no secret`);
   return profile;
@@ -395,14 +395,22 @@ async function clonesOf(options: OnboardOptions, profile: Profile | null, host: 
   return clones;
 }
 
-/** The provider blocks onboard fills: the profile's, with the reviewer's identity and the terminal the exposure takes. The tracker's own settings are its plugin's steps' (`runPluginSteps`). */
+/** A block that names a plugin, written enabled as `agent-org plugin install` writes it. `none` is no plugin, so a publisher or reviewer that is none is left as it is. */
+const installed = (block: Record<string, unknown>): Record<string, unknown> => (block.provider === "none" ? block : { ...block, enabled: true });
+
+/**
+ * The provider blocks onboard fills (A11-163): each plugin the machine uses is INSTALLED AND ENABLED, as `agent-org plugin install` would write it: `provider` and `enabled: true`, beside
+ * the profile's settings. The tracker and the code host always, so a fresh machine ends with a `linear` and a `github` block that `plugin list`, `disable` and `config` and the Settings page
+ * read; each optional concern whose choice is not `none` too. The profile's reviewer identity and the terminal the exposure takes are added. The tracker's own settings are its plugin's
+ * steps' (`runPluginSteps`).
+ */
 function blocksOf({ planned, identity, terminal }: Readonly<{ planned: PlannedBlocks | null; identity: Record<string, unknown> | null; terminal: boolean }>): Record<string, Record<string, unknown> | undefined> {
   return {
-    tracker: planned?.tracker ?? { provider: DEFAULT_PROVIDER.tracker },
-    codeHost: planned === null ? undefined : { ...planned.codeHost, identity: identity === null ? undefined : { reviewer: identity } },
-    publish: planned?.publish,
-    reviewer: planned?.reviewer,
-    exposure: { ...(planned?.exposure ?? { provider: "local" }), terminal: terminal ? terminalAddress(DEFAULT_TERMINAL_PORT) : undefined },
+    tracker: installed(planned?.tracker ?? { provider: DEFAULT_PROVIDER.tracker }),
+    codeHost: { ...installed(planned?.codeHost ?? { provider: DEFAULT_PROVIDER.codeHost }), identity: identity === null ? undefined : { reviewer: identity } },
+    publish: planned === null ? undefined : installed(planned.publish),
+    reviewer: planned === null ? undefined : installed(planned.reviewer),
+    exposure: { ...installed(planned?.exposure ?? { provider: "local" }), terminal: terminal ? terminalAddress(DEFAULT_TERMINAL_PORT) : undefined },
   };
 }
 
@@ -437,6 +445,20 @@ function plannedProviders({ host, tickets, planned, catalog }: Readonly<{ host: 
     return resolveProviders({ ...host, tickets: { ...tickets, providers: names } }, catalog);
   } catch (err) {
     throw new OnboardRefusal(`the providers onboard would write are refused, so nothing is written: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Says one line per plugin onboard installs and enables, before it runs that plugin's steps (A11-163): `installed linear as the tracker`, or that the host file already names it. The plugins
+ * are the ones the providers will name once onboard has written the host file: a block the file holds keeps its plugin, and a concern whose choice is `none` has no line.
+ */
+function sayInstalls(providers: Providers, existing: Providers["blocks"], deps: OnboardDeps): void {
+  for (const block of PROVIDER_BLOCKS) {
+    const { provider } = providers.blocks[block];
+    if (provider === "none") continue;
+    const label = CONCERN_LABEL[CONCERN_OF_BLOCK[block]];
+    const held = existing[block];
+    deps.out.log(held.from === "block" && held.provider === provider ? `${provider} is already the ${label}` : `installed ${provider} as the ${label}`);
   }
 }
 
@@ -497,6 +519,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
 
   const existing = resolveProviders(host, deps.catalog()).blocks;
   const planned = profile === null ? null : providerBlocksOf(profile);
+  sayInstalls(plannedProviders({ host, tickets, planned, catalog: deps.catalog() }), existing, deps);
   const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null, clones }, deps);
   const identity = await reviewerIdentity(planned?.reviewerApp, existing.codeHost.settings.identity.value, deps);
   const terminal = options.terminal && await setUpTerminal(deps);
