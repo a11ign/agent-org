@@ -59,13 +59,17 @@ export type ViewEntry = Readonly<{
 }>;
 
 /**
- * The branch a run was branched from: the blocker's key, the repository and branch, the commit it was at (`sha`), and what agent-org did since. `seen`
- * is the head the blocker's branch moved to, while the run has not been rebased onto it; `rebased` is the last rebase (from the old commit to the new);
- * `failed` is a rebase that could not be made against that head, and why: nothing is tried again until the blocker's branch is at another head.
+ * The branch a run was branched from: the blocker's key, the repository and branch, the commit it has the blocker's branch merged in up to (`sha`), and what
+ * agent-org did since. `seen` is the head the blocker's branch moved to, while it is not merged in yet; `merged` is the last merge (from the old head to the
+ * new); `conflict` is a merge that conflicted against that head, and its files: nothing is merged against that head again, and `capped` is the board's round cap
+ * when the board's rounds were used up before the conflict was resolved. `rebased` and `failed` are what the rebase this replaced wrote: a record that holds
+ * them is read as a merge, and is written as one the next time it changes.
  */
 export type StackBaseRecord = Readonly<{
   key: string; repo: string; branch: string; sha: string;
   seen?: string;
+  merged?: Readonly<{ from: string; to: string; at: number }>;
+  conflict?: Readonly<{ head: string; files: readonly string[]; capped?: number }>;
   rebased?: Readonly<{ from: string; to: string; at: number }>;
   failed?: Readonly<{ head: string; reason: string }>;
 }>;

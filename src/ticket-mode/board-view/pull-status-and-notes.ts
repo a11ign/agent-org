@@ -316,18 +316,34 @@ export function retargetNote(entry: ViewEntry): string | null {
 /** The commit a stack note names: its first seven characters, as git's own short form does. PURE. */
 const short = (sha: string): string => sha.slice(0, 7);
 
+/** How many file names a conflict note names before it counts the rest. */
+const CONFLICT_NOTE_FILES = 3;
+
+/** The file names a conflict is in, as the board shows them: the first few, then how many more there are. PURE. */
+const conflictFiles = (files: readonly string[]): string => {
+  const names = files.map((file) => file.slice(file.lastIndexOf("/") + 1));
+  const shown = names.slice(0, CONFLICT_NOTE_FILES);
+  return names.length <= CONFLICT_NOTE_FILES ? shown.join(", ") : `${shown.join(", ")} and ${names.length - CONFLICT_NOTE_FILES} more`;
+};
+
 /**
- * The line the board shows for a run stacked on a blocker's branch that agent-org keeps current (A11-116), or null when there is nothing to say: that the
- * rebase failed and a person resolves it, such as "Rebase onto NBF-1 conflicted in pool.ts: a person resolves it"; that the blocker's branch moved and the
- * run will be rebased when its worker stops; or that it was rebased onto the blocker's branch, such as "Rebased onto NBF-1 by agent-org (abc1234 → def5678)".
- * The run's status does not change for it. PURE.
+ * The line the board shows for a run stacked on a blocker's branch that agent-org keeps current (A11-116, A11-150), or null when there is nothing to say:
+ * that a merge of the blocker's branch conflicted and the worker is resolving it, such as "Resolving a conflict with NBF-1 in pool.ts"; that the board's rounds
+ * ran out before it was resolved; that the blocker's branch moved and it is merged in when the worker stops; or that it was merged in by agent-org, such as
+ * "Merged NBF-1 into the branch by agent-org (abc1234 → def5678)". The run's status does not change for it. PURE.
  */
 export function rebaseNote(entry: ViewEntry): string | null {
   const base = entry.stackBase;
   if (base === undefined) return null;
-  if (base.failed !== undefined) return `Rebase onto ${base.key} ${base.failed.reason}: a person resolves it`;
-  if (base.seen !== undefined && entry.phase !== "finished") return `Will be rebased onto ${base.key} when the worker stops`;
-  if (base.rebased !== undefined && base.rebased.to === base.sha) return `Rebased onto ${base.key} by agent-org (${short(base.rebased.from)} → ${short(base.rebased.to)})`;
+  if (base.conflict !== undefined) {
+    if (base.conflict.capped === undefined) return `Resolving a conflict with ${base.key} in ${conflictFiles(base.conflict.files)}`;
+    // Said only while the run is handed back: that is when Respond to review starts another round. A parked run at the cap has none to start.
+    return entry.handedBack === undefined ? null
+      : `The board's ${base.conflict.capped} rounds are used up before the merge with ${base.key} was resolved: Respond to review starts another`;
+  }
+  if (base.seen !== undefined && entry.phase !== "finished") return `Will have ${base.key} merged in when the worker stops`;
+  const merged = base.merged ?? base.rebased;
+  if (merged !== undefined && merged.to === base.sha) return `Merged ${base.key} into the branch by agent-org (${short(merged.from)} → ${short(merged.to)})`;
   return null;
 }
 

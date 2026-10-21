@@ -11,7 +11,7 @@ import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
 import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, unreadBlockerKeys, unreadPaths } from "./queue/queue-transitions.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
-import { remoteHead, rebaseDue, rebaseOnto, afterRebase, roundHeldBy, stackBaseIn } from "./stack-rebase.ts";
+import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
 import { repoOf } from "./board-view/pull-status-and-notes.ts";
 import { worktreePath } from "./worktree.ts";
 import { type TicketSettings } from "./settings.ts";
@@ -25,7 +25,7 @@ import { talk, talkFailed } from "./queue/talk.ts";
 import { markWriterRunning, markWriterStarting, nextStarts, writerFailed, writerOf, writerToStart } from "./queue.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles } from "./pool-prepare.ts";
-import { hasPlan } from "./board-view/view-types-and-filters.ts";
+import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { needsDecision } from "./open-decisions.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -230,21 +230,46 @@ export async function readHeads(ctx: PoolContext, keys: readonly string[]): Prom
   update(ctx, (queue) => recordHeads(queue, heads));
 }
 
+/** A stacked review round's merge before it starts, when there is nothing to merge in, or none could be made (A11-150). */
+const NO_MERGE = { held: null, feedback: null } as const;
+
 /**
- * Rebase a stacked review round onto its blocker's branch before it starts, so the round begins on the rebased branch (A11-116). Returns why the run cannot
- * start on it, or null when it can. A rebase that conflicts is a person's to resolve, so it ends the run needing one, and no round is started on it.
+ * Merge a stacked review round's blocker branch in before it starts, so the round begins on the merged branch (A11-116, A11-150). Returns why the run cannot
+ * start on it, and, when the merge conflicted, the feedback the round starts with: the conflict lines, so that the round merges the base in first. A merge that
+ * fails for another reason ends the run needing a person's look, with no round started on it.
  */
-async function rebaseBeforeRound(ctx: PoolContext, entry: Entry): Promise<string | null> {
-  const { git, now, settings } = ctx;
+async function mergeBeforeRound(ctx: PoolContext, entry: Entry): Promise<{ held: string | null; feedback: string | null }> {
+  const { git, now, settings, store } = ctx;
+  const key = entry.ticket.key;
   const record = entry.stackBase;
   const clone = record === undefined ? undefined : settings.clones[record.repo];
-  if (record === undefined || clone === undefined) return null;
-  const head = await remoteHead(git, clone, record.branch);
-  if (!rebaseDue(record, head)) return roundHeldBy(record, head);
-  const result = await rebaseOnto({ git, clone, worktree: worktreePath(settings.worktreeRoot, entry.ticket.key, record.repo), own: entry.ticket.branch, base: record });
-  update(ctx, (queue) => recordStackBase(queue, entry.ticket.key, afterRebase(stackBaseIn(queue, entry.ticket.key, record), head, result, now())));
-  return result.ok ? null : `Rebase onto ${record.key} ${result.reason}: a person resolves it`;
+  if (record === undefined || clone === undefined) return NO_MERGE;
+  // The lock is taken before the first await, in the same turn as the sweep's check (`rebaseOneStack`), so no merge runs in this worktree beside this one.
+  ctx.rebasing.add(key);
+  try {
+    const head = await remoteHead(git, clone, record.branch);
+    if (head === null || head === record.sha) return NO_MERGE;
+    const result = await mergeBaseIn({ git, worktree: worktreePath(settings.worktreeRoot, key, record.repo), own: entry.ticket.branch, base: record });
+    update(ctx, (queue) => recordStackBase(queue, key, afterMerge(stackBaseIn(queue, key, record), head, result, now())));
+    if (result.ok) return NO_MERGE;
+    if (result.conflict === undefined) return { held: `Merging ${record.key} into the branch ${result.reason}`, feedback: null };
+    const pulls = openPulls(store.get().entries.find((e) => e.ticket.key === key) ?? entry);
+    return { held: null, feedback: conflictFeedback(pulls.filter((pr) => pr.repo === record.repo).map((pr) => pr.url), record, result.conflict) };
+  } finally {
+    ctx.rebasing.delete(key);
+  }
 }
+
+/**
+ * The run as its round starts on it, when its merge of the blocker's branch conflicted (A11-150): an asked round is given the conflict as its feedback, and a
+ * round the board started keeps its own feedback, with the conflict line after it. An approval round keeps its brief as it is: `approvedRound` already has the
+ * worker merge a conflicting base first, and the feedback it would take here would replace its instruction to mark the draft ready. PURE.
+ */
+const withConflict = (entry: Entry, feedback: string): Entry => {
+  if (entry.asked === true) return { ...entry, feedback };
+  if (entry.feedback === undefined) return entry;
+  return { ...entry, feedback: `${entry.feedback}\n${feedback}` };
+};
 
 /**
  * The plan files the tracker holds for a ticket, downloaded to a folder of their own so a plan's name never reaches the ticket's brief. None when this
@@ -399,6 +424,8 @@ export function talkTo(ctx: PoolContext, key: string): void {
 /** Start one run for one ticket, the rest of its batch, if it had one, being started already or waiting on a blocker. */
 async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
   const { now } = ctx;
+  // The sweep is merging this run's branch in its worktree: the run waits, still queued, for a later tick (A11-150).
+  if (ctx.rebasing.has(queued.ticket.key)) return;
   if (queued.batch !== undefined) update(ctx, (queue) => leaveBatch(queue, queued.ticket.key));
   const { batch: _alone, ...entry } = queued;
   update(ctx, (queue) => markStarting(queue, entry.ticket.key, now()));
@@ -411,13 +438,15 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     // A work run held by an open decision ends needs-human with its reason (A11-134); a review round may wait on its stacked base instead. Only a work run
     // reads the tracker here, so a planning run or a review round starts as it did before.
     const held = isPlanning(ctx, entry) || entry.review !== undefined ? null : await openDecisionHold(ctx, entry);
-    const blocked = held ?? (entry.review !== undefined && entry.stackBase !== undefined ? await rebaseBeforeRound(ctx, entry) : null);
+    const merge = entry.review !== undefined && entry.stackBase !== undefined ? await mergeBeforeRound(ctx, entry) : NO_MERGE;
+    const blocked = held ?? merge.held;
     if (blocked !== null) {
       update(ctx, (queue) => finish(queue, entry.ticket.key, { kind: "needs-human", reason: blocked }, now()));
       return;
     }
-    const { folder, dir, resume } = await prepare(ctx, entry);
-    if (!(await openRun(ctx, entry, folder, dir, resume))) return;
+    const round = merge.feedback === null ? entry : withConflict(entry, merge.feedback);
+    const { folder, dir, resume } = await prepare(ctx, round);
+    if (!(await openRun(ctx, round, folder, dir, resume))) return;
     if (!isPlanning(ctx, entry)) moveTicketToWorkingState(ctx, entry.ticket.key);
     await settleStart(ctx, runPlace(ctx, entry));
   } catch (err) {

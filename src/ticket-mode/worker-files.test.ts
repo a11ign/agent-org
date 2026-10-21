@@ -230,7 +230,8 @@ test("A11-116: a stacked run whose blocker has no pull request yet is told its b
   assert.equal(text.includes("has an open pull request"), false, "it never says the base has an open pull request");
   assert.equal(text.includes("gh stack link <its pull request url>"), true, "the link is named for when both pull requests exist");
   assert.ok(text.includes("Never rebase it, merge it in, or force-push"), "the worker never rebases the branch it builds on");
-  assert.ok(text.includes("agent-org rebases your branch onto it for you after you stop"), "agent-org does the rebase");
+  assert.ok(text.includes("agent-org merges that branch into yours for you after you stop"), "agent-org does the merge");
+  assert.ok(text.includes("that round merges the branch in by hand"), "a conflict is the worker's to merge by hand");
 });
 
 const reviewed = [{ repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/806" }];
@@ -444,6 +445,17 @@ test("A11-125: a Respond to review round on a pull request that does not conflic
   assert.equal(unnamed, today, "no conflict is the same brief as none given");
   assert.equal(today.includes("The board handed this run back because:"), false, "nothing is quoted");
   assert.equal(/^1\. The text above says a pull request conflicts/m.test(today), false, "no merge step leads the round");
+});
+
+test("A11-150: a Respond to review round whose merge of the blocker's branch conflicted says so and merges first; an approval round keeps its ready step", () => {
+  const lines = "https://github.com/x/nbl-ui-netbox/pull/806 conflicts with its base branch nbf-1-fit.\nMerging NBF-1's branch `nbf-1-fit` conflicted in ticket.txt.";
+  const asked = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true, asked: true, feedback: lines });
+  assert.match(asked, /The merge of the blocker's branch into yours conflicted:/);
+  assert.match(asked, /^1\. The text above says a pull request conflicts with its base branch/m, "the merge step leads the round");
+  assert.equal(asked.includes("The board handed this run back because:"), false, "it is not a cap hand-back");
+  const approved = reviewBriefText({ ticket, folder: "/work/.tickets/NBF-1270", ticketDir: "/state/tickets/NBF-1270", prs: reviewed, resumed: true });
+  assert.match(approved, /Mark each pull request ready with `gh pr ready <url>`/, "an approval round still marks the drafts ready");
+  assert.equal(/^1\. The text above says a pull request conflicts/m.test(approved), false, "an approval round is not given the conflict lines");
 });
 
 test("A11-89: every review round tells the worker, when no check has started, to read the merge state first and to merge a conflicting base in", () => {

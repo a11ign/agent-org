@@ -567,12 +567,16 @@ the run, and nor does one the planner said to wait on to merge: a person decides
 A ticket's repository is its Linear project's: the project's summary names it with a `github.com/<owner>/<repo>` address, and it must be one of the
 host file's `clones`. A planner that names another repository for a ticket overrides it. A project that names none leaves the worker to choose.
 
-When the blocker's branch moves (a rebase, review fixes, or a force-push), agent-org rebases the stacked run onto it. It does that once the worker has
-stopped, never while the worker holds the worktree, and never the worker itself: the worker is told not to rebase, merge the base in or force-push.
-The rebase replays the run's commits from the commit it was branched at, which `ticket:worktree --from` records in the ticket's `stack-base.json`, so
-a force-pushed blocker's old commits are not repeated. The push is a lease on the run's own branch. A rebase that conflicts is aborted and left for a
-person: the board says "Rebase onto NBF-1 conflicted in <files>: a person resolves it". When the blocker merges, its stacked pull request is retargeted to
-the default branch (A11-106).
+When the blocker's branch moves (a rebase, review fixes, or a force-push), agent-org merges it into the stacked run's branch. It does that once the worker
+has stopped, for a finished run with its workspace closed, and never while a live worker or a parked run's workspace is open. The merge is plain: agent-org
+never rebases or force-pushes the run's branch, and the worker is told not to do either while it works. The commit the run was branched at is recorded by
+`ticket:worktree --from` in the ticket's `stack-base.json`. A merge that conflicts is aborted. Where the board can start a round on the run (one it resumes on
+a conflict, with a pull request open in the blocker's repository), the conflict is recorded and that round starts: its worker merges the base in, keeps both
+changes, re-runs the checks and pushes, the same round as for any pull request that conflicts with its base. Until then the board says "Resolving a conflict
+with NBF-1 in <file>". Elsewhere (a draft, say) the conflict is not recorded, and the next sweep tries the merge again; an approval round merges the base in
+first. A conflict its worker resolved by merging the blocker's branch in by hand is cleared by the next sweep. Past the board's round cap the run is handed
+back with the conflict named, and Respond to review starts the round. When the blocker merges, its stacked pull request is retargeted to the default branch
+(A11-106).
 
 ## What an install holds
 

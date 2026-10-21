@@ -3,15 +3,16 @@
 
 import { existsSync } from "node:fs";
 import { headsToRead, readBlockers, readHeads } from "./pool-start.ts";
-import { completableRuns, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, unsettledKeys } from "./queue/queue-transitions.ts";
+import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
+import { startStackConflictRound } from "./pool-watch.ts";
 import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
-import { settledByPulls } from "./board-view/pull-status-and-notes.ts";
+import { resumesOnConflict, settledByPulls } from "./board-view/pull-status-and-notes.ts";
 import { recordClosedByBoard } from "./queue.ts";
 import { sweepRetargets } from "../ticket-port/stack-retarget.ts";
-import { afterRebase, protectStack, rebaseDue, rebaseOnto, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type RebaseResult } from "./stack-rebase.ts";
+import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { type PoolContext } from "./pool-context.ts";
 
@@ -83,10 +84,10 @@ async function completeMerged(ctx: PoolContext): Promise<void> {
 }
 
 /**
- * The branch each stacked run was branched from, kept current on the server's own sweep (A11-116). Each stacked run keeps its base commit reachable in its
- * clone, and the blocker's branch is read for a move: a finished run with a pull request still open, or its worktree on disk, and no worker in its workspace,
- * is rebased onto a moved branch by agent-org, never by its worker. A rebase that cannot be made is recorded against that head and not retried until the branch
- * moves again. A run that is not finished is only told the branch moved, so the board says it will be rebased when its worker stops.
+ * The branch each stacked run was branched from, kept current on the server's own sweep (A11-116, A11-150). Each stacked run keeps its base commit reachable in
+ * its clone, and the blocker's branch is read for a move. A finished run the board resumes on a conflict, with a pull request open in its repository, has the
+ * blocker's branch merged in by agent-org when it moved, never by its worker. A merge that conflicts starts that run's conflict round, which merges the base in
+ * and resolves it; a merge that cannot be made for another reason is tried again on the next sweep. A run that is not finished is only told the branch moved.
  */
 export async function rebaseStacked(ctx: PoolContext): Promise<void> {
   const { store } = ctx;
@@ -108,14 +109,9 @@ function stackBaseOf(ctx: PoolContext, entry: Entry): StackBaseRecord | undefine
   return file === null || blocker === undefined ? undefined : { key: blocker.key, repo: file.repo, branch: file.branch, sha: file.sha };
 }
 
-/** Whether a run's worker may hold its worktree: a run that is not finished, or one whose workspace is still open (a parked run's is closed first). PURE. */
-const workerHoldsWorktree = (entry: Entry): boolean => entry.phase !== "finished" || entry.workspace !== undefined;
-
-/** The stacked branch a run carries now, as the queue holds it: a rebase writes it back on top of what is there, not on a copy read before it. PURE. */
-
-/** One run's stacked branch, for {@link rebaseStacked}: its base is kept reachable, and a moved branch is rebased or noted as due. */
+/** One run's stacked branch, for {@link rebaseStacked}: its base is kept reachable, and a moved branch is merged in, or noted as due. */
 async function rebaseOneStack(ctx: PoolContext, entry: Entry): Promise<void> {
-  const { git, now, settings, store } = ctx;
+  const { git, settings, store } = ctx;
   const key = entry.ticket.key;
   const found = stackBaseOf(ctx, entry);
   if (found === undefined) return;
@@ -128,7 +124,7 @@ async function rebaseOneStack(ctx: PoolContext, entry: Entry): Promise<void> {
     await releaseStack(git, clone, ref).catch(() => undefined);
     return;
   }
-  // Without its worktree on this machine there is nothing to rebase, and no base to keep reachable for it: nothing is asked of the remote.
+  // Without its worktree on this machine there is nothing to merge into, and no base to keep reachable for it: nothing is asked of the remote.
   const worktree = worktreePath(settings.worktreeRoot, key, found.repo);
   if (!existsSync(worktree)) return;
   await protectStack(git, clone, ref, found.sha);
@@ -136,21 +132,50 @@ async function rebaseOneStack(ctx: PoolContext, entry: Entry): Promise<void> {
   const seen = head !== null && head !== found.sha ? head : undefined;
   const record = store.get().entries.find((e) => e.ticket.key === key)?.stackBase ?? found;
   if (seen !== record.seen) update(ctx, (queue) => recordStackBase(queue, key, { ...record, seen }));
-  // Read again now the awaits are over: the run may have been queued again, and a pool that starts it takes no part in this rebase.
+  // Read again now the awaits are over: the run may have been queued again, and a pool that starts it takes no part in this merge.
   const fresh = store.get().entries.find((e) => e.ticket.key === key);
-  // A rebase is made only when no worker holds the worktree, and only for a branch that moved from the one the run was branched from. The lock is taken
-  // in the same turn as the check, so a round starting in the pool cannot begin while this rebase is in progress.
-  const mayRebase = fresh !== undefined && !workerHoldsWorktree(fresh) && !ctx.rebasing.has(key);
-  if (!mayRebase || head === null || !rebaseDue(record, head)) return;
+  // A merge is made into a finished run's branch that no worker is running in: its workspace is closed, and it is not queued again. The lock is taken in the
+  // same turn as the check, so a round starting in the pool cannot begin while this merge is in progress.
+  if (fresh === undefined || !mergeable(fresh) || ctx.rebasing.has(key)) return;
   ctx.rebasing.add(key);
-  let result: RebaseResult;
   try {
-    result = await rebaseOnto({ git, clone, worktree, own: entry.ticket.branch, base: record });
+    await mergeMoved({ ctx, entry: fresh, found, record, head, worktree });
   } finally {
     ctx.rebasing.delete(key);
   }
-  update(ctx, (queue) => recordStackBase(queue, key, afterRebase(stackBaseIn(queue, key, record), head, result, now())));
-  if (!result.ok) log(`${key}: the rebase onto ${found.key} ${result.reason}`);
+}
+
+/** Whether a run's branch may be merged into: the run is finished, and no workspace is open in it. PURE. */
+const mergeable = (entry: Entry): boolean => entry.phase === "finished" && entry.workspace === undefined;
+
+/**
+ * Merge a moved blocker branch into a finished run's branch, under the sweep's lock (A11-150). A worker's round that merged the conflicting head in by hand
+ * has resolved that conflict, so it clears first. A clean merge is recorded. A conflict is recorded, and starts the run's conflict round, only where a round
+ * can start on it; elsewhere the merge is tried again on the next sweep, and a round that starts merges the base in first.
+ */
+async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
+  ctx: PoolContext; entry: Entry; found: StackBaseRecord; record: StackBaseRecord; head: string | null; worktree: string;
+}): Promise<void> {
+  const { git, now, store } = ctx;
+  const key = entry.ticket.key;
+  const cleared = record.conflict !== undefined && await mergedIn({ git, worktree, base: found, head: record.conflict.head });
+  if (cleared) update(ctx, (queue) => recordStackBase(queue, key, afterConflictCleared(stackBaseIn(queue, key, record))));
+  const current = cleared ? afterConflictCleared(record) : record;
+  if (!mergeDue(current, head)) return;
+  const result = await mergeBaseIn({ git, worktree, own: entry.ticket.branch, base: current });
+  const latest = store.get().entries.find((e) => e.ticket.key === key) ?? entry;
+  const roundable = resumesOnConflict(latest) && openPulls(latest).some((pr) => pr.repo === found.repo);
+  const capped = roundsLeft(latest) ? undefined : MAX_FEEDBACK_ROUNDS;
+  const recorded: MergeResult = !result.ok && result.conflict !== undefined && !roundable ? { ok: false, reason: result.reason } : result;
+  update(ctx, (queue) => recordStackBase(queue, key, afterMerge(stackBaseIn(queue, key, current), head, recorded, now(), capped)));
+  if (result.ok) return;
+  if (result.conflict === undefined) {
+    log(`${key}: the merge of ${found.key} ${result.reason}`);
+    return;
+  }
+  if (!roundable) return;
+  const urls = openPulls(latest).filter((pr) => pr.repo === found.repo).map((pr) => pr.url);
+  startStackConflictRound(ctx, key, conflictFeedback(urls, found, result.conflict));
 }
 
 /**

@@ -1761,38 +1761,140 @@ test("A11-116: a ticket in a project that names a repository is planned for it, 
   assert.ok(brief.includes("ticket:worktree nbl-ui-netbox --from <branch>"), "the worktree is made from the pushed branch");
 });
 
-test("A11-116: a stacked run is rebased onto its blocker's moved branch by agent-org once its worker has stopped, and only noted while it runs", async () => {
-  const { root, clone } = originAndClone("ticket-pool-rebase-");
+/** Commit `text` to `file` in `cwd` as the test's committer, and return the new head. */
+const commitTo = (cwd: string, file: string, text: string, message: string) => {
+  writeFileSync(join(cwd, file), text);
+  gitIn(cwd, ["add", file]);
+  gitIn(cwd, [...identity, "commit", "-q", "-m", message]);
+  return gitIn(cwd, ["rev-parse", "HEAD"]);
+};
+
+const BLOCKER = { key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1-fit", pulls: {} };
+const PULL = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-netbox/pull/2" };
+/** NBF-2 stopped with its pull request open, which the board resumes on a conflict: the state a stacked run's sweep merges in. */
+const FINISHED_WATCHED = { phase: "finished", outcome: { kind: "ready-pr", prs: [PULL] }, workspace: undefined, finishedAt: 1 };
+
+/**
+ * NBF-2 stacked on NBF-1's branch `nbf-1-fit`, in a clone of `nbl-ui-netbox` on a bare origin. Its worktree is on its own branch, with its own commit
+ * to `ticket.txt`, and its `stack-base.json` names the commit it was branched at. `setRun` sets the run's fields, and `moveBlocker` commits to the
+ * blocker's branch and pushes it, returning the new head.
+ */
+function stackedRun(prefix: string) {
+  const { root, clone } = originAndClone(prefix);
   gitIn(clone, ["checkout", "-q", "-b", "nbf-1-fit"]);
-  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "blocker"]);
+  commitTo(clone, "blocker.txt", "one\n", "blocker: first");
   gitIn(clone, ["push", "-q", "origin", "nbf-1-fit"]);
   const branchedAt = gitIn(clone, ["rev-parse", "HEAD"]);
-  const { pool, entry, settings, store } = setup(3, ["NBF-2"], { worktreeRoot: join(root, "tickets") }, { clones: { "nbl-ui-netbox": clone } });
-  // The run was branched from the blocker's branch, and its worktree holds its own commit on the ticket's branch.
-  const worktree = worktreePath(settings.worktreeRoot, "NBF-2", "nbl-ui-netbox");
+  const made = setup(3, ["NBF-2"], { worktreeRoot: join(root, "tickets") }, { clones: { "nbl-ui-netbox": clone } });
+  const worktree = worktreePath(made.settings.worktreeRoot, "NBF-2", "nbl-ui-netbox");
   gitIn(clone, ["worktree", "add", "-q", "-b", "nbf-2", worktree, "origin/nbf-1-fit"]);
-  gitIn(worktree, [...identity, "commit", "-q", "--allow-empty", "-m", "ticket: its work"]);
+  commitTo(worktree, "ticket.txt", "ours\n", "ticket: its work");
   gitIn(worktree, ["push", "-q", "origin", "HEAD:nbf-2"]);
-  writeStackBase(stackBaseFile(settings, "NBF-2"), { repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: branchedAt });
-  const blocker = { key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1-fit", pulls: {} };
-  const finishedAs = (fields: Record<string, unknown>) => store.set({ ...store.get(), entries: store.get().entries.map((e) => (e.ticket.key === "NBF-2"
-    ? { ...e, phase: "finished" as const, outcome: { kind: "checked" as const, reason: "x" }, blockers: [blocker], ...fields } : e)) });
-  // The blocker's branch moves while the run's worker is still running: it is noted, and nothing is rebased.
-  finishedAs({ phase: "running", outcome: undefined, workspace: "w1" });
-  gitIn(clone, [...identity, "commit", "-q", "--allow-empty", "-m", "blocker: review fix"]);
-  gitIn(clone, ["push", "-q", "origin", "nbf-1-fit"]);
-  const moved = gitIn(clone, ["rev-parse", "HEAD"]);
+  writeStackBase(stackBaseFile(made.settings, "NBF-2"), { repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: branchedAt });
+  const setRun = (fields: Record<string, unknown>) => made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((e) => (e.ticket.key === "NBF-2"
+    ? { ...e, blockers: [BLOCKER], ...fields } : e)) });
+  const moveBlocker = (file: string, text: string) => {
+    const head = commitTo(clone, file, text, `blocker: ${file}`);
+    gitIn(clone, ["push", "-q", "origin", "nbf-1-fit"]);
+    return head;
+  };
+  return { ...made, clone, worktree, branchedAt, setRun, moveBlocker };
+}
+
+test("A11-150: a stacked run's blocker branch that moved is merged in by agent-org once its worker has stopped, and only noted while it runs", async () => {
+  const { pool, entry, worktree, branchedAt, setRun, moveBlocker, clone } = stackedRun("ticket-pool-merge-");
+  const own = gitIn(worktree, ["rev-parse", "HEAD"]);
+  setRun({ phase: "running", outcome: undefined, workspace: "w1" });
+  // The blocker's branch moves while the run's worker is still running: it is noted, and nothing is merged.
+  const moved = moveBlocker("blocker.txt", "one\ntwo\n");
   await pool.rebaseStacked();
   assert.equal(gitIn(worktree, ["rev-parse", "HEAD~1"]), branchedAt, "a live worker's branch is left alone");
   assert.equal(entry("NBF-2").stackBase?.seen, moved);
-  assert.equal(rebaseNote(entry("NBF-2")), "Will be rebased onto NBF-1 when the worker stops");
-  // Its worker stopped: the next sweep rebases the run onto the new head, from the commit it was branched at, and pushes its own branch.
-  finishedAs({ workspace: undefined, finishedAt: 1 });
+  assert.equal(rebaseNote(entry("NBF-2")), "Will have NBF-1 merged in when the worker stops");
+  // Its worker stopped: the next sweep merges the blocker's new head into the run's branch, and pushes its own branch.
+  setRun(FINISHED_WATCHED);
   await pool.rebaseStacked();
-  assert.equal(gitIn(worktree, ["rev-parse", "HEAD~1"]), moved, "the run's commit now sits on the blocker's new head");
+  assert.equal(gitIn(worktree, ["rev-parse", "HEAD^2"]), moved, "the blocker's new head is merged into the run's branch");
+  assert.equal(gitIn(worktree, ["rev-parse", "HEAD^1"]), own, "the run's own commit is the first parent");
   assert.equal(gitIn(clone, ["rev-parse", "origin/nbf-2"]), gitIn(worktree, ["rev-parse", "HEAD"]), "its own branch is pushed");
-  assert.deepEqual(entry("NBF-2").stackBase, { key: "NBF-1", repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: moved, rebased: { from: branchedAt, to: moved, at: 100 } });
-  assert.equal(rebaseNote(entry("NBF-2")), `Rebased onto NBF-1 by agent-org (${branchedAt.slice(0, 7)} → ${moved.slice(0, 7)})`);
+  assert.deepEqual(entry("NBF-2").stackBase, { key: "NBF-1", repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: moved, merged: { from: branchedAt, to: moved, at: 100 } });
+  assert.equal(rebaseNote(entry("NBF-2")), `Merged NBF-1 into the branch by agent-org (${branchedAt.slice(0, 7)} → ${moved.slice(0, 7)})`);
+});
+
+test("A11-150: a stacked run whose blocker's moved branch conflicts with it is handed a conflict round by agent-org, and no person is asked", async () => {
+  const { pool, entry, worktree, branchedAt, setRun, moveBlocker } = stackedRun("ticket-pool-stack-conflict-");
+  setRun(FINISHED_WATCHED);
+  const before = gitIn(worktree, ["rev-parse", "HEAD"]);
+  const moved = moveBlocker("ticket.txt", "theirs\n");
+  await pool.rebaseStacked();
+  assert.deepEqual(entry("NBF-2").stackBase, { key: "NBF-1", repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: branchedAt, seen: moved, conflict: { head: moved, files: ["ticket.txt"] } },
+    "still at the commit it was branched from, conflicted against the new head");
+  assert.equal(gitIn(worktree, ["rev-parse", "HEAD"]), before, "the merge is aborted, and the run's branch is as it was");
+  assert.equal(gitIn(worktree, ["status", "--porcelain"]), "", "no merge is left in progress");
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").rounds], ["queued", 1], "the conflict round is queued for the run's own worker");
+  assert.equal(entry("NBF-2").feedback, `${PULL.url} conflicts with its base branch nbf-1-fit.\nMerging NBF-1's branch \`nbf-1-fit\` conflicted in ticket.txt.`);
+  assert.equal(rebaseNote(entry("NBF-2")), "Resolving a conflict with NBF-1 in ticket.txt", "the board names the conflict, not a person");
+});
+
+test("A11-150: a parked run's workspace is open, so the sweep merges nothing into its worktree; its round merges the base when it starts", async () => {
+  const { pool, entry, worktree, branchedAt, setRun, moveBlocker, h } = stackedRun("ticket-pool-stack-parked-");
+  setRun({ phase: "finished", outcome: { kind: "needs-human", reason: "which colour?" }, review: [PULL], workspace: "w1", finishedAt: 1 });
+  const before = gitIn(worktree, ["rev-parse", "HEAD"]);
+  moveBlocker("ticket.txt", "theirs\n");
+  await pool.rebaseStacked();
+  assert.equal(gitIn(worktree, ["rev-parse", "HEAD"]), before, "the worktree is left as it was");
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").rounds, entry("NBF-2").stackBase?.sha], ["finished", undefined, branchedAt]);
+  assert.equal(closes(h, "w1"), 0, "the parked workspace is not closed by the sweep");
+});
+
+test("A11-150: a conflicting merge at the board's round cap starts no round, and the note names the cap, not the conflict", async () => {
+  const { pool, entry, setRun, moveBlocker } = stackedRun("ticket-pool-stack-capped-");
+  setRun({ ...FINISHED_WATCHED, rounds: 3 });
+  const moved = moveBlocker("ticket.txt", "theirs\n");
+  await pool.rebaseStacked();
+  assert.equal(entry("NBF-2").phase, "finished", "no round is queued");
+  assert.match(entry("NBF-2").handedBack ?? "", /^The pull requests keep getting feedback: the board answered 3 rounds/);
+  assert.deepEqual(entry("NBF-2").stackBase?.conflict, { head: moved, files: ["ticket.txt"], capped: 3 });
+  assert.equal(rebaseNote(entry("NBF-2")), "The board's 3 rounds are used up before the merge with NBF-1 was resolved: Respond to review starts another");
+});
+
+test("A11-150: a finished run with no pull request is merged in when its blocker moves, and a conflict there starts no round", async () => {
+  const { pool, entry, worktree, branchedAt, setRun, moveBlocker } = stackedRun("ticket-pool-stack-no-pull-");
+  setRun({ phase: "finished", outcome: { kind: "checked", reason: "nothing to change" }, workspace: undefined, finishedAt: 1 });
+  const moved = moveBlocker("blocker.txt", "one\ntwo\n");
+  await pool.rebaseStacked();
+  assert.equal(gitIn(worktree, ["rev-parse", "HEAD^2"]), moved, "the blocker's new head is merged in, as for any stacked run");
+  assert.deepEqual(entry("NBF-2").stackBase, { key: "NBF-1", repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: moved, merged: { from: branchedAt, to: moved, at: 100 } });
+});
+
+test("A11-150: a draft run whose blocker's moved branch conflicts records nothing and starts no round: its approval merges the base in", async () => {
+  const { pool, entry, worktree, branchedAt, setRun, moveBlocker } = stackedRun("ticket-pool-stack-draft-");
+  setRun({ phase: "finished", outcome: { kind: "draft-pr", prs: [PULL] }, workspace: undefined, finishedAt: 1 });
+  const before = gitIn(worktree, ["rev-parse", "HEAD"]);
+  const moved = moveBlocker("ticket.txt", "theirs\n");
+  await pool.rebaseStacked();
+  assert.equal(gitIn(worktree, ["rev-parse", "HEAD"]), before, "the merge is aborted, and the branch is as it was");
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").rounds, entry("NBF-2").stackBase], ["finished", undefined, { key: "NBF-1", repo: "nbl-ui-netbox", branch: "nbf-1-fit", sha: branchedAt, seen: moved }],
+    "the head is seen, not recorded as a conflict: no note claims a round that does not exist");
+  assert.equal(rebaseNote(entry("NBF-2")), null);
+});
+
+test("A11-150: a conflict the run's worker resolved by merging the blocker's branch in is cleared by the next sweep, and the run is branched from that head", async () => {
+  const { pool, entry, worktree, setRun, moveBlocker } = stackedRun("ticket-pool-stack-cleared-");
+  setRun(FINISHED_WATCHED);
+  const moved = moveBlocker("ticket.txt", "theirs\n");
+  await pool.rebaseStacked();
+  assert.deepEqual(entry("NBF-2").stackBase?.conflict, { head: moved, files: ["ticket.txt"] }, "the conflict is recorded first");
+  // The round's worker merges the base in by hand, keeps both changes, and pushes.
+  assert.throws(() => gitIn(worktree, [...identity, "merge", "--no-edit", "origin/nbf-1-fit"]), "its own merge conflicts too");
+  writeFileSync(join(worktree, "ticket.txt"), "both\n");
+  gitIn(worktree, ["add", "ticket.txt"]);
+  gitIn(worktree, [...identity, "commit", "-q", "--no-edit"]);
+  gitIn(worktree, ["push", "-q", "origin", "HEAD:nbf-2"]);
+  setRun(FINISHED_WATCHED);
+  await pool.rebaseStacked();
+  assert.equal(entry("NBF-2").stackBase?.conflict, undefined, "no conflict is named once its head is in the branch");
+  assert.equal(entry("NBF-2").stackBase?.sha, moved, "the run is branched from the head the worker merged in");
 });
 
 /**
