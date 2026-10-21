@@ -415,13 +415,16 @@ a worker can choose from:
   "tickets": { "max": 3 } }
 ```
 
-Ticket mode's settings are grouped into provider blocks under `tickets.providers`: `tracker` (`linear`), `codeHost` (`github`), `publish` (`slack` or `none`), `reviewer` (`atomic` or `none`) and `exposure` (`local` or `tailscale`). Each block reads only its own settings. A block left out takes its provider's default, which `agent-org doctor` says. The old keys, such as `tickets.linearKey`, `tickets.workingState`, `tickets.publish`, `tickets.reviewer`, `tickets.port` and `tickets.serve`, are read as aliases for one release: `agent-org doctor` names the place each one moves to, and `agent-org doctor --fix` moves them, keeps a backup of the host file beside it, and writes nothing unless the moved file reads the same settings. Choosing or switching a provider goes through `agent-org onboard`; the Settings page edits a provider's values.
+Every external concern of ticket mode is an **agent-org plugin**: a code module behind a versioned contract (a "Claude plugin" is something else: `tickets.plugins` lists those). There are six concerns: the tracker, the code host, the publisher, the reviewer, the exposure and messaging. A plugin's settings are the block of its concern under `tickets.providers`: `tracker` (`linear`), `codeHost` (`github`), `publish` (`slack` or `none`), `reviewer` (`atomic` or `none`) and `exposure` (`local` or `tailscale`). In a block, `provider` names an installed plugin, `enabled` (absent is true) turns it off without forgetting its settings, and the rest are the plugin's own settings, each refused by name when the plugin does not declare it. Exactly one tracker and one code host must be enabled, so `enabled: false` on either is refused by name; a disabled publisher publishes nothing, a disabled reviewer starts none, and a disabled exposure serves the board on loopback only. A plugin that implements a contract major this agent-org does not read is refused by name, at start and in `agent-org doctor`. While core still runs a concern's built-in (the tracker until A11-159, the code host until A11-160, the publisher and reviewer until A11-161, the exposure until A11-162), only that built-in may be enabled for it. A block left out takes its plugin's default, which `agent-org doctor` says. The old keys, such as `tickets.linearKey`, `tickets.workingState`, `tickets.publish`, `tickets.reviewer`, `tickets.port` and `tickets.serve`, are read as aliases for one release: `agent-org doctor` names the place each one moves to, and `agent-org doctor --fix` moves them, keeps a backup of the host file beside it, and writes nothing unless the moved file reads the same settings.
+
+`agent-org plugin list|install|enable|disable|uninstall|config` manages them. `list` shows each concern with the plugin enabled for it and every plugin known for it (bundled in `plugins/<name>`, built into core until its concern moves, or a fake for tests), with its contract version and any refusal. `install <name> [--set key=value] [--replace]` writes the plugin's block (it is refused by name when the block names another plugin, unless `--replace`); `enable <name>` and `disable <name>` set `enabled`; `uninstall <name>` removes the block, and the concern falls back to its default (refused for the tracker and the code host, which must keep one); `config <name> [key] [key=value] [--unset key]` shows or sets the block's settings, never printing a secret, only the path of its file. Each write goes through the Settings page's own path: it keeps the file's layout and your `_` notes, is refused when the readers would refuse the new file, and leaves `host.json.bak` beside it. A key the schema marks dangerous needs `--confirm`. A concern still read from an alias is refused a write, naming `agent-org doctor --fix`, and messaging, which `project.json` configures, is refused a write too, until A11-162 moves it. The Settings page edits a plugin's values; choosing or switching one goes through `agent-org plugin` or `agent-org onboard`.
 
 | key | |
 | --- | --- |
 | [`tickets.providers`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.tracker`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.tracker.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.tracker.enabled`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.tracker.key`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.tracker.key.path`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.tracker.key.keychain`](src/ticket-mode/config-schema.ts) | |
@@ -431,6 +434,7 @@ Ticket mode's settings are grouped into provider blocks under `tickets.providers
 | [`tickets.providers.tracker.takenStates`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.codeHost.enabled`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost.identity`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost.identity.<role>`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.codeHost.identity.<role>.mode`](src/ticket-mode/config-schema.ts) | |
@@ -448,14 +452,17 @@ Ticket mode's settings are grouped into provider blocks under `tickets.providers
 | [`tickets.providers.codeHost.stack`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.publish`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.publish.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.publish.enabled`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.publish.run`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.publish.model`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.publish.effort`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.publish.connectors`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.reviewer`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.reviewer.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.reviewer.enabled`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.exposure`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.exposure.provider`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.providers.exposure.enabled`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.exposure.port`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.exposure.uiPort`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.providers.exposure.terminal`](src/ticket-mode/config-schema.ts) | |

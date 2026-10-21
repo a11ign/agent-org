@@ -56,6 +56,9 @@ function gateProblems(ci: Workflow): string[] {
   return problems;
 }
 
+/** The lint script: the scope `eslint.config.ts` covers, with `plugins/` (A11-158), which holds no `.ts` file until the first bundled agent-org plugin lands, so an unmatched pattern is no error. */
+const LINT_SCRIPT = "eslint --no-error-on-unmatched-pattern src scripts plugins";
+
 /** The three packages are pinned EXACT (no `^`, no `~`), and the lint script runs the scope `eslint.config.ts` covers. */
 function pinProblems(pins: Pins): string[] {
   const problems: string[] = [];
@@ -63,7 +66,7 @@ function pinProblems(pins: Pins): string[] {
     const range = pins.devDependencies?.[name];
     if (range !== version) problems.push(`${name} is ${range ?? "not in devDependencies"}, not the exact ${version}`);
   }
-  if (pins.scripts?.lint !== "eslint src scripts") problems.push(`the lint script is ${JSON.stringify(pins.scripts?.lint)}, not \`eslint src scripts\``);
+  if (pins.scripts?.lint !== LINT_SCRIPT) problems.push(`the lint script is ${JSON.stringify(pins.scripts?.lint)}, not \`${LINT_SCRIPT}\``);
   return problems;
 }
 

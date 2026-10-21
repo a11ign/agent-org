@@ -1,0 +1,149 @@
+// @ts-check
+// module: the tracker contract's suite (A11-158) -- `runTrackerConformance(source, probe)` is the only definition of "a tracker"
+//
+// EVERY IMPLEMENTATION'S OWN TEST CALLS THIS, so "does Linear honour `read`" and "does the next tracker" are one question with one answer. A tracker cannot be asked
+// offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
+// write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Ticket, TicketSource } from "../contracts/tracker.ts";
+import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
+
+/** What the caller has seeded: the key of a ticket the tracker holds, a key it holds none of, and a second ticket the write checks may relate to the first. */
+export type TrackerProbe = Readonly<{ known: string; missing: string; other?: string }>;
+type Subject = Readonly<{ source: TicketSource; probe: TrackerProbe }>;
+
+const REQUIRED_OPERATIONS = ["assigned", "read", "download"] as const;
+const TICKET_STRINGS = ["key", "title", "description", "url", "branch", "status", "team"] as const;
+
+/** A ticket as the board reads it: its text fields, its order and priority as numbers, and its parent as a key or null. */
+function expectTicket(value: unknown, where: string): asserts value is Ticket {
+  expect(isObject(value), `${where} is not a ticket object`);
+  for (const field of TICKET_STRINGS) expect(isString(value[field]), `${where}.${field} must be text`);
+  expect(typeof value.statusOrder === "number", `${where}.statusOrder must be a number`);
+  expect(typeof value.priority === "number", `${where}.priority must be a number`);
+  expect(value.parent === null || isString(value.parent), `${where}.parent must be a ticket key or null`);
+}
+
+const has = (name: keyof TicketSource) => (subject: Subject): boolean => typeof subject.source[name] === "function";
+const optional = (name: keyof TicketSource, run: Conditional<Subject>["run"]): Conditional<Subject> => ({ applies: has(name), reason: `the tracker has no ${name}, which is optional`, run });
+
+async function expectMap(promise: Promise<unknown>, what: string): Promise<Map<unknown, unknown>> {
+  const value = await promise;
+  expect(value instanceof Map, `${what} must resolve a Map`);
+  return value;
+}
+
+/** Runs `use` with a scratch directory, and removes it: `download` writes into one. */
+async function withScratch(use: (dir: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "tracker-conformance-"));
+  try {
+    await use(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
+  "assigned lists tickets": async ({ source }) => {
+    const tickets = await source.assigned();
+    expect(Array.isArray(tickets), "assigned() must resolve a list");
+    tickets.forEach((ticket, index) => expectTicket(ticket, `assigned()[${index}]`));
+  },
+  "read answers a ticket by its key": async ({ source, probe }) => {
+    const ticket = await source.read(probe.known);
+    expectTicket(ticket, `read(${probe.known})`);
+    expect(ticket.key === probe.known, `read(${probe.known}) answered the ticket ${ticket.key}`);
+  },
+  "read answers null for a key the tracker has none of": async ({ source, probe }) => {
+    expect((await source.read(probe.missing)) === null, `read(${probe.missing}) must resolve null for a key with no ticket, not a guess`);
+  },
+  "download returns the paths it fetched": async ({ source, probe }) => {
+    const ticket = await source.read(probe.known);
+    expectTicket(ticket, `read(${probe.known})`);
+    await withScratch(async (dir) => {
+      const paths = await source.download(ticket, dir);
+      expect(Array.isArray(paths) && paths.every(isString), "download() must resolve a list of paths");
+    });
+  },
+};
+
+const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
+  "viewer names the person whose key this is": optional("viewer", async ({ source }) => {
+    const name = await source.viewer?.();
+    expect(isString(name) && name !== "", "viewer() must resolve a name");
+  }),
+  "me names the person by id and name": optional("me", async ({ source }) => {
+    const me = await source.me?.();
+    expect(isObject(me) && isString(me.id) && isString(me.name), "me() must resolve { id, name }");
+  }),
+  "people counts who holds the open tickets": optional("people", async ({ source }) => {
+    const held = await source.people?.();
+    expect(isObject(held) && Array.isArray(held.people) && typeof held.unassigned === "number" && typeof held.total === "number", "people() must resolve { people, unassigned, total }");
+  }),
+  "scoped pages a scope's tickets": optional("scoped", async ({ source }) => {
+    const page = await source.scoped?.("anyone", null);
+    expect(isObject(page) && Array.isArray(page.tickets) && (page.next === null || isString(page.next)), "scoped() must resolve { tickets, next }, with next null at the end");
+  }),
+  "stateTypes answers a Map of the keys it knows": optional("stateTypes", async ({ source, probe }) => {
+    const types = await expectMap(source.stateTypes!([probe.known, probe.missing]), "stateTypes()");
+    expect(isString(types.get(probe.known)), `stateTypes() must name the state type of ${probe.known}`);
+    expect(!types.has(probe.missing), `stateTypes() must leave out ${probe.missing}, which the tracker has none of`);
+  }),
+  "pullStates answers a Map by key": optional("pullStates", async ({ source, probe }) => {
+    await expectMap(source.pullStates!([probe.known]), "pullStates()");
+  }),
+  "blockers answers a Map, leaving out a key with no ticket": optional("blockers", async ({ source, probe }) => {
+    const blockers = await expectMap(source.blockers!([probe.known, probe.missing]), "blockers()");
+    expect(!blockers.has(probe.missing), `blockers() must leave out ${probe.missing}, which the tracker has none of`);
+  }),
+  "projectSummaries answers a Map, leaving out a key with no project": optional("projectSummaries", async ({ source, probe }) => {
+    const summaries = await expectMap(source.projectSummaries!([probe.known, probe.missing]), "projectSummaries()");
+    expect(!summaries.has(probe.missing), `projectSummaries() must leave out ${probe.missing}`);
+  }),
+  "keywords name the words a pull request body is read by": {
+    applies: ({ source }) => source.keywords !== undefined,
+    reason: "the tracker declares no keywords, so it is read by the defaults",
+    run: ({ source }) => expect(isString(source.keywords?.closing) && source.keywords.closing !== "" && isString(source.keywords.nonClosing) && source.keywords.nonClosing !== "", "keywords must be { closing, nonClosing }, each a word"),
+  },
+  "updateTicketText writes the fields it is given and no others": optional("updateTicketText", async ({ source, probe }) => {
+    const before = await source.read(probe.known);
+    expectTicket(before, `read(${probe.known})`);
+    await source.updateTicketText!(probe.known, { title: `${before.title} (edited)` });
+    const after = await source.read(probe.known);
+    expectTicket(after, `read(${probe.known})`);
+    expect(after.title === `${before.title} (edited)`, "updateTicketText({ title }) must change the title");
+    expect(after.description === before.description, "updateTicketText({ title }) must leave the description as it was");
+  }),
+  "addBlockers records a relation once, and again without error": {
+    applies: ({ source, probe }) => typeof source.addBlockers === "function" && typeof source.blockers === "function" && probe.other !== undefined,
+    reason: "the tracker has no addBlockers or blockers, or the probe names no second ticket",
+    run: async ({ source, probe }) => {
+      await source.addBlockers!(probe.known, [probe.other!]);
+      await source.addBlockers!(probe.known, [probe.other!]);
+      const blockers = await expectMap(source.blockers!([probe.known]), "blockers()");
+      const held = blockers.get(probe.known);
+      expect(Array.isArray(held) && held.filter((blocker) => blocker.key === probe.other).length === 1, `${probe.other} must block ${probe.known} exactly once after two calls`);
+    },
+  },
+  "complete finishes a ticket once and leaves a finished one alone": optional("complete", async ({ source, probe }) => {
+    await source.complete!(probe.known, "completed by the conformance suite");
+    if (typeof source.stateTypes === "function") {
+      expect((await source.stateTypes([probe.known])).get(probe.known) === "completed", "complete() must move the ticket to a completed state");
+    }
+    await source.complete!(probe.known, "completed again");
+  }),
+};
+
+/**
+ * Runs every check against `source`, so one run reports EVERY way a tracker is wrong.
+ * @throws ContractError listing each failed check
+ */
+export function runTrackerConformance(source: TicketSource, probe: TrackerProbe): Promise<ConformanceResult> {
+  return runChecks("tracker", { source, probe }, {
+    shape: ({ source: candidate }) => expect(hasFunctions(candidate, REQUIRED_OPERATIONS), `a tracker is an object with ${REQUIRED_OPERATIONS.join(", ")} functions`),
+    always: ALWAYS,
+    conditional: CONDITIONAL,
+  });
+}

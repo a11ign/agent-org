@@ -39,6 +39,22 @@
 // A check that does not apply (a provider that declares no `replies` is not asked to reply) is reported in `skipped` WITH its reason
 // and never as a pass, and a provider's own test asserts what ran, so "the checks all skipped" is not a green result.
 
+/**
+ * What a provider declares it can do. `silent`, `buttons`, `replies` and `conversation` are the four every provider states; the rest are optional, and an
+ * absent `edit` or `pin` is false. `maxText` is the longest text `send` takes whole.
+ */
+export type MessagingCapabilities = { silent?: boolean; buttons?: boolean; replies?: boolean; conversation?: boolean; maxText?: number; ratePerSecond?: number; destinations?: number; edit?: boolean; pin?: boolean };
+
+/** The messaging contract's provider (A11-158): the shape `runProviderConformance` checks, written as a type. `poll`, `edit` and `pin` are opt-in. */
+export interface MessagingProvider {
+  id: string;
+  capabilities: MessagingCapabilities;
+  send(message: { text: string; silent?: boolean; actions?: unknown[]; replyTo?: string; audience?: string }): Promise<{ messageRef: string; silent: boolean; audience: string }>;
+  poll?(cursor: number | undefined, signal?: AbortSignal): Promise<{ updates: Record<string, any>[]; cursor: number }>;
+  edit?(request: { messageRef: string; text: string; audience?: string }): Promise<{ messageRef: string; unchanged: boolean }>;
+  pin?(request: { messageRef: string; audience?: string }): Promise<{ messageRef: string }>;
+}
+
 const CONTRACT_TEXT = "conformance probe";
 const POLL_DEADLINE_MS = 1000;
 const BOOLEAN_CAPABILITIES = Object.freeze(["silent", "buttons", "replies", "conversation"]);

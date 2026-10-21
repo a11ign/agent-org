@@ -47,7 +47,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src scripts",
+    "lint": "eslint --no-error-on-unmatched-pattern src scripts plugins",
     "test": "node scripts/test-entry.ts",
     "changeset": "pnpm dlx @changesets/cli@3.0.1",
     "messaging:listen": "node src/messaging/listen.ts",
@@ -66,6 +66,8 @@
   "files": [
     "src",
     "!src/**/*.test.ts",
+    "plugins",
+    "!plugins/**/*.test.ts",
     "host",
     "LICENSE",
     "README.md"

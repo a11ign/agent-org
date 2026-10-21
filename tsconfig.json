@@ -1,5 +1,5 @@
 {
-  // THE PROGRAM `npm run typecheck` CHECKS AND CI REQUIRES (a11ign/a11ign#3551, toolchain row 4a of #3550). It is every `.ts` and every `.mjs` under `src/`; a `.mjs` is
+  // THE PROGRAM `npm run typecheck` CHECKS AND CI REQUIRES (a11ign/a11ign#3551, toolchain row 4a of #3550). It is every `.ts` and every `.mjs` under `src/`, and every `.ts` under `plugins/` (the bundled agent-org plugins, A11-158); a `.mjs` is
   // checked only when it carries `// @ts-check` (`checkJs` stays false, so the pragma keeps meaning what it meant), and every `*.test.ts` is checked.
   //
   // `exclude` NAMES WHAT IS NOT YET CLEAN, so a NEW file is checked from its first commit and the list can only shrink: fix a file, delete its line. It is not a way to
@@ -18,7 +18,7 @@
     "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.mjs"],
+  "include": ["src/**/*.ts", "src/**/*.mjs", "plugins/**/*.ts"],
   "exclude": [
     // CANNOT BE CHECKED IN THIS TREE: each imports a sibling module that lives in the project the tool is installed in (`packages/lab/src/packaging/`), which the `gate` job copies
     // in beside the tests and a checkout of this repository alone does not have (TS2307). Removing these needs the siblings here, or a typecheck run in the project's layout; copying

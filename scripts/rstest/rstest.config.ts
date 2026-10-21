@@ -26,7 +26,7 @@ process.env.AGENT_ORG_UNDER_TEST ??= "1";
 export default {
   ...defineToolchainConfig({
     root: fileURLToPath(new URL("../../", import.meta.url)),
-    include: ["src/**/*.test.ts", "src/**/*.test.mjs"],
+    include: ["src/**/*.test.ts", "src/**/*.test.mjs", "plugins/**/*.test.ts"],
   }),
   // EVERY RUN HAS A PRIVATE `TMPDIR` (a11ign/a11ign#3854, from the #3846 incident): the globalSetup makes `~/.cache/a11ign/tmp/run-*`, each test file's worker
   // points `TMPDIR` at its own directory inside it, and the teardown names the files that left something and removes the run. Both paths are relative to `root`.

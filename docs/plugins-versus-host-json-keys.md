@@ -200,4 +200,10 @@ The run start calls the same function, so the page and `clearRunDir` cannot disa
 
 ## 8. Addendum (A11-144): the tracker and the code host are built in
 
+> **Superseded by A11-157 (2026-10-21).** The chairman's decisions there replace the one this section records: every external concern, the tracker and the code host included, is an
+> **agent-org plugin**, a code module behind a versioned contract that is installed, enabled, disabled, uninstalled and configured (`agent-org plugin`, A11-158). The question A11-143's
+> Decision 1 answered ("a plugin, as the conventions plugin is, or a provider built in?") confused two things: a *Claude plugin* (what `tickets.plugins` lists and what this record is
+> about) and an *agent-org plugin* (code the tool runs). The tracker and the code host are agent-org plugins; the conventions plugin stays a Claude plugin, and the "go, narrowly" of
+> section 7 for it stands. The text below is kept as the record of what A11-144 decided at the time.
+
 The open question of A11-144 was whether the tracker and the code host are plugins, as the conventions plugin is, or built-in providers picked by name. They are built in. A11-143 Decision 1 settles it: the tracker and the code host are code that agent-org runs (API calls and auth), so each is a provider picked by name under `tickets.providers` (`tracker: linear`, `codeHost: github`), and a later tracker such as Jira is a code change behind the same provider interface. The "go, narrowly" of section 7 stands for the conventions plugin alone, which says how tickets are written and reviewed. Section 6's contract is not extended to the providers, and neither needs a `metadata.agentOrg` entry.

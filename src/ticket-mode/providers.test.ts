@@ -1,7 +1,9 @@
 // no-token: none -- pure: each host file is parsed here, and nothing is read from disk or the tracker
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALIASES_REFUSED_FROM, resolveProviders } from "./providers.ts";
+import { ALIASES_REFUSED_FROM, isActive, resolveProviders } from "./providers.ts";
+import type { Catalog } from "../plugins/manifest.ts";
+import { buildCatalog } from "../plugins/registry.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 
@@ -160,4 +162,95 @@ test("a block's settings are read in their own place: the tracker's connectors, 
   assert.equal(settings.stackRequired, false);
   assert.equal(settings.reviewer, "atomic");
   assert.deepEqual(settings.publish, { run: RUN, model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] });
+});
+
+// A11-158: a block is an agent-org plugin's config. `provider` names a plugin of the registry, `enabled` switches it, and the rules of the registry are the reader's.
+const NO_PACKAGES = { directories: () => [], text: () => null, isFile: () => false };
+/** The built-ins and fakes, with no pin, so a fake may be enabled; and `pins` for a test of the pin. */
+const unpinned = (): Catalog => buildCatalog({ root: "/none", files: NO_PACKAGES, pins: {} });
+const refusalOf = (host: Record<string, unknown>, catalog?: Catalog): TicketSettingsRefusal => {
+  try {
+    resolveProviders(host, catalog);
+  } catch (error) {
+    if (error instanceof TicketSettingsRefusal) return error;
+    throw error;
+  }
+  throw new assert.AssertionError({ message: `the host file was not refused: ${JSON.stringify(host)}` });
+};
+
+test("A11-158: `enabled` is absent for every host file there is, and absent is true", () => {
+  const providers = resolveProviders({ tickets: { providers: { publish: { provider: "slack", run: RUN }, tracker: { provider: "linear" } } } });
+  assert.deepEqual(Object.values(providers.blocks).map(({ enabled }) => enabled), [true, true, true, true, true]);
+  assert.equal(isActive(providers.blocks.publish), true);
+  assert.equal(isActive(providers.blocks.reviewer), false, "none runs no plugin, enabled or not");
+});
+
+test("A11-158: `enabled: false` keeps the plugin named and its settings read, and the block is no longer active", () => {
+  const providers = resolveProviders({ tickets: { providers: { publish: { provider: "slack", run: RUN, enabled: false, connectors: ["^mcp__slack__send"] } } } });
+  assert.equal(providers.blocks.publish.provider, "slack");
+  assert.equal(providers.blocks.publish.enabled, false);
+  assert.equal(isActive(providers.blocks.publish), false);
+  assert.equal(providers.blocks.publish.settings.run?.value, RUN, "its settings are kept for `enable`");
+});
+
+test("A11-158: the only tracker and the only code host cannot be disabled: refused by name, saying why", () => {
+  const tracker = refusalOf({ tickets: { providers: { tracker: { provider: "linear", enabled: false } } } });
+  assert.equal(tracker.field, "tickets.providers.tracker.enabled");
+  assert.match(tracker.message, /`tickets\.providers\.tracker\.enabled` in the host file is false, but linear is the only tracker, and exactly one tracker must be enabled: leave it enabled/);
+  const codeHost = refusalOf({ tickets: { providers: { codeHost: { provider: "github", enabled: false } } } });
+  assert.equal(codeHost.field, "tickets.providers.codeHost.enabled");
+  assert.match(codeHost.message, /github is the only code host, and exactly one code host must be enabled/);
+  for (const [block, provider] of [["publish", "slack"], ["reviewer", "atomic"], ["exposure", "tailscale"]] as const) {
+    const accepted = resolveProviders({ tickets: { providers: { [block]: { provider, enabled: false, ...(block === "publish" ? { run: RUN } : {}) } } } });
+    assert.equal(accepted.blocks[block].enabled, false, `${block} may be disabled`);
+  }
+});
+
+test("A11-158: `enabled` that is not true or false is refused by name", () => {
+  assert.equal(refusalOf({ tickets: { providers: { publish: { provider: "slack", run: RUN, enabled: "no" } } } }).field, "tickets.providers.publish.enabled");
+  assert.equal(refusalOf({ tickets: { providers: { tracker: { provider: "linear", enabled: 0 } } } }).field, "tickets.providers.tracker.enabled");
+});
+
+test("A11-158: a disabled plugin's settings are still validated, so `enable` cannot restore what the reader refuses", () => {
+  assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale", enabled: false, port: 0 } } } }),
+    (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.exposure.port");
+  assert.equal(refusalOf({ tickets: { providers: { reviewer: { provider: "atomic", enabled: false, model: "opus" } } } }).field, "tickets.providers.reviewer.model");
+});
+
+test("A11-158: a plugin that implements a contract major this agent-org does not read is refused by name at start, when its block enables it", () => {
+  const catalog = buildCatalog({ root: "/none", files: NO_PACKAGES, pins: {} });
+  const unread = { ...catalog, plugins: catalog.plugins.map((plugin) => (plugin.name === "fake-tracker" ? { ...plugin, contract: "2.0" } : plugin)) };
+  const refused = refusalOf({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } }, unread);
+  assert.equal(refused.field, "tickets.providers.tracker.provider");
+  assert.match(refused.message, /is refused: plugin fake-tracker implements tracker contract 2\.0; this agent-org reads tracker 1\.x: update agent-org, or use a plugin of a major it reads/);
+  const disabled = resolveProviders({ tickets: { providers: { tracker: { provider: "linear" }, publish: { provider: "fake-publisher", enabled: false } } } }, unread);
+  assert.equal(disabled.blocks.publish.enabled, false);
+  assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "the same plugin at a major it reads is accepted");
+});
+
+test("A11-158: while core runs a concern's built-in, any other plugin enabled for it is refused, naming the plugin, the built-in and the ticket that moves it", () => {
+  const refused = refusalOf({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } });
+  assert.equal(refused.field, "tickets.providers.tracker.provider");
+  assert.match(refused.message, /is refused: fake-tracker is a tracker plugin, but this release runs the tracker in core as linear until A11-159: name "linear"/);
+  assert.match(refusalOf({ tickets: { providers: { exposure: { provider: "fake-exposure" } } } }).message, /fake-exposure is an exposure plugin, but this release runs the exposure in core as local or tailscale until A11-162/);
+  assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "no pin, no refusal");
+  assert.equal(resolveProviders({ tickets: { providers: { publish: { provider: "fake-publisher", enabled: false } } } }).blocks.publish.enabled, false, "a disabled plugin is not run, so the pin has nothing to refuse");
+});
+
+test("A11-158: a plugin of another concern, and one the registry does not hold, are refused by name listing what the block may name", () => {
+  const wrongConcern = refusalOf({ tickets: { providers: { tracker: { provider: "slack" } } } });
+  assert.equal(wrongConcern.field, "tickets.providers.tracker.provider");
+  assert.match(wrongConcern.message, /must be one of "linear", not "slack"/, "the fake is pinned off, so it is not offered");
+  assert.match(refusalOf({ tickets: { providers: { publish: { provider: "jira" } } } }).message, /must be one of "slack", "none", not "jira"/);
+});
+
+test("A11-158: a block that names a plugin the registry refused says why it was refused", () => {
+  const catalog = { ...unpinned(), refusals: [{ plugin: "linear-tools", why: "plugin linear-tools: package.json declares dependencies (left-pad)" }] };
+  const refused = refusalOf({ tickets: { providers: { tracker: { provider: "linear-tools" } } } }, catalog);
+  assert.match(refused.message, /names a plugin that was refused: plugin linear-tools: package\.json declares dependencies \(left-pad\)/);
+});
+
+test("A11-158: a plugin takes the settings it declares and no others", () => {
+  assert.equal(refusalOf({ tickets: { providers: { publish: { provider: "fake-publisher", run: RUN } } } }, unpinned()).field, "tickets.providers.publish.run");
+  assert.match(refusalOf({ tickets: { providers: { tracker: { provider: "linear", port: 1 } } } }).message, /is not a setting of linear: its settings are provider, enabled, key, connectors, workingState, plannedState, takenStates/);
 });

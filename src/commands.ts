@@ -36,6 +36,7 @@ export const COMMANDS = {
   "messaging:watch": "messaging/watch.ts",
   "onboard": "install/onboard.ts",
   "order:verify": "order-verify.ts",
+  "plugin": "plugins/cli.ts",
   "pr:edit": "pr-open.ts",
   "pr:hold": "pr-hold.ts",
   "pr:open": "pr-open.ts",

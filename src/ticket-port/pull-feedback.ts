@@ -4,26 +4,10 @@
 // Which checks are red is `red-pr.ts`'s to decide (#2956), so this file asks it.
 import { brokenChecks } from "../red-pr.ts";
 
-/** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
-export type PullFeedback = Readonly<{
-  state: "open" | "merged" | "closed";
-  /** The newest review (commented or changes requested), conversation comment or inline comment by someone other than the board's account. */
-  feedbackAt: number | null;
-  /** Who left feedback, each once, the author of the newest first. */
-  authors: readonly string[];
-  /** The checks failing on the head commit, by name: its required ones, or every one where none is required. */
-  failing: readonly string[];
-  /** When the newest of those failing checks finished. */
-  failedAt: number | null;
-  /** Whether it conflicts with its base: GitHub says `CONFLICTING` or `DIRTY`. `UNKNOWN` (still being computed) is not a conflict. */
-  conflicting: boolean;
-  /** The branch it merges into, or null when GitHub does not say. */
-  base: string | null;
-  /** The files it changes, by path within its repository. */
-  files: readonly string[];
-  /** Whether `files` is all of them. Read a page of 100 at a time, up to {@link MAX_FILE_PAGES}: a list cut off there is not complete. */
-  filesComplete: boolean;
-}>;
+import type { PullFeedback } from "../plugins/contracts/code-host.ts";
+
+// THE TYPE IS THE CODE HOST CONTRACT'S (`src/plugins/contracts/code-host.ts`, A11-158), re-exported so no caller changes.
+export type { PullFeedback };
 
 /** How much of each list one read takes, newest last. Only the newest item of each counts, so a long history is not read. */
 const LAST = 50;

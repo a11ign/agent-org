@@ -13,6 +13,7 @@ import type { StackBase } from "./board-view/pull-status-and-notes.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest, WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
+import { PUBLISHED_FILE } from "../plugins/contracts/publisher.ts";
 import { DECISIONS_FILE, MAX_CREATED, PRIORITY_NUMBER, type Priority } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
@@ -105,8 +106,8 @@ export const PR_REVIEW_FILE = "pr-review.json";
  * was made. A push or a pull request is refused unless its last line is `review`. Only the hook writes it, so no worker may (A11-86).
  */
 export const PR_REVIEW_LOG_FILE = "pr-review-log";
-/** What a publish run writes beside its outcome file: the messages it posted, as `{ "links": ["<message url>", ...] }`. */
-export const PUBLISHED_FILE = "published.json";
+/** What a publish run writes beside its outcome file: the messages it posted, as `{ "links": ["<message url>", ...] }`. The publisher contract names it (A11-158). */
+export { PUBLISHED_FILE };
 
 /**
  * How a review run waits. A worker that ended its turn to wait was read as a run that stopped: the Stop hook let the third stop through, the

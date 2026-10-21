@@ -1,0 +1,4 @@
+# The agent-org plugins bundled with the tool: one package per plugin under `plugins/` (A11-158, Decision 3 of A11-157). A host does NOT install them as workspace packages:
+# it installs the tool with `--ignore-workspace`, so the registry reads `plugins/*/package.json` from the checkout instead (docs/adr/0001-plugins-load-from-the-checkout.md).
+packages:
+  - "plugins/*"

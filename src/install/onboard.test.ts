@@ -12,6 +12,7 @@ import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
 import type { Account, Program, ProgramRunner } from "../ticket-port/stack-extension.ts";
 import { diagnose, type DoctorDeps } from "./doctor.ts";
 import type { ProfileRepo } from "./onboard-profile.ts";
+import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
 import type { Replacements } from "./interim-guards.ts";
 import { PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 
@@ -458,7 +459,7 @@ function greenDoctor(home: string): DoctorDeps {
     ghWrapper: async () => ({ divergence: null, mints: [] }), ghAs: () => listedGh(), originOf: () => null, platform: "linux",
     isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
-    reviewerGate: async () => null, codexStatus: () => 0, chromium: () => BROWSERS_READY, now: () => Date.now(),
+    reviewerGate: async () => null, codexStatus: () => 0, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
   };
 }
 
