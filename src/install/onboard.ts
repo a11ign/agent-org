@@ -48,6 +48,7 @@ import { resolveProviders } from "../ticket-mode/providers.ts";
 import { readPluginContract, type Contract } from "../ticket-mode/plugin-contract.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
 import { ensureBun } from "./bun.ts";
+import { chromiumProblems, chromiumReport, lacksLibraries, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updateChannelPath, type RunResult, type ServiceName, type Started, type UpdateChannel } from "./service.ts";
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, PAIRING_STEPS, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
@@ -119,6 +120,10 @@ export type OnboardDeps = Readonly<{
   replacements: () => Promise<Replacements>;
   /** The checks `agent-org doctor` runs, read now: printed as onboard's last report (A11-145). */
   diagnose: () => Promise<Check[]>;
+  /** The Chromium builds this machine has, read now: onboard installs what is missing, and says what it cannot (A11-151). */
+  chromium: () => ChromiumReport;
+  /** Whether this process runs as root, so the system libraries are installed without `sudo` (A11-151). */
+  isRoot: () => boolean;
   /** Start the named services, in order. @returns one line per service */
   startServices: (names: readonly ServiceName[]) => string;
   out: Pick<Console, "log">;
@@ -363,6 +368,30 @@ async function setUpTerminal(deps: OnboardDeps): Promise<boolean> {
   }
 }
 
+/**
+ * Install the browsers `ticket:capture` drives, as the person who runs onboard, without root, and check that both builds start. The system libraries are
+ * installed only when this process is root or `sudo -n` works; otherwise the command is said, as the other steps say theirs, and onboard goes on (A11-151).
+ * @returns whether both builds start, which is what sets `tickets.capture`.
+ */
+function setUpChromium(deps: OnboardDeps): boolean {
+  const browsers = deps.run("node", [PLAYWRIGHT_CLI, "install", "chromium"]);
+  if (browsers.status !== 0) deps.out.log(`the Chromium browsers did not install: ${firstLine(browsers)}`);
+  let report = deps.chromium();
+  if (lacksLibraries(report)) {
+    const canInstall = deps.isRoot() || deps.run("sudo", ["-n", "true"]).status === 0;
+    if (canInstall) {
+      const libraries = deps.isRoot()
+        ? deps.run("node", [PLAYWRIGHT_CLI, "install-deps", "chromium"])
+        : deps.run("sudo", ["-n", "node", PLAYWRIGHT_CLI, "install-deps", "chromium"]);
+      if (libraries.status !== 0) deps.out.log(`the Chromium libraries did not install: ${firstLine(libraries)}`);
+      report = deps.chromium();
+    }
+  }
+  const problems = chromiumProblems(report);
+  for (const line of problems) deps.out.log(line);
+  return problems.length === 0;
+}
+
 /** Register Linear's MCP for Claude Code at user scope, unless a `linear` MCP is there already. Says what it did, never the key. */
 function registerLinearMcp(source: KeySource, deps: OnboardDeps) {
   if (deps.run("claude", ["mcp", "get", "linear"]).status === 0) {
@@ -533,6 +562,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   const planned = profile === null ? null : providerBlocksOf(profile);
   const identity = await reviewerIdentity(planned?.reviewerApp, existing.codeHost.settings.identity.value, deps);
   const terminal = options.terminal && await setUpTerminal(deps);
+  const capture = setUpChromium(deps);
   const plugin = profile?.conventions === undefined ? null : installPlugin(profile.conventions, deps);
   for (const line of plugin?.lines ?? []) deps.out.log(line);
   const contract = plugin?.installPath === null || plugin === null ? null : contractOf(plugin.installPath, deps);
@@ -546,7 +576,8 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   if (readable) providers.tracker = withLinearReads(providers.tracker);
   const pluginKeys = plugin?.installPath === null || plugin === null ? {} : conventionKeys(profile?.conventions?.plugin ?? "", contract);
   const prReview = profile?.conventions?.prReview === true ? contract?.provides.prReview?.skill : undefined;
-  const next = { ...host, clones, tickets: fill({ ...tickets, providers }, { pick: planned?.pick, ...pluginKeys, prReview, ...(notes?.keys ?? {}) }) };
+  // `tickets.capture` is written only where it is absent, and only as true: a machine whose browsers do not start keeps what the host file says, or nothing.
+  const next = { ...host, clones, tickets: fill({ ...tickets, providers }, { pick: planned?.pick, ...pluginKeys, prReview, ...(notes?.keys ?? {}), capture: capture || undefined }) };
   writeHostFiles({ hostFile, next, updateChannel: options.updateChannel }, deps);
   await finishOnboard({ next, options, source, terminal }, deps);
   return hostFile;
@@ -644,6 +675,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       ghAs: (account) => asAccount(defaultGh, account),
       replacements: () => replacementsNow(process.env, home),
       diagnose: () => diagnose(defaultDoctorDeps()),
+      chromium: () => chromiumReport(),
+      isRoot: () => process.getuid?.() === 0,
       startServices: (names) => startServices(names, (name) => startService(name, services)),
       out: console,
     });
