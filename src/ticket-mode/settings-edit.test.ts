@@ -247,3 +247,32 @@ test("the page's refusal and a save's refusal of the same file are the same word
   assert.ok(preview instanceof SettingsEditRefusal);
   assert.equal(preview.message, shown);
 });
+
+// A11-158: a plugin's block, its `provider` and its `enabled` are read-only on the Settings page, and `agent-org plugin` alone may write them.
+const ENABLED = [{ key: "tickets.providers.reviewer.enabled", value: false }, { key: "tickets.providers.reviewer.provider", value: "atomic" }];
+
+test("A11-158: the page cannot change a plugin's provider or `enabled`, and a save with the plugin option can, through the same checks", async () => {
+  const { hostPath, options } = setup();
+  await assert.rejects(previewEdit(options, "host.json", ENABLED), /tickets\.providers\.reviewer\.enabled cannot be changed from this page: changed with agent-org plugin enable or disable/);
+  await assert.rejects(previewEdit(options, "host.json", [{ key: "tickets.providers.reviewer.provider", value: "atomic" }]), /tickets\.providers\.reviewer\.provider cannot be changed from this page/);
+  const forPlugins: EditOptions = { ...options, plugins: true };
+  const preview = await previewEdit(forPlugins, "host.json", ENABLED);
+  const saved = await saveEdit(forPlugins, "host.json", ENABLED, { base: preview.base });
+  assert.deepEqual(JSON.parse(readFileSync(hostPath, "utf8")).tickets.providers.reviewer, { enabled: false, provider: "atomic" });
+  assert.match(readFileSync(hostPath, "utf8"), /"_note": "Kept as written\."/, "the person's notes are kept");
+  assert.equal(readFileSync(saved.backup, "utf8").includes("providers"), false, "the backup is the file as it was");
+});
+
+test("A11-158: the plugin option writes only plugin keys: any other key the page keeps read-only is still refused", async () => {
+  const { options } = setup();
+  const forPlugins: EditOptions = { ...options, plugins: true };
+  await assert.rejects(previewEdit(forPlugins, "host.json", [{ key: "schema", value: 2 }]), /schema cannot be changed from this page/);
+  await assert.rejects(previewEdit(forPlugins, "host.json", [{ key: "tickets.linearKey.keychain", value: "other" }]), /tickets\.linearKey\.keychain cannot be changed from this page/);
+});
+
+test("A11-158: the plugin option still refuses a value the readers refuse, and writes nothing", async () => {
+  const { hostPath, options } = setup();
+  const before = readFileSync(hostPath, "utf8");
+  await assert.rejects(previewEdit({ ...options, plugins: true }, "host.json", [{ key: "tickets.providers.tracker.provider", value: "linear" }, { key: "tickets.providers.tracker.enabled", value: false }]), /linear is the only tracker/);
+  assert.equal(readFileSync(hostPath, "utf8"), before);
+});

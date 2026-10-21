@@ -73,6 +73,11 @@ export type EditOptions = Readonly<{
   projectPath?: string;
   /** The queue file, which says whether it holds its own number of workers (`tickets.max`'s `applies`). */
   queuePath?: string;
+  /**
+   * `agent-org plugin`'s writes (A11-158): the page leaves a plugin's block, its `provider` and its `enabled` read-only (choosing and switching a plugin may need secrets, so
+   * it goes through the CLI or onboard), and a plugin's own settings that are objects or lists. This lets the one caller that is allowed write them, and no other key.
+   */
+  plugins?: true;
   fs?: FileSystem;
 }>;
 
@@ -98,19 +103,34 @@ function patternOf(schemaKey: string): Readonly<{ pattern: RegExp; literal: numb
   return { pattern: new RegExp(`^${source}$`), literal: segments.filter((segment) => !PLACEHOLDER.test(segment)).join("").length };
 }
 
+/** A plugin's block, or one of its top-level keys: `provider`, `enabled` or a setting. The only keys `agent-org plugin` may write that the page may not. */
+const PLUGIN_KEY = /^tickets\.providers\.(?:tracker|codeHost|publish|reviewer|exposure)(?:\.[A-Za-z]+)?$/;
+
+/** The edit a plugin key has for the CLI: its own when the page may edit it, else a JSON value read when the board starts. */
+const PLUGIN_EDIT: Extract<SchemaEntry["edit"], { editable: true }> = { editable: true, input: "json", applies: "board" };
+
+/** An entry for a plugin key the schema does not describe (a bundled plugin's own setting), so the CLI can write it. */
+const pluginEntry = (key: string): SchemaEntry => ({ key, file: "host.json", group: "Machine", type: "a JSON value", absent: "unset", default: null,
+  explanation: "A setting of an agent-org plugin.", breaks: "The reader refuses a value its plugin does not take, by name.", edit: PLUGIN_EDIT });
+
 /**
  * The schema entry a change's key names, and the path it sets in the file, with a `<name>` filled from the key. A key may match two entries (`routing.guidance.<route>`
- * and its `.what`, since a name may hold dots): the one with the longer literal part is the one it names.
+ * and its `.what`, since a name may hold dots): the one with the longer literal part is the one it names. A plugin key the page keeps read-only is writable when
+ * `options.plugins` is set.
  */
-function resolve(file: EditFile, key: string): Readonly<{ entry: Editable; path: readonly string[] }> {
+function resolve(options: EditOptions, file: EditFile, key: string): Readonly<{ entry: Editable; path: readonly string[] }> {
   const matched = SCHEMA.filter((entry) => entry.file === file).flatMap((entry) => {
     const { pattern, literal } = patternOf(entry.key);
     const match = pattern.exec(key);
     return match === null ? [] : [{ entry, literal, name: match[1] }];
   }).sort((a, b) => b.literal - a.literal);
-  const best = matched[0];
+  const forPlugin = options.plugins === true && file === "host.json" && PLUGIN_KEY.test(key);
+  const best = matched[0] ?? (forPlugin ? { entry: pluginEntry(key), literal: 0, name: "" } : undefined);
   if (best === undefined) throw new SettingsEditRefusal(`${key} is not a key this page describes in ${file}`);
-  if (!best.entry.edit.editable) throw new SettingsEditRefusal(`${key} cannot be changed from this page: ${best.entry.edit.why}`);
+  if (!best.entry.edit.editable) {
+    if (!forPlugin) throw new SettingsEditRefusal(`${key} cannot be changed from this page: ${best.entry.edit.why}`);
+    return { entry: { ...best.entry, edit: PLUGIN_EDIT } as Editable, path: key.split(".") };
+  }
   const segments = best.entry.key.split(".");
   const at = segments.findIndex((segment) => PLACEHOLDER.test(segment));
   const path = at === -1 ? key.split(".") : [...segments.slice(0, at), best.name, ...segments.slice(at + 1)];
@@ -187,7 +207,7 @@ async function planned(options: EditOptions, file: EditFile, changes: readonly C
   const base = createHash("sha256").update(located.text).digest("hex");
   const current = objectOfText(located.text, located.path);
   const resolved = changes.map((change) => {
-    const { entry, path } = resolve(file, change.key);
+    const { entry, path } = resolve(options, file, change.key);
     const applies: Applies = entry.key === "tickets.max" && queueOwnsMax(options, fs) ? "none" : entry.edit.applies;
     const edit: JsonEdit = "remove" in change ? { path, remove: true } : { path, value: change.value };
     const was = valueAt(current, path);

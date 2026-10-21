@@ -19,6 +19,11 @@ import { ghWith } from "../lib/tool-version-agreement.ts";
 import { headMatches, reviewVerdict as verdictOfText } from "../review-verdict.ts";
 import type { DoorRun, ReviewTrust } from "../review-trust.ts";
 import type { ReviewWord } from "./board-view/pull-review-state.ts";
+import type { Review, ReviewState } from "../plugins/contracts/code-host.ts";
+import type { ReviewerRef, ReviewerPort, ReviewerSettled, RepostAnswer, PromptAnswer, CloseAnswer, RetireAnswer } from "../plugins/contracts/reviewer.ts";
+
+// THE PORT IS THE REVIEWER CONTRACT'S (`src/plugins/contracts/reviewer.ts`, A11-158); its types are re-exported here, so no caller changes.
+export type { ReviewState, ReviewerRef, ReviewerPort, ReviewerSettled, RepostAnswer, PromptAnswer, CloseAnswer, RetireAnswer };
 
 /** The gate's modules: its reviewer, its trust rules, its verdict prompt, and the org's declaration. */
 type GateModules = {
@@ -67,57 +72,11 @@ export const REVIEWER_LOGIN = "a11ign-reviewer";
 /** The cause the reviewer is started for: the gate's `draft-awaiting-verdict`, the one a ready pull request is reviewed under. */
 export const REVIEW_CAUSE = "draft-awaiting-verdict";
 
-/** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
-export type ReviewerRef = Readonly<{ pr: string; head: string }>;
-
-/**
- * The port: start a reviewer for a ready pull request at its head, or refuse naming why; say whether one is live for that head; close it once its
- * verdict is posted; retire a pull request's reviewer once it has merged or closed; and list the pull requests whose reviewer workspaces the session holds.
- */
-export type ReviewerPort = Readonly<{
-  /** Starts a reviewer, once the head is claimed for this instance. `tookOver` says which expired claim was taken over, when one was (A11-149). */
-  start(ref: ReviewerRef): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }>;
-  live(ref: ReviewerRef): boolean;
-  close(ref: ReviewerRef): CloseAnswer;
-  retire(pr: string): RetireAnswer;
-  listedPulls(): readonly string[];
-  /** Whether the reviewer for `ref` is still working, has ended its turn, or is not there (A11-83). */
-  settled(ref: ReviewerRef): ReviewerSettled;
-  /** The verdict file the reviewer wrote for `ref` in its checkout, or null when it wrote none (A11-83). */
-  verdictFileOf(ref: ReviewerRef): string | null;
-  /** Posts a verdict file through the verdict door for `ref`, minting the reviewer's token first (A11-83). */
-  repostVerdict(ref: ReviewerRef, file: string): RepostAnswer;
-  /** Sends the reviewer its verdict prompt again, for a reviewer that ended without writing a verdict file (A11-83). */
-  reprompt(ref: ReviewerRef): PromptAnswer;
-}>;
-
-/** Where a reviewer stands: `working` while its turn runs, `ended` when it has finished its turn (or its agent has exited), `gone` when herdr lists none for its head. */
-export type ReviewerSettled = "working" | "ended" | "gone";
-
-/**
- * What `repostVerdict` answers: `posted`, or a refusal naming why the verdict is not on the pull request. `final` is set where a later attempt would
- * only be refused the same way (the door's exits for a malformed call, a second review at an equal patch, and a moved head); the pool stops there.
- */
-export type RepostAnswer = Readonly<{ posted: true }> | Readonly<{ refusal: string; final: boolean }>;
-/** What `reprompt` answers: `prompted`, or a refusal naming why the prompt was not sent. */
-export type PromptAnswer = Readonly<{ prompted: true }> | Readonly<{ refusal: string }>;
-
 /** The statuses herdr shows for a reviewer whose turn is over: idle or done, or no agent at all (its process exited). */
 const ENDED_STATUSES: readonly string[] = ["idle", "done", "unknown"];
 
 /** The door's exits a repost cannot cure: 2 (a malformed call), 3 (a second review at an equal patch) and 5 (the head moved). */
 const FINAL_DOOR_EXITS: readonly number[] = [2, 3, 5];
-
-/**
- * What `close` answers: `closed` (the workspace under the seat's label is closed), `gone` (herdr lists none: nothing to close), or `busy` (one is still
- * working: asked again), or a refusal naming why.
- */
-export type CloseAnswer = Readonly<{ state: "closed" | "gone" | "busy" }> | Readonly<{ refusal: string }>;
-/**
- * What `retire` answers: `retired`, with the report of the uncommitted changes its checkout is removed with (null when it had none, or none could be
- * seen), or a refusal naming the step that did not happen. A refusal leaves whatever is not yet removed in place for the next sweep.
- */
-export type RetireAnswer = Readonly<{ retired: true; report: string | null }> | Readonly<{ refusal: string }>;
 
 /** How many changed paths a discard report names before it says how many more there were. */
 const REPORTED_PATHS = 20;
@@ -132,13 +91,6 @@ function discardReport({ label, pr, head, path, paths }: { label: string; pr: st
   const more = paths.length > REPORTED_PATHS ? ` and ${paths.length - REPORTED_PATHS} more` : "";
   return `reviewer teardown: ${label} for ${pr} at ${head} had ${paths.length} uncommitted change(s) in ${path}, discarded with the checkout: ${shown}${more}`;
 }
-
-/**
- * What the pool reads of a pull request's reviewer: its head, whether the org's own, the reviews on it, whether its checks have settled green, and
- * the pull request as the gate's verdict prompt reads it (`view`).
- */
-export type ReviewState = Readonly<{ head: string; trust: ReviewTrust; reviews: readonly Review[]; settled: boolean; view: Readonly<Record<string, any>> }>;
-type Review = Readonly<{ author: string; state: string; commit: string; at: number }>;
 
 /** The pull request's repository (`owner/name`) and number, or null for a url that is none. */
 function pullOf(url: string): { repository: string; number: number } | null {

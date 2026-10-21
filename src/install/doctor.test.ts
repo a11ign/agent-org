@@ -3,6 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import type { ChromiumReport } from "./chromium.ts";
+import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
+import type { Catalog, CatalogPlugin } from "../plugins/manifest.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
 import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
@@ -34,7 +36,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     ghAs: () => ghFake(), originOf: () => null,
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0,
-    chromium: () => BROWSERS_READY, now: () => NOW,
+    chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     ...over,
   };
 }
@@ -143,7 +145,7 @@ test("doctor passes every check on a working install, and never prints the key",
     ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["herdr", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
-    ["terminal answering", true], ["exposure (local)", true], ["publisher (none)", true], ["reviewer (none)", true], ["pairing", true],
+    ["terminal answering", true], ["exposure (local)", true], ["publisher (none)", true], ["reviewer (none)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
@@ -688,4 +690,90 @@ test("A11-145: doctor says a conventions plugin refresh that a live run held bac
   assert.equal(unreadable["plugin refresh"].ok, false);
   assert.equal(unreadable["plugin refresh"].fix, "run `agent-org update` once no run is live: a refresh that runs removes the record");
   assert.equal(byName(await diagnose(deps()))["plugin refresh"], undefined);
+});
+
+// A11-158: agent-org plugins. The doctor names each plugin and whether it is disabled, says what the registry refused and which plugin implements a contract major agent-org does not read,
+// runs the doctor checks of an enabled bundled plugin, and says what the project's messaging key holds.
+const PUBLISH = { provider: "slack", run: "post {prs} into {dir}" };
+const hostWithProviders = (providers: Record<string, unknown>): string => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { ...JSON.parse(HOST).tickets.providers, ...providers } } });
+
+/** The catalog a test reads: the built-ins and fakes, `plugins` in place of the fake of the same name, and the pins `pins` names (none by default, so a fake may be enabled). */
+function catalogWith(plugins: readonly CatalogPlugin[], pins: Catalog["pins"] = {}, refusals: Catalog["refusals"] = []): Catalog {
+  const base = fakeAgentOrgPlugins().catalog();
+  return { plugins: [...base.plugins.filter(({ name }) => !plugins.some((plugin) => plugin.name === name)), ...plugins], refusals, pins };
+}
+/** A row's verdict, and its detail and fix where the test names them (text must match whole, a pattern must match). */
+function assertRow(checks: Record<string, Check>, name: string, expected: Readonly<{ ok: boolean; detail?: string | RegExp; fix?: string | RegExp }>): void {
+  const row = checks[name];
+  assert.ok(row !== undefined, `there is a row named ${name}`);
+  assert.equal(row.ok, expected.ok, `${name} ok`);
+  for (const field of ["detail", "fix"] as const) {
+    const want = expected[field];
+    if (typeof want === "string") assert.equal(row[field], want, `${name} ${field}`);
+    else if (want !== undefined) assert.match(row[field] ?? "", want, `${name} ${field}`);
+  }
+}
+const fakeOf = (name: string, over: Partial<CatalogPlugin> = {}): CatalogPlugin => ({ ...(fakeAgentOrgPlugins().catalog().plugins.find((plugin) => plugin.name === name) as CatalogPlugin), ...over });
+
+test("A11-158: a disabled publisher is named as disabled, says what the board does without it, and is not a failure", async () => {
+  const disabled = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: { ...PUBLISH, enabled: false } }) })));
+  assert.equal(disabled["publisher (slack, disabled)"].ok, true);
+  assert.equal(disabled["publisher (slack, disabled)"].detail, "disabled: publishes nothing");
+  assert.equal(disabled["publisher (slack)"], undefined, "the enabled row is not also there");
+  const enabled = byName(await diagnose(deps({ readFile: () => hostWithProviders({ publish: PUBLISH }) })));
+  assert.equal(enabled["publisher (slack)"].ok, true);
+  assert.equal(enabled["publisher (slack)"].detail, "from tickets.providers.publish");
+});
+
+test("A11-158: a plugin that implements a contract major agent-org does not read fails its own row, naming it and the fix, when no block enables it", async () => {
+  const unread = fakeOf("fake-tracker", { contract: "2.0" });
+  const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
+  assertRow(checks, "plugin fake-tracker", { ok: false, detail: "plugin fake-tracker implements tracker contract 2.0; this agent-org reads tracker 1.x: update agent-org, or use a plugin of a major it reads", fix: /update agent-org/ });
+  assertRow(checks, "tracker (linear)", { ok: true });
+});
+
+test("A11-158: a block that enables a plugin of an unread contract major fails the host file row with the same refusal, so nothing starts", async () => {
+  const unread = fakeOf("fake-tracker", { contract: "2.0" });
+  const checks = byName(await diagnose(deps({ readFile: () => hostWithProviders({ tracker: { provider: "fake-tracker" } }), agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
+  assert.equal(checks["host file"].ok, false);
+  assert.match(checks["host file"].detail, /`tickets\.providers\.tracker\.provider` in the host file is refused: plugin fake-tracker implements tracker contract 2\.0; this agent-org reads tracker 1\.x: update agent-org, or use a plugin of a major it reads/);
+  assert.equal(checks["plugin fake-tracker"], undefined, "an enabled plugin's refusal is the host row's, not a second row");
+});
+
+test("A11-158: a package the registry refused is a failed row naming it", async () => {
+  const refusals = [{ plugin: "linear-tools", why: "plugin linear-tools: package.json declares dependencies (left-pad), which a host's install does not install" }];
+  const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([], {}, refusals) }) })));
+  assert.equal(checks["plugin linear-tools"].ok, false);
+  assert.equal(checks["plugin linear-tools"].detail, refusals[0].why);
+});
+
+test("A11-158: the doctor checks of an enabled bundled plugin are rows, and a failing one fails its provider's row with its own fix", async () => {
+  const bundled = fakeOf("fake-tracker", { where: "bundled", dir: "/checkout/plugins/fake-tracker", entry: "index.ts" });
+  const tracker = (await import("../plugins/fakes/tracker.ts")).createFakeTracker();
+  const module = { create: () => tracker, doctorChecks: () => [{ name: "fake tracker key", ok: false, detail: "no key at /k/fake", fix: "write the key to /k/fake" }], onboardSteps: [] };
+  const seen: string[] = [];
+  const plugins = fakeAgentOrgPlugins({
+    catalog: () => catalogWith([bundled]),
+    load: async (providers) => { seen.push(providers.blocks.tracker.provider); return { loaded: [{ plugin: bundled, implementation: tracker, module }], refusals: [] }; },
+  });
+  const checks = byName(await diagnose(deps({ readFile: () => hostWithProviders({ tracker: { provider: "fake-tracker" } }), agentOrgPlugins: plugins })));
+  assert.deepEqual(seen, ["fake-tracker"]);
+  assertRow(checks, "fake tracker key", { ok: false });
+  assertRow(checks, "tracker (fake-tracker)", { ok: false, detail: /no key at \/k\/fake/, fix: "write the key to /k/fake" });
+});
+
+test("A11-158: a plugin the loader refuses fails its provider's row, naming the plugin", async () => {
+  const bundled = fakeOf("fake-tracker", { where: "bundled", dir: "/checkout/plugins/fake-tracker", entry: "index.ts" });
+  const plugins = fakeAgentOrgPlugins({ catalog: () => catalogWith([bundled]), load: async () => ({ loaded: [], refusals: [{ plugin: "fake-tracker", concern: "tracker" as const, why: "plugin fake-tracker: index.ts must export create, doctorChecks and onboardSteps" }] }) });
+  const checks = byName(await diagnose(deps({ readFile: () => hostWithProviders({ tracker: { provider: "fake-tracker" } }), agentOrgPlugins: plugins })));
+  assert.equal(checks["plugin fake-tracker"].ok, false);
+  assert.equal(checks["tracker (fake-tracker)"].ok, false);
+});
+
+test("A11-158: the messaging row says what the project's messaging key holds, and never a secret", async () => {
+  const on = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => ({ provider: "telegram" }) }) })));
+  assert.equal(on["messaging (telegram)"].ok, true);
+  assert.match(on["messaging (telegram)"].detail, /project\.json's messaging key/);
+  const off = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => ({ provider: null, why: "project.json has no messaging key, so messaging is off" }) }) })));
+  assert.equal(off["messaging (none)"].detail, "project.json has no messaging key, so messaging is off");
 });

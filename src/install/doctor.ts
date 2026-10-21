@@ -22,7 +22,14 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
-import type { ProviderBlock } from "../ticket-mode/providers.ts";
+import { PROVIDER_BLOCKS, type ProviderBlock, type Providers } from "../ticket-mode/providers.ts";
+import { blockOf } from "../plugins/concerns.ts";
+import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
+import { messagingStateOfFile } from "../plugins/messaging-state.ts";
+import type { Catalog, PluginDeps } from "../plugins/manifest.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
+import { type MessagingState, sourceWords } from "../plugins/view.ts";
+import { readsConcernContract, unreadMajorRefusal } from "../plugins/version.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { parseServeStatus, parseStatus, portState, runTailscale, serveStatusArgv, statusArgv, tailnetHosts, type ServeStatus, type TailscaleResult } from "../ticket-mode/tailnet.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
@@ -32,7 +39,7 @@ import { deferralPath, readDeferral, type Deferral } from "./plugin-install.ts";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
-import { hostFilePath, TOOL_ROOT, type Env } from "./paths.ts";
+import { hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { asAccount, githubRepoOf, STACK_EXTENSION, stackExtensionIn, stacksOf, type Account, type ProgramRunner } from "../ticket-port/stack-extension.ts";
 import { installCommand, workerAccount } from "./stack-account.ts";
@@ -106,6 +113,15 @@ export type DoctorDeps = Readonly<{
   chromium: () => ChromiumReport;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
   plugins: (input: { wanted: readonly string[]; folder: string; host: HostFacts }) => PluginProblems;
+  /**
+   * The agent-org plugins (A11-158): the registry's catalog, the loader (which imports only the bundled plugins the host enables), and what the project's `messaging` key says. A
+   * test injects each, so no plugin module is imported and no `project.json` is read.
+   */
+  agentOrgPlugins: Readonly<{
+    catalog: () => Catalog;
+    load: (providers: Providers, catalog: Catalog, deps: PluginDeps) => Promise<LoadResult>;
+    messaging: () => Promise<MessagingState>;
+  }>;
   now: () => number;
 }>;
 
@@ -150,7 +166,7 @@ function hostCheck(deps: DoctorDeps): { check: Check; settings: TicketSettings |
   }
   try {
     const parsed: unknown = JSON.parse(text);
-    const settings = parseTicketSettings(parsed, deps.home);
+    const settings = parseTicketSettings(parsed, deps.home, undefined, deps.agentOrgPlugins.catalog());
     return { check: ok("host file", `${path}: ${Object.keys(settings.clones).length} repositories`), settings, noProject: !Object.hasOwn(parsed as object, "primary") };
   } catch (err) {
     return { check: failed("host file", `${path}: ${(err as Error).message}`, `fix the field it names, or run \`agent-org onboard\``), settings: null, noProject: false };
@@ -341,24 +357,6 @@ function pluginsOf(settings: TicketSettings | null, deps: DoctorDeps): PluginPro
   return deps.plugins({ wanted: settings.plugins, folder: ticketFolder(settings, "<ticket>"), host: hostFactsOf(settings) });
 }
 
-/** What a block's settings came from, in the words a row gives: its block, the old keys it still reads, or the default it takes with no block. */
-function sourceOf(settings: TicketSettings, block: ProviderBlock): string {
-  const report = settings.providers.blocks[block];
-  if (report.from === "block") return `from tickets.providers.${block}`;
-  if (report.from === "default") return `no block: the default, ${DEFAULT_TEXT[block]}, applies`;
-  const aliases = settings.providers.aliases.filter(({ new: place }) => place === `tickets.providers.${block}` || place.startsWith(`tickets.providers.${block}.`));
-  return `from aliases (${aliases.map(({ old }) => old).join(", ")})`;
-}
-
-/** The default each block takes with no block and no alias, in the words doctor says it with. */
-const DEFAULT_TEXT: Readonly<Record<ProviderBlock, string>> = {
-  tracker: "linear, with the Keychain service agent-org-linear",
-  codeHost: "github, with every role on a user account",
-  publish: "none, which publishes nothing",
-  reviewer: "none, which starts no reviewer",
-  exposure: "local, on loopback with ports 4747 and 4748",
-};
-
 const PROVIDER_LABEL: Readonly<Record<ProviderBlock, string>> = {
   tracker: "tracker",
   codeHost: "code host",
@@ -367,13 +365,24 @@ const PROVIDER_LABEL: Readonly<Record<ProviderBlock, string>> = {
   exposure: "exposure",
 };
 
+/** What a concern does with its plugin disabled, in the words of a row's detail. */
+const WITHOUT_PLUGIN: Readonly<Record<ProviderBlock, string>> = {
+  tracker: "reads no tickets",
+  codeHost: "reads no pull requests",
+  publish: "publishes nothing",
+  reviewer: "starts no reviewer",
+  exposure: "serves the board on loopback only",
+};
+
 /**
- * One check per provider (A11-144), named for it and its provider, ok when every check it summarises passes. Its detail says where its settings came
- * from, so a block a machine does not have is said to take the default.
+ * One check per provider (A11-144), named for it and its plugin and whether the plugin is disabled (A11-158), ok when every check it summarises passes. Its detail says where its settings came
+ * from, so a block a machine does not have is said to take the default, and a disabled plugin says what the board does without it.
  */
 function providerRow(settings: TicketSettings, block: ProviderBlock, wrapped: readonly Check[]): Check {
-  const name = `${PROVIDER_LABEL[block]} (${settings.providers.blocks[block].provider})`;
-  const source = sourceOf(settings, block);
+  const { provider, enabled } = settings.providers.blocks[block];
+  const name = `${PROVIDER_LABEL[block]} (${provider}${enabled || provider === "none" ? "" : ", disabled"})`;
+  if (!enabled && provider !== "none") return ok(name, `disabled: ${WITHOUT_PLUGIN[block]}`);
+  const source = sourceWords(settings.providers, block);
   const failing = wrapped.filter((check) => !check.ok);
   if (failing.length === 0) return ok(name, wrapped.length === 0 ? source : `${source}, and its checks pass`);
   return failed(name, `${source}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises");
@@ -395,12 +404,58 @@ function codexChecks(deps: DoctorDeps): Check[] {
  * The reviewer's row (A11-144), with the gate's check when the reviewer is `atomic`: the gate's modules must load, or no reviewer starts a run, and Codex
  * must be installed and logged in (A11-145). With no reviewer, the row says so and asks nothing.
  */
-async function reviewerChecks(settings: TicketSettings, deps: DoctorDeps): Promise<Check[]> {
-  if (settings.reviewer === null) return [providerRow(settings, "reviewer", [])];
+async function reviewerChecks(settings: TicketSettings, deps: DoctorDeps, pluginChecks: readonly Check[]): Promise<Check[]> {
+  if (settings.reviewer === null) return [providerRow(settings, "reviewer", pluginChecks)];
   const refusal = await deps.reviewerGate();
   const gate = refusal === null ? ok("reviewer gate", "the gate's modules load") : failed("reviewer gate", refusal, "fix what it names: no reviewer starts while the gate does not load");
   const codex = codexChecks(deps);
-  return [gate, ...codex, providerRow(settings, "reviewer", [gate, ...codex])];
+  return [gate, ...codex, providerRow(settings, "reviewer", [gate, ...codex, ...pluginChecks])];
+}
+
+/** What the agent-org plugins add to the report: the checks each enabled plugin's block folds into its provider row, and the rows that stand alone. */
+type PluginRows = Readonly<{ byBlock: Readonly<Record<ProviderBlock, readonly Check[]>>; rows: readonly Check[] }>;
+
+const pluginFailed = (plugin: string, why: string, fix: string): Check => failed(`plugin ${plugin}`, why, fix);
+
+/**
+ * The rows of the agent-org plugins (A11-158): one for each package the registry refused, one for each plugin whose contract major this agent-org does not read and that no block
+ * enables (an enabled one is the host row's refusal), and, for each bundled plugin the host enables, the doctor checks it declares, which its provider row summarises. A plugin the loader
+ * refuses to load fails its provider row. Nothing here prints a secret: a plugin's rows are its own.
+ */
+async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Promise<PluginRows> {
+  const { catalog: catalogOf, load } = deps.agentOrgPlugins;
+  const catalog = catalogOf();
+  const byBlock = Object.fromEntries(PROVIDER_BLOCKS.map((block) => [block, [] as Check[]])) as Record<ProviderBlock, Check[]>;
+  const rows: Check[] = catalog.refusals.map(({ plugin, why }) => pluginFailed(plugin, why, "fix the plugin's package.json, or remove the plugin"));
+  // A host file the reader refused cannot say which plugins it enables, and its row already says why: an unread major is judged once the file reads.
+  if (settings === null) return { byBlock, rows };
+  const enabledNames = new Set(PROVIDER_BLOCKS.filter((block) => settings.providers.blocks[block].enabled).map((block) => settings.providers.blocks[block].provider));
+  for (const plugin of catalog.plugins.filter(({ concern, contract, name }) => !readsConcernContract(concern, contract) && !enabledNames.has(name))) {
+    rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
+  }
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings.stateDir, log: () => undefined };
+  const loaded = await load(settings.providers, catalog, pluginDeps);
+  for (const { plugin, concern, why } of loaded.refusals) {
+    const block = blockOf(concern);
+    const row = pluginFailed(plugin, why, "update agent-org, or the plugin");
+    if (block !== null) byBlock[block].push(row);
+    rows.push(row);
+  }
+  for (const { plugin, module } of loaded.loaded) {
+    const block = blockOf(plugin.concern);
+    if (block === null) continue;
+    const checks = await module.doctorChecks(settingsOfBlock(settings.providers.blocks[block]), pluginDeps);
+    byBlock[block].push(...checks);
+    rows.push(...checks);
+  }
+  return { byBlock, rows };
+}
+
+/** The messaging row (A11-158): what the project's `messaging` key says, since messaging is configured in `project.json` until A11-162 moves it. */
+async function messagingRow(deps: DoctorDeps): Promise<Check> {
+  const state = await deps.agentOrgPlugins.messaging();
+  return state.provider === null ? ok("messaging (none)", state.why)
+    : ok(`messaging (${state.provider})`, "configured in project.json's messaging key, which agent-org plugin shows and does not write until A11-162 moves it");
 }
 
 /**
@@ -428,11 +483,12 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const tailnet = await tailnetChecks(settings, deps);
   const key = keyCheck(settings, deps);
   const linear = linearMcpCheck(deps);
-  const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...stack])];
-  const tracker = settings === null ? [] : [providerRow(settings, "tracker", [key, linear])];
-  const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...tailnet])];
-  const publisher = settings === null ? [] : [providerRow(settings, "publish", [])];
-  const reviewer = settings === null ? [] : await reviewerChecks(settings, deps);
+  const extra = await pluginRows(settings, deps);
+  const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...stack, ...extra.byBlock.codeHost])];
+  const tracker = settings === null ? [] : [providerRow(settings, "tracker", [key, linear, ...extra.byBlock.tracker])];
+  const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...tailnet, ...extra.byBlock.exposure])];
+  const publisher = settings === null ? [] : [providerRow(settings, "publish", extra.byBlock.publish)];
+  const reviewer = settings === null ? [] : await reviewerChecks(settings, deps, extra.byBlock.reviewer);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -459,6 +515,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...exposure,
     ...publisher,
     ...reviewer,
+    ...extra.rows,
+    await messagingRow(deps),
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
@@ -770,6 +828,11 @@ export function defaultDoctorDeps(): DoctorDeps {
     },
     codexStatus: () => spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 60_000 }).status,
     chromium: () => chromiumReport(),
+    agentOrgPlugins: {
+      catalog: defaultCatalog,
+      load: (providers, catalog, pluginDeps) => loadEnabled(providers, catalog, pluginDeps),
+      messaging: () => messagingStateOfFile(hostFilePath(process.env, homedir(), readOrNull)),
+    },
     now: () => Date.now(),
   };
 }

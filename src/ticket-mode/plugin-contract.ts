@@ -12,12 +12,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { liveToolVersion } from "../lib/tool-version.ts";
 import type { TicketSettings } from "./settings.ts";
+import { CONTRACT_VERSION, majorOf, readsMajor } from "../plugins/version.ts";
 
 /** The contract majors this agent-org reads. A plugin declaring any other major gets one row, and nothing else is checked. */
 export const READ_CONTRACT_MAJORS: readonly number[] = [1];
 
 /** Whether this agent-org reads `contract`, by its major. A contract it does not read is checked for nothing but its major. */
-export const readsContract = (contract: Contract): boolean => READ_CONTRACT_MAJORS.includes(Number(contract.contract.split(".")[0]));
+export const readsContract = (contract: Contract): boolean => readsMajor(READ_CONTRACT_MAJORS, contract.contract);
 
 /** The extension points a contract may provide a skill for, each with the host key that names its skill. */
 export type Point = "planner" | "writer" | "prReview";
@@ -141,7 +142,7 @@ export function readPluginContract(installPath: string, { read = readText }: { r
 function parseContract(name: string, declared: unknown): ContractRead {
   if (!isObject(declared)) return malformed("metadata.agentOrg must be an object");
   const { contract, agentOrg, provides = {}, needs = {} } = declared;
-  if (typeof contract !== "string" || !/^\d+\.\d+$/.test(contract)) return malformed("metadata.agentOrg.contract must be \"<major>.<minor>\", such as \"1.0\"");
+  if (typeof contract !== "string" || !CONTRACT_VERSION.test(contract)) return malformed("metadata.agentOrg.contract must be \"<major>.<minor>\", such as \"1.0\"");
   if (typeof agentOrg !== "string" || rangeOf(agentOrg) === null) return malformed("metadata.agentOrg.agentOrg must be a version range with an upper bound, such as \">=0.258.0 <1.0.0\"");
   if (!isObject(provides)) return malformed("metadata.agentOrg.provides must be an object");
   const skills = providesOf(name, provides);
@@ -181,7 +182,7 @@ function needsOf(needs: Record<string, unknown>): Contract["needs"] | string {
 export function contractRows({ entry, name, contract, host, agentOrgVersion = agentOrgVersionDefault, onPath = onPathDefault }: Readonly<{
   entry: string; name: string; contract: Contract; host: HostFacts; agentOrgVersion?: () => string | null; onPath?: (command: string) => boolean;
 }>): ContractRow[] {
-  const major = Number(contract.contract.split(".")[0]);
+  const major = majorOf(contract.contract);
   const row = (kind: RowKind, why: string): ContractRow => ({ plugin: entry, kind, why });
   if (!READ_CONTRACT_MAJORS.includes(major)) return [row("contract-major", `${entry} declares contract ${contract.contract}, a major this agent-org does not read: update agent-org, or the plugin to a major agent-org reads.`)];
   const version = agentOrgVersion();

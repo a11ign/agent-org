@@ -6,7 +6,7 @@
 //
 // TypeScript since a11ign/a11ign#3556: only tests import it, and node strips the types itself (README, "Source is TypeScript").
 
-import { AUDIENCE, AUDIENCES } from "./provider-contract.ts";
+import { AUDIENCE, AUDIENCES, type MessagingCapabilities } from "./provider-contract.ts";
 
 const DEFAULT_MAX_TEXT = 4096;
 
@@ -16,11 +16,9 @@ const DEFAULT_MAX_TEXT = 4096;
 // is kept in `edits`; `pinned` is the refs pinned, in order, as a chat's pinned list is (a pin adds to it, and pinning twice is one pin).
 export const FULL_CAPABILITIES = Object.freeze({ silent: true, buttons: true, replies: true, conversation: true, maxText: DEFAULT_MAX_TEXT, destinations: 1, edit: true, pin: true });
 
-/** Widened to `boolean` and `number` on purpose: `Partial<typeof FULL_CAPABILITIES>` would pin each to the literal it is frozen with, so a test could not declare `silent: false` (#3571). */
-type Capabilities = { silent?: boolean; buttons?: boolean; replies?: boolean; conversation?: boolean; maxText?: number; ratePerSecond?: number; destinations?: number; edit?: boolean; pin?: boolean };
 type Record_ = Record<string, any>;
 
-export function createFakeProvider({ id = "fake", capabilities = {} }: { id?: string; capabilities?: Capabilities } = {}) {
+export function createFakeProvider({ id = "fake", capabilities = {} }: { id?: string; capabilities?: MessagingCapabilities } = {}) {
   const declared = { ...FULL_CAPABILITIES, ...capabilities };
   const sent: Record_[] = [];
   const inbox: Record_[] = [];

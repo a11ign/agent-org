@@ -44,7 +44,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { readLinearKey } from "../ticket-mode/linear.ts";
 import type { KeySource } from "../ticket-mode/settings.ts";
-import { resolveProviders } from "../ticket-mode/providers.ts";
+import { isActive, resolveProviders } from "../ticket-mode/providers.ts";
 import { readPluginContract, type Contract } from "../ticket-mode/plugin-contract.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
 import { ensureBun } from "./bun.ts";
@@ -530,7 +530,7 @@ function keyMissingLine(source: KeySource): string {
 /** What onboard does once the host file is written: the stack extension, the key, Linear's MCP, Codex, the guards, the services, and the doctor's report. */
 async function finishOnboard({ next, options, source, terminal }: Readonly<{ next: Record<string, unknown>; options: OnboardOptions; source: KeySource; terminal: boolean }>, deps: OnboardDeps) {
   const written = resolveProviders(next).blocks;
-  if (written.exposure.provider === "tailscale" && deps.which("tailscale") === null) {
+  if (isActive(written.exposure) && written.exposure.provider === "tailscale" && deps.which("tailscale") === null) {
     deps.out.log("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing");
   }
   const account = workerAccount(JSON.stringify(next), deps.env);
@@ -538,7 +538,7 @@ async function finishOnboard({ next, options, source, terminal }: Readonly<{ nex
   const readable = keyReadable(source, deps);
   deps.out.log(readable ? keyFoundLine(source) : keyMissingLine(source));
   if (readable) registerLinearMcp(source, deps);
-  if (written.reviewer.provider === "atomic") for (const line of codexChecklist(deps)) deps.out.log(line);
+  if (isActive(written.reviewer) && written.reviewer.provider === "atomic") for (const line of codexChecklist(deps)) deps.out.log(line);
   const guards = await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements });
   for (const line of guards) deps.out.log(line);
   if (options.start) deps.out.log(deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })));

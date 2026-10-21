@@ -100,7 +100,9 @@ function bareRepository(): string {
 /** The package as a project would get it: its files at a commit tagged `v0.1.0`, in a scratch repository a `file://` URL names. */
 function taggedTool(): string {
   const repository = scratch();
-  for (const entry of ["package.json", "README.md", "LICENSE", "src", "host"]) cpSync(join(TOOL_ROOT, entry), join(repository, entry), { recursive: true });
+  // `plugins` is copied when it exists: the registry reads the bundled agent-org plugins from the checkout (A11-158), and a release tag holds them.
+  const bundled = existsSync(join(TOOL_ROOT, "plugins")) ? ["plugins"] : [];
+  for (const entry of ["package.json", "README.md", "LICENSE", "src", "host", ...bundled]) cpSync(join(TOOL_ROOT, entry), join(repository, entry), { recursive: true });
   git(repository, "init", "-q", "-b", "main");
   git(repository, "add", "-A");
   git(repository, "commit", "-q", "-m", "release v0.1.0");

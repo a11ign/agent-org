@@ -1,0 +1,129 @@
+// @ts-check
+// module: the in-memory tracker (A11-158) -- the reference that passes `runTrackerConformance`, and what core's tests use in place of Linear
+//
+// IT HOLDS TICKETS AND NOTHING ELSE. A test seeds them (`seed`), and reads what the board did to them (`ticketOf`, `comments`, `calls`) rather than what core believes it did.
+// It implements every optional operation, so a test of the board's planning, ordering or completion has a tracker that takes part; a test of a tracker that has none builds
+// its own object, which is a `TicketSource` too.
+import type { Assignee, Blocker, People, PullState, ScopePage, StateMove, Ticket, TicketSource } from "../contracts/tracker.ts";
+
+/** A ticket as the fake holds it: the board's ticket, with the state type the tracker would name and the relations the fake records. */
+type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: string[] };
+type Tickets = Map<string, Held>;
+
+const ME: Assignee = { id: "fake-me", name: "Fake Person" };
+const FINISHED = ["completed", "canceled"];
+
+/** A ticket with every required field, for a test to seed: only what it names differs. */
+export function fakeTicket(key: string, over: Partial<Ticket> = {}): Ticket {
+  return { key, title: `Ticket ${key}`, description: `The description of ${key}.`, url: `https://tracker.example.invalid/${key}`, branch: `admin/${key.toLowerCase()}`,
+    status: "Todo", statusOrder: 1, team: "FAKE", project: null, priority: 0, parent: null, ...over };
+}
+
+const heldOf = (held: Tickets, key: string): Held => {
+  const entry = held.get(key);
+  if (entry === undefined) throw new RangeError(`fake tracker: no ticket ${JSON.stringify(key)}`);
+  return entry;
+};
+
+const isOpen = ({ statusType }: Held): boolean => !FINISHED.includes(statusType);
+
+function setStatus(entry: Held, status: string, statusType: string): void {
+  entry.ticket = { ...entry.ticket, status, statusType };
+  entry.statusType = statusType;
+}
+
+/** The reads: what the board lists, looks up and asks of the tracker. */
+function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "pullStates" | "blockers" | "projectSummaries"> {
+  return {
+    async assigned() {
+      calls.push("assigned");
+      return [...held.values()].filter(isOpen).map(({ ticket }) => ({ ...ticket, assignee: ME }));
+    },
+    viewer: async () => ME.name,
+    me: async () => ME,
+    async people(): Promise<People> {
+      const open = [...held.values()].filter(isOpen).length;
+      return { people: [{ ...ME, count: open }], unassigned: 0, total: open };
+    },
+    scoped: async (_scope: string, after: string | null): Promise<ScopePage> => ({ tickets: after === null ? [...held.values()].map(({ ticket }) => ticket) : [], next: null }),
+    async read(key) {
+      calls.push(`read ${key}`);
+      return held.get(key)?.ticket ?? null;
+    },
+    async download(ticket, dir) {
+      calls.push(`download ${ticket.key}`);
+      return heldOf(held, ticket.key).files.map((file) => `${dir}/${file}`);
+    },
+    stateTypes: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).statusType] as const] : []))),
+    pullStates: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).pulls] as const] : []))),
+    async blockers(keys) {
+      const blockerOf = (blocker: string): Blocker => ({ key: blocker, state: heldOf(held, blocker).statusType, status: heldOf(held, blocker).ticket.status, pulls: heldOf(held, blocker).pulls });
+      return new Map(keys.flatMap((key): [string, Blocker[]][] => (held.has(key) ? [[key, heldOf(held, key).blockedBy.map(blockerOf)]] : [])));
+    },
+    projectSummaries: async (keys) => new Map(keys.flatMap((key) => (held.get(key)?.ticket.projectSummary === undefined ? [] : [[key, held.get(key)!.ticket.projectSummary!] as const]))),
+  };
+}
+
+/** The writes: what the board does to a ticket. Each is idempotent where the contract says so. */
+function writesOf(held: Tickets, comments: { key: string; text: string }[]): Pick<TicketSource, "attachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "updateTicketText"> {
+  return {
+    async attachPlan(key, files, state) {
+      const entry = heldOf(held, key);
+      for (const file of files) if (!entry.files.includes(file)) entry.files.push(file);
+      if (state !== null && entry.statusType === "unstarted") setStatus(entry, state, "started");
+      return null;
+    },
+    async moveToWorkingState(key, state) {
+      const entry = heldOf(held, key);
+      if (entry.statusType !== "unstarted") return { moved: null, note: null };
+      const moved: StateMove = { from: entry.ticket.status, to: state };
+      setStatus(entry, state, "started");
+      return { moved, note: null };
+    },
+    async restoreState(key, move) {
+      const entry = heldOf(held, key);
+      if (entry.ticket.status === move.to) setStatus(entry, move.from, "unstarted");
+      return null;
+    },
+    async addBlockers(key, blockerKeys) {
+      const entry = heldOf(held, key);
+      for (const blocker of blockerKeys) if (!entry.blockedBy.includes(blocker)) entry.blockedBy.push(blocker);
+    },
+    async complete(key, comment) {
+      const entry = heldOf(held, key);
+      if (!isOpen(entry)) return null;
+      comments.push({ key, text: comment });
+      setStatus(entry, "Done", "completed");
+      return null;
+    },
+    async updateTicketText(key, text) {
+      const entry = heldOf(held, key);
+      entry.ticket = { ...entry.ticket, ...(text.title === undefined ? {} : { title: text.title }), ...(text.description === undefined ? {} : { description: text.description }) };
+    },
+  };
+}
+
+export function createFakeTracker(seed: readonly Ticket[] = []) {
+  const held: Tickets = new Map();
+  const comments: { key: string; text: string }[] = [];
+  const calls: string[] = [];
+  const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, files: [] });
+  seed.forEach(hold);
+  const source: TicketSource = { ...readsOf(held, calls), ...writesOf(held, comments), keywords: { closing: "Closes", nonClosing: "Refs" } };
+  return Object.assign(source, {
+    /** Add a ticket, or replace the one with its key. */
+    seed: hold,
+    /** The ticket as the fake holds it now, or undefined. */
+    ticketOf: (key: string): Ticket | undefined => held.get(key)?.ticket,
+    /** Record a pull request on a ticket, as the tracker would link it. */
+    linkPull(key: string, url: string, state: PullState) {
+      heldOf(held, key).pulls[url] = state;
+    },
+    /** Name a file as uploaded to a ticket, for `download` to return. */
+    attach(key: string, file: string) {
+      heldOf(held, key).files.push(file);
+    },
+    comments,
+    calls,
+  });
+}

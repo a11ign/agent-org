@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { SCHEMA } from "./config-schema.ts";
 import { HOST_FILE_ENV, claimantOf, defaultInstance, instanceIdOf, parseTicketSettings, plansInBatches, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
 import { mkdtempSync, rmSync } from "node:fs";
+import type { Catalog } from "../plugins/manifest.ts";
+import { buildCatalog } from "../plugins/registry.ts";
 import { tmpdir } from "node:os";
 
 const clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform": "/repos/nbl-ui-platform", "platform-monorepo": "/repos/platform-monorepo" };
@@ -372,4 +374,42 @@ test("A11-149: an install keeps one eight-character id in its state directory, a
     rmSync(first, { recursive: true, force: true });
     rmSync(second, { recursive: true, force: true });
   }
+});
+
+// A11-158: `enabled` is what makes a plugin none. A disabled publisher is `publish: null`, so the board refuses to queue a publish run and publishes nothing.
+const PUBLISH_RUN = "post {prs} into {dir}";
+
+test("A11-158: disabling the publisher gives the board no publisher, and enabling gives back the one the file kept", () => {
+  const settingsOf = (publish: Record<string, unknown>) => parseTicketSettings({ clones, tickets: { providers: { publish } } });
+  assert.deepEqual(settingsOf({ provider: "slack", run: PUBLISH_RUN, connectors: ["^mcp__slack__send"] }).publish, { run: PUBLISH_RUN, model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] });
+  assert.equal(settingsOf({ provider: "slack", run: PUBLISH_RUN, enabled: false }).publish, null);
+  assert.deepEqual(settingsOf({ provider: "slack", run: PUBLISH_RUN, enabled: true }).publish?.run, PUBLISH_RUN);
+});
+
+test("A11-158: a disabled publisher whose run is not one is still refused by name, so `enable` never restores a refused file", () => {
+  assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { publish: { provider: "slack", run: "post", enabled: false } } } }),
+    (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.publish.run");
+});
+
+test("A11-158: disabling the reviewer starts none, and disabling the tailscale exposure serves the board on loopback only", () => {
+  assert.equal(parseTicketSettings({ clones, tickets: { providers: { reviewer: { provider: "atomic" } } } }).reviewer, "atomic");
+  assert.equal(parseTicketSettings({ clones, tickets: { providers: { reviewer: { provider: "atomic", enabled: false } } } }).reviewer, null);
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale" } } } }).serve, { ui: 9443, terminal: 9444 });
+  assert.equal(parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale", enabled: false } } } }).serve, null);
+  assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale", enabled: false, tailnetPorts: { ui: 9443, terminal: 9443 } } } } }),
+    (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.exposure.tailnetPorts", "a disabled exposure's ports are still validated");
+});
+
+test("A11-158: disabling the only tracker or code host refuses the host file at start, by name", () => {
+  assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { tracker: { provider: "linear", enabled: false } } } }),
+    (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.tracker.enabled" && /linear is the only tracker/.test(err.message));
+  assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { codeHost: { provider: "github", enabled: false } } } }),
+    (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.codeHost.enabled" && /github is the only code host/.test(err.message));
+});
+
+test("A11-158: a plugin of an unsupported contract major is refused at start, by the catalog the reader is given", () => {
+  const catalog = buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false }, pins: {} });
+  const unread: Catalog = { ...catalog, plugins: catalog.plugins.map((plugin) => (plugin.name === "fake-tracker" ? { ...plugin, contract: "2.0" } : plugin)) };
+  assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { tracker: { provider: "fake-tracker" } } } }, "/home/me", "machine", unread),
+    (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.tracker.provider" && /plugin fake-tracker implements tracker contract 2\.0; this agent-org reads tracker 1\.x/.test(err.message));
 });

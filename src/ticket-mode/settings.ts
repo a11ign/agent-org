@@ -20,7 +20,9 @@
 // the field, never answered with a guess.
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
-import { isLinearConnector, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
+import { isActive, isLinearConnector, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
+import type { Catalog } from "../plugins/manifest.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { defaultTakenStates } from "./pick-taken.ts";
 import { randomBytes } from "node:crypto";
@@ -348,6 +350,13 @@ function word(value: unknown, field: string, fallback: string): string {
  */
 function publisherOf(publish: BlockReport): Publisher | null {
   if (publish.provider === "none") return null;
+  const publisher = publisherSettingsOf(publish);
+  // A disabled publisher still has its settings validated, and kept in the file, so `enable` restores them; it publishes nothing, so the board has none.
+  return isActive(publish) ? publisher : null;
+}
+
+/** The settings of a publisher that names a plugin, refused by name when its run is not one. */
+function publisherSettingsOf(publish: BlockReport): Publisher {
   const run = settingOf(publish, "run");
   if (typeof run.value !== "string" || !run.value.includes("{prs}") || !run.value.includes("{dir}")) {
     throw new TicketSettingsRefusal(run.at, PUBLISHER_SHAPE);
@@ -448,6 +457,13 @@ function tailnetPortsOf(setting: Setting): ServePorts {
   return Object.freeze(ports);
 }
 
+/** The tailnet ports of an enabled tailscale exposure, or null for loopback only. A disabled tailscale block's ports are still validated, and kept, so `enable` restores them. */
+function tailnetOf(exposure: BlockReport): ServePorts | null {
+  if (exposure.provider !== "tailscale") return null;
+  const ports = tailnetPortsOf(settingOf(exposure, "tailnetPorts"));
+  return exposure.enabled ? ports : null;
+}
+
 /**
  * The tailnet ports the board and the terminal are served on, or null when they are served on loopback only, read from one `tickets` block (the
  * `tickets.serve` and `tickets.servePorts` the release before A11-144 read, or the exposure block). Kept for the units, which read the ports from the
@@ -455,7 +471,7 @@ function tailnetPortsOf(setting: Setting): ServePorts {
  */
 export function serveOf(tickets: Record<string, unknown>): ServePorts | null {
   const { exposure } = resolveProviders({ tickets }).blocks;
-  return exposure.provider === "tailscale" ? tailnetPortsOf(settingOf(exposure, "tailnetPorts")) : null;
+  return tailnetOf(exposure);
 }
 
 /** `tickets.uiPort`, read from a `tickets` block as the settings read it: the loopback port the page listens on, 4748 by default. */
@@ -512,7 +528,7 @@ function instanceOf(value: unknown, machine: string): string {
  * @param home the user's home directory, for the default state directory
  * @param machine the machine's host name, which `tickets.instance` defaults to
  */
-export function parseTicketSettings(host: unknown, home: string = homedir(), machine: string = hostname()): TicketSettings {
+export function parseTicketSettings(host: unknown, home: string = homedir(), machine: string = hostname(), catalog: Catalog = defaultCatalog()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
   if (!isObject(clones) || Object.keys(clones).length === 0) {
@@ -526,7 +542,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) throw new TicketSettingsRefusal("tickets.herdrSession", "must be a herdr session name");
   const instance = instanceOf(tickets.instance, machine);
   const plan = planPattern(tickets.plan);
-  const providers = resolveProviders(host);
+  const providers = resolveProviders(host, catalog);
   const { tracker, codeHost, publish, reviewer, exposure } = providers.blocks;
   const port = settingOf(exposure, "port");
   const uiPort = settingOf(exposure, "uiPort");
@@ -571,11 +587,11 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     designTools: designToolsOf(tickets.designTools),
     capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
-    reviewer: reviewer.provider === "atomic" ? "atomic" : null,
+    reviewer: reviewer.provider === "atomic" && reviewer.enabled ? "atomic" : null,
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
-    serve: exposure.provider === "tailscale" ? tailnetPortsOf(settingOf(exposure, "tailnetPorts")) : null,
+    serve: tailnetOf(exposure),
     stackRequired: stack.value ?? true,
     providers,
   });

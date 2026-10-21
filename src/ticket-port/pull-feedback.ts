@@ -4,41 +4,10 @@
 // Which checks are red is `red-pr.ts`'s to decide (#2956), so this file asks it.
 import { brokenChecks } from "../red-pr.ts";
 import { isAtLeastAsNew } from "../newest-check-run.ts";
+import type { FailingCheck, PullFeedback } from "../plugins/contracts/code-host.ts";
 
-/** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
-export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
-
-/** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
-export type PullFeedback = Readonly<{
-  state: "open" | "merged" | "closed";
-  /** The newest review (commented or changes requested), conversation comment or inline comment by someone other than the board's account. */
-  feedbackAt: number | null;
-  /** Who left feedback, each once, the author of the newest first. */
-  authors: readonly string[];
-  /** The checks failing on the head commit, by name: its required ones, or every one where none is required. */
-  failing: readonly string[];
-  /**
-   * Every check failing on the head commit, counted or not, with the address of its job's page (`detailsUrl`), or null for a check that has none, such as a commit status: where its
-   * log is read (A11-154). `failing` is the ones the board answers; this also lists a job behind a required roll-up that failed.
-   */
-  failures: readonly FailingCheck[];
-  /** When the newest of those failing checks finished. */
-  failedAt: number | null;
-  /** Whether it conflicts with its base: GitHub says `CONFLICTING` or `DIRTY`. `UNKNOWN` (still being computed) is not a conflict. */
-  conflicting: boolean;
-  /** Whether GitHub says it merges cleanly: `MERGEABLE`. `UNKNOWN` (still being computed) is not mergeable, as it is not a conflict either. */
-  mergeable: boolean;
-  /** The commit its branch is at, or null when GitHub does not say. */
-  head: string | null;
-  /** Whether the newest approving or changes-requesting review on the head commit, by someone other than the board's account, approves. */
-  approvedAtHead: boolean;
-  /** The branch it merges into, or null when GitHub does not say. */
-  base: string | null;
-  /** The files it changes, by path within its repository. */
-  files: readonly string[];
-  /** Whether `files` is all of them. Read a page of 100 at a time, up to {@link MAX_FILE_PAGES}: a list cut off there is not complete. */
-  filesComplete: boolean;
-}>;
+// THE TYPE IS THE CODE HOST CONTRACT'S (`src/plugins/contracts/code-host.ts`, A11-158), re-exported so no caller changes.
+export type { FailingCheck, PullFeedback };
 
 /** How much of each list one read takes, newest last. Only the newest item of each counts, so a long history is not read. */
 const LAST = 50;
