@@ -16,7 +16,8 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { HOST_FILE_ENV, readTicketSettings } from "./settings.ts";
 import { createBoard } from "./server.ts";
 import { herdrName } from "./pool.ts";
-import type { Ticket, TicketSource } from "./source.ts";
+import type { TicketSource } from "./source.ts";
+import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SERVER = realpathSync(join(HERE, "server.ts"));
@@ -296,12 +297,7 @@ test("on a ticket-only host, a new-ticket request runs the writer, which files i
     tickets: { linearKey: { path: keyPath }, ...WRITER_HOST } }));
   const settings = readTicketSettings({ [HOST_FILE_ENV]: hostPath });
   assert.equal(settings.writer?.model, "opus", "the writer's defaults, on a host that names no more");
-  const source: TicketSource = {
-    assigned: async () => [],
-    read: async (key) => (key === "NBF-101" ? { key, title: "feat: show requests", description: "", url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog",
-      statusOrder: 0, team: "NBF", project: null, priority: 0, parent: null } as Ticket : null),
-    download: async () => [],
-  };
+  const source: TicketSource = createFakeTracker([fakeTicket("NBF-101", { title: "feat: show requests", url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog", team: "NBF" })]);
   const status = new Map<string, string>();
   const board = createBoard({ settings, source, key: "k".repeat(48), queuePath: join(root, "state", "tickets", "queue.json"), choicePath: join(root, "state", "tickets", "choice.json"),
     poolDeps: { herdr: herdrWith(status), wait: async () => {}, now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"),

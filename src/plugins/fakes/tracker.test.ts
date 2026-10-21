@@ -1,5 +1,8 @@
 // no-token: none -- the fake tracker holds tickets in memory, and the suite writes only into a scratch folder
 import { test } from "node:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { runTrackerConformance } from "../conformance/tracker.ts";
 import { ContractError } from "../conformance/suite.ts";
@@ -62,4 +65,18 @@ test("a tracker that answers a guess for a key it has none of fails by name, and
 
 test("a thing with no read is not a tracker, and nothing else is run", async () => {
   await assert.rejects(runTrackerConformance({ assigned: async () => [] } as unknown as TicketSource, probe), (error: unknown) => error instanceof ContractError && error.failures.length === 1 && error.failures[0].check === "shape");
+});
+
+test("download writes the files a ticket holds, with their text, into the folder it is given, and a ticket the fake holds nothing of has none", async () => {
+  const fake = seeded();
+  fake.attach("FAKE-1", "attachment-1-FAKE-1-0001-plan-x.md", "## Paths\n\n- `a:b.ts`\n");
+  const dir = mkdtempSync(join(tmpdir(), "fake-tracker-"));
+  try {
+    const paths = await fake.download(fakeTicket("FAKE-1"), dir);
+    assert.deepEqual(paths, [join(dir, "attachment-1-FAKE-1-0001-plan-x.md")]);
+    assert.equal(readFileSync(paths[0], "utf8"), "## Paths\n\n- `a:b.ts`\n");
+    assert.deepEqual(await fake.download(fakeTicket("FAKE-404"), dir), [], "a ticket never seeded has no files, so a core test that queues any ticket and downloads for it works");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

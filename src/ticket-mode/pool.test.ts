@@ -25,11 +25,13 @@ import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
+import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
 import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
-const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
+/** The tracker a pool is built over by default: the tracker contract's in-memory fake, holding no ticket (A11-159). */
+const source: TicketSource = createFakeTracker();
 
 /** A herdr that opens workspaces and starts agents, and reports each label's status from `status`. A verb in `refused` fails as herdr does. */
 function herdr(status: Map<string, string>, screen: { text: string } = { text: "" }) {

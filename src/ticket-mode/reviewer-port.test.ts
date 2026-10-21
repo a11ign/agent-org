@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/pull-status-and-notes.ts";
@@ -20,7 +21,8 @@ import type { Ticket, TicketSource } from "./source.ts";
 const PR_URL = `https://github.com/${REPO}/pull/7`;
 const DECLARED = { exact: ["worker-bot"], pattern: [] };
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
-const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
+/** The tracker a pool is built over by default: the tracker contract's in-memory fake, holding no ticket (A11-159). */
+const source: TicketSource = createFakeTracker();
 const at = (ms: number) => new Date(ms).toISOString();
 const review = (login: string, state: string, commit: string, ms: number) => ({ author: { login }, state, commit: { oid: commit }, submittedAt: at(ms) });
 

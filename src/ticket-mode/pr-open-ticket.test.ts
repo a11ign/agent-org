@@ -16,6 +16,7 @@ import { REPO } from "../project-identity.ts";
 import { declaredRegionFiles } from "../region-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TicketSource } from "./source.ts";
+import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 import { preReviewReport, readTicketContext, ticketBodyReports, ticketClosesReport, treeKeyUnder, type TicketContext } from "./pr-open-ticket.ts";
 import { READY_FILE } from "./worker-files.ts";
 import { CI_BODY_REPORTS } from "../acceptance-commands/acceptance-report-and-closure.ts";
@@ -264,12 +265,11 @@ test("A11-74: a ticket that cannot be read refuses the create, and its Region is
     const settings = () => parseTicketSettings(JSON.parse(readFileSync(host, "utf8")));
     const description: Ticket = { key: KEY, title: "t", description: "Fix the thing.", url: "https://linear.app/x", branch: BRANCH, status: "Todo", statusOrder: 0,
       team: "A11", project: null, priority: 3, parent: null };
-    const planned = (files: Record<string, string>, extra: Partial<TicketSource> = {}): TicketSource => ({
-      assigned: async () => [],
-      read: async () => description,
-      download: async (_ticket, to) => Object.entries(files).map(([name, text]) => { const path = join(to, name); writeFileSync(path, text); return path; }),
-      ...extra,
-    });
+    const planned = (files: Record<string, string>, extra: Partial<TicketSource> = {}): TicketSource => {
+      const tracker = createFakeTracker([description]);
+      for (const [name, text] of Object.entries(files)) tracker.attach(KEY, name, text);
+      return { ...tracker, ...extra };
+    };
     const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH };
 
     const read = await readTicketContext(env, { settings, git: gitFor(), exists: () => false,
@@ -296,11 +296,11 @@ test("A11-125: a plan with only a Paths section is the Region pr:open checks, re
     const settings = planHost(dir);
     const description: Ticket = { key: KEY, title: "t", description: "Fix the thing.\n\n## Region\n\n```\nagent-org:src/from-description.ts\n```", url: "https://linear.app/x", branch: BRANCH,
       status: "Todo", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null };
-    const planned = (files: Record<string, string>): TicketSource => ({
-      assigned: async () => [],
-      read: async () => description,
-      download: async (_ticket, to) => Object.entries(files).map(([name, text]) => { const path = join(to, name); writeFileSync(path, text); return path; }),
-    });
+    const planned = (files: Record<string, string>): TicketSource => {
+      const tracker = createFakeTracker([description]);
+      for (const [name, text] of Object.entries(files)) tracker.attach(KEY, name, text);
+      return tracker;
+    };
     const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH };
     const pathsPlan = "## Paths\n\n- `agent-org:src/from-paths.ts`\n";
     const both = `${pathsPlan}\n## Region\n\n\`\`\`\nagent-org:src/from-region.ts\n\`\`\`\n`;
@@ -332,7 +332,7 @@ test("A11-74: the run's folder and drafts setting come from the host file named 
   try {
     const host = join(dir, "host.json");
     writeFileSync(host, JSON.stringify({ clones: { "agent-org": TREE }, stateDir: join(dir, "state"), tickets: { worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } }));
-    const tracker: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
+    const tracker: TicketSource = createFakeTracker();
     const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH, AGENT_ORG_TICKET_HOST: host };
     const onReadyMark = (path: string) => path === join(dir, "state", "tickets", KEY, READY_FILE);
     const placed = await readTicketContext(env, { git: gitFor(), source: () => ({ ...tracker, read: async () => ({ key: KEY, title: "t", description: "", url: "", branch: BRANCH, status: "", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null }), download: async () => [] }), exists: onReadyMark });
@@ -368,8 +368,7 @@ test("A11-86: the body reports are CI's own unless the machine names a pre-PR re
 });
 
 test("A11-86: the run's context carries the machine's pre-PR review skill, and none when the host file names none", async () => {
-  const tracker: TicketSource = { assigned: async () => [], download: async () => [], read: async () => ({ key: KEY, title: "t", description: "", url: "", branch: BRANCH,
-    status: "", statusOrder: 0, team: "A11", project: null, priority: 3, parent: null }) };
+  const tracker: TicketSource = createFakeTracker([fakeTicket(KEY, { title: "t", description: "", url: "", branch: BRANCH, status: "", statusOrder: 0, team: "A11", priority: 3 })]);
   const env = { AGENT_ORG_TICKET: KEY, AGENT_ORG_TICKET_BRANCH: BRANCH };
   const context = (tickets: Record<string, unknown>) => readTicketContext(env, { settings: () => parseTicketSettings({ clones: { "agent-org": TREE }, tickets }),
     source: () => tracker, git: gitFor(), exists: () => false });

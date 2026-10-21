@@ -14,6 +14,7 @@ import { httpForward, type Forward } from "./remote-proxy.ts";
 import { createBoard } from "./server.ts";
 import { parseTicketSettings } from "./settings.ts";
 import type { Ticket, TicketSource } from "./source.ts";
+import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { assigneeFilterScript, boardViewScript, createUi, endedPage, isEnded, labelFiltersScript, pairedBy, sameTerminal } from "./ui-server.ts";
 import type { TerminalMint } from "./terminal-pair.ts";
 
@@ -42,7 +43,7 @@ async function instance(mintTerminal?: () => Promise<TerminalMint>, { queue, ter
   const key = boardKey(boardKeyPath(stateDir));
   const seen: IncomingMessage["headers"][] = [];
   const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {} };
-  const source: TicketSource = { assigned: async () => [{ ...ticket("NBF-1"), labels: LABELS }], read: async () => null, download: async () => [] };
+  const source: TicketSource = createFakeTracker([{ ...ticket("NBF-1"), labels: LABELS }]);
   const served = await listen((port) => {
     const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal } });
     const board = createBoard({ settings, source, key, queuePath: join(stateDir, "queue.json"), choicePath: join(stateDir, "choice.json"), pool, now: () => 7, mintTerminal });

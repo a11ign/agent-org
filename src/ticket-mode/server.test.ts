@@ -13,6 +13,7 @@ import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import type { Ticket, TicketSource } from "./source.ts";
+import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import type { View } from "./settings-view.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -21,7 +22,7 @@ const KEY = "a".repeat(48);
 function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra: Partial<BoardDeps> = {}, tracker?: TicketSource) {
   const dir = tmpDir("ticket-server-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox", "platform-monorepo": "/r/pm" }, stateDir: dir, tickets: { port, ...ticketSettings } });
-  const source: TicketSource = tracker ?? { assigned: async () => [ticket("NBF-1"), ticket("NBF-2")], read: async (key) => (key === "VE-9" ? ticket("VE-9") : null), download: async () => [] };
+  const source: TicketSource = tracker ?? createFakeTracker([ticket("NBF-1"), ticket("NBF-2"), { ...ticket("VE-9"), statusType: "completed" }]);
   const ticks: string[] = [];
   const held: { now: { name: string; reason: string; since: number } | null } = { now: null };
   const pool = {
@@ -172,7 +173,7 @@ test("A11-144: a ticket another instance holds is marked taken in the list, and 
 
 test("A11-144: a state the team's takenStates names marks its tickets taken, even without the started type", async () => {
   const planned = { ...ticket("NBF-2"), status: "Planned" } as Ticket;
-  const tracker: TicketSource = { assigned: async () => [planned], read: async (key) => (key === "NBF-2" ? planned : null), download: async () => [] };
+  const tracker: TicketSource = createFakeTracker([planned]);
   const b = board(4747, { providers: { tracker: { provider: "linear", takenStates: ["Planned"] } } }, {}, tracker);
   const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
   assert.equal(listed[0].taken, "Planned");
@@ -182,13 +183,12 @@ test("A11-144: a state the team's takenStates names marks its tickets taken, eve
 });
 
 test("A11-144: a ticket this instance holds a run for is not marked taken, though the tracker now shows it In Progress", async () => {
-  const live: Ticket[] = [ticket("NBF-1")];
-  const tracker: TicketSource = { assigned: async () => live.map((t) => ({ ...t })), read: async (key) => live.find((t) => t.key === key) ?? null, download: async () => [] };
+  const tracker = createFakeTracker([ticket("NBF-1")]);
   const b = board(4747, {}, {}, tracker);
   await b.api("GET", "/api/tickets", {});
   const [queued] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
   assert.equal(queued, 200);
-  live[0] = { ...live[0], status: "In Progress", statusType: "started" };
+  tracker.seed({ ...tracker.ticketOf("NBF-1")!, status: "In Progress", statusType: "started" });
   const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
   assert.equal(listed[0].taken, undefined, "this instance's own run holds it");
 });
@@ -500,7 +500,7 @@ test("A11-76: the queue refuses a parent with a 400 that says why, over HTTP, an
   assert.deepEqual(b.store.get().entries, [], "nothing of the request is queued, not even the ordinary ticket beside the parent");
   const [, queue] = await b.api("POST", "/api/queue", { keys: ["A11-30"], model: "opus", effort: "high" }) as [number, any];
   assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-30"], "an epic with no sub-issue open is an ordinary ticket");
-  const source: TicketSource = { assigned: async () => [], read: async (key) => (key === "A11-24" ? { ...ticket(key), children: ["A11-25"] } : null), download: async () => [] };
+  const source: TicketSource = createFakeTracker([{ ...ticket("A11-24"), children: ["A11-25"] }]);
   await overHttp(async (base) => {
     const refused = await fetch(`${base}/api/queue`, { method: "POST", headers: keyed, body: JSON.stringify({ keys: ["A11-24"], model: "opus", effort: "high" }) });
     assert.equal(refused.status, 400);
@@ -948,7 +948,7 @@ test("/api/settings reads the project of the host file the suite runs against, t
 const DECIDING = { ...ticket("A11-50"), description: "## Acceptance\n\n- Decide whether the list sorts.\n" } as Ticket;
 
 test("A11-134: the page is sent each ticket's open decision as needsDecision, and a ticket with none is sent without one", async () => {
-  const tracker: TicketSource = { assigned: async () => [DECIDING, ticket("NBF-2")], read: async () => null, download: async () => [] };
+  const tracker: TicketSource = createFakeTracker([DECIDING, ticket("NBF-2")]);
   const [, tickets] = await board(4747, {}, {}, tracker).api("GET", "/api/tickets", {}) as [number, any[]];
   assert.match(tickets[0].needsDecision.reason, /An open decision is still in acceptance: "- Decide whether the list sorts\."/);
   assert.equal(tickets[1].needsDecision, undefined);
@@ -972,18 +972,17 @@ test("A11-134: the queue refuses a ticket with an open decision, naming its line
 });
 
 test("A11-134: a ticket the page copied with an open decision is queued once its tracker text is settled, since the queue reads it again", async () => {
-  let text = DECIDING.description;
-  const tracker: TicketSource = { assigned: async () => [DECIDING], read: async () => ({ ...DECIDING, description: text }), download: async () => [] };
+  const tracker = createFakeTracker([DECIDING]);
   const b = board(4747, {}, {}, tracker);
   await b.api("GET", "/api/tickets", {});
-  text = `${DECIDING.description}\n**Decisions:** settled\n`;
+  tracker.seed({ ...DECIDING, description: `${DECIDING.description}\n**Decisions:** settled\n` });
   const [status, queue] = await b.api("POST", "/api/queue", { keys: ["A11-50"], model: "opus", effort: "high" }) as [number, any];
   assert.equal(status, 200);
   assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["A11-50"]);
 });
 
 test("A11-134: Grill on a ticket with an open decision queues a grill run on it that files nothing and keeps the text it started from, and is refused without a terminal or a settled ticket", async () => {
-  const tracker: TicketSource = { assigned: async () => [DECIDING], read: async (key) => (key === "A11-50" ? DECIDING : key === "NBF-1" ? ticket("NBF-1") : null), download: async () => [] };
+  const tracker: TicketSource = createFakeTracker([DECIDING, ticket("NBF-1")]);
   const b = board(4747, WRITER, {}, tracker);
   const [status, writers] = await b.api("POST", "/api/grill-ticket", { key: "A11-50" }) as [number, any];
   assert.equal(status, 200);

@@ -12,13 +12,15 @@ import { pullReviewText } from "./board-view/pull-review-state.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { emptyQueue } from "./queue.ts";
 import type { TicketSource } from "./source.ts";
+import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
 const HEAD = "h1";
 const DECLARED = { exact: ["worker-bot"], pattern: [] };
 const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
 const LEASE = REVIEW_LEASE_MINUTES * 60_000;
-const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
+/** The tracker a pool is built over by default: the tracker contract's in-memory fake, holding no ticket (A11-159). */
+const source: TicketSource = createFakeTracker();
 const store = { get: () => emptyQueue(1), set: () => {} };
 
 /**
