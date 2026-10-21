@@ -268,7 +268,8 @@ export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): st
  * or while it waits on a path another run holds ({@link overlapWait}), or while its plan cannot be downloaded (`pathsFailure`). The
  * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
  * its pull requests, whatever the outcome was: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests
- * merged is done even while its ticket is still in progress (A11-153). Before either, the outcome decides, except that a `needs-human` run whose pull request
+ * merged is done even while its ticket is still in progress (A11-153), unless its worker declared them partial: then the ticket is not done, and the run needs a person where
+ * the board did not queue the next step (A11-168). Before either, the outcome decides, except that a `needs-human` run whose pull request
  * was answered or approved is awaiting its review, not asking ({@link pullAnswer}). It never answers Publishing: that is {@link shownStatus}'s.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
@@ -277,6 +278,8 @@ export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []):
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const settled = settledByPulls(entry);
+  // A pull request declared partial that merged does not finish the run: the board queued the next step in its place, or, where it could not, a person is asked (A11-168).
+  if (settled === "completed" && entry.partial !== undefined) return "needs-you";
   if (settled !== null) return settled;
   // The board stopped answering a run's red checks or feedback on its own and handed it to a person, whatever the run ended on (A11-154): Respond starts again.
   if (entry.handedBack !== undefined) return "needs-you";

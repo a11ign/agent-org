@@ -1268,3 +1268,35 @@ test("A11-161: a run says \"publishing off\" only when it is Ready to merge on a
   for (const status of ["published", "working", "needs-you", "awaiting-review", "publishing"]) assert.equal(publishingOffLine(status, "off"), null, status);
   for (const publisher of ["on", "none", undefined]) assert.equal(publishingOffLine("ready-to-merge", publisher), null, String(publisher));
 });
+
+const STEP_PR = "https://github.com/a11ign/agent-org/pull/1811";
+const queuedStep = (fields: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key: "A11-160" }, phase: "queued", steps: [{ step: 1, of: 9, prs: [STEP_PR] }], ...fields });
+
+test("A11-168: a next-step run's line says step 1 of 9 merged; step 2 queued, and running once it started", () => {
+  assert.deepEqual(reasonOf(queuedStep()), { line: "step 1 of 9 merged; step 2 queued", question: null });
+  assert.equal(reasonOf(queuedStep({ phase: "running" })).line, "step 1 of 9 merged; step 2 running");
+  assert.equal(reasonOf(queuedStep({ steps: [{ step: 1, of: 9, prs: [STEP_PR] }, { step: 2, of: 9, prs: [] }] })).line, "step 2 of 9 merged; step 3 queued", "the last merged step is the one named");
+  assert.equal(reasonOf(queuedStep({ steps: undefined })).line, null, "a run that is no later step says nothing");
+});
+
+test("A11-168: a worker's own note on a running next step is not hidden by the step line", () => {
+  assert.equal(reasonOf(queuedStep({ phase: "running", working: { reason: "the tests are still running" } })).line, "the tests are still running");
+});
+
+test("A11-168: a merged partial run the board did not queue a step for reads Needs you with the reason as its line, and the tracker's word on the ticket wins", () => {
+  const merged = (fields: Partial<ViewEntry>): ViewEntry => run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, ...fields });
+  const stalled = merged({ partial: "step 9 of 9: the docs" });
+  assert.equal(runStatus(stalled), "needs-you");
+  assert.equal(reasonOf(stalled).line, "Partial merged: step 9 of 9: the docs. It names step 9 of 9, the last, with Partial: the last step closes the ticket");
+  assert.equal(reasonOf(merged({ partial: "the docs" })).line, "Partial merged: the docs. It names no step, so nothing was queued: Dismiss it and queue the ticket");
+  assert.equal(reasonOf(merged({ partial: "step 1 of 9", steps: [{ step: 1, of: 9, prs: [] }] })).line, "Partial merged: step 1 of 9. Step 1 is not after step 1: nothing was queued");
+  assert.deepEqual([runStatus(merged({ partial: "the docs", trackerState: "completed" })), reasonOf(merged({ partial: "the docs", trackerState: "completed" })).line], ["completed", null]);
+  assert.equal(runStatus(merged({})), "completed", "a pull request with no declaration completes the run as before");
+  assert.equal(reasonOf(merged({})).line, null);
+});
+
+test("A11-168: a merged partial run is dismissed, not retried, and a closed unmerged one is still cancelled", () => {
+  const stalled = run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, partial: "the docs" });
+  assert.ok(runActions(stalled).includes("dismiss") && !runActions(stalled).includes("retry"));
+  assert.equal(runStatus({ ...stalled, pullStates: { [STEP_PR]: "closed" } }), "cancelled");
+});

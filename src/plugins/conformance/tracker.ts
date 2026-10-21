@@ -5,6 +5,7 @@
 // offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
 // write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
 //
+// CONTRACT 1.2 (A11-168) adds the optional `claim` and `claims`, checked together: a claim is read back as the latest, and a repeated one changes nothing.
 // CONTRACT 1.1 (A11-159): a tracker also declares what a new-ticket run files with (`TrackerWriting`, the plugin's manifest data). The caller passes it, and the suite checks that it
 // hangs together the way the hook and the brief use it: the tools it grants are covered by its filing pattern, a creation with an `id` is refused, a created key is read back by
 // the declared shape, and every priority has a number, `none` being 0.
@@ -163,6 +164,20 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       const blockers = await expectMap(source.blockers!([probe.known]), "blockers()");
       const held = blockers.get(probe.known);
       expect(Array.isArray(held) && held.filter((blocker) => blocker.key === probe.other).length === 1, `${probe.other} must block ${probe.known} exactly once after two calls`);
+    },
+  },
+  "claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing": {
+    applies: ({ source }) => typeof source.claim === "function" && typeof source.claims === "function",
+    reason: "the tracker has no claim or claims, which are optional (contract 1.2)",
+    run: async ({ source, probe }) => {
+      const claimantOf = async () => (await expectMap(source.claims!([probe.known, probe.missing]), "claims()")).get(probe.known);
+      await source.claim!(probe.known, "conformance.a");
+      expect(await claimantOf() === "conformance.a", `claims() must name conformance.a for ${probe.known} after claim(${probe.known}, "conformance.a")`);
+      await source.claim!(probe.known, "conformance.a");
+      expect(await claimantOf() === "conformance.a", "a second claim by the same claimant must leave the latest claim as it was");
+      await source.claim!(probe.known, "conformance.b");
+      expect(await claimantOf() === "conformance.b", "claims() must name the LATEST claimant: another claimant's claim replaces it");
+      expect(!(await expectMap(source.claims!([probe.missing]), "claims()")).has(probe.missing), `claims() must leave out ${probe.missing}, which the tracker has none of`);
     },
   },
   "complete finishes a ticket once and leaves a finished one alone": optional("complete", async ({ source, probe }) => {

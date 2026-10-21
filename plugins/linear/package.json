@@ -6,7 +6,7 @@
   "type": "module",
   "agentOrg": {
     "concern": "tracker",
-    "contract": "1.1",
+    "contract": "1.2",
     "description": "Linear: where tickets are kept and read.",
     "entry": "index.ts",
     "settings": {
@@ -112,7 +112,7 @@
         "type": "list of state names",
         "absent": "default",
         "default": "the working and planned states, where they are set",
-        "explanation": "The tracker states that mark a ticket as held by another instance in Pick: a ticket in one of them, with no run on this instance, is shown with its state and cannot be queued here. A state of the started type is always taken, so In Progress needs no entry. Listing [] takes none of these states.",
+        "explanation": "The tracker states in which a ticket another instance claimed is held in Pick: a ticket in one of them, whose latest claim in the tracker names another instance, is shown with its state and cannot be queued here. A state of the started type is always one of them, so In Progress needs no entry. A ticket with no claim, or one this instance claimed, is not taken in any state. Listing [] names none of these states.",
         "breaks": "A name that is not a state's name is refused by name. A state left out lets another instance's ticket be queued here too.",
         "edit": {
           "editable": true,

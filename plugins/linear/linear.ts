@@ -6,7 +6,8 @@
 // to a team or a project). It writes only what the board hands the tracker, each on a planning run's or a verified outcome's behalf or a person's: the
 // plan's files, attached to the ticket, the ticket's move to the planner's state, a batch's order as "blocks" relations, once a run's pull request
 // merged without closing its ticket or a worker verified its `done` (A11-91), the ticket's move to its completed state with a comment (A11-92), and,
-// once a person applies a worker's proposed edit, the ticket's title and description (A11-91). Workers write nothing, and a new-ticket run files its own
+// once a person applies a worker's proposed edit, the ticket's title and description (A11-91), and, as a run starts, a comment that names the instance holding the ticket
+// (A11-168, ADR A11-168-0001). Workers write nothing, and a new-ticket run files its own
 // ticket through its own tracker tools (A11-135), not through this module. Linear's
 // own GitHub integration links each pull request, because the worker's branch is the ticket's `branchName`.
 //
@@ -41,6 +42,10 @@ const OPEN_CHILDREN = 'children(first: 50, filter: { state: { type: { nin: ["com
  */
 const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
 const ISSUE_FIELDS = `identifier title description url branchName priority state { name position type } team { key } project { name summary: description } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
+/** The words a claim comment starts with: `agent-org: claimed by <claimant>` (A11-168). The tracker is asked only for comments that start with them. */
+const CLAIM_PREFIX = "agent-org: claimed by ";
+/** A ticket's claim comments with their times: Linear's first page of 50, which a ticket comes nowhere near, since a claim is written only when the claimant changes. */
+const CLAIMS = `comments(first: 50, filter: { body: { startsWith: ${JSON.stringify(CLAIM_PREFIX)} } }) { nodes { body createdAt } }`;
 /** A file name that is safe as it stands: no folder, and an extension. A plan's attachment title is one. */
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
@@ -366,6 +371,36 @@ async function completeTicket(client: Client, identifier: string, comment: strin
   return null;
 }
 
+type Claims = { comments: { nodes: { body: string; createdAt: string }[] } };
+
+/**
+ * The claimant the latest claim comment names, or undefined when the ticket has none. The latest is found by its time, not by the order Linear lists them in, and a
+ * comment that starts with the words but names no claimant is no claim. PURE.
+ */
+export function latestClaimant({ comments }: Claims): string | undefined {
+  const named = comments.nodes.flatMap(({ body, createdAt }) => {
+    const claimant = body.startsWith(CLAIM_PREFIX) ? body.slice(CLAIM_PREFIX.length).trim() : "";
+    return claimant === "" || /\s/.test(claimant) ? [] : [{ claimant, at: Date.parse(createdAt) }];
+  });
+  return named.sort((a, b) => b.at - a.at)[0]?.claimant;
+}
+
+/** Record that `claimant` holds the ticket, unless its latest claim already names them, so nine steps of one ticket make one comment. */
+async function claimTicket(client: Client, identifier: string, claimant: string): Promise<void> {
+  const found = await issue<{ id: string } & Claims>(client, identifier, `id ${CLAIMS}`);
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (latestClaimant(found) === claimant) return;
+  await postComment(client, identifier, found.id, `${CLAIM_PREFIX}${claimant}`);
+}
+
+async function claimsOf(client: Client, keys: readonly string[]): Promise<ReadonlyMap<string, string>> {
+  const found = await eachIssue<Claims>(client, keys, CLAIMS);
+  return new Map([...found].flatMap(([key, node]) => {
+    const claimant = latestClaimant(node);
+    return claimant === undefined ? [] : [[key, claimant] as const];
+  }));
+}
+
 async function downloadTicket(client: Client, ticket: Ticket, dir: string): Promise<string[]> {
   const { key, request } = client;
   const linked = uploadLinks(ticket.description);
@@ -476,6 +511,14 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
 
     async complete(identifier, comment) {
       return completeTicket(client, identifier, comment);
+    },
+
+    async claim(identifier, claimant) {
+      return claimTicket(client, identifier, claimant);
+    },
+
+    async claims(keys) {
+      return claimsOf(client, keys);
     },
 
     async download(ticket, dir) {

@@ -20,9 +20,10 @@ import {
 import { approve, completableRuns, finish, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { talk } from "./queue/talk.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
-import { parseTicketSettings } from "./settings.ts";
+import { claimantOf, parseTicketSettings } from "./settings.ts";
 import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
@@ -5496,4 +5497,122 @@ test("A11-161: a run Ready to merge waits through the publisher being off, and e
   assert.equal(off.store.get().publish, undefined, "no publish run is queued by enabling the publisher");
   assert.equal(off.h.calls.some((args) => args.includes("start")), false, "and none is started");
   assert.equal(runStatus(off.entry("NBF-1")), "ready-to-merge", "the run is as it was: a person's Publish is what publishes");
+});
+
+/** The tracker of the A11-168 tests: the contract's fake with every read and write a multi-step ticket's sweep and start use, and none of the optional reads that run on in the background. */
+function stepsTracker() {
+  const tracker = createFakeTracker([ticket("NBF-1")]);
+  const { assigned, read, download, keywords, stateTypes, pullStates, claim, claims, complete } = tracker;
+  return { tracker, source: { assigned, read, download, keywords, stateTypes, pullStates, claim, claims, complete } as TicketSource };
+}
+const STEP_1_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/811";
+const STEP_2_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/812";
+
+/** NBF-1 runs to the end on `outcome`, and its worker writes it. */
+const finishedOn = (outcome: Record<string, unknown>, tracker: TicketSource) => endedOn(outcome, 1, ["NBF-1"], {}, { source: tracker });
+
+/** Step 1's pull request merges and the board queues step 2, whose run starts and ends on `outcome` with its own pull request merged: the pool as it is once step 2 is settled. */
+async function throughStepTwo(made: Awaited<ReturnType<typeof finishedOn>>, tracker: ReturnType<typeof stepsTracker>["tracker"], outcome: Record<string, unknown>) {
+  const { pool, status, settings } = made;
+  tracker.linkPull("NBF-1", STEP_1_PR, "merged");
+  await pool.refreshTracker();
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_2_PR }], ...outcome }));
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  tracker.linkPull("NBF-1", STEP_2_PR, "merged");
+  await pool.refreshTracker();
+}
+
+test("A11-168: a two-step ticket whose first pull request merges Partial starts its second step with no person", async () => {
+  const { tracker, source: tracked } = stepsTracker();
+  const made = await finishedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_1_PR }], partial: "step 1 of 2: the second half" }, tracked);
+  const { pool, entry, store, settings } = made;
+  assert.equal(entry("NBF-1").phase, "finished", "step 1's run ended on its pull request");
+  tracker.linkPull("NBF-1", STEP_1_PR, "merged");
+  await pool.refreshTracker();
+  const queued = entry("NBF-1");
+  assert.deepEqual([queued.phase, queued.steps, queued.session, queued.outcome, queued.partial, queued.pullStates], ["queued", [{ step: 1, of: 2, prs: [STEP_1_PR] }], undefined, undefined, undefined, undefined],
+    "the finished run is replaced by a queued one that records the step and its pull request");
+  assert.equal(reasonOf(queued).line, "step 1 of 2 merged; step 2 queued");
+  assert.equal(runStatus(queued), "queued");
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "the next pass starts it with no person");
+  const brief = readFileSync(join(ticketDir(settings, "NBF-1"), "brief.md"), "utf8");
+  assert.match(brief, /## Steps already merged/);
+  assert.ok(brief.includes(`- step 1 of 2: ${STEP_1_PR}`) && brief.includes("This run does step 2 of 2"), "its brief names the step it does and the one merged");
+  assert.equal(reasonOf(entry("NBF-1")).line, "step 1 of 2 merged; step 2 running");
+  assert.deepEqual(tracker.claimed, [{ key: "NBF-1", claimant: claimantOf(settings) }], "two runs of one ticket claimed it once");
+  assert.equal(store.get().entries.length, 1, "one entry for the ticket throughout");
+});
+
+test("A11-168: step 2 of 2 merges with Closes and its run reads Completed; nothing is queued and the ticket is completed", async () => {
+  const { tracker, source: tracked } = stepsTracker();
+  const made = await finishedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_1_PR }], partial: "step 1 of 2" }, tracked);
+  await throughStepTwo(made, tracker, {});
+  const last = made.entry("NBF-1");
+  assert.deepEqual([last.phase, runStatus(last), last.steps?.map(({ step }) => step), last.partial], ["finished", "completed", [1], undefined], "the last step's run is finished and completed, with no step queued after it");
+  assert.equal(tracker.ticketOf("NBF-1")?.status, "Done", "its pull request ends the ticket");
+});
+
+test("A11-168: a partial pull request that merges naming no step, the last step, or a step not past the last merged queues nothing and needs a person, with the reason", async () => {
+  const reasons: [string, string][] = [
+    ["the settings page", "Partial merged: the settings page. It names no step, so nothing was queued: Dismiss it and queue the ticket"],
+    ["step 2 of 2: the docs", "Partial merged: step 2 of 2: the docs. It names step 2 of 2, the last, with Partial: the last step closes the ticket"],
+  ];
+  for (const [partial, reason] of reasons) {
+    const { tracker, source: tracked } = stepsTracker();
+    const { pool, entry } = await finishedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_1_PR }], partial }, tracked);
+    tracker.linkPull("NBF-1", STEP_1_PR, "merged");
+    await pool.refreshTracker();
+    await pool.refreshTracker();
+    const left = entry("NBF-1");
+    assert.deepEqual([left.phase, runStatus(left), reasonOf(left).line], ["finished", "needs-you", reason], partial);
+    assert.equal(tracker.ticketOf("NBF-1")?.status, "Backlog", "a partial run's ticket is left open");
+  }
+});
+
+test("A11-168: a step that moves nowhere forward is not queued twice: the next step's run that declares the same step again needs a person", async () => {
+  const { tracker, source: tracked } = stepsTracker();
+  const made = await finishedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_1_PR }], partial: "step 1 of 3" }, tracked);
+  await throughStepTwo(made, tracker, { partial: "step 1 of 3 again" });
+  const left = made.entry("NBF-1");
+  assert.deepEqual([left.phase, runStatus(left)], ["finished", "needs-you"]);
+  assert.equal(reasonOf(left).line, "Partial merged: step 1 of 3 again. Step 1 is not after step 1: nothing was queued");
+});
+
+test("A11-168: a partial run whose ticket the tracker finished queues no next step", async () => {
+  const { tracker, source: tracked } = stepsTracker();
+  const { pool, entry } = await finishedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_1_PR }], partial: "step 1 of 2" }, tracked);
+  tracker.linkPull("NBF-1", STEP_1_PR, "merged");
+  await tracker.complete!("NBF-1", "closed by a person");
+  await pool.refreshTracker();
+  assert.deepEqual([entry("NBF-1").phase, runStatus(entry("NBF-1"))], ["finished", "completed"], "the tracker's word on the ticket wins: step 2 is not queued");
+});
+
+test("A11-168: a run claims its ticket in the tracker as it starts, a planning run too and a review round not, and a refused claim goes to the log while the run goes on", async () => {
+  const { tracker, source: tracked } = stepsTracker();
+  const made = setup(1, ["NBF-1"], {}, { source: tracked });
+  await made.pool.tick();
+  await settled();
+  assert.deepEqual(tracker.claimed, [{ key: "NBF-1", claimant: claimantOf(made.settings) }]);
+  const refusing: TicketSource = { ...tracked, claim: async () => { throw new Error("Linear answered 500"); } };
+  let refused!: ReturnType<typeof setup>;
+  const written = await captureStderr(async () => {
+    refused = setup(1, ["NBF-1"], {}, { source: refusing });
+    await refused.pool.tick();
+    await settled();
+  });
+  assert.equal(refused.entry("NBF-1").phase, "running", "the claim fails nothing");
+  assert.ok(written.includes("ticket:serve: NBF-1 could not be claimed in the tracker: Linear answered 500\n"));
+  const planning = stepsTracker();
+  const planned = setup(1, ["NBF-1"], PLANNER, { source: planning.source, planFirst: ["NBF-1"] });
+  await planned.pool.tick();
+  await settled();
+  assert.deepEqual(planning.tracker.claimed.map(({ key }) => key), ["NBF-1"], "a planning run claims the ticket too");
+  const plain = setup(1, ["NBF-1"]);
+  await plain.pool.tick();
+  assert.equal(plain.entry("NBF-1").phase, "running", "a source with no claim starts the run as before");
 });

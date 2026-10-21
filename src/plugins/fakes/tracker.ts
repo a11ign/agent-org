@@ -29,7 +29,7 @@ export const FAKE_TRACKER_WRITING: TrackerWriting = Object.freeze({
 });
 
 /** A ticket as the fake holds it: the board's ticket, with the state type the tracker would name and the relations the fake records. */
-type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: { name: string; text: string }[] };
+type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: { name: string; text: string }[]; claimant?: string };
 type Tickets = Map<string, Held>;
 
 const ME: Assignee = { id: "fake-me", name: "Fake Person" };
@@ -55,7 +55,7 @@ function setStatus(entry: Held, status: string, statusType: string): void {
 }
 
 /** The reads: what the board lists, looks up and asks of the tracker. */
-function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "pullStates" | "blockers" | "projectSummaries"> {
+function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "pullStates" | "blockers" | "projectSummaries" | "claims"> {
   return {
     async assigned() {
       calls.push("assigned");
@@ -87,12 +87,13 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
       const blockerOf = (blocker: string): Blocker => ({ key: blocker, state: heldOf(held, blocker).statusType, status: heldOf(held, blocker).ticket.status, pulls: heldOf(held, blocker).pulls });
       return new Map(keys.flatMap((key): [string, Blocker[]][] => (held.has(key) ? [[key, heldOf(held, key).blockedBy.map(blockerOf)]] : [])));
     },
+    claims: async (keys) => new Map(keys.flatMap((key) => (held.get(key)?.claimant === undefined ? [] : [[key, held.get(key)!.claimant!] as const]))),
     projectSummaries: async (keys) => new Map(keys.flatMap((key) => (held.get(key)?.ticket.projectSummary === undefined ? [] : [[key, held.get(key)!.ticket.projectSummary!] as const]))),
   };
 }
 
 /** The writes: what the board does to a ticket. Each is idempotent where the contract says so. */
-function writesOf(held: Tickets, comments: { key: string; text: string }[]): Pick<TicketSource, "attachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "updateTicketText"> {
+function writesOf(held: Tickets, comments: { key: string; text: string }[], claimed: { key: string; claimant: string }[]): Pick<TicketSource, "attachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "updateTicketText" | "claim"> {
   return {
     async attachPlan(key, files, state) {
       const entry = heldOf(held, key);
@@ -123,6 +124,13 @@ function writesOf(held: Tickets, comments: { key: string; text: string }[]): Pic
       setStatus(entry, "Done", "completed");
       return null;
     },
+    async claim(key, claimant) {
+      const entry = heldOf(held, key);
+      // Written only when the latest claim names someone else, as the contract says: a repeated claim is no new write.
+      if (entry.claimant === claimant) return;
+      entry.claimant = claimant;
+      claimed.push({ key, claimant });
+    },
     async updateTicketText(key, text) {
       const entry = heldOf(held, key);
       entry.ticket = { ...entry.ticket, ...(text.title === undefined ? {} : { title: text.title }), ...(text.description === undefined ? {} : { description: text.description }) };
@@ -134,9 +142,10 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
   const held: Tickets = new Map();
   const comments: { key: string; text: string }[] = [];
   const calls: string[] = [];
+  const claimed: { key: string; claimant: string }[] = [];
   const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, files: [] });
   seed.forEach(hold);
-  const source: TicketSource = { ...readsOf(held, calls), ...writesOf(held, comments), keywords: { closing: "Closes", nonClosing: "Refs" } };
+  const source: TicketSource = { ...readsOf(held, calls), ...writesOf(held, comments, claimed), keywords: { closing: "Closes", nonClosing: "Refs" } };
   return Object.assign(source, {
     /** Add a ticket, or replace the one with its key. */
     seed: hold,
@@ -150,7 +159,13 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
     attach(key: string, file: string, text = "") {
       heldOf(held, key).files.push({ name: file, text });
     },
+    /** Set the claimant of a ticket's latest claim, as another instance's `claim` would have left it, or clear it with `undefined`. Records no write. */
+    setClaimant(key: string, claimant: string | undefined) {
+      heldOf(held, key).claimant = claimant;
+    },
     comments,
+    /** Every claim the fake wrote, in order: a `claim` that found its claimant already the latest writes none. */
+    claimed,
     calls,
   });
 }

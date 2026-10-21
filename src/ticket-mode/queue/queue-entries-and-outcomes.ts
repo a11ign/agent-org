@@ -1,5 +1,6 @@
 import { CONCLUDED, openPulls, RESULT_KINDS, type CheckHead, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
+import type { MergedStep } from "../board-view/plan-steps.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import { needsDecision } from "../open-decisions.ts";
@@ -151,6 +152,11 @@ export type Entry = Readonly<{
    * through a review round, whose `reviewed` outcome does not say it, and dropped by a retry, which starts a fresh worker.
    */
   partial?: string;
+  /**
+   * The plan steps of this ticket whose pull requests merged, in order, each with the pull requests that finished it (A11-168): set on the run the board queued for the next
+   * step ({@link nextStepRun}), and carried through its review, talk and check rounds, so each step's run knows which it is on. Unset on a run that is the first step, or no step.
+   */
+  steps?: readonly MergedStep[];
   /**
    * Set once the board has acted on the ticket for a merged pull request its body did not complete (A11-92): it completed the ticket, or found it
    * already finished, or its team has no completed state to move it to, which the log says once.
@@ -516,14 +522,15 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, stackBase, overlapOverride, checkHeads } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, overlapOverride, checkHeads } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, stackBase, checkHeads }) };
-  // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again.
-  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}),
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, checkHeads }) };
+  // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
+  // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
+  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
 }
@@ -560,11 +567,11 @@ export function talkRound(entry: Entry, now: number): Entry {
 }
 
 /**
- * The fields a review round carries from the run it continues, its paths, pull request files, partial declaration and the heads its red checks were answered at: only those the run has set. PURE.
+ * The fields a review round carries from the run it continues, its paths, pull request files, partial declaration, merged plan steps and the heads its red checks were answered at: only those the run has set. PURE.
  */
-const carriedFields = ({ paths, plannedRepo, projectRepo, pullFiles, partial, stackBase, checkHeads }: Pick<Entry, "paths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "stackBase" | "checkHeads">) => ({
+const carriedFields = ({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, checkHeads }: Pick<Entry, "paths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "steps" | "stackBase" | "checkHeads">) => ({
   ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
-  ...(partial !== undefined ? { partial } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}),
+  ...(partial !== undefined ? { partial } : {}), ...(steps ? { steps } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}),
 });
 
 /** The tracker states a finished run can end in, after which its ticket is not read again. */

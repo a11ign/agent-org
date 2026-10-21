@@ -739,3 +739,20 @@ test("step 5a has a worker capture a changed page before step 6 opens the pull r
     /\]\(https:\/\/github\.com\/<owner>\/<repo>\/blob\/<head sha>\/\.acceptance\/captures\/<name>\.png\?raw=true\)/, /Do not end `needs-human` to ask a person to look at the page/];
   for (const pattern of expected) assert.match(capturing, pattern);
 });
+
+test("A11-168: the brief of a next step lists the merged steps and their pull requests, says which step it does, and a first step's brief has no such section", () => {
+  const brief = (steps?: { step: number; of: number; prs: string[] }[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], steps, clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const next = brief([{ step: 1, of: 9, prs: ["https://github.com/a11ign/agent-org/pull/1811"] }, { step: 2, of: 9, prs: ["https://github.com/a11ign/agent-org/pull/1812", "https://github.com/a11ign/control/pull/9"] }]);
+  for (const part of ["## Steps already merged", "- step 1 of 9: https://github.com/a11ign/agent-org/pull/1811", "- step 2 of 9: https://github.com/a11ign/agent-org/pull/1812, https://github.com/a11ign/control/pull/9",
+    "This run does step 3 of 9, and only that step.", "git fetch origin && git merge origin/<the repository's default branch>", "open a NEW pull request", "Do not push to the merged pull request"]) {
+    assert.ok(next.includes(part), `the next step's brief says ${part}`);
+  }
+  assert.equal(brief().includes("## Steps already merged"), false);
+  assert.equal(brief([]).includes("## Steps already merged"), false);
+});
+
+test("A11-168: every brief tells the worker to begin a numbered plan's Partial line and partial outcome with step N of M, and the last step's pull request to close the ticket", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  assert.ok(brief.includes("When the plan has numbered steps, the `Partial:` line begins `step <N> of <M>`, and the last step's pull request names the ticket `Closes NBF-1270` and has no `Partial:` line."));
+  assert.ok(brief.includes("When the plan has numbered steps, `partial` begins `step <N> of <M>`: the board queues step N + 1 when that pull request merges."));
+});

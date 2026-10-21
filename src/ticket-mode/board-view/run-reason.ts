@@ -1,7 +1,8 @@
 // @ts-check
 // module: the reason line a run's card shows, and the question it keeps one click away (PURE)
 import { pullAnswer, type PullAnswer } from "./pull-answer.ts";
-import { rebaseNote, retargetNote, verdictNote, workingNote } from "./pull-status-and-notes.ts";
+import { afterPartialMerge, stepQueuedLine, stepRunningLine } from "./plan-steps.ts";
+import { rebaseNote, retargetNote, settledByPulls, verdictNote, workingNote } from "./pull-status-and-notes.ts";
 import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
 
 /** The words a card's reason line says for an answered run, in place of its question. */
@@ -30,6 +31,19 @@ function askedReason(entry: ViewEntry): string | null {
 }
 
 /**
+ * What the card says of a plan's steps (A11-168), or null: that a step merged and the next is queued, or running once it started; and, on a finished run whose partial pull
+ * requests merged with no next step to queue, why nothing was queued. The tracker's own word on the ticket comes first, as it does for the run's status. PURE.
+ */
+function stepNote(entry: ViewEntry): string | null {
+  const merged = entry.steps ?? [];
+  if (entry.phase !== "finished") return entry.phase === "queued" ? stepQueuedLine(merged) : stepRunningLine(merged);
+  const settled = entry.trackerState === "completed" || entry.trackerState === "canceled" || entry.trackerState === "duplicate";
+  if (entry.partial === undefined || settled || settledByPulls(entry) !== "completed") return null;
+  const after = afterPartialMerge(entry.partial, merged);
+  return "stalled" in after ? after.stalled : null;
+}
+
+/**
  * The reason line a run's card shows, and the question it keeps one click away. A needs-human run whose pull requests answered it says "Answered: awaiting
  * review" or "Approved" from them, and keeps what it asked as `question`. A text the card already shows as the rebase, retarget or verdict note is not said a
  * second time, as the line or as the question (A11-153). PURE.
@@ -42,6 +56,6 @@ export function reasonOf(entry: ViewEntry): Readonly<{ line: string | null; ques
   if (answer !== null) return { line: ANSWER_LINE[answer], question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).
   const asking = entry.handedBack !== undefined && entry.outcome?.kind === "needs-human" ? once(entry.outcome.reason ?? null) : null;
-  return { line: asked, question: asking };
+  return { line: asked ?? stepNote(entry), question: asking };
 }
 
