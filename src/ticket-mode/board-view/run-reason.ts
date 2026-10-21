@@ -4,6 +4,7 @@ import { pullAnswer, type PullAnswer } from "./pull-answer.ts";
 import { afterPartialMerge, stepQueuedLine, stepRunningLine } from "./plan-steps.ts";
 import { rebaseNote, retargetNote, settledByPulls, verdictNote, workingNote } from "./pull-status-and-notes.ts";
 import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
+import { clockOf, shortVersion, versionLine, type UpdateView } from "./update-banner.ts";
 
 /** The words a card's reason line says for an answered run, in place of its question. */
 const ANSWER_LINE: Readonly<Record<PullAnswer, string>> = { approved: "Approved", answered: "Answered: awaiting review" };
@@ -59,3 +60,27 @@ export function reasonOf(entry: ViewEntry): Readonly<{ line: string | null; ques
   return { line: asked ?? stepNote(entry), question: asking };
 }
 
+
+/** Whether a run that holds its copy of agent-org (it is live, or a parked workspace is open) was started on a version that is not the instance's. PURE. */
+const isOffInstanceVersion = (entry: ViewEntry, instanceVersion: string | null): boolean => {
+  const holdsVersion = entry.phase === "starting" || entry.phase === "running" || entry.workspace !== undefined;
+  return holdsVersion && instanceVersion !== null && entry.toolVersion !== instanceVersion;
+};
+
+/**
+ * What a run's card says of the update (A11-169), one line each, in order. While a breaking update drains, a live run says it is "finishing before the update" and a queued one "waits for the update".
+ * A run the board stopped for an update says when, and which release it resumes on, until its round starts. A live or parked run whose version is not the instance's says which it is on. A run on
+ * the instance's version, and every run while no update drains, say nothing. PURE.
+ */
+export function updateLines(entry: ViewEntry, view: UpdateView | undefined): string[] {
+  if (view === undefined) return [];
+  const lines: string[] = [];
+  const stopped = entry.stoppedForUpdate;
+  if (stopped !== undefined && entry.phase === "queued") lines.push(`stopped for the update at ${clockOf(stopped.at)} and re-queued; resumes on ${shortVersion(stopped.target)}`);
+  else if (view.note !== null) {
+    if (entry.phase === "starting" || entry.phase === "running") lines.push("finishing before the update");
+    else if (entry.phase === "queued") lines.push("waits for the update");
+  }
+  if (isOffInstanceVersion(entry, view.instanceVersion) && entry.toolVersion !== undefined && view.instanceVersion !== null) lines.push(versionLine(entry.toolVersion, view.instanceVersion));
+  return lines;
+}

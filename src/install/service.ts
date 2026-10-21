@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 // @ts-check
-// command: start, stop and status -- run an agent-org service (`instance`, `ui`, `terminal` or `auto-update`) as a launchd user agent on macOS or a systemd user unit on Linux
+// command: start, stop and status -- run an agent-org service (`herdr`, `instance`, `ui`, `terminal` or `auto-update`) as a launchd user agent on macOS or a systemd user unit on Linux
 //
 // A SERVICE IS A NAME AND THE PROGRAM IT RUNS. `instance` runs `ticket:serve` (the queue and the workers) and `ui` runs `ticket:ui` (the page), each
 // looked up in `commands.ts`'s table: a service whose command the table does not hold is refused by name, so a checkout older than the split says so
 // and starts nothing. `terminal` runs herdr web ui against ticket mode's herdr session (`terminal.ts`), so the board can link each run to its live
-// worker (A11-66). `auto-update` runs `agent-org update` every hour: on a ticket-mode machine nothing else moves this checkout (the org's gate used
-// to), so a merged fix never reached the running instance. Update restarts a service only when the checkout moved, so an hour
-// with nothing new restarts nothing. `agent-org stop auto-update` is the opt-out, and the channel it follows is `<home>/update-channel`
-// (`release`, or `main`), which onboard writes.
+// worker (A11-66). `auto-update` runs `agent-org update` every ten minutes: on a ticket-mode machine nothing else moves the tool (the org's gate used
+// to), so a merged fix never reached the running instance. Update restarts a service only when `current` moved, so a run with nothing new restarts
+// nothing. `agent-org stop auto-update` is the opt-out, and the channel it follows is `<home>/update-channel` (`release`, or `main`), which onboard writes.
+//
+// HERDR IS A SERVICE OF ITS OWN (A11-169). `herdr` runs `herdr --session <tickets.herdrSession> server` and holds every worker's pane. The instance and the terminal `Want=` and start `After=` it,
+// so starting either starts it, and nothing `Requires=`, `BindsTo=` or `PartOf=` it, so a restart of the instance, the ui or the terminal never reaches it: that is the whole of "an update
+// lands while workers run". `start herdr` starts the unit and never restarts it (a restart ends every pane); `start herdr --move` is the one move from a server started outside the
+// unit (`herdr-move.ts`). Its working directory is the agent-org home, never a tool folder, because a version folder can be pruned.
 //
 // A UNIT SYSTEMD REFUSES IS SAID, WITH WHY (A11-67). A unit with a setting systemd cannot read loads as `bad-setting` and never starts, and
 // `systemctl is-active` says only `inactive`. `unitProblem` asks systemd for the load state and, for a bad one, asks `systemd-analyze verify` for
@@ -33,6 +37,9 @@ import { loadActive, realPluginDeps } from "../plugins/active.ts";
 import type { Exposure } from "../plugins/contracts/exposure.ts";
 import type { PluginDeps } from "../plugins/manifest.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
+import { toolEntryOf } from "./tool-versions.ts";
+import { HERDR_UNIT } from "./herdr-place.ts";
+import type { MoveDeps } from "./herdr-move.ts";
 import { resolveProviders } from "../ticket-mode/providers.ts";
 import { uiPortOf } from "../ticket-mode/settings.ts";
 import { writeAtomic } from "./write-atomic.ts";
@@ -43,12 +50,14 @@ export const SERVICE_COMMANDS = Object.freeze({
   ui: Object.freeze({ command: "ticket:ui", args: Object.freeze(["--no-open"]) }),
 });
 
-export const SERVICE_NAMES = Object.freeze(["instance", "ui", "terminal", "auto-update"] as const);
+export const SERVICE_NAMES = Object.freeze(["herdr", "instance", "ui", "terminal", "auto-update"] as const);
 export type ServiceName = (typeof SERVICE_NAMES)[number];
-/** The services that run this checkout's code, which `update` restarts once the checkout has moved. The terminal runs the plugin's, and the updater is the one moving it. */
+/** The services that run the tool's code, which `update` restarts once `current` has moved. herdr is never restarted by an update; the terminal runs the plugin's, and the updater is the one moving it. */
 export const TOOL_SERVICES: readonly ServiceName[] = Object.freeze(["instance", "ui"]);
-/** How often `auto-update` runs `agent-org update`. */
-export const UPDATE_INTERVAL_SECONDS = 3600;
+/** How often `auto-update` runs `agent-org update`: an update applies within minutes (A11-169), and one with nothing new is a tag fetch that restarts nothing. */
+export const UPDATE_INTERVAL_SECONDS = 600;
+/** The services the instance's unit and the terminal's `Want=` and start after: starting either starts herdr, and a restart of either leaves it alone. */
+const NEEDS_HERDR: readonly ServiceName[] = ["instance", "terminal"];
 export type UpdateChannel = "release" | "main";
 /** The file that names the channel `auto-update` follows; absent or anything else is `release`. */
 export const updateChannelPath = (env: Env, home: string) => join(agentOrgHome(env, home), "update-channel");
@@ -65,6 +74,7 @@ export type ServiceDeps = Readonly<{
   uid: number;
   /** The `node` the unit runs the tool with: this process's, so the service runs on the version that registered it. */
   node: string;
+  /** The tool path a unit runs: `<tool>/current` for an install in version folders, else the checkout itself. */
   toolRoot: string;
   run: Run;
   exists: (path: string) => boolean;
@@ -100,7 +110,7 @@ const defaultRun: Run = (file, args) => {
 
 export function defaultServiceDeps(): ServiceDeps {
   return Object.freeze({
-    platform: process.platform, env: process.env, home: homedir(), uid: userInfo().uid, node: process.execPath, toolRoot: TOOL_ROOT,
+    platform: process.platform, env: process.env, home: homedir(), uid: userInfo().uid, node: process.execPath, toolRoot: toolEntryOf(TOOL_ROOT),
     run: defaultRun, exists: existsSync, read: readOrNull, write: (path, text) => writeAtomic(path, text, 0o644), commands: COMMANDS,
     user: userInfo().username,
   });
@@ -149,12 +159,23 @@ type UnitSource = Program & { log: string };
  * The host file's JSON, which names the terminal's session and port. REFUSES, naming the file, one that cannot be read or is not a JSON object:
  * a terminal started on the defaults would serve another herdr session and port than the host file means, and say nothing.
  */
-function hostJson(deps: ServiceDeps): Record<string, unknown> {
+function hostJson(deps: ServiceDeps, service: "terminal" | "herdr" = "terminal"): Record<string, unknown> {
   const path = hostFilePath(deps.env, deps.home, deps.read);
   const text = deps.read(path);
-  if (text === null) throw new ServiceRefusal(`the terminal service reads its herdr session and port from the host file, and ${path} cannot be read. Run \`agent-org onboard\` first.`);
-  return parseHostObject(text, `the terminal service reads its herdr session and port from the host file, and ${path} is not valid JSON. Fix it, then start the terminal again.`,
-    `${path} does not hold a JSON object, so the terminal service has no herdr session or port to serve`);
+  const reads = service === "herdr" ? "its herdr session" : "its herdr session and port";
+  if (text === null) throw new ServiceRefusal(`the ${service} service reads ${reads} from the host file, and ${path} cannot be read. Run \`agent-org onboard\` first.`);
+  return parseHostObject(text, `the ${service} service reads ${reads} from the host file, and ${path} is not valid JSON. Fix it, then start the ${service} service again.`,
+    `${path} does not hold a JSON object, so the ${service} service has no herdr session${service === "terminal" ? " or port to serve" : ""}`);
+}
+
+/** The herdr session ticket mode runs in, from the host file: `tickets.herdrSession`, `tickets` when it names none. REFUSES a host file that cannot be read. */
+export function herdrSessionOfHost(deps: ServiceDeps): string {
+  return terminalTarget(hostJson(deps, "herdr")).session;
+}
+
+/** The first `herdr` in `path` that exists: a unit's `ExecStart` is an absolute path, and a service gets no login shell's PATH to find it by. Null when there is none. */
+function herdrBinary(path: string, exists: (path: string) => boolean): string | null {
+  return path.split(":").map((dir) => join(dir, "herdr")).find((candidate) => exists(candidate)) ?? null;
 }
 
 /** The host file's text as a JSON object. `notJson` and `notObject` are the refusals for text that is not JSON and for JSON that is not an object. */
@@ -190,6 +211,14 @@ function programFor(name: ServiceName, deps: ServiceDeps): Program {
       PATH: servicePath(deps.env.PATH),
     };
   };
+  if (name === "herdr") {
+    const herdr = herdrBinary(servicePath(deps.env.PATH), deps.exists);
+    if (herdr === null) throw new ServiceRefusal("the herdr service runs `herdr`, and this machine has none on PATH. Install herdr and put it on PATH, then start the herdr service again.");
+    const session = herdrSessionOfHost(deps);
+    // The workers' panes inherit this environment (they inherited the instance's), and its working directory is the home: a version folder can be pruned under a server that sat in it.
+    return { description: `herdr server for the ${session} herdr session (the workers' terminals)`, argv: [herdr, "--session", session, "server"], environment: toolEnvironment(),
+      workingDirectory: agentOrgHome(deps.env, deps.home), tool: false, everySeconds: null };
+  }
   if (name === "instance" || name === "ui") {
     const { command, args } = SERVICE_COMMANDS[name];
     if (!Object.hasOwn(deps.commands, command)) {
@@ -201,7 +230,7 @@ function programFor(name: ServiceName, deps: ServiceDeps): Program {
     if (!Object.hasOwn(deps.commands, "update")) throw new ServiceRefusal("the auto-update service runs `agent-org update`, which this version of agent-org does not have");
     const channel = updateChannel(deps);
     return {
-      description: `agent-org auto-update: agent-org update${channel === "main" ? " --channel main" : ""}, every hour`,
+      description: `agent-org auto-update: agent-org update${channel === "main" ? " --channel main" : ""}, every ten minutes`,
       argv: [deps.node, bin, "update", ...(channel === "main" ? ["--channel", "main"] : [])],
       environment: toolEnvironment(), workingDirectory: deps.toolRoot, tool: true, everySeconds: UPDATE_INTERVAL_SECONDS,
     };
@@ -286,7 +315,7 @@ function systemdUnit(name: ServiceName, deps: ServiceDeps, { description, argv, 
 ExecStart=${argv.map(systemdQuoted).join(" ")}
 ${Object.entries(environment).map(([key, value]) => `Environment=${systemdQuoted(`${key}=${value}`)}`).join("\n")}`;
   if (everySeconds !== null) {
-    // A timer and the oneshot service it starts. `OnCalendar` with `Persistent` runs a missed hour once the machine is up again.
+    // A timer and the oneshot service it starts. `OnCalendar` with `Persistent` runs a missed run once the machine is up again.
     const timer = `agent-org-${name}.timer`;
     const serviceText = `[Unit]
 Description=${description}
@@ -299,8 +328,8 @@ ${body}
 Description=${description}
 
 [Timer]
-OnCalendar=*-*-* *:00:00
-RandomizedDelaySec=600
+OnCalendar=*:0/10
+RandomizedDelaySec=60
 Persistent=true
 Unit=${service}
 
@@ -309,9 +338,11 @@ WantedBy=timers.target
 `;
     return { manager: "systemd", id: timer, path: join(dir, timer), text: timerText, log: null, companion: { path: join(dir, service), text: serviceText }, interval: true };
   }
+  // `Wants=` plus `After=` and nothing stronger: starting the instance or the terminal starts herdr, and restarting either leaves it running (systemd carries a restart only through `Requires=`, `BindsTo=` and `PartOf=`).
+  const herdr = NEEDS_HERDR.includes(name) ? `Wants=${HERDR_UNIT.systemd}\n` : "";
   const text = `[Unit]
 Description=${description}
-After=network-online.target
+${herdr}After=network-online.target${herdr === "" ? "" : ` ${HERDR_UNIT.systemd}`}
 
 [Service]
 Type=simple
@@ -444,13 +475,18 @@ export async function startService(name: ServiceName, deps: ServiceDeps): Promis
     mkdirSync(dirname(unit.log as string), { recursive: true, mode: 0o700 });
     const target = launchdTarget(unit, deps);
     must(deps.run("launchctl", ["enable", target]), `launchctl enable ${target}`);
-    // A loaded agent keeps the plist it was loaded with, so it is booted out and in again to read the one just written.
-    if (deps.run("launchctl", ["print", target]).status === 0) deps.run("launchctl", ["bootout", target]);
-    must(deps.run("launchctl", ["bootstrap", `gui/${deps.uid}`, unit.path]), `launchctl bootstrap ${unit.path}`);
+    // A loaded agent keeps the plist it was loaded with, so it is booted out and in again to read the one just written. herdr's is left loaded: booting it out ends every pane.
+    const loaded = deps.run("launchctl", ["print", target]).status === 0;
+    if (loaded && name !== "herdr") deps.run("launchctl", ["bootout", target]);
+    if (!loaded || name !== "herdr") must(deps.run("launchctl", ["bootstrap", `gui/${deps.uid}`, unit.path]), `launchctl bootstrap ${unit.path}`);
+    // A loaded herdr job that exited (a `server stop` is a successful exit, which `KeepAlive` leaves alone) is started again; one that runs is left running by a kickstart without `-k`.
+    else must(deps.run("launchctl", ["kickstart", target]), `launchctl kickstart ${target}`);
   } else {
     must(deps.run("systemctl", ["--user", "daemon-reload"]), "systemctl --user daemon-reload");
     must(deps.run("systemctl", ["--user", "enable", unit.id]), `systemctl --user enable ${unit.id}`);
-    must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
+    // herdr is STARTED, never restarted: a start leaves a running server alone, and a restart ends every worker's pane and agent.
+    const verb = name === "herdr" ? "start" : "restart";
+    must(deps.run("systemctl", ["--user", verb, unit.id]), `systemctl --user ${verb} ${unit.id}`);
   }
   if (served === null || dns === null) return { ...unit, address: null };
   const result = served.exposure.serve(served.port, served.local);
@@ -498,11 +534,22 @@ export function unitProblem(name: ServiceName, deps: ServiceDeps): string | null
   return `systemd reads ${unit.id} as ${state}${lines.length > 0 ? `: ${lines.join("; ")}` : ""}`;
 }
 
-/** Restart a registered service, so it loads the tool's checkout again. */
+/** Restart a registered service, so it loads the tool's `current` version again. */
 export function restartService(name: ServiceName, deps: ServiceDeps): void {
   const unit = unitFor(name, deps);
   if (unit.manager === "launchd") must(deps.run("launchctl", ["kickstart", "-k", launchdTarget(unit, deps)]), `launchctl kickstart -k ${unit.id}`);
   else must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
+}
+
+/**
+ * Run the auto-update job now, rather than at its next timer (A11-169): a draining update applies the moment the last run has been stopped. Systemd starts the oneshot service the timer
+ * starts, and launchd kickstarts the interval job. Throws a {@link ServiceRefusal} when the manager refuses.
+ */
+export function runAutoUpdateNow(deps: ServiceDeps): void {
+  const unit = unitFor("auto-update", deps);
+  if (unit.manager === "launchd") must(deps.run("launchctl", ["kickstart", launchdTarget(unit, deps)]), `launchctl kickstart ${unit.id}`);
+  // `--no-block`: the oneshot service runs `update`, which restarts the instance that asked for it, so waiting for it would hold the instance's loop while it is stopped.
+  else must(deps.run("systemctl", ["--user", "start", "--no-block", unit.companion?.path ? basename(unit.companion.path) : unit.id]), "systemctl --user start --no-block agent-org-auto-update.service");
 }
 
 const STATE_WORDS: Readonly<Record<ServiceState, string>> = { "not-registered": "not registered", stopped: "stopped", running: "running" };
@@ -510,13 +557,22 @@ const STATE_WORDS: Readonly<Record<ServiceState, string>> = { "not-registered": 
 const NOT_RUNNING = 3;
 const REFUSED = 2;
 
-/** `agent-org start|stop|status [instance|ui|terminal|auto-update]`. @returns the exit code */
-export async function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), out: Pick<Console, "log" | "error"> = console): Promise<number> {
+/** `agent-org start|stop|status [herdr|instance|ui|terminal|auto-update]`, and `start herdr --move`. @returns the exit code */
+export async function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), out: Pick<Console, "log" | "error"> = console, moveDeps?: MoveDeps): Promise<number> {
   try {
-    const { positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true });
+    const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: { move: { type: "boolean", default: false } } });
     const [action, word, ...extra] = positionals;
     if (extra.length > 0) throw new ServiceRefusal(`one service at a time, and \`${extra.join(" ")}\` is extra`);
     const name = serviceName(word);
+    if (values.move && !(action === "start" && name === "herdr")) throw new ServiceRefusal("--move is for `agent-org start herdr`, which moves a herdr server that runs outside its unit");
+    if (action === "start" && name === "herdr") {
+      // Its own path: a server outside the unit is refused unless `--move`, and a start never restarts the one in the unit.
+      const { defaultMoveDeps, startHerdr } = await import("./herdr-move.ts");
+      const { started, lines } = await startHerdr({ move: values.move }, moveDeps ?? defaultMoveDeps(deps));
+      for (const line of lines) out.log(line);
+      out.log(`started the herdr service (${started.manager} ${started.id}), logging to ${started.log ?? "`journalctl --user -u agent-org-herdr`"}`);
+      return 0;
+    }
     if (action === "start") {
       const unit = await startService(name, deps);
       const journal = unit.companion === null ? unit.id : basename(unit.companion.path);
@@ -526,7 +582,8 @@ export async function main(argv: string[], deps: ServiceDeps = defaultServiceDep
     }
     if (action === "stop") {
       await stopService(name, deps);
-      out.log(`stopped the ${name} service; it will not start at login until \`agent-org start ${name}\``);
+      const panes = name === "herdr" ? "; every pane and agent it held ended" : "";
+      out.log(`stopped the ${name} service${panes}; it will not start at login until \`agent-org start ${name}\``);
       return 0;
     }
     if (action === "status") {

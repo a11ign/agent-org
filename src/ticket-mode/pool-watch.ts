@@ -23,6 +23,7 @@ import { openPulls } from "./board-view/view-types-and-filters.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { forceDrain } from "./pool-drain.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
 
 /** The longest a publish run may take. Posting a few messages takes a minute or two. */
@@ -401,6 +402,8 @@ export async function tick(ctx: PoolContext): Promise<void> {
     do {
       pass.again = false;
       watch(ctx);
+      // A draining update's deadline (A11-169): the runs still live are stopped and queued again before the pass fills slots, which a drain starts nothing in.
+      forceDrain(ctx);
       await fill(ctx);
     } while (pass.again);
   } finally {

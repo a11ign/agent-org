@@ -3,6 +3,7 @@
 
 import { herdrReason, herdrRun } from "../herdr-agents.ts";
 import { execFile, spawn } from "node:child_process";
+import { defaultServiceDeps, serviceState, unitFor, type ServiceDeps } from "../install/service.ts";
 
 export type Herdr =(args: string[], timeoutMs?: number) => string;
 
@@ -18,30 +19,35 @@ export const defaultHerdrAsync: HerdrAsync = (args, timeoutMs) => new Promise((r
 export const defaultWait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * The command that starts a session's headless herdr server so it OUTLIVES THIS PROCESS AND ITS SERVICE (A11-78). PURE.
- *
- * `detached` alone is not enough under systemd. A detached child leaves the instance's process group, and launchd, which ends a job's process
- * group, then leaves it alone; but systemd ends a unit by its CONTROL GROUP, and a child stays in its parent's cgroup whatever its process group.
- * Measured on a Linux host 2026-10-17: `herdr --session tickets server`, every pane's shell and every worker's `claude` were listed under
- * `agent-org-instance.service`, so `systemctl --user restart` (which `agent-org update` runs every hour) sent each of them SIGTERM. The server
- * died, the next instance started a new one, herdr restored the workspaces and resumed each worker with `claude --resume`, and the pane showed
- * "Interrupted · What should Claude do instead?" with the worker sitting at its prompt; a reviewer the instance had started was gone.
- *
- * So under systemd (`INVOCATION_ID`, which systemd sets for every unit it runs) the server is started through `systemd-run --user --scope`,
- * which moves it into a scope of its own before it runs: it keeps this process's environment, and the instance's unit no longer holds it. A
- * process started by hand, or by launchd, starts herdr directly, as before.
+ * The command that starts a session's headless herdr server directly. It is the way of a machine whose herdr has no service of its own (someone running `ticket:serve` by hand): a machine that
+ * runs the services starts herdr's UNIT instead (`herdrServiceOf`, A11-169), because a server the instance spawns lives in the instance's cgroup or in a transient scope the instance made, and carries
+ * the instance's working directory, which is a version folder an update prunes. PURE.
  */
-export function herdrServerCommand(session: string, env: Readonly<Record<string, string | undefined>>, platform: NodeJS.Platform): { file: string; args: string[] } {
-  const herdrArgs = ["--session", session, "server"];
-  if (platform !== "linux" || !env.INVOCATION_ID) return { file: "herdr", args: herdrArgs };
-  const unit = `agent-org-herdr-${session.replace(/[^A-Za-z0-9_-]/g, "-")}`;
-  return { file: "systemd-run", args: ["--user", "--scope", "--quiet", "--collect", `--unit=${unit}`, "--description=herdr server for agent-org ticket mode", "herdr", ...herdrArgs] };
+export const herdrServerCommand = (session: string): { file: string; args: string[] } => ({ file: "herdr", args: ["--session", session, "server"] });
+
+/** Start a session's headless herdr server directly, detached so it outlives this process. Only for a machine with no herdr service. */
+export const defaultStartServer = (session: string): void => {
+  const { file, args } = herdrServerCommand(session);
+  spawn(file, args, { detached: true, stdio: "ignore" }).unref();
+};
+
+/** The herdr service of this machine, when it has one registered: the instance starts the unit and never spawns the server itself. */
+export type HerdrService = Readonly<{ registered: () => boolean; start: () => void }>;
+
+/** This machine's herdr service: registered when its unit file exists, started with `start` (never a restart: a restart ends every pane). */
+export function herdrServiceOf(services: ServiceDeps): HerdrService {
+  return {
+    registered: () => serviceState("herdr", services) !== "not-registered",
+    start: () => {
+      const unit = unitFor("herdr", services);
+      if (unit.manager === "launchd") must(services.run("launchctl", ["kickstart", `gui/${services.uid}/${unit.id}`]), `launchctl kickstart ${unit.id}`);
+      else must(services.run("systemctl", ["--user", "start", unit.id]), `systemctl --user start ${unit.id}`);
+    },
+  };
 }
 
-/** Start a session's headless herdr server, detached and outside this service, so it outlives this process as the org's does under its own unit. */
-export const defaultStartServer = (session: string): void => {
-  const { file, args } = herdrServerCommand(session, process.env, process.platform);
-  spawn(file, args, { detached: true, stdio: "ignore" }).unref();
+const must = (result: { status: number | null; stdout: string; stderr: string }, what: string): void => {
+  if (result.status !== 0) throw new Error(`${what} failed: ${(result.stderr || result.stdout).trim() || `exit ${result.status}`}`);
 };
 
 /**

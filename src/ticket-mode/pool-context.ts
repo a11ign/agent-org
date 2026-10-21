@@ -13,10 +13,11 @@ import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import { type ReviewerState, reviewerStateOf } from "./concern-states.ts";
 import type { Publisher } from "../plugins/contracts/publisher.ts";
 import type { Reviewer } from "../plugins/contracts/reviewer.ts";
-import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
+import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { defaultGit, type Git } from "./worktree.ts";
 import { noReviewerMemory, reviewerMemoryPath, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
+import { type DrainStore } from "./pool-drain.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
 
 export type PoolDeps = Readonly<{
@@ -37,8 +38,13 @@ export type PoolDeps = Readonly<{
   transcriptsRoot?: string;
   /** Claude Code's plugin install record, read to check each worker's plugins are installed where its session will find them. */
   pluginRecord?: string;
-  /** Start the session's headless herdr server; called only when its listing does not answer. */
+  /** Start the session's headless herdr server; called only when its listing does not answer, and the machine has no herdr service (a hand-run `ticket:serve`). */
   startServer?: (session: string) => void;
+  /**
+   * This machine's herdr service (A11-169): when it is registered, a listing that does not answer starts the unit, and the instance never spawns the server itself. Absent: the real service manager is asked,
+   * lazily, the first time a server has to be started.
+   */
+  herdrService?: HerdrService;
   /** Wait between looks at a just-started server or agent. */
   wait?: (ms: number) => Promise<void>;
   /** `gh`, for the calls the code host does not make yet: a failed check's job log and its re-run, and the reviewer's claim (A11-160 moves them in its later steps). */
@@ -62,6 +68,10 @@ export type PoolDeps = Readonly<{
   reviewerHeads?: Map<string, string>;
   /** Runs one `tickets.preflight` command; a shell by default. A test injects one so no process runs. */
   preflight?: PreflightExec;
+  /** Where a draining update's record is read and written (A11-169): the agent-org home's `update-drain.json` by default. */
+  drain?: DrainStore;
+  /** Starts the auto-update service now, once a drain's runs have been stopped (A11-169). */
+  startUpdate?: () => void;
 }>;
 
 /** The pool holds the queue through these two, so the server stays its one writer. */

@@ -8,6 +8,7 @@ import * as view_1 from "./board-view/pull-status-and-notes.ts";
 import * as view_2 from "./board-view/view-types-and-filters.ts";
 import * as view_3 from "./board-view/run-reason.ts";
 import * as view_4 from "./board-view/pull-review-state.ts";
+import * as view_5 from "./board-view/update-banner.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -109,13 +110,15 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   queueHeld?: { name: string; reason: string; since: number };
   /** What the instance's Settings page reads (`/api/settings`), by default an instance with nothing to describe. */
   settings?: unknown;
+  /** What the queue says of the instance's version and a breaking update that drains (`update`, A11-169). */
+  update?: unknown;
   /** What the instance's Plugins section reads (`/api/plugins`), and what it answers an action with; the text Copy puts on the clipboard goes to `clipboard`. */
   plugins?: unknown; pluginActions?: (body: any) => unknown; clipboard?: string[];
   /** What the instance answers a Settings edit with (`/api/settings/preview`, `save` and `restore`), by its path and body. */
   edits?: (path: string, body: any) => unknown };
 const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [], contract: [] };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children, pulls,
-  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits, plugins, pluginActions, clipboard = [] }: PageOptions = {}) {
+  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits, plugins, pluginActions, clipboard = [], update }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [], requested: string[] = [];
   // A path in `hold` answers its value only once the test calls `release`, as a slow remote does.
@@ -163,7 +166,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       ...(plugins === undefined ? {} : { "/api/plugins": () => plugins }), ...(pluginActions === undefined ? {} : { "/api/plugins/action": () => pluginActions(body) }),
       ...(edits === undefined ? {} : { "/api/settings/preview": () => edits("/api/settings/preview", body), "/api/settings/save": () => edits("/api/settings/save", body), "/api/settings/restore": () => edits("/api/settings/restore", body) }),
     };
-    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), pulls: pulls ?? {} };
+    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), ...(update === undefined ? {} : { update }), pulls: pulls ?? {} };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -171,7 +174,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
     window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } }, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
@@ -2582,6 +2585,25 @@ test("A11-163: plugins read from a host file the reader refuses are shown with t
   const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: { ...PLUGINS, note: "the host file is refused, so the plugins are shown as their defaults: tickets.port must be a number" } });
   assert.match(pluginsNode(p).text(), /the host file is refused, so the plugins are shown as their defaults/);
   assert.deepEqual(buttonsIn(pluginRow(p, "tailscale")).map((button) => button.text()), [], "nothing is offered over defaults the file does not hold");
+});
+
+// A11-169: what the board says while a breaking update drains. The words are the ticket's, exactly; a non-breaking update has no note and shows nothing.
+test("A11-169: the Board shows the draining update's banner and each run's line, and the version of a run only when it is not the instance's", async () => {
+  const deadline = new Date(2026, 9, 21, 14, 30).getTime();
+  const note = { target: "v0.280.0", deadline, finishing: 1, forced: false, stopped: 0 };
+  const entries = [entry("N-1", { phase: "running", startedAt: 5, workspace: "w1", toolVersion: "v0.273.0" }), entry("N-2", { phase: "queued" }),
+    entry("N-3", { phase: "queued", stoppedForUpdate: { at: deadline, target: "v0.280.0" } })];
+  const draining = await page(new Map(), { entries, update: { version: "v0.280.0", note } });
+  assert.equal(draining.$("update-note").hidden, false);
+  assert.equal(draining.$("update-note").textContent, "Updating to v0.280 (breaking): no new runs start; 1 run finishing; forced at 14:30");
+  const runs = draining.$("runs").text();
+  assert.ok(runs.includes("finishing before the update"), "a live run");
+  assert.ok(runs.includes("on v0.273 (instance v0.280)"), "its version, which is not the instance's");
+  assert.ok(runs.includes("waits for the update"), "a queued run");
+  assert.ok(runs.includes("stopped for the update at 14:30 and re-queued; resumes on v0.280"), "a run the update stopped");
+  const calm = await page(new Map(), { entries, update: { version: "v0.273.0", note: null } });
+  assert.equal(calm.$("update-note").hidden, true, "the banner is gone when the record is");
+  assert.ok(!calm.$("runs").text().includes("finishing before the update") && !calm.$("runs").text().includes("instance v0"), "a run on the instance's version says nothing extra");
 });
 
 // A11-161: what the board says when the reviewer is off and when the publisher is. The words are the ticket's, exactly.

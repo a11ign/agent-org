@@ -12,6 +12,7 @@ import { dirname } from "node:path";
 import { overlapWait, waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
 import { runOf, slotsHeld } from "./queue/queue-transitions.ts";
+import type { ToolPin } from "./queue/queue-pins.ts";
 
 /** Record that the board completed the ticket of the finished run `key`, so it is not completed again. */
 export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace(queue, key, (entry) => ({ ...entry, closedByBoard: true }));
@@ -132,6 +133,10 @@ export function writerToStart(queue: Queue): WriterRun | undefined {
 
 export const markWriterStarting = (queue: Queue, id: string, now: number): Queue =>
   replaceWriter(queue, id, (run) => ({ ...run, phase: "starting", startedAt: now }));
+
+/** The copy of agent-org a new-ticket run is started with (A11-169), recorded as `recordToolPin` records a ticket run's. */
+export const recordWriterPin = (queue: Queue, id: string, pin: ToolPin): Queue =>
+  replaceWriter(queue, id, (run) => ({ ...run, toolRoot: pin.toolRoot, ...(pin.toolVersion === undefined ? {} : { toolVersion: pin.toolVersion }) }));
 
 export const markWriterRunning = (queue: Queue, id: string, workspace: string, pane: string): Queue =>
   replaceWriter(queue, id, (run) => ({ ...run, phase: "running", workspace, pane }));

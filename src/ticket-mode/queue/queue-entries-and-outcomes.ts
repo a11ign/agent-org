@@ -4,6 +4,7 @@ import type { MergedStep } from "../board-view/plan-steps.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import { needsDecision } from "../open-decisions.ts";
+import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
 
 /**
  * What a worker's `partial` declaration says remains of its ticket: its words, trimmed, or null for none, which is a blank declaration or the brief's
@@ -247,6 +248,14 @@ export type Entry = Readonly<{
   published?: Readonly<{ link: string | null; at: number }>;
   /** Set while a running run's worker last said its background work is still running: see {@link WorkingNote}. Dropped when the run ends. */
   working?: WorkingNote;
+  /** The version of agent-org the run's hooks and commands were written for, when it is known (A11-169). See {@link ToolPin}. */
+  toolVersion?: string;
+  /** The version folder those hooks and commands name; the folder is kept while this run holds a workspace. */
+  toolRoot?: string;
+  /** The conventions plugins' installs the run's session was started with. Best effort: absent when the install record could not be read. */
+  pluginCopy?: readonly PluginCopy[];
+  /** Set when a breaking update stopped this run and queued it again; its round resumes the same session on the new version. */
+  stoppedForUpdate?: StoppedForUpdate;
 }>;
 
 /**
@@ -269,6 +278,9 @@ export type PublishRun = Readonly<{
   seenWorking?: boolean;
   /** Why it failed, once it has: the runs stay Ready to merge. */
   failure?: string;
+  /** The version folder its hooks name, recorded when it starts (A11-169). */
+  toolRoot?: string;
+  toolVersion?: string;
 }>;
 
 /**
@@ -324,6 +336,9 @@ export type WriterRun = Readonly<{
   ticket?: string;
   /** The description of that ticket when the Grill started: the answers are written only while it still holds this text. */
   startedFrom?: string;
+  /** The version folder its hooks name, recorded when it starts (A11-169). */
+  toolRoot?: string;
+  toolVersion?: string;
 }>;
 
 /** The most new-ticket requests that are not finished at once: a fourth is refused until one ends. */
@@ -558,11 +573,13 @@ export function reviewRound(entry: Entry, prs: readonly PullRequest[], now: numb
  */
 export function talkRound(entry: Entry, now: number): Entry {
   const { talkFrom: _earlier, ...before } = entry;
-  const { ticket, repos, model, effort, plan, planned, session, batch, published, overlapOverride } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, batch, published, overlapOverride, toolRoot, toolVersion, pluginCopy } = entry;
+  // The session resumes the run's own settings, which name the version folder it was prepared with: the pin goes with it (A11-169).
+  const pin = { ...(toolRoot !== undefined ? { toolRoot } : {}), ...(toolVersion !== undefined ? { toolVersion } : {}), ...(pluginCopy !== undefined ? { pluginCopy } : {}) };
   // The pull requests the finished run listed stay with the session as its `review`, so they stay linked while its agent waits for a person.
   const review = entry.review ?? (entry.outcome && "prs" in entry.outcome ? entry.outcome.prs : undefined);
   return { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(session ? { session } : {}), ...(batch ? { batch } : {}),
-    ...(review ? { review } : {}), ...(published ? { published } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...carriedFields(entry),
+    ...(review ? { review } : {}), ...(published ? { published } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...carriedFields(entry), ...pin,
     talk: true, talkFrom: before, phase: "queued", queuedAt: now };
 }
 

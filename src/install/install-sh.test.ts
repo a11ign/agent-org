@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
@@ -62,20 +62,27 @@ function fixture() {
 const launch = (home: string, path: string, args: string[] = []) =>
   execFileSync(join(home, ".local", "bin", "agent-org"), args, { encoding: "utf8", env: { HOME: home, PATH: path } }).trim();
 
-test("install.sh installs the newest release by numeric order, and the launcher runs it", () => {
+/** The folder `current` names, by its name under `versions/`. */
+const currentOf = (home: string, agentOrgHome = join(home, ".agent-org")) => readlinkSync(join(agentOrgHome, "tool", "current"));
+
+test("install.sh installs the newest release by numeric order into its own folder, points current at it, and the launcher runs through current", () => {
   const { home, repo, path } = fixture();
   const result = install(home, path, repo);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(launch(home, path, ["doctor"]), `fixture v0.10.0 ${join(home, ".agent-org")} doctor`);
-  const checkout = join(home, ".agent-org", "agent-org");
-  assert.equal(execFileSync("git", ["-C", checkout, "describe", "--tags", "--exact-match"], { encoding: "utf8" }).trim(), "v0.10.0");
+  const tool = join(home, ".agent-org", "tool");
+  assert.equal(currentOf(home), join("versions", "v0.10.0"));
+  assert.equal(lstatSync(join(tool, "current")).isSymbolicLink(), true);
+  assert.deepEqual(readdirSync(join(tool, "versions")), ["v0.10.0"], "one folder, built whole: no .partial is left");
+  assert.equal(existsSync(join(tool, "repo.git", "HEAD")), true, "the bare mirror update fetches into");
   assert.equal(statSync(join(home, ".local", "bin", "agent-org")).mode & 0o777, 0o755);
   assert.equal(statSync(join(home, ".agent-org")).mode & 0o777, 0o700);
+  assert.match(readFileSync(join(home, ".local", "bin", "agent-org"), "utf8"), new RegExp(`exec node '${join(tool, "current", "src", "bin.ts").replace(/[.]/g, "\\.")}'`));
   assert.match(result.stdout, /is not on your PATH/);
   assert.match(result.stdout, new RegExp(`export PATH="${join(home, ".local", "bin")}:\\$PATH"`));
 });
 
-test("install.sh --version installs that release, and running it again moves the same checkout", () => {
+test("install.sh --version installs that release, and running it again builds the newest beside it and moves current", () => {
   const { home, repo, path } = fixture();
   assert.equal(install(home, path, repo, ["--version", "v0.2.0"]).status, 0);
   assert.equal(launch(home, path), `fixture v0.2.0 ${join(home, ".agent-org")}`);
@@ -83,6 +90,9 @@ test("install.sh --version installs that release, and running it again moves the
   assert.equal(again.status, 0, again.stderr);
   assert.match(again.stdout, /updating /);
   assert.equal(launch(home, path), `fixture v0.10.0 ${join(home, ".agent-org")}`);
+  assert.deepEqual(readdirSync(join(home, ".agent-org", "tool", "versions")).toSorted(), ["v0.10.0", "v0.2.0"], "the older folder stays: a run that started on it keeps calling it, and update prunes it");
+  const third = install(home, path, repo);
+  assert.match(third.stdout, /v0\.10\.0 is built already/);
 });
 
 test("install.sh refuses a --version that is not a release, and one the repository lacks", () => {
@@ -100,7 +110,7 @@ test("install.sh honours AGENT_ORG_HOME, and the launcher exports it and the hos
   const { root, home, repo, path } = fixture();
   const custom = join(root, "custom-home");
   assert.equal(install(home, path, repo, [], { AGENT_ORG_HOME: custom }).status, 0);
-  assert.ok(existsSync(join(custom, "agent-org", "src", "bin.ts")));
+  assert.ok(existsSync(join(custom, "tool", "versions", "v0.10.0", "src", "bin.ts")));
   assert.equal(launch(home, path), `fixture v0.10.0 ${custom}`);
   const launcher = readFileSync(join(home, ".local", "bin", "agent-org"), "utf8");
   assert.match(launcher, new RegExp(`AGENT_ORG_HOST="\\$AGENT_ORG_HOME/host.json"`));
@@ -119,6 +129,7 @@ test("install.sh refuses without Node, and with a Node older than 24, and instal
   const gitOnly = join(root, "git-only");
   mkdirSync(gitOnly);
   symlinkSync(execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), join(gitOnly, "git"));
+  symlinkSync(execFileSync("/bin/sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim(), join(gitOnly, "tar"));
   const none = install(home, gitOnly, repo);
   assert.equal(none.status, 1);
   assert.match(none.stderr, /no `node` on PATH/);
@@ -132,16 +143,18 @@ test("install.sh refuses without Node, and with a Node older than 24, and instal
   assert.equal(existsSync(join(home, ".agent-org")), false);
 });
 
-test("install.sh refuses to move a checkout with changes to tracked files", () => {
+test("install.sh leaves an earlier install's checkout alone, and says its services move onto current with `agent-org update`", () => {
   const { home, repo, path } = fixture();
-  assert.equal(install(home, path, repo).status, 0);
-  writeFileSync(join(home, ".agent-org", "agent-org", "src", "bin.ts"), "console.log('edited');\n");
+  const checkout = join(home, ".agent-org", "agent-org");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  writeFileSync(join(checkout, "marker"), "an earlier checkout\n");
   const result = install(home, path, repo);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /changes to tracked files/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(checkout, "marker"), "utf8"), "an earlier checkout\n");
+  assert.match(result.stdout, /an earlier install's checkout at .* is left as it is\. Its services move onto .* when you run: agent-org update/);
 });
 
-test("install.sh installs a release's dependencies with the pinned pnpm through corepack, not the pnpm on PATH, and puts the checkout back when that install fails", () => {
+test("install.sh installs a release's dependencies with the pinned pnpm through corepack, not the pnpm on PATH, and leaves current where it was when that install fails", () => {
   const { root, home, repo, path } = fixture();
   assert.equal(install(home, path, repo).status, 0);
   const work = join(root, "work");
@@ -154,16 +167,18 @@ test("install.sh installs a release's dependencies with the pinned pnpm through 
   git(["push", "--quiet", repo, "v0.12.0"]);
   const pnpm = join(root, "pnpm-bin");
   mkdirSync(pnpm);
-  writeFileSync(join(pnpm, "corepack"), `#!/bin/sh\necho "$@" > "${join(root, "pnpm-args")}"\n[ -f "${join(root, "pnpm-fails")}" ] && exit 1\nexit 0\n`, { mode: 0o755 });
+  writeFileSync(join(pnpm, "corepack"), `#!/bin/sh\necho "$@" > "${join(root, "pnpm-args")}"\n[ -f "${join(root, "pnpm-fails")}" ] && exit 1\nmkdir -p node_modules\nexit 0\n`, { mode: 0o755 });
   writeFileSync(join(root, "pnpm-fails"), "");
   const corepack = { AGENT_ORG_COREPACK: join(pnpm, "corepack") };
   const failed = install(home, path, repo, [], corepack);
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /installing the dependencies failed/);
   assert.match(launch(home, path), /^fixture v0\.10\.0 /);
+  assert.deepEqual(readdirSync(join(home, ".agent-org", "tool", "versions")), ["v0.10.0"], "no half folder is left for the failed release");
   rmSync(join(root, "pnpm-fails"));
   const passed = install(home, path, repo, [], corepack);
   assert.equal(passed.status, 0, passed.stderr);
   assert.equal(readFileSync(join(root, "pnpm-args"), "utf8").trim(), "pnpm@10.34.5 install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent");
   assert.equal(launch(home, path), "fixture v0.12.0");
+  assert.equal(currentOf(home), join("versions", "v0.12.0"));
 });
