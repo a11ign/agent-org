@@ -1384,7 +1384,7 @@ function settingRow(row) {
   const editing = row.editable && editable();
   const shown = row.alias ?? `Value: ${row.value}`;
   // A provider is chosen by `agent-org onboard`, which may need secrets or installs, so a provider's row says where it is changed.
-  const onboard = row.key.endsWith(".provider") && row.why !== null ? el("span", { className: "hint", textContent: " Change the provider with agent-org onboard." }) : null;
+  const onboard = row.key.endsWith(".provider") && row.why !== null ? el("span", { className: "hint", textContent: " Change the provider with the Plugins section or agent-org plugin." }) : null;
   return el("dl", { className: "setting" },
     el("dt", {}, el("code", { textContent: row.key })),
     el("dd", {}, `${shown}. State: ${row.state}. Source: ${row.source}. ${editing ? "Editable" : "Read-only"}.`, onboard, detailsOf(row), editing ? editControl(row) : null));

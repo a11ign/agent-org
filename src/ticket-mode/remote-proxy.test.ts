@@ -221,15 +221,14 @@ test("A11-163: the Plugins section is read through any connection, and its actio
   assert.equal(passedOn("POST", "/api/plugins"), false, "and writes nothing");
   assert.equal(passedOn("POST", "/api/plugins/action"), true);
   assert.equal(passedOn("GET", "/api/plugins/action"), false, "an action is a POST");
-  const LOCAL: Connection = { name: "local", kind: "local" };
   const LAB: Connection = { name: "lab", kind: "https", origin: "https://agents.example.ts.net", keyFile: "/k" };
   const sent: string[] = [];
   const forward = async (_target: Target, request: { path: string }) => { sent.push(request.path); return { status: 200, body: "{}" }; };
-  const target = overSsh("/unused.sock");
-  assert.deepEqual(await proxy(fixed(target, LOCAL).remotes, "local", { method: "POST", path: "/api/plugins/action", body: "{}" }, forward), [200, {}]);
+  const through = (remote: Connection, method: string, path: string) => proxy(fixed(overSsh("/unused.sock"), remote).remotes, remote.name, { method, path, body: method === "GET" ? null : "{}" }, forward);
+  assert.deepEqual(await through({ name: "local", kind: "local" }, "POST", "/api/plugins/action"), [200, {}]);
   for (const remote of [PERSONAL, LAB]) {
-    assert.deepEqual(await proxy(fixed(target, remote).remotes, remote.name, { method: "GET", path: "/api/plugins", body: null }, forward), [200, {}], `${remote.name} is read`);
-    const [status, body] = await proxy(fixed(target, remote).remotes, remote.name, { method: "POST", path: "/api/plugins/action", body: "{}" }, forward);
+    assert.deepEqual(await through(remote, "GET", "/api/plugins"), [200, {}], `${remote.name} is read`);
+    const [status, body] = await through(remote, "POST", "/api/plugins/action");
     assert.equal(status, 403, `an action over ${remote.kind}`);
     assert.match((body as { error: string }).error, new RegExp(`${remote.name}'s settings are not changed from here`));
   }

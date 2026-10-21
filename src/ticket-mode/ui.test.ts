@@ -116,8 +116,7 @@ const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], 
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children, pulls,
   writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits, plugins, pluginActions, clipboard = [] }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
-  const posts: { path: string; body: any }[] = [];
-  const requested: string[] = [];
+  const posts: { path: string; body: any }[] = [], requested: string[] = [];
   // A path in `hold` answers its value only once the test calls `release`, as a slow remote does.
   let release!: () => void;
   const gate = new Promise<void>((done) => { release = done; });
@@ -160,8 +159,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
       ...(children === undefined ? {} : { "/api/queue-children": () => children }),
       "/api/settings": () => settings,
-      ...(plugins === undefined ? {} : { "/api/plugins": () => plugins }),
-      ...(pluginActions === undefined ? {} : { "/api/plugins/action": () => pluginActions(body) }),
+      ...(plugins === undefined ? {} : { "/api/plugins": () => plugins }), ...(pluginActions === undefined ? {} : { "/api/plugins/action": () => pluginActions(body) }),
       ...(edits === undefined ? {} : { "/api/settings/preview": () => edits("/api/settings/preview", body), "/api/settings/save": () => edits("/api/settings/save", body), "/api/settings/restore": () => edits("/api/settings/restore", body) }),
     };
     const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), pulls: pulls ?? {} };
@@ -2077,7 +2075,7 @@ test("Settings: a row says Editable or Read-only, what the key does and what bre
   assert.match(alias.text(), /Alias of tickets\.providers\.exposure\.port: run agent-org doctor --fix\. State: enabled\. Source: host\.json\. Read-only\./, "an alias says where its key is in place of its value");
   assert.doesNotMatch(alias.text(), /Value: 4747/, "its value text is replaced");
   const provider = rowOf(p, "tickets.providers.tracker.provider");
-  assert.match(provider.text(), /Change the provider with agent-org onboard/, "a provider's row says where it is changed");
+  assert.match(provider.text(), /Change the provider with the Plugins section or agent-org plugin/, "a provider's row says where it is changed");
   assert.equal(visibleText(p.$("settings-groups")).includes("The loopback port the instance listens on."), false, "the explanation is not visible until Details opens");
   assert.equal(visibleText(p.$("settings-groups")).includes("If it is wrong"), false, "nor is what breaks");
   const details = alias.all().find((n) => n.tag === "details")!;
@@ -2393,6 +2391,8 @@ const PLUGIN_ROWS = {
 };
 /** The Plugins section as the page draws it. */
 const pluginsNode = (p: Page) => p.$("settings-groups").all().find((n) => n.className === "plugins")!;
+/** Press the control `label` of the plugin `name`, and let the page act. */
+const press = async (p: Page, name: string, label: string) => { buttonIn(pluginRow(p, name), label).fire("click"); await flush(); };
 /** The row of the plugin `name`, in the Plugins section. */
 const pluginRow = (p: Page, name: string) => pluginsNode(p).all().find((n) => n.tag === "li" && n.className.startsWith("plugin") && n.text().startsWith(`${name}. Version`))!;
 const buttonsIn = (node: Node_) => node.all().filter((n) => n.tag === "button");
@@ -2424,23 +2424,19 @@ test("A11-163: Disable on the only tracker or code host is drawn disabled with t
 
 test("A11-163: Uninstall and an Install that replaces a plugin ask first, naming what is lost, and post nothing until they are confirmed", async () => {
   const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, pluginActions: () => ({ said: "uninstalled tailscale", changed: true, inForce: [] }) });
-  buttonIn(pluginRow(p, "tailscale"), "Uninstall").fire("click");
-  await flush();
+  await press(p, "tailscale", "Uninstall");
   assert.equal(p.posts.some((post) => post.path === "/api/plugins/action"), false, "nothing is sent before the confirmation");
   assert.ok(pluginRow(p, "tailscale").text().includes("Uninstall tailscale? Its block is removed."));
   buttonIn(pluginRow(p, "tailscale"), "Cancel").fire("click");
   assert.equal(p.posts.some((post) => post.path === "/api/plugins/action"), false, "Cancel sends nothing");
-  buttonIn(pluginRow(p, "tailscale"), "Uninstall").fire("click");
-  buttonIn(pluginRow(p, "tailscale"), "Confirm uninstall").fire("click");
-  await flush();
+  await press(p, "tailscale", "Uninstall");
+  await press(p, "tailscale", "Confirm uninstall");
   assert.deepEqual(p.posts.at(-1), { path: "/api/plugins/action", body: { action: "uninstall", name: "tailscale", base: "h1", confirmed: true } });
-  buttonIn(pluginRow(p, "local"), "Install").fire("click");
+  await press(p, "local", "Install");
   assert.ok(pluginRow(p, "local").text().includes("Install local? It replaces tailscale as the exposure: no setting is lost."));
-  buttonIn(pluginRow(p, "local"), "Confirm install").fire("click");
-  await flush();
+  await press(p, "local", "Confirm install");
   assert.deepEqual(p.posts.at(-1), { path: "/api/plugins/action", body: { action: "install", name: "local", base: "h1", confirmed: true } });
-  buttonIn(pluginRow(p, "slack"), "Install").fire("click");
-  await flush();
+  await press(p, "slack", "Install");
   assert.deepEqual(p.posts.at(-1), { path: "/api/plugins/action", body: { action: "install", name: "slack", base: "h1" } }, "an install that replaces nothing needs no confirmation");
 });
 

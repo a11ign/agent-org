@@ -158,8 +158,7 @@ function loaderFailure(why: string, checks: readonly PluginCheck[]): Failure {
   return failing === undefined ? { why, fix: LOADER_FIX } : { why: failing.detail, fix: failing.fix ?? ENABLE_FIX };
 }
 
-function failureOf(plugin: CatalogPlugin, input: HealthInput, checks: readonly PluginCheck[], enabled: boolean): Failure | null {
-  if (plugin.concern === "messaging" && enabled && input.messagingFailure != null) return input.messagingFailure;
+function failureOf(plugin: CatalogPlugin, input: HealthInput, checks: readonly PluginCheck[]): Failure | null {
   if (!readsConcernContract(plugin.concern, plugin.contract)) return { why: unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), fix: UNREAD_FIX };
   const refusal = input.load.refusals.find((candidate) => candidate.plugin === plugin.name);
   return refusal === undefined ? null : loaderFailure(refusal.why, checks);
@@ -197,7 +196,8 @@ function entryOf(plugin: CatalogPlugin, input: HealthInput, context: PlanContext
   const installed = named && report.from === "block";
   const enabled = named && report.enabled;
   const checks = input.checks[plugin.name] ?? [];
-  const failure = failureOf(plugin, input, checks, enabled);
+  // The messaging key the reader or the loader refused fails the plugin it names, in the words doctor's row has.
+  const failure = (plugin.concern === "messaging" && enabled ? input.messagingFailure ?? null : null) ?? failureOf(plugin, input, checks);
   const secrets = secretsOf(plugin, report);
   const state: HealthState = failure !== null ? "failed" : enabled ? "enabled" : named ? "disabled" : "not installed";
   return { name: plugin.name, concern: plugin.concern, version: input.version, contract: plugin.contract, where: whereOf(plugin), description: plugin.description, state, installed, enabled,

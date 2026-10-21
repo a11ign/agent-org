@@ -51,6 +51,11 @@ were core's. `tooling.connectors` are the read-only tools a worker may call; `co
 tracker's `tooling.writer` is what a new-ticket run files with (tracker contract 1.1): the tools it is granted, what the hook refuses, how a created ticket's key is read back, and the
 priority numbers. It is data and not code because the PreToolUse hook is a process started for every tool call, which must not import a plugin to answer one.
 
+**A setting that names a secret declares the command that sets it.** An entry with `"secret": "path"` or `"secret": "keychain"` must also declare `"setCommand"`, the exact command that sets it, or the registry
+refuses the manifest by name: the Settings page never takes a secret, so it shows this command with a copy button (A11-163). `{value}` is the setting's current value, and `{value|fallback}` takes `fallback` when the
+host file holds none (`security add-generic-password -a "$USER" -s {value|agent-org-linear} -w`). A plugin that needs a secret is installed with `agent-org plugin install` or `agent-org onboard`, so the page offers its
+install command and these, and no Install button.
+
 **A messaging plugin's settings are keys of the project's `messaging` object** (`project.json`), not of a block under `tickets.providers`: its manifest keys them `messaging.<name>` with `"file": "project.json"`.
 
 **The entry module** exports `create(settings, deps)`, which returns the concern's contract implementation; `doctorChecks(settings, deps)`, which returns doctor rows; and

@@ -187,7 +187,7 @@ test("the rows say which keys the page changes in place, and for a key it does n
   const view = viewOf({ host: { tickets: { providers: { tracker: { provider: "linear" } } } } });
   const provider = row(view, "tickets.providers.tracker.provider");
   assert.deepEqual([provider.editable, provider.input], [false, null]);
-  assert.match(provider.why ?? "", /agent-org onboard/, "a provider is changed by onboard, which says why");
+  assert.match(provider.why ?? "", /Plugins section.s controls, or `agent-org plugin`/, "a provider is changed by the Plugins section or the CLI, which says why");
   const path = row(view, "tickets.providers.tracker.key.path");
   assert.deepEqual([path.editable, path.why], [true, null], "an editable key has no reason not to be");
   assert.match(row(view, "tickets.providers.tracker.key").why ?? "", /tickets\.providers\.tracker\.key\.path/, "a container says which key changes it");
