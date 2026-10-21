@@ -48,7 +48,7 @@
 //   3  `gh pr create` LANDED and the step after it failed, so the PR exists. Do not retry pr-open; run only
 //      the step the error line names. Before #1479 that throw escaped `main` and Node exited 1 for a PR
 //      that existed.
-//  75  (#4898) GitHub refused the call for a RATE LIMIT and `host/gh` HELD it: it is not sent and not failed. The gate makes it
+//  75  (#4898) GitHub refused the call for a RATE LIMIT and `plugins/github/wrapper/gh` HELD it: it is not sent and not failed. The gate makes it
 //      after the reset, then arms the PR and labels it. Do NOT retry pr-open (that is a second copy) and do not ask a human.
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync, rmSync } from "node:fs";
@@ -818,7 +818,7 @@ const writeOut = (line: string) => { process.stdout.write(line); };
 /** @param {string[]} args */
 export const PR_OPEN_ENV = "A11Y_PR_OPEN";
 /**
- * `host/gh` refuses `gh pr create` unless this variable is set (#4397), so the one create that may pass is this tool's. It is set on the `gh`
+ * `plugins/github/wrapper/gh` refuses `gh pr create` unless this variable is set (#4397), so the one create that may pass is this tool's. It is set on the `gh`
  * child alone: the row's Acceptance command runs from `process.env`, which never carries it.
  * @param {string[]} args
  */
@@ -826,7 +826,7 @@ export const defaultGh = (args: string[]) => {
   rmSync(QUEUED_TO, { force: true });
   execFileSync("gh", args, { stdio: "inherit", env: { ...process.env, [PR_OPEN_ENV]: "1", A11Y_GH_QUEUED_TO: QUEUED_TO } });
 };
-/** (#4898) WHERE `host/gh` LEAVES THE QUEUE ENTRY IT HELD: `<queue dir> TAB <id> TAB <reset epoch>`, written only for a call it queued. */
+/** (#4898) WHERE `plugins/github/wrapper/gh` LEAVES THE QUEUE ENTRY IT HELD: `<queue dir> TAB <id> TAB <reset epoch>`, written only for a call it queued. */
 const QUEUED_TO = join(tmpdir(), `pr-open-queued-${process.pid}`);
 /** @returns {{ dir: string, id: string, resetAt: number } | null} the entry the last `gh` call was held as, or null when none was (or an older wrapper left no file) */
 export function readQueuedEntry(path: string = QUEUED_TO): { dir: string; id: string; resetAt: number; } | null {
@@ -1281,7 +1281,7 @@ const ghFailureLine = (error: unknown) =>
  * GraphQL `viewer { login }` answers for the same token (`a11ign-workers[bot]`; measured 2026-10-11 from a worker session,
  * the 403 and the answer side by side). The second read runs only after the first fails, so a user token pays one call.
  *
- * #796: A THIRD READ, THE ROLE, WHEN BOTH FAIL AND THE CALLER KNOWS ONE. `role` is `AGENT_ORG_GH_ROLE`, the value `host/gh` routes the
+ * #796: A THIRD READ, THE ROLE, WHEN BOTH FAIL AND THE CALLER KNOWS ONE. `role` is `AGENT_ORG_GH_ROLE`, the value `plugins/github/wrapper/gh` routes the
  * call's token by and records as `app:<role>` in the ledger, so it names the same App `gh pr create` will author as. It answers
  * `app:<role>`, which `ownsReviewOnlyLane` resolves through `APP_ROLE_LANE_OWNER`: the lane check still decides, where it used to refuse
  * "could not say who is opening it" for every manager. A role the wrapper does not declare is no identity (the third read is skipped, and

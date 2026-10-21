@@ -15,8 +15,30 @@ import { join } from "node:path";
 import { PROJECT_ROOT } from "./host-units-project.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseHostConfig } from "../host-config.ts";
-import { type MintRun, ghWrapperDivergence, hostIdentityInstall, mintFailure, rerenderGhWrapper, startupGhWrapper, tickRerenderGhWrapper, wrapperRoles, writeGhWrapper } from "../host-units/gh-wrapper-and-notes.ts";
-import { shippedScriptText } from "../host-units/shipped-unit-texts-and-declarations.ts";
+import * as core from "../host-units/gh-wrapper-and-notes.ts";
+import type { CodeHostWrapper } from "../plugins/contracts/code-host.ts";
+import { wrapperInputsOf } from "../plugins/host-place.ts";
+import { createWrapper, wrapperRoles } from "../../plugins/github/wrapper.ts";
+
+// THE RULES ARE THE PLUGIN'S AND THE WRITER IS CORE'S (A11-160): this file runs core's one writer, installer, tick and start-up over the GitHub plugin's real wrapper, which each call is handed
+// explicitly (`wrapper`). The shims below keep the calls as they were written, with the minter stubbed through the wrapper's own `exec`.
+
+/** What a mint probe is given, and what it answers: the script, the role and the environment it is run with. */
+type MintRun = (script: string, role: string, env: Record<string, string>) => { status: number | null; stdout: string; stderr: string };
+const noMint: MintRun = () => ({ status: null, stdout: "", stderr: "a mint is not asked in this test" });
+/** The GitHub plugin's wrapper, its template read from disk and its minter stubbed by `run`. */
+const githubWrapper = (run: MintRun = noMint): CodeHostWrapper => createWrapper({ exec: (_file, args, options) => run(args[0], args[1], { ...options?.env }), readFile: (path) => readFileSync(path, "utf8"), env: {} });
+type Host = ReturnType<typeof parseHostConfig>;
+const writeGhWrapper = (request: Parameters<typeof core.writeGhWrapper>[0]) => core.writeGhWrapper({ wrapper: githubWrapper(), ...request });
+const hostIdentityInstall = (deps: Parameters<typeof core.hostIdentityInstall>[0] = {}) => core.hostIdentityInstall({ wrapper: githubWrapper(), ...deps });
+const ghWrapperDivergence = (deps: Parameters<typeof core.ghWrapperDivergence>[0] = {}) => core.ghWrapperDivergence({ wrapper: githubWrapper(), ...deps });
+const rerenderGhWrapper = (deps: Parameters<typeof core.rerenderGhWrapper>[0] = {}) => core.rerenderGhWrapper({ wrapper: githubWrapper(), ...deps });
+const tickRerenderGhWrapper = (deps: Parameters<typeof core.tickRerenderGhWrapper>[0] = {}) => core.tickRerenderGhWrapper({ wrapper: githubWrapper(), ...deps });
+const startupGhWrapper = ({ run = noMint, ...deps }: Parameters<typeof core.startupGhWrapper>[0] & { run?: MintRun } = {}) => core.startupGhWrapper({ wrapper: githubWrapper(run), ...deps });
+/** The wrapper's own mint probe for `role`, as the instance's start-up and doctor ask it. */
+const mintFailure = (role: string, { host, run }: { host: Host; run: MintRun }) => githubWrapper(run).mintFailure(wrapperInputsOf(host), role);
+/** The wrapper as the plugin renders it for a host. */
+const wrapperText = (host: Host) => githubWrapper().file(wrapperInputsOf(host)).expected as string;
 
 const baseHost = () => JSON.parse(readFileSync(join(PROJECT_ROOT, ".agent-org/host.json"), "utf8")) as Record<string, unknown>;
 const APPS = (roles: string[]) => ({ identity: Object.fromEntries(roles.map((role) => [role, {
@@ -37,16 +59,16 @@ function installed(roles: string[]) {
   const root = tmpDir("gh-wrapper-guard-");
   mkdirSync(join(root, "bin"), { recursive: true });
   const target = join(root, "bin", "gh");
-  writeFileSync(target, shippedScriptText("gh", { host: hostOf(root, roles) }) as string, { mode: 0o755 });
+  writeFileSync(target, wrapperText(hostOf(root, roles)), { mode: 0o755 });
   return { root, target, host: (declared: string[]) => hostOf(root, declared), text: () => readFileSync(target, "utf8") };
 }
 
 /** The rendered wrapper for `roles`, as text. */
-const rendered = (root: string, roles: string[]) => shippedScriptText("gh", { host: hostOf(root, roles) }) as string;
+const rendered = (root: string, roles: string[]) => wrapperText(hostOf(root, roles));
 /** The same wrapper with its minter at a shipped checkout's path, outside any temporary directory: what production writes. */
 const shippedCheckout = (text: string) => text
-  .replace(/(A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/opt/agent-org/src/app-token.ts}")
-  .replace(/(A11Y_GH_FLAG_SCRIPT:-)[^}\n]*\}/, "$1/opt/agent-org/src/gh-author-fallback.ts}");
+  .replace(/(A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/opt/agent-org/plugins/github/app-token.ts}")
+  .replace(/(A11Y_GH_FLAG_SCRIPT:-)[^}\n]*\}/, "$1/opt/agent-org/plugins/github/author-flag.ts}");
 
 /** A write that must not happen: the refusal is what is under test, so a call here is the failure. */
 const noWrite = (() => { throw new Error("a refused wrapper must not be written"); }) as never;
@@ -103,10 +125,10 @@ test("A11-84 REFUSAL 3: in production, a wrapper whose minter runs from /tmp is 
   const root = tmpDir("gh-wrapper-guard-tmp-");
   const host = hostOf(root, ["workers"]);
   const target = join(root, "bin", "gh");
-  const scratch = rendered(root, ["workers"]).replace(/(app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/tmp/claude-1000/scratch/project/src/app-token.ts}");
-  assert.match(scratch, /app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-\/tmp\/claude-1000\/scratch\/project\/src\/app-token\.ts\}/, "the control: the path is rewritten");
+  const scratch = rendered(root, ["workers"]).replace(/(app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/tmp/claude-1000/scratch/project/plugins/github/app-token.ts}");
+  assert.match(scratch, /app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-\/tmp\/claude-1000\/scratch\/project\/plugins\/github\/app-token\.ts\}/, "the control: the path is rewritten");
   assert.throws(() => writeGhWrapper({ target, mode: 0o755, text: scratch, host, realBin: join(root, "elsewhere"), under: false, ...noWrites }),
-    /the wrapper runs \/tmp\/claude-1000\/scratch\/project\/src\/app-token\.ts, which is in a temporary directory/);
+    /the wrapper runs \/tmp\/claude-1000\/scratch\/project\/plugins\/github\/app-token\.ts, which is in a temporary directory/);
   assert.equal(existsSync(target), false);
   const elsewhere = shippedCheckout(rendered(root, ["workers"]));
   writeGhWrapper({ target, mode: 0o755, text: elsewhere, host, realBin: join(root, "elsewhere"), under: false });
@@ -116,7 +138,7 @@ test("A11-84 REFUSAL 3: in production, a wrapper whose minter runs from /tmp is 
 test("A11-84 REFUSAL 3 IS NOT A TEST RUN'S: under a test run a fixture's checkout in a temporary directory renders and is written, and the real bin is still refused", () => {
   const root = tmpDir("gh-wrapper-guard-fixture-tmp-");
   const host = hostOf(root, ["workers"]);
-  const scratch = rendered(root, ["workers"]).replace(/(app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/tmp/claude-1000/scratch/project/src/app-token.ts}");
+  const scratch = rendered(root, ["workers"]).replace(/(app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-)[^}\n]*\}/, "$1/tmp/claude-1000/scratch/project/plugins/github/app-token.ts}");
   const target = join(root, "bin", "gh");
   writeGhWrapper({ target, mode: 0o755, text: scratch, host, realBin: join(root, "elsewhere"), under: true });
   assert.equal(readFileSync(target, "utf8"), scratch, "a fixture's own bin directory takes the fixture's checkout");

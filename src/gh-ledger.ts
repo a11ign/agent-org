@@ -2,11 +2,11 @@
 // THE READER OF THE `gh` CALL LEDGER (#3466) -- a LEAF module: no import but node's own, since it is run by hand on a host
 // where nothing else is wanted.
 //
-// `host/gh` WRITES the ledger (one TAB-separated line per call, shell, so a call pays no node start-up and the wrapper has
+// `plugins/github/wrapper/gh` WRITES the ledger (one TAB-separated line per call, shell, so a call pays no node start-up and the wrapper has
 // no dependency on where this checkout lives); this file only READS it and answers the question #3448 could not: WHICH
 // caller spends a pool. `gh api rate_limit` shows how much is left and is a broken gauge (#1967); it never says who spent it.
 //
-// (#4898) IT ALSO OWNS THE QUEUE BESIDE THE LEDGER: a WRITE that GitHub refused for a rate limit is held by `host/gh` in
+// (#4898) IT ALSO OWNS THE QUEUE BESIDE THE LEDGER: a WRITE that GitHub refused for a rate limit is held by `plugins/github/wrapper/gh` in
 // `<config dir>/refused-queue` and made by the gate after the reset (`ghQueueTick`, below), and a pool that passes 70% of its
 // hour leaves a ledger incident naming the callers that spent it (`poolAlarms`). The wrapper writes the files and this file
 // reads, retries and clears them, the same split the ledger has.
@@ -19,7 +19,7 @@ import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
 import { CORE_POOL_PROBE } from "./ticket-port/core-pool-probe.ts";
 
 /**
- * `sessionId` is the 9th field, the id of the session that made the call (`host/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did.
+ * `sessionId` is the 9th field, the id of the session that made the call (`plugins/github/wrapper/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did.
  * `cache` is the 10th field, raw: `-` for a call the read cache did not look at, the verdict for a read it did (`verdictOf`), and NO key on a line from before it.
  * (agent-org#1395) `used` and `reset` are the 11th and 12th: the pool's own counter after the call (`X-Ratelimit-Used`, `X-Ratelimit-Reset` as an epoch), and NO key on a
  * line that did not read it. `settled` is set by `settle`, never by a parse: `read` says `cost` is what the pool's counter moved over this call and was read, `shared`
@@ -43,7 +43,7 @@ const HARNESS_SHELL = /\/shell-snapshots\/snapshot-/;
 /** What a session's shell is called: its snapshot file, `snapshot-zsh-<ms>-<id>.sh`, is one per session process and says nothing of what ran (#3590). */
 export const SESSION_SHELL = "(a session's shell)";
 
-/** (agent-org#1618) `host/gh` widens the command of an `api graphql` call with the name of the read (`api graphql repository.issue.closedByPullRequestsReferences`); a line from before it says `api graphql` and no more. */
+/** (agent-org#1618) `plugins/github/wrapper/gh` widens the command of an `api graphql` call with the name of the read (`api graphql repository.issue.closedByPullRequestsReferences`); a line from before it says `api graphql` and no more. */
 const GRAPHQL_QUERY = /^api graphql (\S+)$/;
 
 /**
@@ -101,7 +101,7 @@ const readCost = (e: LedgerEntry) => (e.settled === "shared" ? 0 : e.cost ?? 0);
 
 /**
  * (agent-org#1395) THE POOL'S OWN COUNTER, PUT BACK ON THE CALLS THAT MOVED IT. Measured 2026-10-13: a pool that went from full to 5 of 5000 in an hour had 1,557
- * ledger lines, none with a `cost`, so each read as the one-point floor and the ledger explained 30% of it. `host/gh` now writes the pool's counter beside every
+ * ledger lines, none with a `cost`, so each read as the one-point floor and the ledger explained 30% of it. `plugins/github/wrapper/gh` now writes the pool's counter beside every
  * `api graphql` call, and the counter's movement between two readings IS the points spent between them, by whoever, so this gives each reading the movement since
  * the one before it (`settled: "read"`), and shares a movement that covered readings it could not make (a `pr list`, whose response head the wrapper does not
  * ask for) across those calls and the reading that closed it (`settled: "shared"`, an inference and said as one). Per account, in time order; a counter that
@@ -208,7 +208,7 @@ export function renderReport(entries: LedgerEntry[], where: { account?: string; 
   return `${head}${table.join("\n")}\n`;
 }
 
-/** What a graphql call is called when its line names no read: written by a `host/gh` from before the name was kept, or a call whose body was not in its arguments. Never given a guess. */
+/** What a graphql call is called when its line names no read: written by a `plugins/github/wrapper/gh` from before the name was kept, or a call whose body was not in its arguments. Never given a guess. */
 export const UNNAMED_QUERY = "(query not named)";
 
 /**
@@ -244,7 +244,7 @@ export function renderByQuery(rows: ReturnType<typeof topQueries>, where: { acco
 }
 
 /**
- * (#4148) THE HOURLY ROLLUP BESIDE THE LEDGER. The ledger keeps its newest half past 2 MiB (70 minutes of the busy afternoon this was written in), so `host/gh` counts what
+ * (#4148) THE HOURLY ROLLUP BESIDE THE LEDGER. The ledger keeps its newest half past 2 MiB (70 minutes of the busy afternoon this was written in), so `plugins/github/wrapper/gh` counts what
  * a trim is about to drop into `<ledger>.hourly` first: TAB lines of hour (`2026-10-08T13`), account, resource, calls, points READ, floor points and, 7th, the caller SCRIPT
  * (a11ign/a11ign#4148 residual: without it a per-caller reading existed only for the 80 minutes the raw ledger holds) and, 8th, what the pool's counter moved (agent-org#1420, `HourRow.moved`). A six-field line is one written before the caller was
  * kept: it is read as it always was and its calls have no caller to name. A reading for an hour is the two files added, and they never overlap, because a line is dropped from
@@ -381,7 +381,7 @@ const APP_LOGIN = /^(.+)\[bot\]$/;
 export const isAppLogin = (login: string): boolean => APP_LOGIN.test(login);
 
 /**
- * (#4916) THE NAME A POOL'S LOGIN IS LEDGERED UNDER. An account's calls are written under its own login, but `host/gh` writes an App's under `app:<role>`
+ * (#4916) THE NAME A POOL'S LOGIN IS LEDGERED UNDER. An account's calls are written under its own login, but `plugins/github/wrapper/gh` writes an App's under `app:<role>`
  * (the role's token, not a name GitHub gave it), so the login a pool's headers report (`a11ign-scheduler[bot]`) never equals a ledger account and every
  * App pool read as spent by nobody. `appRoles` is the roles `host.json` declares as `github-apps`. THE DECLARATION HOLDS NO SLUG (only `appId`, `keyPath`
  * and `installationId`), so the slug is matched to the role it names: the slug IS the role, or ends `-<role>` (`a11ign-scheduler` for `scheduler`).
@@ -468,7 +468,7 @@ export function spenderPhrase(ledgerPath: string, account: string, now: number =
 //
 // 2026-10-10: `pr:open` was refused with `GraphQL: API rate limit already exceeded` after every check had passed, and the worker
 // stopped and asked a human to rerun it. A refused WRITE has changed nothing on GitHub, so it is safe to make again later; this is
-// the reader, retrier and clearer of the files `host/gh` leaves for it. Per entry, in `<config dir>/refused-queue/`:
+// the reader, retrier and clearer of the files `plugins/github/wrapper/gh` leaves for it. Per entry, in `<config dir>/refused-queue/`:
 //   `<id>.argv`      the call's arguments, NUL-separated (a body holds newlines, so no line format can carry it)
 //   `<id>.stdin`     what the call read on stdin, when it read any
 //   `<id>.fileN`     a copy of each `--body-file`/`--input` the arguments named: the caller's scratch file is gone by the retry
@@ -476,7 +476,7 @@ export function spenderPhrase(ledgerPath: string, account: string, now: number =
 //   `<id>.meta`      `key<TAB>value` lines, written LAST and renamed into place, so an entry without one is a torn write and is skipped
 // A READ is never queued: its answer is wanted now, and a refused read passes through as it always did.
 
-/** The exit status `host/gh` returns for a call it has queued: "held, not sent", which is neither success nor failure (EX_TEMPFAIL). */
+/** The exit status `plugins/github/wrapper/gh` returns for a call it has queued: "held, not sent", which is neither success nor failure (EX_TEMPFAIL). */
 export const QUEUED_EXIT = 75;
 export const QUEUE_DIR = "refused-queue";
 const RETRY_BASE_SECONDS = 120;
@@ -492,12 +492,12 @@ const TOP_IN_ALARM = 3;
 
 type RefusalKind = "primary" | "secondary";
 
-/** `host/gh` greps the same two phrases lists (`rate_limit_kind`); `gh-ledger.test.ts` feeds both the same fixtures so they cannot drift apart unseen. */
+/** `plugins/github/wrapper/gh` greps the same two phrases lists (`rate_limit_kind`); `gh-ledger.test.ts` feeds both the same fixtures so they cannot drift apart unseen. */
 const SECONDARY_REFUSAL = /secondary rate limit|abuse detection|submitted too quickly/i;
 const PRIMARY_REFUSAL = /api rate limit (?:already )?exceeded|rate limit exceeded|HTTP 429/i;
 
 /**
- * @param poolLeft the refused pool's `x-ratelimit-remaining`, read the same way `host/gh` reads it (`pool_probe`), or null when no head said
+ * @param poolLeft the refused pool's `x-ratelimit-remaining`, read the same way `plugins/github/wrapper/gh` reads it (`pool_probe`), or null when no head said
  * @returns {"primary" | "secondary" | null} what kind of rate limit `gh`'s stderr reports, or null: any other failure is NOT retried.
  * (#1518) an hourly phrase with calls left in its pool is a per-minute refusal, so it is secondary; a pool at zero is primary.
  */
@@ -632,7 +632,7 @@ function attemptCall(call: QueuedCall, { nowMs, run, poolLeftOf }: { nowMs: numb
     return { id: call.id, command, event: "completed", detail: failures.length === 0 ? `after ${call.attempts + 1} attempt(s)` : `after ${call.attempts + 1} attempt(s); follow-up(s) FAILED: ${failures.join("; ")}` };
   }
   if (r.status !== null && refusalKind(r.stderr) !== null) {
-    // (#1518) FILED AS THE POOL READS NOW, as `host/gh` files it: an hourly phrase with calls left is secondary. The pool is read only for an hourly phrase.
+    // (#1518) FILED AS THE POOL READS NOW, as `plugins/github/wrapper/gh` files it: an hourly phrase with calls left is secondary. The pool is read only for an hourly phrase.
     const kind = refusalKind(r.stderr, SECONDARY_REFUSAL.test(r.stderr) ? null : poolLeftOf(call, r.stderr)) ?? call.kind;
     const wait = Math.min(RETRY_CAP_SECONDS, RETRY_BASE_SECONDS * 2 ** (call.attempts + 1));
     requeue({ ...call, kind }, Math.floor(nowMs / 1000) + wait);
@@ -665,7 +665,7 @@ export const spawnQueued: RunQueued = (call, argv) => {
 };
 
 /**
- * (#1518) THE REFUSED POOL'S `x-ratelimit-remaining`, read the way `host/gh` reads it: the GraphQL probe for a refusal that names GraphQL, else the core one,
+ * (#1518) THE REFUSED POOL'S `x-ratelimit-remaining`, read the way `plugins/github/wrapper/gh` reads it: the GraphQL probe for a refusal that names GraphQL, else the core one,
  * sent THROUGH `run`, so it goes as the call's own account (`spawnQueued` sets its config dir). `null` when there is no answer. The probe is sent through the
  * caller's runner and not spawned here, so this file keeps its one spawn site (the ratchet, #826).
  */
@@ -831,7 +831,7 @@ export function ghQueueTick({ home = process.env.A11Y_GH_QUEUE_HOME ?? homedir()
 
 // --- #4148 residual (agent-org#742): WHICH READS MISS, AND WHY -----------------------------------------------------------------
 //
-// `host/gh` ends a read's ledger line with the read cache's verdict: `<hit|miss>-<why>:<argv digest>:<key digest>:<repository slug>`
+// `plugins/github/wrapper/gh` ends a read's ledger line with the read cache's verdict: `<hit|miss>-<why>:<argv digest>:<key digest>:<repository slug>`
 // (`-` for a call the cache did not look at). The argument digest says "the same question", so a group of reads with one caller,
 // subcommand, repository and digest is one question asked again. A HIT's line says `cache` (it spent no pool), so it is counted with
 // the group its call made: it is in scope under `--resource` only when a call of that group spent the pool named.

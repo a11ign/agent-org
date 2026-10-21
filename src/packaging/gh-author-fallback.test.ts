@@ -14,13 +14,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountAuthoringTimes, authorFallbackRefusalOn, AUTHOR_FALLBACK_MINUTES, isAuthoringCall, REFUSE_AUTHOR_FALLBACK_FLAG } from "../gh-author-fallback.ts";
+import { accountAuthoringTimes, AUTHOR_FALLBACK_MINUTES, isAuthoringCall, REFUSE_AUTHOR_FALLBACK_FLAG } from "../gh-author-fallback.ts";
+import { authorFallbackRefusalOn } from "../../plugins/github/author-flag.ts";
+import { createWrapper } from "../../plugins/github/wrapper.ts";
+import { wrapperInputsOf } from "../plugins/host-place.ts";
 import { parseLine } from "../gh-ledger.ts";
 import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { machineryValues } from "../org-health.ts";
 import { MACHINERY_SIGNALS } from "../org-health/hold-and-rerun-readings.ts";
 import { STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-readings.ts";
-import { parseHostConfig, renderTemplate, templateValues } from "../host-config.ts";
+import { parseHostConfig } from "../host-config.ts";
 import { authorFallbackTimes } from "../work-gate/causes/org-health-github-incident.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 import { SUPPORTED_SCHEMA } from "../project-config.ts";
@@ -29,19 +32,19 @@ const HOST = {
   schema: SUPPORTED_SCHEMA, home: "/home/h", binDir: "/home/h/bin", primary: "p", projects: [{ id: "p", checkout: "/home/h/p" }],
   gh: { workers: "/home/h/workers", leads: "/home/h/leads", leadsHeader: [], leadsWorkspaces: [] },
 };
-const UNITS = { prefix: "x-", boardReportWorkflow: "b.yml", own: [] };
 const parse = (extra: Record<string, unknown>) => parseHostConfig(JSON.stringify({ ...HOST, ...extra }), "host.json");
-const LEAF = fileURLToPath(new URL("../gh-author-fallback.ts", import.meta.url));
+const LEAF = fileURLToPath(new URL("../../plugins/github/author-flag.ts", import.meta.url));
+/** The wrapper as the GitHub plugin renders it for a host (A11-160: the renderer is the plugin's). */
+const renderedFor = (host: ReturnType<typeof parseHostConfig>) => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} }).file(wrapperInputsOf(host)).expected as string;
 const WORKERS_APP = { mode: "github-apps", appId: "id-workers", keyPath: "/nonexistent-1666/workers.pem", installationId: "777" };
 const MINT_401 = "app token: token: POST answered 401";
 const LEDGER_NOW = "2026-10-16T21:20:00Z";
 const ACCOUNT = "a11ign-ai-workers";
 
-/** The wrapper RENDERED through `templateValues` from a host that declares the workers' App, as the installed one is. */
+/** The wrapper RENDERED by the plugin from a host that declares the workers' App, as the installed one is. */
 const WRAPPER = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("gh-author-fallback-wrapper-"), "gh");
-  writeFileSync(rendered, renderTemplate(text, templateValues(parse({ github: { identity: { workers: WORKERS_APP } } }), UNITS), "gh"), { mode: 0o755 });
+  writeFileSync(rendered, renderedFor(parse({ github: { identity: { workers: WORKERS_APP } } })), { mode: 0o755 });
   return rendered;
 })();
 
@@ -102,7 +105,7 @@ const tokenOf = (stdout: string) => /^token=(\S+)/.exec(stdout)?.[1];
 test("#1666: the switch is the flag `machinery:flag` names, and it reads ON only when the record says `on: true`", () => {
   assert.equal(REFUSE_AUTHOR_FALLBACK_FLAG, "gh.refuseFallbackAuthor");
   assert.equal(CANARY_STATE_FILE, "machinery-canary.json");
-  assert.equal(templateValues(parse({}), UNITS).canaryStateFile.split("/").at(-1), CANARY_STATE_FILE, "the wrapper reads the file `org-health` writes");
+  assert.match(renderedFor(parse({})), new RegExp(`A11Y_GH_CANARY_STATE:-[^}]*/${CANARY_STATE_FILE.replace(".", "\\.")}\\}`), "the wrapper reads the file `org-health` writes");
   const record = (on: unknown) => JSON.stringify({ flags: { [REFUSE_AUTHOR_FALLBACK_FLAG]: { on } }, samples: [], memo: {} });
   assert.equal(authorFallbackRefusalOn(null), false, "an absent state is OFF");
   assert.equal(authorFallbackRefusalOn(""), false);

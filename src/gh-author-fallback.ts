@@ -1,25 +1,22 @@
-#!/usr/bin/env node
 // module: a failed App-token mint must not AUTHOR as the shared account (agent-org#1666, the tracker row; the ledger it reads is agent-org#790's)
 //
 // THE RULE. A worker, manager or reviewer call that writes a pull request (`pr create`, `pr merge`, `pr review`, which is the review and the approval) is never sent as
 // the account `a11ign-ai-workers` (or the others) because its App's token could not be minted: the author of the pull request is the account, and the account
-// is shared by every session. `host/gh` mints it again, a bounded number of times (`A11Y_APP_AUTHOR_MINTS`), and REFUSES the call, non-zero and nothing sent, when
+// is shared by every session. The wrapper mints it again, a bounded number of times (`A11Y_APP_AUTHOR_MINTS`), and REFUSES the call, non-zero and nothing sent, when
 // every mint fails. READS still fall back to the account, as before: a read authors nothing.
 //
-// THE SWITCH IS `gh.refuseFallbackAuthor`, in the canary state (`machinery-canary.json`), OFF when absent. The wrapper reads it by running this file as a
-// script, once per authoring call under an app role, and a state it cannot read is OFF: the fallback is today's behaviour and not a refusal of every merge.
+// THE SWITCH IS `gh.refuseFallbackAuthor`, in the canary state (`machinery-canary.json`), OFF when absent. THE WRAPPER READS IT by running the GitHub plugin's script (`plugins/github/author-flag.ts`),
+// once per authoring call under an app role; this file holds the switch's NAME for `machinery-flag.ts`, which registers it, and the signal below.
 //
 // THE SIGNAL is `gh-author-fallback`: the account-attributed authoring calls in the ledgers, each counted in the tick whose window it falls in while it is at
-// most `AUTHOR_FALLBACK_MINUTES` old. `org-health.ts` reads the count; the caller reads the ledger files and passes the lines in.
+// most `AUTHOR_FALLBACK_MINUTES` old. `org-health.ts` reads the count; the caller reads the ledger files and passes the lines in. It moves into the plugin with org-health's readers
+// (A11-160, step 8), which are its only users.
 //
-// A LEAF: it reads `gh-ledger.ts`'s line parser and nothing else (no `org-health.ts`, which imports it through the registry), so the wrapper's one `node` start
-// for the switch is cheap. Its one file read is the script's own argument.
-import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+// A LEAF: it reads `gh-ledger.ts`'s line parser and nothing else (no `org-health.ts`, which imports it through the registry).
 import { parseLine } from "./gh-ledger.ts";
-import type { GithubRole } from "./app-token.ts";
+import type { GithubRole } from "./host-config.ts";
 
-/** The switch. A `_FLAG` constant, so `flag-switch-ledger.ts` finds it and `machinery:flag` names it. */
+/** The switch. A `_FLAG` constant, so `flag-switch-ledger.ts` finds it and `machinery:flag` names it. The plugin's script holds the same name (`plugins/github/wrapper.test.ts` holds the two to one). */
 export const REFUSE_AUTHOR_FALLBACK_FLAG = "gh.refuseFallbackAuthor";
 
 /** THE ROW'S FIGURE: an account-attributed authoring call older than this is not counted (the tick that sees it is ten minutes late, and not later). */
@@ -63,38 +60,3 @@ export function accountAuthoringTimes(ledgers: readonly AuthorLedger[], declared
   }
   return times;
 }
-
-/**
- * Whether the switch is ON in a canary state's text. ABSENT, malformed or not an object is OFF, and so is a flag whose record says anything but `on: true`:
- * `machineryFlagOn`'s rule, read here without importing the module that holds it.
- * @param text the file's text, or `null` when it does not exist
- * @returns the state the wrapper acts on
- */
-export function authorFallbackRefusalOn(text: string | null): boolean {
-  if (text === null || text.trim() === "") return false;
-  try {
-    const parsed = JSON.parse(text) as { flags?: Record<string, { on?: unknown } | undefined> };
-    return parsed?.flags?.[REFUSE_AUTHOR_FALLBACK_FLAG]?.on === true;
-  } catch {
-    return false;
-  }
-}
-
-/** The script: `node gh-author-fallback.ts <canary state file>` prints `on` or `off`, and exits 0 either way. An unreadable file is `off`, said on stderr. */
-export function main(argv: readonly string[] = process.argv.slice(2), { read = (path: string) => readFileSync(path, "utf8"), out = (text: string) => process.stdout.write(text), err = (text: string) => process.stderr.write(text) } = {}): number {
-  const [path] = argv;
-  if (path === undefined) {
-    err("usage: gh-author-fallback.ts <machinery-canary.json>\n");
-    return 2;
-  }
-  let text: string | null = null;
-  try {
-    text = read(path);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") err(`gh-author-fallback: ${path} could not be read (${String((cause as Error).message).split("\n")[0]}), so the switch is off\n`);
-  }
-  out(`${authorFallbackRefusalOn(text) ? "on" : "off"}\n`);
-  return 0;
-}
-
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) process.exitCode = main();

@@ -484,12 +484,14 @@ function greenDoctor(home: string): DoctorDeps {
       // The atomic reviewer's checks run `which codex` and `codex login status` (A11-161): Codex is installed and logged in.
       if (file === "which" && args[0] === "codex") return { status: 0, stdout: "/usr/local/bin/codex\n", stderr: "" };
       if (file === "codex") return { status: 0, stdout: "", stderr: "" };
+      // The code host plugin's identity rows mint a token for the reviewer's App on this ticket-only host too (A11-160): the minter answers one.
+      if (file === "node" && args[0]?.endsWith("plugins/github/app-token.ts")) return { status: 0, stdout: "ghs_minted\n", stderr: "" };
       return { status: null, stdout: "", stderr: "cannot start" };
     },
     mode: () => 0o600, serviceState: () => "running", answers: async () => true, healthy: async () => true, unitProblem: () => null,
     pnpmVersion: () => "10.34.5",
     probe: async () => 200,
-    ghWrapper: async () => ({ divergence: null, mints: [] }), platform: "linux",
+    hostPlace: async () => ({ kind: "no-project" }), platform: "linux",
     isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),

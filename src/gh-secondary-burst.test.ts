@@ -3,7 +3,7 @@
  * (#1518) AN INSTALLATION REFUSED WHILE ITS HOURLY POOL HAS CALLS LEFT IS A SECONDARY (per-minute) LIMIT, and the installation's calls are PACED.
  *
  * The filer's reading: 26 refusals `API rate limit exceeded for installation ID 170075049` in 20:10Z to 20:19Z, while the pools read healthy, and
- * `host/gh` and `gh-ledger.ts` both filed them as PRIMARY. Three claims, each with its positive control beside it:
+ * `plugins/github/wrapper/gh` and `gh-ledger.ts` both filed them as PRIMARY. Three claims, each with its positive control beside it:
  *   (a) the same refusal text is SECONDARY in the wrapper's queue and in `refusalKind` when the pool reads calls left, and PRIMARY when it reads zero;
  *   (b) 40 calls from three producers at once never have more than `A11Y_GH_PACE_INFLIGHT` (2) in flight, nor more than `A11Y_GH_PACE_PER_MINUTE`
  *       (4) starts in one window (1 s here, `A11Y_GH_PACE_WINDOW_MS`, 60 s by default). The control is the same calls with the bound lifted, and it overlaps.
@@ -28,7 +28,7 @@ import { CORE_POOL_PROBE } from "./ticket-port/core-pool-probe.ts";
 import { poolProbeAnswer as probeOf } from "./packaging/rows-by-label-fixtures.ts";
 import { forgetRefusedReads, readUnlessRefused } from "./ticket-port/rows-by-label.ts";
 
-const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
+const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
 const WRAPPER = (() => {
   const rendered = join(tmpDirForFile("gh-secondary-1518-"), "gh");
   writeFileSync(rendered, WRAPPER_TEXT.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
@@ -215,7 +215,7 @@ test("(c) a read refused for a secondary limit is not asked again that tick, and
 
 // ---- (d) the gate's RETRY files a refusal as the pool reads NOW --------------------------------------------------------
 
-/** A queued call as `host/gh` writes it, filed `primary`: the kind its first refusal had when the pool was at zero. */
+/** A queued call as `plugins/github/wrapper/gh` writes it, filed `primary`: the kind its first refusal had when the pool was at zero. */
 function queuedCall(dir: string) {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "1000000-1.argv"), ["issue", "comment", "7", "--body", "x"].map((a) => `${a}\0`).join(""));

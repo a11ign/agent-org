@@ -100,7 +100,7 @@ test("#484 adapter: postDecision is ONE `issue comment` whose body ends in the r
   assert.equal(calls[0][5], "--body");
   const lines = calls[0][6].split("\n");
   assert.equal(lines[0], "The interface is ruled.");
-  assert.equal(lines.at(-1), "<!-- decided-by: ceo run: run-7 -->", "the LAST line is host/gh's own grammar, so the wrapper does not stamp it twice (agent-org#486)");
+  assert.equal(lines.at(-1), "<!-- decided-by: ceo run: run-7 -->", "the LAST line is plugins/github/wrapper/gh's own grammar, so the wrapper does not stamp it twice (agent-org#486)");
   assert.ok(lines.includes("<!-- decision-kind: ruling -->"));
 });
 

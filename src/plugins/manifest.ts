@@ -11,7 +11,7 @@ import type { Secret } from "../messaging/secret.ts";
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { Concern } from "./concerns.ts";
-import type { CodeHost, ReviewTrust } from "./contracts/code-host.ts";
+import type { CodeHost, HostPlace, ReviewTrust } from "./contracts/code-host.ts";
 import type { MessagingPair } from "./contracts/messaging.ts";
 import type { PublishResult, PublishedPull } from "./contracts/publisher.ts";
 import type { TrackerWriting } from "./contracts/tracker.ts";
@@ -219,6 +219,12 @@ export type MessagingHelpers = Readonly<{
 export type ProbeRequest = Readonly<{ host: string; port: number; tls: boolean; servername?: string; hostHeader?: string; timeoutMs: number }>;
 
 /**
+ * Where the machine keeps what a code host's routing wrapper is rendered from, as the host file declares it (code host contract 1.3): the place, or why there is none. `no-project` is a host file that read and
+ * declares no primary project: a machine that runs only the ticket board installs no wrapper. `unreadable` is a host file the reader refused, which is never a pass.
+ */
+export type HostPlaceReading = Readonly<{ kind: "place"; place: HostPlace }> | Readonly<{ kind: "no-project" }> | Readonly<{ kind: "unreadable"; reason: string }>;
+
+/**
  * What a plugin is given by core to do its work: every runtime helper reaches it here, because it imports core's types only. `fetch` and `exec` are the two seams a plugin's I/O goes
  * through (a test injects each); `readFile` and `mode` read a file's text and permission bits (null when it cannot be read); `pick` is the board's `tickets.pick` scope, which a tracker
  * lists by, and which is a board setting and not one of the tracker block's. Sibling tickets add helpers as they move code.
@@ -248,6 +254,8 @@ export type PluginDeps = Readonly<{
   publishing: PublishingHelpers;
   /** What a reviewer plugin needs of core (A11-161). */
   reviewing: ReviewerHelpers;
+  /** Where the machine keeps what a code host's wrapper is rendered from (A11-160), asked only by the code host's doctor rows. */
+  place: () => Promise<HostPlaceReading>;
 }>;
 
 /** What an onboard step is given besides the plugin's deps: the prompts and the machine's facts, and the flags onboard was started with that name this plugin's settings. */

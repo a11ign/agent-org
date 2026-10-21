@@ -71,7 +71,7 @@ export type SweepRow = {
 };
 export type SweepReads = { run?: (args: string[]) => string; repo?: string; repos?: readonly { key: string; repo: string }[] };
 
-/** #5039: THE SAME READ `lookupClaimedRegions` makes, on purpose -- `host/gh` answers an identical repeated read from disk for 20 seconds, so the claim's second look at the claimed rows costs no API call. WITHOUT SEARCH: see {@link readClaimedRows}. */
+/** #5039: THE SAME READ `lookupClaimedRegions` makes, on purpose -- `plugins/github/wrapper/gh` answers an identical repeated read from disk for 20 seconds, so the claim's second look at the claimed rows costs no API call. WITHOUT SEARCH: see {@link readClaimedRows}. */
 type ListedRow = { number: number; labels?: { name: string }[]; body?: string | null };
 
 function listClaimedRows({ run, repo }: Required<Pick<SweepReads, "run" | "repo">>): ListedRow[] {

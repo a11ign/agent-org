@@ -370,7 +370,7 @@ const blockedComment = (session: string, reason: string, createdAt: string, id: 
   id: `IC_${id}`, url: row460(`#issuecomment-${id}`), createdAt,
   body: `BLOCKED (\`${session}\`, declared with \`worker:state\`): ${reason}\n\nOwed by \`product-manager\`; the row carries \`${ANSWER_PREFIX}product-manager\`.`,
 });
-/** A comment a seat posted, as `host/gh` writes it: the author's text, then the `decided-by` line naming the seat (the last one is the seat's). */
+/** A comment a seat posted, as `plugins/github/wrapper/gh` writes it: the author's text, then the `decided-by` line naming the seat (the last one is the seat's). */
 const seatComment = (seat: string, createdAt: string, id: number, text = "Ruled: wait for the spelling."): RowComment => ({
   id: `IC_${id}`, url: row460(`#issuecomment-${id}`), createdAt, body: `${text}\n\n<!-- decided-by: ${seat} run: 4f2a -->`,
 });

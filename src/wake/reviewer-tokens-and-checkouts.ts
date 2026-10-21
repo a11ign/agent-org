@@ -1,4 +1,5 @@
-import { tokenNeedsRefresh, type AppIdentity } from "../app-token.ts";
+import { tokenNeedsRefresh } from "../app-token-cache.ts";
+import type { AppIdentity } from "../host-config.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, renameSync, existsSync, readdirSync, lstatSync, readlinkSync, symlinkSync, rmSync } from "node:fs";
 import { homedir } from "node:os";

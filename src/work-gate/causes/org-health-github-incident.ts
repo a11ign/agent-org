@@ -14,8 +14,7 @@ import { blockingChecks, checksSettledGreen } from "../pr-state.ts";
 import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
 import { REVIEWER_STATE_DIR } from "../vocabulary.ts";
 import { accountAuthoringTimes, type AuthorLedger } from "../../gh-author-fallback.ts";
-import { GITHUB_ROLES, type GithubRole } from "../../app-token.ts";
-import { homeHostConfig, roleIdentity, type HostConfig } from "../../host-config.ts";
+import { GITHUB_ROLES, type GithubRole, homeHostConfig, roleIdentity, type HostConfig } from "../../host-config.ts";
 import { REVIEWER_GH_CONFIG_DIR } from "../../review-trust.ts";
 import { GITHUB_STATUS_URL } from "../github-status-url.ts";
 

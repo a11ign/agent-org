@@ -1,5 +1,4 @@
-import { homeHostConfig, roleIdentity } from "../host-config.ts";
-import type { AppIdentity } from "../app-token.ts";
+import { type AppIdentity, homeHostConfig, roleIdentity } from "../host-config.ts";
 import { fileURLToPath } from "node:url";
 import { readFileSync, statSync } from "node:fs";
 import { flagValue } from "../lib/cli-flags.ts";
@@ -475,7 +474,7 @@ export type ReviewerEntry = { spawnedAt: number; trust?: ReviewTrust; };
  * `/tmp` is RAM-backed ({@link REVIEW_CHECKOUT_ROOT}); `node_modules/.cache` is gitignored and goes with the tree when
  * {@link removeReviewCheckout} removes it, so nothing outlives the pull request.
  *
- * THE APP TOKEN IS CACHED THERE TOO (agent-org#1342): `A11Y_APP_TOKEN_DIR` is `node_modules/.cache/app-tokens` in the same tree. `host/gh`'s
+ * THE APP TOKEN IS CACHED THERE TOO (agent-org#1342): `A11Y_APP_TOKEN_DIR` is `node_modules/.cache/app-tokens` in the same tree. `plugins/github/wrapper/gh`'s
  * `app_token` writes the minted token, its `.err` and its `.failed` to that directory, and its default (`~/.cache/a11ign/app-tokens`) is read-only
  * in the sandbox, so every mint failed there once the token an unsandboxed caller had cached expired. Since #1347 a failed mint REFUSES the
  * reviewer's call, so from 2026-10-13 ~16:06Z no reviewer could post a verdict without improvising a cache of its own.
@@ -493,17 +492,18 @@ export function reviewerEnvironment(session: string, override: Record<string, st
     ...(repo === null ? {} : { GH_REPO: repo, [HOST_CONFIG_ENV]: hostConfigPath() }), ...override };
 }
 
-/** Where the reviewer's token lives in its tree: `host/gh` reads `reviewer.token` here, and {@link ensureReviewerToken} writes it. */
+/** Where the reviewer's token lives in its tree: `plugins/github/wrapper/gh` reads `reviewer.token` here, and {@link ensureReviewerToken} writes it. */
 export const reviewerTokenDir = (tree: string) => `${tree}/node_modules/.cache/app-tokens`;
 
 /**
  * THE REVIEWER'S APP TOKEN IS MINTED BY WAKE, NOT BY THE SANDBOX (agent-org#1348). The key is `-rw-------` for the user a workspace-write sandbox
  * runs as, so a reviewer that mints for itself can read it. Wake runs unsandboxed: it mints into the instance's token directory BEFORE the pane
- * opens, and again on a tick when the token has less than {@link REVIEWER_TOKEN_REFRESH_SECONDS} left. `host/gh` uses the file while it lasts
+ * opens, and again on a tick when the token has less than {@link REVIEWER_TOKEN_REFRESH_SECONDS} left. `plugins/github/wrapper/gh` uses the file while it lasts
  * and mints only when it is stale, which the refresh keeps from happening.
  */
 export const REVIEWER_TOKEN_REFRESH_SECONDS = 1800;
-export const APP_TOKEN_SCRIPT = fileURLToPath(new URL("../app-token.ts", import.meta.url));
+// The minter is the GitHub plugin's program, run by its path and never imported (core imports no plugin's code).
+export const APP_TOKEN_SCRIPT = fileURLToPath(new URL("../../plugins/github/app-token.ts", import.meta.url));
 export const APP_TOKEN_MINT_TIMEOUT_MS = 30_000;
 
 /** The reviewer's app as the host declares it: `app` is `null` when the reviewer takes a user account (nothing is minted, as before); `unknown` is the reason the declaration could not be read. */

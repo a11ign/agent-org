@@ -2,7 +2,7 @@
 // THE TICK'S SNAPSHOT (#4148): ONE cheap question per repository per tick -- "did anything change?" -- asked of REST with an ETag, where an unchanged answer is a
 // 304 that costs NO point, instead of every reader of the tick asking GitHub's GraphQL for the same pull requests and rows again.
 //
-// THE READS THEMSELVES ARE ANSWERED BY `host/gh`, not here: every reader (the gate, its batch worker, `wake.ts`, `row-claim`, a session) reaches GitHub through that
+// THE READS THEMSELVES ARE ANSWERED BY `plugins/github/wrapper/gh`, not here: every reader (the gate, its batch worker, `wake.ts`, `row-claim`, a session) reaches GitHub through that
 // wrapper, so a cache there reaches all of them and no reader had to learn it. What this file does is the one thing the wrapper cannot do in shell: decide, per
 // repository, whether the entries stored under it are still true. It keeps a GENERATION per repository (`<counter> <verified-at>` in
 // `$GH_CONFIG_DIR/read-cache/gen/<repository>`): the counter moves when a probe says the repository changed, `verified-at` moves every time the probes ran and
@@ -47,7 +47,7 @@ export const probePaths = (repo: string): string[] => [
   `repos/${repo}/actions/runs?per_page=10`,
 ];
 
-/** The name `host/gh` files a repository's entries under: `a11ign/agent-org` -> `a11ign_agent-org`; the empty slug is `default` (a call that names no repository). */
+/** The name `plugins/github/wrapper/gh` files a repository's entries under: `a11ign/agent-org` -> `a11ign_agent-org`; the empty slug is `default` (a call that names no repository). */
 export const slugOf = (repo: string) => (repo === "" ? "default" : repo.replace(/[^A-Za-z0-9._-]/g, "_"));
 
 /** what one probe said: the HTTP status (`null` when `gh` printed none) and the tag, `W/` removed */

@@ -15,7 +15,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GITHUB_ROLES, tokenPath } from "../app-token.ts";
+import { tokenPath } from "../app-token-cache.ts";
+import { createWrapper, wrapperRoles } from "../../plugins/github/wrapper.ts";
+import { wrapperInputsOf } from "../plugins/host-place.ts";
 import { APP_ROLE_LANE_OWNER } from "../lane-ownership.ts";
 import { parseLine } from "../gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
@@ -23,7 +25,7 @@ import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 // No `$AGENT_ORG_HOST` of this file's own: `wake.ts` reads the host through `work-gate.ts` at import, a host file this file wrote would have to be a
 // whole valid one (CI, where the variable is unset and the project is found from the working directory, refused the bare one it first wrote), and
 // `wake-reviewer-instance.test.ts` imports the same modules as they are. The host here is what the run was given.
-import { HostConfigRefusal, parseHostConfig, renderTemplate, roleIdentity, templateValues } from "../host-config.ts";
+import { GITHUB_ROLES, HostConfigRefusal, parseHostConfig, roleIdentity } from "../host-config.ts";
 import { SUPPORTED_SCHEMA } from "../project-config.ts";
 import { reviewerEnvironment } from "../wake/pull-request-spawn-orders.ts";
 
@@ -31,12 +33,13 @@ const HOST = {
   schema: SUPPORTED_SCHEMA, home: "/home/h", binDir: "/home/h/bin", primary: "p", projects: [{ id: "p", checkout: "/home/h/p" }],
   gh: { workers: "/home/h/workers", leads: "/home/h/leads", leadsHeader: [], leadsWorkspaces: [] },
 };
-const UNITS = { prefix: "x-", boardReportWorkflow: "b.yml", own: [] };
 const parse = (extra: Record<string, unknown>) => parseHostConfig(JSON.stringify({ ...HOST, ...extra }), "host.json");
 const refusalField = (extra: Record<string, unknown>) => {
   try { parse(extra); } catch (error) { return error instanceof HostConfigRefusal ? error.field : `not a refusal: ${error}`; }
   return "not refused";
 };
+/** The wrapper as the GitHub plugin renders it for a host (A11-160: the renderer is the plugin's). */
+const renderedFor = (host: ReturnType<typeof parse>) => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} }).file(wrapperInputsOf(host)).expected as string;
 const REVIEWER_APP = { mode: "github-apps", appId: "424242", keyPath: "/home/h/.config/agent-org/apps/a11ign-reviewer.pem", slug: "a11ign-reviewer" };
 /** The value the wake side puts in the reviewer instance's environment: the wrapper is driven with THIS, so the two halves cannot drift apart. */
 const REVIEWER_ROLE = reviewerEnvironment("reviewer-7").AGENT_ORG_GH_ROLE;
@@ -51,8 +54,8 @@ test("#955: `reviewer` is a role `github.identity` accepts, `user-accounts` unle
   const declared = parse({ github: { identity: { reviewer: REVIEWER_APP } } });
   assert.deepEqual(roleIdentity(declared, "reviewer"), REVIEWER_APP);
   assert.deepEqual(GITHUB_ROLES.filter((role) => roleIdentity(declared, role).mode === "github-apps"), ["reviewer"], "only the role that was named moved");
-  assert.equal(templateValues(declared, UNITS).appRoles, "reviewer");
-  assert.equal(templateValues(parse({}), UNITS).appRoles, "", "NEGATIVE CONTROL: nothing declared renders no app role, so the wrapper takes none of the app paths");
+  assert.deepEqual(wrapperRoles(renderedFor(declared)), ["reviewer"]);
+  assert.deepEqual(wrapperRoles(renderedFor(parse({}))), [], "NEGATIVE CONTROL: nothing declared renders no app role, so the wrapper takes none of the app paths");
 });
 
 test("#955: a typo of the role is still refused by FIELD NAME, and a half-flipped reviewer is refused as any role's is", () => {
@@ -79,9 +82,8 @@ test("#955: the reviewer App owns no review-only lane, and its token is cached i
 // ---- 2. the wrapper, run ---------------------------------------------------------------------------------------------------------
 
 const wrapperFor = (identity: Record<string, unknown>) => {
-  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("reviewer-app-role-wrapper-"), "gh");
-  writeFileSync(rendered, renderTemplate(text, templateValues(parse(Object.keys(identity).length === 0 ? {} : { github: { identity } }), UNITS), "gh"), { mode: 0o755 });
+  writeFileSync(rendered, renderedFor(parse(Object.keys(identity).length === 0 ? {} : { github: { identity } })), { mode: 0o755 });
   return rendered;
 };
 // Built inside each test, never at import: a role the reader refuses must turn THAT test red and not take the whole file down with it.

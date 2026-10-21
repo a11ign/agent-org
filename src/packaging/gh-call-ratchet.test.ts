@@ -121,7 +121,8 @@ test("the committed baseline admits today's tree: the real inventory yields no o
   const plugin = Object.keys(inventory.files).filter((file) => file.startsWith(PLUGIN_DIRECTORY));
   assert.ok(plugin.length > 0 && plugin.some((file) => inventory.files[file]!.spawns > 0), `${PLUGIN_DIRECTORY} is not in the inventory with a spawn: the scan does not see the plugin, so its exemption exempts nothing`);
   assert.ok(Object.keys(inventory.files).some((file) => file.startsWith("scripts/")), "no file of scripts/ is in the inventory: the scan does not read it");
-  assert.ok(Object.keys(inventory.files).some((file) => /\.sh$/.test(file) || file === "host/gh"), "no shell script is in the inventory: the scan does not read them");
+  assert.ok(Object.keys(inventory.files).some((file) => /\.sh$/.test(file)), "no shell script is in the inventory: the scan does not read them");
+  assert.ok((inventory.files["plugins/github/wrapper/gh"]?.spawns ?? 0) > 0, "the routing wrapper (a shell script with no extension, the GitHub plugin's since A11-160) is not in the inventory with a spawn: the scan does not read a plugin's shell scripts, so its exemption exempts nothing");
   for (const file of Object.keys(baseline.files)) assert.ok(!isExempt(file), `${file} is in the baseline though its directory is exempt`);
 });
 

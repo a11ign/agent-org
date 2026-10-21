@@ -313,7 +313,7 @@ export function parseMapArgs(argv: string[], now: number = Date.now()) {
   return { since: requested, store: flags.store ?? defaultStore(), out: flags.out, budget, filter: { repo: flags.repo, week, cause: flags.cause } };
 }
 
-/** The `gh` call ledgers `host/gh` writes (#3466): one per account, in the config directory the wrapper routes that account to. An account that never called has none, and the ingest says so. */
+/** The `gh` call ledgers `plugins/github/wrapper/gh` writes (#3466): one per account, in the config directory the wrapper routes that account to. An account that never called has none, and the ingest says so. */
 const ghLedgerFiles = (home: string = homedir()) => [join(home, "workers", "gh"), join(home, "leads", "gh"), join(home, ".config", "gh")].map((dir) => join(dir, "gh-calls.tsv"));
 
 const defaultStore = () => join(homedir(), ".cache", "a11ign", "trace", "events.ndjson");

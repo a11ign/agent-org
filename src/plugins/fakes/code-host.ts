@@ -3,7 +3,8 @@
 //
 // IT HOLDS PULL REQUESTS AND NOTHING ELSE, and answers `null` for one it was never given, as a host does that cannot read it. A test seeds a pull request (`seedPull`),
 // moves its head or its checks, and reads what the board asked of it (`calls`) and did to it (`armed`, `reviewRequests`, `retargets`). Every read is synchronous, as the contract's are.
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, PullFeedback, Reply, RetargetRequest, ReviewState } from "../contracts/code-host.ts";
+import { join } from "node:path";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, PullFeedback, Reply, RetargetRequest, ReviewState, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -117,6 +118,29 @@ function actionsOf(pulls: Pulls, subscribers: Subscriber[], record: { armed: str
   };
 }
 
+/** What the fake's wrapper says of a role: the text carries the roles that are Apps, so a role that moves changes the text, and a test sets what the wrapper refuses and what cannot mint. */
+export type FakeWrapperState = { refusal: string | null; mintFailures: Record<string, string> };
+
+/** The fake's wrapper text for inputs: one line, naming the Apps the inputs declare. */
+const fakeWrapperText = (inputs: WrapperInputs): string => `#!/bin/sh\n# the fake code host's wrapper\nAPP_ROLES=${appRolesOf(inputs).join(" ")}\n`;
+
+const appRolesOf = (inputs: WrapperInputs): string[] => Object.entries(inputs.identity).filter(([, identity]) => identity.mode === "github-apps").map(([role]) => role);
+
+/**
+ * The fake's routing wrapper (contract 1.3): the file is `<binDir>/gh` holding {@link fakeWrapperText}, it is stale when the installed text is not that text, and what it refuses and which App cannot
+ * mint are the test's to say (`state`). Core's tests of installing, comparing and re-writing the wrapper run on it, so none renders GitHub's.
+ */
+function wrapperOf(state: FakeWrapperState): CodeHostWrapper {
+  return {
+    file: (inputs) => ({ target: join(inputs.place.binDir, "gh"), mode: 0o755, expected: fakeWrapperText(inputs) }),
+    appRoles: appRolesOf,
+    refusal: () => state.refusal,
+    divergence: (inputs, { target, installed }) => installed === null ? `there is no gh wrapper at ${target}` : installed === fakeWrapperText(inputs) ? null : `${target} is not the fake's wrapper`,
+    identityStale: (inputs, installed) => installed !== fakeWrapperText(inputs),
+    mintFailure: (inputs, role) => (appRolesOf(inputs).includes(role) ? state.mintFailures[role] ?? null : null),
+  };
+}
+
 /** Whether an event is one the subscriber's filter names. */
 const wants = ({ filter }: Subscriber, event: CodeHostEvent): boolean => (filter.kinds?.includes(event.kind) ?? true) && (filter.ref === undefined || filter.ref.id === event.ref.id);
 
@@ -128,8 +152,11 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const armed: string[] = [];
   const reviewRequests: { ref: ChangeRef; reviewer: string }[] = [];
   const retargets: { url: string; base: string }[] = [];
-  const host: CodeHost = { ...readsOf(pulls, repositories, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), sweepRetargets: sweepOf(pulls, retargets) };
+  const wrapperState: FakeWrapperState = { refusal: null, mintFailures: {} };
+  const host: CodeHost = { ...readsOf(pulls, repositories, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState) };
   return Object.assign(host, {
+    /** What the fake's wrapper refuses to write (null: nothing) and the reason a role's App cannot mint, by role. */
+    wrapperState,
     /** Hold a pull request, open at head `head-<number>` on `main` unless a test says otherwise. Returns its address and its change ref. */
     seedPull(repository: string, number: number, over: Partial<FakePull> = {}) {
       const url = fakePullUrl(repository, number);

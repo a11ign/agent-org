@@ -1,6 +1,6 @@
-// no-token: gh -- `sendToGitHub` is given a `run` that throws what `host/gh` exits with, and one case puts a stub `gh` first on PATH; no real `gh` starts.
+// no-token: gh -- `sendToGitHub` is given a `run` that throws what `plugins/github/wrapper/gh` exits with, and one case puts a stub `gh` first on PATH; no real `gh` starts.
 //
-// (#4898) A RATE-LIMITED `pr create` IS HELD, NOT FAILED. `host/gh` exits 75 for a write it queued; pr-open must then (1) not call that a failure,
+// (#4898) A RATE-LIMITED `pr create` IS HELD, NOT FAILED. `plugins/github/wrapper/gh` exits 75 for a write it queued; pr-open must then (1) not call that a failure,
 // (2) attach the arm and the session label to the held entry so they are made after the create does, and (3) tell the author in words that stop a
 // second copy and a question to a human. The ordinary failure beside it is the positive control: a `gh` that fails for another reason is still
 // exit 1, "nothing sent", with the cause.

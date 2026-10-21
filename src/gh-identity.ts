@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 // #1984: WHICH `gh` ACCOUNT IS THIS PROCESS ABOUT TO ACT AS -- answered from the same three facts
-// `packages/agent-org/host/gh` (the routing wrapper every `gh` invocation on this host goes through) reads,
+// `packages/agent-org/plugins/github/wrapper/gh` (the routing wrapper every `gh` invocation on this host goes through) reads,
 // in the SAME order, so this module can never answer a different question than the one that actually
 // decides the account. A restated conclusion drifts from the thing it restates; this reads the wrapper's
 // own inputs instead.
@@ -96,7 +96,7 @@ function loginForHost(text: string, host: string): string | null {
 }
 
 /**
- * WHICH ACCOUNT THIS PROCESS WILL ACT AS, derived the way `packages/agent-org/host/gh` decides it rather
+ * WHICH ACCOUNT THIS PROCESS WILL ACT AS, derived the way `packages/agent-org/plugins/github/wrapper/gh` decides it rather
  * than restated from memory. See this file's header for the three branches and why each is read off disk
  * instead of assumed.
  *

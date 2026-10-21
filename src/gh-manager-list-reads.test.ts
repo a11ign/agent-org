@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { parseLedger, recordPoolAlarms, settle, sessionAlarms } from "./gh-ledger.ts";
 
-const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
+const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
 const WRAPPER = (() => {
   const rendered = join(tmpDirForFile("gh-manager-list-reads-render-"), "gh");
   writeFileSync(rendered, WRAPPER_TEXT.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });

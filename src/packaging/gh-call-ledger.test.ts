@@ -29,7 +29,7 @@ const GRAPHQL_BODY = `{"data":{"viewer":{"login":"x"}},"rateLimit":{"remaining":
  * the acceptance job that runs this file has none.
  */
 const WRAPPER = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
+  const text = readFileSync(fileURLToPath(new URL("../../plugins/github/wrapper/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("gh-ledger-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;

@@ -85,7 +85,7 @@ export const repoNow = () => activeRepo ?? REPO;
  * THE MOST ONE `gh` MAY TAKE before the gate cuts it (#3737). Without a bound a `gh` that never returned held the whole tick until `TimeoutStartSec=600`
  * killed it, and `systemctlRun` and `herdrRun` already carry one. The same 30 s as `wake.ts`'s `defaultGh`, so a `gh` is cut at one time wherever it runs.
  *
- * DERIVED, NOT TYPED, AND THE LEDGER HAS NO DURATION COLUMN (`host/gh` writes a call's end second, no more), so the slowest single call is read as the
+ * DERIVED, NOT TYPED, AND THE LEDGER HAS NO DURATION COLUMN (`plugins/github/wrapper/gh` writes a call's end second, no more), so the slowest single call is read as the
  * longest gap between consecutive `work-gate.ts` calls inside one run, which holds a call's time and the gate's own between calls, so it can only overstate.
  * Measured 2026-10-06 over the workers' and leads' ledgers (1,396 gate calls, 17:22Z to 19:27Z and from 00:35Z): within a run the gaps ran 0 to 10 s, and two
  * gaps (28 s, 42 s) cannot be told from the quiet between two runs. So 10 s is the slowest call the ledger shows, 42 s the most it could be, and 30 s is three
@@ -132,7 +132,7 @@ const metered = (run: (args: string[], repo?: string) => string) => (args: strin
 /**
  * agent-org#1095: AN IDENTICAL READ IS ASKED ONCE A TICK. The gate's readers each ask for the lists they need and several ask for the same one: 567 to 745
  * `gh` calls a tick, `pr list --state merged --limit 100` eight times and `pr list --state open --limit 20` seven, until the tick's 300 s ran out
- * (`GATE OUT OF BUDGET`, 30 times in 3 h) and a release it had decided was refused for the primary rate limit it had spent on its own repeats. `host/gh`
+ * (`GATE OUT OF BUDGET`, 30 times in 3 h) and a release it had decided was refused for the primary rate limit it had spent on its own repeats. `plugins/github/wrapper/gh`
  * answers an identical read from disk for 20 s, which is shorter than the tick, so the repeat went to GitHub.
  *
  * WHAT IS REMEMBERED is the successful answer to a read-only call, by repository and argv (`readOnlyGh`). A refusal is never kept, so a read that failed is
@@ -298,7 +298,7 @@ export const BATCH_OUTER_GRACE_MS = 5_000;
  * The `node` one batch runs: each call through ASYNC `execFile` so they wait together, answers printed as one JSON list in the order asked. `GH_REPO`
  * aims a call exactly as `defaultRun` does, so the census (preloaded through `NODE_OPTIONS`) still counts each `gh` by repository.
  *
- * (#4148) THE FIRST LINE NAMES THE SCRIPT. `host/gh` records the calling process's command line cut at 160 characters, and a `node -e <code>` has nothing in it that is
+ * (#4148) THE FIRST LINE NAMES THE SCRIPT. `plugins/github/wrapper/gh` records the calling process's command line cut at 160 characters, and a `node -e <code>` has nothing in it that is
  * a file, so 852 of 7,053 ledger calls (12% of the 14:00Z-15:45Z window, measured 2026-10-08) read `/usr/bin/node` and belonged to no one. The comment is what the ledger's
  * script-name pattern finds.
  */
@@ -1039,7 +1039,7 @@ export const GH_READS = Object.freeze({
     // MORE (that run's jobs, and `.changeset/` on `main`), which are the failure's detail and are not counted here.
     // agent-org#887: THE SAME CALL FOR EACH OTHER REPOSITORY THE ORG RELEASES (`releaseRepositories`: the project's, then every `dora` entry -- eight today, so eight calls a tick, 240 an hour of the
     // 5,000 core pool). A failing repository costs ONE MORE (the failed job's log, for its first error line), and the open `incident` list is read while any release verdict is read (the same call
-    // `readFleetBuildIncidents` makes, which `host/gh` answers from disk inside 20 s).
+    // `readFleetBuildIncidents` makes, which `plugins/github/wrapper/gh` answers from disk inside 20 s).
     "api repos/{repo}/actions/workflows/release.yml/runs (readReleaseRuns -- org-health's release-run-failed)",
     // #4126: ONE REST CALL on the core pool -- the 100 newest-updated closed rows, projected to number, state, close time and labels (readClassRepeat -- org-health's class-repeat). It makes ONE MORE
     // PER CLASS whose newest instance closed in the last 90 minutes (that class's closed rows, all time), which are the repeat's detail and are not counted here.

@@ -6,7 +6,7 @@
 // #1984: "32 scripts spawn gh and none can say which account they are about to act as."
 //
 // THIS FILE COVERS BOTH HALVES OF THE ROW. First, `declaredGhAccount` itself (done-when 1): every branch
-// `packages/agent-org/host/gh` -- the routing wrapper installed as `~/.local/bin/gh` -- takes, read off the
+// `packages/agent-org/plugins/github/wrapper/gh` -- the routing wrapper installed as `~/.local/bin/gh` -- takes, read off the
 // SAME three facts (an explicit `GH_CONFIG_DIR`, `HERDR_WORKSPACE_ID` against `host.json`'s leads list, and
 // the human fallback), never a restated conclusion. Second, done-when 3's guard: the population, and a
 // scope decision this row has to make explicitly rather than leave implicit.
@@ -464,7 +464,7 @@ test("#1984: declaredGhAccount resolves BOTH agent-host routing branches from th
 // `gh-call-ledger.test.ts` does; every path a placeholder stands for is overridden by an environment variable below.
 
 const WRAPPER_FILE = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
+  const text = readFileSync(fileURLToPath(new URL("../../plugins/github/wrapper/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("gh-refuse-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;

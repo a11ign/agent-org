@@ -2,7 +2,7 @@
 /**
  * (agent-org#1517) A MANAGER READS THE GATE'S SNAPSHOT FOR A LIST, NOT THE API. The gate reads the open pull requests, the open rows and the board
  * once a tick and stores them on this host (`open-prs-memory.json` and `gate-conditional/kept-reads.json` in the state directory, the newest file of
- * `runs/board-snapshots`). A manager's `pr list` or `issue list` re-reads the same lists through the API, and `host/gh` refuses it for that reason.
+ * `runs/board-snapshots`). A manager's `pr list` or `issue list` re-reads the same lists through the API, and `plugins/github/wrapper/gh` refuses it for that reason.
  * This reader is the answer that refusal names: it prints what is stored and how old it is, and it makes NO `gh` call (control f).
  *
  *   gate-snapshot-read prs   --repo <owner/name>           the open pull requests the gate last read whole, with their titles

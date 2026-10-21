@@ -7,6 +7,9 @@ import { agreement, agreementReport, memoFile, readFacts } from "../lib/tool-ver
 import { SPAWNS_GH } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { homeHostConfig, stateEntryPath } from "../host-config.ts";
+import { activeCodeHost } from "../plugins/active.ts";
+import type { CodeHostWrapper } from "../plugins/contracts/code-host.ts";
+import { wrapperInputsOf } from "../plugins/host-place.ts";
 import { INSTALLED_DIR, REPO_ROOT, RUNS_PACKAGE_SCRIPT, SHIPPED_DIR, binDirectory, entriesFromCommand, environmentDeclarations, execCommands, identityDeclarations, leadsDirectory, leadsListText, opaqueCommands, packageScripts, shellSpawnsGh, shippedContext, shippedHostScripts, shippedScriptText, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type HostConfig, type ShippedDeps, unitEntryPoints, unitPrefix, workersDirectory } from "./shipped-unit-texts-and-declarations.ts";
 
 /**
@@ -795,10 +798,31 @@ function seatWrapperFiles(deps: ShippedDeps & { scriptDir?: string; seatDir?: st
   return [{ label: "claude seat wrapper", target: join(dir, "claude"), mode: 0o755, expected: shippedScriptText("claude", deps) }];
 }
 
-/** The routing wrapper as an owned file: where it is installed and the text it must hold. `expected` is `null` when the shipped copy cannot be read. @param {Parameters<typeof ownedIdentityFiles>[0]} [deps] */
-export function ghWrapperFile(deps: Parameters<typeof ownedIdentityFiles>[0] = {}): { label: string; target: string; mode: number; expected: string | null; } {
+/**
+ * THE ROUTING WRAPPER IS THE CODE HOST PLUGIN'S (A11-160): the text, the install target and the rules about writing it are asked of the wrapper of the code host this process activated, or of `deps.wrapper`
+ * (a test's). `null` is a code host that installs none, which this host then owns no `gh` file for.
+ * @param {{ wrapper?: CodeHostWrapper }} deps
+ */
+export function wrapperOf({ wrapper }: { wrapper?: CodeHostWrapper } = {}): CodeHostWrapper | null {
+  return wrapper ?? activeCodeHost().wrapper ?? null;
+}
+
+/** The wrapper of the activated code host, for a caller that cannot go on without one: refused by name when the code host installs none. */
+export function requiredWrapper(): CodeHostWrapper {
+  const wrapper = wrapperOf();
+  if (wrapper === null) throw new Error("the code host installs no routing wrapper, so there is none to write");
+  return wrapper;
+}
+
+/**
+ * The routing wrapper as an owned file: where it is installed (`scriptDir`, the host's bin directory unless a caller moved it) and the text the plugin renders for this host. `expected` is `null` when the
+ * plugin's shipped copy cannot be read. THROWS what the render refuses (a placeholder no value fills).
+ * @param {CodeHostWrapper} wrapper @param {Parameters<typeof ownedIdentityFiles>[0]} [deps]
+ */
+export function wrapperFile(wrapper: CodeHostWrapper, deps: Parameters<typeof ownedIdentityFiles>[0] = {}): { label: string; target: string; mode: number; expected: string | null; } {
   const { scriptDir = binDirectory(deps) } = deps;
-  return { label: "gh", target: join(scriptDir, "gh"), mode: 0o755, expected: shippedScriptText("gh", deps) };
+  const { mode, expected } = wrapper.file(wrapperInputsOf(deps.host ?? homeHostConfig()));
+  return { label: "gh", target: join(scriptDir, "gh"), mode, expected };
 }
 
 /**
@@ -810,11 +834,12 @@ export function ghWrapperFile(deps: Parameters<typeof ownedIdentityFiles>[0] = {
  */
 export function ownedIdentityFiles(deps: ShippedDeps & {
     shippedDir?: string; scriptDir?: string; workersDir?: string; leadsDir?: string; seatDir?: string;
-    read?: typeof readFileSync;
+    read?: typeof readFileSync; wrapper?: CodeHostWrapper;
 } = {}): { label: string; target: string; mode: number; expected: string | null; }[] {
   const { scriptDir = binDirectory(deps), workersDir = workersDirectory(deps), leadsDir = leadsDirectory(deps) } = deps;
+  const wrapper = wrapperOf(deps);
   return [
-    ghWrapperFile(deps),
+    ...(wrapper === null ? [] : [wrapperFile(wrapper, deps)]),
     ...agentOrgLauncher(scriptDir, deps),
     ...seatWrapperFiles(deps),
     { label: "gh-leads-workspaces.txt", target: join(leadsDir, "workspaces.txt"),

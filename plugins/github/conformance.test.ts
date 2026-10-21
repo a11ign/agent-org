@@ -5,7 +5,9 @@
 // account cannot see.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { runCodeHostConformance } from "../../src/plugins/conformance/code-host.ts";
+import type { WrapperInputs } from "../../src/plugins/contracts/code-host.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { corePolicy } from "../../src/plugins/policy.ts";
 import { create } from "./index.ts";
@@ -42,16 +44,23 @@ function github(calls: string[][] = []) {
   };
 }
 
+/** What the wrapper is asked about: a host whose tool is installed outside any temporary directory, with the workers' role an App. */
+export const WRAPPER_INPUTS: WrapperInputs = {
+  place: { binDir: "/opt/host/bin", tool: "/opt/agent-org", checkout: "/opt/project", stateEntry: (name) => `/opt/state/${name}` }, accounts: { workers: "/opt/workers", leads: "/opt/leads" },
+  identity: { scheduler: { mode: "user-accounts" }, workers: { mode: "github-apps", appId: "1", keyPath: "/opt/workers.pem" }, managers: { mode: "user-accounts" }, reviewer: { mode: "user-accounts" } },
+};
+
 /** The policy a host with a loaded reviewer gate gives: the author is the org's own, and the checks have settled. */
 const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRepository", trustOf: () => "inside", settledOf: () => true }));
 
 test("the GitHub plugin passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
-  const host = create({}, fakePluginDeps({ exec: github(), policy }));
-  const { passed, skipped } = await runCodeHostConformance(host, { pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot" });
+  const host = create({}, fakePluginDeps({ exec: github(), policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));
+  const { passed, skipped } = await runCodeHostConformance(host, { pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS });
   assert.deepEqual(passed, [
     "shape", "readOwnLogin names the account or answers null", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read", "readReplies answers a list of replies, and null for a pull request it cannot read",
     "readPullState names the state or answers null", "readReviewState reads the head, the reviews and whether the checks settled", "openPullUrlsOf lists a repository's open pull requests",
     "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes", "subscribe returns the function that cancels it",
+    "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ["readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"],
     "the plugin makes no change reads and arms no merge yet, so the checks that need a change are skipped with their reason and not passed");

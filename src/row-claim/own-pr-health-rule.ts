@@ -640,7 +640,7 @@ export function lookupOpenPrReviewHealth({ run = gh, log = (line) => process.std
  */
 export function lookupOtherHeldIssues(mySession: string, excludeIssueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): number[] | null {
   return lookup(() => {
-    // #5039: WITHOUT SEARCH -- the claimed rows are the one list the claim already reads (the identical argv, so `host/gh` answers it from disk),
+    // #5039: WITHOUT SEARCH -- the claimed rows are the one list the claim already reads (the identical argv, so `plugins/github/wrapper/gh` answers it from disk),
     // and the session's own are told apart by their `session:` label here rather than by a second search.
     const mine = `${SESSION_PREFIX}${mySession}`;
     return readClaimedRows({ run, repo })

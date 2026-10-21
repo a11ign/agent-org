@@ -2,7 +2,7 @@
 // nothing reaches the network or any account's config.
 //
 // #4148: THE INSTRUMENT THE GRAPHQL-HOUR READINGS USE. `gh-ledger.ts --per-hour` buckets ONE account's ONE resource by UTC hour, keeps the points the responses
-// REPORTED apart from the one-point FLOOR, and an hourly rollup that `host/gh` writes as the 2 MiB trim drops lines keeps a reading for an hour the ledger no longer
+// REPORTED apart from the one-point FLOOR, and an hourly rollup that `plugins/github/wrapper/gh` writes as the 2 MiB trim drops lines keeps a reading for an hour the ledger no longer
 // holds. IT GUARDS THE INSTRUMENT, NOT THE SAVING: the saving is read off the live ledger, on the row.
 //
 // THE POSITIVE CONTROL for "the rollup survives the trim" is the ledger ALONE: after the trim it holds fewer lines than were written, so a rollup that counted nothing
@@ -35,7 +35,7 @@ const LEADS = "a11ign-ai-leads";
 const COST = 3;
 const COSTED_BODY = `{"data":{},"rateLimit":{"remaining":4990,"cost":${COST},"resetAt":"2026-10-08T15:00:00Z"}}`;
 
-/** One ledger line as `host/gh` writes it (nine fields); `cost` is the field a costed response fills. */
+/** One ledger line as `plugins/github/wrapper/gh` writes it (nine fields); `cost` is the field a costed response fills. */
 const line = (time: string, { account = WORKERS, resource = "graphql", cost = "", command = "pr list", caller = "/usr/bin/node /x/src/work-gate.ts" } = {}) =>
   [time, account, resource, cost, "0", command, "-", caller, "-"].join("\t");
 
@@ -64,7 +64,7 @@ test("#4148: the rollup is ADDED to the ledger's lines, so an hour present in bo
 
 /** The wrapper's text with its placeholders filled; every path it uses is overridden by an environment variable below. */
 const WRAPPER = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
+  const text = readFileSync(fileURLToPath(new URL("../../plugins/github/wrapper/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("gh-per-hour-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;
@@ -293,8 +293,8 @@ test("agent-org#1395: what the counter moved that no call in the ledger accounts
   assert.equal(topSpender(reordered, { account: "app:scheduler", now: Date.parse("2026-10-13T20:05:00Z") })?.total, 1 + 5 + 0);
 });
 
-test("agent-org#1395: the scheduler App's token is handed out by `host/gh` alone, so every call that spends its pool is a ledger line", () => {
-  // DONE-WHEN 2: "a test fails when a caller of the scheduler App's token is not ledgered". What can hand the token out is `app-token.ts` (the minter the wrapper runs) and the
+test("agent-org#1395: the scheduler App's token is handed out by `plugins/github/wrapper/gh` alone, so every call that spends its pool is a ledger line", () => {
+  // DONE-WHEN 2: "a test fails when a caller of the scheduler App's token is not ledgered". What can hand the token out is the plugin's `app-token.ts` (the minter the wrapper runs) and the
   // wrapper; any other file that reads the cache file or mints one holds a token whose calls no ledger line is written for. The pool's counter (above) shows such spend as `unplaced`.
   const root = fileURLToPath(new URL("../..", import.meta.url));
   // a walk of the tree, not `git grep`: a file nobody has added yet is a holder too, and this file spawns nothing that would need GIT_* scrubbed
@@ -304,10 +304,12 @@ test("agent-org#1395: the scheduler App's token is handed out by `host/gh` alone
     return /\.(ts|mjs|js|sh)$/.test(d.name) && !d.name.endsWith(".test.ts") ? [rel] : [];
   });
   const MINTS = /mintInstallationToken|tokenPath\(|parseTokenFile|appToken\(/;
-  const files = [...sources("src"), ...sources("scripts"), "host/gh"];
-  const holders = files.filter((f) => MINTS.test(readFileSync(join(root, f), "utf8")) && f !== "src/app-token.ts" && f !== "host/gh");
-  assert.deepEqual(holders, [], "nothing but app-token.ts and host/gh reads or mints an installation token");
-  assert.ok(MINTS.test(readFileSync(join(root, "src/app-token.ts"), "utf8")), "POSITIVE CONTROL: the pattern finds the minter, so an empty answer above is not a pattern that matches nothing");
+  // THE MINTER AND THE WRAPPER ARE THE GITHUB PLUGIN'S (A11-160). Core's one reader of the cache is wake's refresh (`app-token-cache.ts`, which reads the expiry and never the token), until the reviewer's identity moves in with it.
+  const MINTER = "plugins/github/app-token.ts";
+  const files = [...sources("src"), ...sources("scripts"), ...sources("plugins"), "plugins/github/wrapper/gh"];
+  const holders = files.filter((f) => MINTS.test(readFileSync(join(root, f), "utf8")) && f !== MINTER && f !== "plugins/github/wrapper/gh" && f !== "src/app-token-cache.ts");
+  assert.deepEqual(holders, [], "nothing but the plugin's app-token.ts and wrapper (and wake's expiry reader) reads or mints an installation token");
+  assert.ok(MINTS.test(readFileSync(join(root, MINTER), "utf8")), "POSITIVE CONTROL: the pattern finds the minter, so an empty answer above is not a pattern that matches nothing");
 });
 
 test("#1482: the trim's rollup settles the reviewer's ordering too: a `pr list` between two readings of A is shared out when B's baseline comes between them", () => {

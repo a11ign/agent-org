@@ -3,7 +3,7 @@
 // claim machinery) and `pr-hold-state.ts` (which every project's wake loads) can both import it without importing each other.
 
 /**
- * The seat a comment says posted it: the role in the LAST `<!-- decided-by: <role> run: <id> -->` line `host/gh` appends to a comment
+ * The seat a comment says posted it: the role in the LAST `<!-- decided-by: <role> run: <id> -->` line `plugins/github/wrapper/gh` appends to a comment
  * (agent-org#486; the role alphabet is the one it accepts), or `null` for a body that carries none. The last line is the wrapper's own, appended
  * after whatever the author wrote, so a marker quoted earlier in the body does not speak for the comment.
  *

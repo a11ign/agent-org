@@ -34,14 +34,14 @@ export const PROJECT_UNITS_DIR = join(REPO_ROOT, ".agent-org/units");
 // SEVENTEEN entries were in `packages/agent-org/host/` before this row, and every one is now classified as exactly one of three
 // things, so an eighteenth that is none of them is REFUSED (`unclassifiedEntries`) and not adopted by whichever glob it happens to
 // match:
-//   the TOOL's     eight files that stay in `host/`: the three unit templates (service + timer), the dispatcher, the `gh` wrapper -- TEN since #2867's shadow-window pair;
+//   the TOOL's     eight files that stay in `host/`: the three unit templates (service + timer), the dispatcher, the `gh` wrapper -- TEN since #2867's shadow-window pair; THE `gh` WRAPPER IS THE GITHUB PLUGIN'S since A11-160 (`plugins/github/wrapper/gh`);
 //   the PROJECT's  eight that moved to `.agent-org/units/` -- the project's declaration (`units.own`) names them, because the tool
 //                  cannot name a11ign's units in its own source without being a11ign's tool;
 //   HOST DATA      one, `gh-leads-workspaces.txt`, which is now `host.json`'s `gh.leadsWorkspaces` and is rendered, not shipped.
 
 /** The tool's own entries in `SHIPPED_DIR`. A template is named without its prefix; the project supplies that. */
 export const TOOL_ENTRIES = Object.freeze([
-  "board-report-dispatch.sh", "board-report.service.in", "board-report.timer.in", "gh",
+  "board-report-dispatch.sh", "board-report.service.in", "board-report.timer.in",
   "work-tick.service.in", "work-tick.timer.in", "worktree-prune.service.in", "worktree-prune.timer.in",
   // #2867: the shadow window's own pair, installed BESIDE the work-tick unit and sharing none of its text.
   "shadow-window.service.in", "shadow-window.timer.in",
@@ -494,7 +494,7 @@ export function shippedUnitText(unit: string, deps: ShippedDeps = {}): string | 
 
 /**
  * A script the tool ships beside its units, as it would be installed. The routing wrapper `gh` is a template UNDER ITS OWN NAME -- the
- * row's Region names `host/gh`, and it is installed as `gh` -- so every script is rendered, and one with no placeholder comes out as it
+ * row's Region names `plugins/github/wrapper/gh`, and it is installed as `gh` -- so every script is rendered, and one with no placeholder comes out as it
  * went in.
  * @param {string} name @param {ShippedDeps} [deps] @returns {string | null}
  */

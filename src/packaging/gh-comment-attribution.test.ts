@@ -2,7 +2,7 @@
 // `gh` or herdr starts and nothing reaches the network or any account's config.
 //
 // agent-org#486 (Move 0 of a11ign/a11ign#4505): A DECISION COMMENT, A REVIEW AND A CLAIM REPORT POSTED THROUGH `gh` CARRY THE ROLE AND RUN THAT POSTED
-// THEM. `ceo`, `product-manager` and `orchestrator` post as one account, so a comment cannot say which of them decided; the wrapper (`host/gh`) is the
+// THEM. `ceo`, `product-manager` and `orchestrator` post as one account, so a comment cannot say which of them decided; the wrapper (`plugins/github/wrapper/gh`) is the
 // one place every post passes, and it appends `<!-- decided-by: <role> run: <id> -->` to the body of `issue comment`, `pr comment` and `pr review`.
 //
 // THE POSITIVE CONTROL for every "reached the stub unchanged" assertion is the stub's own record of its arguments: a wrapper that never ran the stub
@@ -26,7 +26,7 @@ const STUB_EXIT = 7; // a status nothing else here returns, so it can only have 
 
 /** The wrapper's own text with its `@@name@@` placeholders filled by paths nothing here uses (every one is overridden by an environment variable below). */
 const WRAPPER = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
+  const text = readFileSync(fileURLToPath(new URL("../../plugins/github/wrapper/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("gh-attribution-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;

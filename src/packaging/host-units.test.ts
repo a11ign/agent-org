@@ -29,6 +29,9 @@ import { readFileSync, readdirSync, mkdirSync, realpathSync, rmSync, writeFileSy
 import { execFileSync, spawnSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { wrapperInputsOf } from "../plugins/host-place.ts";
+import { createWrapper } from "../../plugins/github/wrapper.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { shippedUnits, SHIPPED_DIR, execCommands, entriesFromCommand, opaqueCommands, shellCommandWords, shellSpawnsGh, shippedHostScripts, unitEntryPoints, programCandidates, PROJECT_UNITS_DIR, shippedUnitText, shippedScriptText, leadsListText, OPTIONAL_UNITS, HOST_OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, declaredProjectKeys, workTickToolForm, autoMemorySeatLabels } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { type Finding, unitState, unitDrift, systemdUserAvailable, orphanedUnits, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, humanLoginOnHost, HUMAN_LOGIN_ON_HOST, retiredHere, addedOnSomeRef, orphanOrigin, supersededHostScripts, hostIdentityDrift, hostIdentityNotes, ownedIdentityFiles, compileCacheNotes, WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, codexTrustDrift, codexTrustedProjects, windowEnd, seatWrapperNotes } from "../host-units/host-drift-findings-and-notes.ts";
@@ -1834,8 +1837,7 @@ test("#2174: it is a SEPARATE finding from STALE, and the shared remedy says it 
  */
 const identityHost = (where: { shippedDir: string, scriptDir: string, workersDir: string,
   leadsDir: string, gitConfigPath: string }) => {
-  // The leads list is rendered from `host.json`, so only the wrapper is a file to put in the fixture's shipped directory.
-  writeFileSync(join(where.shippedDir, "gh"), shippedScriptText("gh") as string);
+  // The leads list is rendered from `host.json`, and the wrapper is the code host plugin's (A11-160: the fake's, in these tests), so nothing is put in the fixture's shipped directory.
   mkdirSync(where.scriptDir, { recursive: true });
   hostIdentityInstall({ ...where, out: () => {} });
   // PINNED SATISFIED TOO (#3316): `hostUnitDrift` now compares the reviewers' door, and an unpinned one reads the real host's.
@@ -2085,16 +2087,17 @@ test("#2174: a unit that is listed but cannot be READ yields no finding and does
 
 // --- #2332: THE `gh` IDENTITY WRAPPER, ITS LEADS LIST AND THE CREDENTIAL HELPER ----------------------
 //
-// THE WRAPPER IS RUN, NOT READ. A regex over `packages/agent-org/host/gh` would pass on a file whose
+// THE WRAPPER IS RUN, NOT READ. A regex over `packages/agent-org/plugins/github/wrapper/gh` would pass on a file whose
 // branches were in the wrong order; these tests put a stub `gh-real` behind it and ask which account the
 // stub was started as. The three paths it can be pointed elsewhere by (`A11Y_GH_REAL`, `A11Y_WORKERS_DIR`,
 // `A11Y_LEADS_DIR`) are environment variables with the production values as defaults, so nothing here
 // touches the real host.
 
-/** The wrapper AS IT INSTALLS (#2620: `host/gh.in` is a template), rendered once into a temp directory so it can be RUN. */
+/** The wrapper AS IT INSTALLS (#2620: it is a template; A11-160: the GitHub plugin's, rendered by the plugin), rendered once into a temp directory so it can be RUN. */
 const WRAPPER = (() => {
   const rendered = join(tmpDirForFile("gh-wrapper-render-"), "gh");
-  writeFileSync(rendered, shippedScriptText("gh") as string, { mode: 0o755 });
+  const github = createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} });
+  writeFileSync(rendered, github.file(wrapperInputsOf(homeHostConfig())).expected as string, { mode: 0o755 });
   return rendered;
 })();
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
@@ -2298,13 +2301,16 @@ test("#2332: the leads list and the README each report DIVERGED too, and host:in
 test("#2332: an unreadable shipped copy is a finding and an install REFUSES, never writing an empty gh", () => {
   const { root, where } = identityDeps();
   try {
-    rmSync(join(where.shippedDir, "gh"));
-    assert.ok(hostIdentityDrift(where).some((d) => d.problem === "SHIPPED COPY UNREADABLE"));
+    // A wrapper whose shipped copy cannot be read says so with no text (the plugin's does when its template is missing): `expected` is null, never the empty string.
+    const fake = createFakeCodeHost().wrapper as NonNullable<ReturnType<typeof createFakeCodeHost>["wrapper"]>;
+    const unreadable = { ...fake, file: (inputs: Parameters<typeof fake.file>[0]) => ({ ...fake.file(inputs), expected: null }) };
+    const unreadableWhere = { ...where, wrapper: unreadable };
+    assert.ok(hostIdentityDrift(unreadableWhere).some((d) => d.problem === "SHIPPED COPY UNREADABLE"));
     const before = readFileSync(join(where.scriptDir, "gh"), "utf8");
-    assert.throws(() => hostIdentityInstall({ ...where, out: () => {} }), /shipped copy could not be read/);
+    assert.throws(() => hostIdentityInstall({ ...unreadableWhere, out: () => {} }), /shipped copy could not be read/);
     assert.equal(readFileSync(join(where.scriptDir, "gh"), "utf8"), before,
       "the installed wrapper is untouched: an empty gh on every agent's PATH is worse than a stale one");
-    assert.equal(ownedIdentityFiles(where).find((f) => f.label === "gh")?.expected, null);
+    assert.equal(ownedIdentityFiles(unreadableWhere).find((f) => f.label === "gh")?.expected, null);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

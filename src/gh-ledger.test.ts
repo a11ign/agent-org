@@ -19,7 +19,7 @@ import {
   perHour, perHourCallers, poolAlarms, readGroups, readQueue, recordPoolAlarms, refusalKind, renderByQuery, renderByRead, retryDue, rollupPathOf, settle, topQueries, topSpender, verdictOf, UNNAMED_QUERY, type QueuedCall, type RunQueued,
 } from "./gh-ledger.ts";
 
-const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
+const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
 const WRAPPER = (() => {
   const rendered = join(tmpDirForFile("gh-ledger-render-"), "gh");
   writeFileSync(rendered, WRAPPER_TEXT.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
@@ -397,7 +397,7 @@ function appendLine(path: string, _line: string, at: number) {
 const LEDGER_CLI = fileURLToPath(new URL("./gh-ledger.ts", import.meta.url));
 const ACCOUNT = "a11ign-ai-workers";
 
-/** One ledger line as `host/gh` writes it (nine fields), for a hand-made ledger. */
+/** One ledger line as `plugins/github/wrapper/gh` writes it (nine fields), for a hand-made ledger. */
 const written = (time: string, caller: string, over: { resource?: string; cost?: number | ""; command?: string } = {}) =>
   [time, ACCOUNT, over.resource ?? "graphql?", over.cost ?? "", "0", over.command ?? "pr list", "-", caller, "-"].join("\t");
 
@@ -484,7 +484,7 @@ test("#4148 residual: a six-field rollup line is read as it always was, kept six
   assert.match(readHours(h.ledger, "--account", ACCOUNT, "--resource", "graphql", "--top", "5"), /^ +400 floor points \( +0 read\) +400 calls +\(caller not recorded\)$/m);
 });
 
-// #4148 residual (agent-org#742): --by-read. A ledger line as `host/gh` writes it with its verdict (the 10th field); `cache` omitted = a line from before it.
+// #4148 residual (agent-org#742): --by-read. A ledger line as `plugins/github/wrapper/gh` writes it with its verdict (the 10th field); `cache` omitted = a line from before it.
 const READ_DIGEST = "3f9a01bc";
 const readLine = (cache: string | undefined, over: { resource?: string; command?: string; caller?: string; time?: string; cost?: number | "" } = {}) =>
   [over.time ?? "2026-10-10T17:00:00Z", ACCOUNT, over.resource ?? "graphql?", over.cost ?? 1, "0", over.command ?? "pr list", "w1",

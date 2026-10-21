@@ -1,6 +1,6 @@
 // no-token: gh -- the wrapper is RUN here, against a stub `gh-real` the test writes (`A11Y_GH_REAL`); no real `gh` starts and nothing reaches the network or any account's config.
 //
-// #4148: THE SAME READ, ASKED AGAIN, IS ANSWERED FROM DISK. `host/gh` keeps an entry for an identical read for N seconds (20, never more than 30), and for a process the TICK started
+// #4148: THE SAME READ, ASKED AGAIN, IS ANSWERED FROM DISK. `plugins/github/wrapper/gh` keeps an entry for an identical read for N seconds (20, never more than 30), and for a process the TICK started
 // it stays good while the repository's generation has not moved. THE POSITIVE CONTROL for every "answered from the cache" assertion is the stub's own call log: a hit is a call the
 // log does not have, and a cache that never stored anything is caught by the first test's second call reading the first call's counter.
 
@@ -18,7 +18,7 @@ const MAX_TTL = 30;
 const HIT = "stdout-of-call-";
 
 const WRAPPER = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../../host/gh", import.meta.url)), "utf8");
+  const text = readFileSync(fileURLToPath(new URL("../../plugins/github/wrapper/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("gh-read-cache-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;

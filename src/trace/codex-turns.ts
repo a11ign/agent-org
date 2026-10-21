@@ -31,7 +31,7 @@ function isModelInput(record: any) {
   return payload?.type === "custom_tool_call_output" || payload?.type === "function_call_output";
 }
 
-/** A rollout's id: the uuid ending its file name (`rollout-<time>-<uuid>.jsonl`), which is what `CODEX_THREAD_ID` holds in a shell that session started (measured 2026-10-05 in `~/.codex/sessions`), so `host/gh`'s id on a call names it (#3589). */
+/** A rollout's id: the uuid ending its file name (`rollout-<time>-<uuid>.jsonl`), which is what `CODEX_THREAD_ID` holds in a shell that session started (measured 2026-10-05 in `~/.codex/sessions`), so `plugins/github/wrapper/gh`'s id on a call names it (#3589). */
 export const rolloutId = (file: string) => basename(file).match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/)?.[1];
 
 /** The session's name from the directory it ran in. */

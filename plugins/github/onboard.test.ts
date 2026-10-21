@@ -28,9 +28,9 @@ function machine(install: ExecResult, listedAtFirst = false) {
 
 const run = (settings: PluginSettings, deps: OnboardStepDeps) => ONBOARD_STEPS[0].run(settings, deps);
 
-test("the plugin has one onboard step, the extension's", () => {
-  assert.deepEqual(ONBOARD_STEPS.map(({ name }) => name), ["gh stack extension"]);
-  assert.ok(ONBOARD_STEPS[0].explain.length > 0);
+test("the plugin has two onboard steps, the extension's and the Apps' keys", () => {
+  assert.deepEqual(ONBOARD_STEPS.map(({ name }) => name), ["gh stack extension", "App keys"]);
+  assert.ok(ONBOARD_STEPS.every(({ explain }) => explain.length > 0));
 });
 
 test("A11-106: onboard installs the stack extension for the workers' account when it is missing, and says so", async () => {
@@ -75,4 +75,69 @@ test("A11-106: update keeps the extension whatever the stack setting says, as it
   const { calls, deps } = machine({ status: 0, stdout: "", stderr: "" }, true);
   keep({ stack: false }, deps);
   assert.deepEqual(calls.map(({ command }) => command), ["extension list"]);
+});
+
+// ---- the Apps' keys (A11-145, moved here from `install/onboard.ts`'s `reviewerIdentity` by A11-160) ----------------------------------------------
+
+const KEY_TEXT = "-----BEGIN RSA PRIVATE KEY-----\nSECRET-KEY-BYTES\n-----END RSA PRIVATE KEY-----\n";
+const REVIEWER_APP = { slug: "acme-reviewer", appId: 4242, installationId: 77 };
+const runKeys = (settings: PluginSettings, deps: OnboardStepDeps) => ONBOARD_STEPS[1].run(settings, deps);
+
+/** A person at a terminal who answers `answer` for the key's path, with `files` on disk, recording what was written and what was asked. */
+function person(answer: string, files: Record<string, string> = { "/home/me/Downloads/key.pem": KEY_TEXT }, over: Partial<OnboardStepDeps> = {}) {
+  const written: Record<string, string> = {};
+  const asked: string[] = [];
+  const deps: OnboardStepDeps = { ...fakePluginDeps({ readFile: (path) => { if (files[path] === undefined) throw new Error(`ENOENT: ${path}`); return files[path]; }, mode: (path) => (files[path] === undefined ? null : 0o600) }),
+    interactive: true, answered: true, ask: async (question) => { asked.push(question); return answer; }, askSecret: async () => "", writeFile: (path, text) => { written[path] = text; }, platform: "linux",
+    home: "/home/me", agentOrgHome: "/home/me/.agent-org", flags: { reviewerApp: REVIEWER_APP }, ...over };
+  return { deps, written, asked };
+}
+
+test("A11-145: the reviewer App's key is copied beside the host file, mode 600 by the writer, and the identity names it; the key's text is never said", async () => {
+  const { deps, written, asked } = person("~/Downloads/key.pem");
+  const answer = await runKeys({}, deps);
+  assert.deepEqual(asked, ["Path to the downloaded private key (.pem) of the reviewer App acme-reviewer, or an empty line to add it later: "]);
+  assert.deepEqual(written, { "/home/me/.agent-org/apps/acme-reviewer.pem": KEY_TEXT }, "the key is written where the host file will name it, and nowhere else");
+  assert.deepEqual(answer, { ok: true, detail: "copied the reviewer App's key to /home/me/.agent-org/apps/acme-reviewer.pem, mode 600; its text is not shown",
+    settings: { identity: { reviewer: { mode: "github-apps", slug: "acme-reviewer", appId: 4242, installationId: 77, keyPath: "/home/me/.agent-org/apps/acme-reviewer.pem" } } } });
+  assert.ok(!JSON.stringify(answer).includes("SECRET-KEY-BYTES"));
+});
+
+test("A11-145: the identity the step returns keeps the roles the host file already declares", async () => {
+  const { deps } = person("/home/me/Downloads/key.pem");
+  const held = { workers: { mode: "github-apps", appId: "1", keyPath: "/k/workers.pem" }, reviewer: { mode: "github-apps", appId: "9", keyPath: "/gone/reviewer.pem" } };
+  const answer = await runKeys({ identity: held }, deps);
+  assert.deepEqual(Object.keys((answer.settings?.identity as Record<string, unknown>)), ["workers", "reviewer"]);
+  assert.deepEqual((answer.settings?.identity as Record<string, unknown>).workers, held.workers, "another role's App is as it was");
+  assert.equal(((answer.settings?.identity as Record<string, { keyPath: string }>).reviewer).keyPath, "/home/me/.agent-org/apps/acme-reviewer.pem", "a reviewer whose key is gone is replaced by the one just copied");
+});
+
+test("A11-145: a reviewer identity whose key is readable is kept, nothing is asked, and a profile that names no App asks nothing either", async () => {
+  const held = { identity: { reviewer: { mode: "github-apps", appId: "9", keyPath: "/home/me/Downloads/key.pem" } } };
+  const kept = person("never asked");
+  assert.deepEqual(await runKeys(held, kept.deps), { ok: true, detail: "" });
+  assert.deepEqual([kept.asked, kept.written], [[], {}]);
+  const none = person("never asked", undefined, { flags: {} });
+  assert.deepEqual(await runKeys({}, none.deps), { ok: true, detail: "" });
+  assert.deepEqual(none.asked, []);
+});
+
+test("A11-145: with no terminal the step says where the key is missing and how to add it, and asks for nothing", async () => {
+  const { deps, asked, written } = person("never asked", undefined, { interactive: false });
+  assert.deepEqual(await runKeys({}, deps), { ok: true, detail: "NO reviewer App key is set for acme-reviewer. Run `agent-org onboard --profile <name>` at a terminal, which asks for the path of the App's downloaded .pem file." });
+  assert.deepEqual([asked, written], [[], {}]);
+});
+
+test("A11-145: an empty answer adds the key later: nothing is copied and no identity is named", async () => {
+  const { deps, written } = person("   ");
+  assert.deepEqual(await runKeys({}, deps), { ok: true, detail: "" });
+  assert.deepEqual(written, {});
+});
+
+test("A11-145: a key's path that is not absolute, or cannot be read, THROWS its sentence, which refuses onboard, and nothing is written", async () => {
+  const relative = person("keys/app.pem");
+  await assert.rejects(runKeys({}, relative.deps), /^Error: the reviewer App's key must be an absolute path$/);
+  const missing = person("/home/me/Downloads/nothing.pem");
+  await assert.rejects(runKeys({}, missing.deps), /^Error: the reviewer App's key cannot be read at \/home\/me\/Downloads\/nothing\.pem$/);
+  assert.deepEqual([relative.written, missing.written], [{}, {}]);
 });

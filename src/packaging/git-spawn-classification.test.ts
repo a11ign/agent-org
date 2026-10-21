@@ -228,7 +228,6 @@ const COMMAND_IS_NOT_GIT: Record<string, string> = {
 const COMMAND_SUPPLIED_BY_OPERATOR: Record<string, string> = {
   "src/board-document.ts": "the Chrome path is BOARD_DOCUMENT_CHROME when the operator sets it (checked only for existence), else a fixed candidate list; a git path there would run as the browser",
   "src/codex-drift.ts": "the daemon program is the path codex app-server daemon reports for its own managed binary, run as reported; it is codex's own output, not a git spawn",
-  "src/host-units/gh-wrapper-and-notes.ts": "the minter's command is A11Y_APP_NODE when the operator sets it, else node; a git path there would run with the script and role as arguments",
   "src/suite-slots.ts": "the `run -- <command>` argv is the command the operator types after `--`; scrubbing it would change the operator's own environment",
   "src/ticket-mode/ui-css.test.ts": "the Chrome path is BOARD_DOCUMENT_CHROME when set, else a fixed list of browser binaries; the same operator setting as board-document.ts",
 };
