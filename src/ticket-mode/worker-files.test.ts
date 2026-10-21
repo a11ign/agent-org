@@ -726,3 +726,15 @@ test("step 7 has a worker decline a design check by default, and do it on a mach
   assert.match(done, /Decline it only when a design tool call is refused, quoting the refusal in the pull request body\./);
   assert.doesNotMatch(done, /no design tool access/);
 });
+
+test("step 5a has a worker capture a changed page before step 6 opens the pull request, only on a machine that can capture", () => {
+  const brief = (capture?: boolean) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", ...(capture === undefined ? {} : { capture }) });
+  for (const text of [brief(), brief(false)]) assert.doesNotMatch(text, /ticket:capture/, "a machine that cannot capture is not told to");
+  const capturing = brief(true);
+  assert.ok(capturing.indexOf("\n5a. ") > capturing.indexOf("\n5. "), "5a follows the commit step");
+  assert.ok(capturing.indexOf("\n5a. ") < capturing.indexOf("\n6. Push the branch"), "5a comes before the step that opens the pull request");
+  assert.match(capturing, /^5a\. If your change alters what a page of the board looks like, capture each such page before you open the pull request in step 6: run `agent-org ticket:capture <route> --size 1280x800 --out \/d\/captures\/`/m);
+  const expected = [/`\/settings` for the Settings page/, /Commit each PNG as `\.acceptance\/captures\/<name>\.png` on your branch/,
+    /\]\(https:\/\/github\.com\/<owner>\/<repo>\/blob\/<head sha>\/\.acceptance\/captures\/<name>\.png\?raw=true\)/, /Do not end `needs-human` to ask a person to look at the page/];
+  for (const pattern of expected) assert.match(capturing, pattern);
+});

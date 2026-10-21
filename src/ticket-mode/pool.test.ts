@@ -4504,3 +4504,10 @@ test("a worker's brief has it do a design check on a machine with tickets.design
   assert.match(brief, /If a design gate asks for a design check, do it/);
   assert.doesNotMatch(brief, /no design tool access/);
 });
+
+test("a worker's brief has it capture a changed page on a machine with tickets.capture, and says nothing of capture otherwise", async () => {
+  const plain = await startedRun();
+  assert.doesNotMatch(readFileSync(join(plain.dir, "brief.md"), "utf8"), /ticket:capture/);
+  const capturing = await startedRun({ capture: true });
+  assert.match(readFileSync(join(capturing.dir, "brief.md"), "utf8"), /run `agent-org ticket:capture <route> --size 1280x800/);
+});

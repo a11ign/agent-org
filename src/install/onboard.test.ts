@@ -13,6 +13,7 @@ import type { Account, Program, ProgramRunner } from "../ticket-port/stack-exten
 import { diagnose, type DoctorDeps } from "./doctor.ts";
 import type { ProfileRepo } from "./onboard-profile.ts";
 import type { Replacements } from "./interim-guards.ts";
+import { PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 
 const STACK_LISTED = "gh stack  github/gh-stack  v0.2.1\n";
 /** The GitHub CLI as the tests see it by default: the stack extension is listed, and nothing else is asked. */
@@ -71,6 +72,12 @@ function pluginWorld(homeOf: () => string) {
   return { calls, runOver };
 }
 
+/** Both Chromium builds start, which is what onboard finds on a machine that can capture: the default of these tests. */
+const BROWSERS_READY: ChromiumReport = {
+  builds: [{ build: "chromium", binary: "/cache/chromium-1243/chrome", missing: [] }, { build: "chromium-headless-shell", binary: "/cache/shell/chrome-headless-shell", missing: [] }],
+  unchecked: null,
+};
+
 function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: (file: string, args: string[]) => RunResult | undefined = () => undefined) {
   const home = tmpDir("onboard-");
   const repo = join(home, "src", "nbl-ui-netbox");
@@ -121,6 +128,8 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     ghAs: () => listedGh(),
     replacements: async () => ({ ghWrapperDeclared: true, herdrOutsideInstance: true }),
     diagnose: async () => [],
+    chromium: () => BROWSERS_READY,
+    isRoot: () => false,
     startServices: (names) => { started.push(...names); return names.map((name) => `started the ${name} service`).join("\n"); },
     out: { log: (line: string) => printed.push(line) },
     ...over,
@@ -142,6 +151,7 @@ test("onboard writes clones and the key source from flags, keeps the host file's
     stateDir: "/var/agent-org", clones: { netbox: repo },
     tickets: {
       max: 5,
+      capture: true,
       providers: {
         tracker: { provider: "linear", key: { keychain: "agent-org-linear" }, connectors: [...LINEAR_CONNECTORS] },
         exposure: { provider: "local", terminal: TERMINAL },
@@ -150,6 +160,46 @@ test("onboard writes clones and the key source from flags, keeps the host file's
   });
   assert.deepEqual(started, ["instance", "ui", "terminal", "auto-update"]);
   assert.ok(printed.some((line) => line === "the Linear key is readable from the Keychain service agent-org-linear"));
+});
+
+const LACKING: ChromiumReport = {
+  builds: [BROWSERS_READY.builds[0], { build: "chromium-headless-shell", binary: "/cache/shell", missing: ["libatk-1.0.so.0"] }],
+  unchecked: null,
+};
+
+test("onboard installs the browsers as the person, and sets tickets.capture where both builds start", async () => {
+  const { deps: d, home, repo, stored, ran } = deps();
+  stored.set("keychain:agent-org-linear", KEY);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  assert.ok(ran.includes(`node ${PLAYWRIGHT_CLI} install chromium`), "the browsers are installed without root");
+  assert.equal(hostOf(home).tickets.capture, true);
+});
+
+test("onboard keeps tickets.capture out, and says the command, when a library is missing and sudo needs a password", async () => {
+  const { deps: d, home, repo, stored, ran, printed } = deps({ chromium: () => LACKING }, [], (file) => (file === "sudo" ? { status: 1, stdout: "", stderr: "a password is required" } : undefined));
+  stored.set("keychain:agent-org-linear", KEY);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  assert.equal(hostOf(home).tickets.capture, undefined);
+  assert.equal(ran.some((line) => line.includes("install-deps")), false, "no library install is attempted without root or sudo -n");
+  assert.ok(printed.some((line) => line.includes(`install-deps chromium`) && line.includes("libatk-1.0.so.0")), "the command that installs the library is said");
+});
+
+test("onboard installs a missing library through sudo -n when sudo needs no password, then checks again", async () => {
+  let checks = 0;
+  const { deps: d, home, repo, stored, ran } = deps({ chromium: () => (checks++ === 0 ? LACKING : BROWSERS_READY) });
+  stored.set("keychain:agent-org-linear", KEY);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  assert.ok(ran.includes(`sudo -n node ${PLAYWRIGHT_CLI} install-deps chromium`));
+  assert.equal(hostOf(home).tickets.capture, true, "both builds start after the install, so capture is set");
+});
+
+test("onboard installs a missing library without sudo when it runs as root", async () => {
+  let checks = 0;
+  const { deps: d, repo, stored, ran } = deps({ chromium: () => (checks++ === 0 ? LACKING : BROWSERS_READY), isRoot: () => true });
+  stored.set("keychain:agent-org-linear", KEY);
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  assert.ok(ran.includes(`node ${PLAYWRIGHT_CLI} install-deps chromium`));
+  assert.equal(ran.some((line) => line.startsWith("sudo ")), false);
 });
 
 test("a Linear key flag replaces the key the host file holds, as it always has; without a flag the host file's key is kept", async () => {
@@ -408,7 +458,7 @@ function greenDoctor(home: string): DoctorDeps {
     ghWrapper: async () => ({ divergence: null, mints: [] }), ghAs: () => listedGh(), originOf: () => null, platform: "linux",
     isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
-    reviewerGate: async () => null, codexStatus: () => 0, now: () => Date.now(),
+    reviewerGate: async () => null, codexStatus: () => 0, chromium: () => BROWSERS_READY, now: () => Date.now(),
   };
 }
 

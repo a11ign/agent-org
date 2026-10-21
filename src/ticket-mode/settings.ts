@@ -97,6 +97,11 @@ export type TicketSettings = Readonly<{
    */
   designTools: boolean;
   /**
+   * Whether this machine can capture the board for a worker (`ticket:capture`): both Chromium builds start, so the worker brief asks for a capture of a page a
+   * change alters, and the pull request shows it. False by default: a worker is then not told to capture. Onboard sets it when both builds start.
+   */
+  capture: boolean;
+  /**
    * The skill a worker runs on its whole diff before it pushes or opens a pull request, such as `"a11ign:clean-code-review"`, or null for none. When
    * it is set, the ticket hook refuses a push or a pull request until that skill has run since the worker's last commit (A11-86).
    */
@@ -376,6 +381,13 @@ function designToolsOf(value: unknown): boolean {
   return value;
 }
 
+/** `tickets.capture`: true when this machine can capture the board for a worker. Absent is false. Any other value is refused by name. */
+function captureOf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") throw new TicketSettingsRefusal("tickets.capture", `must be true or false, not ${JSON.stringify(value)}`);
+  return value;
+}
+
 /** `tickets.drafts`: true, or false for a worker to open its pull request ready. Absent is true. Any other value is refused by name. */
 function draftsOf(value: unknown): boolean {
   if (value === undefined) return true;
@@ -557,6 +569,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     publish: publisherOf(publish),
     drafts: draftsOf(tickets.drafts),
     designTools: designToolsOf(tickets.designTools),
+    capture: captureOf(tickets.capture),
     prReview: prReviewOf(tickets.prReview),
     reviewer: reviewer.provider === "atomic" ? "atomic" : null,
     pick: pickOf(tickets.pick),
