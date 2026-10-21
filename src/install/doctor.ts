@@ -22,13 +22,14 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { parseTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { PROVIDER_BLOCKS, type ProviderBlock, type Providers, providersOfText } from "../ticket-mode/providers.ts";
-import { blockOf } from "../plugins/concerns.ts";
-import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
+import type { Concern } from "../plugins/concerns.ts";
+import { type ConcernEntry, type PluginEntry, type PluginHealth, sectionHeader, sectionPlugins } from "../plugins/health.ts";
+import { readPluginHealth, toolVersionOf } from "../plugins/health-read.ts";
+import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import { messagingChecksOfFile, messagingStateOfFile } from "../plugins/messaging-state.ts";
 import type { Catalog, PluginDeps, ProbeRequest } from "../plugins/manifest.ts";
 import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
-import { readsConcernContract, unreadMajorRefusal } from "../plugins/version.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
@@ -48,7 +49,11 @@ import { corePolicy } from "../plugins/policy.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
-export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null }>;
+/**
+ * One row of the report. `section` heads the rows of one agent-org plugin (A11-163): consecutive rows with the same section are printed under it, indented, so each plugin has a
+ * section of its own. A row with no section is a machine check.
+ */
+export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null; section?: string }>;
 
 /**
  * The installed `gh` wrapper, read by the host's own module (`host-units.ts`, A11-84): whether it is the one `host.json` declares, and each declared role's token
@@ -308,19 +313,15 @@ function codexChecks(deps: DoctorDeps): Check[] {
 }
 
 /**
- * The reviewer's row (A11-144), with the gate's check when the reviewer is `atomic`: the gate's modules must load, or no reviewer starts a run, and Codex
- * must be installed and logged in (A11-145). With no reviewer, the row says so and asks nothing.
+ * What the reviewer adds to its section (A11-144): with the `atomic` reviewer, the gate's check (its modules must load, or no reviewer starts a run) and Codex, which must be
+ * installed and logged in (A11-145). With no reviewer, nothing is asked.
  */
-async function reviewerChecks(settings: TicketSettings, deps: DoctorDeps, pluginChecks: readonly Check[]): Promise<Check[]> {
-  if (settings.reviewer === null) return [providerRow(settings, "reviewer", pluginChecks)];
+async function reviewerExtras(settings: TicketSettings, deps: DoctorDeps): Promise<Check[]> {
+  if (settings.reviewer === null) return [];
   const refusal = await deps.reviewerGate();
   const gate = refusal === null ? ok("reviewer gate", "the gate's modules load") : failed("reviewer gate", refusal, "fix what it names: no reviewer starts while the gate does not load");
-  const codex = codexChecks(deps);
-  return [gate, ...codex, providerRow(settings, "reviewer", [gate, ...codex, ...pluginChecks])];
+  return [gate, ...codexChecks(deps)];
 }
-
-/** What the agent-org plugins add to the report: the checks each enabled plugin's block folds into its provider row, and the rows that stand alone. */
-type PluginRows = Readonly<{ byBlock: Readonly<Record<ProviderBlock, readonly Check[]>>; rows: readonly Check[] }>;
 
 const pluginFailed = (plugin: string, why: string, fix: string): Check => failed(`plugin ${plugin}`, why, fix);
 
@@ -340,70 +341,98 @@ function hostText(deps: DoctorDeps): string | null {
 }
 
 /**
- * The rows of the agent-org plugins (A11-158): one for each package the registry refused, one for each plugin whose contract major this agent-org does not read and that no block
- * enables (an enabled one is the host row's refusal), and, for each bundled plugin the host enables, the doctor checks it declares, which its provider row summarises. A plugin the loader
- * refuses to load fails its provider row. Nothing here prints a secret: a plugin's rows are its own.
+ * The account of every agent-org plugin (A11-163), read once and drawn as the report's plugin sections: the same account the Settings page draws, so a failed plugin's reason and fix
+ * are the page's word for word. A host file the reader refused cannot say which plugins it enables, and its row already says why; the code host's rows are shown all the same, for the
+ * providers the file names or the defaults: they ran on whatever the host file said (the stacking extension is the person's own `gh` account's), and they are asked alone, since nothing
+ * else of the plugins is built for a file that does not read. Nothing here prints a secret: a plugin's rows are its own.
  */
-async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Promise<PluginRows> {
-  const { catalog: catalogOf, load } = deps.agentOrgPlugins;
-  const catalog = catalogOf();
-  const byBlock = Object.fromEntries(PROVIDER_BLOCKS.map((block) => [block, [] as Check[]])) as Record<ProviderBlock, Check[]>;
-  const rows: Check[] = catalog.refusals.map(({ plugin, why }) => pluginFailed(plugin, why, "fix the plugin's package.json, or remove the plugin"));
-  // A host file the reader refused cannot say which plugins it enables, and its row already says why: an unread major is judged once the file reads. The code host's rows are shown all
-  // the same, for the providers the file names or the defaults: they ran on whatever the host file said (the stacking extension is the person's own `gh` account's), and they are asked
-  // alone, since nothing else of the plugins is built for a file that does not read.
-  const providers = settings?.providers ?? providersOfText(hostText(deps));
-  const blocks: readonly ProviderBlock[] = settings === null ? ["codeHost"] : PROVIDER_BLOCKS;
-  if (settings !== null) {
-    const enabledNames = new Set(PROVIDER_BLOCKS.filter((block) => providers.blocks[block].enabled).map((block) => providers.blocks[block].provider));
-    for (const plugin of catalog.plugins.filter(({ concern, contract, name }) => !readsConcernContract(concern, contract) && !enabledNames.has(name))) {
-      rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
-    }
-  }
+async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps): Promise<PluginHealth> {
+  const { catalog, load, messaging, messagingChecks } = deps.agentOrgPlugins;
   const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
     pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy() };
-  const loaded = await load(providers, catalog, pluginDeps, blocks);
-  // A plugin whose module imported but whose `create` threw has checks of its own, which say why (a key that cannot be read) with the fix: its refusal is a row only when none of them fails.
-  const unbuilt = new Set(loaded.unbuilt.map(({ plugin }) => plugin.name));
-  const addRefusal = ({ plugin, concern, why }: LoadResult["refusals"][number]): void => {
-    const block = blockOf(concern);
-    const row = pluginFailed(plugin, why, "update agent-org, or the plugin");
-    if (block !== null) byBlock[block].push(row);
-    rows.push(row);
-  };
-  loaded.refusals.filter(({ plugin }) => !unbuilt.has(plugin)).forEach(addRefusal);
-  for (const { plugin, module } of [...loaded.loaded, ...loaded.unbuilt]) {
-    const block = blockOf(plugin.concern);
-    if (block === null) continue;
-    const checks = await module.doctorChecks(settingsOfBlock(providers.blocks[block]), pluginDeps);
-    byBlock[block].push(...checks);
-    rows.push(...checks);
-    const refusal = loaded.refusals.find((candidate) => candidate.plugin === plugin.name);
-    if (unbuilt.has(plugin.name) && refusal !== undefined && checks.every((check) => check.ok)) addRefusal(refusal);
-  }
-  return { byBlock, rows };
+  return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
+    version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });
 }
 
+/** A plugin's own rows: the checks it reported, then the row that says it failed, unless one of the checks already says it (a key that cannot be read says why `create` threw, with its own fix). */
+function pluginRowsOf(entry: PluginEntry): Check[] {
+  const { failure } = entry;
+  const said = failure !== null && entry.checks.some((check) => !check.ok && check.detail === failure.why);
+  return [...entry.checks, ...(failure === null || said ? [] : [pluginFailed(entry.name, failure.why, failure.fix)])];
+}
+
+/** The plugin a block names, if the concern has one in force: the one section its provider row summarises. */
+const namedEntry = (concern: ConcernEntry): PluginEntry | undefined => concern.plugins.find((plugin) => plugin.enabled || plugin.installed);
+
+/** Rows under a section's header. */
+const under = (section: string, rows: readonly Check[]): Check[] => rows.map((row) => ({ ...row, section }));
+
 /**
- * The messaging rows (A11-158, A11-162): what the project's `messaging` key says, and for a plugin that is on, the checks it declares, which its row summarises. Messaging is configured in
- * `project.json`'s `messaging` key (not a provider block), so the plugin's rows are asked for the files that key resolves to. A key the messaging reader refuses is the row's failure.
+ * One concern's sections, each plugin under a header that names the concern, the plugin, its state and contract and where its code lives. The plugin the block names is followed by the
+ * concern's provider row, which summarises its checks and the machine checks that feed the same row; a disabled one says what the board does without it. A concern with no plugin
+ * is `<concern>: none`, with its provider row. A plugin that failed has its FAIL row, named and with the fix.
  */
-async function messagingRows(deps: DoctorDeps): Promise<Check[]> {
-  const state = await deps.agentOrgPlugins.messaging();
-  if (state.provider === null) return [ok("messaging (none)", state.why)];
-  const { provider } = state;
-  if (!state.enabled) return [ok(`messaging (${provider}, disabled)`, "disabled: nothing is sent to the chairman and nothing is asked, and its settings are kept for `agent-org plugin enable`")];
-  let checks: Check[];
-  try {
-    checks = [...await deps.agentOrgPlugins.messagingChecks()];
-  } catch (error) {
-    checks = [failed(`plugin ${provider}`, (error as Error).message, "fix the messaging key of project.json: `agent-org messaging:check` says what is wrong with it")];
-  }
-  const failing = checks.filter((check) => !check.ok);
-  const name = `messaging (${provider})`;
-  const where = "configured in project.json's messaging key";
-  return [...checks, failing.length === 0 ? ok(name, checks.length === 0 ? where : `${where}, and its checks pass`)
-    : failed(name, `${where}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises")];
+function concernSections(concern: ConcernEntry, summary: (named: PluginEntry | undefined, rows: readonly Check[]) => Check[], extra: readonly Check[] = []): Check[] {
+  const named = namedEntry(concern);
+  const sections = sectionPlugins(concern).flatMap((entry) => {
+    const rows = pluginRowsOf(entry);
+    return under(sectionHeader(concern.label, entry), entry === named ? [...rows, ...summary(entry, rows)] : rows);
+  });
+  // A concern no plugin runs still has its row (the provider is none, or names a plugin the registry does not hold), whether or not another plugin of it failed.
+  return named === undefined ? [...sections, ...under(`${concern.label}: none`, [...extra, ...summary(undefined, extra)])] : sections;
+}
+
+const concernOf = (health: PluginHealth, concern: Concern): ConcernEntry => health.concerns.find((entry) => entry.concern === concern)!;
+
+/**
+ * The messaging section (A11-158, A11-162): what the project's `messaging` key says, and for a plugin that is on, the checks it declares, which its row summarises. Messaging is configured in
+ * `project.json`'s `messaging` key (not a provider block); a key the messaging reader refuses is the row's failure.
+ */
+function messagingSections(health: PluginHealth): Check[] {
+  const { messaging, messagingFailure } = health;
+  const named = namedEntry(concernOf(health, "messaging"));
+  // A key that names a plugin the registry does not hold has no entry to fail: its refusal is the row.
+  const unknown = named === undefined && messagingFailure !== null && messaging.provider !== null ? [pluginFailed(messaging.provider, messagingFailure.why, messagingFailure.fix)] : [];
+  return concernSections(concernOf(health, "messaging"), (_entry, rows) => {
+    if (messaging.provider === null) return [ok("messaging (none)", messaging.why)];
+    const { provider } = messaging;
+    if (!messaging.enabled) return [ok(`messaging (${provider}, disabled)`, "disabled: nothing is sent to the chairman and nothing is asked, and its settings are kept for `agent-org plugin enable`")];
+    const failing = rows.filter((check) => !check.ok);
+    const name = `messaging (${provider})`;
+    const where = "configured in project.json's messaging key";
+    return [failing.length === 0 ? ok(name, rows.length === 0 ? where : `${where}, and its checks pass`)
+      : failed(name, `${where}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises")];
+  }, unknown);
+}
+
+/** The machine checks a provider's row summarises beside its plugin's own rows. */
+type Machine = Readonly<{ gh: readonly Check[]; terminal: readonly Check[] }>;
+
+/** The registry's refusals, in a section of their own: they name no concern, so no plugin's section holds them. */
+const registrySection = (health: PluginHealth): Check[] => under("refused by the registry", health.refused.map(({ plugin, failure }) => pluginFailed(plugin, failure.why, failure.fix)));
+
+/**
+ * The sections of a host file the reader refused: its row says why, and nothing of the plugins is built but the code host's, whose rows are shown as they always were, with no provider row
+ * to summarise them. The registry's refusals are still said.
+ */
+function hostlessSections(health: PluginHealth): Check[] {
+  const codeHost = concernOf(health, "codeHost").plugins.filter((plugin) => plugin.enabled || plugin.installed);
+  return [...codeHost.flatMap(pluginRowsOf), ...messagingSections(health), ...registrySection(health)];
+}
+
+/** Every plugin section, in the order tracker, code host, publisher, reviewer, exposure, messaging, then what the registry refused. */
+async function pluginSections(settings: TicketSettings, health: PluginHealth, { gh, terminal }: Machine, deps: DoctorDeps): Promise<Check[]> {
+  const summarise = (block: ProviderBlock, machine: readonly Check[] = []) => (_entry: PluginEntry | undefined, rows: readonly Check[]): Check[] => [providerRow(settings, block, [...machine, ...rows])];
+  const extras = await reviewerExtras(settings, deps);
+  return [
+    ...concernSections(concernOf(health, "tracker"), summarise("tracker")),
+    ...concernSections(concernOf(health, "codeHost"), summarise("codeHost", gh)),
+    ...concernSections(concernOf(health, "publisher"), summarise("publish")),
+    ...concernSections(concernOf(health, "reviewer"), (entry, rows) => [...extras, ...summarise("reviewer", extras)(entry, rows)]),
+    ...concernSections(concernOf(health, "exposure"), summarise("exposure", terminal)),
+    ...messagingSections(health),
+    ...registrySection(health),
+  ];
 }
 
 /**
@@ -427,12 +456,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const plugins = pluginsOf(settings, deps);
   const gh = noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper());
   const terminal = await terminalChecks(settings, deps);
-  const extra = await pluginRows(settings, deps);
-  const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...extra.byBlock.codeHost])];
-  const tracker = settings === null ? [] : [providerRow(settings, "tracker", extra.byBlock.tracker)];
-  const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...extra.byBlock.exposure])];
-  const publisher = settings === null ? [] : [providerRow(settings, "publish", extra.byBlock.publish)];
-  const reviewer = settings === null ? [] : await reviewerChecks(settings, deps, extra.byBlock.reviewer);
+  const health = await pluginHealthOf(settings, deps);
+  const sections = settings === null ? hostlessSections(health) : await pluginSections(settings, health, { gh, terminal }, deps);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -442,13 +467,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     host,
     ...aliasChecks(settings),
     ...gh,
-    // The code host plugin's own rows (for GitHub: the stacking extension and the stacks), where they were when doctor owned them, then the code host's row that summarises them.
-    ...extra.byBlock.codeHost,
-    ...codeHost,
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
-    // The tracker plugin's own rows (for Linear: its key and its MCP), where they were when doctor owned them, then the tracker's row that summarises them.
-    ...extra.byBlock.tracker,
-    ...tracker,
     writerCheck(settings, plugins),
     ...pluginChecks(settings, plugins),
     ...await preflightChecks(settings, deps),
@@ -456,13 +475,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...herdrScopeChecks(settings, instanceState, deps),
     ...ui,
     ...terminal,
-    // The exposure plugin's own rows (for Tailscale: its entries, Funnel and whether each port answers), then the exposure's row that summarises them.
-    ...extra.byBlock.exposure,
-    ...exposure,
-    ...publisher,
-    ...reviewer,
-    ...extra.rows.filter((row) => !extra.byBlock.tracker.includes(row) && !extra.byBlock.codeHost.includes(row) && !extra.byBlock.exposure.includes(row)),
-    ...await messagingRows(deps),
+    // One section per agent-org plugin, in concern order, each with the plugin's own rows and then the concern's row that summarises them (A11-163).
+    ...sections,
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
@@ -609,8 +623,22 @@ async function serviceChecks(name: ServiceName, port: number, state: ServiceStat
   ];
 }
 
+/** A row as the report prints it: `ok` or `FAIL`, its name and detail, and a failing row's fix on the line below. */
+const rowText = ({ name, ok: passed, detail, fix }: Check): string => (passed ? `ok    ${name}: ${detail}` : `FAIL  ${name}: ${detail}\n      fix: ${fix}`);
+
+/**
+ * The report's text. A row with a `section` is printed under that section's header, indented, the header once for the rows that follow each other (A11-163): the plugins are sections,
+ * and the machine's checks stand outside them.
+ */
 export function report(checks: readonly Check[]): string {
-  return checks.map(({ name, ok: passed, detail, fix }) => (passed ? `ok    ${name}: ${detail}` : `FAIL  ${name}: ${detail}\n      fix: ${fix}`)).join("\n");
+  const lines: string[] = [];
+  let open: string | undefined;
+  for (const check of checks) {
+    if (check.section !== open && check.section !== undefined) lines.push(check.section);
+    open = check.section;
+    lines.push(...rowText(check).split("\n").map((line) => (check.section === undefined ? line : `  ${line}`)));
+  }
+  return lines.join("\n");
 }
 
 /** The release tags this checkout holds, read with git and no network: none when git cannot be run. */

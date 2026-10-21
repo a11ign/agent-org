@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { CONNECTORS as LINEAR_CONNECTORS } from "../../plugins/linear/connectors.ts";
+import { runPlugin } from "../plugins/cli.ts";
 import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import type { OnboardStep } from "../plugins/manifest.ts";
 import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "../plugins/registry.ts";
@@ -167,8 +168,9 @@ test("onboard writes clones and the key source from flags, keeps the host file's
       max: 5,
       capture: true,
       providers: {
-        tracker: { provider: "linear", key: { keychain: "agent-org-linear" }, connectors: [...LINEAR_CONNECTORS] },
-        exposure: { provider: "local", terminal: TERMINAL },
+        tracker: { provider: "linear", enabled: true, key: { keychain: "agent-org-linear" }, connectors: [...LINEAR_CONNECTORS] },
+        codeHost: { provider: "github", enabled: true },
+        exposure: { provider: "local", enabled: true, terminal: TERMINAL },
       },
     },
   });
@@ -528,9 +530,9 @@ test("A11-145: a complete profile sets everything but the secrets: asks for the 
   const host = hostOf(home);
   assert.deepEqual(host.clones, { "example-app": repo });
   assert.deepEqual(host.tickets.providers, {
-    tracker: { provider: "linear", workingState: "In Progress", plannedState: "Planned", key: { path: join(home, ".agent-org", "linear.key") }, connectors: [...LINEAR_CONNECTORS] },
-    codeHost: { provider: "github", identity: { reviewer: { mode: "github-apps", slug: "example-reviewer", appId: 111, installationId: 222, keyPath: join(home, ".agent-org", "apps", "example-reviewer.pem") } } },
-    publish: { provider: "none" }, reviewer: { provider: "atomic" }, exposure: { provider: "local", terminal: TERMINAL },
+    tracker: { provider: "linear", enabled: true, workingState: "In Progress", plannedState: "Planned", key: { path: join(home, ".agent-org", "linear.key") }, connectors: [...LINEAR_CONNECTORS] },
+    codeHost: { provider: "github", enabled: true, identity: { reviewer: { mode: "github-apps", slug: "example-reviewer", appId: 111, installationId: 222, keyPath: join(home, ".agent-org", "apps", "example-reviewer.pem") } } },
+    publish: { provider: "none" }, reviewer: { provider: "atomic", enabled: true }, exposure: { provider: "local", enabled: true, terminal: TERMINAL },
   });
   assert.deepEqual(host.tickets.pick, { team: "ZZ" });
   assert.deepEqual(host.tickets.plugins, [PLUGIN]);
@@ -675,7 +677,7 @@ test("A11-162: onboarding a tailscale exposure with no Tailscale installed says 
   seedExposure(base.home, { provider: "tailscale" });
   await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
   assert.ok(base.printed.includes("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing"));
-  assert.deepEqual(hostOf(base.home).tickets.providers.exposure, { provider: "tailscale", terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" },
+  assert.deepEqual(hostOf(base.home).tickets.providers.exposure, { provider: "tailscale", enabled: true, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" },
     "an interactive onboard writes no ports (a profile's get the plugin's defaults, as they always did); the terminal's address is onboard's, as before");
 });
 
@@ -693,15 +695,16 @@ test("A11-162: onboarding the local exposure asks Tailscale nothing, and writes 
   const base = deps({}, [], (file) => { if (file === "tailscale") throw new Error("the local exposure must not run tailscale"); return undefined; });
   seedExposure(base.home, { provider: "local" });
   await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
-  assert.deepEqual(hostOf(base.home).tickets.providers.exposure, { provider: "local", terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" });
+  assert.deepEqual(hostOf(base.home).tickets.providers.exposure, { provider: "local", enabled: true, terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" });
   assert.ok(!base.printed.some((line) => /tailscale/i.test(line) && !line.includes("doctor")));
 });
 
 // ---- A11-159: onboard runs the steps of each plugin the host will enable, and writes the settings they choose into the plugin's block
 const STEPPED_ROOT = "/checkout";
 const STEPPED_FILES: PackageFiles = {
-  directories: (path) => (path === `${STEPPED_ROOT}/plugins` ? ["local", "stepped"] : []),
-  text: (path) => (path === `${STEPPED_ROOT}/plugins/local/package.json` ? JSON.stringify({ agentOrg: { concern: "exposure", contract: "1.1", description: "Loopback.", entry: "index.ts",
+  directories: (path) => (path === `${STEPPED_ROOT}/plugins` ? ["github", "local", "stepped"] : []),
+  text: (path) => (path === `${STEPPED_ROOT}/plugins/github/package.json` ? JSON.stringify({ agentOrg: { concern: "codeHost", contract: "1.1", description: "A code host.", entry: "index.ts" } })
+    : path === `${STEPPED_ROOT}/plugins/local/package.json` ? JSON.stringify({ agentOrg: { concern: "exposure", contract: "1.1", description: "Loopback.", entry: "index.ts",
     settings: ["port", "uiPort", "terminal"].reduce((all, name) => ({ ...all, [name]: { key: `tickets.providers.exposure.${name}`, file: "host.json", group: "Exposure", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } } }), {}) } })
     : path === `${STEPPED_ROOT}/plugins/stepped/package.json` ? JSON.stringify({ agentOrg: { concern: "tracker", contract: "1.1", description: "A tracker that steps.", entry: "index.ts",
     settings: ["token", "mode"].reduce((all, name) => ({ ...all, [name]: { key: `tickets.providers.tracker.${name}`, file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } } }), {}) } }) : null),
@@ -735,7 +738,7 @@ test("A11-159: onboard runs a plugin's steps in order, each given the settings t
   ], "the block's own settings first, then the first step's; the tracker plugin is told the key flags; nobody answered the questions for it");
   assert.ok(printed.includes("step one says this") && printed.includes("step three saw token t1"));
   assert.equal(printed.indexOf("step one says this") + 1, printed.indexOf("step three saw token t1"), "the second step's empty detail is not printed between them");
-  assert.deepEqual(hostOf(home).tickets.providers.tracker, { provider: "stepped", mode: "fast", token: "t1" }, "a step replaces the setting it returns, and one it returns undefined for keeps the block's");
+  assert.deepEqual(hostOf(home).tickets.providers.tracker, { provider: "stepped", enabled: true, mode: "fast", token: "t1" }, "a step replaces the setting it returns, and one it returns undefined for keeps the block's");
 });
 
 test("A11-159: a plugin whose create threw (a key not stored yet) still has its steps run, since the step is what stores it; any other refusal refuses onboard by name and writes nothing", async () => {
@@ -771,4 +774,48 @@ test("A11-159: a profile answers onboard's questions, so a plugin's steps are to
   seedProfile(home, profiled.repo);
   await onboard(options({ profile: "example-laptop", start: false }), profiled.deps);
   assert.deepEqual(seen, [false, true]);
+});
+
+// ---- A11-163: onboard installs and enables the plugins it chose, and says so
+
+const PLUGIN_STATE_LINES = /^(?:installed .* as the .*|.* is already the .*)$/;
+
+test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub plugins as blocks that `plugin list`, `disable` and `config` read, and says one line each before the plugin's steps", async () => {
+  const base = deps({ platform: "linux" });
+  await onboard(options({ repos: [`netbox=${base.repo}`], keyFile: join(base.home, ".agent-org", "linear.key"), start: false }), base.deps);
+  const providers = hostOf(base.home).tickets.providers;
+  assert.deepEqual([providers.tracker.provider, providers.tracker.enabled, providers.codeHost.provider, providers.codeHost.enabled], ["linear", true, "github", true]);
+  const lines = base.printed.filter((line) => PLUGIN_STATE_LINES.test(line));
+  assert.deepEqual(lines, ["installed linear as the tracker", "installed github as the code host", "installed local as the exposure"]);
+  assert.equal(base.printed.indexOf("installed linear as the tracker"), 0, "the lines come before any plugin's steps say anything");
+  // The CLI reads them as installed and enabled: `list` shows both, and `disable github` is refused as the only code host, not as "not installed".
+  const hostPath = join(base.home, ".agent-org", "host.json");
+  const said: string[] = [];
+  const run = async (...argv: string[]) => ({ status: await runPlugin(argv, { hostPath, catalog: defaultCatalog(), log: (line) => said.push(line), error: (line) => said.push(line) }), said: said.splice(0).join("\n") });
+  const list = await run("list");
+  assert.match(list.said, /tracker: linear \(from tickets\.providers\.tracker\)\n {2}linear +enabled/);
+  assert.match(list.said, /code host: github \(from tickets\.providers\.codeHost\)\n {2}github +enabled/);
+  const disable = await run("disable", "github");
+  assert.equal(disable.status, 1);
+  assert.equal(disable.said, "agent-org plugin: github is the only code host, and exactly one code host must be enabled: it cannot be disabled");
+  assert.equal((await run("config", "github")).status, 0, "config reads an installed plugin");
+});
+
+test("A11-163: a profile's optional plugins other than none are installed and enabled too, each with its line; none has no line, and a block the host file already holds is said to be", async () => {
+  const base = deps({ platform: "linux", interactive: false });
+  mkdirSync(join(base.home, ".agent-org", "profiles"), { recursive: true });
+  const profile = { ...profileOf({ name: "example-app", path: base.repo }), reviewer: { provider: "atomic" }, exposure: { provider: "tailscale" } };
+  writeFileSync(join(base.home, ".agent-org", "profiles", "example-laptop.json"), JSON.stringify(profile));
+  writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify({ tickets: { providers: { tracker: { provider: "linear", enabled: true } } } }));
+  await onboard(options({ profile: "example-laptop", keyFile: join(base.home, ".agent-org", "linear.key"), start: false }), base.deps);
+  assert.deepEqual(base.printed.filter((line) => PLUGIN_STATE_LINES.test(line)), ["linear is already the tracker", "installed github as the code host", "installed atomic as the reviewer", "installed tailscale as the exposure"]);
+  const providers = hostOf(base.home).tickets.providers;
+  assert.deepEqual([providers.publish, providers.reviewer.enabled, providers.exposure.enabled], [{ provider: "none" }, true, true], "none is left as it is");
+});
+
+test("A11-163: a host file that switched a plugin off keeps it off: onboard writes only the keys that are absent", async () => {
+  const base = deps({ platform: "linux" });
+  seedExposure(base.home, { provider: "tailscale", enabled: false });
+  await onboard(options({ repos: [base.repo], keyFile: join(base.home, ".agent-org", "linear.key"), start: false }), base.deps);
+  assert.equal(hostOf(base.home).tickets.providers.exposure.enabled, false);
 });

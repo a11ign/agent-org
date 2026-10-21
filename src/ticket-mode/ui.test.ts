@@ -10,6 +10,7 @@ import * as view_3 from "./board-view/run-reason.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
+import * as pluginsSection from "./plugins-section.ts";
 import { testEach } from "../lib/test-each.ts";
 
 /**
@@ -18,9 +19,9 @@ import { testEach } from "../lib/test-each.ts";
  * and its top-level `await` runs inside an async wrapper.
  */
 const MODULE = /<script type="module">([\s\S]*)<\/script>/.exec(readFileSync(new URL("./ui.html", import.meta.url), "utf8"))![1];
-const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters|assignee-filter|settings-search)\.js";$/gm;
+const IMPORTS = /^import \{[^}]*\} from "\/(board-view|label-filters|assignee-filter|settings-search|plugins-section)\.js";$/gm;
 const imported = [...MODULE.matchAll(IMPORTS)].map((m) => m[1]).sort();
-if (imported.join() !== "assignee-filter,board-view,label-filters,settings-search") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js, /label-filters.js, /assignee-filter.js and /settings-search.js as this test expects`);
+if (imported.join() !== "assignee-filter,board-view,label-filters,plugins-section,settings-search") throw new Error(`the page's script imports ${imported.join() || "nothing"}, not /board-view.js, /label-filters.js, /assignee-filter.js, /settings-search.js and /plugins-section.js as this test expects`);
 const SCRIPT = `(async () => {\n${MODULE.replace(IMPORTS, "")}\n})();`;
 
 class Node_ {
@@ -107,14 +108,15 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   queueHeld?: { name: string; reason: string; since: number };
   /** What the instance's Settings page reads (`/api/settings`), by default an instance with nothing to describe. */
   settings?: unknown;
+  /** What the instance's Plugins section reads (`/api/plugins`), and what it answers an action with; the text Copy puts on the clipboard goes to `clipboard`. */
+  plugins?: unknown; pluginActions?: (body: any) => unknown; clipboard?: string[];
   /** What the instance answers a Settings edit with (`/api/settings/preview`, `save` and `restore`), by its path and body. */
   edits?: (path: string, body: any) => unknown };
 const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [], contract: [] };
 async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children, pulls,
-  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits }: PageOptions = {}) {
+  writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits, plugins, pluginActions, clipboard = [] }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
-  const posts: { path: string; body: any }[] = [];
-  const requested: string[] = [];
+  const posts: { path: string; body: any }[] = [], requested: string[] = [];
   // A path in `hold` answers its value only once the test calls `release`, as a slow remote does.
   let release!: () => void;
   const gate = new Promise<void>((done) => { release = done; });
@@ -157,6 +159,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       "/api/max": () => { max = body.max; return { entries, max, paused: true }; },
       ...(children === undefined ? {} : { "/api/queue-children": () => children }),
       "/api/settings": () => settings,
+      ...(plugins === undefined ? {} : { "/api/plugins": () => plugins }), ...(pluginActions === undefined ? {} : { "/api/plugins/action": () => pluginActions(body) }),
       ...(edits === undefined ? {} : { "/api/settings/preview": () => edits("/api/settings/preview", body), "/api/settings/save": () => edits("/api/settings/save", body), "/api/settings/restore": () => edits("/api/settings/restore", body) }),
     };
     const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), pulls: pulls ?? {} };
@@ -167,8 +170,8 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...labelFilters, ...assigneeFilter, ...settingsSearch, document, fetch,
-    window: { localStorage, open: browser.open, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+    window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } }, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
   for (let i = 0; i < 10; i++) await settle();
@@ -1856,7 +1859,7 @@ test("the page draws what each key says, in its group, with its state and source
   const p = await page(new Map(), { config: SETTINGS, settings: DESCRIBED });
   await openFrom(p, "open-settings");
   const headings = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
-  assert.deepEqual(headings, ["Workers", "Pick", "Conventions plugin"], "one heading per group, in the page's order");
+  assert.deepEqual(headings, ["Plugins", "Workers", "Pick", "Conventions plugin"], "the Plugins section first, then one heading per group, in the page's order");
   const text = p.$("settings-groups").text();
   assert.match(text, /tickets\.max[\s\S]*Value: 3\. State: default\. Source: built-in default\./);
   assert.match(text, /tickets\.linearKey\.path[\s\S]*Value: \/k\/linear\.key \(the file is missing\)\. State: enabled\. Source: host\.json\./, "a secret path shows its path and whether the file exists");
@@ -2072,7 +2075,7 @@ test("Settings: a row says Editable or Read-only, what the key does and what bre
   assert.match(alias.text(), /Alias of tickets\.providers\.exposure\.port: run agent-org doctor --fix\. State: enabled\. Source: host\.json\. Read-only\./, "an alias says where its key is in place of its value");
   assert.doesNotMatch(alias.text(), /Value: 4747/, "its value text is replaced");
   const provider = rowOf(p, "tickets.providers.tracker.provider");
-  assert.match(provider.text(), /Change the provider with agent-org onboard/, "a provider's row says where it is changed");
+  assert.match(provider.text(), /Change the provider with the Plugins section or agent-org plugin/, "a provider's row says where it is changed");
   assert.equal(visibleText(p.$("settings-groups")).includes("The loopback port the instance listens on."), false, "the explanation is not visible until Details opens");
   assert.equal(visibleText(p.$("settings-groups")).includes("If it is wrong"), false, "nor is what breaks");
   const details = alias.all().find((n) => n.tag === "details")!;
@@ -2338,4 +2341,244 @@ test("Settings: the Changes panel is drawn only while it has something in it, an
   await stage(p, "tickets.drafts", "false");
   assert.equal(p.$("edit-panel").hidden, false, "a staged change draws the panel, where it is reviewed");
   assert.equal(p.$("restores").children.length, 1, "and the restore buttons stay below the sections");
+});
+
+// ---- A11-163: the Settings page's Plugins section
+
+type FixturePlugin = Record<string, any>;
+/** A plugin's entry as `GET /api/plugins` sends it (plugins/health.ts): the fields the page draws. */
+const plugin = (name: string, over: FixturePlugin = {}): FixturePlugin => ({ name, concern: "tracker", version: "v1.2.3", contract: "1.1", where: `plugins/${name}`, description: `${name} does its work.`, state: "enabled", installed: true,
+  enabled: true, checks: [], failure: null, controls: { offered: ["disable", "uninstall", "configure"], refused: {}, confirm: { uninstall: `Uninstall ${name}? Its block is removed.` } }, installCommand: `agent-org plugin install ${name}`,
+  secrets: [], settingKeys: [], ...over });
+const concern = (name: string, label: string, plugins: FixturePlugin[], over: FixturePlugin = {}): FixturePlugin => ({ concern: name, label, file: "host.json", required: name === "tracker" || name === "codeHost",
+  enabled: plugins.find((candidate) => candidate.enabled)?.name ?? null, empty: null, plugins, ...over });
+const LINEAR = plugin("linear", { settingKeys: ["tickets.providers.tracker.workingState", "tickets.providers.tracker.key.path"], secrets: [
+  { setting: "key.keychain", command: "security add-generic-password -a \"$USER\" -s agent-org-linear -w" }, { setting: "key.path", command: "( umask 077; read -rs -p \"Linear API key: \" K; printf '%s' \"$K\" > ~/.config/agent-org/linear.key )" }],
+  controls: { offered: ["disable", "uninstall", "configure"], refused: { disable: "linear is the only tracker, and exactly one tracker must be enabled: it cannot be disabled", uninstall: "linear is the only tracker, and exactly one tracker must be enabled: it cannot be uninstalled, since its default would put linear back" }, confirm: { uninstall: "Uninstall linear?" } } });
+const TELEGRAM = plugin("telegram", { concern: "messaging", state: "not installed", installed: false, enabled: false, where: "plugins/telegram", settingKeys: [],
+  controls: { offered: [], refused: {}, confirm: {} }, secrets: [{ setting: "tokenFile", command: "( umask 077; read -rs -p \"bot token: \" T; printf '%s' \"$T\" > ~/.config/agent-org/telegram-token )" }, { setting: "chairmanFile", command: "agent-org messaging:pair" }] });
+const TAILSCALE = plugin("tailscale", { concern: "exposure", settingKeys: ["tickets.providers.exposure.port", "tickets.providers.exposure.tailnetPorts"], controls: { offered: ["disable", "uninstall", "configure"], refused: {}, confirm: { uninstall: "Uninstall tailscale? Its block is removed." } } });
+const LOCAL = plugin("local", { concern: "exposure", state: "not installed", installed: false, enabled: false, settingKeys: ["tickets.providers.exposure.port"], controls: { offered: ["install"], refused: {}, confirm: { install: "Install local? It replaces tailscale as the exposure: no setting is lost." } } });
+const SLACK = plugin("slack", { concern: "publisher", state: "not installed", installed: false, enabled: false, where: "core, until A11-161", controls: { offered: ["install"], refused: {}, confirm: {} } });
+const PLUGINS = {
+  version: "v1.2.3", messaging: { provider: null, why: "no project" }, note: null, bases: { "host.json": "h1" }, refused: [],
+  concerns: [
+    concern("tracker", "tracker", [LINEAR]),
+    concern("codeHost", "code host", [plugin("github", { concern: "codeHost", settingKeys: [], controls: { offered: ["disable", "uninstall"], refused: { disable: "github is the only code host, and exactly one code host must be enabled: it cannot be disabled" }, confirm: { uninstall: "Uninstall github?" } } })]),
+    concern("publisher", "publisher", [SLACK], { empty: { text: "None", commands: ["agent-org plugin install slack"] } }),
+    concern("reviewer", "reviewer", [], { empty: { text: "None", commands: [] } }),
+    concern("exposure", "exposure", [TAILSCALE, LOCAL]),
+    concern("messaging", "messaging", [TELEGRAM], { file: "project.json", empty: { text: "None", commands: ["agent-org plugin install telegram"] } }),
+  ],
+};
+/** The Settings rows of the five provider groups, as the instance describes them: the plugin line, a plugin's own setting, one only another plugin of the concern declares, and an old key. */
+const PLUGIN_ROWS = {
+  ...NOTHING_TO_DESCRIBE,
+  groups: [
+    { group: "Tracker", rows: [
+      SHOWN({ key: "tickets.providers.tracker.provider", group: "Tracker", explanation: "The tracker's provider.", value: "linear" }),
+      SHOWN({ key: "tickets.providers.tracker.workingState", group: "Tracker", explanation: "The state a ticket moves to as a worker starts.", input: "text", raw: "In Progress", editable: true }),
+    ] },
+    { group: "Exposure", rows: [
+      SHOWN({ key: "tickets.providers.exposure.provider", group: "Exposure", explanation: "The exposure's provider.", value: "tailscale" }),
+      SHOWN({ key: "tickets.providers.exposure.enabled", group: "Exposure", explanation: "Whether the exposure runs.", value: "true" }),
+      SHOWN({ key: "tickets.providers.exposure.port", group: "Exposure", explanation: "The loopback port the instance listens on.", input: "number", raw: "4747", editable: true }),
+      SHOWN({ key: "tickets.providers.exposure.tailnetPorts", group: "Exposure", explanation: "The ports served on the tailnet.", state: "default" }),
+      SHOWN({ key: "tickets.port", group: "Exposure", explanation: "An old key for the port.", alias: "Alias of tickets.providers.exposure.port: run agent-org doctor --fix" }),
+    ] },
+    { group: "Workers", rows: [SHOWN({ key: "tickets.stallMinutes", group: "Workers", explanation: "How long a run may be silent before it is stalled.", value: "20" })] },
+  ],
+};
+/** The Plugins section as the page draws it. */
+const pluginsNode = (p: Page) => p.$("settings-groups").all().find((n) => n.className === "plugins")!;
+/** Press the control `label` of the plugin `name`, and let the page act. */
+const press = async (p: Page, name: string, label: string) => { buttonIn(pluginRow(p, name), label).fire("click"); await flush(); };
+/** The row of the plugin `name`, in the Plugins section. */
+const pluginRow = (p: Page, name: string) => pluginsNode(p).all().find((n) => n.tag === "li" && n.className.startsWith("plugin") && n.text().startsWith(`${name}. Version`))!;
+const buttonsIn = (node: Node_) => node.all().filter((n) => n.tag === "button");
+
+test("A11-163: the Plugins section lists the concerns in the chairman's order, each plugin with its name, version, contract and state in words", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS });
+  const headings = pluginsNode(p).all().filter((n) => n.tag === "h4").map((n) => n.text());
+  assert.deepEqual(headings, ["Tracker", "Code host", "Publisher", "Reviewer", "Exposure", "Messaging"]);
+  assert.equal(pluginRow(p, "linear").all().find((n) => n.tag === "p")!.text(), "linear. Version v1.2.3. Contract 1.1. State: enabled.");
+  assert.match(pluginRow(p, "local").text(), /^local\. Version v1\.2\.3\. Contract 1\.1\. State: not installed\./);
+  assert.match(pluginRow(p, "slack").text(), /core, until A11-161\./, "a built-in says it is still core's");
+  assert.deepEqual(p.requested.filter((path) => path === "/api/plugins").length, 1, "the section is its own call");
+});
+
+test("A11-163: Disable on the only tracker or code host is drawn disabled with the reason beside it, and Disable on an optional plugin posts the action with the file's base", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, pluginActions: () => ({ said: "disabled tailscale: the board is served on loopback only", changed: true, inForce: ["in force after the instance, the page and the terminal restart."] }) });
+  const disable = buttonIn(pluginRow(p, "linear"), "Disable");
+  assert.equal(disable.disabled, true);
+  assert.ok(pluginRow(p, "linear").text().includes("linear is the only tracker, and exactly one tracker must be enabled: it cannot be disabled"), "the reason is beside it");
+  assert.equal(buttonIn(pluginRow(p, "github"), "Disable").disabled, true);
+  const off = buttonIn(pluginRow(p, "tailscale"), "Disable");
+  assert.equal(off.disabled, false);
+  off.fire("click");
+  await flush();
+  assert.deepEqual(p.posts.at(-1), { path: "/api/plugins/action", body: { action: "disable", name: "tailscale", base: "h1" } });
+  assert.match(pluginsNode(p).text(), /disabled tailscale: the board is served on loopback only\. in force after the instance, the page and the terminal restart\./, "it says what it did and when it is in force");
+  assert.ok(p.requested.filter((path) => path === "/api/plugins").length >= 2, "and the page reads the plugins again");
+});
+
+test("A11-163: Uninstall and an Install that replaces a plugin ask first, naming what is lost, and post nothing until they are confirmed", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, pluginActions: () => ({ said: "uninstalled tailscale", changed: true, inForce: [] }) });
+  await press(p, "tailscale", "Uninstall");
+  assert.equal(p.posts.some((post) => post.path === "/api/plugins/action"), false, "nothing is sent before the confirmation");
+  assert.ok(pluginRow(p, "tailscale").text().includes("Uninstall tailscale? Its block is removed."));
+  buttonIn(pluginRow(p, "tailscale"), "Cancel").fire("click");
+  assert.equal(p.posts.some((post) => post.path === "/api/plugins/action"), false, "Cancel sends nothing");
+  await press(p, "tailscale", "Uninstall");
+  await press(p, "tailscale", "Confirm uninstall");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/plugins/action", body: { action: "uninstall", name: "tailscale", base: "h1", confirmed: true } });
+  await press(p, "local", "Install");
+  assert.ok(pluginRow(p, "local").text().includes("Install local? It replaces tailscale as the exposure: no setting is lost."));
+  await press(p, "local", "Confirm install");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/plugins/action", body: { action: "install", name: "local", base: "h1", confirmed: true } });
+  await press(p, "slack", "Install");
+  assert.deepEqual(p.posts.at(-1), { path: "/api/plugins/action", body: { action: "install", name: "slack", base: "h1" } }, "an install that replaces nothing needs no confirmation");
+});
+
+test("A11-163: a refused action says the instance's sentence on the section and changes nothing, and the page reads the plugins again", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, pluginActions: () => ({}), refused: ["/api/plugins/action"], errors: { "/api/plugins/action": "the file changed since you looked: read it again" } });
+  const reads = p.requested.filter((path) => path === "/api/plugins").length;
+  buttonIn(pluginRow(p, "tailscale"), "Disable").fire("click");
+  await flush();
+  assert.match(pluginsNode(p).text(), /the file changed since you looked: read it again/);
+  assert.ok(p.requested.filter((path) => path === "/api/plugins").length > reads, "so the next action carries a fresh base");
+});
+
+test("A11-163: a required concern with no plugin enabled says the board cannot run with the command, and an optional one says None with how to add one", async () => {
+  const none = { ...PLUGINS, concerns: PLUGINS.concerns.map((entry) => (entry.concern === "tracker" ? { ...entry, enabled: null, empty: { text: "No tracker enabled: the board cannot run", commands: ["agent-org plugin enable linear"] } } : entry)) };
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: none });
+  const texts = pluginsNode(p).all().filter((n) => n.tag === "p").map((n) => n.text());
+  assert.ok(texts.includes("No tracker enabled: the board cannot run. Run agent-org plugin enable linear."));
+  assert.ok(texts.includes("None. Run agent-org plugin install slack."), "an optional concern says None, with how to add one");
+  const copy = buttonsIn(pluginsNode(p)).find((button) => button.attrs["data-command"] === "agent-org plugin enable linear");
+  assert.ok(copy, "the command can be copied");
+});
+
+test("A11-163: a plugin that needs a secret shows the install command and the command for each secret with copy buttons, offers no Install button, and the page draws no field for a secret", async () => {
+  const clipboard: string[] = [];
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, clipboard });
+  const row = pluginRow(p, "telegram");
+  assert.equal(buttonsIn(row).some((button) => button.text() === "Install"), false, "choosing a plugin that needs a secret goes through the CLI or onboard");
+  const commands = row.all().filter((n) => n.tag === "code").map((n) => n.text());
+  assert.deepEqual(commands, ["agent-org plugin install telegram", TELEGRAM.secrets[0].command, "agent-org messaging:pair"]);
+  assert.match(row.text(), /A secret is never typed in this page/);
+  const copy = buttonsIn(row).filter((button) => button.text() === "Copy");
+  assert.deepEqual(copy.map((button) => button.attrs["data-command"]), commands, "each copy button carries its command");
+  copy[1].fire("click");
+  await flush();
+  assert.deepEqual(clipboard, [TELEGRAM.secrets[0].command]);
+  assert.equal(copy[1].text(), "Copied");
+  assert.equal(pluginsNode(p).all().filter((n) => n.tag === "input" || n.tag === "textarea").some((n) => !n.parent || !n.parent.className.includes("edit-form")), false, "no field in the section takes a secret: only a setting's own edit form has inputs");
+  assert.ok(pluginRow(p, "linear").all().filter((n) => n.tag === "code").map((n) => n.text()).includes(LINEAR.secrets[0].command), "an installed plugin shows its secret commands too");
+});
+
+test("A11-163: a plugin that failed to load is a red row with doctor's reason and the fix, and the other rows are drawn", async () => {
+  const failed = plugin("tailscale", { concern: "exposure", state: "failed", failure: { why: "plugin tailscale: index.ts must export create, doctorChecks and onboardSteps", fix: "update agent-org, or the plugin" } });
+  const answer = { ...PLUGINS, concerns: PLUGINS.concerns.map((entry) => (entry.concern === "exposure" ? { ...entry, plugins: [failed, LOCAL] } : entry)),
+    refused: [{ plugin: "linear-tools", failure: { why: "plugin linear-tools: package.json is not valid JSON", fix: "fix the plugin's package.json, or remove the plugin" } }] };
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: answer });
+  const row = pluginRow(p, "tailscale");
+  assert.equal(row.className, "plugin failed", "a red row");
+  assert.match(row.text(), /State: failed\./, "and its state in words, not by colour alone");
+  assert.ok(row.text().includes("Why: plugin tailscale: index.ts must export create, doctorChecks and onboardSteps") && row.text().includes("Fix: update agent-org, or the plugin"));
+  assert.equal(pluginRow(p, "linear").className, "plugin", "the other rows are not failed");
+  assert.match(pluginsNode(p).text(), /Refused by the registry[\s\S]*linear-tools\. State: failed\.[\s\S]*Why: plugin linear-tools: package\.json is not valid JSON/);
+  const nodes = pluginsNode(p).all();
+  assert.ok(nodes.some((n) => n.tag === "dl" && n.text().includes("tickets.stallMinutes")) === false, "workers rows are outside the section");
+  assert.match(p.$("settings-groups").text(), /tickets\.stallMinutes/, "and drawn");
+});
+
+test("A11-163: an enabled plugin whose checks fail stays enabled, with the failing checks and their fixes on its row", async () => {
+  const slow = plugin("linear", { checks: [{ name: "tracker key", ok: false, detail: "the Keychain holds no key for agent-org-linear", fix: "security add-generic-password -a \"$USER\" -s agent-org-linear -w" }, { name: "linear mcp", ok: true, detail: "connected", fix: null }] });
+  const answer = { ...PLUGINS, concerns: PLUGINS.concerns.map((entry) => (entry.concern === "tracker" ? { ...entry, plugins: [slow] } : entry)) };
+  const row = pluginRow(await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: answer }), "linear");
+  assert.match(row.text(), /State: enabled\./);
+  assert.ok(row.text().includes("Check failing: tracker key: the Keychain holds no key for agent-org-linear Fix: security add-generic-password"));
+  assert.equal(row.text().includes("linear mcp"), false, "a passing check is not repeated");
+});
+
+test("A11-163: a failed call for the plugins is said inside the section only: the rest of the page, with the provider groups where they were, is drawn", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, refused: ["/api/plugins"], errors: { "/api/plugins": "Linear could not be reached" } });
+  assert.match(pluginsNode(p).text(), /The plugins could not be read: Linear could not be reached\. The rest of the page is as it was\./);
+  const headings = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
+  assert.deepEqual(headings, ["Plugins", "Tracker", "Exposure", "Workers"], "the provider groups are drawn in their own sections, so no row goes missing");
+  assert.match(p.$("settings-groups").text(), /tickets\.providers\.tracker\.provider/, "including the plugin line");
+  assert.equal(p.$("settings-notes").text().includes("could not be read"), false, "the settings themselves read fine");
+});
+
+test("A11-163: an instance with no Plugins route, or an answer that lists no plugin, is said in the section and the settings are drawn as before", async () => {
+  const old = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, refused: ["/api/plugins"], errors: { "/api/plugins": "no route GET /api/plugins" } });
+  assert.match(pluginsNode(old).text(), /The plugins could not be read: no route GET \/api\/plugins/);
+  const odd = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS });
+  assert.match(pluginsNode(odd).text(), /The plugins could not be read: the instance's answer does not list the plugins/);
+  assert.match(odd.$("settings-groups").text(), /tickets\.stallMinutes/);
+});
+
+test("A11-163: the rest of the page is drawn while the plugins are still being read, and the section says so", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, hold: { "/api/plugins": PLUGINS } });
+  assert.match(pluginsNode(p).text(), /Reading the plugins…/);
+  assert.match(p.$("settings-groups").text(), /tickets\.stallMinutes/, "the Workers rows are already drawn");
+  assert.equal(p.$("settings-groups").all().some((n) => n.tag === "h4"), false, "and the plugins wait");
+  p.release();
+  await flush();
+  assert.match(pluginsNode(p).text(), /Tracker[\s\S]*linear\. Version/);
+});
+
+test("A11-163: once the plugins are read, a plugin's settings are drawn under its concern from the schema: without the plugin and enabled lines, nor another plugin's setting, and an old key still appears", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS });
+  const tracker = pluginsNode(p).all().find((n) => n.tag === "details" && n.className === "setting-group" && n.all().some((c) => c.tag === "h3" && c.text() === "Tracker settings"))!;
+  assert.deepEqual(rowsIn(tracker.children.length > 0 ? tracker : tracker), [], "closed until opened");
+  buttonIn(pluginRow(p, "linear"), "Configure").fire("click");
+  assert.equal(tracker.open, true, "Configure opens the plugin's settings in place");
+  assert.deepEqual(rowsIn(tracker), ["tickets.providers.tracker.workingState"]);
+  const exposure = pluginsNode(p).all().find((n) => n.tag === "details" && n.all().some((c) => c.tag === "h3" && c.text() === "Exposure settings"))!;
+  buttonIn(pluginRow(p, "tailscale"), "Configure").fire("click");
+  assert.deepEqual(rowsIn(exposure), ["tickets.providers.exposure.port", "tickets.port"], "an old key is the concern's and still appears, the provider and enabled lines do not, and the default of a setting nobody has set stays at its default");
+  await search(p, "tailnet");
+  assert.deepEqual(rowsIn(exposure), ["tickets.providers.exposure.tailnetPorts"], "a search still finds every row");
+});
+
+test("A11-163: Configure on a plugin whose settings are in the project's declaration names the CLI command, and a remote instance's section is read-only with the note", async () => {
+  const messaging = { ...PLUGINS, concerns: PLUGINS.concerns.map((entry) => (entry.concern === "messaging" ? { ...entry, plugins: [plugin("telegram", { concern: "messaging", controls: { offered: ["disable", "uninstall", "configure"], refused: {}, confirm: {} } })] } : entry)) };
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: messaging });
+  buttonIn(pluginRow(p, "telegram"), "Configure").fire("click");
+  const hint = pluginRow(p, "telegram").all().find((n) => n.tag === "p" && n.text().includes("agent-org plugin config telegram"))!;
+  assert.equal(hint.hidden, false);
+  const remote = await settingsPage({ connections: WORK_AND_PERSONAL, config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS });
+  await chooseInstance(remote, "personal");
+  await flush();
+  assert.match(pluginsNode(remote).text(), /Its files are changed on that machine, so this page offers no edit here\./);
+  assert.deepEqual(buttonsIn(pluginRow(remote, "tailscale")).map((button) => button.text()), [], "a remote instance's plugins have no control");
+});
+
+test("A11-163: settings that cannot be read leave the Plugins section drawn, with its controls, and plugins that cannot be read leave the settings", async () => {
+  const p = await settingsPage({ config: SETTINGS, plugins: PLUGINS, refused: ["/api/settings"], errors: { "/api/settings": "Linear could not be reached" } });
+  assert.match(p.$("settings-notes").text(), /could not be read: Linear could not be reached/);
+  assert.match(pluginRow(p, "linear").text(), /State: enabled\./, "the plugins are independent of the settings");
+  assert.equal(buttonIn(pluginRow(p, "tailscale"), "Disable").disabled, false);
+  assert.equal(buttonsIn(pluginRow(p, "tailscale")).some((button) => button.text() === "Configure"), true, "Configure is still offered, and opens nothing the settings could not give");
+});
+
+test("A11-163: the provider groups are drawn where they were while the plugins are read, then move under their concern; a read that lands late does not replace a newer one", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, hold: { "/api/plugins": PLUGINS } });
+  const before = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
+  assert.deepEqual(before, ["Plugins", "Tracker", "Exposure", "Workers"], "no setting waits for the plugins");
+  assert.match(p.$("settings-groups").text(), /tickets\.providers\.tracker\.provider/);
+  p.release();
+  await flush();
+  const after = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
+  assert.deepEqual(after, ["Plugins", "Tracker settings", "Exposure settings", "Workers"], "read, they are the concerns' settings");
+  const summary = sectionNamed(p, "Tracker settings").node.all().find((n) => n.tag === "summary")!.all().filter((n) => n.tag === "span").map((n) => n.text());
+  assert.ok(summary.includes("plugin linear"), "and the summary still says which plugin runs");
+});
+
+test("A11-163: plugins read from a host file the reader refuses are shown with the note and with no control", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: { ...PLUGINS, note: "the host file is refused, so the plugins are shown as their defaults: tickets.port must be a number" } });
+  assert.match(pluginsNode(p).text(), /the host file is refused, so the plugins are shown as their defaults/);
+  assert.deepEqual(buttonsIn(pluginRow(p, "tailscale")).map((button) => button.text()), [], "nothing is offered over defaults the file does not hold");
 });

@@ -141,6 +141,18 @@
   .setting-nested > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
   .setting-group ul { margin: 6px 0; padding-left: 20px; }
   .change { margin-bottom: 12px; }
+  .plugins { margin: 12px 0; }
+  .plugins > h3 { font-size: 15px; margin: 0 0 6px; }
+  .plugin-concern { margin: 12px 0; }
+  .plugin-concern > h4 { font-size: 14px; margin: 0 0 4px; }
+  .plugin-list { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 6px; }
+  .plugin { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  .plugin.failed { border-color: var(--bad); border-left: 4px solid var(--bad); }
+  .plugin.failed .plugin-failure { color: var(--bad); }
+  .plugin p { margin: 0 0 4px; overflow-wrap: anywhere; }
+  .plugin-controls { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-top: 6px; }
+  .command { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+  .command code { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; overflow-wrap: anywhere; user-select: all; }
   .hint.failed { color: var(--bad); }
   .no-plan { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--warn); }
   .no-plan.covered { color: var(--muted); }
@@ -318,6 +330,8 @@ import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js"
 import { ANYONE, NO_VIEWER, defaultScope, inScope, ownerName, scopeChips, scopeEmptyText, scopeToRead, scopeWord, showsOwner } from "/assignee-filter.js";
 // The Settings page's search: which groups and rows a query leaves (settings-search.ts, A11-146).
 import { searchGroups } from "/settings-search.js";
+// The Settings page's Plugins section: the words of a plugin's row, which settings its Configure draws, and where each control sits (plugins-section.ts, A11-163).
+import { CONCERNS, CONTROL_LABEL, PLUGIN_GROUPS, SECRET_WORDS, concernOfGroup, controlsOf, emptyWords, isProviderLine, ofAnotherPlugin, outcomeWords, rowWords } from "/plugins-section.js";
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -337,7 +351,9 @@ const state = {
   settingsShown: false, opener: "open-settings", boardHash: "",
   // The Settings search (A11-146): the query typed, the sections the person last left open or closed (by name; `Machine` starts closed), and the view last read,
   // which a query is applied to without reading the instance again. Kept across a redraw, so a save does not close what was open.
-  settingsSearch: { query: "", all: false, open: recall(storage, "ticket-mode.settings-open"), view: null, sections: [] },
+  settingsSearch: { query: "", all: false, open: recall(storage, "ticket-mode.settings-open"), view: null, sections: [], others: [], providers: [], providersWith: null, unreadable: false },
+  // The Plugins section (A11-163), read by its own call: `phase` is reading, read or failed; `answer` is what `/api/plugins` sent; `outcome` and `refusal` say what the last action did.
+  plugins: { phase: "reading", answer: null, failure: "" }, pluginReads: 0, pluginOutcome: "", pluginRefusal: "",
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
   pick: "assigned to you", empty: null,
   // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
@@ -877,6 +893,11 @@ async function drawSettings() {
   $("settings-notes").replaceChildren();
   // Until the rows are read, a search has nothing to filter, so it waits for them (drawSettingsView sets the view again).
   state.settingsSearch.view = null;
+  state.settingsSearch.providersWith = null;
+  state.settingsSearch.unreadable = false;
+  // The Plugins section is its own call, started now and never waited for: a plugin's checks run programs, and the rest of the page must not wait on them or fail with them.
+  state.plugins = { phase: "reading", answer: null, failure: "" };
+  readPlugins(chosen);
   await Promise.all([readChoice(), readMax()]);
   let view = null;
   let failure = "";
@@ -890,6 +911,35 @@ async function drawSettings() {
   if (state.connection !== chosen || !onSettingsPage()) return;
   drawSettingsView(view, failure);
 }
+/** Reads the Plugins section: what the instance says of each plugin, or why it could not. A failure is said inside the section, and the rest of the page is drawn as it is. */
+async function readPlugins(chosen) {
+  // Each read is numbered: one that lands after a later one began is not drawn, so a slow earlier answer never replaces a newer.
+  const mine = ++state.pluginReads;
+  let next;
+  try {
+    const answer = await call("GET", "/api/plugins");
+    if (!Array.isArray(answer?.concerns)) throw new Error("the instance's answer does not list the plugins");
+    next = { phase: "read", answer, failure: "" };
+  } catch (err) {
+    if (err === STALE) return;
+    next = { phase: "failed", answer: null, failure: String(err.message || err) };
+  }
+  if (mine !== state.pluginReads || state.connection !== chosen || !onSettingsPage()) return;
+  state.plugins = next;
+  layoutSettings();
+}
+/**
+ * The sections of the five provider groups. With the Plugins section read (`answer`), a group is a concern's settings: without the plugin and enabled lines, which the state and the
+ * controls show, and without the settings only another plugin of the concern declares. Without it, the group is drawn whole, where it always was.
+ */
+function providerSections(view, answer) {
+  return view.groups.filter((group) => PLUGIN_GROUPS.includes(group.group)).map((group) => {
+    const concern = answer === null ? null : answer.concerns.find((entry) => entry.concern === concernOfGroup(group.group)) ?? null;
+    const rows = concern === null ? group.rows : group.rows.filter((row) => !isProviderLine(row.key)).map((row) => ({ ...row, inUse: row.inUse && !ofAnotherPlugin(concern.plugins, row.key) }));
+    const section = settingsGroup({ group: group.group, rows }, view, concern === null ? {} : { label: `${group.group} settings`, words: concern.enabled === null ? "no plugin enabled" : `plugin ${concern.enabled}` });
+    return section === null ? null : { ...section, concern: concern === null ? null : concern.concern };
+  }).filter((section) => section !== null);
+}
 /** The rows of the page: each group's keys, with what each says, and the plugins and connectors in words. With no view, an instance without the route is older than this page; any other failure is said. */
 function drawSettingsView(view, failure) {
   if (view === null) {
@@ -898,16 +948,43 @@ function drawSettingsView(view, failure) {
     const older = failure.startsWith("no route");
     const text = older ? "This instance is older than this page and cannot describe its settings. The controls above still change them." : `The settings could not be read: ${failure}`;
     $("settings-notes").replaceChildren(el("p", { className: "notice", textContent: text }));
+    state.settingsSearch.unreadable = true;
+    layoutSettings();
     return;
   }
   $("settings-refusals").hidden = view.refusals.length === 0;
   $("settings-refusals").replaceChildren(...view.refusals.map((r) => el("p", { textContent: `${r.file}: ${r.message}` })));
   $("settings-notes").replaceChildren(...view.notes.map((note) => el("p", { className: "hint", textContent: note })));
   state.settingsSearch.view = view;
-  state.settingsSearch.sections = view.groups.map((group) => settingsGroup(group, view)).filter((section) => section !== null);
-  $("settings-groups").replaceChildren(...state.settingsSearch.sections.map((section) => section.node));
-  drawSearch();
+  // The sections that are not a plugin's are built once, now; the plugins' are built when the Plugins section has been read (layoutSettings).
+  state.settingsSearch.others = view.groups.filter((group) => !PLUGIN_GROUPS.includes(group.group)).map((group) => settingsGroup(group, view)).filter((section) => section !== null);
+  state.settingsSearch.providersWith = null;
+  layoutSettings();
   drawEdits(view);
+}
+/**
+ * Lays the sections out: the Plugins section first, with the five provider groups drawn inside it under their concern once it has been read (a plugin's own settings, edited in place,
+ * without the plugin and enabled lines, which the state and the controls show), then the rest. While the plugins are being read their groups wait; when the section could not be read they
+ * are drawn where they always were, so no row goes missing. Safe to call again: the sections already built are kept as they are.
+ */
+function layoutSettings() {
+  const search = state.settingsSearch;
+  const view = search.view;
+  // Settings that could not be read leave the Plugins section to be drawn alone, with no settings to open under Configure; settings not read yet leave the page as it is.
+  if (view === null && !search.unreadable) return;
+  const { phase, answer } = state.plugins;
+  // The provider groups are drawn where they always were until the Plugins section has been read, and again if it cannot be: the page never waits on the plugins for a setting. Read, they
+  // move into it, under their concern, as a fresh section (the staged changes are kept apart from the rows, so none is lost).
+  const withPlugins = phase === "read";
+  if (view !== null && search.providersWith !== withPlugins) {
+    search.providers = providerSections(view, withPlugins ? answer : null);
+    search.providersWith = withPlugins;
+  }
+  const providers = view === null ? [] : search.providers;
+  search.sections = [...providers, ...search.others];
+  const fallback = withPlugins ? [] : providers.map((section) => section.node);
+  $("settings-groups").replaceChildren(buildPluginsSection(providers), ...fallback, ...search.others.map((section) => section.node));
+  drawSearch();
 }
 /** Shows what a query leaves, on the rows already built, so an open Edit form, a value typed into it and an open Details stay as they are. A section with no match is
  * hidden, unless it holds the plugins' checks, which a search does not filter; a section with a match is open. */
@@ -1148,7 +1225,7 @@ function setOpened(key, open) {
 }
 /** One section, built once for the view: a disclosure whose summary names the group and counts its settings. `Machine` starts closed. The plugins and connectors are
  * said in their section whatever a search leaves, since they are checks and not settings. Returns what drawSearch needs, or null for a section with nothing to say. */
-function settingsGroup({ group, rows }, view) {
+function settingsGroup({ group, rows }, view, { label = group, words = null } = {}) {
   const plugins = group === "Conventions plugin";
   if (rows.length === 0 && !(plugins && (view.plugins.length > 0 || view.words.length > 0))) return null;
   const id = `group-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
@@ -1169,8 +1246,8 @@ function settingsGroup({ group, rows }, view) {
   });
   // The summary line is the section on the first screen: its name, its provider, and what is set (drawSearch writes the count).
   const provider = rows.find((row) => /^tickets\.providers\.[^.]+\.provider$/.test(row.key));
-  const providerWords = el("span", { className: "hint", textContent: provider ? `provider ${provider.value}` : "" });
-  const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: group }), providerWords, count), ...children);
+  const providerWords = el("span", { className: "hint", textContent: words ?? (provider ? `provider ${provider.value}` : "") });
+  const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: label }), providerWords, count), ...children);
   section.setAttribute("aria-labelledby", id);
   // Only a choice made while nothing is searched is kept: a search's own opening of a section is not the person's.
   section.addEventListener("toggle", () => { if (state.settingsSearch.query === "") setOpened(group, section.open); });
@@ -1181,6 +1258,136 @@ function settingsGroup({ group, rows }, view) {
       el("ul", {}, ...view.words.map((words) => el("li", { textContent: words }))));
   }
   return { group, node: section, count, rows: shown, nested, alwaysShown: plugins };
+}
+/** The command a person copies: what it does in words, the command itself, and a Copy button that carries it. A secret is only ever a command like this, never a field. */
+function commandNode(label, command) {
+  const copy = el("button", { type: "button", className: "copy", textContent: "Copy" });
+  copy.setAttribute("data-command", command);
+  copy.setAttribute("aria-label", `Copy the command: ${command}`);
+  copy.addEventListener("click", async () => {
+    try {
+      await window.navigator.clipboard.writeText(command);
+      copy.textContent = "Copied";
+    } catch {
+      copy.textContent = "Select the command and copy it";
+    }
+  });
+  return el("div", { className: "command" }, el("span", { textContent: label }), el("code", { textContent: command }), copy);
+}
+/** The Plugins section: every concern with its plugins, each with its state in words and the controls its plan allows. `providers` are the provider groups, drawn inside it once it has been read. */
+function buildPluginsSection(providers) {
+  const { phase, answer, failure } = state.plugins;
+  const section = el("section", { className: "plugins" }, el("h3", { id: "plugins-title", textContent: "Plugins" }));
+  section.setAttribute("aria-labelledby", "plugins-title");
+  section.append(el("p", { className: "hint", textContent: "Every external concern is a plugin, installed, enabled and configured here or with agent-org plugin. A change is in force when the board restarts." }));
+  if (phase === "reading") {
+    section.append(el("p", { className: "hint", textContent: "Reading the plugins…" }));
+    return section;
+  }
+  if (phase === "failed") {
+    section.append(el("p", { className: "notice", textContent: `The plugins could not be read: ${failure}. The rest of the page is as it was.` }));
+    return section;
+  }
+  if (answer.note) section.append(el("p", { className: "notice", textContent: answer.note }));
+  if (!editable()) section.append(el("p", { className: "hint", textContent: `This instance is ${connectionLabel(state.connection)}. Its files are changed on that machine, so this page offers no edit here.` }));
+  if (state.pluginRefusal !== "") {
+    const refusal = el("p", { className: "notice", textContent: state.pluginRefusal });
+    refusal.setAttribute("role", "alert");
+    section.append(refusal);
+  }
+  if (state.pluginOutcome !== "") {
+    const outcome = el("p", { className: "hint", textContent: state.pluginOutcome });
+    outcome.setAttribute("role", "status");
+    section.append(outcome);
+  }
+  for (const concern of answer.concerns) section.append(concernNode(concern, answer, providers.find((group) => group.concern === concern.concern) ?? null));
+  if (answer.refused.length > 0) {
+    section.append(el("section", { className: "plugin-concern" }, el("h4", { textContent: "Refused by the registry" }),
+      el("ul", { className: "plugin-list" }, ...answer.refused.map(({ plugin, failure: why }) => failedNode(plugin, why)))));
+  }
+  return section;
+}
+/** The red row of something that failed: what it is, why, and the fix, in doctor's words. */
+function failedNode(name, failure) {
+  return el("li", { className: "plugin failed" }, el("p", { textContent: `${name}. State: failed.` }),
+    el("p", { className: "plugin-failure", textContent: `Why: ${failure.why}` }), el("p", { className: "plugin-failure", textContent: `Fix: ${failure.fix}` }));
+}
+/** One concern: its name, the sentence that says none runs (a required one cannot run the board), each plugin of it, and its plugin's settings. */
+function concernNode(concern, answer, group) {
+  const meta = CONCERNS.find((entry) => entry.concern === concern.concern);
+  const id = `plugins-${concern.concern}`;
+  const node = el("section", { className: "plugin-concern" }, el("h4", { id, textContent: meta.title }));
+  node.setAttribute("aria-labelledby", id);
+  if (concern.empty !== null) {
+    node.append(el("p", { className: concern.required ? "notice" : "hint", textContent: emptyWords(concern.empty) }));
+    for (const command of concern.empty.commands) node.append(commandNode("", command));
+  }
+  node.append(el("ul", { className: "plugin-list" }, ...concern.plugins.map((plugin) => pluginNode(plugin, concern, answer, group))));
+  if (group !== null) node.append(group.node);
+  return node;
+}
+/** One plugin's row: name, version, contract and state in words; why and the fix when it failed; the commands for its secrets; the controls its plan allows, off with the reason when refused. */
+function pluginNode(plugin, concern, answer, group) {
+  const row = el("li", { className: plugin.state === "failed" ? "plugin failed" : "plugin" });
+  row.append(el("p", { textContent: rowWords(plugin) }), el("p", { className: "hint", textContent: `${plugin.description} ${plugin.where}.` }));
+  if (plugin.failure !== null) row.append(el("p", { className: "plugin-failure", textContent: `Why: ${plugin.failure.why}` }), el("p", { className: "plugin-failure", textContent: `Fix: ${plugin.failure.fix}` }));
+  for (const check of plugin.checks.filter((candidate) => !candidate.ok)) row.append(el("p", { className: "plugin-failure", textContent: `Check failing: ${check.name}: ${check.detail}${check.fix === null ? "" : ` Fix: ${check.fix}`}` }));
+  if (plugin.secrets.length > 0) {
+    // A plugin that needs a secret is chosen and set up with the CLI or onboard: the page shows the commands and never takes the secret.
+    row.append(el("p", { className: "hint", textContent: SECRET_WORDS }));
+    if (!plugin.installed) row.append(commandNode("Install:", plugin.installCommand));
+    for (const secret of plugin.secrets) row.append(commandNode(`Set ${secret.setting}:`, secret.command));
+  }
+  const controls = el("div", { className: "plugin-controls" });
+  const confirmation = el("div", { className: "plugin-confirm", hidden: true });
+  confirmation.setAttribute("role", "alert");
+  if (editable() && answer.note === null) for (const name of controlsOf(plugin.controls.offered)) controls.append(...controlNodes(name, plugin, concern, answer, group, confirmation));
+  row.append(controls, confirmation);
+  return row;
+}
+/** A control: a button, off with its reason beside it when the plan refused it. Configure opens the plugin's settings; Uninstall and a replacing Install ask first. */
+function controlNodes(name, plugin, concern, answer, group, confirmation) {
+  const button = el("button", { type: "button", textContent: CONTROL_LABEL[name] });
+  button.setAttribute("aria-label", `${CONTROL_LABEL[name]} ${plugin.name}`);
+  const refusal = plugin.controls.refused[name];
+  if (refusal !== undefined) {
+    button.disabled = true;
+    return [button, el("span", { className: "hint", textContent: refusal })];
+  }
+  if (name === "configure") {
+    const hint = el("p", { className: "hint", hidden: true, textContent: `This plugin's settings are in the project's declaration: change them with agent-org plugin config ${plugin.name} <setting>=<value>.` });
+    button.addEventListener("click", () => {
+      if (group === null) { hint.hidden = !hint.hidden; return; }
+      group.node.open = true;
+      group.node.scrollIntoView?.();
+    });
+    return group === null ? [button, hint] : [button];
+  }
+  const ask = plugin.controls.confirm[name];
+  const act = () => runPluginAction(name, plugin, concern, answer, ask !== undefined);
+  button.addEventListener("click", () => {
+    if (ask === undefined) { act().catch(report); return; }
+    const yes = el("button", { type: "button", textContent: `Confirm ${CONTROL_LABEL[name].toLowerCase()}` });
+    const no = el("button", { type: "button", textContent: "Cancel" });
+    yes.addEventListener("click", () => act().catch(report));
+    no.addEventListener("click", () => { confirmation.hidden = true; confirmation.replaceChildren(); });
+    confirmation.replaceChildren(el("span", { textContent: ask }), " ", yes, " ", no);
+    confirmation.hidden = false;
+  });
+  return [button];
+}
+/** Asks the instance to install, enable, disable or uninstall a plugin, as `agent-org plugin` does: a refusal is its sentence and nothing changed, and either way the page reads the plugins and settings again. */
+async function runPluginAction(action, plugin, concern, answer, confirmed) {
+  state.pluginRefusal = "";
+  state.pluginOutcome = "";
+  try {
+    const done = await call("POST", "/api/plugins/action", { action, name: plugin.name, base: answer.bases[concern.file], ...(confirmed ? { confirmed: true } : {}) });
+    state.pluginOutcome = outcomeWords(done);
+  } catch (err) {
+    if (err === STALE) return;
+    state.pluginRefusal = String(err.message || err);
+  }
+  await drawSettings();
 }
 /** The contract mismatches, one row each, under a label in words; the page draws none of its own (the server's check gives them). Nothing when there are none. */
 function renderContractMismatchRows(rows) {
@@ -1194,7 +1401,7 @@ function settingRow(row) {
   const editing = row.editable && editable();
   const shown = row.alias ?? `Value: ${row.value}`;
   // A provider is chosen by `agent-org onboard`, which may need secrets or installs, so a provider's row says where it is changed.
-  const onboard = row.key.endsWith(".provider") && row.why !== null ? el("span", { className: "hint", textContent: " Change the provider with agent-org onboard." }) : null;
+  const onboard = row.key.endsWith(".provider") && row.why !== null ? el("span", { className: "hint", textContent: " Change the provider with the Plugins section or agent-org plugin." }) : null;
   return el("dl", { className: "setting" },
     el("dt", {}, el("code", { textContent: row.key })),
     el("dd", {}, `${shown}. State: ${row.state}. Source: ${row.source}. ${editing ? "Editable" : "Read-only"}.`, onboard, detailsOf(row), editing ? editControl(row) : null));
@@ -1214,6 +1421,7 @@ function showRoute() {
   if (!settings) state.boardHash = location.hash;
   $("back-to-board").setAttribute("href", state.boardHash || "#");
   $("settings-page").hidden = !settings;
+  if (!settings) { state.pluginOutcome = ""; state.pluginRefusal = ""; }
   $("pick").hidden = settings || state.tab !== "pick";
   $("board").hidden = settings || state.tab !== "board";
   $("queue-bar").hidden = settings || state.tab !== "pick";

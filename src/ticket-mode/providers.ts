@@ -131,7 +131,7 @@ function blocksOf(tickets: Record<string, unknown>): Record<string, unknown> {
 }
 
 /** The plugins a block may name, as the refusal lists them: the catalog's plugins of its concern that the pin lets run, never a fake (it runs no host), and `none` where a concern may have no plugin. */
-function choosable(block: ProviderBlock, catalog: Catalog): string[] {
+export function choosable(block: ProviderBlock, catalog: Catalog): string[] {
   const concern = CONCERN_OF_BLOCK[block];
   const pin = catalog.pins[concern];
   const names = pluginsOfConcern(catalog, concern).filter(({ where }) => where !== "fake").map(({ name }) => name).filter((name) => pin === undefined || pin.runs.includes(name));

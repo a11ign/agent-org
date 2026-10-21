@@ -2,6 +2,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import type { Catalog, CatalogPlugin } from "../plugins/manifest.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
 import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf } from "./onboard-profile.ts";
 
 /** A complete profile with invented names, as the README's example shows one. */
@@ -71,4 +73,50 @@ test("the example profile committed for the live check parses, and names no secr
   const text = readFileSync(new URL("./fixtures/onboard-profile.example.json", import.meta.url), "utf8");
   assert.equal(parseProfile(text).conventions?.plugin, "example@example-marketplace");
   assert.ok(!/key|token|secret|\.pem/i.test(text), "no secret field or key path is named");
+});
+
+// ---- A11-163: a profile names plugins of the registry
+
+/** The catalog a test reads: this checkout's, with `plugin` added to it and no concern pinned to core's built-in. */
+const catalogWith = (plugin: Partial<CatalogPlugin> & Pick<CatalogPlugin, "name" | "concern">): Catalog => {
+  const base = defaultCatalog();
+  return { ...base, pins: {}, plugins: [...base.plugins, { contract: "1.1", description: "A plugin.", entry: "index.ts", settings: {}, tooling: { mcpServers: [], connectors: [], skills: [] }, where: "bundled", dir: "/checkout/plugins/x", movedBy: null, ...plugin }] };
+};
+
+test("A11-163: a block's provider is checked against the registry: a bundled plugin of the concern is named by the profile, with no list written in the profile reader", () => {
+  const catalog = catalogWith({ name: "jira", concern: "tracker" });
+  assert.equal(parseProfile(text({ tracker: { provider: "jira" } }), catalog).tracker.provider, "jira");
+  assert.throws(() => parseProfile(text({ tracker: { provider: "jira" } })), /tracker\.provider must be one of "linear", not "jira"/, "the real catalog has no jira");
+  assert.equal(parseProfile(text({ exposure: { provider: "local" } })).exposure.provider, "local");
+  assert.equal(parseProfile(text({ publish: { provider: "slack" } })).publish.provider, "slack", "slack is the publisher core runs");
+});
+
+test("A11-163: a profile that names a fake, a plugin of another concern or an unknown plugin is refused by the field and the name", () => {
+  assert.throws(() => parseProfile(text({ tracker: { provider: "fake-tracker" } })), /tracker\.provider must be one of "linear", not "fake-tracker"/);
+  assert.throws(() => parseProfile(text({ tracker: { provider: "github" } })), /tracker\.provider must be one of "linear", not "github"/);
+  assert.throws(() => parseProfile(text({ reviewer: { provider: "codex" } })), /reviewer\.provider must be one of "atomic", "none", not "codex"/);
+  assert.throws(() => parseProfile(text({ exposure: { provider: "ngrok" } })), /exposure\.provider must be one of "local", "tailscale", not "ngrok"/);
+  assert.throws(() => parseProfile(text({ codeHost: { provider: "gitlab" } })), /codeHost\.provider must be one of "github", not "gitlab"/);
+  const refused = { ...defaultCatalog(), plugins: defaultCatalog().plugins.filter(({ name }) => name !== "tailscale"), refusals: [{ plugin: "tailscale", why: "plugin tailscale: package.json is not valid JSON" }] };
+  assert.throws(() => parseProfile(text(), refused), /exposure\.provider must be one of "local", not "tailscale"/, "a plugin the registry refused is not one to name");
+  assert.throws(() => parseProfile(text({ messaging: { provider: "telegram" } })), /messaging is not a profile key: the keys are schema, tracker, codeHost, publish, reviewer, exposure, conventions, repos, notes/, "messaging is a project's key, not a laptop's");
+});
+
+test("A11-163: a profile saved before this release still reads, with its schema and block shape unchanged", () => {
+  const saved = readFileSync(new URL("./fixtures/onboard-profile.example.json", import.meta.url), "utf8");
+  const profile = parseProfile(saved);
+  assert.equal(profile.schema, 1);
+  assert.deepEqual([profile.tracker.provider, profile.codeHost.provider, profile.publish.provider, profile.reviewer.provider, profile.exposure.provider], ["linear", "github", "none", "atomic", "local"]);
+  assert.deepEqual(parseProfile(profileText(profile)), profile);
+});
+
+test("A11-163: the questions offer each concern's plugins from the registry, and an answer outside them is refused by the field", async () => {
+  const asked: string[] = [];
+  const catalog = catalogWith({ name: "codex-review", concern: "reviewer" });
+  await askProfile({ ask: async (question) => { asked.push(question); return ""; } }, [{ name: "example-app", path: "/src/example-app" }], catalog);
+  assert.ok(asked.includes("Reviewer: atomic or codex-review or none [atomic]: "), asked.join("\n"));
+  assert.ok(asked.includes("Exposure: local or tailscale [local]: "));
+  const profile = await askProfile({ ask: async (question) => (question.startsWith("Reviewer") ? "codex-review" : "") }, [{ name: "example-app", path: "/src/example-app" }], catalog);
+  assert.equal(profile.reviewer.provider, "codex-review", "a plugin the registry gained is offered and accepted with no change to the profile reader");
+  await assert.rejects(askProfile({ ask: async (question) => (question.startsWith("Exposure") ? "ngrok" : "") }, [{ name: "example-app", path: "/src/example-app" }]), /exposure\.provider must be one of "local", "tailscale", not "ngrok"/);
 });

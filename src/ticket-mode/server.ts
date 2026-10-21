@@ -35,6 +35,8 @@ import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./qu
 import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
 import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from "./settings-edit.ts";
+import { type PluginsApi, pluginsApi, type PluginsSeam } from "./plugins-api.ts";
+import { PluginCommandRefusal } from "../plugins/manage.ts";
 import { isObject } from "./json-value.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
@@ -74,6 +76,8 @@ export type BoardDeps = Readonly<{
   exposure?: Exposure;
   /** The worker terminal's pairing code, minted for a paired browser following a worker link (A11-93). Default: herdr web ui's own, on loopback. */
   mintTerminal?: () => Promise<TerminalMint>;
+  /** What the Settings page's Plugins section reads and runs through (A11-163): the real catalog, loader and programs unless a test replaces them. */
+  plugins?: PluginsSeam;
 }>;
 
 /** The name the exposure answers to on this machine, or null when it has none: an exposure that serves nothing is not asked. */
@@ -196,6 +200,7 @@ type Board = Readonly<{
   terminalAddress: () => Promise<string | null>;
   scopesOnDemand: () => boolean;
   whoHolds: () => Promise<People>;
+  plugins: PluginsApi;
 }>;
 
 /**
@@ -278,6 +283,10 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     // The read-only Settings page: each file read fresh, so a refusal names its field, and the instance's own queue and choice (A11-131).
     return [200, await readSettingsView({ hostPath: deps.hostPath ?? hostFilePath(), settings, queuePath: deps.queuePath, queueMax: store.get().max,
       choicePath: deps.choicePath, ...(deps.poolDeps?.pluginRecord === undefined ? {} : { pluginRecord: deps.poolDeps.pluginRecord }) })];
+  }
+  if (method === "GET" && path === "/api/plugins") {
+    // The Plugins section is its own call (A11-163): a plugin's checks run programs, and the rest of the page must not wait on them or fail with them.
+    return [200, await board.plugins.read()];
   }
   if (method === "GET" && path === "/api/pick") {
     // Asked only by a Pick view whose list came back empty, so the name of the key's person costs a request only then. A tracker that cannot
@@ -481,6 +490,20 @@ async function settingsEditRoute(board: Board, method: string, path: string, bod
   return [200, await saveEdit(options, file, changes, { base: String(body.base ?? ""), confirmed })];
 }
 
+/**
+ * The Plugins section's actions (A11-163): install, enable, disable and uninstall a plugin, written as `agent-org plugin` writes them, through the one writer. A refusal is the CLI's sentence and
+ * nothing is written. The change takes effect when the board restarts, which the answer says.
+ */
+async function pluginActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
+  if (method !== "POST" || path !== "/api/plugins/action") return undefined;
+  try {
+    return [200, await board.plugins.act(body)];
+  } catch (error) {
+    if (!(error instanceof PluginCommandRefusal)) throw error;
+    return [400, { error: error.message }];
+  }
+}
+
 /** The routes that act on one queued run: amend, remove, retry, approve, respond, start anyway, stop, close, dismiss, and apply or discard its edit. */
 async function queueActionRoute(board: Board, method: string, path: string, body: Json): Promise<[number, unknown] | undefined> {
   const { store, pool, now, wake } = board;
@@ -520,6 +543,7 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? (await postRoute(board, method, path, body))
     ?? (await writerRoute(board, method, path, body))
     ?? (await settingsEditRoute(board, method, path, body))
+    ?? (await pluginActionRoute(board, method, path, body))
     ?? (await queueActionRoute(board, method, path, body))
     ?? [404, { error: `no route ${method} ${path}` }];
 }
@@ -592,7 +616,8 @@ export function createBoard(deps: BoardDeps) {
       batch: plansInBatches(settings.planner) };
   }
 
-  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds };
+  const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins });
+  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
 
   async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
     return routeApi(board, method, path, body, query);

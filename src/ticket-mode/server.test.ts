@@ -1018,3 +1018,152 @@ test("A11-134: Grill on a ticket with an open decision queues a grill run on it 
   const plain = board(4747, { writer: WRITER.writer }, {}, tracker);
   await assert.rejects(plain.api("POST", "/api/grill-ticket", { key: "A11-50" }), /Grill needs a terminal: name tickets.terminal in the host file/);
 });
+
+// ---- A11-163: the Settings page's Plugins section
+
+type PluginsView = Awaited<ReturnType<import("./plugins-api.ts").PluginsApi["read"]>>;
+type Acted = { said: string; changed: boolean; inForce: string[] };
+
+/** A board over a scratch host file, with the plugins' seam replaced so no plugin module is imported and no program runs. */
+function pluginsBoard(providers: Record<string, unknown>) {
+  const dir = tmpDir("ticket-server-plugins-");
+  const hostPath = join(dir, "host.json");
+  const text = (blocks: Record<string, unknown>) => `${JSON.stringify({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir, tickets: { providers: blocks } }, null, 2)}\n`;
+  writeFileSync(hostPath, text(providers));
+  const released: string[] = [];
+  const plugins = {
+    load: async () => ({ loaded: [], unbuilt: [], refusals: [] }),
+    messaging: { state: async () => ({ provider: null, why: "this machine declares no project, so messaging is not configured" }) as const, checks: async () => [] },
+    version: "v1.2.3",
+    outgoing: async (plugin: { name: string }) => ({ machineName: null, release: () => { released.push(plugin.name); return { ok: true, detail: "" }; } }),
+  };
+  return { ...board(4747, {}, { hostPath, plugins }), hostPath, released, text, plugins };
+}
+const FRESH_BLOCKS = { tracker: { provider: "linear", enabled: true }, codeHost: { provider: "github", enabled: true }, exposure: { provider: "tailscale", port: 5000 } };
+/** What the page reads of the plugins, and what it sends an action. */
+const readPlugins = async (b: ReturnType<typeof pluginsBoard>) => (await b.api("GET", "/api/plugins", {}) as [number, PluginsView])[1];
+const actOn = async <T = Acted>(b: ReturnType<typeof pluginsBoard>, body: Record<string, unknown>) => await b.api("POST", "/api/plugins/action", body) as [number, T];
+/** What an action the instance refuses answers: a 400, and the sentence. */
+async function refusalOf(b: ReturnType<typeof pluginsBoard>, body: Record<string, unknown>): Promise<string> {
+  const [status, answer] = await actOn<{ error: string }>(b, body);
+  assert.equal(status, 400);
+  return answer.error;
+}
+/** What an action the instance carries out says it did: a 200, and the sentence. */
+async function saidBy(b: ReturnType<typeof pluginsBoard>, body: Record<string, unknown>): Promise<string> {
+  const [status, done] = await actOn(b, body);
+  assert.equal(status, 200);
+  return done.said;
+}
+/** A board over the fresh blocks, with the plugins read once and the base of the host file the page would send back. */
+async function opened() {
+  const b = pluginsBoard(FRESH_BLOCKS);
+  const view = await readPlugins(b);
+  return { b, view, base: view.bases["host.json"] };
+}
+const entryOf = (view: PluginsView, name: string) => view.concerns.flatMap((concern) => concern.plugins).find((plugin) => plugin.name === name)!;
+
+test("A11-163: GET /api/plugins answers every concern in order with each plugin's name, version, contract and state, from the block that names it", async () => {
+  const b = pluginsBoard(FRESH_BLOCKS);
+  const [status, view] = await b.api("GET", "/api/plugins", {}) as [number, PluginsView];
+  assert.equal(status, 200);
+  assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
+  assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
+    [["linear", "v1.2.3", "1.1", "enabled"], ["github", "v1.2.3", "1.1", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.0", "not installed"]]);
+  assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
+  assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
+  assert.equal(view.note, null);
+  assert.doesNotMatch(JSON.stringify(view), /lin_api_|BEGIN .*PRIVATE KEY/, "no secret is in the answer, only the commands that set one");
+});
+
+test("A11-163: the Plugins call does not wait on the rest of the page: /api/settings answers while the plugins are still loading, and fails alone", async () => {
+  const b = pluginsBoard(FRESH_BLOCKS);
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((done) => { release = done; });
+  const stuck = board(4747, {}, { hostPath: b.hostPath, plugins: { ...b.plugins, load: async () => { await gate; return { loaded: [], unbuilt: [], refusals: [] }; } } });
+  const pending = stuck.api("GET", "/api/plugins", {});
+  const [status] = await stuck.api("GET", "/api/settings", {}) as [number, unknown];
+  assert.equal(status, 200, "the settings are read while the plugins are not");
+  release();
+  assert.equal((await pending)[0], 200);
+  const broken = board(4747, {}, { hostPath: b.hostPath, plugins: { ...b.plugins, load: async () => { throw new Error("loader down"); } } });
+  await assert.rejects(broken.api("GET", "/api/plugins", {}), /loader down/);
+  assert.equal((await broken.api("GET", "/api/settings", {}))[0], 200, "a failed Plugins call leaves the settings readable");
+});
+
+test("A11-163: Disable and Enable round trip through the host file, keep the person's notes, and say the change is in force when the board restarts", async () => {
+  const b = pluginsBoard(FRESH_BLOCKS);
+  const view = await readPlugins(b);
+  const [status, off] = await actOn(b, { action: "disable", name: "tailscale", base: view.bases["host.json"] });
+  assert.equal(status, 200);
+  assert.match(off.said, /^disabled tailscale: the board is served on loopback only, and its settings are kept for `enable`$/);
+  assert.match(off.inForce.join(" "), /^in force after the instance, the page and the terminal restart/, "the exposure says what must restart");
+  assert.equal(JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers.exposure.enabled, false);
+  assert.equal(JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers.exposure.port, 5000, "its settings are kept");
+  assert.ok(existsSync(`${b.hostPath}.bak`), "the file before the change is kept beside it");
+  assert.deepEqual(b.released, ["tailscale"], "the plugin was released while it was still the enabled one");
+  const after = await readPlugins(b);
+  assert.equal(entryOf(after, "tailscale").state, "disabled");
+  const [, on] = await actOn(b, { action: "enable", name: "tailscale", base: after.bases["host.json"] });
+  assert.match(on.said, /^enabled tailscale/);
+  assert.equal(JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers.exposure.enabled, true);
+});
+
+test("A11-163: disabling the only tracker is refused with the CLI's sentence naming it, and nothing is written", async () => {
+  const b = pluginsBoard(FRESH_BLOCKS);
+  const before = readFileSync(b.hostPath, "utf8");
+  const view = await readPlugins(b);
+  const refused = await refusalOf(b, { action: "disable", name: "linear", base: view.bases["host.json"] });
+  assert.equal(refused, "linear is the only tracker, and exactly one tracker must be enabled: it cannot be disabled");
+  assert.equal(readFileSync(b.hostPath, "utf8"), before);
+  assert.equal(existsSync(`${b.hostPath}.bak`), false, "no backup either: nothing was written");
+  assert.equal(entryOf(view, "linear").controls.refused.disable, refused, "and the page was told the same sentence beforehand");
+});
+
+test("A11-163: Install of a plugin that takes a block another holds is the switch, asks to be confirmed, keeps the settings both declare and releases the plugin it leaves", async () => {
+  const { b, view, base } = await opened();
+  assert.match(await refusalOf(b, { action: "install", name: "local", base }), /^install local needs the person's confirmation first/);
+  assert.equal(JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers.exposure.provider, "tailscale", "nothing changed");
+  assert.match(entryOf(view, "local").controls.confirm.install ?? "", /^Install local\? It replaces tailscale as the exposure: no setting is lost\.$/);
+  assert.match(await saidBy(b, { action: "install", name: "local", base, confirmed: true }), /^switched the exposure from tailscale to local, keeping port/);
+  const block = JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers.exposure;
+  assert.deepEqual([block.provider, block.enabled, block.port], ["local", true, 5000]);
+  assert.deepEqual(b.released, ["tailscale"]);
+});
+
+test("A11-163: Uninstall is confirmed first, then removes the block so the concern takes its default", async () => {
+  const { b, view, base } = await opened();
+  assert.match(await refusalOf(b, { action: "uninstall", name: "tailscale", base }), /needs the person's confirmation first/);
+  assert.match(entryOf(view, "tailscale").controls.confirm.uninstall ?? "", /^Uninstall tailscale\? Its block is removed, with its settings/);
+  assert.match(await saidBy(b, { action: "uninstall", name: "tailscale", base, confirmed: true }), /^uninstalled tailscale: the exposure falls back to its default, local/);
+  assert.equal("exposure" in JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers, false);
+  assert.equal(entryOf(await readPlugins(b), "tailscale").state, "not installed");
+});
+
+test("A11-163: an action sent for a file that changed since the page read it is refused, and nothing is written or released", async () => {
+  const { b, base } = await opened();
+  writeFileSync(b.hostPath, b.text({ ...FRESH_BLOCKS, exposure: { provider: "tailscale", port: 5001 } }));
+  const changed = readFileSync(b.hostPath, "utf8");
+  assert.equal(await refusalOf(b, { action: "disable", name: "tailscale", base }), "the file changed since you looked: read it again");
+  assert.equal(readFileSync(b.hostPath, "utf8"), changed);
+  assert.deepEqual(b.released, [], "the plugin was not released for a change that was refused");
+});
+
+test("A11-163: an action is refused by name when its words are wrong: an unknown action, a plugin that does not exist, a missing base", async () => {
+  const { b, base } = await opened();
+  const answer = (body: Record<string, unknown>) => actOn<{ error: string }>(b, body);
+  assert.match((await answer({ action: "delete", name: "linear", base }))[1].error, /^action must be one of install, enable, disable, uninstall/);
+  assert.match((await answer({ action: "enable", name: "nope", base }))[1].error, /^no plugin is named nope/);
+  assert.match((await answer({ action: "enable", name: "tailscale" }))[1].error, /^base must be the hash of the file as you read it/);
+  assert.match((await answer({ action: "install", name: "fake-exposure", base }))[1].error, /fake-exposure is an in-memory exposure for core's tests/);
+});
+
+test("A11-163: a host file the reader refuses is said in the plugins' answer, which then shows the defaults and carries no settings of the messaging key", async () => {
+  const b = pluginsBoard(FRESH_BLOCKS);
+  writeFileSync(b.hostPath, JSON.stringify({ clones: {}, tickets: { providers: { tracker: { provider: "jira" } } } }));
+  const refusing = await readPlugins(b);
+  assert.match(refusing.note ?? "", /^the host file is refused, so the plugins are shown as their defaults: /);
+  const pasted = board(4747, {}, { hostPath: b.hostPath, plugins: { ...b.plugins, messaging: { state: async () => ({ provider: "telegram", enabled: true, settings: { pasted: "123:SECRET-TOKEN" } }), checks: async () => [] } } });
+  const [, answer] = await pasted.api("GET", "/api/plugins", {}) as [number, PluginsView];
+  assert.doesNotMatch(JSON.stringify(answer), /SECRET-TOKEN/, "a key pasted into the messaging key is never sent to the page");
+});

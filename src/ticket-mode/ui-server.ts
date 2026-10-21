@@ -51,6 +51,8 @@ const LABEL_FILTERS = join(HERE, "label-filters.ts");
 const ASSIGNEE_FILTER = join(HERE, "assignee-filter.ts");
 /** The Settings page's search, sent the same way: it imports nothing, so the browser runs it as it is (A11-146). */
 const SETTINGS_SEARCH = join(HERE, "settings-search.ts");
+/** The Settings page's Plugins section: its words and rules, sent the same way (A11-163). */
+const PLUGINS_SECTION = join(HERE, "plugins-section.ts");
 const COOKIE = "ticket_session";
 /** The most a pairing request may send. It is read before the request is known to be anyone's, so it is kept small. */
 const PAIR_BODY_BYTES = 1024;
@@ -191,10 +193,15 @@ export function settingsSearchScript(read: (path: string) => string = (path) => 
   return stripTypeScriptTypes(read(SETTINGS_SEARCH));
 }
 
+/** `plugins-section.ts` as the browser can run it, as `boardViewScript` sends `board-view.ts`. */
+export function pluginsSectionScript(read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
+  return stripTypeScriptTypes(read(PLUGINS_SECTION));
+}
+
 /** The page's modules, by the path it imports each from. */
 const SCRIPTS: Readonly<Record<string, () => string>> = {
   "/board-view.js": () => boardViewScript(), "/label-filters.js": () => labelFiltersScript(), "/assignee-filter.js": () => assigneeFilterScript(),
-  "/settings-search.js": () => settingsSearchScript(),
+  "/settings-search.js": () => settingsSearchScript(), "/plugins-section.js": () => pluginsSectionScript(),
 };
 
 /**

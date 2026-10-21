@@ -37,7 +37,7 @@ export function sourceWords(providers: Providers, block: keyof Providers["blocks
 }
 
 /** Where a plugin's code lives, in the words `list` gives. */
-const whereOf = (plugin: CatalogPlugin): string => (plugin.where === "bundled" ? `plugins/${plugin.name}` : plugin.where === "core" ? `core, until ${plugin.movedBy}` : "fake");
+export const whereOf = (plugin: CatalogPlugin): string => (plugin.where === "bundled" ? `plugins/${plugin.name}` : plugin.where === "core" ? `core, until ${plugin.movedBy}` : "fake");
 
 function stateOf(plugin: CatalogPlugin, report: BlockReport): PluginState {
   if (report.provider !== plugin.name) return "available";

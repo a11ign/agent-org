@@ -164,10 +164,10 @@ test("A11-144: a provider row fails when a check it summarises fails, with that 
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
-    ["herdr", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["ticket writer", true], ["instance service", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["herdr", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
-    ["terminal answering", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["publisher (none)", true], ["reviewer (none)", true], ["messaging (none)", true], ["pairing", true],
+    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh stack", true], ["code host (github)", true],
+    ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
@@ -609,10 +609,10 @@ test("A11-139: the instruction's words do not decide the writer check: a mode wo
 const WORKERS_HOST = JSON.stringify({ gh: { workers: "/home/agent/workers" }, clones: { netbox: "/src/netbox" }, tickets: { providers: { tracker: { provider: "linear", key: { keychain: "agent-org-linear" } }, exposure: { provider: "local", port: 4800, uiPort: 4801, terminal: TERMINAL } } } });
 const GITHUB_ORIGIN = "git@github.com:a11ign/nbl-ui-netbox.git";
 
-test("A11-160: the code host plugin's rows are in the report where doctor's own were, after the wrapper and before the code host's row that summarises them", async () => {
+test("A11-160: the code host plugin's rows are in the code host's section, after the machine's wrapper check and before the code host's row that summarises them", async () => {
   const checks = await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN }) }));
   const names = checks.map(({ name }) => name);
-  assert.deepEqual(names.filter((name) => ["gh wrapper", "gh stack", "stacked pull requests", "code host (github)", "herdr"].includes(name)), ["gh wrapper", "gh stack", "stacked pull requests", "code host (github)", "herdr"]);
+  assert.deepEqual(names.filter((name) => ["gh wrapper", "gh stack", "stacked pull requests", "code host (github)", "herdr"].includes(name)), ["gh wrapper", "herdr", "gh stack", "stacked pull requests", "code host (github)"]);
   const row = byName(checks);
   assert.deepEqual([row["gh stack"].ok, row["gh stack"].detail], [true, "github/gh-stack v0.2.1 (for GH_CONFIG_DIR=/home/agent/workers/gh)"], "the row is the plugin's, with the words it had");
   assert.deepEqual([row["stacked pull requests"].ok, row["stacked pull requests"].detail], [true, "available for a11ign/nbl-ui-netbox"]);
@@ -793,7 +793,8 @@ test("A11-158: a disabled publisher is named as disabled, says what the board do
 });
 
 test("A11-158: a plugin that implements a contract major agent-org does not read fails its own row, naming it and the fix, when no block enables it", async () => {
-  const unread = fakeOf("fake-tracker", { contract: "2.0" });
+  // A fake is never listed, so the plugin that implements the unread major is a built-in of the catalog.
+  const unread = fakeOf("fake-tracker", { contract: "2.0", where: "core", movedBy: "A11-999" });
   const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
   assertRow(checks, "plugin fake-tracker", { ok: false, detail: "plugin fake-tracker implements tracker contract 2.0; this agent-org reads tracker 1.x: update agent-org, or use a plugin of a major it reads", fix: /update agent-org/ });
   assertRow(checks, "tracker (linear)", { ok: true });
@@ -930,4 +931,102 @@ test("A11-162 done-when: `agent-org plugin enable local` takes a served board of
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- A11-163: one section per plugin
+
+/** The report's lines. */
+const linesOf = (checks: Check[]): string[] => report(checks).split("\n");
+
+test("A11-163: doctor prints a section per agent-org plugin in concern order, each headed by the concern, the plugin, its state and contract and where its code lives, with the plugin's checks beneath", async () => {
+  const checks = await diagnose(deps());
+  const lines = linesOf(checks);
+  const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
+  assert.deepEqual(headers, [
+    "tracker: linear (enabled, contract 1.1, plugins/linear)",
+    "code host: github (enabled, contract 1.1, plugins/github)",
+    "publisher: none",
+    "reviewer: none",
+    "exposure: local (enabled, contract 1.1, plugins/local)",
+    "messaging: none",
+  ]);
+  const tracker = lines.indexOf("tracker: linear (enabled, contract 1.1, plugins/linear)");
+  assert.match(lines[tracker + 1], /^ {2}ok {4}tracker key: /, "the plugin's own checks are indented beneath its header");
+  assert.match(lines[tracker + 2], /^ {2}ok {4}linear mcp: /);
+  assert.match(lines[tracker + 3], /^ {2}ok {4}tracker \(linear\): /, "and the concern's row that summarises them closes the section");
+  assert.match(lines[tracker - 1], /^ok {4}terminal answering: /, "the machine's checks stand outside the sections, before them");
+  assert.deepEqual(lines.filter((line) => /^ok {4}(?:tracker key|tracker \(linear\))/.test(line)), [], "no plugin row is left outside its section");
+});
+
+test("A11-163: a disabled plugin's section says what the board does without it, and a concern with none says none", async () => {
+  const host = hostWithProviders({ publish: { ...PUBLISH, enabled: false } });
+  const lines = linesOf(await diagnose(deps({ readFile: () => host })));
+  const at = lines.indexOf("publisher: slack (disabled, contract 1.0, core, until A11-161)");
+  assert.notEqual(at, -1);
+  assert.equal(lines[at + 1], "  ok    publisher (slack, disabled): disabled: publishes nothing");
+  assert.ok(lines.includes("reviewer: none"));
+  assert.ok(lines.includes("  ok    reviewer (none): no block: the default, none, which starts no reviewer, applies"));
+});
+
+test("A11-163: a plugin that failed to load is a FAIL row in its own section with the reason and the fix, the other sections are as they were, and the exit status is the same as it was", async () => {
+  const bundled = fakeOf("fake-tracker", { where: "bundled", dir: "/checkout/plugins/fake-tracker", entry: "index.ts" });
+  const refusal = { plugin: "fake-tracker", concern: "tracker" as const, why: "plugin fake-tracker: index.ts must export create, doctorChecks and onboardSteps" };
+  const plugins = fakeAgentOrgPlugins({ catalog: () => catalogWith([bundled]), load: async () => ({ loaded: [], unbuilt: [], refusals: [refusal] }) });
+  const checks = await diagnose(deps({ readFile: () => hostWithProviders({ tracker: { provider: "fake-tracker" } }), agentOrgPlugins: plugins }));
+  const lines = linesOf(checks);
+  const at = lines.indexOf("tracker: fake-tracker (failed, contract 1.1, plugins/fake-tracker)");
+  assert.notEqual(at, -1, `the header says failed: ${lines.filter((line) => /^tracker/.test(line)).join(" / ")}`);
+  assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
+  assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
+  assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.1, plugins/github)"), "the code host's section is untouched");
+  assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
+  assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
+});
+
+test("A11-163: what the registry refused, and a plugin that implements a major this release does not read, are failed sections too", async () => {
+  const unread = fakeOf("fake-tracker", { contract: "2.0", where: "core", movedBy: "A11-999" });
+  const refusals = [{ plugin: "linear-tools", why: "plugin linear-tools: package.json declares dependencies (left-pad), which a host's install does not install" }];
+  const lines = linesOf(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread], {}, refusals) }) })));
+  const unreadAt = lines.indexOf("tracker: fake-tracker (failed, contract 2.0, core, until A11-999)");
+  assert.notEqual(unreadAt, -1);
+  assert.match(lines[unreadAt + 1], /^ {2}FAIL {2}plugin fake-tracker: plugin fake-tracker implements tracker contract 2\.0/);
+  const refusedAt = lines.indexOf("refused by the registry");
+  assert.equal(lines[refusedAt + 1], `  FAIL  plugin linear-tools: ${refusals[0].why}`);
+  assert.equal(lines[refusedAt + 2], "        fix: fix the plugin's package.json, or remove the plugin");
+});
+
+test("A11-163: the messaging section is headed by its plugin, and a project with none says so", async () => {
+  const state = { provider: "telegram", enabled: true, settings: {} } as const;
+  const rows = [{ name: "telegram token file", ok: true, detail: "readable by no one else", fix: null }];
+  const lines = linesOf(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state, messagingChecks: async () => rows }) })));
+  const at = lines.indexOf("messaging: telegram (enabled, contract 1.1, plugins/telegram)");
+  assert.deepEqual(lines.slice(at + 1, at + 3), ["  ok    telegram token file: readable by no one else", "  ok    messaging (telegram): configured in project.json's messaging key, and its checks pass"]);
+});
+
+test("A11-163: a messaging key that names a plugin the registry does not hold is a FAIL, in its own section, as it was; it is not read as no messaging", async () => {
+  const state = { provider: "nope", enabled: true, settings: {} } as const;
+  const checks = await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state, messagingChecks: async () => { throw new Error("messaging: no provider named nope is installed"); } }) }));
+  const row = byName(checks);
+  assertRow(row, "plugin nope", { ok: false, detail: "messaging: no provider named nope is installed" });
+  assert.equal(row["messaging (nope)"].ok, false);
+  assert.equal(checks.every((check) => check.ok), false, "so the run fails, as it did");
+  assert.ok(linesOf(checks).includes("messaging: none"));
+});
+
+test("A11-163: a concern no plugin runs keeps its row when another plugin of it failed to load", async () => {
+  const unread = fakeOf("fake-reviewer", { contract: "2.0", where: "core", movedBy: "A11-999" });
+  const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
+  assertRow(checks, "plugin fake-reviewer", { ok: false });
+  assertRow(checks, "reviewer (none)", { ok: true });
+});
+
+test("A11-163: a host file the reader refuses still shows the messaging rows, as it always did", async () => {
+  const state = { provider: "telegram", enabled: true, settings: {} } as const;
+  const refusedText = JSON.stringify({ tickets: { port: "x" } });
+  const checks = byName(await diagnose(deps({ readFile: () => refusedText, agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state,
+    messagingChecks: async () => [{ name: "telegram token file", ok: false, detail: "mode 0644", fix: "chmod 600 the token" }] }) })));
+  assert.equal(checks["host file"].ok, false);
+  assertRow(checks, "telegram token file", { ok: false });
+  assertRow(checks, "messaging (telegram)", { ok: false, fix: "chmod 600 the token" });
 });

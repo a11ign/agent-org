@@ -194,3 +194,19 @@ test("the writer a host names is the tracker plugin's, and a tracker that declar
   assert.deepEqual(trackerWritingOf(providers("example"), catalog), writing);
   assert.throws(() => trackerWritingOf(providers("bare"), catalog), /the tracker bare declares no writer tooling \(tracker contract 1\.1\), so a new-ticket run cannot file a ticket with it/);
 });
+
+test("A11-163: a manifest's secret setting must declare the command that sets it, since the Settings page shows it and never takes a secret", () => {
+  const entry = { key: "tickets.providers.tracker.token", file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, secret: "path", explanation: "e", breaks: "b", edit: { editable: false, why: "w" } };
+  assert.match(refusalOf(catalogOf({ bad: manifest({ settings: { token: entry } }) }), "bad") ?? "",
+    /agentOrg\.settings\.token is a secret \(path\) and must declare setCommand, the exact command that sets it/);
+  assert.match(refusalOf(catalogOf({ bad: manifest({ settings: { token: { ...entry, setCommand: "" } } }) }), "bad") ?? "", /must declare setCommand/, "an empty command is none");
+  assert.match(refusalOf(catalogOf({ bad: manifest({ settings: { token: { ...entry, secret: undefined, setCommand: 7 } } }) }), "bad") ?? "", /agentOrg\.settings\.token\.setCommand must be the command as text/);
+  const good = pluginNamed(catalogOf({ ok: manifest({ settings: { token: { ...entry, setCommand: "pass insert example" } } }) }), "ok");
+  assert.equal(good?.settings.token.setCommand, "pass insert example");
+});
+
+test("A11-163: every secret setting of this checkout's bundled plugins declares its command", () => {
+  const secrets = defaultCatalog().plugins.flatMap((plugin) => Object.entries(plugin.settings).filter(([, entry]) => entry.secret !== undefined).map(([name, entry]) => [plugin.name, name, entry.setCommand]));
+  assert.ok(secrets.length >= 6, "linear, github and telegram each declare secrets");
+  for (const [plugin, name, command] of secrets) assert.equal(typeof command === "string" && command !== "", true, `${plugin} ${name} declares setCommand`);
+});

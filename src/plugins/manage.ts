@@ -55,7 +55,7 @@ const placeOf = (block: ProviderBlock): Place => ({ file: "host.json", block: `t
 const keyOf = (place: Place, setting?: string): string => (setting === undefined ? place.block : `${place.block}.${setting}`);
 
 /** What the project's `messaging` key holds, shaped as a block the other concerns have: the plugin it names, whether it is enabled, and its settings. */
-function messagingReport(state: MessagingState): BlockReport {
+export function messagingReport(state: MessagingState): BlockReport {
   if (state.provider === null) return { provider: "none", enabled: false, from: "default", settings: {} };
   const settings = Object.fromEntries(Object.entries(state.settings).map(([name, value]) => [name, { value, at: `messaging.${name}` }]));
   return { provider: state.provider, enabled: state.enabled, from: "block", settings };
@@ -160,6 +160,28 @@ function planSwitch(target: Target, context: PlanContext): Plan {
   const terminal = report.settings.terminal?.value;
   return { changes, said, file: place.file, leaves: leavingOf(target, context.catalog),
     ...(typeof terminal === "string" && declared.includes("terminal") ? { ownTerminal: { key: keyOf(place, "terminal"), address: terminal } } : {}) };
+}
+
+/**
+ * What the Settings page's Install does (A11-163): a plugin of a concern whose block names ANOTHER plugin replaces it through the switch (`enable`), which keeps the settings both declare;
+ * a concern that names none, or only its default, is installed (`install`, replacing that default). The CLI's `install --replace` drops the old plugin's settings and the page does not.
+ */
+export function planInstallOrSwitch(name: string, context: PlanContext): Plan {
+  const { report } = targetOf(name, context);
+  const another = report.provider !== "none" && report.provider !== name;
+  if (another && report.from === "block") return planEnable(name, context);
+  return planInstall(name, { sets: [], replace: another }, context);
+}
+
+/**
+ * The plugin that installing `name` replaces on the page, and the settings of it that `name` does not declare and the switch drops, or null when it replaces none: the words of the
+ * confirmation the page asks before it installs (A11-163).
+ */
+export function replacementOf(name: string, context: PlanContext): Readonly<{ replaced: string; dropped: readonly string[] }> | null {
+  const { plugin, report } = targetOf(name, context);
+  if (report.provider === "none" || report.provider === name || report.from !== "block") return null;
+  const declared = blockSettings(plugin);
+  return { replaced: report.provider, dropped: heldSettings(report).map(([setting]) => setting).filter((setting) => !declared.includes(setting)) };
 }
 
 /** Switches an installed plugin on. One that is on is left as it is. A plugin of the concern that the place does not name replaces the one it does (A11-162). */
