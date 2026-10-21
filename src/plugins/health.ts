@@ -68,6 +68,8 @@ export type PluginEntry = Readonly<{
   installCommand: string;
   /** The command for each secret the plugin takes. Empty for a plugin that needs none. */
   secrets: readonly SecretCommand[];
+  /** The schema keys of the plugin's own settings (`tickets.providers.<block>.<name>`, with `<role>` for a map's name), which the page draws under Configure. */
+  settingKeys: readonly string[];
 }>;
 
 /** What a concern shows when no plugin runs: the sentence, and the commands that add or enable one. */
@@ -199,7 +201,7 @@ function entryOf(plugin: CatalogPlugin, input: HealthInput, context: PlanContext
   const secrets = secretsOf(plugin, report);
   const state: HealthState = failure !== null ? "failed" : enabled ? "enabled" : named ? "disabled" : "not installed";
   return { name: plugin.name, concern: plugin.concern, version: input.version, contract: plugin.contract, where: whereOf(plugin), description: plugin.description, state, installed, enabled,
-    checks, failure, controls: controlsOf(plugin, { installed, enabled, secrets: secrets.length > 0 }, context), installCommand: `agent-org plugin install ${plugin.name}`, secrets };
+    checks, failure, controls: controlsOf(plugin, { installed, enabled, secrets: secrets.length > 0 }, context), installCommand: `agent-org plugin install ${plugin.name}`, secrets, settingKeys: Object.values(plugin.settings).map((entry) => entry.key) };
 }
 
 /** The empty state of a concern with no plugin running: the required ones cannot run the board, the optional ones say "None". Each gives the command that fixes it, one per plugin. */

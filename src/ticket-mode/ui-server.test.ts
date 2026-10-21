@@ -305,7 +305,7 @@ test("a paired browser gets all of the page's modules, and a ticket's labels rea
   const u = await ui([WORK]);
   try {
     const cookie = await pairedCookie(u.base, u.local.key);
-    for (const path of ["/board-view.js", "/label-filters.js", "/assignee-filter.js"]) {
+    for (const path of ["/board-view.js", "/label-filters.js", "/assignee-filter.js", "/settings-search.js", "/plugins-section.js"]) {
       const served = await fetch(`${u.base}${path}`, { headers: { cookie } });
       assert.equal(served.status, 200, path);
       assert.match(String(served.headers.get("content-type")), /^text\/javascript/, path);

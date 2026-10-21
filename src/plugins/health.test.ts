@@ -185,3 +185,11 @@ test("A11-163: doctor's sections are the plugins a block names and any that fail
   assert.deepEqual(sectionPlugins(concernOf(health, "exposure")).map(({ name }) => name), ["tailscale"], "a disabled plugin still has its section");
   assert.deepEqual(sectionPlugins(concernOf(health, "publisher")), [], "an optional concern with none has no plugin section");
 });
+
+test("A11-163: an entry names the schema keys of its own settings, so the page draws only those under its Configure", () => {
+  const health = healthOf(FRESH);
+  assert.ok(pluginOf(health, "linear").settingKeys.includes("tickets.providers.tracker.workingState"));
+  assert.ok(pluginOf(health, "tailscale").settingKeys.includes("tickets.providers.exposure.tailnetPorts"));
+  assert.equal(pluginOf(health, "local").settingKeys.includes("tickets.providers.exposure.tailnetPorts"), false, "a setting of another plugin of the concern is not its own");
+  assert.deepEqual(pluginOf(health, "atomic").settingKeys, [], "a plugin that declares none has none");
+});
