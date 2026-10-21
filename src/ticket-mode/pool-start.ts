@@ -30,6 +30,7 @@ import { pickTeamOf } from "./pick-scope.ts";
 import { needsDecision } from "./open-decisions.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { trackerWritingOf } from "../plugins/registry.ts";
+import { settleSessions } from "./pool-sessions.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
@@ -337,6 +338,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
   } catch {
     return;
   }
+  // A round or a talk session never starts beside an agent that holds its Claude session or its name (A11-154): one that works holds it back, a leftover is closed.
+  settleSessions(ctx);
   // A batch is planned together only while this machine's planner plans batches: otherwise each of its tickets is planned alone.
   if (!batches) updateEach(ctx, store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined && !e.talk), leaveBatch);
   const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
@@ -412,11 +415,15 @@ async function startTalk(ctx: PoolContext, entry: Entry): Promise<void> {
   }
 }
 
-/** A person asks to talk to a finished run's agent: refused, naming why, when there is no session to resume. Otherwise the session is queued, and starts on the next pass. */
+/**
+ * A person asks to talk to a finished run's agent: refused, naming why, when there is no session to resume, and while a review round of the run is queued or running, since
+ * the round and the talk session would share the run's Claude session (A11-154). Otherwise the session is queued, and starts on the next pass.
+ */
 export function talkTo(ctx: PoolContext, key: string): void {
   const { now, store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   if (entry?.talk && entry.phase === "queued") return;
+  if (entry?.review !== undefined && entry.talk !== true && entry.phase !== "finished") throw new Error(`${key} has a review round ${entry.phase === "queued" ? "queued" : "running"}: talk to it once the round has ended, as the round and a talk session would share one session`);
   if (entry === undefined || entry.phase !== "finished") throw new Error(`${key} has no finished run to talk to`);
   if (talkSession(ctx, entry) === undefined) throw new Error(`${key} has no saved session to resume: its transcript is gone`);
   update(ctx, (queue) => talk(queue, key, now()));

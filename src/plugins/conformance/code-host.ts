@@ -23,7 +23,7 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     const feedback = host.readPullFeedback(probe.pull, probe.self);
     expect(isObject(feedback), `readPullFeedback(${probe.pull}) must read the pull request the host holds`);
     expect(["open", "merged", "closed"].includes(String(feedback.state)), "feedback.state must be open, merged or closed");
-    expect(Array.isArray(feedback.failing) && Array.isArray(feedback.authors) && Array.isArray(feedback.files), "feedback.failing, authors and files must be lists");
+    expect(Array.isArray(feedback.failing) && Array.isArray(feedback.failures) && Array.isArray(feedback.authors) && Array.isArray(feedback.files), "feedback.failing, failures, authors and files must be lists");
     expect(typeof feedback.conflicting === "boolean" && typeof feedback.filesComplete === "boolean", "feedback.conflicting and filesComplete must be true or false");
     expect(typeof feedback.mergeable === "boolean" && typeof feedback.approvedAtHead === "boolean" && (feedback.head === null || isString(feedback.head)), "feedback.mergeable and approvedAtHead must be true or false, and head a commit or null");
   },

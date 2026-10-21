@@ -3,7 +3,7 @@
 // THE WRITE IS NOT HERE. This file holds no command: the committed call baseline (`gh-call-ratchet.test.ts`) does not let a new file name a tracker
 // call, and the reads and writes of the code host belong in `src/ticket-port/` (`rerunFailedJobsOf`). A `rerun` is handed to the port by the tick (`withCiFailureClass`, agent-org#1217).
 // THE ONCE BOUND is the run's own attempt count: a rerun makes attempt 2, and the caller passes `rerunsOnThisHead` from it (`readCiFailure`'s `rerunAlready`), so a second red on the head is the owner's.
-import { ERROR_LINE, LOG_TIMESTAMP, NOT_THE_FAILURE } from "./ci-failure-class.ts";
+import { ERROR_LINE, LOG_TIMESTAMP, NOT_THE_FAILURE } from "./ci-log-lines.ts"; // the leaf that reads no project declaration (A11-154): ticket mode's pool imports this file
 
 /** Shipped ON (agent-org#1180, the switch row a11ign#5230): a required check red on a GitHub 5xx is rerun once. The explicit OFF, passed as `flags`, is today's route, byte for byte. */
 export const CI_RERUN_ON_5XX: { readonly enabled: boolean } = Object.freeze({ enabled: true });

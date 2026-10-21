@@ -13,6 +13,9 @@ export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHost
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
 export const CODE_HOST_CONTRACT_VERSION = "1.0";
 
+/** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
+export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
+
 /** What the board reads of one pull request. Times are epoch milliseconds, or null when there is none. */
 export type PullFeedback = Readonly<{
   state: "open" | "merged" | "closed";
@@ -22,6 +25,11 @@ export type PullFeedback = Readonly<{
   authors: readonly string[];
   /** The checks failing on the head commit, by name: its required ones, or every one where none is required. */
   failing: readonly string[];
+  /**
+   * Every check failing on the head commit, counted or not, with the address of its job's page (`detailsUrl`), or null for a check that has none, such as a commit status: where its
+   * log is read (A11-154). `failing` is the ones the board answers; this also lists a job behind a required roll-up that failed.
+   */
+  failures: readonly FailingCheck[];
   /** When the newest of those failing checks finished. */
   failedAt: number | null;
   /** Whether it conflicts with its base: GitHub says `CONFLICTING` or `DIRTY`. `UNKNOWN` (still being computed) is not a conflict. */

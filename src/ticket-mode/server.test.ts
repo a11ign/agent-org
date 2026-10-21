@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { parseTicketSettings } from "./settings.ts";
-import { markPublishRunning, markPublishStarting } from "./queue/queue-transitions.ts";
+import { markPublishRunning, markPublishStarting, respond as respondQueued } from "./queue/queue-transitions.ts";
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
 import { remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
@@ -30,6 +30,8 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     dismiss: async (key: string) => { ticks.push(`dismiss ${key}`); },
     applyEdit: async (key: string) => { ticks.push(`apply-edit ${key}`); },
     discardEdit: (key: string) => { ticks.push(`discard-edit ${key}`); },
+    // The pool takes Respond, closing a parked run's workspace first: here only the queue's part, which can refuse.
+    respond: (key: string) => { ticks.push(`respond ${key}`); made.store.set(respondQueued(made.store.get(), key, 7)); },
     stopWriterRun: (id: string) => { ticks.push(`stop-writer ${id}`); },
     // The pool takes a queued run off, after putting its ticket back: here only the queue's part, which the board's store is asked for.
     remove: async (key: string) => { ticks.push(`remove ${key}`); made.store.set(removeQueued(made.store.get(), key)); },
@@ -60,7 +62,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     },
     download: async () => [],
   };
-  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {} };
+  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {} };
   const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
@@ -130,7 +132,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
     tickets: { plan: "-plan-[^/]*\\.md$", planner: { run, state: "Planned" } } });
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
-  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {} };
+  const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {} };
   return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 
@@ -257,6 +259,22 @@ test("Respond to review queues a review round of a run whose pull requests are r
   const [entry] = b.store.get().entries;
   assert.deepEqual([entry.phase, entry.review, entry.asked], ["queued", [READY_PR], true]);
   assert.ok(b.ticks.includes("tick"), "responding wakes the pool");
+});
+
+test("A11-154: Respond to review goes through the pool: a run that ended needs-human with a pull request open gets its round, and a press that cannot act answers why", async () => {
+  const b = board();
+  await queueFinished(b, { kind: "needs-human", reason: "which colour?" });
+  const before = b.ticks.length;
+  const press = () => b.api("POST", "/api/queue/NBF-1/respond", {});
+  await assert.rejects(press(), /NBF-1 has no pull request open, so there is no feedback to answer/, "the refusal reaches the response");
+  assert.deepEqual(b.ticks.slice(before), ["respond NBF-1"], "the pool was asked, and nothing was woken for a refusal");
+  assert.equal(b.store.get().entries[0].phase, "finished");
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, review: [READY_PR], pullStates: { [READY_PR.url]: "open" } })) });
+  await press();
+  const [entry] = b.store.get().entries;
+  assert.deepEqual([entry.phase, entry.review, entry.asked], ["queued", [READY_PR], true]);
+  assert.ok(b.ticks.includes("tick"), "responding wakes the pool");
+  await assert.rejects(press(), /a round is already queued for NBF-1/, "a second press says a round is queued");
 });
 
 // A11-125: Start anyway, through the board, passes a queued run's overlap, records it, logs it and wakes the pool; a refusal is named.

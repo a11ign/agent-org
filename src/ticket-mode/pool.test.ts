@@ -9,7 +9,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
 import { rebaseNote, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
-import { reasonOf } from "./board-view/run-reason.ts";
+import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
@@ -35,6 +35,10 @@ const source: TicketSource = { assigned: async () => [], read: async () => null,
 function herdr(status: Map<string, string>, screen: { text: string } = { text: "" }) {
   const calls: string[][] = [];
   const refused = new Set<string>();
+  /** What herdr says when it refuses a verb in `refused`, where that is not the default, `workspace_not_found`. */
+  const reasons = new Map<string, string>();
+  /** Workspaces herdr holds that no run of the queue does, such as the leftover of a talk session (A11-154): listed with their agent, and gone once closed by their id. */
+  const extra: { workspace_id: string; label: string; name: string | null; session: string | null; status: string }[] = [];
   /** The error codes herdr refuses the next agent starts with, in order, as it refuses a pane whose shell is not at its prompt yet; after them starts go through. */
   const refusals: string[] = [];
   let next = 0;
@@ -43,17 +47,25 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
     if (args.includes("agent") && args.includes("start") && refusals.length > 0) {
       throw Object.assign(new Error("herdr exited 1"), { stderr: JSON.stringify({ error: { code: refusals.shift(), message: "agent target pane is not an available shell" } }) });
     }
-    if (args.some((arg) => refused.has(arg))) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: "workspace_not_found" } }) });
+    const refusing = args.find((arg) => refused.has(arg));
+    if (refusing !== undefined) throw Object.assign(new Error("herdr exited 1"), { stdout: JSON.stringify({ error: { message: reasons.get(refusing) ?? "workspace_not_found" } }) });
     if (args.includes("read")) return screen.text;
     if (args.includes("create")) {
       next += 1;
       return JSON.stringify({ result: { root_pane: { pane_id: `w${next}:p1` }, workspace: { workspace_id: `w${next}` } } });
     }
-    if (args.includes("agent") && args.includes("list")) return JSON.stringify({ result: { agents: [...status].map(([label]) => ({ name: null, workspace_id: `w${label.replace(/\D/g, "")}`, agent_session: { value: `session-${label}` } })) } });
-    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...status].map(([label, s]) => ({ label, agent_status: s })) } });
+    if (args.includes("agent") && args.includes("list")) {
+      const own = [...status].map(([label, s]) => ({ name: null, workspace_id: `w${label.replace(/\D/g, "")}`, agent_session: { value: `session-${label}` }, agent_status: s }));
+      return JSON.stringify({ result: { agents: [...own, ...extra.map((x) => ({ name: x.name, workspace_id: x.workspace_id, agent_session: x.session === null ? undefined : { value: x.session }, agent_status: x.status }))] } });
+    }
+    if (args.includes("workspace") && args.includes("close") && extra.some((x) => x.workspace_id === args[args.indexOf("close") + 1])) {
+      extra.splice(extra.findIndex((x) => x.workspace_id === args[args.indexOf("close") + 1]), 1);
+      return JSON.stringify({ type: "ok" });
+    }
+    if (args.includes("list")) return JSON.stringify({ result: { workspaces: [...[...status].map(([label, s]) => ({ label, agent_status: s })), ...extra.map((x) => ({ label: x.label, agent_status: x.status, workspace_id: x.workspace_id }))] } });
     return JSON.stringify({ type: "ok" });
   };
-  return { run, calls, refused, refusals };
+  return { run, calls, refused, reasons, refusals, extra };
 }
 
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
@@ -775,6 +787,17 @@ test("a run waits on its blocker: its blockers are read before anything starts, 
   await pool.refreshTracker();
   await pool.tick();
   assert.equal(entry("NBF-1").phase, "running");
+});
+
+test("A11-154: a run whose blocker's pull request merged starts though the blocker's ticket is still In Progress, and a canceled blocker still holds it", async () => {
+  const merged = { "https://github.com/a11ign/agent-org/pull/1800": "merged" as const };
+  for (const [state, started] of [["started", true], ["canceled", false]] as const) {
+    const tracker: TicketSource = { ...source, blockers: async () => new Map([["NBF-1", [blocks("NBF-0", state, "In Progress", merged)]]]) };
+    const { pool, entry, store } = setup(1, ["NBF-1"], {}, { source: tracker });
+    await pool.tick();
+    assert.equal(entry("NBF-1").phase, started ? "running" : "queued", `a ${state} blocker whose pull request merged`);
+    if (!started) assert.equal(waitNote(entry("NBF-1"), store.get().entries), "NBF-0 was canceled: a person decides");
+  }
 });
 
 test("nothing starts while the tracker cannot say what blocks a run, and a source that cannot say holds nothing back", async () => {
@@ -2266,27 +2289,27 @@ test("feedback from before the run's last round ended, from the workers' own acc
   }
 });
 
-test("a check that failed on the head commit after the round ended starts a round naming it, and a run the board does not watch is never read", async () => {
+test("a check that is red at the head commit starts a round naming it, and a run the board does not watch is never read", async () => {
   const gh = ghFor({ 1: feedbackPull({ checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }) });
   const { pool, entry } = await readyRun(gh.run);
   pool.watchFeedback();
-  assert.equal(entry("NBF-1").feedback, `typecheck failed on the head commit of ${approvedPr.url}.`);
+  assert.equal(entry("NBF-1").feedback, `typecheck failed on the head commit of ${approvedPr.url}; its log could not be read.`, "a check with no job page has no log to quote, and is named as such");
   const unwatched = ghFor({});
   const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched.run });
   other.watchFeedback();
   assert.deepEqual(unwatched.calls, [], "nothing Ready to merge: GitHub is not asked, not even who the workers are");
 });
 
-test("what triggers a round names each pull request's new feedback and failed checks, and nothing older than the round", () => {
-  const read = { state: "open" as const, feedbackAt: 200, authors: ["alice", "bob"], failing: ["typecheck", "suite"], failedAt: 300, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true };
-  assert.equal(feedbackSince([{ url: "u1", read }], 100), "New review feedback on u1, the newest from alice.\ntypecheck, suite failed on the head commit of u1.");
-  assert.equal(feedbackSince([{ url: "u1", read }], 250), "typecheck, suite failed on the head commit of u1.");
+test("what triggers a round names each pull request's new feedback and nothing older than the round, and leaves failed checks to the check rule", () => {
+  const read = { state: "open" as const, feedbackAt: 200, authors: ["alice", "bob"], failing: ["typecheck", "suite"], failures: [], failedAt: 300, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true };
+  assert.equal(feedbackSince([{ url: "u1", read }], 100), "New review feedback on u1, the newest from alice.", "failed checks are answered once for each head, with their log lines, not here (A11-154)");
+  assert.equal(feedbackSince([{ url: "u1", read }], 250), null, "a failed check newer than the round names nothing here either");
   assert.equal(feedbackSince([{ url: "u1", read }], 300), null);
   assert.equal(feedbackSince([{ url: "u1", read: { ...read, state: "closed" } }], 100), null);
 });
 
 test("A11-82: a pull request that conflicts with its base names its base on every watch, whatever the round's time, and a closed one is not named", () => {
-  const read = { state: "open" as const, feedbackAt: null, authors: [], failing: [], failedAt: null, conflicting: true, mergeable: false, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true };
+  const read = { state: "open" as const, feedbackAt: null, authors: [], failing: [], failures: [], failedAt: null, conflicting: true, mergeable: false, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true };
   const line = "https://github.com/acme/repo/pull/7 conflicts with its base branch main.";
   assert.equal(feedbackSince([{ url: "https://github.com/acme/repo/pull/7", read }], 900), line, "a conflict is a state, so no time passes it by");
   assert.equal(feedbackSince([{ url: "https://github.com/acme/repo/pull/7", read: { ...read, state: "merged" as const } }], 0), null);
@@ -2424,12 +2447,11 @@ test("A11-89: a parked run whose pull request conflicts is resumed: its workspac
   assert.equal(existsSync(join(dir, "outcome.json")), false, "the needs-human it parked on is cleared, so it does not end this round");
 });
 
-test("A11-89: a parked run whose pull request is clear, unknown, or has only new review feedback and a failed check is left alone", async () => {
+test("A11-89: a parked run whose pull request is clear, unknown, or has only new review feedback is left alone", async () => {
   const pulls = [
     feedbackPull({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }),
     feedbackPull({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }),
-    feedbackPull({ reviews: [{ state: "CHANGES_REQUESTED", submittedAt: at(300), author: { login: "a11ign-reviewer" } }],
-      checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }),
+    feedbackPull({ reviews: [{ state: "CHANGES_REQUESTED", submittedAt: at(300), author: { login: "a11ign-reviewer" } }] }),
   ];
   for (const pull of pulls) {
     const { pool, entry, h } = await parkedOnQuestion(ghFor({ 1: pull }).run);
@@ -4611,6 +4633,451 @@ test("A11-153: the end of a run reads its pull requests' heads only for a draft 
   const reads = gh.calls.filter((args) => args[1] === "graphql").length;
   assert.equal(reads, 1, "the draft's end read it once; the reviewed end of the round after it read nothing");
   assert.equal(entry("NBF-1").outcomeHeads, undefined, "and a reviewed run records no heads");
+});
+
+// A11-154: a red check at a pull request's current head starts a fix round by itself, once for each head, with the failing checks and their log lines.
+const HEAD_1 = `1a2b3c4d${"0".repeat(32)}`;
+const HEAD_2 = `5e6f7a8b${"0".repeat(32)}`;
+const jobPage = (id: number) => `https://github.com/x/nbl-ui-netbox/actions/runs/${id * 10}/job/${id}`;
+const redCheck = (name: string, id: number, minute = 400) => ({ __typename: "CheckRun", name, conclusion: "FAILURE", completedAt: at(minute), detailsUrl: jobPage(id), isRequired: false });
+const stamped = (lines: string[]) => lines.map((line) => `2026-10-20T10:00:00.1234567Z ${line}`).join("\n");
+/** The log of a job whose test failed: the runner's noise, the failing test, and the exit code every failed step ends on. */
+const TEST_FAILED = stamped(["##[group]Run npm test", "npm warn deprecated left-pad@1.0.0", "not ok 3 - git spawn classification", "AssertionError: expected 1 to equal 2", "##[error]Process completed with exit code 1."]);
+const RUNNER_LOST = stamped(["Run npm test", "##[error]The hosted runner lost communication with the server.", "##[error]Process completed with exit code 143."]);
+const BAD_GATEWAY = stamped(["Run gh api repos/x/y", "gh: HTTP 502: Server Error", "##[error]Process completed with exit code 1."]);
+const NETWORK_DOWN = stamped(["Run npm ci", "npm error code ECONNRESET", "npm error network aborted", "##[error]Process completed with exit code 1."]);
+
+/** A gh that answers the log of an Actions job from `logs` (by job id, refused for any other), records each read and each rerun of a workflow run, and leaves every other call to `base`. */
+function withCi(base: (args: string[]) => string, logs: Record<number, string>) {
+  const reruns: string[][] = [];
+  const logReads: number[] = [];
+  const run = (args: string[]) => {
+    const job = args[0] === "api" ? /\/actions\/jobs\/(\d+)\/logs$/.exec(args[1] ?? "") : null;
+    if (job !== null) {
+      logReads.push(Number(job[1]));
+      if (!(Number(job[1]) in logs)) throw new Error("gh exited 1");
+      return logs[Number(job[1])];
+    }
+    if (args[0] === "run" && args[1] === "rerun") {
+      reruns.push(args);
+      return "";
+    }
+    return base(args);
+  };
+  return { run, reruns, logReads };
+}
+
+/** A run made by `make` over a gh that serves one pull request at `head` with `checks` failing and the logs of `logs` by job id; `pulls` is changed to change what it serves later. */
+async function redRun(checks: unknown[], logs: Record<number, string>, make: (gh: (args: string[]) => string) => ReturnType<typeof readyRun> = readyRun) {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks }) };
+  const ci = withCi(ghFor(pulls).run, logs);
+  return { pulls, ci, ctx: await make(ci.run) };
+}
+
+/** NBF-1 ended needs-human after a round, with its pull request open and its workspace closed: the run of the incident (A11-145). */
+async function needsHumanRun(gh: (args: string[]) => string) {
+  const ctx = await parkedOnQuestion(gh);
+  ctx.pool.close("NBF-1");
+  ctx.status.delete(herdrName("NBF-1"));
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").outcome?.kind, ctx.entry("NBF-1").workspace], ["finished", "needs-human", undefined]);
+  return ctx;
+}
+
+test("A11-154: a red check at the current head starts one fix round for a run Ready to merge, one that ended needs-human and one parked, naming the check and its log lines", async () => {
+  const kinds = {
+    "Ready to merge": (gh: (args: string[]) => string) => readyRun(gh),
+    "needs-human": needsHumanRun,
+    "parked on a question": (gh: (args: string[]) => string) => parkedOnQuestion(gh),
+  };
+  for (const [kind, make] of Object.entries(kinds)) {
+    const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
+    const ci = withCi(ghFor(pulls).run, { 11: TEST_FAILED });
+    const ctx = await make(ci.run);
+    await watchRound(ctx.pool);
+    assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").review], ["running", 1, [approvedPr]], `${kind}: one round`);
+    assert.equal(ctx.entry("NBF-1").feedback, [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"),
+      `${kind}: the check and its error lines, without the runner's noise, its timestamps or its exit-code line`);
+    assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "round" } }, `${kind}: the head is answered`);
+    assert.match(readFileSync(join(ctx.dir, "brief.md"), "utf8"), /^>   AssertionError: expected 1 to equal 2$/m, `${kind}: the brief quotes the log lines`);
+    assert.deepEqual(ci.logReads, [11], `${kind}: the log is read once`);
+  }
+});
+
+test("A11-154: a required roll-up that failed is replaced in the round by the jobs behind it and their log lines", async () => {
+  const roll = { ...redCheck("gate", 40), isRequired: true };
+  const { ctx } = await redRun([roll, redCheck("suite", 41), redCheck("lint", 42)], { 40: stamped(["##[error]Process completed with exit code 1.", "a job reported 'failure', not success"]), 41: TEST_FAILED, 42: BAD_GATEWAY });
+  await watchRound(ctx.pool);
+  assert.equal(ctx.entry("NBF-1").feedback, [`suite failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2",
+    `lint also failed on the head commit of ${approvedPr.url} for an infrastructure reason (GitHub answered with a server error): that is not a fault in your change, so leave it; the next push runs it again.`].join("\n"),
+    "the gate names no cause: the jobs behind it are named, each by what its own log says");
+  const infra = await redRun([roll, redCheck("suite", 41)], { 40: stamped(["a job reported 'failure', not success"]), 41: RUNNER_LOST });
+  await watchRound(infra.ctx.pool);
+  assert.deepEqual([infra.ctx.entry("NBF-1").phase, infra.ci.reruns], ["finished", [["run", "rerun", "410", "--failed", "-R", "x/nbl-ui-netbox"]]], "a roll-up over a lost runner is a rerun of the job, not a round");
+  assert.deepEqual(infra.ci.logReads, [41], "and the roll-up's own log, which names no cause, is not read");
+});
+
+test("A11-154: a head that stays red after its round starts no second round, a restart starts none, and a new red head starts one more", async () => {
+  const { pulls, ci, ctx } = await redRun([redCheck("test", 11)], { 11: TEST_FAILED, 12: TEST_FAILED });
+  await watchRound(ctx.pool);
+  assert.equal(ctx.entry("NBF-1").rounds, 1);
+  await finishRound(ctx);
+  await watchRound(ctx.pool);
+  await watchRound(ctx.restart());
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 1], "the worker pushed nothing and the head is red still: it was answered");
+  assert.deepEqual(ci.logReads, [11], "and its log is not read again");
+  pulls[1] = feedbackPull({ head: HEAD_2, checks: [redCheck("test", 12)] });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 2], "the worker pushed a head that is red: one more round");
+  assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_2, step: "round" } }, "the record follows the head");
+  await finishRound(ctx);
+  pulls[1] = feedbackPull({ head: HEAD_2 });
+  await watchRound(ctx.pool);
+  assert.equal(ctx.entry("NBF-1").rounds, 2, "green: nothing more");
+});
+
+test("A11-154: red checks wake no run the board does not resume: a draft awaiting Approve, a run that concluded, a run a person stopped, and one whose pull request merged", async () => {
+  const red = () => ghFor({ 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) });
+  const draft = withCi(red().run, { 11: TEST_FAILED });
+  const drafted = await draftRun(draft.run);
+  await watchRound(drafted.pool);
+  assert.deepEqual([drafted.entry("NBF-1").phase, drafted.entry("NBF-1").rounds, drafted.entry("NBF-1").checkHeads], ["finished", undefined, undefined], "a draft waits for Approve");
+  assert.deepEqual(draft.logReads, [], "and its log is not read");
+  for (const [why, outcome] of [["concluded", { kind: "checked" as const, reason: "nothing to do" }], ["stopped", { kind: "stopped" as const }]] as const) {
+    const ci = withCi(red().run, { 11: TEST_FAILED });
+    const ctx = await needsHumanRun(ci.run);
+    ctx.store.set({ ...ctx.store.get(), entries: ctx.store.get().entries.map((e) => ({ ...e, outcome })) });
+    await watchRound(ctx.pool);
+    assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", undefined], why);
+    assert.deepEqual(ci.logReads, [], `${why}: its log is not read`);
+  }
+  const merged = withCi(ghFor({ 1: feedbackPull({ state: "MERGED", head: HEAD_1, checks: [redCheck("test", 11)] }) }).run, { 11: TEST_FAILED });
+  const done = await needsHumanRun(merged.run);
+  await watchRound(done.pool);
+  assert.deepEqual([done.entry("NBF-1").rounds, merged.logReads], [undefined, []], "a merged pull request has no checks to answer");
+});
+
+test("A11-154: a check whose log cannot be read is named as such, and a head with several failing checks names each with a share of the log lines", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("lint", 21), redCheck("typecheck", 22)] }) };
+  const ci = withCi(ghFor(pulls).run, { 22: TEST_FAILED });
+  const ctx = await readyRun(ci.run);
+  await captureStderr(async () => { await watchRound(ctx.pool); });
+  assert.equal(ctx.entry("NBF-1").feedback, [`lint failed on the head commit of ${approvedPr.url}; its log could not be read.`,
+    `typecheck failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"));
+  const long = stamped(Array.from({ length: 100 }, (_, i) => `Error: failure number ${i}`));
+  const many: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_2, checks: [redCheck("a", 31), redCheck("b", 32)] }) };
+  const heavy = await readyRun(withCi(ghFor(many).run, { 31: long, 32: long }).run);
+  await watchRound(heavy.pool);
+  const quoted = (heavy.entry("NBF-1").feedback ?? "").split("\n").filter((line) => line.startsWith("  "));
+  assert.equal(quoted.length, 40, "forty lines in all, the last of each log");
+  assert.equal(quoted.at(-1), "  Error: failure number 99");
+});
+
+test("A11-154: at the round cap a red check hands any run to a person, who reads Needs you and answers with Respond", async () => {
+  for (const make of [(gh: (args: string[]) => string) => readyRun(gh), needsHumanRun, (gh: (args: string[]) => string) => parkedOnQuestion(gh)]) {
+    const ci = withCi(ghFor({ 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) }).run, { 11: TEST_FAILED });
+    const ctx = await make(ci.run);
+    ctx.store.set({ ...ctx.store.get(), entries: ctx.store.get().entries.map((e) => ({ ...e, rounds: 3 })) });
+    ctx.h.calls.length = 0;
+    await watchRound(ctx.pool);
+    const run = ctx.entry("NBF-1");
+    assert.deepEqual([run.phase, run.rounds], ["finished", 3], "no round is started");
+    assert.match(run.handedBack ?? "", /The pull requests keep getting feedback: the board answered 3 rounds on its own and stopped\. Respond to review starts another\. The latest: test failed on the head commit/);
+    assert.equal(runStatus(run), "needs-you");
+    assert.deepEqual(ctx.h.calls.filter((args) => args.includes("close") || args.includes("start")), [], "nothing is closed or started");
+    const handed = run.handedBack;
+    await watchRound(ctx.pool);
+    assert.equal(ctx.entry("NBF-1").handedBack, handed, "the head was answered with the hand-back: it is not said again");
+    ctx.pool.respond("NBF-1");
+    assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").handedBack, ctx.entry("NBF-1").rounds], ["queued", true, undefined, undefined], "Respond starts the count again");
+  }
+});
+
+test("A11-154: a check that failed for an infrastructure reason is rerun once for its head and named on the card, and no worker is handed it", async () => {
+  for (const [log, reason] of [[RUNNER_LOST, "a runner was lost or a rate limit was hit"], [BAD_GATEWAY, "GitHub answered with a server error"], [NETWORK_DOWN, "a network error"]] as const) {
+    const { ci, ctx } = await redRun([redCheck("test", 11)], { 11: log }, needsHumanRun);
+    await watchRound(ctx.pool);
+    assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").feedback], ["finished", undefined, undefined], `${reason}: no round`);
+    assert.deepEqual(ci.reruns, [["run", "rerun", "110", "--failed", "-R", "x/nbl-ui-netbox"]], `${reason}: the failed jobs of its workflow run are rerun`);
+    const note = `Reran test on 1a2b3c4d: ${reason}`;
+    assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "rerun", note } }, `${reason}: recorded for the head`);
+    assert.equal(checkNote(ctx.entry("NBF-1")), note, `${reason}: said on the run's card`);
+    await watchRound(ctx.pool);
+    assert.equal(ci.reruns.length, 1, `${reason}: asked again, it is not rerun twice`);
+  }
+});
+
+test("A11-154: an infrastructure check red again on the same head after its rerun is named for a person, and no round or second rerun follows", async () => {
+  const { pulls, ci, ctx } = await redRun([redCheck("test", 11)], { 11: RUNNER_LOST });
+  await watchRound(ctx.pool);
+  assert.equal(ci.reruns.length, 1);
+  pulls[1] = feedbackPull({ head: HEAD_1, checks: [{ ...redCheck("test", 11), conclusion: null, status: "IN_PROGRESS" }] });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.step, ci.logReads], ["rerun", [11]], "while the rerun is under way there is nothing red, and nothing is read");
+  pulls[1] = feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11, 500)] });
+  const logged = await captureStderr(async () => { await watchRound(ctx.pool); });
+  const note = "test failed again on 1a2b3c4d after a rerun (a runner was lost or a rate limit was hit): a person decides";
+  assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "named", note } });
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ci.reruns.length], ["finished", undefined, 1], "no worker is handed it, and it is not rerun again");
+  assert.equal(checkNote(ctx.entry("NBF-1")), note);
+  assert.ok(logged.some((line) => line.includes(`NBF-1: ${note}`)), "said in the log");
+  await watchRound(ctx.pool);
+  assert.deepEqual([ci.reruns.length, ci.logReads.length], [1, 2], "and said once");
+});
+
+test("A11-154: a head with a check the code failed and a check the infrastructure failed starts a round for the first, which names the second, and reruns nothing", async () => {
+  const { ci, ctx } = await redRun([redCheck("test", 11), redCheck("install", 12)], { 11: TEST_FAILED, 12: NETWORK_DOWN });
+  await watchRound(ctx.pool);
+  assert.equal(ctx.entry("NBF-1").rounds, 1);
+  assert.equal(ctx.entry("NBF-1").feedback, [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2",
+    `install also failed on the head commit of ${approvedPr.url} for an infrastructure reason (a network error): that is not a fault in your change, so leave it; the next push runs it again.`].join("\n"));
+  assert.deepEqual(ci.reruns, [], "the push that fixes the first runs the second again");
+});
+
+test("A11-154: a rerun GitHub refuses names the check for a person and is not asked again, and a parked run's workspace is not touched by a rerun", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
+  const ci = withCi(ghFor(pulls).run, { 11: RUNNER_LOST });
+  const gh = (args: string[]) => {
+    if (args[0] === "run") throw new Error("gh: Resource not accessible by integration (HTTP 403)");
+    return ci.run(args);
+  };
+  const ctx = await parkedOnQuestion(gh);
+  ctx.h.calls.length = 0;
+  const logged = await captureStderr(async () => { await watchRound(ctx.pool); });
+  const note = "test failed on 1a2b3c4d for an infrastructure reason (a runner was lost or a rate limit was hit) and could not be rerun (gh: Resource not accessible by integration (HTTP 403)): a person decides";
+  assert.ok(logged.some((line) => line.includes(`NBF-1: ${note}`)), logged.join("\n"));
+  assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "named", note } }, "named, so no watch reads its log and is refused again");
+  assert.deepEqual([ctx.entry("NBF-1").workspace, ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["w2", "finished", undefined], "the run stays parked, and no round is started");
+  await watchRound(ctx.pool);
+  assert.deepEqual(ci.logReads, [11], "and the next watch asks nothing");
+  assert.deepEqual(ctx.h.calls.filter((args) => args.includes("close")), []);
+});
+
+test("A11-154: a name for a person is dropped once nothing fails on the head any more, and the head stays answered", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
+  const ci = withCi(ghFor(pulls).run, { 11: RUNNER_LOST });
+  const gh = (args: string[]) => (args[0] === "run" ? (() => { throw new Error("gh: HTTP 403"); })() : ci.run(args));
+  const ctx = await readyRun(gh);
+  await captureStderr(async () => { await watchRound(ctx.pool); });
+  assert.match(checkNote(ctx.entry("NBF-1")) ?? "", /a person decides$/);
+  pulls[1] = feedbackPull({ head: HEAD_1 });
+  await watchRound(ctx.pool);
+  assert.deepEqual([checkNote(ctx.entry("NBF-1")), ctx.entry("NBF-1").checkHeads?.[approvedPr.url]], [null, { head: HEAD_1, step: "named" }]);
+});
+
+test("A11-154: a conflict and a rerun in one watch queue the conflict round and still record the rerun, so it is not made twice", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", checks: [redCheck("test", 11)] }) };
+  const ci = withCi(ghFor(pulls).run, { 11: RUNNER_LOST });
+  const ctx = await needsHumanRun(ci.run);
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").feedback, ci.reruns.length], ["running", `${approvedPr.url} conflicts with its base branch main.`, 1]);
+  assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.step, "rerun");
+});
+
+test("A11-154: Respond to review on a run that ended needs-human queues a round that resumes its worker, whatever the run ended on", async () => {
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  ctx.pool.respond("NBF-1");
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").review, ctx.entry("NBF-1").session], ["queued", true, [approvedPr], "session-t-nbf-1"]);
+  await ctx.pool.tick();
+  assert.equal(ctx.entry("NBF-1").phase, "running", "and the round starts");
+  const start = ctx.h.calls.filter((args) => args.includes("start")).at(-1)!;
+  assert.deepEqual(start.slice(start.indexOf("--resume"), start.indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
+});
+
+test("A11-154: Respond to review on a parked run closes its workspace first, once, and then queues the round; a workspace herdr will not close leaves it parked and says why", async () => {
+  const ctx = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  ctx.h.refused.add("close");
+  assert.throws(() => ctx.pool.respond("NBF-1"), /herdr could not close NBF-1's workspace/);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").workspace], ["finished", "w2"], "still parked, no round");
+  ctx.h.refused.clear();
+  ctx.h.calls.length = 0;
+  ctx.pool.respond("NBF-1");
+  assert.equal(closes(ctx.h, "w2"), 1, "the workspace is closed once");
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").workspace, ctx.entry("NBF-1").asked], ["queued", undefined, true]);
+  assert.throws(() => ctx.pool.respond("NBF-1"), /a round is already queued for NBF-1/, "a second press says a round is queued");
+  assert.equal(closes(ctx.h, "w2"), 1);
+});
+
+test("A11-154: Respond to review that cannot act says why and closes nothing: no pull request open, a settled ticket, a run still running", async () => {
+  const merged = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  merged.store.set(recordPullStates(merged.store.get(), new Map([["NBF-1", { [approvedPr.url]: "merged" }]])));
+  merged.h.calls.length = 0;
+  assert.throws(() => merged.pool.respond("NBF-1"), /NBF-1 has no pull request open/);
+  assert.deepEqual(merged.h.calls, [], "the parked workspace of a run Respond cannot act on is left open");
+  const settled = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  settled.store.set({ ...settled.store.get(), entries: settled.store.get().entries.map((e) => ({ ...e, trackerState: "completed" })) });
+  assert.throws(() => settled.pool.respond("NBF-1"), /NBF-1's ticket is completed in the tracker/);
+  const running = setup(1, ["NBF-1"]);
+  await running.pool.tick();
+  assert.throws(() => running.pool.respond("NBF-1"), /NBF-1 is still running/);
+  assert.throws(() => running.pool.respond("NBF-9"), /NBF-9 is not on the board/);
+});
+
+test("A11-154: Respond to review on a draft acts as Approve", async () => {
+  const ctx = await draftRun(ghFor({ 1: feedbackPull() }).run);
+  ctx.pool.respond("NBF-1");
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").review, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").feedback], ["queued", [approvedPr], undefined, undefined], "the approved round, not an asked one");
+});
+
+/** A workspace of the talk session NBF-1 left behind, as herdr lists it: under the run's name and holding its Claude session, doing `status`. */
+const talkLeftover = (status: string, fields: Partial<{ workspace_id: string; label: string; name: string | null; session: string | null }> = {}) =>
+  ({ workspace_id: "w9", label: "t-nbf-1", name: "t-nbf-1", session: "session-t-nbf-1", status, ...fields });
+
+test("A11-154: a round never starts beside a Talk session that is working: it stays queued, says what it waits for, and starts once the session has ended", async () => {
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  ctx.pool.respond("NBF-1");
+  ctx.h.extra.push(talkLeftover("working"));
+  ctx.h.calls.length = 0;
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").sessionWait], ["queued", "Waits for the Talk session in w9 to end"]);
+  assert.equal(waitNote(ctx.entry("NBF-1"), ctx.store.get().entries), "Waits for the Talk session in w9 to end");
+  assert.equal(runStatus(ctx.entry("NBF-1"), ctx.store.get().entries), "blocked");
+  assert.deepEqual(ctx.h.calls.filter((args) => args.includes("start") || args.includes("create") || args.includes("close")), [], "nothing is started, and the working Talk is not closed");
+  await ctx.pool.tick();
+  assert.equal(ctx.entry("NBF-1").phase, "queued", "and it waits on the next pass too");
+  ctx.h.extra.length = 0;
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").sessionWait], ["running", undefined], "the Talk ended: the round starts, holding no wait");
+});
+
+test("A11-154: a leftover that is idle, done or has no pane is closed before the round starts, in the log and on the run, and its note goes when the round ends", async () => {
+  for (const [why, leftover] of [["idle", talkLeftover("idle")], ["done", talkLeftover("done")], ["no pane, held by the run's name alone", talkLeftover("unknown", { name: null, session: null })],
+    ["held by the session alone, under another name", talkLeftover("idle", { label: "claude", name: null })]] as const) {
+    const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+    ctx.pool.respond("NBF-1");
+    ctx.h.extra.push(leftover);
+    ctx.h.calls.length = 0;
+    const logged = await captureStderr(async () => { await ctx.pool.tick(); });
+    assert.equal(closes(ctx.h, "w9"), 1, `${why}: closed by its id`);
+    const closeAt = ctx.h.calls.findIndex((args) => args.includes("close") && args.includes("w9"));
+    assert.ok(closeAt < ctx.h.calls.findIndex((args) => args.includes("create")), `${why}: before the round's workspace is opened`);
+    assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").sessionNote], ["running", "Closed the Talk session in w9 before this round"], why);
+    assert.ok(logged.some((line) => line.includes("NBF-1: Closed the Talk session in w9 before this round")), `${why}: said in the log`);
+    await finishRound(ctx);
+    assert.equal(ctx.entry("NBF-1").sessionNote, undefined, `${why}: the round's note is dropped when it ends`);
+  }
+});
+
+test("A11-154: what is not the run's own is left alone, and a workspace herdr will not close holds the round back, saying why", async () => {
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  ctx.pool.respond("NBF-1");
+  ctx.h.extra.push(talkLeftover("idle", { workspace_id: "w7", label: "t-nbf-2", name: "t-nbf-2", session: "session-t-nbf-2" }));
+  ctx.h.calls.length = 0;
+  await ctx.pool.tick();
+  assert.equal(closes(ctx.h, "w7"), 0, "another run's idle workspace is not this run's leftover");
+  assert.equal(ctx.entry("NBF-1").phase, "running");
+  const held = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  held.pool.respond("NBF-1");
+  held.h.extra.push(talkLeftover("idle"));
+  held.h.refused.add("close");
+  await held.pool.tick();
+  assert.match(held.entry("NBF-1").sessionWait ?? "", /^Waits for the Talk session in w9: herdr would not close it \(/);
+  assert.equal(held.entry("NBF-1").phase, "queued");
+  held.h.refused.clear();
+  await held.pool.tick();
+  assert.deepEqual([held.entry("NBF-1").phase, held.entry("NBF-1").sessionWait], ["running", undefined], "and starts once herdr closes it");
+});
+
+test("A11-154: a Talk session never starts beside a working agent that holds the run's session, and starts once it is closed", async () => {
+  const { pool, h, entry } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  h.extra.push(talkLeftover("working"));
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").sessionWait], ["queued", "Waits for the Talk session in w9 to end"]);
+  assert.equal(h.calls.filter((args) => args.includes("start")).length, 0);
+  h.extra[0].status = "idle";
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").sessionNote], ["running", "Closed the Talk session in w9 before this talk session"]);
+});
+
+test("A11-154: a Talk is refused while a round of the run is queued or running, and the refusal names the round", async () => {
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  ctx.pool.respond("NBF-1");
+  assert.throws(() => ctx.pool.talk("NBF-1"), /NBF-1 has a review round queued: talk to it once the round has ended, as the round and a talk session would share one session/);
+  await ctx.pool.tick();
+  assert.throws(() => ctx.pool.talk("NBF-1"), /NBF-1 has a review round running/);
+  assert.equal(ctx.entry("NBF-1").talk, undefined, "and nothing changed");
+  await finishRound(ctx);
+  ctx.pool.talk("NBF-1");
+  assert.equal(ctx.entry("NBF-1").talk, true, "once the round has ended it is allowed");
+  await ctx.pool.tick();
+  assert.equal(ctx.entry("NBF-1").phase, "running");
+  assert.throws(() => ctx.pool.talk("NBF-1"), /has no finished run to talk to/, "a running Talk is no round: the refusal does not call it one");
+});
+
+test("A11-154: a parked run whose agent drops out of herdr's listing has its workspace closed by its id as it is unparked, so no leftover keeps its name", async () => {
+  const ctx = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  ctx.h.calls.length = 0;
+  ctx.status.delete(herdrName("NBF-1"));
+  await ctx.pool.tick();
+  assert.equal(ctx.entry("NBF-1").workspace, "w2", "one look missing it is not gone");
+  await ctx.pool.tick();
+  assert.deepEqual([ctx.entry("NBF-1").workspace, closes(ctx.h, "w2")], [undefined, 1], "two looks in a row: unparked, and its workspace closed");
+  assert.equal(ctx.entry("NBF-1").outcome?.kind, "needs-human", "it keeps its outcome");
+  const refused = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  refused.h.refused.add("close");
+  refused.h.reasons.set("close", "workspace is busy");
+  refused.status.delete(herdrName("NBF-1"));
+  await refused.pool.tick();
+  const logged = await captureStderr(async () => { await refused.pool.tick(); });
+  assert.equal(refused.entry("NBF-1").workspace, undefined, "a close herdr refuses still unparks the run, as it did");
+  assert.ok(logged.some((line) => line.includes("NBF-1: its workspace w2 could not be closed as the run was unparked (workspace is busy)")), logged.join("\n"));
+  const gone = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  gone.h.refused.add("close");
+  gone.status.delete(herdrName("NBF-1"));
+  await gone.pool.tick();
+  assert.deepEqual(await captureStderr(async () => { await gone.pool.tick(); }), [], "a workspace that is gone already is no refusal worth saying");
+});
+
+test("A11-154 Done-when: a stacked pull request whose checks fail after its base merges is fixed by a round that starts by itself, and the reviewer then reviews the new head", async () => {
+  await loadReviewerGate();
+  const { port, starts } = fakeReviewer();
+  const stacked = { base: "nbf-0-fit", blocker: "OPEN", edits: [] as string[][] };
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, base: stacked.base }) };
+  const answers = ghFor(pulls);
+  const ci = withCi((args: string[]) => {
+    if (args[0] === "pr" && args[1] === "view" && args.includes("baseRefName,state")) return JSON.stringify({ baseRefName: stacked.base, state: "OPEN" });
+    if (args[0] === "repo") return "main\n";
+    if (args[0] === "pr" && args[1] === "list" && args.includes("--head")) return JSON.stringify([{ state: stacked.blocker }]);
+    if (args[0] === "pr" && args[1] === "edit") {
+      stacked.edits.push(args);
+      stacked.base = "main";
+      return "";
+    }
+    return answers.run(args);
+  }, { 11: TEST_FAILED });
+  const ctx = setup(1, ["NBF-1"], REVIEWING, { gh: ci.run, reviewerPort: port });
+  await ctx.pool.tick();
+  ctx.status.set(herdrName("NBF-1"), "idle");
+  writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [approvedPr] }));
+  await ctx.pool.tick();
+  ctx.status.delete(herdrName("NBF-1"));
+  withBlockerOn(ctx.store, "NBF-1", "nbf-0-fit");
+  const dir = ticketDir(ctx.settings, "NBF-1");
+
+  // 1. Stacked on its blocker's branch, its checks are green: the reviewer reviews its head.
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, starts.map((ref) => ref.head)], ["finished", [HEAD_1]]);
+
+  // 2. The blocker's pull request merges, the sweep moves this pull request to main, and its checks fail there.
+  stacked.blocker = "MERGED";
+  ctx.pool.retargetStacked();
+  assert.deepEqual(stacked.edits, [["pr", "edit", approvedPr.url, "--base", "main"]]);
+  pulls[1] = feedbackPull({ head: HEAD_1, base: "main", checks: [redCheck("test", 11)] });
+
+  // 3. Nobody presses anything and nothing is retried by hand: the next watch starts a fix round with the failing check and its log lines.
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1]);
+  assert.equal(ctx.entry("NBF-1").feedback, [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"));
+  assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /^>   AssertionError: expected 1 to equal 2$/m);
+  assert.equal(ctx.h.calls.filter((args) => args.includes("start")).length, 2, "the first run and the round");
+
+  // 4. The round's worker pushes a fix and ends; the new head's checks settle green; the sweep gives it a reviewer.
+  pulls[1] = feedbackPull({ head: HEAD_2, base: "main" });
+  await finishRound({ ...ctx, dir });
+  assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the round ended reviewed");
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts.map((ref) => ref.head), [HEAD_1, HEAD_2], "the reviewer reviews the new head");
+  assert.deepEqual(ci.reruns, [], "and nothing was rerun by hand");
 });
 
 test("a worker's brief has it capture a changed page on a machine with tickets.capture, and says nothing of capture otherwise", async () => {

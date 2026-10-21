@@ -40,7 +40,7 @@ test("the fake leaves out what the caller's own login wrote, as the contract say
 
 test("a code host that answers an empty reading for a pull request it cannot read fails by name", async () => {
   const { host, probe } = seeded();
-  const lying: CodeHost = { ...host, readPullFeedback: (url, self) => host.readPullFeedback(url, self) ?? { state: "open", feedbackAt: null, authors: [], failing: [], failedAt: null, conflicting: false, mergeable: false, head: null, approvedAtHead: false, base: null, files: [], filesComplete: true } };
+  const lying: CodeHost = { ...host, readPullFeedback: (url, self) => host.readPullFeedback(url, self) ?? { state: "open", feedbackAt: null, authors: [], failing: [], failures: [], failedAt: null, conflicting: false, mergeable: false, head: null, approvedAtHead: false, base: null, files: [], filesComplete: true } };
   await assert.rejects(runCodeHostConformance(lying, probe), (error: unknown) => error instanceof ContractError && error.concern === "codeHost"
     && error.failures.map(({ check }) => check).join() === "readPullFeedback answers null for a pull request it cannot read");
 });

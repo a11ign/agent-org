@@ -20,7 +20,7 @@ export const recordClosedByBoard = (queue: Queue, key: string): Queue => replace
  * The queued entries to start now, in queue order: none while the queue is paused or the host is loaded past its cores (`wake.ts`'s `hostLoadRefusal` rule, where
  * exactly equal does not refuse), and otherwise as many as the free slots allow. An entry still waiting on a blocker, or on a path another run holds
  * ({@link overlapWait}), is passed over, and holds no slot. So is one whose plan could not be downloaded (`pathsFailure`): it takes no slot another
- * run could use (A11-125). A batch is one run, so its tickets take one slot between them, live or starting.
+ * run could use (A11-125). And so is a review round or talk session that a working agent's session holds back (`sessionWait`, A11-154). A batch is one run, so its tickets take one slot between them, live or starting.
  * An entry this call starts holds its paths against the entries after it, as a live run would, so overlapping runs never start in the same pass.
  */
 export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
@@ -29,7 +29,7 @@ export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
   const runs = new Set<string>();
   const started: Entry[] = [];
   return queue.entries.filter((entry) => {
-    if (entry.phase !== "queued" || entry.pathsFailure !== undefined || waitsOn(entry, queue.entries).length > 0) return false;
+    if (entry.phase !== "queued" || isHeldBack(entry, queue.entries)) return false;
     if (!runs.has(runOf(entry)) && runs.size >= free) return false;
     if (overlapWait(entry, [...queue.entries, ...started.map(asStarting)]) !== null) return false;
     runs.add(runOf(entry));
@@ -37,6 +37,10 @@ export function nextStarts(queue: Queue, load: number, cores: number): Entry[] {
     return true;
   });
 }
+
+/** Whether a queued entry is held back for a reason of its own: its plan could not be downloaded, a session holds it, or a blocker has not let go. PURE. */
+const isHeldBack = (entry: Entry, entries: readonly Entry[]): boolean =>
+  entry.pathsFailure !== undefined || entry.sessionWait !== undefined || waitsOn(entry, entries).length > 0;
 
 /** The entry as it is once a start is recorded: starting, so it holds what a live run holds. */
 const asStarting = (entry: Entry): Entry => ({ ...entry, phase: "starting" });

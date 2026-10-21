@@ -90,7 +90,7 @@
 // remembers of it. A pull request whose state cannot be read is asked again, and nothing is forgotten until its checkout is gone.
 
 import { ensureSession, talkTo } from "./pool-start.ts";
-import { applyEdit, discardEdit, dismiss, remove, stop, stopWriterRun } from "./pool-actions.ts";
+import { applyEdit, discardEdit, dismiss, remove, respond, stop, stopWriterRun } from "./pool-actions.ts";
 import { close } from "./pool-settle.ts";
 import { reconcile, tick, watchFeedback } from "./pool-watch.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
@@ -115,6 +115,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     close: (key: string) => close(ctx, key),
     dismiss: (key: string) => dismiss(ctx, key),
     talk: (key: string) => talkTo(ctx, key),
+    respond: (key: string) => respond(ctx, key),
     remove: (key: string) => remove(ctx, key),
     reconcile: () => reconcile(ctx),
     ensureSession: () => ensureSession(ctx),
