@@ -21,6 +21,10 @@ export type ViewEntry = Readonly<{
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Why the plan of a queued run could not be downloaded, which holds it back (A11-125). */
   pathsFailure?: string;
+  /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
+  sessionWait?: string;
+  /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */
+  sessionNote?: string;
   /** Set when a person started the run past the overlap it was Blocked on: the run it overlapped, and where (A11-125). */
   overlapOverride?: Readonly<{ holder: string; pull: string | null; path: string | null; at: number }>;
   /** The repositories the run has made worktrees in, once it has made any. */
@@ -56,6 +60,8 @@ export type ViewEntry = Readonly<{
   retargets?: Readonly<Record<string, string>>;
   /** The blocker branch a run was branched from, and what agent-org has done to keep it on that branch (A11-116). */
   stackBase?: StackBaseRecord;
+  /** What the board did about the red checks of each open pull request, by URL: the head it was at, and the line the card shows when the checks were rerun or are named for a person (A11-154). */
+  checkHeads?: Readonly<Record<string, CheckHead>>;
   /** The commit each open pull request of the run was at when it ended, by URL: what its question or work was about (A11-153). Unset until read. */
   outcomeHeads?: Readonly<Record<string, string>>;
   /** Each open pull request's head now, and whether the newest verdict on it is an approval, by URL, as the last watch read them (A11-153). */
@@ -64,6 +70,13 @@ export type ViewEntry = Readonly<{
 
 /** A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit. */
 export type PullHead = Readonly<{ head: string; approved: boolean }>;
+
+/**
+ * What the board did about the red checks on one pull request at one head (A11-154): a fix round was started for them (`round`), the checks that failed for an
+ * infrastructure reason were rerun (`rerun`), or they failed again on that head after their rerun and are named for a person (`named`). `note` is the line the
+ * card shows for the last two.
+ */
+export type CheckHead = Readonly<{ head: string; step: "round" | "rerun" | "named"; note?: string }>;
 
 /**
  * The branch a run was branched from: the blocker's key, the repository and branch, the commit it has the blocker's branch merged in up to (`sha`), and what

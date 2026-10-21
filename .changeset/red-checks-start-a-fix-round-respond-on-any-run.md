@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+A red check on a pull request the board holds now starts a fix round by itself, once for each head, for a run Ready to merge, one that ended needs-human, with no outcome or crashed, and one parked on a question: the round's brief names each failing check and the error lines of its job's log, and the jobs behind a failed `gate` in its place. A check that failed for an infrastructure reason (a lost runner, a rate limit, a GitHub 5xx or a network error) is rerun once and named on the card instead, and red again on that head it is named for a person. At the board's 3 rounds any such run is handed to a person and reads Needs you. Respond to review works on any finished run with a pull request open, whatever its outcome, closes a parked run's workspace first, acts as Approve on a draft, and says why when it cannot act. A blocker lets go once its pull requests have merged, whatever state its ticket is in. A round and a Talk never share a Claude session: one waits for a working agent that holds it, closes a leftover that is idle first, and a Talk is refused while a round is queued or running (A11-154).

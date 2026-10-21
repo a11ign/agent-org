@@ -31,7 +31,7 @@ test("the newest review, conversation comment or inline comment by anyone but th
     threads: [{ createdAt: at(20), author: { login: "carol" } }],
   }));
   const read = readPullFeedback(URL, "worker-bot", run);
-  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failedAt: null, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true },
+  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failures: [], failedAt: null, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true },
     "an approval and the workers' own comments are not feedback");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
   assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
@@ -117,4 +117,27 @@ test("A11-153: the head commit, whether GitHub says the pull request is mergeabl
   assert.equal(read({ head: "h2", reviews: [review("APPROVED", 5, "h2", "worker-bot")] })?.approvedAtHead, false, "the workers' own account does not approve its own work");
   assert.equal(read({ head: "h2", reviews: [review("COMMENTED", 9, "h2"), review("APPROVED", 5, "h2")] })?.approvedAtHead, true, "a comment takes no side");
   assert.equal(read({ reviews: [review("APPROVED", 5, "h2")] })?.approvedAtHead, false, "with no head to approve there is no approval");
+});
+
+test("A11-154: each failing check carries the address of its job's page, from the newest run of its name, and a check with none carries null", () => {
+  const job = (id: number) => `https://github.com/netboxlabs/nbl-ui-netbox/actions/runs/${id}/job/${id + 1}`;
+  const run = (name: string, conclusion: string, minute: number, detailsUrl: string | null) => ({ __typename: "CheckRun", name, conclusion, completedAt: at(minute), detailsUrl, isRequired: false });
+  const read = readPullFeedback(URL, "me", answering(pullWith({ head: "a".repeat(40), checks: [
+    run("suite", "FAILURE", 10, job(100)), run("suite", "FAILURE", 20, job(200)), run("typecheck", "SUCCESS", 5, job(300)), run("typecheck", "FAILURE", 1, job(150)),
+    run("lint", "FAILURE", 30, null), { __typename: "StatusContext", context: "netlify", state: "FAILURE", createdAt: at(35), isRequired: false },
+  ] })).run);
+  assert.deepEqual(read?.failures, [{ name: "suite", detailsUrl: job(200) }, { name: "lint", detailsUrl: null }, { name: "netlify", detailsUrl: null }],
+    "the newest run of a name, its address or none; a commit status has no job page; a name that passed since is not failing");
+  assert.deepEqual(read?.failing, ["suite", "lint", "netlify"], "the names are the ones the board has always read");
+  assert.equal(read?.head, "a".repeat(40), "the head the checks ran on is the head they are answered at");
+  assert.deepEqual(readPullFeedback(URL, "me", answering(pullWith({ head: "b".repeat(40) })).run)?.failures, [], "a green head has none");
+});
+
+test("A11-154: a job behind a required roll-up that failed is listed with the checks, though the board answers only the required one", () => {
+  const run = (name: string, minute: number, isRequired: boolean) => ({ __typename: "CheckRun", name, conclusion: "FAILURE", completedAt: at(minute), detailsUrl: `https://github.com/x/y/actions/runs/${minute}/job/${minute + 1}`, isRequired });
+  const read = readPullFeedback(URL, "me", answering(pullWith({ head: "a".repeat(40), checks: [run("gate", 30, true), run("suite", 20, false), run("lint", 10, false)] })).run);
+  assert.deepEqual(read?.failing, ["gate"], "only the required check is answered");
+  assert.deepEqual(read?.failures?.map(({ name }) => name), ["gate", "suite", "lint"], "and the jobs behind it are listed with it");
+  const passing = readPullFeedback(URL, "me", answering(pullWith({ checks: [{ ...run("gate", 30, true), conclusion: "SUCCESS" }, run("suite", 20, false)] })).run);
+  assert.deepEqual([passing?.failing, passing?.failures?.map(({ name }) => name)], [[], ["suite"]], "a non-required check that is red beside a required one that passed answers nothing");
 });

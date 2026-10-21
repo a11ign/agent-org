@@ -29,7 +29,7 @@ import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
 import { loadReviewerGate } from "./reviewer-port.ts";
 import { takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
-import { approve, queuePublish, respond, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
+import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { EFFORTS, MODELS, readSettingsView } from "./settings-read.ts";
@@ -60,7 +60,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
@@ -480,7 +480,8 @@ async function queueActionRoute(board: Board, method: string, path: string, body
     if (verb === "remove") await pool.remove(key);
     if (verb === "retry") store.set(retry(store.get(), key, now()));
     if (verb === "approve") store.set(approve(store.get(), key, now()));
-    if (verb === "respond") store.set(respond(store.get(), key, now()));
+    // The pool's, like Close: a parked run's workspace is closed before its round is queued, and a refusal is named (A11-154).
+    if (verb === "respond") pool.respond(key);
     // The pool's: a talk session needs a saved session to resume, and says so when there is none.
     if (verb === "talk") pool.talk?.(key);
     // A person's override of the overlap wait, which the board records on the run and logs (A11-125).

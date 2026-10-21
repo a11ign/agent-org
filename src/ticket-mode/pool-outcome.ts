@@ -79,14 +79,14 @@ export function publishResult(outcomeText: string, dir: string): Readonly<{ link
 
 /**
  * What new feedback, if any, reached a run's pull requests after `since`, the end of its last round, as the round's brief names it: the newest
- * comments and who left them, and the checks that failed; and each pull request that conflicts with its base. Null when nothing is newer. PURE.
+ * comments and who left them; and each pull request that conflicts with its base. Null when nothing is newer. The checks that failed are not here: they are
+ * answered once for each head they are red at, with their log lines (`answerChecks`, A11-154). PURE.
  */
 export function feedbackSince(reads: readonly Readonly<{ url: string; read: PullFeedback }>[], since: number): string | null {
   const lines = reads.filter(({ read }) => read.state === "open").flatMap(({ url, read }) => [
     // A conflict is a state, so its line does not wait for `since`: it is named on every watch until the pull request is clear of it.
     ...(read.conflicting ? [conflictLine(url, read.base)] : []),
     ...(read.feedbackAt !== null && read.feedbackAt > since ? [`New review feedback on ${url}, the newest from ${read.authors[0] ?? "someone"}.`] : []),
-    ...(read.failedAt !== null && read.failedAt > since ? [`${read.failing.join(", ")} failed on the head commit of ${url}.`] : []),
   ]);
   return lines.length === 0 ? null : lines.join("\n");
 }

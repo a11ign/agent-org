@@ -33,7 +33,7 @@ function readsOf(pulls: Pulls, login: string | null, calls: string[]): Pick<Code
       // What `self` wrote is not feedback: it is left out, as the contract says.
       const authors = (pull.feedback.authors ?? []).filter((author) => author !== self);
       const approvedAtHead = pull.reviews.some((review) => review.commit === pull.head && review.state === "APPROVED" && review.author !== self);
-      return { state: pull.state, feedbackAt: null, failing: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
+      return { state: pull.state, feedbackAt: null, failing: [], failures: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
         base: pull.base, files: pull.files, filesComplete: true, ...pull.feedback, authors };
     },
     readReviewState(url) {
