@@ -319,7 +319,7 @@ async function hostFacts(): Promise<{ providerDeclared: boolean; logPath: () => 
 async function deliveryFromHost(now: number): Promise<Delivery> {
   const { HOME_CHECKOUT } = await import("./project-config.ts");
   const { MessagingConfigRefusal, readMessagingConfig } = await import("./messaging/config.ts");
-  const { trackerRepo, readAnnouncementsChatId, readChairman, defaultLedgerPath } = await import("./messaging/state.ts");
+  const { trackerRepo, defaultLedgerPath } = await import("./messaging/state.ts");
   let config;
   try {
     config = readMessagingConfig(HOME_CHECKOUT);
@@ -329,11 +329,10 @@ async function deliveryFromHost(now: number): Promise<Delivery> {
     throw error;
   }
   if (!config.enabled) return { via: "tracker", repo: trackerRepo(HOME_CHECKOUT), run: (args) => execFileSync("gh", args, { encoding: "utf8", timeout: GH_TIMEOUT_MS }) };
-  const { readSecretFile, SecretFileRefusal } = await import("./messaging/secret.ts");
-  const { createTelegramProvider } = await import("./messaging/providers/telegram/send.ts");
+  const { SecretFileRefusal } = await import("./messaging/secret.ts");
+  const { messagingProvider } = await import("./messaging/plugin.ts");
   try {
-    const provider = createTelegramProvider({ token: readSecretFile(config.tokenFile), chatId: readChairman(config.chairmanFile).chatId,
-      announcementsChatId: readAnnouncementsChatId(config.announcementsFile), log: (line) => process.stderr.write(`${line}\n`) });
+    const provider = await messagingProvider(config, { log: (line: string) => process.stderr.write(`${line}\n`) });
     return { via: "messenger", provider, ledger: createLedger({ path: defaultLedgerPath(homedir()), now: () => now }) };
   } catch (error) {
     if (error instanceof SecretFileRefusal) return cannot(error.message);

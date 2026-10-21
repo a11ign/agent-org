@@ -165,7 +165,9 @@ test("the exposure's UI port is in force after the units are reinstalled, ticket
   const { options, queuePath } = setup((folder) => hostWith(folder, `, "providers": { "exposure": { "provider": "tailscale" } }`));
   const serve = await previewEdit(options, "host.json", [{ key: "tickets.providers.exposure.tailnetPorts", value: { ui: 9443, terminal: 9444 } }]);
   assert.equal(serve.changes[0].applies, "unit");
-  assert.match(serve.changes[0].inForce, /reinstall and restart agent-org-instance\.service and agent-org-ui\.service/);
+  assert.match(serve.changes[0].inForce, /reinstall and restart agent-org-ui\.service and agent-org-terminal\.service/, "the tailnet ports are read by the page and the terminal (A11-162 corrected the services the entry names)");
+  const cli = await previewEdit({ ...options, plugins: true }, "host.json", [{ key: "tickets.providers.exposure.tailnetPorts", value: { ui: 9443, terminal: 9444 } }, { key: "tickets.providers.exposure.provider", value: "tailscale" }]);
+  assert.deepEqual(cli.changes.map(({ inForce }) => inForce), Array(2).fill("in force after the instance, the page and the terminal restart: run `agent-org start instance`, `agent-org start ui` and `agent-org start terminal`."), "agent-org plugin names all three services of an exposure change");
   const max = await previewEdit(options, "host.json", [{ key: "tickets.max", value: 2 }]);
   assert.equal(max.changes[0].applies, "board");
   writeFileSync(queuePath, JSON.stringify({ entries: [], max: 4, paused: true }));
@@ -275,4 +277,13 @@ test("A11-158: the plugin option still refuses a value the readers refuse, and w
   const before = readFileSync(hostPath, "utf8");
   await assert.rejects(previewEdit({ ...options, plugins: true }, "host.json", [{ key: "tickets.providers.tracker.provider", value: "linear" }, { key: "tickets.providers.tracker.enabled", value: false }]), /linear is the only tracker/);
   assert.equal(readFileSync(hostPath, "utf8"), before);
+});
+
+test("A11-162: the project's messaging key is judged for agent-org plugin's writes only: the page's other saves of project.json are as they were", async () => {
+  const { options, projectPath } = setup(() => hostWith("/nowhere"));
+  const broken = JSON.parse(readFileSync(projectPath, "utf8"));
+  writeFileSync(projectPath, `${JSON.stringify({ ...broken, messaging: { provider: "telegram", tokenFile: "/etc/shadow", chairmanFile: "/etc/shadow" } })}\n`);
+  const page = await previewEdit(options, "project.json", [{ key: "offerMilestones", value: ["v1"] }]);
+  assert.equal(page.changes[0].key, "offerMilestones", "a key the page changes is saved whatever the messaging key says");
+  await assert.rejects(previewEdit({ ...options, plugins: true }, "project.json", [{ key: "messaging.enabled", value: false }]), /messaging\.tokenFile: .*is not a file under ~\/\.config\/agent-org\//, "and the plugin command's write is judged by the messaging reader");
 });

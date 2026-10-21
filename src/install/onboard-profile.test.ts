@@ -45,7 +45,7 @@ test("the provider blocks a profile names are the host file's: pick moves to tic
   assert.deepEqual(blocks.pick, { team: "ZZ" });
   assert.deepEqual(blocks.reviewerApp, { slug: "example-reviewer", appId: 111, installationId: 222 });
   assert.deepEqual(blocks.codeHost, { provider: "github" });
-  assert.deepEqual(blocks.exposure, { tailnetPorts: { ui: 9443, terminal: 9444 }, provider: "tailscale" });
+  assert.deepEqual(blocks.exposure, { provider: "tailscale" }, "a plugin's own defaults are written by its onboard step (A11-162), not by the profile");
 });
 
 test("a profile is written as copyable JSON, and never holds a secret: the answers are the only text in it", async () => {

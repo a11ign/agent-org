@@ -10,6 +10,7 @@ import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import type { OnboardStep } from "../plugins/manifest.ts";
 import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "../plugins/registry.ts";
 import { onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
+import { createTailscale, freshState } from "../../plugins/tailscale/stub.ts";
 import { PAIRING_STEPS } from "./terminal.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
 import type { ProgramRunner, Program } from "./gh-account.ts";
@@ -143,7 +144,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     diagnose: async () => [],
     chromium: () => BROWSERS_READY,
     isRoot: () => false,
-    startServices: (names) => { started.push(...names); return names.map((name) => `started the ${name} service`).join("\n"); },
+    startServices: async (names) => { started.push(...names); return names.map((name) => `started the ${name} service`).join("\n"); },
     out: { log: (line: string) => printed.push(line) },
     ...over,
   };
@@ -276,9 +277,9 @@ test("onboard refuses a Keychain service name a shell would not read as it is", 
   await assert.rejects(onboard(options({ repos: [repo], keychain: "x; touch pwned" }), d), /is not a Keychain service name/);
 });
 
-test("onboard's start starts the instance and the ui service, in that order", () => {
+test("onboard's start starts the instance and the ui service, in that order", async () => {
   const started: string[] = [];
-  const lines = startServices(["instance", "ui"], (name) => {
+  const lines = await startServices(["instance", "ui"], async (name) => {
     started.push(name);
     return { manager: "systemd", id: `agent-org-${name}.service`, path: `/u/agent-org-${name}.service`, text: "", log: null, companion: null, interval: false, address: null };
   });
@@ -286,16 +287,16 @@ test("onboard's start starts the instance and the ui service, in that order", ()
   assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nstarted the ui service (systemd agent-org-ui.service)");
 });
 
-test("onboard starts the terminal only once it is set up and auto-update unless opted out; a refused optional service is said, a refused instance fails", () => {
+test("onboard starts the terminal only once it is set up and auto-update unless opted out; a refused optional service is said, a refused instance fails", async () => {
   assert.deepEqual(onboardServices({ terminal: true, autoUpdate: true }), ["instance", "ui", "terminal", "auto-update"]);
   assert.deepEqual(onboardServices({ terminal: false, autoUpdate: false }), ["instance", "ui"]);
   const unit = (name: string) => ({ manager: "systemd" as const, id: name, path: name, text: "", log: null, companion: null, interval: false, address: null });
-  const lines = startServices(["instance", "terminal"], (name) => {
+  const lines = await startServices(["instance", "terminal"], async (name) => {
     if (name === "terminal") throw new ServiceRefusal("no bun");
     return unit(name);
   });
   assert.equal(lines, "started the instance service (systemd instance)\ndid not start the terminal service: no bun");
-  assert.throws(() => startServices(["instance"], () => { throw new ServiceRefusal("port in use"); }), /port in use/);
+  await assert.rejects(startServices(["instance"], async () => { throw new ServiceRefusal("port in use"); }), /port in use/);
 });
 
 // A11-66: the web terminal, set up by onboard, written into the exposure block (A11-144).
@@ -388,21 +389,21 @@ test("onboard records the host file's path for shells with no AGENT_ORG_HOST, an
   assert.ok(writes.has("/elsewhere/host.json"));
 });
 
-test("a service on the tailnet is said with its address when it starts, and a page the tailnet refuses fails onboard", () => {
+test("a service on the tailnet is said with its address when it starts, and a page the exposure refuses fails onboard", async () => {
   const served = (name: string) => ({ manager: "systemd" as const, id: `agent-org-${name}.service`, path: name, text: "", log: null, companion: null, interval: false, address: "https://agents.tail1234.ts.net:9443/" });
-  assert.equal(startServices(["ui"], served), "started the ui service (systemd agent-org-ui.service), on the tailnet at https://agents.tail1234.ts.net:9443/");
-  assert.throws(() => startServices(["instance", "ui"], (name) => {
-    if (name === "ui") throw new TailnetRefusal("the ui service started on 127.0.0.1, but the tailnet does not reach it: refused");
+  assert.equal(await startServices(["ui"], async (name) => served(name)), "started the ui service (systemd agent-org-ui.service), served at https://agents.tail1234.ts.net:9443/");
+  await assert.rejects(startServices(["instance", "ui"], async (name) => {
+    if (name === "ui") throw new TailnetRefusal("the ui service started on 127.0.0.1, but the exposure does not reach it: refused");
     return { ...served(name), address: null };
-  }), /the tailnet does not reach it/);
+  }), /the exposure does not reach it/);
 });
 
-test("a terminal the tailnet does not reach is said as running on loopback, not as not started", () => {
-  const lines = startServices(["instance", "terminal"], (name) => {
-    if (name === "terminal") throw new TailnetRefusal("the terminal service started on 127.0.0.1, but the tailnet does not reach it: refused");
+test("a terminal the exposure does not reach is said as running on loopback, not as not started", async () => {
+  const lines = await startServices(["instance", "terminal"], async (name) => {
+    if (name === "terminal") throw new TailnetRefusal("the terminal service started on 127.0.0.1, but the exposure does not reach it: refused");
     return { manager: "systemd" as const, id: "agent-org-instance.service", path: name, text: "", log: null, companion: null, interval: false, address: null };
   });
-  assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nthe terminal service started on 127.0.0.1, but the tailnet does not reach it: refused");
+  assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nthe terminal service started on 127.0.0.1, but the exposure does not reach it: refused");
 });
 
 /** A machine whose `gh` lists the stacking extension once `install` has run, recording each call's environment and command, and whose host file names the workers' account. */
@@ -480,7 +481,7 @@ function greenDoctor(home: string): DoctorDeps {
     },
     mode: () => 0o600, serviceState: () => "running", answers: async () => true, healthy: async () => true, unitProblem: () => null,
     pnpmVersion: () => "10.34.5",
-    tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
+    probe: async () => 200,
     ghWrapper: async () => ({ divergence: null, mints: [] }), platform: "linux",
     isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
@@ -662,11 +663,47 @@ test("A11-158: a disabled tailscale exposure and a disabled atomic reviewer ask 
   assert.ok(!base.printed.some((line) => /codex/i.test(line) && !line.includes("doctor")), "a disabled reviewer needs no Codex");
 });
 
+// ---- A11-162: the Tailscale plugin's onboard steps run when the host will enable it, and the exposure `local` asks nothing of Tailscale
+
+const seedExposure = (home: string, exposure: Record<string, unknown>) => {
+  mkdirSync(join(home, ".agent-org"), { recursive: true });
+  writeFileSync(join(home, ".agent-org", "host.json"), JSON.stringify({ tickets: { providers: { exposure } } }));
+};
+
+test("A11-162: onboarding a tailscale exposure with no Tailscale installed says so in the words it always did, and leaves the block's ports alone", async () => {
+  const base = deps({}, [], (file) => (file === "tailscale" ? { status: null, stdout: "", stderr: "ENOENT" } : undefined));
+  seedExposure(base.home, { provider: "tailscale" });
+  await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
+  assert.ok(base.printed.includes("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing"));
+  assert.deepEqual(hostOf(base.home).tickets.providers.exposure, { provider: "tailscale", terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" },
+    "an interactive onboard writes no ports (a profile's get the plugin's defaults, as they always did); the terminal's address is onboard's, as before");
+});
+
+test("A11-162: a Tailscale that will not let this user change its serve config says the operator command, and a taken tailnet port is said before the services start", async () => {
+  const state = freshState({ operator: false });
+  state.web["agents.tail1234.ts.net:9443"] = { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } };
+  const stub = createTailscale(state);
+  const base = deps({ env: { USER: "agent" } }, [], (file, args) => (file === "tailscale" ? (args[0] === "serve" && args[1] === "status" ? { status: 1, stdout: "", stderr: "Access denied: serve config denied" } : stub(file, args)) : undefined));
+  seedExposure(base.home, { provider: "tailscale", tailnetPorts: { ui: 9443, terminal: 9444 } });
+  await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
+  assert.ok(base.printed.some((line) => /agent is not the operator of this machine's Tailscale.*run `sudo tailscale set --operator=agent`/.test(line)), base.printed.join("\n"));
+});
+
+test("A11-162: onboarding the local exposure asks Tailscale nothing, and writes no tailnet port into the exposure block", async () => {
+  const base = deps({}, [], (file) => { if (file === "tailscale") throw new Error("the local exposure must not run tailscale"); return undefined; });
+  seedExposure(base.home, { provider: "local" });
+  await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
+  assert.deepEqual(hostOf(base.home).tickets.providers.exposure, { provider: "local", terminal: "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal" });
+  assert.ok(!base.printed.some((line) => /tailscale/i.test(line) && !line.includes("doctor")));
+});
+
 // ---- A11-159: onboard runs the steps of each plugin the host will enable, and writes the settings they choose into the plugin's block
 const STEPPED_ROOT = "/checkout";
 const STEPPED_FILES: PackageFiles = {
-  directories: (path) => (path === `${STEPPED_ROOT}/plugins` ? ["stepped"] : []),
-  text: (path) => (path === `${STEPPED_ROOT}/plugins/stepped/package.json` ? JSON.stringify({ agentOrg: { concern: "tracker", contract: "1.1", description: "A tracker that steps.", entry: "index.ts",
+  directories: (path) => (path === `${STEPPED_ROOT}/plugins` ? ["local", "stepped"] : []),
+  text: (path) => (path === `${STEPPED_ROOT}/plugins/local/package.json` ? JSON.stringify({ agentOrg: { concern: "exposure", contract: "1.1", description: "Loopback.", entry: "index.ts",
+    settings: ["port", "uiPort", "terminal"].reduce((all, name) => ({ ...all, [name]: { key: `tickets.providers.exposure.${name}`, file: "host.json", group: "Exposure", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } } }), {}) } })
+    : path === `${STEPPED_ROOT}/plugins/stepped/package.json` ? JSON.stringify({ agentOrg: { concern: "tracker", contract: "1.1", description: "A tracker that steps.", entry: "index.ts",
     settings: ["token", "mode"].reduce((all, name) => ({ ...all, [name]: { key: `tickets.providers.tracker.${name}`, file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } } }), {}) } }) : null),
   isFile: () => true,
 };

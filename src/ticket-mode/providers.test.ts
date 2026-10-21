@@ -83,7 +83,8 @@ test("the old keys parse to the settings they parsed to before, under the new na
   assert.deepEqual(settings.connectors, [LINEAR, SAVE, DESIGN]);
   assert.equal(settings.workingState, "In Progress");
   assert.equal(settings.planner?.state, "Planned");
-  assert.deepEqual(settings.serve, { ui: 9443, terminal: 9444 });
+  assert.deepEqual([settings.providers.blocks.exposure.provider, settings.providers.blocks.exposure.enabled, settings.providers.blocks.exposure.settings.tailnetPorts], ["tailscale", true, { value: { ui: 9443, terminal: 9444 }, at: "tickets.servePorts" }],
+    "tickets.serve and tickets.servePorts name the exposure and its ports, which the Tailscale plugin serves on");
   assert.equal(settings.reviewer, "atomic");
   assert.deepEqual(settings.publish, { run: RUN, model: "haiku", effort: "low", connectors: ["^mcp__slack__send"] });
   assert.equal(settings.port, 4800);
@@ -131,7 +132,7 @@ test("a provider's defaults are the ones a host file with no block takes, so an 
   const settings = parseTicketSettings({ clones, tickets: {} });
   assert.equal(settings.publish, null, "publish none");
   assert.equal(settings.reviewer, null, "reviewer none");
-  assert.equal(settings.serve, null, "exposure local");
+  assert.deepEqual([settings.providers.blocks.exposure.provider, settings.providers.blocks.exposure.from], ["local", "default"], "exposure local");
   assert.equal(settings.port, 4747);
   assert.equal(settings.uiPort, 4748);
   assert.equal(settings.terminal, null);
@@ -155,7 +156,7 @@ test("a block's settings are read in their own place: the tracker's connectors, 
   assert.deepEqual(settings.connectors, [LINEAR, DESIGN], "the tracker's, then the rest of tickets.connectors");
   assert.equal(settings.workingState, "In Progress");
   assert.equal(settings.planner, null, "no planner named");
-  assert.deepEqual(settings.serve, { ui: 7443, terminal: 7444 });
+  assert.deepEqual(settings.providers.blocks.exposure.settings.tailnetPorts.value, { ui: 7443, terminal: 7444 });
   assert.equal(settings.port, 5000);
   assert.equal(settings.uiPort, 5001);
   assert.equal(settings.stackRequired, false);
@@ -231,7 +232,7 @@ test("A11-158: while core runs a concern's built-in, any other plugin enabled fo
   const refused = refusalOf({ tickets: { providers: { reviewer: { provider: "fake-reviewer" } } } });
   assert.equal(refused.field, "tickets.providers.reviewer.provider");
   assert.match(refused.message, /is refused: fake-reviewer is a reviewer plugin, but this release runs the reviewer in core as atomic until A11-161: name "atomic"/);
-  assert.match(refusalOf({ tickets: { providers: { exposure: { provider: "fake-exposure" } } } }).message, /fake-exposure is an exposure plugin, but this release runs the exposure in core as local or tailscale until A11-162/);
+  assert.equal(resolveProviders({ tickets: { providers: { exposure: { provider: "fake-exposure" } } } }).blocks.exposure.provider, "fake-exposure", "the exposure has no pin since A11-162: local and tailscale are bundled packages, and a fake is refused when a person installs or enables it, and at start");
   assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "no pin, no refusal");
   assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } }).blocks.tracker.provider, "fake-tracker", "the tracker has no pin since A11-159: linear is a bundled package, and a fake is refused when a person installs or enables it, and at start");
   assert.equal(resolveProviders({ tickets: { providers: { publish: { provider: "fake-publisher", enabled: false } } } }).blocks.publish.enabled, false, "a disabled plugin is not run, so the pin has nothing to refuse");

@@ -15,8 +15,8 @@ export type PluginState = "enabled" | "disabled" | "available";
 export type PluginView = Readonly<{ name: string; state: PluginState; contract: string; where: string; description: string; refusal: string | null }>;
 export type ConcernView = Readonly<{ concern: Concern; label: string; enabled: string | null; source: string; plugins: readonly PluginView[]; note: string | null }>;
 
-/** What the project's `messaging` key says, which is read from `project.json` and not from a provider block until A11-162 moves it. */
-export type MessagingState = Readonly<{ provider: string } | { provider: null; why: string }>;
+/** What the project's `messaging` key says, which is read from `project.json` and not from a provider block: the plugin it names, whether it is enabled, and its settings. */
+export type MessagingState = Readonly<{ provider: string; enabled: boolean; settings: Readonly<Record<string, unknown>> } | { provider: null; why: string }>;
 
 /** The default each block takes with no block and no alias, in the words doctor says it with. */
 export const DEFAULT_TEXT: Readonly<Record<string, string>> = {
@@ -57,11 +57,13 @@ function viewOfBlock(concern: Concern, providers: Providers, catalog: Catalog): 
 
 function viewOfMessaging(catalog: Catalog, messaging: MessagingState): ConcernView {
   const named = messaging.provider;
-  const source = named === null ? messaging.why : "configured in project.json's messaging key, which agent-org plugin does not write until A11-162 moves it";
+  const enabled = named !== null && "enabled" in messaging && messaging.enabled;
+  const source = named === null ? messaging.why : "configured in project.json's messaging key";
   const plugins = pluginsOfConcern(catalog, "messaging").map((plugin): PluginView => ({
-    name: plugin.name, state: plugin.name === named ? "enabled" : "available", contract: plugin.contract, where: whereOf(plugin), description: plugin.description, refusal: enableRefusal(plugin, catalog),
+    name: plugin.name, state: plugin.name !== named ? "available" : enabled ? "enabled" : "disabled", contract: plugin.contract, where: whereOf(plugin), description: plugin.description,
+    refusal: enableRefusal(plugin, catalog) ?? fakeRefusal(plugin),
   }));
-  return { concern: "messaging", label: CONCERN_LABEL.messaging, enabled: named, source, plugins, note: null };
+  return { concern: "messaging", label: CONCERN_LABEL.messaging, enabled: enabled ? named : null, source, plugins, note: null };
 }
 
 /** One view per concern, in the order tracker, code host, publisher, reviewer, exposure, messaging. */

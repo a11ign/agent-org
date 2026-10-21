@@ -29,8 +29,12 @@ import { COMMANDS } from "../commands.ts";
 import { agentOrgHome, hostFilePath, hostGhConfigDir, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { findBun } from "./bun.ts";
 import { herdrConfigDir, pluginRoot, TERMINAL_PLUGIN, terminalProgram, terminalTarget } from "./terminal.ts";
-import { serveOf, TicketSettingsRefusal, uiPortOf, type ServePorts } from "../ticket-mode/settings.ts";
-import { noName, notRunning, parseServeStatus, parseStatus, portState, refused, removeArgv, serveArgv, serveStatusArgv, statusArgv, TAILSCALE_MISSING } from "../ticket-mode/tailnet.ts";
+import { loadActive, realPluginDeps } from "../plugins/active.ts";
+import type { Exposure } from "../plugins/contracts/exposure.ts";
+import type { PluginDeps } from "../plugins/manifest.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
+import { resolveProviders } from "../ticket-mode/providers.ts";
+import { uiPortOf } from "../ticket-mode/settings.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
 /** Service name -> the `agent-org` command it runs, and the arguments after it. */
@@ -68,19 +72,24 @@ export type ServiceDeps = Readonly<{
   read: (path: string) => string | null;
   write: (path: string, text: string) => void;
   commands: Readonly<Record<string, string>>;
-  /** The person who started the service, whose `tailscale` the serve step needs as the operator. */
+  /** The person who started the service, whose exposure program the serve step needs as the operator. */
   user: string;
+  /**
+   * The exposure plugin the host file enables (A11-162), loaded: it says which port a served service is served on and serves it. The default loads the bundled plugin, running its
+   * programs through `run`; a test passes its own.
+   */
+  exposure?: (host: Record<string, unknown>) => Promise<Exposure>;
 }>;
 
 export class ServiceRefusal extends Error {}
 
-/** A served service that started on loopback, and whose tailnet entry was then refused: it runs, and is not on the tailnet. */
+/** A served service that started on loopback, and whose entry on the network was then refused: it runs, and the exposure does not reach it. */
 export class TailnetRefusal extends ServiceRefusal {}
 
-/** A service the tailnet serves: `ui` or `terminal`, its tailnet HTTPS port, and the loopback port it listens on and `tailscale serve` proxies to. */
-type Served = Readonly<{ name: "ui" | "terminal"; port: number; local: number }>;
+/** A service the exposure serves: `ui` or `terminal`, the port it is served on, the loopback port it listens on and the exposure proxies to, and the exposure that serves it. */
+type Served = Readonly<{ name: "ui" | "terminal"; port: number; local: number; exposure: Exposure }>;
 
-/** What `startService` returns: the unit, and the tailnet address it is served at, or null when it is served on loopback only. */
+/** What `startService` returns: the unit, and the address it is served at, or null when it is served on loopback only. */
 export type Started = Unit & Readonly<{ address: string | null }>;
 
 const defaultRun: Run = (file, args) => {
@@ -343,99 +352,92 @@ export function serviceState(name: ServiceName, deps: ServiceDeps): ServiceState
 }
 
 /**
- * The host file's JSON object, for the tailnet's own reads. Null when the file is absent. A file that is there but cannot be read, or is not a JSON
+ * The host file's JSON object, for the exposure's own reads. Null when the file is absent. A file that is there but cannot be read, or is not a JSON
  * object, REFUSES, naming it: a page or terminal must not start, or be left on loopback, on a host file that cannot say whether it is served.
  */
 function hostObject(deps: ServiceDeps): Record<string, unknown> | null {
   const path = hostFilePath(deps.env, deps.home, deps.read);
   const text = deps.read(path);
   if (text === null) {
-    if (deps.exists(path)) throw new ServiceRefusal(`${path} exists but cannot be read, so the tailnet cannot be checked: make it readable, then run the command again`);
+    if (deps.exists(path)) throw new ServiceRefusal(`${path} exists but cannot be read, so the exposure cannot be checked: make it readable, then run the command again`);
     return null;
   }
-  return parseHostObject(text, `${path} is not valid JSON, so the tailnet cannot be checked: fix it, then run the command again`,
-    `${path} does not hold a JSON object, so the tailnet cannot be checked: fix it, then run the command again`);
+  return parseHostObject(text, `${path} is not valid JSON, so the exposure cannot be checked: fix it, then run the command again`,
+    `${path} does not hold a JSON object, so the exposure cannot be checked: fix it, then run the command again`);
+}
+
+/** The exposure plugin a host file enables, loaded with every program it runs going through `deps.run`. REFUSES, naming it, a host file the readers refuse and a plugin the loader refuses. */
+async function exposureOf(host: Record<string, unknown>, deps: ServiceDeps): Promise<Exposure> {
+  if (deps.exposure !== undefined) return deps.exposure(host);
+  try {
+    const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
+    const exec: PluginDeps["exec"] = (file, args) => deps.run(file, [...args]);
+    // The person who started the service is the operator Tailscale's refusal names, so their name goes in the environment the plugin reads it from.
+    const env = { ...deps.env, USER: deps.user };
+    const active = await loadActive(resolveProviders(host), defaultCatalog(), { ...realPluginDeps({ env, stateDir, pick: "assigned" }), exec }, undefined, ["exposure"]);
+    return active.exposure();
+  } catch (err) {
+    // The readers' refusals and the loader's both name what is wrong; the service says them as its own.
+    throw err instanceof Error ? new ServiceRefusal(err.message) : err;
+  }
 }
 
 /**
- * Which tailnet port `name` is served on, and the loopback port it listens on, from `tickets.serve`. Null when the service is not served: the instance
- * and auto-update never are, and neither is a host file without `tickets.serve`. A `tickets.serve` or `tickets.servePorts` that is not valid is refused by name.
+ * Which port `name` is served on by the exposure, and the loopback port it listens on. Null when the service is not served: the instance and auto-update never are, and neither is a
+ * host whose exposure serves nothing (`local`). A host file the readers refuse, or an exposure whose settings are not valid, is refused by name.
  */
-function servedAt(name: ServiceName, deps: ServiceDeps): Served | null {
+async function servedAt(name: ServiceName, deps: ServiceDeps): Promise<Served | null> {
   if (name !== "ui" && name !== "terminal") return null;
   const host = hostObject(deps);
   if (host === null) return null;
   const block = host.tickets ?? {};
   if (typeof block !== "object" || block === null || Array.isArray(block)) {
-    throw new ServiceRefusal(`the \`tickets\` block of ${hostFilePath(deps.env, deps.home, deps.read)} must be an object, so the tailnet cannot be checked`);
+    throw new ServiceRefusal(`the \`tickets\` block of ${hostFilePath(deps.env, deps.home, deps.read)} must be an object, so the exposure cannot be checked`);
   }
-  const tickets = block as Record<string, unknown>;
-  let ports: ServePorts | null;
-  try {
-    ports = serveOf(tickets);
-  } catch (err) {
-    if (err instanceof TicketSettingsRefusal) throw new ServiceRefusal(err.message);
-    throw err;
-  }
+  const exposure = await exposureOf(host, deps);
+  const ports = exposure.ports();
   if (ports === null) return null;
-  return { name, port: ports[name], local: name === "ui" ? uiPortOf(tickets) : terminalTarget(host).port };
+  return { name, port: ports[name], local: name === "ui" ? uiPortOf(block as Record<string, unknown>) : terminalTarget(host).port, exposure };
 }
 
-/**
- * Refuses before anything starts, when this machine cannot be served on the tailnet: tailscale is installed, Running and has a DNS name. Returns the
- * name the board answers to. Each refusal names its fix.
- */
-function tailnetName(deps: ServiceDeps): string {
-  const status = deps.run("tailscale", statusArgv());
-  if (status.status === null) throw new ServiceRefusal(TAILSCALE_MISSING);
-  const self = status.status === 0 ? parseStatus(status.stdout) : null;
-  if (self === null) throw new ServiceRefusal(refused(status, statusArgv(), deps.user));
-  if (!self.running) throw new ServiceRefusal(notRunning(self));
-  if (self.name === null) throw new ServiceRefusal(noName);
-  return self.name;
+/** The name the exposure answers to: refuses before anything starts when this machine cannot be served, with the exposure's own sentence and its fix. */
+async function machineName(served: Served): Promise<string> {
+  const { exposure } = served;
+  const why = exposure.readiness();
+  if (why !== null) throw new ServiceRefusal(why);
+  const name = await exposure.machineName();
+  if (name === null) throw new ServiceRefusal("the exposure has no name for this machine, so there is no name for the board to answer to");
+  return name;
 }
 
-/** Refuses a tailnet port that is public (Funnel is on for it) or that another entry serves: the board never replaces either. */
-function refuseTakenPort(served: Served, dns: string, deps: ServiceDeps): void {
-  const args = serveStatusArgv();
-  const result = deps.run("tailscale", args);
-  const entries = result.status === 0 ? parseServeStatus(result.stdout) : null;
-  if (entries === null) throw new ServiceRefusal(refused(result, args, deps.user));
-  const state = portState(entries, dns, served.port, served.local);
-  const setting = `tickets.servePorts.${served.name}`;
-  if (state.funnel) throw new ServiceRefusal(`port ${served.port} is on Funnel, which makes it public, and the board is never served on Funnel: set \`${setting}\` to a port nothing serves`);
-  if (state.kind === "foreign") throw new ServiceRefusal(`port ${served.port} already serves ${state.proxy ?? "another entry"} on the tailnet, and the board will not replace it: set \`${setting}\` to a port nothing serves`);
-}
-
-/**
- * Removes this service's own tailnet entry, once the service has stopped. Only that port's entry is removed, and only when it still proxies to this
- * service: no other entry, Funnel or not, is named in any command.
- */
-function removeServe(served: Served, deps: ServiceDeps): void {
-  const left = `the ${served.name} service is stopped, but its tailscale serve entry on port ${served.port} was not removed`;
-  const status = deps.run("tailscale", statusArgv());
-  const self = status.status === 0 ? parseStatus(status.stdout) : null;
-  if (self === null || self.name === null) throw new ServiceRefusal(`${left}: ${self === null ? refused(status, statusArgv(), deps.user) : noName}`);
-  const serve = deps.run("tailscale", serveStatusArgv());
-  const entries = serve.status === 0 ? parseServeStatus(serve.stdout) : null;
-  if (entries === null) throw new ServiceRefusal(`${left}: ${refused(serve, serveStatusArgv(), deps.user)}`);
-  if (portState(entries, self.name, served.port, served.local).kind !== "ours") return;
-  const args = removeArgv(served.port);
-  const removed = deps.run("tailscale", args);
-  if (removed.status !== 0) throw new ServiceRefusal(`${left}: ${refused(removed, args, deps.user)}. \`tailscale serve --https=${served.port} off\` removes it`);
+/** Removes this service's own entry from the exposure, once the service has stopped. Only that port's entry is removed, and only when it still proxies to this service. */
+function removeServe(served: Served): void {
+  const left = `the ${served.name} service is stopped, but its entry on port ${served.port} was not removed`;
+  let state;
+  try {
+    state = served.exposure.portState(served.port, served.local);
+  } catch (err) {
+    throw new ServiceRefusal(`${left}: ${(err as Error).message}`);
+  }
+  if (state.kind !== "ours") return;
+  const removed = served.exposure.unserve(served.port);
+  if (removed.status !== 0) throw new ServiceRefusal(`${left}: ${removed.refusal ?? removed.stderr}`);
 }
 
 /**
  * Write the unit, register it to start at login, and start it. Starting a service that runs already leaves it running. A page or terminal that
- * `tickets.serve` puts on the tailnet is checked first (nothing starts on a refusal), then started, then given its tailnet entry.
+ * the exposure serves is checked first (nothing starts on a refusal), then started, then given its entry.
  */
-export function startService(name: ServiceName, deps: ServiceDeps): Started {
+export async function startService(name: ServiceName, deps: ServiceDeps): Promise<Started> {
   const unit = unitFor(name, deps);
   const hostFile = hostFilePath(deps.env, deps.home, deps.read);
   if (!deps.exists(hostFile)) throw new ServiceRefusal(`there is no host file at ${hostFile}. Run \`agent-org onboard\` first.`);
-  const served = servedAt(name, deps);
-  const dns = served === null ? null : tailnetName(deps);
-  if (served !== null && dns !== null) refuseTakenPort(served, dns, deps);
+  const served = await servedAt(name, deps);
+  const dns = served === null ? null : await machineName(served);
+  if (served !== null) {
+    const taken = served.exposure.claim(served.port, served.local, served.name);
+    if (taken !== null) throw new ServiceRefusal(taken);
+  }
   if (unit.companion !== null) deps.write(unit.companion.path, unit.companion.text);
   deps.write(unit.path, unit.text);
   if (unit.manager === "launchd") {
@@ -451,17 +453,18 @@ export function startService(name: ServiceName, deps: ServiceDeps): Started {
     must(deps.run("systemctl", ["--user", "restart", unit.id]), `systemctl --user restart ${unit.id}`);
   }
   if (served === null || dns === null) return { ...unit, address: null };
-  const args = serveArgv(served.port, served.local);
-  const result = deps.run("tailscale", args);
-  if (result.status !== 0) throw new TailnetRefusal(`the ${name} service started on 127.0.0.1, but the tailnet does not reach it: ${refused(result, args, deps.user)}`);
-  return { ...unit, address: `https://${dns}:${served.port}/` };
+  const result = served.exposure.serve(served.port, served.local);
+  if (result.status !== 0) throw new TailnetRefusal(`the ${name} service started on 127.0.0.1, but the exposure does not reach it: ${result.refusal ?? result.stderr}`);
+  // The address says the port it is served on, as a browser is given it: the origin that names it, else the first one the exposure gives.
+  const origins = served.exposure.origins({ name: dns, port: served.port });
+  return { ...unit, address: `${origins.find((origin) => origin.endsWith(`:${served.port}`)) ?? origins[0]}/` };
 }
 
 /**
  * Stop the service and keep it from starting at login. The unit file stays, so `start` and `doctor` still find it. A page or terminal that
- * `tickets.serve` puts on the tailnet then loses its own tailnet entry, and nothing else.
+ * the exposure serves then loses its own entry, and nothing else.
  */
-export function stopService(name: ServiceName, deps: ServiceDeps): void {
+export async function stopService(name: ServiceName, deps: ServiceDeps): Promise<void> {
   const unit = unitFor(name, deps);
   if (!deps.exists(unit.path)) throw new ServiceRefusal(`the ${name} service is not registered. \`agent-org start ${name}\` registers and starts it.`);
   if (unit.manager === "launchd") {
@@ -471,8 +474,8 @@ export function stopService(name: ServiceName, deps: ServiceDeps): void {
   } else {
     must(deps.run("systemctl", ["--user", "disable", "--now", unit.id]), `systemctl --user disable --now ${unit.id}`);
   }
-  const served = servedAt(name, deps);
-  if (served !== null) removeServe(served, deps);
+  const served = await servedAt(name, deps);
+  if (served !== null) removeServe(served);
 }
 
 /**
@@ -508,21 +511,21 @@ const NOT_RUNNING = 3;
 const REFUSED = 2;
 
 /** `agent-org start|stop|status [instance|ui|terminal|auto-update]`. @returns the exit code */
-export function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), out: Pick<Console, "log" | "error"> = console): number {
+export async function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), out: Pick<Console, "log" | "error"> = console): Promise<number> {
   try {
     const { positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true });
     const [action, word, ...extra] = positionals;
     if (extra.length > 0) throw new ServiceRefusal(`one service at a time, and \`${extra.join(" ")}\` is extra`);
     const name = serviceName(word);
     if (action === "start") {
-      const unit = startService(name, deps);
+      const unit = await startService(name, deps);
       const journal = unit.companion === null ? unit.id : basename(unit.companion.path);
-      const tailnet = unit.address === null ? "" : `, on the tailnet at ${unit.address}`;
-      out.log(`started the ${name} service (${unit.manager} ${unit.id})${tailnet}${unit.log ? `, logging to ${unit.log}` : `, logging to \`journalctl --user -u ${journal}\``}`);
+      const where = unit.address === null ? "" : `, served at ${unit.address}`;
+      out.log(`started the ${name} service (${unit.manager} ${unit.id})${where}${unit.log ? `, logging to ${unit.log}` : `, logging to \`journalctl --user -u ${journal}\``}`);
       return 0;
     }
     if (action === "stop") {
-      stopService(name, deps);
+      await stopService(name, deps);
       out.log(`stopped the ${name} service; it will not start at login until \`agent-org start ${name}\``);
       return 0;
     }
@@ -540,4 +543,4 @@ export function main(argv: string[], deps: ServiceDeps = defaultServiceDeps(), o
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) process.exitCode = main(process.argv.slice(2));
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) process.exitCode = await main(process.argv.slice(2));

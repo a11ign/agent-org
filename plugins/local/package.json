@@ -1,0 +1,63 @@
+{
+  "name": "@agent-org/plugin-local",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The local exposure: the board, its page and the worker terminal are served on this machine's loopback only; nothing is served on a network.",
+  "type": "module",
+  "agentOrg": {
+    "concern": "exposure",
+    "contract": "1.1",
+    "description": "Serves the board and the worker terminal on loopback only.",
+    "entry": "index.ts",
+    "settings": {
+      "port": {
+        "key": "tickets.providers.exposure.port",
+        "file": "host.json",
+        "group": "Exposure",
+        "type": "whole number of 1 or more",
+        "absent": "default",
+        "default": "4747",
+        "explanation": "The loopback port the instance listens on.",
+        "breaks": "A port another program holds stops the instance from starting, and the board cannot reach it.",
+        "edit": {
+          "editable": true,
+          "input": "number",
+          "applies": "board",
+          "dangerous": "A port another program holds stops the instance from starting, and the board cannot reach it."
+        }
+      },
+      "uiPort": {
+        "key": "tickets.providers.exposure.uiPort",
+        "file": "host.json",
+        "group": "Exposure",
+        "type": "whole number of 1 or more",
+        "absent": "default",
+        "default": "4748",
+        "explanation": "The loopback port the board's page listens on. It must differ from the instance's port.",
+        "breaks": "Equal to the instance's port it is refused by name; a taken port stops the page.",
+        "edit": {
+          "editable": true,
+          "input": "number",
+          "applies": "unit",
+          "unit": "agent-org-instance.service and agent-org-ui.service",
+          "dangerous": "A port another program holds stops the page, and the board cannot be opened."
+        }
+      },
+      "terminal": {
+        "key": "tickets.providers.exposure.terminal",
+        "file": "host.json",
+        "group": "Exposure",
+        "type": "http or https address naming {workspace} or {pane}",
+        "absent": "unset",
+        "default": null,
+        "explanation": "Where a run's live terminal opens in a browser, with {workspace}, {pane} and {key} filled in per run. Absent means no terminal link. agent-org onboard writes it when the key is absent, and its terminal service serves it.",
+        "breaks": "Any other shape is refused by name, and a grill run has no terminal to open.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board"
+        }
+      }
+    }
+  }
+}

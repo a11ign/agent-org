@@ -34,10 +34,10 @@ import { completionPath } from "../lib/tick-completion.ts";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
 import { createLedger, describeError, readLedgerLines } from "./ledger.ts";
 import { createGhReaders } from "./placeholders.ts";
-import { createTelegramProvider } from "./providers/telegram/send.ts";
+import { pluginProviders } from "./plugin.ts";
 import { createReply, prepareReply } from "./reply.ts";
-import { readSecretFile, SecretFileRefusal } from "./secret.ts";
-import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.ts";
+import { SecretFileRefusal } from "./secret.ts";
+import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.ts";
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, refused: 2 });
 const GH_TIMEOUT_MS = 60_000;
@@ -72,12 +72,8 @@ function guardedRunner(file: string, assertRead: (argv: readonly string[]) => vo
   };
 }
 
-/** The providers this command can reach, keyed by `messaging.provider`. */
-const PROVIDERS: Record<string, (config: import("./config.ts").MessagingOn, deps: { fetch?: typeof fetch; }) => any> = {
-  telegram: (config, { fetch: fetchImpl }) => createTelegramProvider({
-    token: readSecretFile(config.tokenFile), chatId: readChairman(config.chairmanFile).chatId, fetch: fetchImpl,
-  }),
-};
+/** The providers this command can reach, keyed by `messaging.provider`: the messaging plugins the registry holds (A11-162), each building through its plugin. */
+const PROVIDERS: Record<string, (config: import("./config.ts").MessagingOn, deps: { fetch?: typeof fetch; }) => any> = pluginProviders({ announcements: false });
 
 /** Returns what is on stdin; "" for a terminal, which would otherwise hang waiting for a person */
 async function readStdin(): Promise<string> {
@@ -222,7 +218,7 @@ export async function main(argv: string[], deps: Partial<ReturnType<typeof DEFAU
     const readers = createGhReaders({ gh, systemctl, repo: trackerRepo(resolve(root)), ...await hostFiles({ root: resolve(root), wakeLedger: () => wakeLedgerPath({ home, env }), err }), now });
     // A dry run builds NO provider: that reads the token and the chairman's chat id, and a probe has no business holding either.
     if (isDryRun) return await dryRun(text, { readers, now }, { out, err });
-    const provider = providers[config.provider](config, { fetch: fetchImpl });
+    const provider = await providers[config.provider](config, { fetch: fetchImpl });
     const reply = createReply({ send: (message) => provider.send(message), ledger: createLedger({ path: defaultLedgerPath(home), now }), readers, now });
     return report(await reply.send(text, { replyTo }), { out, err });
   } catch (error) {

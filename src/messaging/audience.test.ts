@@ -18,8 +18,11 @@ import { EVENT_KINDS } from "./event.ts";
 import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, readLedgerLines } from "./ledger.ts";
 import { AUDIENCE, ConformanceError, runProviderConformance } from "./provider-contract.ts";
-import { createSecret } from "./secret.ts";
-import { createTelegramProvider } from "./providers/telegram/send.ts";
+import { createSecret, redactingFetch } from "./secret.ts";
+import { createTelegramProvider as createWithoutRedaction } from "../../plugins/telegram/send.ts";
+
+/** The Telegram provider the plugin builds, with the core's `redactingFetch` it is given in `deps.messaging`: these tests pin where each message goes over the wire (A11-162 leaves them with the real wire shape on purpose). */
+const createTelegramProvider = (options: Omit<Parameters<typeof createWithoutRedaction>[0], "redactingFetch">) => createWithoutRedaction({ ...options, redactingFetch });
 
 const START = Date.parse("2026-10-10T09:00:00Z");
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";

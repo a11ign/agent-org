@@ -52,7 +52,7 @@ test("the loader loads the plugin for the default host, builds its source from t
   const log: string[] = [];
   const result = await loadEnabled(providers, defaultCatalog(), { ...depsWith(), log: (line) => log.push(line) });
   assert.deepEqual(result.refusals, []);
-  assert.deepEqual(result.loaded.map(({ plugin }) => plugin.name), ["linear", "github"], "the default host enables the bundled code host beside the tracker (A11-160)");
+  assert.deepEqual(result.loaded.map(({ plugin }) => plugin.name), ["linear", "github", "local"], "the default host enables the bundled code host beside the tracker (A11-160), and the bundled exposure (A11-162)");
   assert.equal(typeof (result.loaded[0].implementation as { assigned: unknown }).assigned, "function");
   assert.equal(log.join("\n").includes(KEY), false);
 });

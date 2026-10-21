@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createFakeProvider } from "./messaging/fake-provider.ts";
 import { createLedger } from "./messaging/ledger.ts";
-import { createSecret } from "./messaging/secret.ts";
+import { createSecret, redactingFetch } from "./messaging/secret.ts";
 import { AUDIENCE } from "./messaging/provider-contract.ts";
-import { createTelegramProvider } from "./messaging/providers/telegram/send.ts";
+import { createTelegramProvider as createWithoutRedaction } from "../plugins/telegram/send.ts";
+
+/** The Telegram provider the plugin builds, with the core's `redactingFetch` it is given in `deps.messaging`: these tests pin where each message goes over the wire (A11-162 leaves them with the real wire shape on purpose). */
+const createTelegramProvider = (options: Omit<Parameters<typeof createWithoutRedaction>[0], "redactingFetch">) => createWithoutRedaction({ ...options, redactingFetch });
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { confidenceReading } from "./provider-confidence.ts";
 import {

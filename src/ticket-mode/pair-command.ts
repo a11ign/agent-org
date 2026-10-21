@@ -8,7 +8,8 @@
 //
 // THE TERMINAL'S CODE IS THE PLUGIN'S OWN. `scripts/plugin.ts pair` runs under the terminal service's environment (`terminalPairProgram`), so
 // the plugin reads the directories, token and port the service runs with, and its output (the code, the QR for the tailnet address) is kept. A
-// person types no path. The terminal's code is printed only when the terminal is served for this instance, or when `--terminal` asks for it.
+// person types no path. The terminal's code is printed only when the terminal is served for this instance, or when `--terminal` asks for it. Whether it is served, and under what
+// name, is the exposure plugin's to say (A11-162).
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -20,7 +21,9 @@ import { readOrNull } from "../install/paths.ts";
 import { servicePath } from "../install/service.ts";
 import { herdrConfigDir, localTerminalPort, pluginRoot, terminalPairProgram, type TerminalProgram } from "../install/terminal.ts";
 import { boardKeyPath, readBoardKey } from "./board-key.ts";
-import { readTailnetName, runTailscale } from "./tailnet.ts";
+import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
+import type { Exposure, ServedPorts } from "../plugins/contracts/exposure.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
 import { readTicketSettings, type TicketSettings } from "./settings.ts";
 
 /** How long a terminal pairing code lasts, as herdr web ui's `pair` says: ten minutes, for one device. */
@@ -51,14 +54,17 @@ export type TerminalDeps = Readonly<{
   exists: (path: string) => boolean;
 }>;
 
+/** What the exposure says of this board: the ports it serves the page and the terminal on (null when it serves nothing), and the name it answers to (null while it has none). */
+export type Exposed = Readonly<{ ports: ServedPorts | null; name: string | null; terminal: (port: number) => string | null }>;
+
 /**
  * Why this machine has no terminal on `port` to pair: `tickets.terminal` is not set, is another machine's, or cannot be told apart from this
- * machine's because the tailnet name cannot be read. Null when there is no terminal to say anything about. PURE.
+ * machine's because the exposure cannot name it. Null when there is no terminal to say anything about. PURE.
  */
-export function unservedTerminal(settings: TicketSettings, tailnetName: string | null): string | null {
+export function unservedTerminal(settings: TicketSettings, exposed: Exposed): string | null {
   if (settings.terminal === null) return "tickets.terminal is not set, so this machine serves no worker terminal: run `agent-org onboard`";
-  if (settings.serve !== null && tailnetName === null) {
-    return `tickets.terminal is ${settings.terminal}, and this machine's tailnet name cannot be read (\`tailscale status --json\`), so it cannot tell whether that terminal is its own: fix Tailscale, then run \`agent-org ticket:pair\` again`;
+  if (exposed.ports !== null && exposed.name === null) {
+    return `tickets.terminal is ${settings.terminal}, and this machine's name cannot be read from the exposure, so it cannot tell whether that terminal is its own: fix the exposure (\`agent-org doctor\` says what), then run \`agent-org ticket:pair\` again`;
   }
   return `tickets.terminal is ${settings.terminal}, which another machine serves: run \`agent-org ticket:pair --terminal\` there`;
 }
@@ -79,21 +85,22 @@ export type PairDeps = Readonly<{
   terminal: () => TerminalDeps;
   /** Runs the plugin's program with its output on this terminal, and answers its exit status. */
   run: (program: TerminalProgram) => number;
-  /** This machine's MagicDNS name, or null while it cannot be read. Asked only when the terminal is on the tailnet. */
-  tailnetName: () => string | null;
+  /** What the exposure says of this board. Asked once, and only the name is read from the machine, and only when the exposure serves the terminal. */
+  exposed: () => Promise<Exposed>;
   out: (text: string) => void;
   err: (text: string) => void;
 }>;
 
-/** The address a person opens to pair the terminal: the tailnet's when it is served there, else this machine's loopback address. */
-function terminalPage(settings: TicketSettings, port: number, name: string | null): string {
-  return settings.serve === null || name === null ? `http://127.0.0.1:${port}/` : `https://${name}:${settings.serve.terminal}/`;
+/** The address a person opens to pair the terminal: the exposure's when it serves the terminal under a name, else this machine's loopback address. */
+function terminalPage(port: number, exposed: Exposed): string {
+  const served = exposed.ports === null || exposed.name === null ? null : exposed.terminal(exposed.ports.terminal);
+  return served === null ? `http://127.0.0.1:${port}/` : `${served.split("?")[0]}`;
 }
 
 /**
  * Prints the codes `mode` names, and returns the exit status. A board code that cannot be had is said and does not stop the terminal's; a
  * terminal that cannot pair exits 1 with the fix, after the board's code is printed. With no flag, the terminal's code is printed only when
- * the terminal is served for this instance (`tickets.serve`, and `tickets.terminal` on this machine's loopback).
+ * the terminal is served for this instance (the exposure serves it, and `tickets.terminal` is on this machine's loopback or its own name).
  */
 export async function runPair(mode: PairMode, settings: TicketSettings, deps: PairDeps): Promise<number> {
   let status = 0;
@@ -107,19 +114,19 @@ export async function runPair(mode: PairMode, settings: TicketSettings, deps: Pa
     }
   }
   if (mode === "board") return status;
-  const name = settings.serve === null ? null : deps.tailnetName();
-  const port = localTerminalPort(settings.terminal, name);
+  const exposed = await deps.exposed();
+  const port = localTerminalPort(settings.terminal, exposed.name);
   if (port === null) {
     // Only a served board says so, and only when a terminal is set: a plain board has nothing to say about a terminal it does not serve.
-    const why = unservedTerminal(settings, name);
+    const why = unservedTerminal(settings, exposed);
     if (mode === "terminal") {
       deps.err(`ticket:pair: ${why}\n`);
       return 1;
     }
-    if (settings.serve !== null && why !== null && settings.terminal !== null) deps.out(`${why}\n`);
+    if (exposed.ports !== null && why !== null && settings.terminal !== null) deps.out(`${why}\n`);
     return status;
   }
-  if (mode === "both" && settings.serve === null) return status;
+  if (mode === "both" && exposed.ports === null) return status;
   const program = terminalPair(settings, port, deps.terminal());
   if (typeof program === "string") {
     deps.err(`ticket:pair: ${program}\n`);
@@ -129,12 +136,21 @@ export async function runPair(mode: PairMode, settings: TicketSettings, deps: Pa
     deps.err("ticket:pair: the worker terminal gave no pairing code: start it with `agent-org start terminal`, then run `agent-org ticket:pair --terminal` again\n");
     return 1;
   }
-  deps.out(`  open ${terminalPage(settings, port, name)} within ${TERMINAL_MINUTES} minutes, and enter the code there. It works once.\n`);
+  deps.out(`  open ${terminalPage(port, exposed)} within ${TERMINAL_MINUTES} minutes, and enter the code there. It works once.\n`);
   return status;
 }
 
-/** The real dependencies: this process's environment and home, the plugin run with its output on this terminal, and the tailnet's name. */
-export function defaultPairDeps(settings: TicketSettings): PairDeps {
+/** What the exposure says of this board: it names a machine only when it serves a port, so a loopback-only exposure is never asked. */
+export function exposedBy(exposure: Exposure): () => Promise<Exposed> {
+  return async () => {
+    const ports = exposure.ports();
+    const name = ports === null ? null : await exposure.machineName();
+    return { ports, name, terminal: (port) => (name === null ? null : exposure.terminal({ name, port })) };
+  };
+}
+
+/** The real dependencies: this process's environment and home, the plugin run with its output on this terminal, and the exposure's say. */
+export function defaultPairDeps(settings: TicketSettings, exposure: Exposure): PairDeps {
   return {
     board: () => pairingCode(settings),
     terminal: () => ({
@@ -149,7 +165,7 @@ export function defaultPairDeps(settings: TicketSettings): PairDeps {
       if (result.error) process.stderr.write(`ticket:pair: ${result.error.message}\n`);
       return result.status ?? 1;
     },
-    tailnetName: () => readTailnetName(runTailscale),
+    exposed: exposedBy(exposure),
     out: (text) => process.stdout.write(text),
     err: (text) => process.stderr.write(text),
   };
@@ -162,14 +178,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     process.exit(1);
   }
   const mode: PairMode = process.argv.includes("--board") ? "board" : process.argv.includes("--terminal") ? "terminal" : "both";
-  try {
+  // The exposure alone: pairing reads no tracker key.
+  (async () => {
     const settings = readTicketSettings();
-    runPair(mode, settings, defaultPairDeps(settings)).then((status) => process.exit(status), (err) => {
-      process.stderr.write(`ticket:pair: ${String((err as Error)?.message ?? err)}\n`);
-      process.exit(1);
-    });
-  } catch (err) {
+    const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones }), undefined, ["exposure"]);
+    return runPair(mode, settings, defaultPairDeps(settings, active.exposure()));
+  })().then((status) => process.exit(status), (err) => {
     process.stderr.write(`ticket:pair: ${String((err as Error)?.message ?? err)}\n`);
     process.exit(1);
-  }
+  });
 }

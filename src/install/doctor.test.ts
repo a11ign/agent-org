@@ -1,6 +1,13 @@
 // no-token: none -- every check's reading is injected: no `node`, PATH, Keychain, service manager or port is asked
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { runPlugin } from "../plugins/cli.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
 import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import type { ChromiumReport } from "./chromium.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
@@ -8,6 +15,7 @@ import type { Catalog, CatalogPlugin } from "../plugins/manifest.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
 import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
+import { createTailscale, freshState, type TailscaleState } from "../../plugins/tailscale/stub.ts";
 
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
 const HOUR = 3600e3;
@@ -46,7 +54,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     readFile: () => HOST, exec: execOf(), mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
     pnpmVersion: () => "10.34.5",
     healthy: async (port) => port === 7318, unitProblem: () => null,
-    tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
+    probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0,
@@ -159,7 +167,7 @@ test("doctor passes every check on a working install, and never prints the key",
     ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["herdr", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
-    ["terminal answering", true], ["exposure (local)", true], ["publisher (none)", true], ["reviewer (none)", true], ["messaging (none)", true], ["pairing", true],
+    ["terminal answering", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["publisher (none)", true], ["reviewer (none)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
@@ -402,60 +410,88 @@ test("doctor reports the auto-update service as registered or not", async () => 
   assert.equal(off.fix, "run `agent-org start auto-update`");
 });
 
-const TAILNET_STATUS = JSON.stringify({ BackendState: "Running", Self: { DNSName: "agents.tail1234.ts.net.", TailscaleIPs: ["100.64.0.7"] } });
 const SERVED_HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL, serve: "tailscale" } });
-/** `tailscale serve status --json` with this board's entries on 9443 and 9444, and Funnel off for both. */
-const SERVE_HERE = JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:4801" } } }, "agents.tail1234.ts.net:9444": { Handlers: { "/": { Proxy: "http://127.0.0.1:7318" } } } } });
+const NAME = "agents.tail1234.ts.net";
 
-/** This machine served on the tailnet: `tailscale status` says it is Running, and `tailscale serve status` answers `serve`. */
-function tailnetDeps(serve: string, over: Partial<DoctorDeps> = {}): DoctorDeps {
-  return deps({ readFile: () => SERVED_HOST, tailscale: (args) => ({ status: 0, stdout: args[0] === "status" ? TAILNET_STATUS : serve, stderr: "" }), tailnetAnswers: async () => true, ...over });
+/** A Tailscale that holds this board's entries on 9443 and 9444 (to the page on 4801 and the terminal on 7318), with Funnel off for both. */
+const servingHere = (over: Partial<TailscaleState> = {}): TailscaleState => {
+  const state = freshState(over);
+  state.web[`${NAME}:9443`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:4801" } } };
+  state.web[`${NAME}:9444`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:7318" } } };
+  return state;
+};
+
+/** This machine served on the tailnet (A11-162: by the Tailscale plugin, which runs its `tailscale` through the doctor's `exec`, here a stand-in over `state`), every port answering unless `probe` says otherwise. */
+function tailnetDeps(state: TailscaleState, over: Partial<DoctorDeps> = {}): DoctorDeps {
+  const programs = execOf();
+  const tailscale = createTailscale(state);
+  return deps({ readFile: () => SERVED_HOST, exec: (file, args) => (file === "tailscale" ? tailscale(file, args) : programs(file, args)), probe: async () => 200, ...over });
 }
 
-test("with tickets.serve, doctor checks each served port's entry, that it is not on Funnel, and that it answers under the machine's name", async () => {
-  const checks = byName(await diagnose(tailnetDeps(SERVE_HERE)));
+test("with the exposure on the tailnet, doctor checks each served port's entry, that it is not on Funnel, and that it answers under the machine's name", async () => {
+  const checks = byName(await diagnose(tailnetDeps(servingHere())));
   for (const name of ["tailscale", "ui tailnet entry", "ui tailnet only", "ui tailnet answering", "terminal tailnet entry", "terminal tailnet only", "terminal tailnet answering"]) {
     assert.equal(checks[name]?.ok, true, name);
   }
-  assert.equal(checks["ui tailnet entry"].detail, "https://agents.tail1234.ts.net:9443/ serves 127.0.0.1:4801");
+  assert.equal(checks["ui tailnet entry"].detail, `https://${NAME}:9443/ serves 127.0.0.1:4801`);
+  assert.equal(checks["exposure (tailscale)"].ok, true, "the exposure's row summarises them and passes");
+  assert.equal(checks["local ports"], undefined, "and the local plugin's rows are not asked of a host that does not enable it");
 });
 
-test("a served port with no entry, another entry, or Funnel on it fails with its fix", async () => {
-  const none = byName(await diagnose(tailnetDeps("{}")));
+test("a served port with no entry, another entry, or Funnel on it fails with its fix, and the exposure's row fails with the first", async () => {
+  const none = byName(await diagnose(tailnetDeps(freshState())));
   assert.equal(none["ui tailnet entry"].ok, false);
   assert.equal(none["ui tailnet entry"].fix, "run `agent-org start ui`");
-  const funnel = byName(await diagnose(tailnetDeps(JSON.stringify({ ...JSON.parse(SERVE_HERE), AllowFunnel: { "agents.tail1234.ts.net:9443": true } }))));
+  assert.equal(none["exposure (tailscale)"].ok, false);
+  assert.equal(none["exposure (tailscale)"].fix, "run `agent-org start ui`");
+  const open = servingHere();
+  open.funnel[`${NAME}:9443`] = true;
+  const funnel = byName(await diagnose(tailnetDeps(open)));
   assert.equal(funnel["ui tailnet only"].ok, false);
   assert.match(funnel["ui tailnet only"].fix ?? "", /tailscale funnel --https=9443 off/);
   assert.equal(funnel["ui tailnet entry"].ok, true, "its entry is still there: only Funnel is wrong");
-  const foreign = byName(await diagnose(tailnetDeps(JSON.stringify({ Web: { "agents.tail1234.ts.net:9443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } } }))));
+  const taken = freshState();
+  taken.web[`${NAME}:9443`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } };
+  const foreign = byName(await diagnose(tailnetDeps(taken)));
   assert.match(foreign["ui tailnet entry"].detail, /serves http:\/\/127\.0\.0\.1:9999 instead/);
-  assert.match(foreign["ui tailnet entry"].fix ?? "", /set `tickets\.servePorts\.ui` to a port nothing serves/);
+  assert.match(foreign["ui tailnet entry"].fix ?? "", /set `tickets\.providers\.exposure\.tailnetPorts\.ui` to a port nothing serves/);
 });
 
 test("a node that is not Running, or no tailscale at all, is the one tailscale failure, with its fix", async () => {
-  const stopped = byName(await diagnose(tailnetDeps(SERVE_HERE, { tailscale: () => ({ status: 0, stdout: JSON.stringify({ BackendState: "Stopped", Self: { DNSName: "agents.tail1234.ts.net." } }), stderr: "" }) })));
+  const stopped = byName(await diagnose(tailnetDeps(servingHere({ backend: "Stopped" }))));
   assert.equal(stopped.tailscale.ok, false);
   assert.equal(stopped.tailscale.detail, "Tailscale is Stopped, not Running");
   assert.equal(stopped.tailscale.fix, "run `sudo tailscale up`, and turn MagicDNS on in the admin console");
-  const absent = byName(await diagnose(tailnetDeps(SERVE_HERE, { tailscale: () => ({ status: null, stdout: "", stderr: "ENOENT" }) })));
+  const absent = byName(await diagnose(tailnetDeps(servingHere(), { exec: (file, args) => (file === "tailscale" ? { status: null, stdout: "", stderr: "ENOENT" } : execOf()(file, args)) })));
   assert.equal(absent.tailscale.detail, "tailscale is not on PATH");
 });
 
-test("a served port that does not answer under the machine's name fails, and without tickets.serve tailscale is not asked", async () => {
-  const silent = byName(await diagnose(tailnetDeps(SERVE_HERE, { tailnetAnswers: async () => false })));
+test("a served port that does not answer under the machine's name fails, and a host on the loopback exposure never asks tailscale", async () => {
+  const silent = byName(await diagnose(tailnetDeps(servingHere(), { probe: async () => null })));
   assert.equal(silent["terminal tailnet answering"].ok, false);
-  assert.equal(silent["ui tailnet answering"].detail, "nothing answers https://agents.tail1234.ts.net:9443/");
-  const plain = byName(await diagnose(deps({ tailscale: () => { throw new Error("tailscale is asked only with tickets.serve"); } })));
+  assert.equal(silent["ui tailnet answering"].detail, `nothing answers https://${NAME}:9443/`);
+  const plain = byName(await diagnose(deps({ exec: (file, args) => { if (file === "tailscale") throw new Error("tailscale is asked only by the tailscale exposure"); return execOf()(file, args); } })));
   assert.equal(plain.tailscale, undefined);
+  assert.equal(plain["local ports"].ok, true, "the local plugin's rows stand in its place");
+  assert.equal(plain["local terminal"].ok, true);
+  assert.equal(plain["exposure (local)"].ok, true);
 });
 
 test("doctor fails the tailnet serve check on a serve config it cannot read, and judges no entry from it", async () => {
-  const checks = byName(await diagnose(tailnetDeps(JSON.stringify({ Web: "unreadable" }))));
+  const state = servingHere();
+  const stub = createTailscale(state);
+  const checks = byName(await diagnose(tailnetDeps(state, { exec: (file, args) => (file === "tailscale" && args[0] === "serve" && args[1] === "status" ? { status: 0, stdout: JSON.stringify({ Web: "unreadable" }), stderr: "" } : file === "tailscale" ? stub(file, args) : execOf()(file, args)) })));
   assert.equal(checks["tailscale serve"].ok, false);
   assert.match(checks["tailscale serve"].detail, /did not answer/);
   assert.equal(checks["ui tailnet entry"], undefined, "no entry is read from a config that cannot be read");
 });
+
+test("A11-162: a loopback exposure that does not answer fails its ports row, and the exposure's row says which service to start", async () => {
+  const { "local ports": ports, "exposure (local)": exposure } = byName(await diagnose(deps({ probe: async ({ port }) => (port === 4800 ? 200 : null) })));
+  assert.deepEqual([ports.ok, ports.detail], [false, "nothing answers on 127.0.0.1 for the ui (port 4801)"]);
+  assert.deepEqual([exposure.ok, exposure.fix], [false, "run `agent-org start ui`"]);
+});
+
 // A11-84: the installed `gh` wrapper and each declared role's mint are checked, and each failure names its fix.
 
 test("doctor fails a gh wrapper that diverges from host.json, naming the fix, and passes each role that mints", async () => {
@@ -604,11 +640,11 @@ test("A11-160: a host file the reader refuses still shows the code host's rows, 
 
 test("A11-160: a failing plugin row fails the code host's row, which says what the plugin found and its fix", async () => {
   const missing = byName(await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ gh: ghFake("gh dash  dlvhdr/gh-dash  v4.0.0\n") }) })));
-  assert.equal(missing["gh stack"].ok, false);
-  assert.equal(missing["gh stack"].fix, "GH_CONFIG_DIR=/home/agent/workers/gh gh extension install github/gh-stack, or run `agent-org onboard`");
-  assert.equal(missing["code host (github)"].ok, false);
-  assert.match(missing["code host (github)"].detail, /`gh stack` is not installed, so a worker cannot link a stacked pull request/);
-  assert.equal(missing["code host (github)"].fix, missing["gh stack"].fix);
+  const host = missing["code host (github)"];
+  assert.deepEqual([missing["gh stack"].ok, missing["gh stack"].fix], [false, "GH_CONFIG_DIR=/home/agent/workers/gh gh extension install github/gh-stack, or run `agent-org onboard`"]);
+  assert.equal(host.ok, false);
+  assert.match(host.detail, /`gh stack` is not installed, so a worker cannot link a stacked pull request/);
+  assert.equal(host.fix, missing["gh stack"].fix);
 });
 
 test("A11-160: the plugin's rows come from the host's clones and the workers' account: a clone's GitHub remote is asked about stacks, as the workers' gh account", async () => {
@@ -802,9 +838,96 @@ test("A11-158: a plugin the loader refuses fails its provider's row, naming the 
 });
 
 test("A11-158: the messaging row says what the project's messaging key holds, and never a secret", async () => {
-  const on = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => ({ provider: "telegram" }) }) })));
+  const on = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => ({ provider: "telegram", enabled: true, settings: { tokenFile: "/home/me/.config/agent-org/token" } }) }) })));
   assert.equal(on["messaging (telegram)"].ok, true);
   assert.match(on["messaging (telegram)"].detail, /project\.json's messaging key/);
+  assert.doesNotMatch(on["messaging (telegram)"].detail, /token/, "the row names no file the key points at");
   const off = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => ({ provider: null, why: "project.json has no messaging key, so messaging is off" }) }) })));
   assert.equal(off["messaging (none)"].detail, "project.json has no messaging key, so messaging is off");
+});
+
+test("A11-162: the messaging plugin's rows stand beside its row, which passes when they do and fails with the first failing row's fix when one does not", async () => {
+  const state = { provider: "telegram", enabled: true, settings: {} } as const;
+  const rows = [{ name: "telegram token file", ok: true, detail: "/h/.config/agent-org/token is readable by no one else", fix: null }, { name: "telegram chat", ok: true, detail: "NOT YET PAIRED: run `agent-org messaging:pair`", fix: null }];
+  const passing = await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state, messagingChecks: async () => rows }) }));
+  assert.deepEqual(passing.filter(({ name }) => name.startsWith("telegram") || name.startsWith("messaging")).map(({ name, ok }) => [name, ok]), [["telegram token file", true], ["telegram chat", true], ["messaging (telegram)", true]]);
+  assert.equal(byName(passing)["messaging (telegram)"].detail, "configured in project.json's messaging key, and its checks pass");
+  const failing = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state,
+    messagingChecks: async () => [{ ...rows[0], ok: false, detail: "/h/.config/agent-org/token has mode 0644, not 0600", fix: "chmod 600 /h/.config/agent-org/token" }, rows[1]] }) })));
+  assert.equal(failing["messaging (telegram)"].ok, false);
+  assert.equal(failing["messaging (telegram)"].detail, "configured in project.json's messaging key: /h/.config/agent-org/token has mode 0644, not 0600");
+  assert.equal(failing["messaging (telegram)"].fix, "chmod 600 /h/.config/agent-org/token");
+});
+
+test("A11-162: a messaging key the reader or the loader refuses is one failing row naming it, and a plugin that is switched off asks for no rows", async () => {
+  const state = { provider: "telegram", enabled: true, settings: {} } as const;
+  const refused = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state,
+    messagingChecks: async () => { throw new Error("project.json: messaging.tokenFile: `/etc/shadow` is not a file under ~/.config/agent-org/"); } }) })));
+  assert.equal(refused["plugin telegram"].ok, false);
+  assert.match(refused["plugin telegram"].detail, /messaging\.tokenFile: `\/etc\/shadow` is not a file under/);
+  assert.equal(refused["messaging (telegram)"].ok, false);
+  const disabled = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => ({ ...state, enabled: false }),
+    messagingChecks: async () => { throw new Error("a disabled plugin is not asked"); } }) })));
+  assert.deepEqual([disabled["messaging (telegram, disabled)"].ok, disabled["plugin telegram"]], [true, undefined]);
+  assert.match(disabled["messaging (telegram, disabled)"].detail, /disabled: nothing is sent to the chairman and nothing is asked, and its settings are kept for `agent-org plugin enable`/);
+});
+
+// ---- A11-162 DONE-WHEN: switching exposure from tailscale to local is `agent-org plugin enable local` plus a restart, with doctor green
+
+test("A11-162 done-when: `agent-org plugin enable local` takes a served board off the tailnet through the real plugin, and doctor is green before and after, asking Tailscale nothing after", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "switch-"));
+  try {
+    // A `tailscale` on PATH that holds its serve config in a file, so the command (a process of its own, for the real loader) and this test see one machine.
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "tailscale"), `#!/bin/sh\nexec "${process.execPath}" "${fileURLToPath(new URL("../../plugins/tailscale/stub.ts", import.meta.url))}" "$@"\n`, { mode: 0o755 });
+    const stateFile = join(dir, "tailscale.json");
+    const environment = { PATH: `${bin}:${process.env.PATH ?? ""}`, TAILSCALE_STUB_STATE: stateFile };
+    const tailscale = (...args: string[]) => spawnSync("tailscale", args, { env: { ...process.env, ...environment }, encoding: "utf8" });
+    const held = () => Object.keys(JSON.parse(readFileSync(stateFile, "utf8")).web as Record<string, unknown>);
+    // The host: its exposure block names tailscale, over the ports and terminal the doctor tests use; the board is served as `agent-org start ui` and `start terminal` serve it.
+    const hostPath = join(dir, "host.json");
+    const served = JSON.parse(HOST);
+    served.tickets.providers.exposure = { ...served.tickets.providers.exposure, provider: "tailscale" };
+    writeFileSync(hostPath, JSON.stringify(served));
+    assert.equal(tailscale("serve", "--bg", "--https=9443", "http://127.0.0.1:4801").status, 0);
+    assert.equal(tailscale("serve", "--bg", "--https=9444", "http://127.0.0.1:7318").status, 0);
+    const doctorOver = async (hostText: string, state: ReturnType<typeof freshState>, over: Partial<DoctorDeps> = {}) => {
+      const programs = execOf();
+      const stub = createTailscale(state);
+      return diagnose(deps({ readFile: () => hostText, exec: (file, args) => (file === "tailscale" ? stub(file, args) : programs(file, args)), ...over }));
+    };
+    const before = await doctorOver(readFileSync(hostPath, "utf8"), JSON.parse(readFileSync(stateFile, "utf8")), { probe: async () => 200 });
+    assert.deepEqual(before.filter((check) => !check.ok), [], "POSITIVE CONTROL: doctor is green while the board is served on the tailnet, so the green after is not an inert harness");
+    assert.equal(byName(before)["exposure (tailscale)"].ok, true);
+    assert.deepEqual(held().sort(), ["agents.tail1234.ts.net:9443", "agents.tail1234.ts.net:9444"]);
+
+    const lines: string[] = [];
+    const saved = { PATH: process.env.PATH, TAILSCALE_STUB_STATE: process.env.TAILSCALE_STUB_STATE };
+    Object.assign(process.env, environment);
+    let status: number;
+    try {
+      status = await runPlugin(["enable", "local"], { hostPath, catalog: defaultCatalog(), log: (line) => lines.push(line), error: (line) => lines.push(line) });
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.TAILSCALE_STUB_STATE === undefined) delete process.env.TAILSCALE_STUB_STATE;
+      else process.env.TAILSCALE_STUB_STATE = saved.TAILSCALE_STUB_STATE;
+    }
+    assert.equal(status, 0, lines.join("\n"));
+    assert.match(lines.join("\n"), /took this board's tailscale serve entries off the tailnet: ui \(port 9443\), terminal \(port 9444\)/);
+    assert.deepEqual(held(), [], "both of this board's entries are gone from the tailnet");
+    assert.equal(JSON.parse(readFileSync(hostPath, "utf8")).tickets.providers.exposure.provider, "local");
+    assert.match(lines.join("\n"), /run `agent-org start instance`, `agent-org start ui` and `agent-org start terminal`/, "the restart it names");
+
+    // The restart and the doctor ask Tailscale nothing: it is not the exposure now.
+    const after = JSON.parse(readFileSync(stateFile, "utf8"));
+    const calls = after.calls.length;
+    const green = await doctorOver(readFileSync(hostPath, "utf8"), freshState(after));
+    assert.deepEqual(green.filter((check) => !check.ok), [], "doctor is green once the exposure is local");
+    assert.equal(byName(green)["exposure (local)"].ok, true);
+    assert.equal(byName(green).tailscale, undefined, "and says nothing of the tailnet");
+    assert.equal(after.calls.length, calls);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

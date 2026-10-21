@@ -1,0 +1,31 @@
+The exposure and messaging are now bundled agent-org plugins: `plugins/local` (the concern's default) and `plugins/tailscale` behind the exposure contract (now 1.1), and `plugins/telegram` behind the messaging contract (now 1.1). Core asks the activated exposure for the board's name, hosts, origins, terminal address and serve calls (`ticket:serve`, `ticket:ui`, `ticket:pair`, `agent-org start` and `stop`, the event receiver's Funnel path and the kernel notes' trace address) and runs no `tailscale`; it builds the messaging provider through the registry and calls no Telegram endpoint (`src/plugins/boundary.test.ts` refuses both, and a tailnet host name). Each plugin passes its concern's contract suite (`plugins/tailscale/conformance.test.ts`, `plugins/local/local.test.ts`, `plugins/telegram/index.test.ts`, `send.test.ts` and `poll.test.ts`). `agent-org plugin enable local` on a host whose exposure is tailscale SWITCHES the block, keeping `port`, `uiPort` and `terminal`, dropping `tailnetPorts` and the tailnet's own terminal address, and RELEASES tailscale first (removes this board's two `tailscale serve` entries and no other, refused by name when Tailscale cannot say what it serves); after a restart, nothing is served and doctor's exposure rows are green. `agent-org plugin` writes the messaging key of `project.json` for `telegram`.
+
+Acceptance:
+```bash
+npx rstest run --config scripts/rstest/rstest.config.ts plugins src/plugins src/install/doctor.test.ts src/install/service.test.ts src/install/onboard.test.ts src/install/onboard-profile.test.ts src/install/update.test.ts src/ticket-mode/pair-command.test.ts src/ticket-mode/server.test.ts src/ticket-mode/ui-server.test.ts src/ticket-mode/providers.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/settings-edit.test.ts src/ticket-mode/config-schema.test.ts src/ticket-mode/readme-keys.test.ts src/event-tunnel.test.ts src/host-kernel.test.ts src/messaging
+scratch=$(mktemp -d)
+mkdir "$scratch/bin"
+printf '#!/bin/sh\nexec "%s" "%s/plugins/tailscale/stub.ts" "$@"\n' "$(command -v node)" "$PWD" > "$scratch/bin/tailscale"
+chmod +x "$scratch/bin/tailscale"
+export TAILSCALE_STUB_STATE="$scratch/tailscale.json"
+export PATH="$scratch/bin:$PATH"
+printf '%s\n' '{ "clones": { "app": "/tmp/app" }, "tickets": { "providers": { "exposure": { "provider": "tailscale", "port": 4800, "uiPort": 4801, "terminal": "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal", "tailnetPorts": { "ui": 9443, "terminal": 9444 } } } } }' > "$scratch/host.json"
+export AGENT_ORG_HOST="$scratch/host.json"
+tailscale serve --bg --https=9443 http://127.0.0.1:4801
+tailscale serve --bg --https=9444 http://127.0.0.1:7318
+tailscale serve --bg --https=8443 http://127.0.0.1:8788
+node src/bin.ts plugin list | grep -qE '^exposure: tailscale '
+node src/bin.ts plugin list | grep -qE '^  local  *available  *contract 1\.1  *plugins/local$'
+node src/bin.ts plugin list | grep -qE '^  tailscale  *enabled  *contract 1\.1  *plugins/tailscale$'
+node src/bin.ts plugin list | grep -qE '^  telegram  *available  *contract 1\.1  *plugins/telegram$'
+node src/bin.ts plugin enable local | grep -q "took this board's tailscale serve entries off the tailnet: ui (port 9443), terminal (port 9444)"
+node src/bin.ts plugin list | grep -qE '^exposure: local '
+node -e 'const h=JSON.parse(require("fs").readFileSync(process.env.AGENT_ORG_HOST,"utf8")).tickets.providers.exposure; if (JSON.stringify(h)!==JSON.stringify({provider:"local",enabled:true,port:4800,uiPort:4801,terminal:"http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal"})) { console.error(JSON.stringify(h)); process.exit(1); }'
+node -e 'const s=JSON.parse(require("fs").readFileSync(process.env.TAILSCALE_STUB_STATE,"utf8")); const held=Object.keys(s.web); if (held.length!==1 || !held[0].endsWith(":8443")) { console.error(held); process.exit(1); }'
+test -f plugins/tailscale/package.json && test -f plugins/local/package.json && test -f plugins/telegram/package.json && test ! -e src/ticket-mode/tailnet.ts && test ! -e src/messaging/providers
+rm -rf "$scratch"
+```
+
+Proof of the done-when ("switching exposure from tailscale to local is `agent-org plugin enable local` plus a restart, with doctor green"): `src/install/doctor.test.ts` "A11-162 done-when" serves a board on a stand-in `tailscale` that holds its state in a file, runs `agent-org plugin enable local` through the real plugin, finds both of this board's entries gone and the trace pages' (:8443) kept, and finds `diagnose` green before and after and asking Tailscale nothing after; `src/install/service.test.ts` "with the exposure block on local, a start serves nothing" proves the restart; `src/plugins/cli.test.ts` proves the switch, the release before the write, the refusal when it cannot release, and `disable`, `uninstall` and `install --replace`. The live check on the agents host is the chairman session's, and does not touch :443, :8443, :9443 or :9444 before this merges: on a scratch copy of its host file whose exposure is a block, `AGENT_ORG_HOST=<copy> node src/bin.ts plugin enable local` prints the release line and `tailscale serve status --json` then lacks the two entries; a pass is both entries gone and `agent-org doctor` green after `agent-org start ui` and `agent-org start terminal`.
+
+Consumer-declaration: none -- no existing host file changes meaning: `tickets.providers.exposure` keeps its shape (`provider`, `enabled`, `port`, `uiPort`, `terminal`, `tailnetPorts`), a host with no exposure block runs the bundled `local`, and `tickets.serve` and `tickets.servePorts` still name the tailscale exposure and its ports. The `messaging` key of `project.json` keeps its shape and gains the optional `enabled`. The Settings page draws the same exposure rows; the `tailnetPorts` entries now name the page and the terminal services, which read them. The doctor rows `tailscale`, `ui tailnet entry`, `ui tailnet only`, `ui tailnet answering` and the terminal's keep the names they had. `src/ticket-mode/tailnet.ts` and `src/messaging/providers/telegram/` are not files another repository reads (they were not in `package.json`'s `exports`); the `messaging:pair` package script now runs `src/messaging/pair.ts`, and `agent-org messaging:pair` is unchanged.

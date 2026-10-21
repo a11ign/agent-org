@@ -171,15 +171,12 @@ async function logPath(): Promise<string> {
 
 /** Messaging configured: the same provider `messaging:watch` builds, plus the channel when `announcementsFile` is declared. */
 async function messengerDelivery({ config, now }: { config: MessagingOn; now: number }): Promise<Delivery> {
-  const { readSecretFile, SecretFileRefusal } = await import("./messaging/secret.ts");
-  const { readAnnouncementsChatId, readChairman, defaultLedgerPath } = await import("./messaging/state.ts");
-  const { createTelegramProvider } = await import("./messaging/providers/telegram/send.ts");
+  const { SecretFileRefusal } = await import("./messaging/secret.ts");
+  const { defaultLedgerPath } = await import("./messaging/state.ts");
+  const { messagingProvider } = await import("./messaging/plugin.ts");
   let provider;
   try {
-    provider = createTelegramProvider({
-      token: readSecretFile(config.tokenFile), chatId: readChairman(config.chairmanFile).chatId,
-      announcementsChatId: readAnnouncementsChatId(config.announcementsFile), log: (line) => process.stderr.write(`${line}\n`),
-    });
+    provider = await messagingProvider(config, { log: (line: string) => process.stderr.write(`${line}\n`) });
   } catch (error) {
     // A secret file that is refused is a post that cannot be made (exit 2), as a non-integer channel file was before the read moved to `messaging/state.ts`.
     if (error instanceof SecretFileRefusal) return cannotPost(error.message);

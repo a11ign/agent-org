@@ -1,0 +1,60 @@
+{
+  "name": "@agent-org/plugin-telegram",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Telegram as the messaging provider: asks and announcements for the chairman, sent through a bot whose token is read by reference from a file.",
+  "type": "module",
+  "agentOrg": {
+    "concern": "messaging",
+    "contract": "1.1",
+    "description": "Telegram: asks and announcements for the chairman. Configured in project.json's messaging key.",
+    "entry": "index.ts",
+    "settings": {
+      "tokenFile": {
+        "key": "messaging.tokenFile",
+        "file": "project.json",
+        "group": "Project",
+        "type": "path under ~/.config/agent-org/",
+        "absent": "unset",
+        "default": null,
+        "secret": "path",
+        "explanation": "The file holding the bot's token, read by reference and never shown. It must be a regular file of mode 0600 owned by the running user.",
+        "breaks": "A path outside ~/.config/agent-org/, or a file others can read, is refused by name, and nothing is sent.",
+        "edit": {
+          "editable": false,
+          "why": "a secret's file: change it with `agent-org plugin config telegram`"
+        }
+      },
+      "chairmanFile": {
+        "key": "messaging.chairmanFile",
+        "file": "project.json",
+        "group": "Project",
+        "type": "path under ~/.config/agent-org/",
+        "absent": "unset",
+        "default": null,
+        "secret": "path",
+        "explanation": "The file `messaging:pair` writes with the chairman's Telegram ids. Nobody types the ids anywhere.",
+        "breaks": "A path outside ~/.config/agent-org/ is refused by name. Until the chairman has paired, the file is absent and nothing can be sent.",
+        "edit": {
+          "editable": false,
+          "why": "a secret's file: change it with `agent-org plugin config telegram`"
+        }
+      },
+      "announcementsFile": {
+        "key": "messaging.announcementsFile",
+        "file": "project.json",
+        "group": "Project",
+        "type": "path under ~/.config/agent-org/",
+        "absent": "default",
+        "default": "announcements go to the chairman's chat",
+        "secret": "path",
+        "explanation": "The file holding the chat id of a one-way announcements channel. Absent, announcements go to the chairman's chat.",
+        "breaks": "A path outside ~/.config/agent-org/ is refused by name; a file holding anything but one chat id is refused when the provider is built.",
+        "edit": {
+          "editable": false,
+          "why": "a secret's file: change it with `agent-org plugin config telegram`"
+        }
+      }
+    }
+  }
+}

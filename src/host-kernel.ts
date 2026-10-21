@@ -20,6 +20,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { HOME_CHECKOUT } from "./project-config.ts";
 import { persistentRoles } from "./project-roles.ts";
 import { stateEntryPath } from "./host-config.ts";
+import { hostExposure } from "./plugins/host-exposure.ts";
 
 export type Finding = { unit: string, problem: string, detail: string };
 export type RebootRecord = { at: number, from: string, to: string, row?: number, readBackAt?: number };
@@ -294,11 +295,10 @@ export async function readBack(deps: ReadBackDeps): Promise<string[]> {
     attempt("work tick", tick), attempt("standing seats", seats), trace];
 }
 
-/** The trace pages as the tailnet sees them: the first `Web` handler `tailscale serve` publishes, fetched. @returns {Promise<string>} */
+/** The trace pages as the exposure serves them: the first web address it publishes, fetched (A11-162: asked of the exposure plugin, which runs the program). @returns {Promise<string>} */
 async function realTracePages(): Promise<string> {
-  const served = JSON.parse(execFileSync("tailscale", ["serve", "status", "--json"], { encoding: "utf8", timeout: 15_000 }));
-  const host = Object.keys(served.Web ?? {})[0];
-  if (host === undefined) throw new Error("tailscale serve publishes no web handler");
+  const [host] = (await hostExposure()).served();
+  if (host === undefined) throw new Error("the exposure publishes no web address");
   const response = await fetch(`https://${host}/`, { signal: AbortSignal.timeout(15_000) });
   return `https://${host}/ answered ${response.status}, ${(await response.text()).length} characters`;
 }

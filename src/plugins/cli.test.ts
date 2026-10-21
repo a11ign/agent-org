@@ -2,11 +2,12 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
-import { runPlugin } from "./cli.ts";
+import { loadOutgoing, type Outgoing, runPlugin } from "./cli.ts";
 import { buildCatalog } from "./registry.ts";
+import type { CatalogPlugin, PluginSettings } from "./manifest.ts";
 
 const RUN = "post {prs} into {dir}";
 const NOTE = "a note the person wrote, which a write keeps";
@@ -31,21 +32,31 @@ type Run = Readonly<{ status: number; out: string; err: string }>;
 const made: string[] = [];
 after(() => made.forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
-/** A scratch host file holding `initial`, and a runner of one command against it that captures what it says. */
-function scratch(initial: string = HOST, project?: string) {
+/** What loading the plugin a change leaves records, so a test reads which plugins were released, with which settings, and in what order against the write. */
+type Left = { plugin: string; settings: PluginSettings; hostBefore: string };
+
+/** A plugin that is left: it answers `machineName`, and releases as `release` says (nothing to release by default). */
+const leaving = (over: Partial<Outgoing> = {}, left: Left[] = [], hostPath = ""): ((plugin: CatalogPlugin, settings: PluginSettings) => Promise<Outgoing>) => async (plugin, settings) => {
+  left.push({ plugin: plugin.name, settings, hostBefore: hostPath === "" ? "" : readFileSync(hostPath, "utf8") });
+  return { machineName: null, release: () => ({ ok: true, detail: "" }), ...over };
+};
+
+/** A scratch host file holding `initial`, and a runner of one command against it that captures what it says. `outgoing` answers for a plugin the command leaves. */
+function scratch(initial: string = HOST, project?: string, outgoing?: (hostPath: string, left: Left[]) => ReturnType<typeof leaving>) {
   const dir = mkdtempSync(join(tmpdir(), "plugin-cli-"));
   made.push(dir);
   const hostPath = join(dir, "host.json");
   writeFileSync(hostPath, initial);
+  const left: Left[] = [];
   const run = async (...argv: string[]): Promise<Run> => {
     const out: string[] = [];
     const err: string[] = [];
-    const status = await runPlugin(argv, { hostPath, catalog: buildCatalog(), log: (line) => out.push(line), error: (line) => err.push(line), projectPath: project });
+    const status = await runPlugin(argv, { hostPath, catalog: buildCatalog(), log: (line) => out.push(line), error: (line) => err.push(line), projectPath: project, outgoing: (outgoing ?? ((path, seen) => leaving({}, seen, path)))(hostPath, left) });
     return { status, out: out.join("\n"), err: err.join("\n") };
   };
   const text = () => readFileSync(hostPath, "utf8");
   const backup = () => (existsSync(`${hostPath}.bak`) ? readFileSync(`${hostPath}.bak`, "utf8") : null);
-  return { dir, hostPath, run, text, backup };
+  return { dir, hostPath, run, text, backup, left };
 }
 
 const settingsOf = (text: string) => parseTicketSettings(JSON.parse(text));
@@ -63,12 +74,15 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
     "exposure: tailscale (from tickets.providers.exposure)",
     "messaging: none (this machine declares no project, so messaging is not configured)",
   ]);
-  for (const fake of ["fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.0 +fake`, "m"), fake);
+  for (const fake of ["fake-publisher", "fake-reviewer"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.0 +fake`, "m"), fake);
+  for (const fake of ["fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.1 +fake`, "m"), fake);
   assert.match(out, /^ {2}fake-tracker +available +contract 1\.1 +fake/m);
   assert.match(out, /^ {2}fake-codeHost +available +contract 1\.1 +fake/m);
   assert.match(out, /^ {2}linear +enabled +contract 1\.1 +plugins\/linear$/m);
   assert.match(out, /^ {2}github +enabled +contract 1\.1 +plugins\/github$/m, "the code host is the bundled github, enabled by the default");
-  assert.match(out, /^ {2}local +available +contract 1\.0 +core, until A11-162$/m);
+  assert.match(out, /^ {2}local +available +contract 1\.1 +plugins\/local$/m, "local is a bundled plugin since A11-162");
+  assert.match(out, /^ {2}tailscale +enabled +contract 1\.1 +plugins\/tailscale$/m);
+  assert.match(out, /^ {2}telegram +available +contract 1\.1 +plugins\/telegram$/m, "and so is telegram, which no project here enables");
   assert.match(out, /^ {2}fake-tracker +available.*refused: fake-tracker is an in-memory tracker for core's tests: it runs no host, so it cannot be installed or enabled/m);
 });
 
@@ -76,7 +90,7 @@ test("`plugin list` reads messaging from the project's project.json, and says it
   const project = scratch(JSON.stringify({ messaging: { provider: "telegram", tokenFile: "~/t", chairmanFile: "~/c" } }));
   const host = scratch(HOST, project.hostPath);
   const { out } = await host.run("list");
-  assert.match(out, /^messaging: telegram \(configured in project\.json's messaging key, which agent-org plugin does not write until A11-162 moves it\)$/m);
+  assert.match(out, /^messaging: telegram \(configured in project\.json's messaging key\)$/m);
   assert.match(out, /^ {2}telegram +enabled/m);
   assert.match(out, /^ {2}fake-messaging +available/m);
 });
@@ -157,9 +171,9 @@ test("install over a block that names another plugin is refused unless --replace
 
 test("install is refused by the reader for a plugin core is pinned off, naming the plugin and the ticket that moves the concern", async () => {
   const host = scratch();
-  const { status, err } = await host.run("install", "fake-exposure", "--replace");
+  const { status, err } = await host.run("install", "fake-publisher", "--replace");
   assert.equal(status, 1);
-  assert.match(err, /fake-exposure is an exposure plugin, but this release runs the exposure in core as local or tailscale until A11-162/);
+  assert.match(err, /fake-publisher is a publisher plugin, but this release runs the publisher in core as slack until A11-161/);
   assert.equal(host.text(), HOST);
 });
 
@@ -239,13 +253,71 @@ test("a write is refused while the concern is read from an old key, naming `agen
   assert.equal(host.text(), old);
 });
 
-test("messaging is configured in project.json, so every write to it is refused, naming the file and A11-162", async () => {
+/** A project's declaration with a messaging key (paths under the scratch home's `.config/agent-org/`), written beside a host file whose `primary` project it is. */
+const TOKEN = join(homedir(), ".config", "agent-org", "telegram-token");
+const CHAIRMAN = join(homedir(), ".config", "agent-org", "telegram-chairman.json");
+const MESSAGING = { provider: "telegram", tokenFile: TOKEN, chairmanFile: CHAIRMAN, summary: { at: "08:00" } };
+const projectOf = (messaging?: Record<string, unknown>) => `${JSON.stringify({ schema: 1, tracker: [{ key: "", repo: "a11ign/agent-org", board: { owner: "a11ign", number: 1 } }], code: [{ key: "", repo: "a11ign/agent-org" }], ...(messaging === undefined ? {} : { messaging }) }, null, 2)}\n`;
+
+test("A11-162: messaging is written to the project's project.json through the Settings page's path, and enable, disable and config keep every setting", async () => {
+  const project = scratch(projectOf(MESSAGING));
+  const host = scratch(HOST, project.hostPath);
+  const disabled = await host.run("disable", "telegram");
+  assert.equal(disabled.status, 0, disabled.err);
+  assert.match(disabled.out, /disabled telegram: nothing is sent to the chairman and nothing is asked, and its settings are kept for `enable`/);
+  assert.deepEqual(JSON.parse(project.text()).messaging, { ...MESSAGING, enabled: false }, "the settings stay, the switch is off");
+  assert.equal(project.backup(), projectOf(MESSAGING), "project.json.bak is the file as it was");
+  assert.equal(host.text(), HOST, "and the host file is not touched");
+  assert.match((await host.run("list")).out, /^messaging: none \(configured in project\.json's messaging key\)$\n {2}telegram +disabled/m);
+  assert.match((await host.run("disable", "telegram")).out, /telegram is already disabled/);
+  const enabled = await host.run("enable", "telegram");
+  assert.equal(enabled.status, 0, enabled.err);
+  assert.deepEqual(JSON.parse(project.text()).messaging, { ...MESSAGING, enabled: true });
+  assert.match((await host.run("enable", "telegram")).out, /telegram is already enabled/);
+  const config = await host.run("config", "telegram", `announcementsFile=${join(homedir(), ".config", "agent-org", "channel")}`);
+  assert.equal(config.status, 0, config.err);
+  assert.equal(JSON.parse(project.text()).messaging.announcementsFile, join(homedir(), ".config", "agent-org", "channel"));
+  const shown = await host.run("config", "telegram");
+  assert.match(shown.out, new RegExp(`^messaging\\.tokenFile: ${JSON.stringify(TOKEN).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"), "a secret file is shown by its path");
+  assert.doesNotMatch(shown.out, /summary/, "summary is the core's, not a setting of the plugin");
+});
+
+test("A11-162: installing the messaging plugin writes the provider, enabled and the settings given, and the messaging reader refuses what it does not accept", async () => {
+  const project = scratch(projectOf());
+  const host = scratch(HOST, project.hostPath);
+  const missing = await host.run("install", "telegram");
+  assert.equal(missing.status, 1);
+  assert.match(missing.err, /messaging\.tokenFile: it must be a non-empty string/, "the reader's words: a token file is needed");
+  assert.equal(project.text(), projectOf());
+  const outside = await host.run("install", "telegram", "--set", "tokenFile=/etc/shadow", "--set", `chairmanFile=${CHAIRMAN}`);
+  assert.match(outside.err, /messaging\.tokenFile: .*is not a file under ~\/\.config\/agent-org\//);
+  assert.equal(project.text(), projectOf());
+  const installed = await host.run("install", "telegram", "--set", `tokenFile=${TOKEN}`, "--set", `chairmanFile=${CHAIRMAN}`);
+  assert.equal(installed.status, 0, installed.err);
+  assert.match(installed.out, /installed telegram as the messaging/);
+  assert.deepEqual(JSON.parse(project.text()).messaging, { provider: "telegram", enabled: true, tokenFile: TOKEN, chairmanFile: CHAIRMAN });
+  assert.match(installed.out, /in force after you reinstall and restart the units that run messaging:listen and messaging:watch/);
+});
+
+test("A11-162: uninstalling the messaging plugin removes the whole messaging key, says its summary goes too, and leaves the host file alone", async () => {
+  const project = scratch(projectOf(MESSAGING));
+  const host = scratch(HOST, project.hostPath);
+  const { status, out } = await host.run("uninstall", "telegram");
+  assert.equal(status, 0);
+  assert.match(out, /uninstalled telegram: the messaging falls back to its default, none, and the whole messaging key goes with it \(its summary and milestones too; project\.json\.bak holds it\)/);
+  assert.equal(JSON.parse(project.text()).messaging, undefined);
+  assert.equal(project.backup(), projectOf(MESSAGING));
+  assert.equal(host.text(), HOST);
+  assert.equal((await host.run("uninstall", "telegram")).err, "agent-org plugin: telegram is not installed: run `agent-org plugin install telegram`");
+});
+
+test("A11-162: the messaging plugin cannot be changed on a machine that declares no project, and a fake is not installable", async () => {
   const host = scratch();
-  for (const argv of [["install", "telegram"], ["enable", "telegram"], ["disable", "telegram"], ["uninstall", "telegram"], ["config", "telegram", "x=1"], ["install", "fake-messaging"]]) {
-    const { status, err } = await host.run(...argv);
-    assert.equal(status, 1, argv.join(" "));
-    assert.match(err, /project\.json's messaging key configures: agent-org plugin does not write it until A11-162 moves messaging onto the registry/);
-  }
+  const disabled = await host.run("disable", "telegram");
+  const fake = await host.run("install", "fake-messaging");
+  assert.equal(disabled.status, 1);
+  assert.match(disabled.err, /telegram is not installed: run `agent-org plugin install telegram`/);
+  assert.match(fake.err, /fake-messaging is an in-memory messaging for core's tests: it runs no host, so it cannot be installed or enabled/);
   assert.equal(host.text(), HOST);
 });
 
@@ -267,4 +339,146 @@ test("a command that is not one, and one with no plugin name, are usage errors a
 test("the plugin command is in the command table, so `agent-org plugin` runs it", async () => {
   const { COMMANDS } = await import("../commands.ts");
   assert.equal(COMMANDS.plugin, "plugins/cli.ts");
+});
+
+// ---- A11-162: `enable` switches within a concern, and the plugin it leaves is released first
+
+const TAILNET = "agents.tail1234.ts.net";
+const TERMINAL_ON_TAILNET = `https://${TAILNET}:9444/?ws={workspace}&pane={pane}&view=terminal`;
+const RELEASED = "took this board's tailscale serve entries off the tailnet: ui (port 9500), terminal (port 9501)";
+const SWITCHED = `{
+  "clones": { "app": "/tmp/app" },
+  "tickets": {
+    "providers": {
+      "exposure": { "provider": "tailscale", "port": 5000, "uiPort": 5001, "terminal": "${TERMINAL_ON_TAILNET}", "tailnetPorts": { "ui": 9500, "terminal": 9501 } }
+    }
+  }
+}
+`;
+
+/** The plugin a command leaves, as the CLI loads it: it answers `machineName`, records the host file as it was when it was released, and releases as `outcome` says. */
+function leavingTailscale(seen: string[], { machineName = TAILNET as string | null, outcome = { ok: true, detail: RELEASED } as { ok: boolean; detail: string } } = {}) {
+  return (hostPath: string, left: Left[]) => async (plugin: CatalogPlugin, settings: PluginSettings): Promise<Outgoing> => {
+    left.push({ plugin: plugin.name, settings, hostBefore: readFileSync(hostPath, "utf8") });
+    return { machineName, release: () => { seen.push(readFileSync(hostPath, "utf8")); return outcome; } };
+  };
+}
+
+test("A11-162: `enable local` on a host whose exposure is tailscale switches the block, keeps the settings both declare, drops tailnetPorts and the tailnet's own terminal, and says so", async () => {
+  const released: string[] = [];
+  const host = scratch(SWITCHED, undefined, leavingTailscale(released));
+  const result = await host.run("enable", "local");
+  assert.equal(result.status, 0, result.err);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.exposure, { provider: "local", enabled: true, port: 5000, uiPort: 5001 });
+  assert.match(result.out, /switched the exposure from tailscale to local, keeping port, uiPort, terminal and dropping tailnetPorts, which local does not declare/);
+  assert.match(result.out, /dropped tickets\.providers\.exposure\.terminal, which named tailscale's own address \(https:\/\/agents\.tail1234\.ts\.net:9444\//);
+  assert.match(result.out, /took this board's tailscale serve entries off the tailnet/);
+  assert.match(result.out, /in force after the instance, the page and the terminal restart: run `agent-org start instance`, `agent-org start ui` and `agent-org start terminal`\./, "the line names the terminal, which A11-158's line left out");
+  assert.deepEqual(released, [SWITCHED], "tailscale was released while it was still the enabled exposure: the host file was not yet written");
+  assert.deepEqual(host.left.map(({ plugin, settings }) => [plugin, settings]), [["tailscale", { port: 5000, uiPort: 5001, terminal: TERMINAL_ON_TAILNET, tailnetPorts: { ui: 9500, terminal: 9501 } }]],
+    "it was given the settings the block held that it declares");
+  assert.equal(settingsOf(host.text()).port, 5000);
+});
+
+test("A11-162: a terminal on this machine's loopback, or on another machine, survives a switch: only the outgoing plugin's own address is dropped", async () => {
+  for (const [terminal, kept] of [["http://127.0.0.1:7318/?ws={workspace}&pane={pane}", true], ["https://elsewhere.example:9444/?ws={workspace}&pane={pane}", true], [TERMINAL_ON_TAILNET, false]] as const) {
+    const host = scratch(SWITCHED.replace(TERMINAL_ON_TAILNET, terminal), undefined, leavingTailscale([]));
+    const result = await host.run("enable", "local");
+    assert.equal(result.status, 0, result.err);
+    assert.equal(JSON.parse(host.text()).tickets.providers.exposure.terminal, kept ? terminal : undefined, terminal);
+  }
+});
+
+test("A11-162: a terminal is kept when the outgoing plugin has no name to compare it with", async () => {
+  const host = scratch(SWITCHED, undefined, leavingTailscale([], { machineName: null }));
+  assert.equal((await host.run("enable", "local")).status, 0);
+  assert.equal(JSON.parse(host.text()).tickets.providers.exposure.terminal, TERMINAL_ON_TAILNET, "nothing proves it is the outgoing plugin's, so nothing is dropped");
+});
+
+test("A11-162: a release that cannot refuses the switch by name, and nothing is written: the host file and the machine agree", async () => {
+  const released: string[] = [];
+  const host = scratch(SWITCHED, undefined, leavingTailscale(released, { outcome: { ok: false, detail: "cannot take the ui entry on tailnet port 9500 off: Tailscale is not Running on this machine (BackendState Stopped): run `sudo tailscale up`" } }));
+  const result = await host.run("enable", "local");
+  assert.deepEqual([result.status, host.text() === SWITCHED, host.backup(), released.length], [1, true, null, 1], "refused, the file as it was, no backup, and the release asked once");
+  assert.match(result.err, /^agent-org plugin: tailscale could not be released, so nothing was changed: cannot take the ui entry on tailnet port 9500 off: Tailscale is not Running/);
+});
+
+test("A11-162: disable and uninstall of the enabled tailscale release it first, and enabling it back after a disable releases nothing", async () => {
+  for (const command of ["disable", "uninstall"]) {
+    const released: string[] = [];
+    const host = scratch(SWITCHED, undefined, leavingTailscale(released));
+    const result = await host.run(command, "tailscale");
+    assert.equal(result.status, 0, result.err);
+    assert.deepEqual(released, [SWITCHED], `${command}: released before the file changed`);
+    assert.match(result.out, /took this board's tailscale serve entries off the tailnet/);
+  }
+  const released: string[] = [];
+  const host = scratch(SWITCHED, undefined, leavingTailscale(released));
+  await host.run("disable", "tailscale");
+  assert.equal(JSON.parse(host.text()).tickets.providers.exposure.enabled, false);
+  released.length = 0;
+  host.left.length = 0;
+  const again = await host.run("enable", "tailscale");
+  assert.equal(again.status, 0, again.err);
+  assert.deepEqual([released, host.left], [[], []], "enabling a plugin leaves none");
+});
+
+test("A11-162: switching away from a tailscale that is already disabled releases nothing, since it released when it was disabled", async () => {
+  const released: string[] = [];
+  const host = scratch(SWITCHED.replace('"provider": "tailscale",', '"provider": "tailscale", "enabled": false,'), undefined, leavingTailscale(released));
+  const result = await host.run("enable", "local");
+  assert.equal(result.status, 0, result.err);
+  assert.deepEqual([released, host.left], [[], []]);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.exposure, { provider: "local", enabled: true, port: 5000, uiPort: 5001, terminal: TERMINAL_ON_TAILNET }, "and with no machine name to compare, the terminal stays");
+});
+
+test("A11-162: install --replace releases the plugin it replaces, as the switch does", async () => {
+  const released: string[] = [];
+  const host = scratch(SWITCHED, undefined, leavingTailscale(released));
+  const result = await host.run("install", "local", "--replace");
+  assert.equal(result.status, 0, result.err);
+  assert.deepEqual(released, [SWITCHED]);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.exposure, { provider: "local", enabled: true }, "install --replace keeps its meaning: the replaced plugin's settings go");
+});
+
+test("A11-162: enabling a plugin of a concern whose block names none is still refused as not installed: the switch is for a block that names another plugin", async () => {
+  const host = scratch(HOST.replace(/,\n\s+"exposure": \{ "provider": "tailscale", "port": 5000 \}/, ""));
+  assert.doesNotMatch(host.text(), /"exposure"/);
+  const result = await host.run("enable", "tailscale");
+  assert.equal(result.status, 1);
+  assert.equal(result.err, "agent-org plugin: tailscale is not installed: run `agent-org plugin install tailscale`");
+});
+
+test("A11-162: the plugin a command leaves is loaded from its entry module, asked its name, and a release that throws is a refusal with its words, not a crash", async () => {
+  const catalog = buildCatalog();
+  const tailscale = catalog.plugins.find(({ name }) => name === "tailscale")!;
+  const urls: string[] = [];
+  const throwing = async (url: string) => { urls.push(url); return { create: () => ({ machineName: async () => TAILNET }), doctorChecks: () => [], onboardSteps: [], release: () => { throw new Error("tickets.providers.exposure.tailnetPorts ui and terminal must be different ports"); } }; };
+  const outgoing = await loadOutgoing(tailscale, { tailnetPorts: { ui: 1, terminal: 1 } }, throwing);
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /\/plugins\/tailscale\/index\.ts$/);
+  assert.equal(outgoing.machineName, TAILNET);
+  assert.deepEqual(outgoing.release(), { ok: false, detail: "tickets.providers.exposure.tailnetPorts ui and terminal must be different ports" });
+  const quiet = await loadOutgoing(tailscale, {}, async () => ({ create: () => ({}), doctorChecks: () => [], onboardSteps: [] }));
+  assert.deepEqual([quiet.machineName, quiet.release()], [null, { ok: true, detail: "" }], "a plugin with no release has nothing to release, and one that cannot be built has no name");
+  const builtin = await loadOutgoing(catalog.plugins.find(({ name }) => name === "slack")!, {}, async () => { throw new Error("a built-in's code is not imported"); });
+  assert.deepEqual([builtin.machineName, builtin.release()], [null, { ok: true, detail: "" }]);
+});
+
+test("A11-162: a write that the dangerous-key rule will refuse is refused BEFORE the plugin is released, so the board is not taken off the tailnet by a change that is not written", async () => {
+  const released: string[] = [];
+  const host = scratch(SWITCHED, undefined, leavingTailscale(released));
+  const refused = await host.run("install", "local", "--replace", "--set", "port=6100");
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /tickets\.providers\.exposure\.port is dangerous and needs a second confirmation.*Run it again with --confirm/);
+  assert.deepEqual([released, host.text()], [[], SWITCHED], "nothing was released and nothing was written");
+  const confirmed = await host.run("install", "local", "--replace", "--set", "port=6100", "--confirm");
+  assert.equal(confirmed.status, 0, confirmed.err);
+  assert.deepEqual(released, [SWITCHED]);
+});
+
+test("A11-162: a plugin with nothing to release is not built to be left: a messaging plugin does not read its secret files to be disabled", async () => {
+  const telegram = buildCatalog().plugins.find(({ name }) => name === "telegram")!;
+  const outgoing = await loadOutgoing(telegram, { tokenFile: "~/not-resolved" }, async () => ({ create: () => { throw new Error("create reads the token file"); }, doctorChecks: () => [], onboardSteps: [] }));
+  assert.deepEqual([outgoing.machineName, outgoing.release()], [null, { ok: true, detail: "" }]);
 });

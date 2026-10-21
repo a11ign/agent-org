@@ -118,19 +118,11 @@ export type TicketSettings = Readonly<{
    * (A11-90). It waits at all only when a restart would interrupt a worker. 2 by default.
    */
   updateMaxDeferHours: number;
-  /**
-   * `tickets.serve: "tailscale"`: the board's page and the worker terminal are served on the tailnet, on these HTTPS ports, with `tailscale serve`
-   * (never Funnel), and the page accepts this machine's MagicDNS name. Null, the default, serves both on loopback only.
-   */
-  serve: ServePorts | null;
   /** Whether doctor requires the `gh stack` extension of the workers' account, the code host's `stack` setting. True by default. */
   stackRequired: boolean;
   /** The named provider blocks and the old keys still read, as `providers.ts` reports them, for doctor and the Settings page (A11-144). */
   providers: Providers;
 }>;
-
-/** The tailnet HTTPS ports `tickets.serve` serves the page and the terminal on. */
-export type ServePorts = Readonly<{ ui: number; terminal: number }>;
 
 /**
  * Which tickets the Pick view lists: `"assigned"`, the ones assigned to the person whose key the board reads with, or every open ticket of the
@@ -448,33 +440,16 @@ function servePort(value: unknown, field: string, fallback: number): number {
 }
 
 /**
- * The tailnet ports of a tailscale exposure: `{ ui, terminal }`, 9443 and 9444 by default. Any other key, a port that is not a port, and two equal
- * ports are each refused by name, at the key the setting was read from.
+ * The ports an exposure that serves on a network names for the page and the terminal (`tailnetPorts`, or the old `tickets.servePorts`): a setting is checked when the file holds
+ * one, so a value no exposure could serve on is refused by name, at the key it was read from, even while the exposure is switched off. Any other key, a port that is not a port, and
+ * two equal ports are each refused. The plugin that serves reads the same setting for the ports, and checks it again at start (`plugins/tailscale`).
  */
-function tailnetPortsOf(setting: Setting): ServePorts {
-  const { value, at } = setting;
-  if (value === undefined) return Object.freeze({ ui: 9443, terminal: 9444 });
+function refuseUnservablePorts({ value, at }: Setting): Record<string, never> {
+  if (value === undefined) return {};
   if (!isObject(value) || Object.keys(value).some((key) => key !== "ui" && key !== "terminal")) throw new TicketSettingsRefusal(at, SERVE_PORTS_SHAPE);
   const ports = { ui: servePort(value.ui, `${at}.ui`, 9443), terminal: servePort(value.terminal, `${at}.terminal`, 9444) };
   if (ports.ui === ports.terminal) throw new TicketSettingsRefusal(at, `ui and terminal must be different ports, and both are ${ports.ui}`);
-  return Object.freeze(ports);
-}
-
-/** The tailnet ports of an enabled tailscale exposure, or null for loopback only. A disabled tailscale block's ports are still validated, and kept, so `enable` restores them. */
-function tailnetOf(exposure: BlockReport): ServePorts | null {
-  if (exposure.provider !== "tailscale") return null;
-  const ports = tailnetPortsOf(settingOf(exposure, "tailnetPorts"));
-  return exposure.enabled ? ports : null;
-}
-
-/**
- * The tailnet ports the board and the terminal are served on, or null when they are served on loopback only, read from one `tickets` block (the
- * `tickets.serve` and `tickets.servePorts` the release before A11-144 read, or the exposure block). Kept for the units, which read the ports from the
- * host file they have.
- */
-export function serveOf(tickets: Record<string, unknown>): ServePorts | null {
-  const { exposure } = resolveProviders({ tickets }).blocks;
-  return tailnetOf(exposure);
+  return {};
 }
 
 /** `tickets.uiPort`, read from a `tickets` block as the settings read it: the loopback port the page listens on, 4748 by default. */
@@ -593,7 +568,8 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     pick: pickOf(tickets.pick),
     stallMinutes: positiveInteger(tickets.stallMinutes, "tickets.stallMinutes", 30),
     updateMaxDeferHours: positiveInteger(tickets.updateMaxDeferHours, "tickets.updateMaxDeferHours", 2),
-    serve: tailnetOf(exposure),
+    // Where the tailnet ports were read before they moved to the exposure plugin: a value no exposure could serve on is still refused after the fields before it.
+    ...refuseUnservablePorts(settingOf(exposure, "tailnetPorts")),
     stackRequired: stack.value ?? true,
     providers,
   });

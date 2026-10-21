@@ -27,7 +27,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2 });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -279,10 +279,11 @@ test("A11-90: a machine names how many hours auto-update may wait on a live run,
   }
 });
 
-test("tickets.serve is absent by default, and \"tailscale\" serves the page and the terminal on tailnet ports 9443 and 9444", () => {
-  assert.equal(parseTicketSettings({ clones }).serve, null);
-  assert.deepEqual(parseTicketSettings({ clones, tickets: { serve: "tailscale" } }).serve, { ui: 9443, terminal: 9444 });
-  assert.deepEqual(parseTicketSettings({ clones, tickets: { serve: "tailscale", servePorts: { terminal: 8444 } } }).serve, { ui: 9443, terminal: 8444 });
+test("tickets.serve is absent by default, and \"tailscale\" names the exposure that serves the page and the terminal on the tailnet, with the ports it was given", () => {
+  const exposure = (tickets?: Record<string, unknown>) => parseTicketSettings({ clones, ...(tickets === undefined ? {} : { tickets }) }).providers.blocks.exposure;
+  assert.deepEqual([exposure().provider, exposure().enabled], ["local", true]);
+  assert.deepEqual([exposure({ serve: "tailscale" }).provider, exposure({ serve: "tailscale" }).settings.tailnetPorts.value], ["tailscale", undefined], "the plugin applies its own default ports");
+  assert.deepEqual(exposure({ serve: "tailscale", servePorts: { terminal: 8444 } }).settings.tailnetPorts, { value: { terminal: 8444 }, at: "tickets.servePorts" });
 });
 
 test("a serve setting that is not valid is refused by name: another value, ports without serve, a port that is not a port, and two equal ports", () => {
@@ -394,8 +395,8 @@ test("A11-158: a disabled publisher whose run is not one is still refused by nam
 test("A11-158: disabling the reviewer starts none, and disabling the tailscale exposure serves the board on loopback only", () => {
   assert.equal(parseTicketSettings({ clones, tickets: { providers: { reviewer: { provider: "atomic" } } } }).reviewer, "atomic");
   assert.equal(parseTicketSettings({ clones, tickets: { providers: { reviewer: { provider: "atomic", enabled: false } } } }).reviewer, null);
-  assert.deepEqual(parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale" } } } }).serve, { ui: 9443, terminal: 9444 });
-  assert.equal(parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale", enabled: false } } } }).serve, null);
+  assert.deepEqual(parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale" } } } }).providers.blocks.exposure.enabled, true);
+  assert.equal(parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale", enabled: false } } } }).providers.blocks.exposure.enabled, false);
   assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { exposure: { provider: "tailscale", enabled: false, tailnetPorts: { ui: 9443, terminal: 9443 } } } } }),
     (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.exposure.tailnetPorts", "a disabled exposure's ports are still validated");
 });
@@ -412,4 +413,10 @@ test("A11-158: a plugin of an unsupported contract major is refused at start, by
   const unread: Catalog = { ...catalog, plugins: catalog.plugins.map((plugin) => (plugin.name === "fake-tracker" ? { ...plugin, contract: "2.0" } : plugin)) };
   assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { tracker: { provider: "fake-tracker" } } } }, "/home/me", "machine", unread),
     (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.tracker.provider" && /plugin fake-tracker implements tracker contract 2\.0; this agent-org reads tracker 1\.x/.test(err.message));
+});
+
+test("A11-162: tailnetPorts are refused where they were: after the fields before them, so two bad values still name the same one first", () => {
+  const bad = { stallMinutes: 0, serve: "tailscale", servePorts: { ui: 9443, terminal: 9443 } };
+  assert.throws(() => parseTicketSettings({ clones, tickets: bad }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.stallMinutes");
+  assert.throws(() => parseTicketSettings({ clones, tickets: { ...bad, stallMinutes: 30 } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.servePorts");
 });

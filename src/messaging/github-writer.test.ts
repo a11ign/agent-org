@@ -19,7 +19,7 @@ import { createInbound } from "./inbound.ts";
 import { createLedger, deliveryLine, STATUS } from "./ledger.ts";
 import { createConverse } from "./converse.ts";
 import { createForwarder } from "./listen.ts";
-import { runListener } from "./providers/telegram/poll.ts";
+import { runListener } from "../../plugins/telegram/poll.ts";
 import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.ts";
 
 const REPO = "a11ign/a11ign";

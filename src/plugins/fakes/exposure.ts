@@ -1,16 +1,29 @@
 // @ts-check
-// module: the in-memory exposure (A11-158) -- the reference that passes `runExposureConformance`, and what core's tests use in place of Tailscale
+// module: the in-memory exposure (A11-158, A11-162) -- the reference that passes `runExposureConformance`, and what core's tests use in place of Tailscale
 //
-// IT SERVES INTO A MAP. Given a machine name it answers as a tailnet does: hosts, https origins, a terminal address, a port it serves and removes. Given none (the default)
-// it serves on loopback only, and refuses to serve a port. A test reads what core served (`served`) and what it asked (`calls`).
-import type { Address, Exposure, PortState, ServeResult } from "../contracts/exposure.ts";
+// IT SERVES INTO A MAP. Given a machine name it answers as a tailnet does: hosts, https origins, a terminal address, the ports it serves the board on, a port (or one path of one)
+// it serves and removes. Given none (the default) it serves on loopback only, and refuses to serve a port. A test reads what core served (`entries`) and what it asked (`calls`).
+import type { Address, Exposure, PortState, ServedPorts, ServeOptions, ServeResult } from "../contracts/exposure.ts";
 
 const OK: ServeResult = { status: 0, stdout: "", stderr: "" };
 
-export function createFakeExposure(name: string | null = null) {
-  const served = new Map<number, number>();
+/** The ports a named fake serves the board and the terminal on, unless a test names others. */
+export const FAKE_PORTS: ServedPorts = Object.freeze({ ui: 9443, terminal: 9444 });
+
+/** One served entry: the port and path it is served at, the loopback port it proxies to, and whether it is open to the internet. */
+type Entry = Readonly<{ port: number; path: string; local: number; funnel: boolean }>;
+
+const keyOf = (port: number, path: string | undefined): string => `${port}${path ?? ""}`;
+
+export function createFakeExposure(name: string | null = null, ports: ServedPorts = FAKE_PORTS) {
+  const entries = new Map<string, Entry>();
   const calls: string[] = [];
-  const refuse = (what: string): ServeResult => ({ status: 1, stdout: "", stderr: `fake exposure: ${what}: this exposure serves on loopback only` });
+  const refuse = (what: string): ServeResult => {
+    const refusal = `fake exposure: ${what}: this exposure serves on loopback only`;
+    return { status: 1, stdout: "", stderr: refusal, refusal };
+  };
+  /** Whether any entry of `port` is open to the internet: the machine opens a port, not a path. */
+  const isOpen = (port: number): boolean => [...entries.values()].some((entry) => entry.port === port && entry.funnel);
   const exposure: Exposure = {
     async machineName() {
       calls.push("machineName");
@@ -19,23 +32,32 @@ export function createFakeExposure(name: string | null = null) {
     hosts: ({ name: machine, port }: Address) => (name === null ? [] : [machine, `${machine}:${port}`]),
     origins: ({ name: machine, port }: Address) => (name === null ? [] : [`https://${machine}`, `https://${machine}:${port}`]),
     terminal: ({ name: machine, port }: Address) => (name === null ? null : `https://${machine}:${port}/?ws={workspace}&pane={pane}&view=terminal`),
-    serve(port, local) {
-      calls.push(`serve ${port}`);
+    serve(port, local, { path = "", funnel = false }: ServeOptions = {}) {
+      calls.push(`serve ${keyOf(port, path)}${funnel ? " funnel" : ""}`);
       if (name === null) return refuse(`serve ${port}`);
-      served.set(port, local);
+      entries.set(keyOf(port, path), { port, path, local, funnel });
       return OK;
     },
-    unserve(port) {
-      calls.push(`unserve ${port}`);
+    unserve(port, { path = "" }: ServeOptions = {}) {
+      calls.push(`unserve ${keyOf(port, path)}`);
       if (name === null) return refuse(`unserve ${port}`);
-      served.delete(port);
+      entries.delete(keyOf(port, path));
       return OK;
     },
-    portState(port, local): PortState {
-      const proxy = served.get(port);
-      if (proxy === undefined) return { kind: "free", proxy: null, funnel: false };
-      return { kind: proxy === local ? "ours" : "foreign", proxy: `http://127.0.0.1:${proxy}`, funnel: false };
+    portState(port, local, { path = "" }: Pick<ServeOptions, "path"> = {}): PortState {
+      const entry = entries.get(keyOf(port, path));
+      if (entry === undefined) return { kind: "free", proxy: null, funnel: isOpen(port) };
+      return { kind: entry.local === local ? "ours" : "foreign", proxy: `http://127.0.0.1:${entry.local}`, funnel: isOpen(port) };
     },
+    ports: () => (name === null ? null : ports),
+    readiness: () => null,
+    claim(port, local, service) {
+      const state = exposure.portState(port, local);
+      if (state.funnel) return `port ${port} is open to the internet, and the board is never served there: change the ${service} port`;
+      if (state.kind === "foreign") return `port ${port} already serves ${state.proxy ?? "another entry"}, and the board will not replace it: change the ${service} port`;
+      return null;
+    },
+    served: () => (name === null ? [] : [...new Set([...entries.values()].map((entry) => `${name}:${entry.port}`))]),
   };
-  return Object.assign(exposure, { served, calls });
+  return Object.assign(exposure, { entries, calls });
 }

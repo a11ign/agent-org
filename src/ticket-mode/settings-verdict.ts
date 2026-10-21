@@ -5,6 +5,7 @@
 // answers with its message, or null when it accepts the text. The page reads a file with these, and so does a save, so a value the page shows as
 // refused is the value a save refuses, with the same words. The readers are loaded lazily, as `settings-read.ts` loads them, because `host-config.ts`
 // and `project-config.ts` resolve a project declaration at import and a ticket-only machine has none.
+import { dirname } from "node:path";
 import { parseTicketSettings } from "./settings.ts";
 import { isObject } from "./json-value.ts";
 
@@ -43,6 +44,17 @@ export async function projectRefusal(text: string, path: string): Promise<string
   try {
     const { parseProjectDeclaration } = await import("../project-config.ts");
     parseProjectDeclaration(text, path);
+    return null;
+  } catch (error) {
+    return refusalOf(error);
+  }
+}
+
+/** The project's `messaging` key as the messaging reader reads it (A11-162), or null when it accepts it: that reader owns the key, and `parseProjectDeclaration` does not look at it. */
+export async function messagingRefusal(text: string, path: string): Promise<string | null> {
+  try {
+    const { parseMessagingConfig } = await import("../messaging/config.ts");
+    parseMessagingConfig(JSON.parse(text), { source: path, root: dirname(dirname(path)) });
     return null;
   } catch (error) {
     return refusalOf(error);

@@ -12,9 +12,11 @@ function projectWith(text: string): string {
   return path;
 }
 
-test("the provider the project's messaging key names is the state, and nothing it points at is opened", async () => {
+test("the provider the project's messaging key names is the state, with whether it is enabled and its settings, and nothing it points at is opened", async () => {
   const project = projectWith(JSON.stringify({ messaging: { provider: "telegram", tokenFile: "/nonexistent/token", chairmanFile: "/nonexistent/chairman" } }));
-  assert.deepEqual(await messagingStateOf({}, project), { provider: "telegram" });
+  assert.deepEqual(await messagingStateOf({}, project), { provider: "telegram", enabled: true, settings: { tokenFile: "/nonexistent/token", chairmanFile: "/nonexistent/chairman" } });
+  const off = projectWith(JSON.stringify({ messaging: { provider: "telegram", enabled: false, tokenFile: "/t" } }));
+  assert.deepEqual(await messagingStateOf({}, off), { provider: "telegram", enabled: false, settings: { tokenFile: "/t" } }, "enabled is the switch, not a setting; absent is true");
 });
 
 test("no messaging key is off, a key that names no provider says so, and a file that cannot be read says why", async () => {

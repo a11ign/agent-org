@@ -56,7 +56,7 @@ test("a block that names a plugin with no code to run on a host (a fake) is refu
   }
 });
 
-test("this checkout's Linear and GitHub plugins load from disk for the default host, and activation is once per process", async () => {
+test("this checkout's Linear, GitHub and local plugins load from disk for the default host, and activation is once per process", async () => {
   forgetActivation();
   const providers = resolveProviders({ tickets: {} });
   const deps = fakePluginDeps({ exec: () => ({ status: 0, stdout: "lin_api_x\n", stderr: "" }) });
@@ -64,7 +64,8 @@ test("this checkout's Linear and GitHub plugins load from disk for the default h
   const second = activatePlugins(resolveProviders(host({ tracker: { provider: "linear", workingState: "x" } })), defaultCatalog(), deps);
   assert.equal(first, second, "the second call returns the first's activation, whatever it is given");
   const active = await first;
-  assert.deepEqual(active.loaded.map(({ plugin }) => [plugin.name, plugin.where]), [["linear", "bundled"], ["github", "bundled"]]);
+  assert.deepEqual(active.loaded.map(({ plugin }) => [plugin.name, plugin.where]), [["linear", "bundled"], ["github", "bundled"], ["local", "bundled"]]);
+  assert.equal(active.exposure().ports(), null, "the exposure is the bundled local's, which serves on loopback only");
   assert.equal(typeof active.tracker().assigned, "function");
   assert.equal(typeof active.codeHost().readPullFeedback, "function", "the code host is the bundled github's, built for the default host");
   forgetActivation();
@@ -111,4 +112,27 @@ test("A11-160: an activation narrowed to the code host builds it alone: the trac
   assert.equal(narrowed.codeHost(), codeHost);
   assert.deepEqual(built, ["code host"], "the tracker was not built, so its key was not read");
   await assert.rejects(loadActive(providers, catalog, fakePluginDeps(), modules), /the tracker plugin my-tracker was refused: no Linear key in the Keychain/);
+});
+
+test("A11-162: an exposure always resolves: a block that is switched off runs the default, `local`, and a block that names a plugin with no code to run is refused by name", async () => {
+  const off = resolveProviders(host({ exposure: { provider: "tailscale", enabled: false, tailnetPorts: { ui: 9500, terminal: 9501 } } }));
+  const active = await loadActive(off, defaultCatalog(), fakePluginDeps(), undefined, ["exposure"]);
+  assert.deepEqual(active.loaded.map(({ plugin }) => plugin.name), ["local"], "the default is loaded, and tailscale's code is not");
+  assert.equal(active.exposure().ports(), null);
+  const fake = resolveProviders(host({ exposure: { provider: "fake-exposure" } }));
+  const refused = await loadActive(fake, defaultCatalog(), fakePluginDeps(), undefined, ["exposure"]);
+  assert.throws(() => refused.exposure(), (error: unknown) => error instanceof PluginActivationRefusal
+    && error.message === "the exposure is fake-exposure, which has no code to run on a host: name a bundled exposure plugin in tickets.providers.exposure (`agent-org plugin list`)");
+});
+
+test("A11-162: an activation narrowed to the tracker and the code host builds no exposure, and says so when asked for one", async () => {
+  const providers = resolveProviders(host({}));
+  const active = await loadActive(providers, defaultCatalog(), fakePluginDeps({ exec: () => ({ status: 0, stdout: "lin_api_x\n", stderr: "" }) }), undefined, ["tracker", "codeHost"]);
+  assert.throws(() => active.exposure(), /the exposure was not built by this process: it asked for the other plugins only/);
+});
+
+test("A11-162: a plugin that cannot be built for the exposure refuses the start, naming it: a tailscale block with ports no exposure could serve on", async () => {
+  const providers = resolveProviders(host({ exposure: { provider: "tailscale" } }));
+  const broken = { ...providers, blocks: { ...providers.blocks, exposure: { ...providers.blocks.exposure, settings: { ...providers.blocks.exposure.settings, tailnetPorts: { value: { ui: 1, terminal: 1 }, at: "tickets.providers.exposure.tailnetPorts" } } } } };
+  await assert.rejects(loadActive(broken, defaultCatalog(), fakePluginDeps(), undefined, ["exposure"]), /the exposure plugin tailscale was refused: tickets\.providers\.exposure\.tailnetPorts ui and terminal must be different ports/);
 });

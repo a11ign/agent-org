@@ -20,10 +20,10 @@
 //
 // **THE TOKEN IS IN THE URL**, so every request goes through `redactingFetch` and every message here is scrubbed by the token's own value.
 
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
-
-import { redactingFetch } from "../../secret.ts";
+import type { Handled } from "../../src/messaging/inbound.ts";
+import type { ListenOptions } from "../../src/messaging/provider-contract.ts";
+import type { Secret } from "../../src/messaging/secret.ts";
+import type { RedactingFetch } from "../../src/plugins/manifest.ts";
 import { createTelegramProvider, TELEGRAM_API } from "./send.ts";
 
 /** How long Telegram holds one `getUpdates` open when nothing arrives. */
@@ -35,8 +35,6 @@ export const BACKOFF_INITIAL_MS = 1000;
 /** The ceiling a run of failures backs off to: a listener whose network is down should come back within a minute of it returning. */
 export const BACKOFF_CEILING_MS = 60_000;
 const CONFLICT = 409;
-const OFFSET_FILE_MODE = 0o600;
-const OFFSET_DIRECTORY_MODE = 0o700;
 const GROUP_CHAT_TYPES = new Set(["group", "supergroup", "channel"]);
 /** `my_chat_member` and `channel_post` are for `chat-seen` (a11ign/a11ign#4743): inbound.ts records them and acts on neither. */
 export const ALLOWED_UPDATES = Object.freeze(["message", "callback_query", "my_chat_member", "channel_post"]);
@@ -51,8 +49,13 @@ export class TelegramApiError extends Error {
   }
 }
 
-/** Telegram answered 409: somebody else is polling this bot (or a webhook is set on it). The listener refuses to run and says so. */
+/**
+ * Telegram answered 409: somebody else is polling this bot (or a webhook is set on it). The listener refuses to run and says so. It carries `refusal: true`, which is how the messaging
+ * contract says a failure restarting cannot mend, so the core's listener exits as it did for this class.
+ */
 export class PollConflictError extends TelegramApiError {
+  readonly refusal = true;
+
   /** `message`: already scrubbed */
   constructor(message: string) {
     super(message, { status: CONFLICT });
@@ -84,7 +87,7 @@ function conflictMessage(status: number, description: string): string {
 }
 
 /** One Telegram Bot API method, as a function. Every failure is scrubbed of the token and carries the status. */
-function callerFor({ token, fetch: fetchImpl, apiBase }: { token: import("../../secret.ts").Secret; fetch: typeof fetch; apiBase: string; }): (method: string, payload: Record<string, unknown>, options?: { signal?: AbortSignal; timeoutMs?: number; }) => Promise<any> {
+function callerFor({ token, fetch: fetchImpl, apiBase, redactingFetch }: { token: Secret; fetch: typeof fetch; apiBase: string; redactingFetch: RedactingFetch; }): (method: string, payload: Record<string, unknown>, options?: { signal?: AbortSignal; timeoutMs?: number; }) => Promise<any> {
   const guarded = redactingFetch(fetchImpl, token);
   return async (method, payload, { signal, timeoutMs = REQUEST_SLACK_MS } = {}) => {
     const limit = AbortSignal.timeout(timeoutMs);
@@ -106,15 +109,19 @@ function callerFor({ token, fetch: fetchImpl, apiBase }: { token: import("../../
  * answer to what `inbound.handle` says to do. `chatId` is the chairman's, which `send` speaks to.
  */
 export function createTelegramPollingProvider(options: {
-        token: import("../../secret.ts").Secret; chatId: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
-        log?: (line: string) => void; apiBase?: string; listenSeconds?: number;
+        token: Secret; chatId: number | string; announcementsChatId?: number | string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>;
+        log?: (line: string) => void; apiBase?: string; listenSeconds?: number; redactingFetch: RedactingFetch;
     }) {
-  const { token, fetch: fetchImpl = globalThis.fetch, apiBase = TELEGRAM_API, listenSeconds = LONG_POLL_SECONDS } = options;
+  const { token, fetch: fetchImpl = globalThis.fetch, apiBase = TELEGRAM_API, listenSeconds = LONG_POLL_SECONDS, redactingFetch } = options;
   const sender = createTelegramProvider(options);
-  const call = callerFor({ token, fetch: fetchImpl, apiBase });
+  const call = callerFor({ token, fetch: fetchImpl, apiBase, redactingFetch });
   return {
     ...sender,
     capabilities: Object.freeze({ ...sender.capabilities, conversation: true }),
+    /** The inbound loop (messaging contract 1.1): this provider's `poll`, and the four calls the listener makes in answer to what `inbound.handle` says to do. */
+    listen(listening: ListenOptions): Promise<void> {
+      return runListener({ ...listening, provider: this });
+    },
     /**
      * `cursor`: the offset to ask from; undefined asks for whatever Telegram still holds
      * `signal`: aborted, the call returns at once with nothing: the listener's shutdown does not wait out a long poll
@@ -145,43 +152,6 @@ export function createTelegramPollingProvider(options: {
   };
 }
 
-/**
- * Where the offset is kept, so a restart asks from it. A corrupt or unreadable file is "no offset": the ledger's dedupe makes asking from
- * the beginning of what Telegram still holds safe, and a listener that refuses to start over a bad cache is worse than one that replays.
- */
-export function createOffsetStore(path: string, { log = () => {} }: { log?: (line: string) => void; } = {}): { path: string; read: () => number | undefined; write: (offset: number) => void; } {
-  return {
-    path,
-    read() {
-      let stored: unknown;
-      try {
-        stored = JSON.parse(readFileSync(path, "utf8")).offset;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") log(`offset file ${path} is unreadable (${(error as Error).message}); asking from the start`);
-        return undefined;
-      }
-      if (Number.isSafeInteger(stored) && (stored as number) >= 0) return stored as number;
-      log(`offset file ${path} does not hold an offset; asking from the start`);
-      return undefined;
-    },
-    write(offset) {
-      mkdirSync(dirname(path), { recursive: true, mode: OFFSET_DIRECTORY_MODE });
-      // Created 0600 under a temporary name and renamed into place: a crash leaves the old file or the whole new one, never half of one.
-      const temporary = `${path}.${process.pid}.tmp`;
-      const descriptor = openSync(temporary, "w", OFFSET_FILE_MODE);
-      try {
-        writeSync(descriptor, `${JSON.stringify({ offset })}\n`);
-      } catch (error) {
-        closeSync(descriptor);
-        unlinkSync(temporary);
-        throw error;
-      }
-      closeSync(descriptor);
-      renameSync(temporary, path);
-    },
-  };
-}
-
 export type PollingProvider = ReturnType<typeof createTelegramPollingProvider>;
 
 /** Answers the update's button press, if it carries one */
@@ -194,7 +164,7 @@ function answererFor({ provider, log }: { provider: PollingProvider; chairman: {
 }
 
 /** Returns the chat to leave: a group, supergroup or channel that is not the chairman's */
-function chatToLeave(action: import("../../inbound.ts").Handled, chairmanChatId: number): number | null {
+function chatToLeave(action: Handled, chairmanChatId: number): number | null {
   if (action.action !== "ignore" || action.chatId === null || action.chatId === chairmanChatId) return null;
   return action.chatType !== null && GROUP_CHAT_TYPES.has(action.chatType) ? action.chatId : null;
 }
@@ -206,7 +176,7 @@ function chatToLeave(action: import("../../inbound.ts").Handled, chairmanChatId:
 function performerFor({ provider, chairman, onForward, log }: {
         provider: PollingProvider; chairman: { userId: number; chatId: number; }; onForward: (accepted: Readonly<Record<string, any>>) => Promise<void> | void;
         log: (line: string) => void;
-    }): (action: import("../../inbound.ts").Handled) => Promise<void> {
+    }): (action: Handled) => Promise<void> {
   const attempt = async (what: string, step: () => Promise<unknown> | unknown) => {
     try {
       await step();
@@ -229,8 +199,8 @@ function performerFor({ provider, chairman, onForward, log }: {
 
 /** One batch: every update through the core, its button answered, what the core said done. THE OFFSET IS NOT TOUCHED HERE. */
 async function handleBatch(updates: any[], { inbound, answer, perform }: {
-        inbound: { handle: (update: unknown) => import("../../inbound.ts").Handled; }; answer: (update: any) => Promise<void>;
-        perform: (action: import("../../inbound.ts").Handled) => Promise<void>;
+        inbound: { handle: (update: unknown) => Handled; }; answer: (update: any) => Promise<void>;
+        perform: (action: Handled) => Promise<void>;
     }) {
   for (const update of updates) {
     await answer(update);
@@ -250,12 +220,7 @@ export function nextBackoff(previousMs: number | null): number {
  * THE LISTENER'S LOOP. Returns when `signal` aborts; throws `PollConflictError` on a 409 and whatever the ledger or offset file throws
  * that cannot be retried past. Every other failure of a poll is waited out on `sleep` (the injected clock) and retried.
  */
-export async function runListener({ provider, inbound, offsets, chairman, onForward = () => {}, sleep, signal, log = () => {} }: {
-        provider: PollingProvider; inbound: { handle: (update: unknown) => import("../../inbound.ts").Handled; };
-        offsets: ReturnType<typeof createOffsetStore>; chairman: { userId: number; chatId: number; };
-        onForward?: (accepted: Readonly<Record<string, any>>) => Promise<void> | void; sleep: (ms: number) => Promise<void>;
-        signal?: AbortSignal; log?: (line: string) => void;
-    }): Promise<void> {
+export async function runListener({ provider, inbound, offsets, chairman, onForward = () => {}, sleep, signal, log = () => {} }: ListenOptions & { provider: PollingProvider; }): Promise<void> {
   const parts = {
     inbound, answer: answererFor({ provider, chairman, log }), perform: performerFor({ provider, chairman, onForward, log }),
   };

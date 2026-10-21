@@ -6,6 +6,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { createFakeExposure } from "../plugins/fakes/exposure.ts";
 import { boardKey, boardKeyPath } from "./board-key.ts";
 import { browserSessions, browserSessionsPath } from "./browser-sessions.ts";
 import { createConnections, readConnections, type Connection, type ConnectionsRead } from "./connections.ts";
@@ -317,14 +318,20 @@ test("a paired browser gets all of the page's modules, and a ticket's labels rea
   }
 });
 
-/** The page on the tailnet: its MagicDNS name is what `name` answers, on the tailnet's port 9443, in front of no connections. */
+/** The page on the tailnet: its MagicDNS name is what `name` answers through the exposure, on the tailnet's port 9443, in front of no connections. */
 async function tailnetPage(name: () => Promise<string | null>) {
-  const stateDir = tmpDir("ticket-ui-tailnet-");
+  const named = Object.assign(createFakeExposure("placeholder", { ui: 9443, terminal: 9444 }), { machineName: name, hosts: ({ name: machine, port }: { name: string; port: number }) => [`${machine}:${port}`], origins: ({ name: machine, port }: { name: string; port: number }) => [`https://${machine}:${port}`] });
+  return pageOver(named);
+}
+
+/** The page in front of no connections, served by `exposure`. */
+async function pageOver(exposure: ReturnType<typeof createFakeExposure>) {
+  const stateDir = tmpDir("ticket-ui-exposed-");
   const key = boardKey(boardKeyPath(stateDir));
   const sessions = browserSessions(browserSessionsPath(stateDir), () => 7);
   const read: ConnectionsRead = { connections: [], refusal: null, migrated: null };
   const connections = createConnections([], { local: { port: 4747, keyPath: boardKeyPath(stateDir) } });
-  const served = await listen((port) => createUi({ port, key, sessions, read, connections, tailnet: { port: 9443, name } }).handle);
+  const served = await listen((port) => createUi({ port, key, sessions, read, connections, exposure }).handle);
   return { ...served, key };
 }
 
@@ -525,4 +532,16 @@ test("a worker link's address is taken only when it is the connection's own term
   assert.equal(sameTerminal("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal&pair=1", template), null, "a name the template lacks");
   assert.equal(sameTerminal("http://localhost:7318/?ws=w1&pane=p&view=terminal", template), null, "another origin");
   assert.equal(sameTerminal("https://127.0.0.1:7318/?ws=w1&pane=p&view=terminal", template), null, "another scheme");
+});
+
+test("A11-162: a page whose exposure serves nothing (local) answers its loopback alone, and never asks the exposure for a name", async () => {
+  const exposure = createFakeExposure();
+  const u = await pageOver(exposure);
+  try {
+    assert.equal((await sendAs(u.base, `127.0.0.1:${u.port}`, "/")).status, 200);
+    assert.equal((await sendAs(u.base, "agents.tail1234.ts.net:9443", "/")).status, 403, "a tailnet Host is not this page's");
+    assert.deepEqual(exposure.calls, [], "and no name was asked of an exposure that serves nothing");
+  } finally {
+    await u.close();
+  }
 });

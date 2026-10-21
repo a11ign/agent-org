@@ -44,9 +44,11 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_PROVIDER, isActive, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
 import { blockOf, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
-import { realExec, realMode } from "../plugins/active.ts";
+import { realExec, realMode, realProbe } from "../plugins/active.ts";
+import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
+import { corePolicy } from "../plugins/policy.ts";
 import type { Catalog, PluginDeps, PluginSettings } from "../plugins/manifest.ts";
 import { readPluginContract, type Contract } from "../ticket-mode/plugin-contract.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
@@ -57,7 +59,6 @@ import { DEFAULT_TERMINAL_PORT, herdrConfigDir, PAIRING_STEPS, pluginRoot, TERMI
 import { writeAtomic } from "./write-atomic.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { asAccount, type Account, type ProgramRunner } from "./gh-account.ts";
-import { corePolicy } from "../plugins/policy.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf, type Profile, type ProfileRepo, type ReviewerApp } from "./onboard-profile.ts";
 import { installConventions, runProgram, stateOfRecord, type ConventionsStep } from "./plugin-install.ts";
@@ -126,7 +127,7 @@ export type OnboardDeps = Readonly<{
   /** Whether this process runs as root, so the system libraries are installed without `sudo` (A11-151). */
   isRoot: () => boolean;
   /** Start the named services, in order. @returns one line per service */
-  startServices: (names: readonly ServiceName[]) => string;
+  startServices: (names: readonly ServiceName[]) => Promise<string>;
   out: Pick<Console, "log">;
 }>;
 
@@ -274,18 +275,19 @@ export function onboardServices({ terminal, autoUpdate }: { terminal: boolean; a
 const REQUIRED: readonly ServiceName[] = ["instance", "ui"];
 
 /** Start `names`, in order. @returns one line per service */
-export function startServices(names: readonly ServiceName[], start: (name: ServiceName) => Started): string {
-  return names.map((name) => {
+export async function startServices(names: readonly ServiceName[], start: (name: ServiceName) => Promise<Started>): Promise<string> {
+  const lines: string[] = [];
+  for (const name of names) {
     try {
-      const unit = start(name);
-      return `started the ${name} service (${unit.manager} ${unit.id})${unit.address === null ? "" : `, on the tailnet at ${unit.address}`}`;
+      const unit = await start(name);
+      lines.push(`started the ${name} service (${unit.manager} ${unit.id})${unit.address === null ? "" : `, served at ${unit.address}`}`);
     } catch (err) {
       if (REQUIRED.includes(name) || !(err instanceof ServiceRefusal)) throw err;
-      // A service that started on loopback and that the tailnet does not reach is running: its message says so, and is said as it is.
-      if (err instanceof TailnetRefusal) return err.message;
-      return `did not start the ${name} service: ${err.message}`;
+      // A service that started on loopback and that the exposure does not reach is running: its message says so, and is said as it is.
+      lines.push(err instanceof TailnetRefusal ? err.message : `did not start the ${name} service: ${err.message}`);
     }
-  }).join("\n");
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -448,7 +450,7 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
   const providers = plannedProviders({ host, tickets, planned, catalog: deps.catalog() });
   const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
   const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
-    exec: deps.exec, readFile: deps.readFile, mode: realMode, pick: "assigned", clones, policy: corePolicy() };
+    exec: deps.exec, readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy() };
   const result = await deps.loadPlugins(providers, pluginDeps);
   const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));
   const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));
@@ -477,13 +479,10 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
 /** What onboard does once the host file is written: Codex, the guards, the services, and the doctor's report. */
 async function finishOnboard({ next, options, terminal }: Readonly<{ next: Record<string, unknown>; options: OnboardOptions; terminal: boolean }>, deps: OnboardDeps) {
   const written = resolveProviders(next, deps.catalog()).blocks;
-  if (isActive(written.exposure) && written.exposure.provider === "tailscale" && deps.which("tailscale") === null) {
-    deps.out.log("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing");
-  }
   if (isActive(written.reviewer) && written.reviewer.provider === "atomic") for (const line of codexChecklist(deps)) deps.out.log(line);
   const guards = await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements });
   for (const line of guards) deps.out.log(line);
-  if (options.start) deps.out.log(deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })));
+  if (options.start) deps.out.log(await deps.startServices(onboardServices({ terminal, autoUpdate: options.autoUpdate })));
   deps.out.log(report(await deps.diagnose()));
   deps.out.log(PAIRING_STEPS);
 }

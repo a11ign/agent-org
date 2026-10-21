@@ -28,7 +28,8 @@ const { createConverse, notReached } = await import("./converse.ts");
 const { createInbound } = await import("./inbound.ts");
 const { createLedger, readLedgerLines } = await import("./ledger.ts");
 const { createFakeProvider } = await import("./fake-provider.ts");
-const { createOffsetStore, runListener } = await import("./providers/telegram/poll.ts");
+const { runListener } = await import("../../plugins/telegram/poll.ts");
+const { createOffsetStore } = await import("./offsets.ts");
 
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
 /** The message id of a request the organisation sent: a reply to it is an answer, and a reply to anything else is conversation. */
@@ -427,7 +428,7 @@ describe("a message that can no longer be answered has its keyboard taken off (a
   });
 
   test("the program wires both: the provider's clearKeyboard to the forwarder, and the liaison's order to the answers", () => {
-    assert.match(SOURCE, /clearKeyboard: \(ref\) => provider\.clearKeyboard\(ref\)/);
+    assert.match(SOURCE, /clearKeyboard: async \(ref\) => \{ await provider\.clearKeyboard\?\.\(ref\); \}/, "the plugin's provider offers clearKeyboard (messaging contract 1.1), and a provider without one has no keyboard to clear");
     assert.match(SOURCE, /orders: \{ liaison: \(order\) => conversation\.orderLiaison\(order\) \}/);
   });
 });

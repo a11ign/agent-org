@@ -31,7 +31,7 @@ export const COMMANDS = {
   "machinery:flag": "machinery-flag.ts",
   "messaging:chats": "messaging/chats.ts",
   "messaging:listen": "messaging/listen.ts",
-  "messaging:pair": "messaging/providers/telegram/pair.ts",
+  "messaging:pair": "messaging/pair.ts",
   "messaging:selftest": "messaging/selftest.ts",
   "messaging:watch": "messaging/watch.ts",
   "onboard": "install/onboard.ts",

@@ -8,6 +8,17 @@ liaison, and not to `ceo`.** The build is thirteen rows and then nineteen more u
 The repository is public. Nothing in this document, the code or its tests may carry a token, a chat id or a user id: those are
 read from files on the host, by reference (decision 1, "Secret by reference only").
 
+## Providers are agent-org plugins (A11-162)
+
+A provider is an **agent-org plugin** of the messaging concern: a code module behind the messaging contract (`src/plugins/contracts/messaging.ts`, version 1.1), in `plugins/<name>`. Telegram is
+`plugins/telegram`, which holds `send.ts`, `poll.ts` and `pair.ts`. The core imports none of it: `plugin.ts` looks `messaging.provider` up in the registry and builds the provider through the
+plugin's `create(settings, deps)`, with the secret helpers the plugin cannot import (`deps.messaging`), and `src/plugins/boundary.test.ts` refuses `api.telegram.org` anywhere else. The plugin's settings
+(`tokenFile`, `chairmanFile`, `announcementsFile`) stay in the project's `messaging` key, with `provider` and `enabled` (absent is true; `false` reads as OFF and keeps every setting). `agent-org plugin
+install|enable|disable|uninstall|config telegram` writes that key through the Settings page's own path, and `agent-org doctor` shows the plugin's rows: the token file is readable by no one else, and the
+chairman has paired (NOT YET PAIRED is not a failure; the row names `agent-org messaging:pair`). The 1.1 contract adds what a provider that listens needs: `listen` (the inbound loop, given the core's
+`inbound`, the offset file the core keeps, the chairman's ids, the clock and a signal) and `clearKeyboard`, and an error with `refusal: true` is a failure restarting cannot mend (two pollers on one bot).
+`messaging:pair` is the core's command; the step that talks to Telegram is the plugin's `pair`. A second provider is a new directory in `plugins/`, passing `runMessagingConformance`.
+
 ## Decision 1. A provider-free core, and optional providers
 
 `src/messaging/` is a **leaf**: it imports nothing from the tool and reads no project checkout, so its tests (`*.test.ts`, on
@@ -169,13 +180,13 @@ is cleared before each order and has no memory of the conversation.
 |---|---|---|
 | 1 | The provider-free core, the delivery log, the provider contract and its conformance test | `core.ts`, `ledger.ts`, `rate-limit.ts`, `provider-contract.ts`, `fake-provider.ts` |
 | 2 | The `messaging` key, `messaging:check`, and the `chairman-watch` unit pair (optional, off without the key) | `config.ts`, `check.ts`, `host/chairman-watch.*.in` |
-| 3 | The Telegram provider: send, silent, split, retry, pairing | `providers/telegram/send.ts`, `providers/telegram/pair.ts` |
+| 3 | The Telegram provider: send, silent, split, retry, pairing | `plugins/telegram/send.ts`, `plugins/telegram/pair.ts`, `pair.ts` |
 | 4 | The one-shot program the timer runs, and the request and summary sources | `watch.ts`, `sources/requests.ts`, `sources/summary.ts` |
 | 5 | The stall and incident sources, every read injected | `sources/stall.ts`, `sources/incidents.ts` |
 | 5b | The real reads for row 5, wired into `watch.ts`, and the `messaging:watch` package script | `sources/readers.ts`, `watch.ts`, `package.json` |
 | 6 | **Live, first real message and the units installed** (a host act; closed 2026-10-04) | `host/chairman-watch.*.in` |
 | 7 | Stage 2's inbound core (identity, the classifier, the branded value) | `inbound.ts`, `classify.ts` |
-| 8 | The Telegram long poll and the listener unit | `providers/telegram/poll.ts`, `listen.ts`, `host/chairman-listen.service.in` |
+| 8 | The Telegram long poll and the listener unit | `plugins/telegram/poll.ts`, `offsets.ts`, `listen.ts`, `host/chairman-listen.service.in` |
 | 9 | Answers: a button or a reply resolves a request on its row | `answers.ts` |
 | 10 | Conversation in: a free message queued for the liaison (it was `ceo` when the row was written; decision 2(b)) | `converse.ts` |
 | 11 | Conversation out: replies are checked facts | `placeholders.ts`, `reply.ts`, `reply-cli.ts` |
@@ -198,7 +209,7 @@ is cleared before each order and has no memory of the conversation.
 | B5 #3421 | The liaison's brief and its roster entry | `.agent-org/roles/liaison.md` and `sessions.json` in `a11ign/a11ign` |
 | B2 #3416 | The chairman's messages go to the liaison, acknowledged at once in words; `ceo` is the fallback (#3538) | `converse.ts` |
 | B4 #3417 | The liaison records the chairman's answers on the row and fixes what he says is wrong; `chairman:ask-ceo` (#3490) | `record.ts`, `correct.ts`, `ask-ceo.ts` |
-| C1 #3423 | Buttons are drawn, and the vocabulary is closed | `providers/telegram/send.ts`, `answers.ts` |
+| C1 #3423 | Buttons are drawn, and the vocabulary is closed | `plugins/telegram/send.ts`, `answers.ts` |
 | C2 #3425 | A physical or account ask is walked through, one verified step at a time | `walk.ts`, `sources/requests.ts` |
 | D1 #3427 | "Do it for me": a queue for the chairman's own session, written only after his OK | `session-queue.ts` (`chairman:queue`) |
 

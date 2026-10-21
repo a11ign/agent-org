@@ -11,9 +11,9 @@
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { type Concern, PROVIDER_BLOCKS, type ProviderBlock } from "./concerns.ts";
-import type { BlockReport, Providers } from "../ticket-mode/providers.ts";
+import { type BlockReport, DEFAULT_PROVIDER, type Providers } from "../ticket-mode/providers.ts";
 import type { Catalog, CatalogPlugin, LoadedPlugin, PluginDeps, PluginModule, PluginSettings } from "./manifest.ts";
-import { pluginNamed } from "./registry.ts";
+import { blockSettings, pluginNamed } from "./registry.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
 
 /**
@@ -43,8 +43,8 @@ function refusalOf(plugin: CatalogPlugin): string | null {
   return null;
 }
 
-/** A plugin's module, imported; or the reason it cannot be. */
-async function importOne(plugin: CatalogPlugin, importModule: ImportModule): Promise<PluginModule> {
+/** A bundled plugin's entry module, imported and checked: REFUSES, by name, a contract major this agent-org does not read and a module that is not a plugin's. */
+export async function importPlugin(plugin: CatalogPlugin, importModule: ImportModule = (url) => import(url)): Promise<PluginModule> {
   const refusal = refusalOf(plugin);
   if (refusal !== null) throw new Error(refusal);
   if (plugin.dir === null || plugin.entry === null) throw new Error(`plugin ${plugin.name} is bundled but names no entry module`);
@@ -67,7 +67,7 @@ export async function importEnabled(providers: Providers, catalog: Catalog, impo
     const plugin = report.enabled ? pluginNamed(catalog, report.provider) : undefined;
     if (plugin === undefined || plugin.where !== "bundled") continue;
     try {
-      modules.push({ plugin, module: await importOne(plugin, importModule) });
+      modules.push({ plugin, module: await importPlugin(plugin, importModule) });
     } catch (error) {
       refusals.push({ plugin: plugin.name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) });
     }
@@ -90,7 +90,7 @@ export async function loadEnabled(providers: Providers, catalog: Catalog, deps: 
     if (plugin === undefined || plugin.where !== "bundled") continue;
     let module: PluginModule | null = null;
     try {
-      module = await importOne(plugin, importModule);
+      module = await importPlugin(plugin, importModule);
       loaded.push({ plugin, implementation: module.create(settingsOfBlock(report), deps), module });
     } catch (error) {
       refusals.push({ plugin: plugin.name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) });
@@ -98,4 +98,25 @@ export async function loadEnabled(providers: Providers, catalog: Catalog, deps: 
     }
   }
   return { loaded, unbuilt, refusals };
+}
+
+/**
+ * The concern's DEFAULT plugin, loaded for a block that is switched off (the exposure of a host whose block says `enabled: false` serves on loopback only, which is `local`): the
+ * default is imported and given the settings the block holds that it declares. It does not look at `enabled`, since the caller asks because the block is off. A default that cannot be
+ * loaded is the refusal, by name.
+ */
+export async function loadDefault(block: ProviderBlock, providers: Providers, catalog: Catalog, deps: PluginDeps, importModule: ImportModule = (url) => import(url)): Promise<Readonly<{
+  loaded?: LoadedPlugin; refusal?: Readonly<{ plugin: string; concern: Concern; why: string }>;
+}>> {
+  const name = DEFAULT_PROVIDER[block];
+  const plugin = pluginNamed(catalog, name);
+  if (plugin === undefined || plugin.where !== "bundled") return { refusal: { plugin: name, concern: plugin?.concern ?? "exposure", why: `the default ${block} plugin ${name} is not a bundled plugin of this checkout` } };
+  try {
+    const module = await importPlugin(plugin, importModule);
+    const declared = new Set(blockSettings(plugin));
+    const own = Object.fromEntries(Object.entries(settingsOfBlock(providers.blocks[block])).filter(([setting]) => declared.has(setting)));
+    return { loaded: { plugin, implementation: module.create(own, deps), module } };
+  } catch (error) {
+    return { refusal: { plugin: name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) } };
+  }
 }

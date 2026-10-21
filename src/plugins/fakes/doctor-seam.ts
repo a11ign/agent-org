@@ -13,6 +13,7 @@ export function fakeAgentOrgPlugins(over: Partial<DoctorDeps["agentOrgPlugins"]>
     catalog: defaultCatalog,
     load: (providers, catalog, deps, blocks) => loadEnabled(providers, catalog, deps, undefined, blocks),
     messaging: async () => ({ provider: null, why: "this test declares no project" }),
+    messagingChecks: async () => [],
     ...over,
   };
 }

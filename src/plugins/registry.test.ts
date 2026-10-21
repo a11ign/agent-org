@@ -29,8 +29,7 @@ test("with no bundled plugin the catalog is today's providers and the fakes, eac
   assert.deepEqual(catalog.plugins.map(({ name, concern, where }) => `${name}:${concern}:${where}`), [
     ...BUILT_IN.map(({ name, concern }) => `${name}:${concern}:core`), ...FAKES.map(({ name, concern }) => `${name}:${concern}:fake`)]);
   assert.deepEqual(BUILT_IN.map(({ name, concern, movedBy }) => [name, concern, movedBy]), [
-    ["slack", "publisher", "A11-161"], ["atomic", "reviewer", "A11-161"],
-    ["local", "exposure", "A11-162"], ["tailscale", "exposure", "A11-162"], ["telegram", "messaging", "A11-162"]]);
+    ["slack", "publisher", "A11-161"], ["atomic", "reviewer", "A11-161"]]);
   assert.deepEqual(FAKES.map(({ name }) => name), ["fake-tracker", "fake-codeHost", "fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]);
   assert.deepEqual(catalog.refusals, []);
   assert.equal(catalog.pins, CORE_RUNS);
@@ -69,7 +68,8 @@ test("a malformed manifest is refused by name, with the field, and is a refusal 
     ["entry file", { entry: "missing.ts" }, /agentOrg\.entry "missing\.ts" is not a file in the package/],
     ["tooling", { tooling: { connectors: ["mcp__no_anchor"] } }, /agentOrg\.tooling\.connectors must be a list of patterns anchored at "\^mcp__"/],
     ["settings", { settings: [] }, /agentOrg\.settings must be an object/],
-    ["messaging settings", { concern: "messaging", settings: { x: { key: "x", type: "t", explanation: "e", breaks: "b", edit: {} } } }, /agentOrg\.settings must be empty: messaging is configured in project\.json/],
+    ["messaging settings", { concern: "messaging", settings: { x: { key: "tickets.providers.tracker.x", file: "host.json", type: "t", explanation: "e", breaks: "b", edit: {} } } }, /agentOrg\.settings\.x\.key must be messaging\.x, not "tickets\.providers\.tracker\.x"/],
+    ["messaging settings file", { concern: "messaging", settings: { x: { key: "messaging.x", file: "host.json", type: "t", explanation: "e", breaks: "b", edit: {} } } }, /agentOrg\.settings\.x\.file must be project\.json: messaging is configured there, not in "host\.json"/],
   ];
   for (const [what, over, pattern] of cases) assert.match(refusalOf(catalogOf({ bad: manifest(over) }), "bad") ?? "", pattern, what);
   assert.match(refusalOf(catalogOf({ bad: "not json" }), "bad") ?? "", /plugin bad: package\.json is not valid JSON/);
@@ -96,7 +96,7 @@ test("a plugin's name is its directory name, and a name that cannot be one is re
 
 test("pins come from core's table unless a test passes its own", () => {
   assert.deepEqual(buildCatalog({ root: ROOT, files: checkout({}), pins: {} }).pins, {});
-  assert.deepEqual(Object.keys(CORE_RUNS), ["publisher", "reviewer", "exposure"], "messaging has no block, so no pin, and the tracker and the code host moved into plugins/linear and plugins/github");
+  assert.deepEqual(Object.keys(CORE_RUNS), ["publisher", "reviewer"], "messaging has no block, so no pin, and the tracker, the code host and the exposure moved into plugins/");
 });
 
 test("this checkout's catalog is read once, holds no refusal, and reads a real plugins folder from disk", () => {
@@ -104,6 +104,8 @@ test("this checkout's catalog is read once, holds no refusal, and reads a real p
   assert.deepEqual(defaultCatalog().refusals, []);
   const linear = pluginNamed(defaultCatalog(), "linear");
   assert.deepEqual([linear?.concern, linear?.where, linear?.contract, linear?.dir?.endsWith("/plugins/linear")], ["tracker", "bundled", "1.1", true], "linear is the bundled package, found on disk");
+  assert.deepEqual(["local", "tailscale", "telegram"].map((name) => { const found = pluginNamed(defaultCatalog(), name); return [name, found?.concern, found?.where, found?.contract]; }),
+    [["local", "exposure", "bundled", "1.1"], ["tailscale", "exposure", "bundled", "1.1"], ["telegram", "messaging", "bundled", "1.1"]], "A11-162: the exposures and the messaging provider are bundled packages too, not rows in core");
   const root = mkdtempSync(join(tmpdir(), "registry-"));
   try {
     mkdirSync(join(root, "plugins", "disk-plugin"), { recursive: true });

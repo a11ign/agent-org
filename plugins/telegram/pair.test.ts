@@ -13,8 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { createSecret } from "../../secret.ts";
-import { EXIT, PAIRING_TTL_MS, REFUSAL, USAGE, createPairingSession, generateCode, main, runPairing, writeChairmanFile } from "./pair.ts";
+import { EXIT, USAGE, main } from "../../src/messaging/pair.ts";
+import { createSecret, redactingFetch } from "../../src/messaging/secret.ts";
+import { PAIRING_TTL_MS, REFUSAL, createPairingSession, generateCode, runPairing as run, writeChairmanFile } from "./pair.ts";
+
+/** The pairing run, with the core's `redactingFetch` that a plugin is given in `deps.messaging` (A11-162). */
+const runPairing = (options: Omit<Parameters<typeof run>[0], "redactingFetch">) => run({ ...options, redactingFetch });
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CODE = "K7M2QX9P4A";

@@ -10,9 +10,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { runProviderConformance } from "../../provider-contract.ts";
-import { createSecret } from "../../secret.ts";
-import { MAX_PARTS, REQUEST_TIMEOUT_MS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider, splitText } from "./send.ts";
+import { runProviderConformance } from "../../src/messaging/provider-contract.ts";
+import { createSecret, redactingFetch } from "../../src/messaging/secret.ts";
+import { MAX_PARTS, REQUEST_TIMEOUT_MS, TELEGRAM_MAX_MESSAGE, TelegramSendError, createTelegramProvider as create, splitText } from "./send.ts";
+
+/** The provider, with the core's `redactingFetch` that a plugin is given in `deps.messaging` (A11-162). */
+const createTelegramProvider = (options: Omit<Parameters<typeof create>[0], "redactingFetch">) => create({ ...options, redactingFetch });
 
 const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
 const CHAT_ID = 4242;
