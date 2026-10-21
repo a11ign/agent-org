@@ -114,3 +114,27 @@ test("this checkout's catalog is read once, holds no refusal, and reads a real p
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a plugins folder or a package.json that exists and cannot be read is refused by name, never taken for an absent one", () => {
+  const root = mkdtempSync(join(tmpdir(), "registry-unreadable-"));
+  try {
+    // `plugins` is a file, not a folder: listing it fails with ENOTDIR, which is not "no plugins here".
+    writeFileSync(join(root, "plugins"), "not a folder");
+    const notAFolder = buildCatalog({ root });
+    assert.deepEqual(notAFolder.refusals.map(({ plugin }) => plugin), ["plugins"]);
+    assert.match(notAFolder.refusals[0].why, /the plugins folder .*plugins cannot be read: /);
+    rmSync(join(root, "plugins"));
+    // `package.json` is a folder: reading it fails with EISDIR, which is not "this folder is no plugin".
+    mkdirSync(join(root, "plugins", "broken", "package.json"), { recursive: true });
+    const broken = buildCatalog({ root });
+    assert.equal(pluginNamed(broken, "broken"), undefined);
+    assert.match(broken.refusals.find(({ plugin }) => plugin === "broken")?.why ?? "", /^plugin broken: package\.json cannot be read: /);
+    // A checkout with no plugins folder, and a folder with no package.json, are absent and refuse nothing.
+    rmSync(join(root, "plugins"), { recursive: true });
+    assert.deepEqual(buildCatalog({ root }).refusals, []);
+    mkdirSync(join(root, "plugins", "empty"), { recursive: true });
+    assert.deepEqual(buildCatalog({ root }).refusals, []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

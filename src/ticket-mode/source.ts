@@ -9,4 +9,3 @@ import type { Keywords } from "../plugins/contracts/tracker.ts";
 
 /** The keywords of a source that names none: the two Linear reads, so a source that needs no others is briefed with them. */
 export const DEFAULT_KEYWORDS: Keywords = Object.freeze({ closing: "Closes", nonClosing: "Refs" });
-

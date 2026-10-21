@@ -30,26 +30,35 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const isInsidePackage = (path: string): boolean => path !== "" && resolve("/package", path).startsWith(`/package${sep}`);
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
 
-/** What reading a package costs the registry: the directory listing and a file's text, so a test reads a fixture without a disk. */
+/**
+ * What reading a package costs the registry: the directory listing and a file's text, so a test reads a fixture without a disk. A path that is not there is `[]` or `null`: that is
+ * "no plugin here". A path that is there and cannot be read THROWS, and the registry refuses it by name: an unreadable plugin is never taken for an absent one.
+ */
 export type PackageFiles = Readonly<{ directories(path: string): readonly string[]; text(path: string): string | null; isFile(path: string): boolean }>;
+
+const isAbsent = (error: unknown): boolean => (error as NodeJS.ErrnoException).code === "ENOENT";
 
 const DISK: PackageFiles = {
   directories: (path) => {
     try {
-      return readdirSync(path).filter((name) => statSync(join(path, name)).isDirectory()).sort();
-    } catch {
-      return [];
+      return readdirSync(path, { withFileTypes: true }).filter((entry) => entry.isDirectory() || entry.isSymbolicLink()).map(({ name }) => name).sort();
+    } catch (error) {
+      if (isAbsent(error)) return [];
+      throw error;
     }
   },
   text: (path) => {
     try {
       return readFileSync(path, "utf8");
-    } catch {
-      return null;
+    } catch (error) {
+      if (isAbsent(error)) return null;
+      throw error;
     }
   },
   isFile: (path) => existsSync(path) && statSync(path).isFile(),
 };
+
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** The tooling a manifest declares, or the reason it is wrong. An absent field is none. */
 function toolingOf(declared: unknown): Tooling | string {
@@ -96,7 +105,12 @@ function manifestOf(declared: unknown, entryExists: (entry: string) => boolean):
 /** One bundled package: the plugin, or the refusal naming it. A directory with no `agentOrg` field is not a plugin and is skipped (null). */
 function readPackage(root: string, name: string, files: PackageFiles): CatalogPlugin | CatalogRefusal | null {
   const dir = join(root, "plugins", name);
-  const text = files.text(join(dir, "package.json"));
+  let text: string | null;
+  try {
+    text = files.text(join(dir, "package.json"));
+  } catch (error) {
+    return { plugin: name, why: `plugin ${name}: package.json cannot be read: ${messageOf(error)}` };
+  }
   if (text === null) return null;
   let manifest: unknown;
   try {
@@ -116,6 +130,16 @@ function readPackage(root: string, name: string, files: PackageFiles): CatalogPl
   return Object.freeze({ ...data, name, where: "bundled", dir, movedBy: null });
 }
 
+/** Every bundled package of the checkout, or the refusal naming the plugins folder when it exists and cannot be listed. */
+function packagesOf(root: string, files: PackageFiles): (CatalogPlugin | CatalogRefusal)[] {
+  const folder = join(root, "plugins");
+  try {
+    return files.directories(folder).map((name) => readPackage(root, name, files)).filter((read) => read !== null);
+  } catch (error) {
+    return [{ plugin: "plugins", why: `the plugins folder ${folder} cannot be read: ${messageOf(error)}` }];
+  }
+}
+
 /**
  * The catalog of a checkout: its bundled packages, then the built-ins, then the fakes. A name taken twice refuses the later plugin, by name. `root` and `files` are a
  * test's; the default is this checkout on disk.
@@ -123,7 +147,7 @@ function readPackage(root: string, name: string, files: PackageFiles): CatalogPl
 export function buildCatalog({ root = TOOL_CHECKOUT, files = DISK, pins = CORE_RUNS }: Readonly<{ root?: string; files?: PackageFiles; pins?: Catalog["pins"] }> = {}): Catalog {
   const refusals: CatalogRefusal[] = [];
   const plugins: CatalogPlugin[] = [];
-  const bundled = files.directories(join(root, "plugins")).map((name) => readPackage(root, name, files)).filter((read) => read !== null);
+  const bundled = packagesOf(root, files);
   for (const candidate of [...bundled, ...BUILT_IN, ...FAKES]) {
     if ("why" in candidate) refusals.push(candidate);
     else if (plugins.some(({ name }) => name === candidate.name)) refusals.push({ plugin: candidate.name, why: `plugin ${candidate.name} is named twice, and plugin names are unique: the ${candidate.where} plugin is refused, and the one found first stays` });
