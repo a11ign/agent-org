@@ -253,7 +253,8 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   that sets `tickets.terminal`, a live or parked run has an Open terminal link to its agent's terminal in the browser. A run whose worker wrote `done` is Completed too: the board moves its ticket to the tracker's completed state and posts the worker's reason and evidence on it (see Outcomes below).
 - **Parked, not closed, when a run needs you.** A run that ends `needs-human`, `wrong-repo` or with no outcome keeps its herdr workspace
   and holds no slot, so you can answer the agent in its terminal. Once the agent works again the run is In progress again, its old outcome
-  is moved to `outcome.prev.json`, and the worker must write a new one before it stops. A worker that writes a new outcome file after its
+  is marked stale (`outcome-stale-before`, the time the run parked) and not moved, so the worker must write a new one before it stops: the stop hook
+  reads the outcome once and judges it as no outcome while it is not newer than that mark (A11-152). A worker that writes a new outcome file after its
   run parked, even between two of the board's looks, ends the run on it once its agent is idle. The stop hook refuses an outcome file that does not
   match the contract and names the field it wants (`ready-pr needs prs: [{repo, url}], you wrote pr`), so the worker fixes it in the same turn. A
   finished run whose outcome file was unreadable is read again when the file changes, so a corrected file ends it without a Dismiss. Close shuts a

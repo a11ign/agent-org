@@ -16,7 +16,7 @@
 // and queues the ticket again to be worked, where it was. A plan the tracker will not take ends the run for a person, with its files kept.
 //
 // A RUN THAT HANDS ITS TICKET BACK IS PARKED, NOT CLOSED. On `needs-human`, `wrong-repo` or `no-outcome` its workspace stays open and holds no
-// slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome file is moved aside, so
+// slot, so the person can answer the agent in its terminal. An agent seen working again has been answered: its outcome is marked stale, so
 // the stop hook asks for a new one, and the run is live again. Close ends a parked run's workspace; a workspace closed by hand is noticed.
 //
 // A RUN THAT CONCLUDED IS CLOSED AT ONCE. On `checked` (the worker looked and found nothing to change), `done` (every Done-when verified, and the

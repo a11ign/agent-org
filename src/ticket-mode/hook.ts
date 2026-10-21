@@ -50,16 +50,16 @@
 // filing tool. A creation is refused when it names an `id` (an update) or `blocks` (a relation on another ticket), and past ten in the run. An attachment is
 // refused unless it names a ticket the run created, which the POST-TOOL-USE hook records as each creation returns (`created-issues.jsonl`, which only the
 // hook writes). A build worker is refused every filing tool by name, before the connector allow list is read, and the refusal names New ticket.
-import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { escapeRegExp } from "../lib/escape-regexp.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
-import { checkOutcome } from "./outcome.ts";
+import { checkOutcome, isStale } from "./outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
-  STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_CREATE_TOOLS, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+  STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_CREATE_TOOLS, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, readCreatedKeys } from "./writer.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
@@ -102,9 +102,10 @@ function readyRefusal(approved: readonly string[]): Refusal {
 /**
  * The review, publish, writer and ready marks are the board's: a worker that wrote one would lift a refusal. So are a grill run's question and its moved
  * outcome: a worker that wrote them would answer its own question (A11-129). The record of a new-ticket run's created tickets is the hook's own, so
- * a run could not write in a key it did not create (A11-135).
+ * a run could not write in a key it did not create (A11-135). The stale mark and the stop hook's own file are the board's too (A11-152): a worker that
+ * wrote the first could refuse its own outcome, and one that wrote the second could hold the board off its question.
  */
-const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE];
+const BOARD_FILES: readonly string[] = [REVIEW_FILE, PUBLISH_FILE, WRITER_FILE, READY_FILE, WAITING_FILE, ASKED_FILE, CREATED_FILE, STALE_OUTCOME_FILE, STOP_ACTIVE_FILE];
 const MARK_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${BOARD_FILES.map(escapeRegExp).join("|")})\\b`),
   why: `${BOARD_FILES.join(", ")} are the board's to write` };
 
@@ -475,9 +476,32 @@ function liveWork(transcriptPath: string | undefined, read: (path: string) => st
   }
 }
 
+/** An outcome file as a stop read it: its text and its time in ms, from the one read. */
+export type OutcomeRead = Readonly<{ text: string; mtime: number }>;
+
+/**
+ * Reads the outcome file once. The file is opened and both its text and its mtime come from that open descriptor, so a file the board moves aside after
+ * the open is still read. Null only when there is no file at `path`: any other failure is thrown, and the stop is allowed out loud (A11-152).
+ */
+export function readOutcomeFile(path: string): OutcomeRead | null {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  try {
+    const text = readFileSync(fd, "utf8");
+    return { text, mtime: fstatSync(fd).mtimeMs };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** The filesystem a stop reads and writes, passed as one value so the helpers below take at most two arguments. */
 type StopIo = Readonly<{
-  exists: (path: string) => boolean; read: (path: string) => string; write: (path: string, text: string) => void; mtime: (path: string) => number;
+  exists: (path: string) => boolean; read: (path: string) => string; write: (path: string, text: string) => void;
 }>;
 
 /** The outcome file a stop is judged on, the stamp a `working` one leaves beside it, and the transcript that may wake it. */
@@ -489,8 +513,8 @@ type Judgment = Readonly<{ verdict: HookResult } | { ask: string; stuck: string 
 /**
  * A `working` outcome: allowed once its stamp is written, while live background work will wake the worker; refused otherwise (A11-80, A11-85).
  */
-function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, io: StopIo): Judgment {
-  const working = String(io.mtime(outcome));
+function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, mtime: number, io: StopIo): Judgment {
+  const working = String(mtime);
   const stuck = `on the same working outcome in ${outcome}, so this one is allowed and the board keeps the run in progress`;
   if (io.exists(stamp) && io.read(stamp).trim() === working) {
     return { ask: `${outcome} still says working from before your background work woke you: write it again with how the run stands now, or with { "kind": "working", "reason": "..." } again if more of your own work is still running.`, stuck };
@@ -505,8 +529,8 @@ function judgeWorking({ outcome, stamp, transcriptPath }: StopSubject, io: StopI
 }
 
 /** The judgment of the outcome file as it stands: refused when the contract refuses it, allowed unless it says `working`, and `working` judged on its own. */
-function judgeOutcome(subject: StopSubject, io: StopIo): Judgment {
-  const checked = checkOutcome(io.read(subject.outcome));
+function judgeOutcome(subject: StopSubject, { text, mtime }: OutcomeRead, io: StopIo): Judgment {
+  const checked = checkOutcome(text);
   if ("problem" in checked) {
     // The field the contract wants is named, so the worker fixes the file in the same turn; a near miss is refused here too (A11-118).
     const stuck = checked.ok
@@ -514,7 +538,18 @@ function judgeOutcome(subject: StopSubject, io: StopIo): Judgment {
       : `on the same invalid outcome in ${subject.outcome}, so this one is allowed and the board hands the run back for a person`;
     return { ask: `${checked.problem}. Write ${subject.outcome} again as the last thing you do, in the shape your brief shows.`, stuck };
   }
-  return checked.outcome.kind === "working" ? judgeWorking(subject, io) : { verdict: ALLOW };
+  return checked.outcome.kind === "working" ? judgeWorking(subject, mtime, io) : { verdict: ALLOW };
+}
+
+/**
+ * The outcome a stop judges: the file as it was read, unless the board marked it stale when a parked run resumed. An outcome written at or before the
+ * mark is the one the run parked on, so it is no outcome (A11-152). A mark that is not a number makes every outcome stale: the refusal is bounded by the
+ * count, so a worker is never held longer than a missing outcome holds it.
+ */
+function currentOutcome(ticketDir: string, found: OutcomeRead | null, io: StopIo): OutcomeRead | null {
+  const mark = join(ticketDir, STALE_OUTCOME_FILE);
+  if (found === null || !io.exists(mark)) return found;
+  return isStale(found.mtime, io.read(mark)) ? null : found;
 }
 
 /**
@@ -553,31 +588,39 @@ function questionAsked(lastMessage: string | undefined, transcriptPath: string |
  * A grill run that ends its turn with no outcome is waiting for the person: that stop is allowed, and its question is recorded for the board (A11-129).
  */
 export function stopVerdict(ticketDir: string, { exists = existsSync, read = (p: string) => readFileSync(p, "utf8"), write = (p: string, t: string) => writeFileSync(p, t),
-  mtime = (p: string) => statSync(p).mtimeMs, transcriptPath, lastMessage }: {
-  exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void; mtime?: (path: string) => number;
+  readOutcome = readOutcomeFile, transcriptPath, lastMessage }: {
+  exists?: (path: string) => boolean; read?: (path: string) => string; write?: (path: string, text: string) => void;
+  readOutcome?: (path: string) => OutcomeRead | null;
   transcriptPath?: string;
   /** The message the agent ended its turn with, as the Stop payload carries it. */
   lastMessage?: string;
 } = {}): HookResult {
   const outcome = join(ticketDir, OUTCOME_FILE);
   const counter = join(ticketDir, STOP_COUNT_FILE);
-  const io: StopIo = { exists, read, write, mtime };
-  if (!exists(outcome) && interactiveWriter(ticketDir, io)) {
-    write(counter, "0");
-    write(join(ticketDir, WAITING_FILE), `${JSON.stringify({ question: questionAsked(lastMessage, transcriptPath, read), at: Date.now() })}\n`);
-    return ALLOW;
+  const io: StopIo = { exists, read, write };
+  // The board does not move the outcome while this stop reads it (A11-152). The mark goes when the stop ends, whatever it decided.
+  write(join(ticketDir, STOP_ACTIVE_FILE), String(Date.now()));
+  try {
+    const found = currentOutcome(ticketDir, readOutcome(outcome), io);
+    if (found === null && interactiveWriter(ticketDir, io)) {
+      write(counter, "0");
+      write(join(ticketDir, WAITING_FILE), `${JSON.stringify({ question: questionAsked(lastMessage, transcriptPath, read), at: Date.now() })}\n`);
+      return ALLOW;
+    }
+    const judged: Judgment = found !== null
+      ? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath }, found, io)
+      : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
+    if ("verdict" in judged) {
+      write(counter, "0");
+      return judged.verdict;
+    }
+    const refused = exists(counter) ? Number.parseInt(read(counter), 10) || 0 : 0;
+    if (refused >= MAX_STOP_REFUSALS) return { code: 0, say: [`ticket-mode: ${refused} stops in a row ${judged.stuck}.`] };
+    write(counter, String(refused + 1));
+    return refuse(judged.ask);
+  } finally {
+    rmSync(join(ticketDir, STOP_ACTIVE_FILE), { force: true });
   }
-  const judged: Judgment = exists(outcome)
-    ? judgeOutcome({ outcome, stamp: join(ticketDir, WORKING_STOP_FILE), transcriptPath }, io)
-    : { ask: `write ${outcome} before you stop, with one of the outcomes your brief lists, such as { "kind": "needs-human", "reason": "..." }.`, stuck: `without ${outcome}, so this one is allowed and the board records no outcome` };
-  if ("verdict" in judged) {
-    write(counter, "0");
-    return judged.verdict;
-  }
-  const refused = exists(counter) ? Number.parseInt(read(counter), 10) || 0 : 0;
-  if (refused >= MAX_STOP_REFUSALS) return { code: 0, say: [`ticket-mode: ${refused} stops in a row ${judged.stuck}.`] };
-  write(counter, String(refused + 1));
-  return refuse(judged.ask);
 }
 
 /**

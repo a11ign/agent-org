@@ -3,9 +3,9 @@
 
 import { type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { join } from "node:path";
-import { conflictLine, PUBLISHED_FILE } from "./worker-files.ts";
-import { readFileSync } from "node:fs";
-import { checkOutcome } from "./outcome.ts";
+import { conflictLine, OUTCOME_FILE, PUBLISHED_FILE, STALE_OUTCOME_FILE } from "./worker-files.ts";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { checkOutcome, isStale } from "./outcome.ts";
 import { type PullFeedback } from "../ticket-port/pull-feedback.ts";
 
 /** The largest file a planning run's plan may hold. A plan is prose; anything bigger is not one. */
@@ -26,6 +26,25 @@ export const doneComment = ({ reason, evidence }: Readonly<{ reason: string; evi
  * text the Stop hook refuses it with, A11-118). An unreadable file is flagged, so a corrected one is read again. A `working` one is not how the run
  * ended: `settle` records it as the run's latest note. PURE over the file's text.
  */
+/**
+ * Marks a run's outcome stale, beside the file: the stop hook judges an outcome written at or before `since` (ms) as no outcome, so its worker writes a
+ * new one. Nothing is moved, so the worker's own file is never taken from it (A11-152).
+ */
+export function markOutcomeStale(dir: string, since: number): void {
+  writeFileSync(join(dir, STALE_OUTCOME_FILE), `${since}\n`);
+}
+
+/**
+ * Whether the worker wrote the outcome file beside `dir` since its run was marked stale. A file the run parked on is no outcome for the board either, so a
+ * worker that ends with none ends the run with none, as the stop hook judges it (A11-152).
+ */
+export function outcomeWritten(dir: string): boolean {
+  const path = join(dir, OUTCOME_FILE);
+  if (!existsSync(path)) return false;
+  const mark = join(dir, STALE_OUTCOME_FILE);
+  return !isStale(statSync(path).mtimeMs, existsSync(mark) ? readFileSync(mark, "utf8") : undefined);
+}
+
 export function parseOutcome(text: string): WrittenOutcome {
   const checked = checkOutcome(text);
   if (!checked.ok) return { kind: "needs-human", reason: `the worker's outcome file is not valid: ${checked.problem}`, unreadable: true };

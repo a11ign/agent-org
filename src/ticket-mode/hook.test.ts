@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, resolveWritePath, stopVerdict, toolVerdict, writerGrants } from "./hook.ts";
+import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, readOutcomeFile, resolveWritePath, stopVerdict, toolVerdict, writerGrants } from "./hook.ts";
 import { PROTECTED_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE } from "./writer.ts";
 
@@ -120,6 +120,69 @@ test("a copy of the machine's refusals that cannot be read is reported and skipp
   assert.equal(ready.code, 2);
   assert.match(ready.say[0], /could not read .*deny\.json, so only the built-in refusals apply/);
   assert.equal(withDeny("{not json", "npm run dev").code, 0);
+});
+
+test("A11-152: an outcome written at or before the board's stale mark is no outcome, and a newer one is judged as written", () => {
+  const dir = tmpDir("ticket-hook-stale-");
+  const outcome = join(dir, "outcome.json");
+  writeFileSync(outcome, JSON.stringify({ kind: "needs-human", reason: "which colour?" }));
+  utimesSync(outcome, 1000, 1000);
+  writeFileSync(join(dir, "outcome-stale-before"), "1000000\n");
+  const refused = stopVerdict(dir);
+  assert.match(refused.say[0], /write .*outcome\.json before you stop/, "with the words a missing outcome gets");
+  assert.equal(refused.code, 2, "the file the run parked on is refused");
+  utimesSync(outcome, 2000, 2000);
+  assert.equal(stopVerdict(dir).code, 0, "a file newer than the mark is judged as written");
+});
+
+test("A11-152: a stale mark it cannot read makes every outcome stale, and the count still bounds the refusal", () => {
+  const dir = tmpDir("ticket-hook-stale-garbled-");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r" }));
+  writeFileSync(join(dir, "outcome-stale-before"), "not a time");
+  assert.deepEqual(Array.from({ length: MAX_STOP_REFUSALS + 1 }, () => stopVerdict(dir).code), [2, 2, 0]);
+});
+
+test("A11-152: the stop reads the outcome once, and a read that finds no file is not repeated", () => {
+  const dir = tmpDir("ticket-hook-read-once-");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r" }));
+  let reads = 0;
+  const readOutcome = (path: string) => {
+    reads += 1;
+    if (reads > 1) throw new Error(`${path} was read again`);
+    return null;
+  };
+  assert.equal(stopVerdict(dir, { readOutcome }).code, 2, "a read that finds no file is a missing outcome");
+  assert.equal(reads, 1, "one read");
+});
+
+test("A11-152: readOutcomeFile takes the text and the mtime from one open file, and is null only for a file that is not there", () => {
+  const dir = tmpDir("ticket-hook-read-file-");
+  const path = join(dir, "outcome.json");
+  assert.equal(readOutcomeFile(path), null);
+  writeFileSync(path, "{}");
+  utimesSync(path, 3, 3);
+  assert.deepEqual(readOutcomeFile(path), { text: "{}", mtime: 3000 });
+});
+
+test("A11-152: a stop holds its stop-active mark while it reads the outcome, and takes the mark off whatever it decides", () => {
+  const dir = tmpDir("ticket-hook-active-");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "r" }));
+  let seen = false;
+  const readOutcome = (path: string) => {
+    seen = existsSync(join(dir, "stop-active"));
+    return readOutcomeFile(path);
+  };
+  assert.equal(stopVerdict(dir, { readOutcome }).code, 0);
+  assert.equal(seen, true, "the mark is there while the outcome is read");
+  assert.equal(existsSync(join(dir, "stop-active")), false, "and gone once the stop is judged");
+  const empty = tmpDir("ticket-hook-active-none-");
+  assert.equal(stopVerdict(empty).code, 2);
+  assert.equal(existsSync(join(empty, "stop-active")), false, "a refused stop takes it off too");
+});
+
+test("A11-152: a worker may not write the stale mark or the stop hook's own file", () => {
+  assert.equal(bash("echo 0 > outcome-stale-before"), 2);
+  assert.equal(bash("rm -f stop-active"), 2);
 });
 
 test("a stop with no outcome is refused twice in a row, then allowed; an outcome allows it and resets the count", () => {
