@@ -2563,3 +2563,22 @@ test("A11-163: settings that cannot be read leave the Plugins section drawn, wit
   assert.equal(buttonIn(pluginRow(p, "tailscale"), "Disable").disabled, false);
   assert.equal(buttonsIn(pluginRow(p, "tailscale")).some((button) => button.text() === "Configure"), true, "Configure is still offered, and opens nothing the settings could not give");
 });
+
+test("A11-163: the provider groups are drawn where they were while the plugins are read, then move under their concern; a read that lands late does not replace a newer one", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: PLUGINS, hold: { "/api/plugins": PLUGINS } });
+  const before = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
+  assert.deepEqual(before, ["Plugins", "Tracker", "Exposure", "Workers"], "no setting waits for the plugins");
+  assert.match(p.$("settings-groups").text(), /tickets\.providers\.tracker\.provider/);
+  p.release();
+  await flush();
+  const after = p.$("settings-groups").all().filter((n) => n.tag === "h3").map((n) => n.text());
+  assert.deepEqual(after, ["Plugins", "Tracker settings", "Exposure settings", "Workers"], "read, they are the concerns' settings");
+  const summary = sectionNamed(p, "Tracker settings").node.all().find((n) => n.tag === "summary")!.all().filter((n) => n.tag === "span").map((n) => n.text());
+  assert.ok(summary.includes("plugin linear"), "and the summary still says which plugin runs");
+});
+
+test("A11-163: plugins read from a host file the reader refuses are shown with the note and with no control", async () => {
+  const p = await settingsPage({ config: SETTINGS, settings: PLUGIN_ROWS, plugins: { ...PLUGINS, note: "the host file is refused, so the plugins are shown as their defaults: tickets.port must be a number" } });
+  assert.match(pluginsNode(p).text(), /the host file is refused, so the plugins are shown as their defaults/);
+  assert.deepEqual(buttonsIn(pluginRow(p, "tailscale")).map((button) => button.text()), [], "nothing is offered over defaults the file does not hold");
+});

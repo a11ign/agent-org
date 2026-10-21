@@ -1157,3 +1157,13 @@ test("A11-163: an action is refused by name when its words are wrong: an unknown
   assert.match((await answer({ action: "enable", name: "tailscale" }))[1].error, /^base must be the hash of the file as you read it/);
   assert.match((await answer({ action: "install", name: "fake-exposure", base }))[1].error, /fake-exposure is an in-memory exposure for core's tests/);
 });
+
+test("A11-163: a host file the reader refuses is said in the plugins' answer, which then shows the defaults and carries no settings of the messaging key", async () => {
+  const b = pluginsBoard(FRESH_BLOCKS);
+  writeFileSync(b.hostPath, JSON.stringify({ clones: {}, tickets: { providers: { tracker: { provider: "jira" } } } }));
+  const refusing = await readPlugins(b);
+  assert.match(refusing.note ?? "", /^the host file is refused, so the plugins are shown as their defaults: /);
+  const pasted = board(4747, {}, { hostPath: b.hostPath, plugins: { ...b.plugins, messaging: { state: async () => ({ provider: "telegram", enabled: true, settings: { pasted: "123:SECRET-TOKEN" } }), checks: async () => [] } } });
+  const [, answer] = await pasted.api("GET", "/api/plugins", {}) as [number, PluginsView];
+  assert.doesNotMatch(JSON.stringify(answer), /SECRET-TOKEN/, "a key pasted into the messaging key is never sent to the page");
+});

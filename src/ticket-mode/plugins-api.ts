@@ -39,7 +39,10 @@ export type PluginsSeam = Readonly<{
   outgoing?: PluginCliDeps["outgoing"];
 }>;
 
-/** What the page is sent: the account of every plugin, a note when the host file is one the reader refuses, and the `base` of each file a change would write. */
+/**
+ * What the page is sent: the account of every plugin, a note when the host file is one the reader refuses (the plugins are then shown as their defaults, and the page offers no control
+ * over them), and the `base` of each file a change would write.
+ */
 export type PluginsAnswer = PluginHealth & Readonly<{ note: string | null; bases: Readonly<Partial<Record<EditFile, string>>> }>;
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -87,9 +90,11 @@ export function pluginsApi(options: Readonly<{ hostPath: string; settings: Ticke
   /** The account of every plugin, read fresh from the host file. */
   async function read(): Promise<PluginsAnswer> {
     const text = readText(hostPath);
+    // The bases are the files as they were when the plugins were read: a file that changes while the checks run is then refused by the next action, not passed on stale information.
+    const bases = await basesOf({ hostPath, projectPath: seam.projectPath });
     const health = await readPluginHealth({ catalog, providers: providersOfText(text, catalog), blocks: PROVIDER_BLOCKS, deps, load: (providers, cat, pluginDeps) => load(providers, cat, pluginDeps), messaging,
       version: seam.version ?? toolVersionOf() });
-    return { ...health, note: hostNote(text, catalog), bases: await basesOf({ hostPath, projectPath: seam.projectPath }) };
+    return { ...health, note: hostNote(text, catalog), bases };
   }
 
   /** Does what the body asks, and answers what it did. A refusal is thrown with the CLI's sentence, and nothing is written. */

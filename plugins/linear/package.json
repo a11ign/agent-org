@@ -32,7 +32,7 @@
         "absent": "unset",
         "default": null,
         "secret": "path",
-        "setCommand": "( umask 077; read -rs -p \"Linear API key: \" K; printf '%s' \"$K\" > {value|~/.config/agent-org/linear.key} )",
+        "setCommand": "( umask 077; printf 'Linear API key: ' >&2; stty -echo; read -r SECRET; stty echo; printf '\\n' >&2; printf '%s' \"$SECRET\" > {value|~/.config/agent-org/linear.key} )",
         "explanation": "The file the tracker's key is in. The file must be readable by no one else.",
         "breaks": "A wrong path means the board cannot read the tracker.",
         "edit": {

@@ -351,9 +351,9 @@ const state = {
   settingsShown: false, opener: "open-settings", boardHash: "",
   // The Settings search (A11-146): the query typed, the sections the person last left open or closed (by name; `Machine` starts closed), and the view last read,
   // which a query is applied to without reading the instance again. Kept across a redraw, so a save does not close what was open.
-  settingsSearch: { query: "", all: false, open: recall(storage, "ticket-mode.settings-open"), view: null, sections: [], others: [], providers: [], providersBuilt: false, unreadable: false },
+  settingsSearch: { query: "", all: false, open: recall(storage, "ticket-mode.settings-open"), view: null, sections: [], others: [], providers: [], providersWith: null, unreadable: false },
   // The Plugins section (A11-163), read by its own call: `phase` is reading, read or failed; `answer` is what `/api/plugins` sent; `outcome` and `refusal` say what the last action did.
-  plugins: { phase: "reading", answer: null, failure: "" }, pluginOutcome: "", pluginRefusal: "",
+  plugins: { phase: "reading", answer: null, failure: "" }, pluginReads: 0, pluginOutcome: "", pluginRefusal: "",
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
   pick: "assigned to you", empty: null,
   // The Assignee filter: whether the instance names assignees (its config carries `viewer`, the signed-in person or null), that person, the setting's
@@ -893,7 +893,7 @@ async function drawSettings() {
   $("settings-notes").replaceChildren();
   // Until the rows are read, a search has nothing to filter, so it waits for them (drawSettingsView sets the view again).
   state.settingsSearch.view = null;
-  state.settingsSearch.providersBuilt = false;
+  state.settingsSearch.providersWith = null;
   state.settingsSearch.unreadable = false;
   // The Plugins section is its own call, started now and never waited for: a plugin's checks run programs, and the rest of the page must not wait on them or fail with them.
   state.plugins = { phase: "reading", answer: null, failure: "" };
@@ -913,15 +913,19 @@ async function drawSettings() {
 }
 /** Reads the Plugins section: what the instance says of each plugin, or why it could not. A failure is said inside the section, and the rest of the page is drawn as it is. */
 async function readPlugins(chosen) {
+  // Each read is numbered: one that lands after a later one began is not drawn, so a slow earlier answer never replaces a newer.
+  const mine = ++state.pluginReads;
+  let next;
   try {
     const answer = await call("GET", "/api/plugins");
     if (!Array.isArray(answer?.concerns)) throw new Error("the instance's answer does not list the plugins");
-    state.plugins = { phase: "read", answer, failure: "" };
+    next = { phase: "read", answer, failure: "" };
   } catch (err) {
     if (err === STALE) return;
-    state.plugins = { phase: "failed", answer: null, failure: String(err.message || err) };
+    next = { phase: "failed", answer: null, failure: String(err.message || err) };
   }
-  if (state.connection !== chosen || !onSettingsPage()) return;
+  if (mine !== state.pluginReads || state.connection !== chosen || !onSettingsPage()) return;
+  state.plugins = next;
   layoutSettings();
 }
 /**
@@ -932,7 +936,7 @@ function providerSections(view, answer) {
   return view.groups.filter((group) => PLUGIN_GROUPS.includes(group.group)).map((group) => {
     const concern = answer === null ? null : answer.concerns.find((entry) => entry.concern === concernOfGroup(group.group)) ?? null;
     const rows = concern === null ? group.rows : group.rows.filter((row) => !isProviderLine(row.key)).map((row) => ({ ...row, inUse: row.inUse && !ofAnotherPlugin(concern.plugins, row.key) }));
-    const section = settingsGroup({ group: group.group, rows }, view, concern === null ? {} : { label: `${group.group} settings` });
+    const section = settingsGroup({ group: group.group, rows }, view, concern === null ? {} : { label: `${group.group} settings`, words: concern.enabled === null ? "no plugin enabled" : `plugin ${concern.enabled}` });
     return section === null ? null : { ...section, concern: concern === null ? null : concern.concern };
   }).filter((section) => section !== null);
 }
@@ -954,7 +958,7 @@ function drawSettingsView(view, failure) {
   state.settingsSearch.view = view;
   // The sections that are not a plugin's are built once, now; the plugins' are built when the Plugins section has been read (layoutSettings).
   state.settingsSearch.others = view.groups.filter((group) => !PLUGIN_GROUPS.includes(group.group)).map((group) => settingsGroup(group, view)).filter((section) => section !== null);
-  state.settingsSearch.providersBuilt = false;
+  state.settingsSearch.providersWith = null;
   layoutSettings();
   drawEdits(view);
 }
@@ -969,15 +973,17 @@ function layoutSettings() {
   // Settings that could not be read leave the Plugins section to be drawn alone, with no settings to open under Configure; settings not read yet leave the page as it is.
   if (view === null && !search.unreadable) return;
   const { phase, answer } = state.plugins;
-  if (view !== null && phase !== "reading" && !search.providersBuilt) {
-    search.providers = providerSections(view, phase === "read" ? answer : null);
-    search.providersBuilt = true;
+  // The provider groups are drawn where they always were until the Plugins section has been read, and again if it cannot be: the page never waits on the plugins for a setting. Read, they
+  // move into it, under their concern, as a fresh section (the staged changes are kept apart from the rows, so none is lost).
+  const withPlugins = phase === "read";
+  if (view !== null && search.providersWith !== withPlugins) {
+    search.providers = providerSections(view, withPlugins ? answer : null);
+    search.providersWith = withPlugins;
   }
-  const providers = search.providersBuilt ? search.providers : [];
+  const providers = view === null ? [] : search.providers;
   search.sections = [...providers, ...search.others];
-  const plugins = buildPluginsSection(providers);
-  const fallback = phase === "read" ? [] : providers.map((section) => section.node);
-  $("settings-groups").replaceChildren(plugins, ...fallback, ...search.others.map((section) => section.node));
+  const fallback = withPlugins ? [] : providers.map((section) => section.node);
+  $("settings-groups").replaceChildren(buildPluginsSection(providers), ...fallback, ...search.others.map((section) => section.node));
   drawSearch();
 }
 /** Shows what a query leaves, on the rows already built, so an open Edit form, a value typed into it and an open Details stay as they are. A section with no match is
@@ -1219,7 +1225,7 @@ function setOpened(key, open) {
 }
 /** One section, built once for the view: a disclosure whose summary names the group and counts its settings. `Machine` starts closed. The plugins and connectors are
  * said in their section whatever a search leaves, since they are checks and not settings. Returns what drawSearch needs, or null for a section with nothing to say. */
-function settingsGroup({ group, rows }, view, { label = group } = {}) {
+function settingsGroup({ group, rows }, view, { label = group, words = null } = {}) {
   const plugins = group === "Conventions plugin";
   if (rows.length === 0 && !(plugins && (view.plugins.length > 0 || view.words.length > 0))) return null;
   const id = `group-${group.toLowerCase().replace(/[^a-z]+/g, "-")}`;
@@ -1240,7 +1246,7 @@ function settingsGroup({ group, rows }, view, { label = group } = {}) {
   });
   // The summary line is the section on the first screen: its name, its provider, and what is set (drawSearch writes the count).
   const provider = rows.find((row) => /^tickets\.providers\.[^.]+\.provider$/.test(row.key));
-  const providerWords = el("span", { className: "hint", textContent: provider ? `provider ${provider.value}` : "" });
+  const providerWords = el("span", { className: "hint", textContent: words ?? (provider ? `provider ${provider.value}` : "") });
   const section = el("details", { className: "setting-group" }, el("summary", {}, el("h3", { id, textContent: label }), providerWords, count), ...children);
   section.setAttribute("aria-labelledby", id);
   // Only a choice made while nothing is searched is kept: a search's own opening of a section is not the person's.
@@ -1335,7 +1341,7 @@ function pluginNode(plugin, concern, answer, group) {
   const controls = el("div", { className: "plugin-controls" });
   const confirmation = el("div", { className: "plugin-confirm", hidden: true });
   confirmation.setAttribute("role", "alert");
-  if (editable()) for (const name of controlsOf(plugin.controls.offered)) controls.append(...controlNodes(name, plugin, concern, answer, group, confirmation));
+  if (editable() && answer.note === null) for (const name of controlsOf(plugin.controls.offered)) controls.append(...controlNodes(name, plugin, concern, answer, group, confirmation));
   row.append(controls, confirmation);
   return row;
 }

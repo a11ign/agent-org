@@ -42,7 +42,7 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { DEFAULT_PROVIDER, isActive, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
+import { type BlockReport, DEFAULT_PROVIDER, isActive, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
 import { realExec, realMode, realProbe } from "../plugins/active.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
@@ -448,6 +448,10 @@ function plannedProviders({ host, tickets, planned, catalog }: Readonly<{ host: 
   }
 }
 
+/** What onboard says of a plugin the host file already names: it is the concern's, or it is installed and switched off, which onboard leaves as it is. */
+const alreadyWords = (provider: string, label: string, held: BlockReport): string =>
+  (held.enabled ? `${provider} is already the ${label}` : `${provider} is already installed as the ${label}, and disabled: onboard leaves it off`);
+
 /**
  * Says one line per plugin onboard installs and enables, before it runs that plugin's steps (A11-163): `installed linear as the tracker`, or that the host file already names it. The plugins
  * are the ones the providers will name once onboard has written the host file: a block the file holds keeps its plugin, and a concern whose choice is `none` has no line.
@@ -458,7 +462,8 @@ function sayInstalls(providers: Providers, existing: Providers["blocks"], deps: 
     if (provider === "none") continue;
     const label = CONCERN_LABEL[CONCERN_OF_BLOCK[block]];
     const held = existing[block];
-    deps.out.log(held.from === "block" && held.provider === provider ? `${provider} is already the ${label}` : `installed ${provider} as the ${label}`);
+    const already = held.from === "block" && held.provider === provider;
+    deps.out.log(already ? alreadyWords(provider, label, held) : `installed ${provider} as the ${label}`);
   }
 }
 
@@ -533,7 +538,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
 
   const providers = providersWith(tickets, blocksOf({ planned, identity, terminal }));
   // A plugin's step decides its settings outright: it was given the block's own, so it keeps the ones it means to keep.
-  // A plugin that chose nothing leaves its block alone: a block onboard has no reason to write (the code host's, on a host that names none) stays absent, which is the default plugin.
+  // A plugin that chose nothing leaves its block alone: the blocks onboard installs are written above (`blocksOf`), so this only adds what a plugin's steps chose.
   for (const [block, set] of Object.entries(stepped)) if (Object.keys(set).length > 0) providers[block] = { ...fill(providers[block], {}), ...set };
   const pluginKeys = plugin?.installPath === null || plugin === null ? {} : conventionKeys(profile?.conventions?.plugin ?? "", contract);
   const prReview = profile?.conventions?.prReview === true ? contract?.provides.prReview?.skill : undefined;

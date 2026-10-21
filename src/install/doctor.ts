@@ -351,7 +351,7 @@ async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps)
   const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
     pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy() };
   return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
-    version: toolVersionOf(), ...(settings === null ? {} : { messaging: { state: messaging, checks: messagingChecks } }) });
+    version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });
 }
 
 /** A plugin's own rows: the checks it reported, then the row that says it failed, unless one of the checks already says it (a key that cannot be read says why `create` threw, with its own fix). */
@@ -372,14 +372,14 @@ const under = (section: string, rows: readonly Check[]): Check[] => rows.map((ro
  * concern's provider row, which summarises its checks and the machine checks that feed the same row; a disabled one says what the board does without it. A concern with no plugin
  * is `<concern>: none`, with its provider row. A plugin that failed has its FAIL row, named and with the fix.
  */
-function concernSections(concern: ConcernEntry, summary: (named: PluginEntry | undefined, rows: readonly Check[]) => Check[]): Check[] {
+function concernSections(concern: ConcernEntry, summary: (named: PluginEntry | undefined, rows: readonly Check[]) => Check[], extra: readonly Check[] = []): Check[] {
   const named = namedEntry(concern);
-  const entries = sectionPlugins(concern);
-  if (entries.length === 0) return under(`${concern.label}: none`, summary(undefined, []));
-  return entries.flatMap((entry) => {
+  const sections = sectionPlugins(concern).flatMap((entry) => {
     const rows = pluginRowsOf(entry);
     return under(sectionHeader(concern.label, entry), entry === named ? [...rows, ...summary(entry, rows)] : rows);
   });
+  // A concern no plugin runs still has its row (the provider is none, or names a plugin the registry does not hold), whether or not another plugin of it failed.
+  return named === undefined ? [...sections, ...under(`${concern.label}: none`, [...extra, ...summary(undefined, extra)])] : sections;
 }
 
 const concernOf = (health: PluginHealth, concern: Concern): ConcernEntry => health.concerns.find((entry) => entry.concern === concern)!;
@@ -389,7 +389,10 @@ const concernOf = (health: PluginHealth, concern: Concern): ConcernEntry => heal
  * `project.json`'s `messaging` key (not a provider block); a key the messaging reader refuses is the row's failure.
  */
 function messagingSections(health: PluginHealth): Check[] {
-  const { messaging } = health;
+  const { messaging, messagingFailure } = health;
+  const named = namedEntry(concernOf(health, "messaging"));
+  // A key that names a plugin the registry does not hold has no entry to fail: its refusal is the row.
+  const unknown = named === undefined && messagingFailure !== null && messaging.provider !== null ? [pluginFailed(messaging.provider, messagingFailure.why, messagingFailure.fix)] : [];
   return concernSections(concernOf(health, "messaging"), (_entry, rows) => {
     if (messaging.provider === null) return [ok("messaging (none)", messaging.why)];
     const { provider } = messaging;
@@ -399,7 +402,7 @@ function messagingSections(health: PluginHealth): Check[] {
     const where = "configured in project.json's messaging key";
     return [failing.length === 0 ? ok(name, rows.length === 0 ? where : `${where}, and its checks pass`)
       : failed(name, `${where}: ${failing.map((check) => check.detail).join("; ")}`, failing[0].fix ?? "fix the check it summarises")];
-  });
+  }, unknown);
 }
 
 /** The machine checks a provider's row summarises beside its plugin's own rows. */
@@ -414,7 +417,7 @@ const registrySection = (health: PluginHealth): Check[] => under("refused by the
  */
 function hostlessSections(health: PluginHealth): Check[] {
   const codeHost = concernOf(health, "codeHost").plugins.filter((plugin) => plugin.enabled || plugin.installed);
-  return [...codeHost.flatMap(pluginRowsOf), ...registrySection(health)];
+  return [...codeHost.flatMap(pluginRowsOf), ...messagingSections(health), ...registrySection(health)];
 }
 
 /** Every plugin section, in the order tracker, code host, publisher, reviewer, exposure, messaging, then what the registry refused. */

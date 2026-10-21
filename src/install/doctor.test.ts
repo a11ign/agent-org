@@ -1003,3 +1003,30 @@ test("A11-163: the messaging section is headed by its plugin, and a project with
   const at = lines.indexOf("messaging: telegram (enabled, contract 1.1, plugins/telegram)");
   assert.deepEqual(lines.slice(at + 1, at + 3), ["  ok    telegram token file: readable by no one else", "  ok    messaging (telegram): configured in project.json's messaging key, and its checks pass"]);
 });
+
+test("A11-163: a messaging key that names a plugin the registry does not hold is a FAIL, in its own section, as it was; it is not read as no messaging", async () => {
+  const state = { provider: "nope", enabled: true, settings: {} } as const;
+  const checks = await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state, messagingChecks: async () => { throw new Error("messaging: no provider named nope is installed"); } }) }));
+  const row = byName(checks);
+  assertRow(row, "plugin nope", { ok: false, detail: "messaging: no provider named nope is installed" });
+  assert.equal(row["messaging (nope)"].ok, false);
+  assert.equal(checks.every((check) => check.ok), false, "so the run fails, as it did");
+  assert.ok(linesOf(checks).includes("messaging: none"));
+});
+
+test("A11-163: a concern no plugin runs keeps its row when another plugin of it failed to load", async () => {
+  const unread = fakeOf("fake-reviewer", { contract: "2.0", where: "core", movedBy: "A11-999" });
+  const checks = byName(await diagnose(deps({ agentOrgPlugins: fakeAgentOrgPlugins({ catalog: () => catalogWith([unread]) }) })));
+  assertRow(checks, "plugin fake-reviewer", { ok: false });
+  assertRow(checks, "reviewer (none)", { ok: true });
+});
+
+test("A11-163: a host file the reader refuses still shows the messaging rows, as it always did", async () => {
+  const state = { provider: "telegram", enabled: true, settings: {} } as const;
+  const refusedText = JSON.stringify({ tickets: { port: "x" } });
+  const checks = byName(await diagnose(deps({ readFile: () => refusedText, agentOrgPlugins: fakeAgentOrgPlugins({ messaging: async () => state,
+    messagingChecks: async () => [{ name: "telegram token file", ok: false, detail: "mode 0644", fix: "chmod 600 the token" }] }) })));
+  assert.equal(checks["host file"].ok, false);
+  assertRow(checks, "telegram token file", { ok: false });
+  assertRow(checks, "messaging (telegram)", { ok: false, fix: "chmod 600 the token" });
+});

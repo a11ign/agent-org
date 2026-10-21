@@ -1,5 +1,6 @@
 // no-token: none -- pure: a host object, the real catalog and the loader's result as data
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { resolveProviders } from "../ticket-mode/providers.ts";
 import { fillCommand, type PluginHealth, pluginHealth, sectionHeader, sectionPlugins } from "./health.ts";
@@ -172,7 +173,7 @@ test("A11-163: messaging is read from the project's key: a plugin it names is in
   const health = healthOf(FRESH, { messaging });
   const telegram = pluginOf(health, "telegram");
   assert.deepEqual([telegram.state, telegram.installed, concernOf(health, "messaging").enabled], ["enabled", true, "telegram"]);
-  assert.equal(telegram.secrets[0].command, "( umask 077; read -rs -p \"bot token: \" T; printf '%s' \"$T\" > ~/.config/agent-org/bot.token )");
+  assert.equal(telegram.secrets[0].command, "( umask 077; printf 'bot token: ' >&2; stty -echo; read -r SECRET; stty echo; printf '\\n' >&2; printf '%s' \"$SECRET\" > ~/.config/agent-org/bot.token )");
   const off = pluginOf(healthOf(FRESH, { messaging: { ...messaging, enabled: false } }), "telegram");
   assert.deepEqual([off.state, off.controls.offered], ["disabled", ["enable", "uninstall", "configure"]]);
 });
@@ -192,4 +193,30 @@ test("A11-163: an entry names the schema keys of its own settings, so the page d
   assert.ok(pluginOf(health, "tailscale").settingKeys.includes("tickets.providers.exposure.tailnetPorts"));
   assert.equal(pluginOf(health, "local").settingKeys.includes("tickets.providers.exposure.tailnetPorts"), false, "a setting of another plugin of the concern is not its own");
   assert.deepEqual(pluginOf(health, "atomic").settingKeys, [], "a plugin that declares none has none");
+});
+
+test("A11-163: a value filled into a command is one word of it: a path with a space or a metacharacter is quoted, and a path with a ~ is left for the shell to expand", () => {
+  assert.equal(fillCommand("cp key {value}", "/home/me/.config/agent-org/linear.key"), "cp key /home/me/.config/agent-org/linear.key");
+  assert.equal(fillCommand("cp key {value}", "~/keys/linear.key"), "cp key ~/keys/linear.key");
+  assert.equal(fillCommand("cp key {value}", "/home/me/my keys/linear.key"), "cp key '/home/me/my keys/linear.key'");
+  assert.equal(fillCommand("cp key {value}", "/k/$(touch pwned);x"), "cp key '/k/$(touch pwned);x'", "a metacharacter is text");
+  assert.equal(fillCommand("cp key {value}", "/k/it's"), "cp key '/k/it'\\''s'");
+});
+
+test("A11-163: every secret command the shipped plugins show parses in the shells a person may have: zsh reads `read -p` as a coprocess, so none uses it", () => {
+  const commands = defaultCatalog().plugins.flatMap((plugin) => Object.values(plugin.settings)).flatMap((entry) => (entry.setCommand === undefined ? [] : [entry.setCommand]));
+  assert.ok(commands.length >= 6);
+  for (const command of commands) {
+    assert.doesNotMatch(command, /\bread\b[^;)]*\s-[a-z]*[ps]/, `a prompt is printed, not read with -p: ${command}`);
+    const text = command.replace(/\{value\|([^}]*)\}/g, "$1");
+    const probes = { sh: spawnSync("sh", ["-n", "-c", text], { encoding: "utf8" }), bash: spawnSync("bash", ["-n", "-c", text], { encoding: "utf8" }), zsh: spawnSync("zsh", ["-n", "-c", text], { encoding: "utf8" }) };
+    for (const [shell, probe] of Object.entries(probes)) if (probe.error === undefined) assert.equal(probe.status, 0, `${shell} parses ${command}: ${probe.stderr}`);
+  }
+});
+
+test("A11-163: the answer sent to the page carries the plugin the messaging key names and whether it is on, and none of the key's settings", () => {
+  const messaging: MessagingState = { provider: "telegram", enabled: true, settings: { tokenFile: "~/.config/agent-org/bot.token", pasted: "123:SECRET-TOKEN" } };
+  const health = healthOf(FRESH, { messaging });
+  assert.deepEqual(health.messaging, { provider: "telegram", enabled: true, settings: {} });
+  assert.doesNotMatch(JSON.stringify(health), /SECRET-TOKEN/);
 });

@@ -89,8 +89,10 @@ export type ConcernEntry = Readonly<{
 
 export type PluginHealth = Readonly<{
   version: string;
-  /** What the project's `messaging` key says, which doctor's messaging section words. */
+  /** What the project's `messaging` key says, which doctor's messaging section words: the plugin it names and whether it is on, and none of its settings (the answer goes to the page). */
   messaging: MessagingState;
+  /** Why the plugin the `messaging` key names could not be asked for its checks, when it names one the registry does not hold. */
+  messagingFailure: Failure | null;
   concerns: readonly ConcernEntry[];
   /** Packages the registry refused, which name no concern: a red row each. */
   refused: readonly Readonly<{ plugin: string; failure: Failure }>[];
@@ -116,9 +118,15 @@ const ENABLE_FIX = "fix the check it summarises";
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The command a template becomes: `{value}` is the setting's value, and `{value|fallback}` takes the fallback when the file holds none (`<value>` when there is none either). */
+/** A value as one word of a shell command: bare when it holds only characters a shell leaves alone (a path with `~` stays one a shell expands), else in single quotes, so a space or a metacharacter in it is text. */
+const shellWord = (value: string): string => (/^[A-Za-z0-9_@%+=:,./~-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`);
+
+/**
+ * The command a template becomes: `{value}` is the setting's value, quoted for the shell, and `{value|fallback}` takes the template's own fallback when the file holds none (`<value>` when there
+ * is none either).
+ */
 export function fillCommand(template: string, value: unknown): string {
-  const held = typeof value === "string" && value !== "" ? value : null;
+  const held = typeof value === "string" && value !== "" ? shellWord(value) : null;
   return template.replace(/\{value(?:\|([^}]*))?\}/g, (_match, fallback: string | undefined) => held ?? fallback ?? "<value>");
 }
 
@@ -224,7 +232,8 @@ export function pluginHealth(input: HealthInput): PluginHealth {
   const context: PlanContext = { providers: input.providers, catalog: input.catalog, messaging: input.messaging };
   return {
     version: input.version,
-    messaging: input.messaging,
+    messaging: input.messaging.provider === null ? input.messaging : { ...input.messaging, settings: {} },
+    messagingFailure: input.messagingFailure ?? null,
     concerns: CONCERNS.map((concern) => concernEntry(concern, input, context)),
     refused: input.catalog.refusals.map(({ plugin, why }) => ({ plugin, failure: { why, fix: REFUSED_PACKAGE_FIX } })),
   };
