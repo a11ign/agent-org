@@ -92,6 +92,12 @@ function providersOf(host: Record<string, unknown>, catalog: Catalog): Providers
   }
 }
 
+/** What the plan functions read: the providers the host file resolves to, the catalog, and what the project says of messaging. A host file the reader refuses is a command refusal. */
+export async function planContextOf(deps: Pick<PluginCliDeps, "hostPath" | "catalog" | "projectPath">): Promise<PlanContext> {
+  const host = readHost(deps.hostPath);
+  return { providers: providersOf(host, deps.catalog), catalog: deps.catalog, messaging: await messagingStateOf(host, deps.projectPath) };
+}
+
 /** The plugin's module and implementation, loaded for this machine to release what it put there. A plugin whose code is not a bundled module has nothing to release. */
 export async function loadOutgoing(plugin: CatalogPlugin, settings: PluginSettings, importModule: ImportModule = (url) => import(url)): Promise<Outgoing> {
   if (plugin.where !== "bundled" || plugin.dir === null || plugin.entry === null) return { machineName: null, release: () => ({ ok: true, detail: "" }) };
@@ -149,11 +155,14 @@ function releasePlugin(plan: Plan, outgoing: Outgoing | null): string {
   return released.detail;
 }
 
-/** Writes a plan through the page's path, and says what changed. A refusal of the readers, of a release or of a dangerous key is thrown as a command refusal. */
-async function write(plan: Plan, deps: PluginCliDeps, confirmed: readonly string[]): Promise<void> {
+/**
+ * Writes a plan through the page's path, and says what changed. A refusal of the readers, of a release or of a dangerous key is thrown as a command refusal. `base` is the hash of the file as
+ * the caller last read it (the Settings page's): a file that has changed since is refused, and nothing is released or written (A11-163). Answers when each change is in force, one sentence each.
+ */
+export async function writePlan(plan: Plan, deps: PluginCliDeps, confirmed: readonly string[], base?: string): Promise<readonly string[]> {
   if (plan.changes.length === 0) {
     deps.log(plan.said);
-    return;
+    return [];
   }
   const options = { hostPath: deps.hostPath, projectPath: deps.projectPath, plugins: true } as const;
   const file: EditFile = plan.file ?? "host.json";
@@ -161,6 +170,7 @@ async function write(plan: Plan, deps: PluginCliDeps, confirmed: readonly string
   const changes = withoutOwnTerminal(plan, outgoing);
   try {
     const preview = await previewEdit(options, file, changes);
+    if (base !== undefined && base !== preview.base) throw new PluginCommandRefusal("the file changed since you looked: read it again");
     refuseUnconfirmed(preview.changes, confirmed);
     const released = releasePlugin(plan, outgoing);
     const saved = await saveEdit(options, file, changes, { base: preview.base, confirmed });
@@ -168,8 +178,10 @@ async function write(plan: Plan, deps: PluginCliDeps, confirmed: readonly string
     if (changes.length < plan.changes.length) deps.log(`dropped ${plan.ownTerminal?.key}, which named ${plan.leaves?.plugin.name}'s own address (${plan.ownTerminal?.address})`);
     deps.log(plan.said);
     for (const change of saved.changes) deps.log(`  ${change.key}: ${change.old} -> ${change.new}${change.changed ? "" : " (unchanged)"}`);
-    for (const inForce of new Set(saved.changes.map((change) => change.inForce))) deps.log(`  ${inForce}`);
+    const inForce = [...new Set(saved.changes.map((change) => change.inForce))];
+    for (const sentence of inForce) deps.log(`  ${sentence}`);
     deps.log(`  the file before this change is ${saved.backup}`);
+    return inForce;
   } catch (error) {
     if (!(error instanceof SettingsEditRefusal)) throw error;
     throw new PluginCommandRefusal(/needs a second confirmation/.test(error.message) ? `${error.message}. Run it again with --confirm to make the change` : error.message);
@@ -200,7 +212,7 @@ async function configure(call: Invocation, context: PlanContext, deps: PluginCli
     return;
   }
   const plan = planConfig(call.name, { sets, unsets: call.unsets }, context);
-  await write(plan, deps, confirmedBy(plan, call));
+  await writePlan(plan, deps, confirmedBy(plan, call));
 }
 
 /** Plans a command that changes the host file, and writes it. */
@@ -212,7 +224,7 @@ async function change(command: string, call: Invocation, context: PlanContext, d
     uninstall: () => planUninstall(call.name, context),
   };
   const plan = plans[command]();
-  await write(plan, deps, confirmedBy(plan, call));
+  await writePlan(plan, deps, confirmedBy(plan, call));
 }
 
 /** One command: `argv` is what follows `agent-org plugin`. Answers the exit status: 0, 1 for a refusal, 2 for a command that is not one. */
@@ -233,8 +245,7 @@ export async function runPlugin(argv: readonly string[], deps: PluginCliDeps): P
   }
   const call: Invocation = { name, rest, sets: values.set ?? [], unsets: values.unset ?? [], replace: values.replace === true, confirm: values.confirm === true };
   try {
-    const host = readHost(deps.hostPath);
-    const context: PlanContext = { providers: providersOf(host, deps.catalog), catalog: deps.catalog, messaging: await messagingStateOf(host, deps.projectPath) };
+    const context = await planContextOf(deps);
     if (command === "list") deps.log(formatList(viewConcerns(context.providers, deps.catalog, context.messaging), deps.catalog));
     else if (command === "config") await configure(call, context, deps);
     else await change(command, call, context, deps);

@@ -59,6 +59,11 @@ export type SchemaEntry = Readonly<{
   /** A key that turns something on or off: its value of `false` is off. */
   switch?: true;
   secret?: "path" | "keychain";
+  /**
+   * The exact command that sets a `secret` entry's value (A11-163), which the Settings page shows with a copy button because a secret is never typed in the page. `{value}` is the
+   * setting's current value, and `{value|fallback}` takes `fallback` when the file holds none. A plugin's manifest must give one for each of its secret entries.
+   */
+  setCommand?: string;
   /** Further paths this key covers, for a key that takes one of several shapes. */
   also?: readonly string[];
   explanation: string;

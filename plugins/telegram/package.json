@@ -18,6 +18,7 @@
         "absent": "unset",
         "default": null,
         "secret": "path",
+        "setCommand": "( umask 077; read -rs -p \"bot token: \" T; printf '%s' \"$T\" > {value|~/.config/agent-org/telegram-token} )",
         "explanation": "The file holding the bot's token, read by reference and never shown. It must be a regular file of mode 0600 owned by the running user.",
         "breaks": "A path outside ~/.config/agent-org/, or a file others can read, is refused by name, and nothing is sent.",
         "edit": {
@@ -33,6 +34,7 @@
         "absent": "unset",
         "default": null,
         "secret": "path",
+        "setCommand": "agent-org messaging:pair",
         "explanation": "The file `messaging:pair` writes with the chairman's Telegram ids. Nobody types the ids anywhere.",
         "breaks": "A path outside ~/.config/agent-org/ is refused by name. Until the chairman has paired, the file is absent and nothing can be sent.",
         "edit": {
@@ -48,6 +50,7 @@
         "absent": "default",
         "default": "announcements go to the chairman's chat",
         "secret": "path",
+        "setCommand": "( umask 077; read -r -p \"announcements chat id: \" C; printf '%s' \"$C\" > {value|~/.config/agent-org/telegram-announcements} )",
         "explanation": "The file holding the chat id of a one-way announcements channel. Absent, announcements go to the chairman's chat.",
         "breaks": "A path outside ~/.config/agent-org/ is refused by name; a file holding anything but one chat id is refused when the provider is built.",
         "edit": {

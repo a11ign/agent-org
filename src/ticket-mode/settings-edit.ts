@@ -237,6 +237,12 @@ async function planned(options: EditOptions, file: EditFile, changes: readonly C
   return { ...located, base, next, changes: resolved.map((r) => r.shown), dangerous: resolved.filter((r) => r.shown.dangerous !== null && r.shown.changed) };
 }
 
+/** The `base` of a file as a save checks it: what the page holds to say which text it read. Reads the file and writes nothing (A11-163). */
+export async function baseOf(options: EditOptions, file: EditFile): Promise<string> {
+  const located = await locate(options, file, options.fs ?? NODE_FS);
+  return createHash("sha256").update(located.text).digest("hex");
+}
+
 /** What a save would change, for the page to show before it asks to confirm. Writes nothing. */
 export async function previewEdit(options: EditOptions, file: EditFile, changes: readonly Change[]): Promise<Preview> {
   const fs = options.fs ?? NODE_FS;

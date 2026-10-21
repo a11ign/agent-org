@@ -32,6 +32,7 @@
         "absent": "unset",
         "default": null,
         "secret": "path",
+        "setCommand": "( umask 077; read -rs -p \"Linear API key: \" K; printf '%s' \"$K\" > {value|~/.config/agent-org/linear.key} )",
         "explanation": "The file the tracker's key is in. The file must be readable by no one else.",
         "breaks": "A wrong path means the board cannot read the tracker.",
         "edit": {
@@ -50,6 +51,7 @@
         "absent": "unset",
         "default": null,
         "secret": "keychain",
+        "setCommand": "security add-generic-password -a \"$USER\" -s {value|agent-org-linear} -w",
         "explanation": "The Keychain service that holds the tracker's key. This page names the service and does not read the key.",
         "breaks": "A service with no key there means the board cannot read the tracker.",
         "edit": {

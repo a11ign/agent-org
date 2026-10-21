@@ -215,3 +215,23 @@ test("every run action the page can send to an instance is passed on, so no butt
   // Start anyway is an override of an overlap wait that only the machine's own board offers: the proxy has never passed it on.
   for (const verb of verbs.filter((v) => v !== "start-anyway")) assert.equal(passedOn("POST", `/api/queue/NBF-1/${verb}`), true, verb);
 });
+
+test("A11-163: the Plugins section is read through any connection, and its actions are the machine's own instance's: refused for an ssh or an https connection before anything is sent", async () => {
+  assert.equal(passedOn("GET", "/api/plugins"), true, "the section's read is passed on");
+  assert.equal(passedOn("POST", "/api/plugins"), false, "and writes nothing");
+  assert.equal(passedOn("POST", "/api/plugins/action"), true);
+  assert.equal(passedOn("GET", "/api/plugins/action"), false, "an action is a POST");
+  const LOCAL: Connection = { name: "local", kind: "local" };
+  const LAB: Connection = { name: "lab", kind: "https", origin: "https://agents.example.ts.net", keyFile: "/k" };
+  const sent: string[] = [];
+  const forward = async (_target: Target, request: { path: string }) => { sent.push(request.path); return { status: 200, body: "{}" }; };
+  const target = overSsh("/unused.sock");
+  assert.deepEqual(await proxy(fixed(target, LOCAL).remotes, "local", { method: "POST", path: "/api/plugins/action", body: "{}" }, forward), [200, {}]);
+  for (const remote of [PERSONAL, LAB]) {
+    assert.deepEqual(await proxy(fixed(target, remote).remotes, remote.name, { method: "GET", path: "/api/plugins", body: null }, forward), [200, {}], `${remote.name} is read`);
+    const [status, body] = await proxy(fixed(target, remote).remotes, remote.name, { method: "POST", path: "/api/plugins/action", body: "{}" }, forward);
+    assert.equal(status, 403, `an action over ${remote.kind}`);
+    assert.match((body as { error: string }).error, new RegExp(`${remote.name}'s settings are not changed from here`));
+  }
+  assert.deepEqual(sent, ["/api/plugins/action", "/api/plugins", "/api/plugins"], "the local action and both reads were sent, and neither remote action");
+});

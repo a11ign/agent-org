@@ -79,6 +79,7 @@
         "absent": "unset",
         "default": null,
         "secret": "path",
+        "setCommand": "install -m 600 <the .pem GitHub downloaded> {value|<key file>}",
         "explanation": "The file of the App's private key. The key is never read by this page.",
         "breaks": "Required with github-apps. A wrong path means the role cannot mint its token.",
         "edit": {

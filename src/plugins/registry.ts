@@ -130,6 +130,9 @@ function settingsOf(concern: Concern, declared: unknown): Readonly<Record<string
     if (!isSchemaEntry(entry)) return `agentOrg.settings.${name} must be a schema entry with a key, type, explanation, breaks and edit`;
     if (entry.key !== `${keyPrefix}.${name}`) return `agentOrg.settings.${name}.key must be ${keyPrefix}.${name}, not ${JSON.stringify(entry.key)}`;
     if (entry.file !== file) return `agentOrg.settings.${name}.file must be ${file}: ${concern} is configured there, not in ${JSON.stringify(entry.file)}`;
+    // A secret is never typed in the Settings page (A11-163), so the page shows the command that sets it: a manifest that names a secret and no such command is refused.
+    if (entry.secret !== undefined && !isText(entry.setCommand)) return `agentOrg.settings.${name} is a secret (${entry.secret}) and must declare setCommand, the exact command that sets it: the Settings page shows it and never takes a secret`;
+    if (entry.setCommand !== undefined && !isText(entry.setCommand)) return `agentOrg.settings.${name}.setCommand must be the command as text`;
     // A part of a list's items (`gh.leadsWorkspaces[].id`) is a part of the list (`gh.leadsWorkspaces`).
     const parent = name.includes(".") ? name.slice(0, name.lastIndexOf(".")).replace(/\[\]$/, "") : null;
     if (parent !== null && !(parent in declared)) return `agentOrg.settings.${name} is a part of ${parent}, which the manifest does not declare`;
