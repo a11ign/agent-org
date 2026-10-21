@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { type HookCommand } from "./worker-files.ts";
 import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
-import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.ts";
+import { type TicketSettings, HOST_FILE_ENV, claimantOf, plansInBatches } from "./settings.ts";
 import { type TicketSource } from "./source.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
@@ -144,7 +144,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const gateRefusal = reviewerOn ? reviewerRefusal() : null;
   if (gateRefusal !== null) log(`tickets.reviewer is set, but no reviewer starts: ${gateRefusal}`);
   /** The reviewer a machine with `tickets.reviewer` starts for each settled head: the atomic one unless the caller injected another. */
-  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads, clones: settings.clones });
+  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads, clones: settings.clones, instance: claimantOf(settings) });
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
   const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts } = reviewerMemory;
   /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */

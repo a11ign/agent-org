@@ -23,9 +23,10 @@ import { defaultBinDir } from "./worker-files.ts";
 import { isLinearConnector, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { defaultTakenStates } from "./pick-taken.ts";
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { dirname, isAbsolute, join } from "node:path";
 
 export { TicketSettingsRefusal };
 
@@ -47,6 +48,8 @@ export type TicketSettings = Readonly<{
   /** The port the board's page (`ticket:ui`) listens on, on 127.0.0.1. */
   uiPort: number;
   herdrSession: string;
+  /** This instance's name: the holder its reviewers' claims on a pull request's head name (A11-149). `tickets.instance`, else the machine's host name. */
+  instance: string;
   worktreeRoot: string;
   stateDir: string;
   /** The host's `binDir`, where the routing `gh` and the launcher `agent-org` are installed. A worker may not write them (A11-84). */
@@ -450,10 +453,54 @@ export function uiPortOf(tickets: Record<string, unknown>): number {
 }
 
 /**
+ * This install's id, eight hex characters kept in its state directory, made the first time it is asked for (A11-149). Two installs that share a host name
+ * have different ids, so their claims name different claimants.
+ */
+export function instanceIdOf(stateDir: string): string {
+  const path = join(stateDir, "tickets", "instance-id");
+  try {
+    const id = readFileSync(path, "utf8").trim();
+    if (/^[0-9a-f]{8}$/.test(id)) return id;
+  } catch {
+    // Not made yet: made below.
+  }
+  const id = randomBytes(4).toString("hex");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${id}\n`);
+  return id;
+}
+
+/**
+ * The name a claim on a head names its instance by: `tickets.instance`, then the install id, so two installs that share a name are two claimants and a claim
+ * by one is never taken as the other's own (A11-149).
+ */
+export function claimantOf(settings: Pick<TicketSettings, "instance" | "stateDir">): string {
+  return `${settings.instance}.${instanceIdOf(settings.stateDir)}`;
+}
+
+/** The longest `tickets.instance` name: a reviewer's claim description names it, and GitHub's status descriptions are 140 characters. */
+const INSTANCE_NAME_LIMIT = 40;
+
+/** The name a machine's instance goes by when `tickets.instance` names none: its host name, with each character a claim may not hold made a hyphen (A11-149). */
+export function defaultInstance(machine: string = hostname()): string {
+  return machine.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, INSTANCE_NAME_LIMIT) || "machine";
+}
+
+/** `tickets.instance` as set, or the machine's default name. A name that is not letters, digits, dots, underscores or hyphens, or is too long, is refused. */
+function instanceOf(value: unknown, machine: string): string {
+  if (value === undefined) return defaultInstance(machine);
+  if (typeof value !== "string" || !new RegExp(`^[A-Za-z0-9._-]{1,${INSTANCE_NAME_LIMIT}}$`).test(value)) {
+    throw new TicketSettingsRefusal("tickets.instance", `must be a name of letters, digits, dots, underscores or hyphens, at most ${INSTANCE_NAME_LIMIT} characters`);
+  }
+  return value;
+}
+
+/**
  * The settings, from the host file's parsed JSON. PURE: the caller reads the file.
  * @param home the user's home directory, for the default state directory
+ * @param machine the machine's host name, which `tickets.instance` defaults to
  */
-export function parseTicketSettings(host: unknown, home: string = homedir()): TicketSettings {
+export function parseTicketSettings(host: unknown, home: string = homedir(), machine: string = hostname()): TicketSettings {
   if (!isObject(host)) throw new TicketSettingsRefusal("(root)", "must be a JSON object");
   const clones = host.clones;
   if (!isObject(clones) || Object.keys(clones).length === 0) {
@@ -465,6 +512,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
   const stateDir = host.stateDir === undefined ? join(home, ".local", "state", "agent-org") : absolutePath(host.stateDir, "stateDir");
   const session = tickets.herdrSession ?? "tickets";
   if (typeof session !== "string" || !/^[A-Za-z0-9_-]+$/.test(session)) throw new TicketSettingsRefusal("tickets.herdrSession", "must be a herdr session name");
+  const instance = instanceOf(tickets.instance, machine);
   const plan = planPattern(tickets.plan);
   const providers = resolveProviders(host);
   const { tracker, codeHost, publish, reviewer, exposure } = providers.blocks;
@@ -489,6 +537,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir()): Ti
     port: portNumber,
     uiPort: uiPortNumber,
     herdrSession: session,
+    instance,
     binDir: host.binDir === undefined ? defaultBinDir(home) : absolutePath(host.binDir, "binDir"),
     worktreeRoot: tickets.worktreeRoot === undefined ? join(stateDir, "tickets", "worktrees") : absolutePath(tickets.worktreeRoot, "tickets.worktreeRoot"),
     stateDir,

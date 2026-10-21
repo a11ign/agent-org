@@ -158,3 +158,13 @@ test("A11-106: the base's kind is merged when its pull request merged with none 
   assert.equal(baseKindOf({ base: "b", defaultBranch: "main", heads: ["CLOSED"], branchExists: missing }), "gone");
   assert.equal(baseKindOf({ base: "b", defaultBranch: "main", heads: [], branchExists: exists }), "kept");
 });
+
+test("A11-149: two instances sweep one stacked pull request, and one edit moves its base: the second reads the default branch and edits nothing", () => {
+  const fake = fakeGh({ base: "nbf-1-fit", heads: { "nbf-1-fit": ["MERGED"] }, branches: ["nbf-1-fit"] });
+  // Each sweep is one instance's pool, with its own memory of the default branch, and the two share the one pull request on GitHub.
+  const first = sweep([STACKED], fake.gh);
+  const second = sweep([STACKED], fake.gh);
+  assert.deepEqual([first.notes, second.notes], [{}, {}], "neither says anything: the first retargeted it and the second found it done");
+  assert.deepEqual(fake.calls.filter((args) => args[1] === "edit"), [["pr", "edit", STACKED, "--base", "main"]], "exactly one edit reaches GitHub");
+  assert.equal(fake.pulls[STACKED].base, "main", "the base is the default branch after both sweeps");
+});

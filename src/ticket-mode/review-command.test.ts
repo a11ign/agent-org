@@ -5,6 +5,7 @@ import { reviewOnDemand } from "./review-command.ts";
 import { atomicReviewerPort, loadReviewerGate, type ReviewerPort, type ReviewState } from "./reviewer-port.ts";
 
 const URL = "https://github.com/a11ign/control/pull/119";
+const PLUGIN = "https://github.com/a11ign/plugin/pull/7";
 const HEAD = "3aeaba9bd".padEnd(40, "0");
 
 /** A port that records what it was asked, and answers as told. */
@@ -101,11 +102,61 @@ test("an address that is not a pull request is refused before anything is asked,
 
 test("ticket:review starts the reviewer for a repository the host clones and the project does not declare, with no entry in project.json", async () => {
   await loadReviewerGate();
-  const gh = () => JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
-    statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] });
-  const port = atomicReviewerPort({ session: "tickets", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, declared: { exact: ["worker-bot"], pattern: [] },
+  // The pull request, and the head's statuses: a claim is read and written as one tab-separated line per status, as `claimEntriesOf` reads them.
+  const statuses: string[] = [];
+  const gh = (args: string[]) => {
+    if (args.some((arg) => arg.includes("/statuses"))) {
+      if (!args.includes("POST")) return statuses.join("");
+      statuses.push(`${statuses.length + 1}\t${new Date().toISOString()}\t${args.find((arg) => arg.startsWith("description="))!.slice("description=".length)}\n`);
+      return "";
+    }
+    return JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
+      statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] });
+  };
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, declared: { exact: ["worker-bot"], pattern: [] },
     clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }) });
   const r = reviewOnDemand({ url: "https://github.com/a11ign/plugin/pull/7", port, readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /started reviewer-plugin-7 for .*a11ign\/plugin\/pull\/7 at 3aeaba9b/);
+});
+
+/**
+ * A port over a `gh` that holds `claim` on the head (a status line under the claim's context, as `claimEntriesOf` reads it) and answers the pull request
+ * as `HEAD` with green checks, the way the tickets' reviewer reads it. A claim written through `claimGh` lands on the same statuses.
+ */
+function portHolding(statuses: string[], spawned: string[]) {
+  const gh = (args: string[]) => {
+    if (args.some((arg) => arg.includes("/statuses"))) {
+      if (!args.includes("POST")) return statuses.join("");
+      statuses.push(`${statuses.length + 1}\t${new Date().toISOString()}\t${args.find((arg) => arg.startsWith("description="))!.slice("description=".length)}\n`);
+      return "";
+    }
+    return JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
+      statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] });
+  };
+  return atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, declared: { exact: ["worker-bot"], pattern: [] },
+    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
+}
+
+/** `ticket:review` for the plugin's pull request, with a claim by `instance` written `minutesOld` minutes ago on its head: what it answers, and what it started. */
+async function reviewWithClaimBy(instance: string, minutesOld: number) {
+  await loadReviewerGate();
+  const spawned: string[] = [];
+  const since = new Date(Date.now() - minutesOld * 60_000).toISOString();
+  const r = reviewOnDemand({ url: PLUGIN, port: portHolding([`1\t${since}\tclaimed by ${instance} at ${since}, lease 60 min\n`], spawned), readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
+  return { r, spawned, since };
+}
+
+test("A11-149: ticket:review refuses a head another instance holds, names the holder, and starts nothing", async () => {
+  const { r, spawned } = await reviewWithClaimBy("laptop", 5);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /another instance \(`laptop`\) holds the review of https:\/\/github\.com\/a11ign\/plugin\/pull\/7 at 3aeaba9b since /);
+  assert.deepEqual(spawned, [], "no reviewer is started");
+});
+
+test("A11-149: ticket:review takes over a claim past its lease with no verdict, and says whose and how old", async () => {
+  const { r, spawned } = await reviewWithClaimBy("laptop", 61);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /started reviewer-plugin-7 for .* at 3aeaba9b; took over the claim of laptop, 61 min old with no verdict; its verdict posts/);
+  assert.deepEqual(spawned, ["reviewer-plugin-7"]);
 });

@@ -5,7 +5,9 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { SCHEMA } from "./config-schema.ts";
-import { HOST_FILE_ENV, parseTicketSettings, plansInBatches, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
+import { HOST_FILE_ENV, claimantOf, defaultInstance, instanceIdOf, parseTicketSettings, plansInBatches, readTicketSettings, TicketSettingsRefusal } from "./settings.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const clones = { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform": "/repos/nbl-ui-platform", "platform-monorepo": "/repos/platform-monorepo" };
 
@@ -23,7 +25,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -185,6 +187,9 @@ test("a bad field is refused by its name", () => {
   assert.equal(field({ clones, tickets: { max: 2.5 } }), "tickets.max");
   for (const stallMinutes of [0, -5, 1.5, "30", null]) assert.equal(field({ clones, tickets: { stallMinutes } }), "tickets.stallMinutes", JSON.stringify(stallMinutes));
   assert.equal(field({ clones, tickets: { herdrSession: "has space" } }), "tickets.herdrSession");
+  assert.equal(field({ clones, tickets: { instance: "has space" } }), "tickets.instance");
+  assert.equal(field({ clones, tickets: { instance: "x".repeat(41) } }), "tickets.instance", "a name longer than 40 characters");
+  assert.equal(field({ clones, tickets: { instance: 7 } }), "tickets.instance");
   assert.equal(field({ clones, tickets: { linearKey: { keychain: "x", path: "/y" } } }), "tickets.linearKey");
   const refusals: [Record<string, unknown>, string, string?][] = [
     [{ brief: "notes.md" }, "tickets.brief", "a relative path"],
@@ -332,4 +337,27 @@ test("tickets.preflight: anything else is refused by name and place", () => {
   assert.match(refused([{ name: "x", run: "y", timeoutSeconds: 1.5 }]) ?? "", /timeoutSeconds/);
   assert.match(refused([{ name: "x", run: "a" }, { name: "x", run: "b" }]) ?? "", /tickets\.preflight\[1\]\.name.*twice/);
   assert.match(refused(["just a string"]) ?? "", /tickets\.preflight\[0\]/);
+});
+
+test("A11-149: tickets.instance names this instance, and defaults to the machine's host name with the characters a claim may not hold made hyphens", () => {
+  assert.equal(parseTicketSettings({ clones, tickets: { instance: "work.mac_1-a" } }, "/home/me").instance, "work.mac_1-a");
+  assert.equal(parseTicketSettings({ clones }, "/home/me", "Anna's MacBook Pro").instance, "Anna-s-MacBook-Pro");
+  assert.equal(parseTicketSettings({ clones }, "/home/me", "x".repeat(60)).instance.length, 40, "a host name is cut to 40 characters");
+  assert.equal(parseTicketSettings({ clones }, "/home/me", "").instance, "machine", "a machine with no host name is named machine");
+});
+
+test("A11-149: an install keeps one eight-character id in its state directory, and two state directories are two installs", () => {
+  const first = mkdtempSync(join(tmpdir(), "instance-id-"));
+  const second = mkdtempSync(join(tmpdir(), "instance-id-"));
+  try {
+    const id = instanceIdOf(first);
+    assert.match(id, /^[0-9a-f]{8}$/);
+    assert.equal(instanceIdOf(first), id, "the same install reads the same id again");
+    assert.notEqual(instanceIdOf(second), id, "another install has its own");
+    const settings = parseTicketSettings({ clones, stateDir: first, tickets: { instance: "MacBook" } }, "/home/me");
+    assert.equal(claimantOf(settings), `MacBook.${id}`, "the claimant is the name and the id");
+  } finally {
+    rmSync(first, { recursive: true, force: true });
+    rmSync(second, { recursive: true, force: true });
+  }
 });

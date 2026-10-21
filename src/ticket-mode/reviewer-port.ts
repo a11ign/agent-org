@@ -14,6 +14,8 @@ import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { ORG_SESSION, firstLine, readAgents, type ListedAgent } from "../herdr-agents.ts";
 import { openPullsOf } from "../ticket-port/open-pulls.ts";
 import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
+import { REVIEW_LEASE_MS, claimEntriesOf, claimHead, releasedDescriptionOf, writeClaimStatus } from "../ticket-port/review-claim.ts";
+import { ghWith } from "../lib/tool-version-agreement.ts";
 import { headMatches, reviewVerdict as verdictOfText } from "../review-verdict.ts";
 import type { DoorRun, ReviewTrust } from "../review-trust.ts";
 import type { ReviewWord } from "./board-view/pull-review-state.ts";
@@ -73,7 +75,8 @@ export type ReviewerRef = Readonly<{ pr: string; head: string }>;
  * verdict is posted; retire a pull request's reviewer once it has merged or closed; and list the pull requests whose reviewer workspaces the session holds.
  */
 export type ReviewerPort = Readonly<{
-  start(ref: ReviewerRef): Readonly<{ label: string }> | Readonly<{ refusal: string }>;
+  /** Starts a reviewer, once the head is claimed for this instance. `tookOver` says which expired claim was taken over, when one was (A11-149). */
+  start(ref: ReviewerRef): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }>;
   live(ref: ReviewerRef): boolean;
   close(ref: ReviewerRef): CloseAnswer;
   retire(pr: string): RetireAnswer;
@@ -206,9 +209,12 @@ function repositoryEnvOf(seat: Seat): Record<string, string> {
   return seat.repository === undefined ? {} : { GH_REPO: seat.repository, [host.HOST_CONFIG_ENV]: host.hostConfigPath() };
 }
 
-/** The spawn option a cloned-only seat adds: its environment. Nothing for any other seat, so their spawn is called as it was. */
-function envOptionOf(seat: Seat): { env?: Record<string, string> } {
-  return seat.repository === undefined ? {} : { env: repositoryEnvOf(seat) };
+/**
+ * The environment a reviewer runs with, laid over the reviewer role's (`reviewerEnvironment`): its seat's repository, and the instance's name, which the
+ * verdict door writes its finished claim with (A11-149). A door run without it writes no claim.
+ */
+function reviewerEnvOf(seat: Seat, instance: string): Record<string, string> {
+  return { ...repositoryEnvOf(seat), AGENT_ORG_INSTANCE: instance };
 }
 
 /**
@@ -451,7 +457,7 @@ export function verdictFileIn(tree: string, number: number, head: string): strin
  */
 export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>(),
   removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync,
-  checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor, clones = {} }: {
+  checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor, clones = {}, instance, now = Date.now, claimGh = ghWith }: {
   session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
   spawn?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").spawnReviewer; checkout?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").prepareReviewCheckout; heads?: Map<string, string>;
   removeCheckout?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
@@ -463,8 +469,13 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
   door?: DoorRun;
   /** The host's checkouts (`clones`): a repository one of them names, under the primary's owner, is reviewed with no entry in the project's `code`. */
   clones?: Clones;
+  /** This instance's name (`tickets.instance`): the holder a head's claim names, and what the verdict door writes its finished claim with (A11-149). */
+  instance: string;
+  now?: () => number;
+  /** The `gh` a claim is written with, as the reviewer role: given the reviewer's environment, a `gh` that runs with it. */
+  claimGh?: (env: Record<string, string>) => (args: string[]) => string;
 }): ReviewerPort {
-  const seams: AtomicSeams = { session, run, gh, declared, spawn, checkout, heads, removeCheckout, uncommittedPaths, exists, checkoutOf, mint, door, clones };
+  const seams: AtomicSeams = { session, run, gh, declared, spawn, checkout, heads, removeCheckout, uncommittedPaths, exists, checkoutOf, mint, door, clones, instance, now, claimGh };
   return {
     live: (ref) => liveReviewer(seams, ref),
     start: (ref) => startReviewer(seams, ref),
@@ -529,7 +540,57 @@ function liveReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): boolean {
   return !("refusal" in seat) && seams.heads.get(seat.label) === head && (listedOf(seams)?.some((agent) => agent.label === seat.label) ?? false);
 }
 
-function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<{ label: string }> | Readonly<{ refusal: string }> {
+/**
+ * Writes a status under the claim's context on `sha` in `repo`, as the reviewer role: the identity the door posts as, whose token is minted in the checkout
+ * first. The one writer of a claim and of its release (A11-149).
+ */
+function claimWriterOf(seams: AtomicSeams, seat: Seat, { repo, sha, tree }: { repo: string; sha: string; tree: string }): (description: string) => void {
+  const gh = seams.claimGh(reviewerGate().wake.reviewerEnvironment(seat.label, repositoryEnvOf(seat), tree));
+  return (description) => writeClaimStatus({ repo, sha, description, gh });
+}
+
+/**
+ * Claims the head for this instance before its reviewer starts (A11-149). A mint that fails is a refusal, as a claim that cannot be written is. Returns the
+ * takeover note when an expired claim was taken over, or the refusal that starts nothing: another instance holds the head, the review is posted, or the
+ * claim could not be made.
+ */
+function claimOf(seams: AtomicSeams, seat: Seat, { pr, head, tree }: { pr: string; head: string; tree: string }): Readonly<{ tookOver: string | null }> | Readonly<{ refusal: string }> {
+  const pull = pullOf(pr);
+  if (pull === null) return { refusal: `no reviewer for ${pr}: it is not a pull request url` };
+  const minted = seams.mint(tree);
+  if (minted !== null) return { refusal: `no reviewer for ${pr}: ${minted}` };
+  const { repository } = pull;
+  const answer = claimHead({
+    instance: seams.instance, now: seams.now(),
+    read: () => claimEntriesOf({ repo: repository, sha: head, gh: seams.gh }),
+    write: claimWriterOf(seams, seat, { repo: repository, sha: head, tree }),
+  });
+  switch (answer.outcome) {
+    case "won": return { tookOver: answer.tookOver };
+    case "held": return { refusal: `another instance (\`${answer.instance}\`) holds the review of ${pr} at ${head.slice(0, 8)} since ${new Date(answer.since).toISOString()}; its lease ends ${new Date(answer.since + REVIEW_LEASE_MS).toISOString()}` };
+    case "finished": return { refusal: `no reviewer for ${pr}: its review at ${head.slice(0, 8)} is already posted (${answer.description})` };
+    case "unclaimed":
+      // A claim whose read-back failed may be on GitHub already: released, so it does not hold the head for its whole lease.
+      releaseClaim(seams, seat, { pr, head, tree });
+      return { refusal: `no reviewer for ${pr}: its claim at ${head.slice(0, 8)} could not be made (${answer.reason}), so none is started` };
+  }
+}
+
+/**
+ * Gives up this instance's claim on a head whose reviewer did not start (A11-149), so another instance may take the head now rather than when the lease ends.
+ * Best effort: a release that cannot be written leaves the claim to expire with its lease, which is the state a release is for avoiding and no worse.
+ */
+function releaseClaim(seams: AtomicSeams, seat: Seat, { pr, head, tree }: { pr: string; head: string; tree: string }): void {
+  const pull = pullOf(pr);
+  if (pull === null) return;
+  try {
+    claimWriterOf(seams, seat, { repo: pull.repository, sha: head, tree })(releasedDescriptionOf({ instance: seams.instance, now: seams.now() }));
+  } catch {
+    // Left to expire with its lease, as the comment above says.
+  }
+}
+
+function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }> {
   const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return seat;
   const { trust } = reviewerGate();
@@ -545,13 +606,22 @@ function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<
   if (stale) closeWorkspace(seams.run, seams.session, seat.label);
   const tree = seams.checkout({ pr: seat.number, session: seat.label, trust: trust.INSIDE, ...rootOf(seat) });
   if ("refusal" in tree) return tree;
+  // The claim comes before the spawn: an instance that holds the head starts nothing, and a claim that cannot be made starts nothing either (A11-149).
+  const claimed = claimOf(seams, seat, { pr, head, tree: tree.path });
+  if ("refusal" in claimed) return claimed;
   const started = seams.spawn({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
-    agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(seams), cwd: tree.path, ...envOptionOf(seat) });
-  if ("refusal" in started) return started;
+    agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(seams), cwd: tree.path, env: reviewerEnvOf(seat, seams.instance) });
+  if ("refusal" in started) {
+    releaseClaim(seams, seat, { pr, head, tree: tree.path });
+    return started;
+  }
   const prompted = sendPrompt(seams, seat, state, head);
-  if ("refusal" in prompted) return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
+  if ("refusal" in prompted) {
+    releaseClaim(seams, seat, { pr, head, tree: tree.path });
+    return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
+  }
   seams.heads.set(seat.label, head);
-  return { label: seat.label };
+  return claimed.tookOver === null ? { label: seat.label } : { label: seat.label, tookOver: claimed.tookOver };
 }
 
 function settledReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): ReviewerSettled {
@@ -575,7 +645,7 @@ function repostReviewerVerdict(seams: AtomicSeams, { pr, head }: ReviewerRef, fi
   const minted = seams.mint(tree);
   if (minted !== null) return { refusal: minted, final: false };
   try {
-    seams.door(reviewerGate().doorPath.reviewerDoorPath(), [String(seat.number), word, file], reviewerGate().wake.reviewerEnvironment(seat.label, repositoryEnvOf(seat), tree));
+    seams.door(reviewerGate().doorPath.reviewerDoorPath(), [String(seat.number), word, file], reviewerGate().wake.reviewerEnvironment(seat.label, reviewerEnvOf(seat, seams.instance), tree));
     return { posted: true };
   } catch (err) {
     const status = (err as { status?: number | null }).status ?? null;

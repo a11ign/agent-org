@@ -86,6 +86,8 @@ that starts up adopts the runs herdr lists and carries on watching them: it send
 reviewer it started for a head is not started again. A herdr server an older instance started is still inside that instance's service, so the
 first restart after updating to this version still stops it; update waits for no run to be live before it does.
 
+**Two instances review a head once.** Every instance sweeps the open pull requests of the repositories it clones, and starts a reviewer on each new head whose checks are green. Two instances on one project (the agents host and a laptop, say) would both see a new head before either had posted, so before a reviewer starts, the instance claims the head on GitHub: a commit status `agent-org/review` on the head, which every instance can read, whose description names the instance and the time (`claimed by <instance> at <time>, lease 60 min`). An instance that finds another's live claim on the head starts nothing, and `ticket:review` says which instance holds it. A claim is live for its lease (`REVIEW_LEASE_MINUTES`, 60 minutes) and has no verdict; a claim older than that is taken over, and the board says so. The verdict door sets the claim to the verdict when the review posts (`convinced by <instance> at <time>`), so the head reads as finished. The instance's name is `tickets.instance`, which defaults to the machine's host name. A claim that cannot be written starts no reviewer, and the board says why.
+
 **The host file without `AGENT_ORG_HOST`.** Every command finds the host file in this order: `$AGENT_ORG_HOST`, then the path in
 `~/.agent-org/host-file` (which onboard writes), then the `AGENT_ORG_HOST` in the instance service's unit, then `~/.agent-org/host.json`.
 A `ticket:*` command started with no `AGENT_ORG_HOST` gets that path. With no `GH_CONFIG_DIR`, it also gets the workers' `gh` account the host
@@ -463,6 +465,7 @@ Ticket mode's settings are grouped into provider blocks under `tickets.providers
 | [`tickets.serve`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.servePorts`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.herdrSession`](src/ticket-mode/config-schema.ts) | |
+| [`tickets.instance`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.worktreeRoot`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.linearKey`](src/ticket-mode/config-schema.ts) | |
 | [`tickets.brief`](src/ticket-mode/config-schema.ts) | |

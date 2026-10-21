@@ -15,7 +15,7 @@ import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { herdrRun } from "../herdr-agents.ts";
 import { atomicReviewerPort, loadReviewerGate, readReviewerMemory, readReviewState, reviewerMemoryPath, reviewerRefusal, reviewPostedAt, reviewWordAt, type ReviewerMemory, type ReviewerPort, type ReviewState, writeReviewerMemory } from "./reviewer-port.ts";
-import { readTicketSettings } from "./settings.ts";
+import { claimantOf, readTicketSettings } from "./settings.ts";
 
 /** A pull request's address as GitHub prints it: `https://github.com/<owner>/<repo>/pull/<number>`. */
 const PULL_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
@@ -43,7 +43,8 @@ export function reviewOnDemand({ url, head, port, readState, started, record }: 
   const launched = port.start({ pr: url, head: at });
   if ("refusal" in launched) return { code: 1, out: `ticket:review: ${launched.refusal}` };
   record(launched.label, `${url}@${at}`, at);
-  return { code: 0, out: `ticket:review: started ${launched.label} for ${url} at ${at.slice(0, 8)}; its verdict posts as a review on the pull request` };
+  const takeover = launched.tookOver === undefined ? "" : `; ${launched.tookOver}`;
+  return { code: 0, out: `ticket:review: started ${launched.label} for ${url} at ${at.slice(0, 8)}${takeover}; its verdict posts as a review on the pull request` };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
@@ -61,7 +62,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   }
   const path = reviewerMemoryPath(settings.stateDir);
   const { memory } = readReviewerMemory(path);
-  const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, heads: memory.heads, clones: settings.clones });
+  const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, heads: memory.heads, clones: settings.clones, instance: claimantOf(settings) });
   const { code, out } = reviewOnDemand({ url, head, port, readState: (u) => readReviewState(u, defaultGh), started: memory.started, record: (label, key, at) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
