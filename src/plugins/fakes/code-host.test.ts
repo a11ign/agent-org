@@ -40,7 +40,7 @@ test("the fake leaves out what the caller's own login wrote, as the contract say
 
 test("a code host that answers an empty reading for a pull request it cannot read fails by name", async () => {
   const { host, probe } = seeded();
-  const lying: CodeHost = { ...host, readPullFeedback: (url, self) => host.readPullFeedback(url, self) ?? { state: "open", feedbackAt: null, authors: [], failing: [], failedAt: null, conflicting: false, base: null, files: [], filesComplete: true } };
+  const lying: CodeHost = { ...host, readPullFeedback: (url, self) => host.readPullFeedback(url, self) ?? { state: "open", feedbackAt: null, authors: [], failing: [], failedAt: null, conflicting: false, mergeable: false, head: null, approvedAtHead: false, base: null, files: [], filesComplete: true } };
   await assert.rejects(runCodeHostConformance(lying, probe), (error: unknown) => error instanceof ContractError && error.concern === "codeHost"
     && error.failures.map(({ check }) => check).join() === "readPullFeedback answers null for a pull request it cannot read");
 });
@@ -75,4 +75,14 @@ test("a subscription is called for the events it names and no longer once cancel
   cancel();
   host.emit({ kind: "head-moved", ref: probe.change, at: "t", actor: null });
   assert.deepEqual(seen, ["head-moved"]);
+});
+
+test("the fake says a pull request is approved at its head only for an approval by someone else on the head it holds", () => {
+  const host = createFakeCodeHost();
+  const review = (author: string, commit: string) => ({ author, state: "APPROVED", commit, at: 1 });
+  const { url } = host.seedPull("owner/repo", 5, { head: "h5", reviews: [review("a-person", "h5"), review("fake-worker", "h5"), review("a-person", "older")] });
+  assert.equal(host.readPullFeedback(url, "someone-else")?.approvedAtHead, true);
+  const own = host.seedPull("owner/repo", 6, { head: "h6", reviews: [review("fake-worker", "h6"), review("a-person", "older")] });
+  assert.equal(host.readPullFeedback(own.url, "fake-worker")?.approvedAtHead, false, "the caller's own approval, and one on an earlier head, are not approval of this head");
+  assert.deepEqual([host.readPullFeedback(url, "x")?.head, host.readPullFeedback(url, "x")?.mergeable], ["h5", true]);
 });

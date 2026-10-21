@@ -26,6 +26,12 @@ export type PullFeedback = Readonly<{
   failedAt: number | null;
   /** Whether it conflicts with its base: GitHub says `CONFLICTING` or `DIRTY`. `UNKNOWN` (still being computed) is not a conflict. */
   conflicting: boolean;
+  /** Whether GitHub says it merges cleanly: `MERGEABLE`. `UNKNOWN` (still being computed) is not mergeable, as it is not a conflict either. */
+  mergeable: boolean;
+  /** The commit its branch is at, or null when GitHub does not say. */
+  head: string | null;
+  /** Whether the newest approving or changes-requesting review on the head commit, by someone other than the board's account, approves. */
+  approvedAtHead: boolean;
   /** The branch it merges into, or null when GitHub does not say. */
   base: string | null;
   /** The files it changes, by path within its repository. */

@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/pull-status-and-notes.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
-import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
+import { overrideNote, START_ANYWAY_TITLE, rebaseNote, settledByPulls, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
+import { pullAnswer } from "./board-view/pull-answer.ts";
+import { reasonOf } from "./board-view/run-reason.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls } from "./board-view.ts";
 import { pullReviewText, type PullRead } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
@@ -403,6 +405,61 @@ test("a review run shows as Reviewing while it works, and its reviewed pull requ
   const reviewed = run({ outcome: { kind: "reviewed", prs: review }, pullStates: { [url]: "open" } });
   assert.equal(runStatus(reviewed), "ready-to-merge");
   assert.equal(runStatus({ ...reviewed, pullStates: { [url]: "merged" } }), "completed");
+});
+
+test("A11-153: a finished run whose pull requests have all merged is Completed, whatever kind its outcome was, and one whose all closed unmerged is Cancelled", () => {
+  const url = "https://github.com/x/y/pull/1";
+  const other = "https://github.com/x/y/pull/2";
+  const review = [{ url }];
+  for (const outcome of [{ kind: "needs-human", reason: "which colour?" }, { kind: "crashed", reason: "x" }, { kind: "stopped" }, { kind: "no-outcome" }, { kind: "wrong-repo", where: "a/b" }]) {
+    const finished = run({ outcome, review, pullStates: { [url]: "open" } });
+    assert.notEqual(runStatus(finished), "completed", `${outcome.kind}: open is not done`);
+    assert.equal(runStatus({ ...finished, pullStates: { [url]: "merged" } }), "completed", `${outcome.kind}: merged is Completed`);
+    assert.equal(runStatus({ ...finished, pullStates: { [url]: "closed" } }), "cancelled", `${outcome.kind}: closed unmerged is Cancelled`);
+  }
+  const pair = run({ outcome: { kind: "needs-human", reason: "q" }, review: [{ url }, { url: other }] });
+  assert.equal(runStatus({ ...pair, pullStates: { [url]: "merged", [other]: "open" } }), "needs-you", "one still open keeps it open");
+  assert.equal(runStatus({ ...pair, pullStates: { [url]: "merged", [other]: "closed" } }), "completed", "a merge and a close is Completed, as for a result");
+  assert.equal(settledByPulls(run({ outcome: { kind: "needs-human", reason: "q" }, pullStates: { [url]: "merged" } })), null, "a pull request the ticket links but the run did not make is not its work");
+  assert.equal(runStatus(run({ trackerState: "canceled", outcome: { kind: "needs-human", reason: "q" }, review, pullStates: { [url]: "merged" } })), "cancelled", "the tracker's word still comes first");
+});
+
+test("A11-153: a needs-human run reads its pull request's answer: approved at its head, or a head that is not the one it ended at, and nothing else", () => {
+  const url = "https://github.com/x/y/pull/1";
+  const other = "https://github.com/x/y/pull/2";
+  const asked = run({ outcome: { kind: "needs-human", reason: "Does a copy run satisfy the done-when?" }, review: [{ url }], pullStates: { [url]: "open" }, outcomeHeads: { [url]: "h1" } });
+  const heads = (head: string, approved = false) => ({ ...asked, pullHeads: { [url]: { head, approved } } });
+  assert.equal(pullAnswer(asked), null, "no head read yet: nothing answers it");
+  assert.equal(pullAnswer(heads("h1")), null, "the head it ended at, not approved");
+  assert.equal(pullAnswer(heads("h2")), "answered");
+  assert.equal(pullAnswer(heads("h1", true)), "approved", "an approval at the head, with no push");
+  assert.equal(pullAnswer(heads("h2", true)), "approved", "approved wins over answered");
+  assert.equal(pullAnswer({ ...heads("h2"), outcomeHeads: undefined }), null, "with no head it ended at there is nothing to compare");
+  const two = { ...asked, review: [{ url }, { url: other }], pullStates: { [url]: "open", [other]: "open" }, outcomeHeads: { [url]: "h1", [other]: "k1" } };
+  assert.equal(pullAnswer({ ...two, pullHeads: { [url]: { head: "h1", approved: true }, [other]: { head: "k1", approved: false } } }), null, "approved needs every open pull request");
+  assert.equal(pullAnswer({ ...two, pullHeads: { [url]: { head: "h1", approved: true }, [other]: { head: "k2", approved: false } } }), "answered", "one pushed to is an answer");
+  assert.equal(pullAnswer({ ...heads("h2"), pullStates: { [url]: "merged" } }), null, "a merged pull request is no open one");
+  assert.equal(pullAnswer({ ...heads("h2"), outcome: { kind: "needs-human", reason: "the outcome file", unreadable: true } }), null, "a push does not fix an outcome file nobody could read");
+  assert.equal(pullAnswer({ ...heads("h2"), outcome: { kind: "wrong-repo", where: "a/b" } }), null, "only needs-human is answered on its pull request");
+  assert.equal(pullAnswer({ ...heads("h2"), phase: "running" }), null);
+  assert.deepEqual([asked, heads("h1"), heads("h2"), heads("h1", true)].map((entry) => runStatus(entry)), ["needs-you", "needs-you", "awaiting-review", "awaiting-review"]);
+});
+
+test("A11-153: a card says Answered or Approved in place of the question, keeps the question one click away, and never says a note twice", () => {
+  const url = "https://github.com/x/y/pull/1";
+  const question = "Does a copy run satisfy the done-when?";
+  const asked = run({ outcome: { kind: "needs-human", reason: question }, review: [{ url }], pullStates: { [url]: "open" }, outcomeHeads: { [url]: "h1" } });
+  assert.deepEqual(reasonOf(asked), { line: question, question: null }, "unanswered, the question is the line");
+  assert.deepEqual(reasonOf({ ...asked, pullHeads: { [url]: { head: "h2", approved: false } } }), { line: "Answered: awaiting review", question });
+  assert.deepEqual(reasonOf({ ...asked, pullHeads: { [url]: { head: "h1", approved: true } } }), { line: "Approved", question });
+  const note = "Resolving a conflict with A11-144 in doctor.ts";
+  const stacked = { ...asked, stackBase: { key: "A11-144", repo: "agent-org", branch: "b", sha: "a".repeat(40), conflict: { head: "b".repeat(40), files: ["src/install/doctor.ts"] } } };
+  assert.equal(rebaseNote(stacked), note);
+  assert.deepEqual(reasonOf({ ...stacked, outcome: { kind: "needs-human", reason: note } }), { line: null, question: null }, "a reason that is the rebase note on the card is not said again");
+  assert.deepEqual(reasonOf({ ...asked, retargets: { u: "retarget it" }, outcome: { kind: "needs-human", reason: "retarget it" } }), { line: null, question: null }, "nor a retarget note");
+  assert.deepEqual(reasonOf({ ...asked, verdictNotPosted: "no verdict", outcome: { kind: "needs-human", reason: "no verdict" } }), { line: null, question: null }, "nor a verdict note");
+  assert.deepEqual(reasonOf({ ...stacked, outcome: { kind: "needs-human", reason: note }, pullHeads: { [url]: { head: "h2", approved: false } } }),
+    { line: "Answered: awaiting review", question: null }, "answered, the duplicate is not kept as the question either");
 });
 
 test("a parked run is a finished one that kept its workspace, and every outcome that parks a run reads as Needs you", () => {

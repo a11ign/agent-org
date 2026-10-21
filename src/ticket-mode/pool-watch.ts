@@ -3,9 +3,9 @@
 
 import { herdrReason, readAgents } from "../herdr-agents.ts";
 import { log, missedAgain, publishPlace, runMembers, runPlace, sameRun, update, updateEach, writerPlace } from "./pool-state.ts";
-import { close, end, pullFilesOf, settle } from "./pool-settle.ts";
+import { close, end, headCommitsOf, pullFilesOf, pullHeadsOf, settle } from "./pool-settle.ts";
 import { type RunPlace, worktreesIn } from "./pool-paths.ts";
-import { conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordPullFiles, recordRepos, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
+import { conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordPullFiles, recordRepos, recordStackBase, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
 import { join } from "node:path";
 import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
@@ -15,6 +15,8 @@ import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { paneBackgroundWork } from "./background-work.ts";
 import { endPublish, endWriter, filedOf, finishWriter } from "./pool-board-runs.ts";
+import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
+import { recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
 import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
 import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
@@ -413,6 +415,8 @@ export function watchFeedback(ctx: PoolContext): void {
     const files = pullFilesOf(open);
     // Written only when a file changed, so a watch that finds the same files does not rewrite the queue.
     if (JSON.stringify(files) !== JSON.stringify(entry.pullFiles ?? {})) update(ctx, (queue) => recordPullFiles(queue, entry.ticket.key, files));
+    recordHeads(ctx, entry, open);
+    clearResolvedConflict(ctx, entry, open);
     if (!resumesOnConflict(entry)) continue;
     if (isWatched(entry)) {
       // A reviewer's verdict is read by `reviewerLines`, which asks for a round only on requested changes; its reviews are not feedback here.
@@ -426,6 +430,33 @@ export function watchFeedback(ctx: PoolContext): void {
     if (resumeParked(ctx, entry, readable)) queued = true;
   }
   if (queued) void tick(ctx);
+}
+
+/**
+ * Record the head each open pull request is at, and whether it is approved there (`pullHeads`, A11-153): written only when it changes, as the files are. A pull
+ * request the run has no outcome head for takes this head as its outcome head: the end of the run could not read it, or the run was stored before heads were
+ * recorded, and the first watch is the nearest read to the end.
+ */
+function recordHeads(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): void {
+  const key = entry.ticket.key;
+  const heads = pullHeadsOf(open);
+  if (JSON.stringify(heads) !== JSON.stringify(entry.pullHeads ?? {})) update(ctx, (queue) => recordPullHeads(queue, key, heads));
+  const unrecorded = Object.fromEntries(Object.entries(headCommitsOf(open)).filter(([url]) => entry.outcomeHeads?.[url] === undefined));
+  if (Object.keys(unrecorded).length > 0) update(ctx, (queue) => recordOutcomeHeads(queue, key, unrecorded));
+}
+
+/**
+ * Clear the conflict a stacked run records with its blocker's branch (A11-116, A11-150) once the branch no longer conflicts with its base: every open pull
+ * request of the run in the stacked repository reads mergeable. A person's own merge, or a worker's round that has since ended, resolves it without agent-org's
+ * merge ever being made, and the board would say "Resolving a conflict" for ever. A pull request GitHub is still computing (`UNKNOWN`) is not mergeable yet. The
+ * record keeps the run branched from the head that conflicted, as a merge by a worker does (`afterConflictCleared`), so that head is not merged again.
+ */
+function clearResolvedConflict(ctx: PoolContext, entry: Entry, open: readonly { url: string; read: PullFeedback }[]): void {
+  const record = entry.stackBase;
+  if (record?.conflict === undefined) return;
+  const stacked = openPulls(entry).filter((pr) => pr.repo === record.repo);
+  const mergeable = stacked.length > 0 && stacked.every(({ url }) => open.find((pull) => pull.url === url)?.read.mergeable === true);
+  if (mergeable) update(ctx, (queue) => recordStackBase(queue, entry.ticket.key, afterConflictCleared(stackBaseIn(queue, entry.ticket.key, record))));
 }
 
 /**
