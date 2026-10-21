@@ -31,7 +31,7 @@ import { basename, dirname, join } from "node:path";
 import { PROJECT_ROOT, TOOL_ROOT } from "./host-units-project.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { wrapperInputsOf } from "../plugins/host-place.ts";
-import { createWrapper } from "../../plugins/github/wrapper.ts";
+import { renderWrapper } from "../../plugins/github/wrapper.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { shippedUnits, SHIPPED_DIR, execCommands, entriesFromCommand, opaqueCommands, shellCommandWords, shellSpawnsGh, shippedHostScripts, unitEntryPoints, programCandidates, PROJECT_UNITS_DIR, shippedUnitText, shippedScriptText, leadsListText, OPTIONAL_UNITS, HOST_OPTIONAL_UNITS, TOOL_ENTRIES, toolForm, declaredProjectKeys, workTickToolForm, autoMemorySeatLabels } from "../host-units/shipped-unit-texts-and-declarations.ts";
 import { type Finding, unitState, unitDrift, systemdUserAvailable, orphanedUnits, ghSpawnReachedFrom, identityDrift, unitsSpendingGh, humanLoginOnHost, HUMAN_LOGIN_ON_HOST, retiredHere, addedOnSomeRef, orphanOrigin, supersededHostScripts, hostIdentityDrift, hostIdentityNotes, ownedIdentityFiles, compileCacheNotes, WORKERS_README, HUMAN_ACCOUNT_ALLOWED, compileCacheDrift, declaredCompileCache, codexTrustDrift, codexTrustedProjects, windowEnd, seatWrapperNotes } from "../host-units/host-drift-findings-and-notes.ts";
@@ -2096,8 +2096,7 @@ test("#2174: a unit that is listed but cannot be READ yields no finding and does
 /** The wrapper AS IT INSTALLS (#2620: it is a template; A11-160: the GitHub plugin's, rendered by the plugin), rendered once into a temp directory so it can be RUN. */
 const WRAPPER = (() => {
   const rendered = join(tmpDirForFile("gh-wrapper-render-"), "gh");
-  const github = createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} });
-  writeFileSync(rendered, github.file(wrapperInputsOf(homeHostConfig())).expected as string, { mode: 0o755 });
+  writeFileSync(rendered, renderWrapper(wrapperInputsOf(homeHostConfig())) as string, { mode: 0o755 });
   return rendered;
 })();
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub

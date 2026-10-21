@@ -25,7 +25,7 @@ writeFileSync(join(SETUP, "host.json"), JSON.stringify({ projects: [{ id: "p", c
 process.env.AGENT_ORG_HOST ??= join(SETUP, "host.json");
 const { HostConfigRefusal, parseHostConfig, roleIdentity } = await import("./host-config.ts");
 const { wrapperInputsOf } = await import("./plugins/host-place.ts");
-const { createWrapper } = await import("../plugins/github/wrapper.ts");
+const { renderWrapper } = await import("../plugins/github/wrapper.ts");
 const { SUPPORTED_SCHEMA } = await import("./project-config.ts");
 
 const HOST = {
@@ -39,7 +39,7 @@ const refusalField = (extra: Record<string, unknown>) => {
 };
 const APP = { mode: "github-apps", appId: "123456", keyPath: "/home/h/.config/agent-org/apps/a.pem" };
 /** The wrapper as the GitHub plugin renders it for a host (A11-160: the renderer is the plugin's). */
-const renderedFor = (host: ReturnType<typeof parse>) => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} }).file(wrapperInputsOf(host)).expected as string;
+const renderedFor = (host: ReturnType<typeof parse>) => renderWrapper(wrapperInputsOf(host)) as string;
 
 // ---- 3. the declaration -----------------------------------------------------------------------------------------------------------
 

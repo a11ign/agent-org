@@ -12,7 +12,7 @@
 //
 // IT IMPORTS NODE'S MODULES AND CORE'S TYPES ONLY (ADR 0001). The minter and the authoring switch are run by the wrapper as programs (`app-token.ts`, `author-flag.ts`), found in this folder: under the
 // installed tool's checkout when the host names one, else under the primary project's own `packages/agent-org`.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,6 +140,9 @@ export function probeMint(deps: Pick<PluginDeps, "exec" | "env">, script: string
   }
 }
 
+/** The wrapper's text for `inputs`, read from this folder, for a caller that has no deps of its own (a test that runs the wrapper): null when the template cannot be read. THROWS what the render refuses. */
+export const renderWrapper = (inputs: WrapperInputs): string | null => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} }).file(inputs).expected;
+
 /** The wrapper's operations, over the seams a test injects: `readFile` reads the template, and `exec` runs the minter for a probe. */
 export function createWrapper(deps: Pick<PluginDeps, "exec" | "readFile" | "env">): CodeHostWrapper {
   const file = (inputs: WrapperInputs): WrapperFile => {
@@ -187,6 +190,12 @@ export function createWrapper(deps: Pick<PluginDeps, "exec" | "readFile" | "env"
   };
 }
 
+/** Whether `target` is `directory` or somewhere under it. */
+function isInside(directory: string, target: string): boolean {
+  const from = relative(resolve(directory), resolve(target));
+  return from !== "" && !from.startsWith("..") && !isAbsolute(from);
+}
+
 /**
  * Why `write.text` may not be written, each with its reason, in this order:
  *   1. (a test run) the target is inside the real home's bin directory;
@@ -196,8 +205,7 @@ export function createWrapper(deps: Pick<PluginDeps, "exec" | "readFile" | "env"
  *   5. the text names no App and the installed copy names some, unless `allowNoApps` (the downgrade: the incident's case, which `host:install --allow-no-apps` takes).
  */
 function refusalOf({ target, text, installed, allowNoApps, under = process.env.AGENT_ORG_UNDER_TEST === "1", realBin = realBinDirectory() }: WrapperWrite, declared: readonly string[]): string | null {
-  const inside = relative(resolve(realBin), resolve(target));
-  if (under && inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)) {
+  if (under && isInside(realBin, target)) {
     return "a test run may not write the real home's bin directory: a test takes its bin directory from a fixture";
   }
   // Production only: a test run's fixtures are checkouts in the runner's own temporary directory, so under a test run the real-bin tripwire above is the guard,

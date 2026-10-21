@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tokenPath } from "../app-token-cache.ts";
-import { createWrapper, wrapperRoles } from "../../plugins/github/wrapper.ts";
+import { renderWrapper, wrapperRoles } from "../../plugins/github/wrapper.ts";
 import { wrapperInputsOf } from "../plugins/host-place.ts";
 import { APP_ROLE_LANE_OWNER } from "../lane-ownership.ts";
 import { parseLine } from "../gh-ledger.ts";
@@ -39,7 +39,7 @@ const refusalField = (extra: Record<string, unknown>) => {
   return "not refused";
 };
 /** The wrapper as the GitHub plugin renders it for a host (A11-160: the renderer is the plugin's). */
-const renderedFor = (host: ReturnType<typeof parse>) => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} }).file(wrapperInputsOf(host)).expected as string;
+const renderedFor = (host: ReturnType<typeof parse>) => renderWrapper(wrapperInputsOf(host)) as string;
 const REVIEWER_APP = { mode: "github-apps", appId: "424242", keyPath: "/home/h/.config/agent-org/apps/a11ign-reviewer.pem", slug: "a11ign-reviewer" };
 /** The value the wake side puts in the reviewer instance's environment: the wrapper is driven with THIS, so the two halves cannot drift apart. */
 const REVIEWER_ROLE = reviewerEnvironment("reviewer-7").AGENT_ORG_GH_ROLE;

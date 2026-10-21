@@ -14,19 +14,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountAuthoringTimes, AUTHOR_FALLBACK_MINUTES, isAuthoringCall, REFUSE_AUTHOR_FALLBACK_FLAG } from "../gh-author-fallback.ts";
-import { authorFallbackRefusalOn } from "../../plugins/github/author-flag.ts";
-import { createWrapper } from "../../plugins/github/wrapper.ts";
-import { wrapperInputsOf } from "../plugins/host-place.ts";
-import { parseLine } from "../gh-ledger.ts";
-import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { machineryValues } from "../org-health.ts";
-import { MACHINERY_SIGNALS } from "../org-health/hold-and-rerun-readings.ts";
+import { accountAuthoringTimes, AUTHOR_FALLBACK_MINUTES, isAuthoringCall } from "../gh-author-fallback.ts";
+import { CANARY_STATE_FILE } from "../org-health/claim-and-tick-readings.ts";
 import { STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-readings.ts";
+import { MACHINERY_SIGNALS } from "../org-health/hold-and-rerun-readings.ts";
 import { parseHostConfig } from "../host-config.ts";
 import { authorFallbackTimes } from "../work-gate/causes/org-health-github-incident.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
+import { parseLine } from "../gh-ledger.ts";
 import { SUPPORTED_SCHEMA } from "../project-config.ts";
+import { authorFallbackRefusalOn, REFUSE_AUTHOR_FALLBACK_FLAG } from "../../plugins/github/author-flag.ts";
+import { renderWrapper } from "../../plugins/github/wrapper.ts";
+import { wrapperInputsOf } from "../plugins/host-place.ts";
 
 const HOST = {
   schema: SUPPORTED_SCHEMA, home: "/home/h", binDir: "/home/h/bin", primary: "p", projects: [{ id: "p", checkout: "/home/h/p" }],
@@ -35,7 +35,7 @@ const HOST = {
 const parse = (extra: Record<string, unknown>) => parseHostConfig(JSON.stringify({ ...HOST, ...extra }), "host.json");
 const LEAF = fileURLToPath(new URL("../../plugins/github/author-flag.ts", import.meta.url));
 /** The wrapper as the GitHub plugin renders it for a host (A11-160: the renderer is the plugin's). */
-const renderedFor = (host: ReturnType<typeof parseHostConfig>) => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} }).file(wrapperInputsOf(host)).expected as string;
+const renderedFor = (host: ReturnType<typeof parseHostConfig>) => renderWrapper(wrapperInputsOf(host)) as string;
 const WORKERS_APP = { mode: "github-apps", appId: "id-workers", keyPath: "/nonexistent-1666/workers.pem", installationId: "777" };
 const MINT_401 = "app token: token: POST answered 401";
 const LEDGER_NOW = "2026-10-16T21:20:00Z";
