@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,9 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import type { PluginsAnswer } from "../ticket-mode/plugins-api.ts";
 
+// NOTHING HERE MAY TOUCH THE MACHINE IT RUNS ON. `tailscale serve`, `systemctl --user`, `launchctl` and `herdr` act on the whole machine, whatever `HOME` is: a throwaway HOME isolates files and no more
+// (the agents host once lost its two tailnet serve entries while a demo ran). So each is a SPY on the scratch PATH, ahead of the real one: it records its arguments and changes nothing, and the
+// tests assert what was called. The machine-wide programs a scratch run may ask are only the ones that read.
 // A11-163 DONE-WHEN: "A fresh machine's onboard enables the Linear and GitHub plugins and the page shows them, ready for the laptop demo." This is the machine, scratch: a HOME with nothing
 // in it, a profile that names the plugins, onboard run as its own process, `agent-org plugin list` run as its own process, and the board's `GET /api/plugins` over a socket on a free port.
 const BIN = fileURLToPath(new URL("../bin.ts", import.meta.url));
@@ -28,11 +31,18 @@ const STUBS: Readonly<Record<string, string>> = {
   node: `#!/bin/sh\ncase "$1" in *playwright-core/cli.js) exit 0;; esac\nexec "${process.execPath}" "$@"\n`,
 };
 
+/** The machine-wide programs, as spies: each appends its name and arguments to the log and exits 1, as a program that is not running does. */
+const MACHINE_WIDE = ["tailscale", "systemctl", "launchctl", "herdr"] as const;
+const spy = (name: string, log: string): string => `#!/bin/sh\necho "${name} $*" >> "${log}"\nexit 1\n`;
+
 function scratchMachine() {
   const home = tmpDir("onboard-demo-");
   const bin = join(home, "stubs");
   mkdirSync(bin, { recursive: true });
-  for (const [name, text] of Object.entries(STUBS)) {
+  const log = join(home, "machine-wide-calls.log");
+  writeFileSync(log, "");
+  const programs = { ...STUBS, ...Object.fromEntries(MACHINE_WIDE.map((name) => [name, spy(name, log)])) };
+  for (const [name, text] of Object.entries(programs)) {
     writeFileSync(join(bin, name), text);
     chmodSync(join(bin, name), 0o755);
   }
@@ -49,7 +59,9 @@ function scratchMachine() {
   }));
   const env = { HOME: home, AGENT_ORG_HOME: state, AGENT_ORG_HOST: join(state, "host.json"), PATH: `${bin}:${process.env.PATH ?? ""}`, USER: "demo", LANG: "C" };
   const run = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { env, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
-  return { home, state, keyFile, env, run };
+  /** The machine-wide calls the scratch run made, one per line. */
+  const calls = () => readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
+  return { home, state, keyFile, env, run, calls };
 }
 
 /** A board over the scratch host file on a free port, asked for its plugins over the socket as the page asks. */
@@ -99,4 +111,29 @@ test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub
   assert.equal(answer.concerns.find(({ concern }) => concern === "tracker")?.empty, null, "no empty state: the board can run");
   assert.deepEqual(entry("tracker", "linear")?.controls.refused.disable, "linear is the only tracker, and exactly one tracker must be enabled: it cannot be disabled");
   assert.doesNotMatch(JSON.stringify(answer), new RegExp(KEY), "no secret is in the page's answer");
+  assertNothingMachineWide(machine.calls());
+});
+
+/** What a scratch run may ask of the machine: nothing, but a service's state read (`systemctl --user is-active|show|cat`). Any other call, and any call at all to the rest, is a change or a reach beyond HOME. */
+function assertNothingMachineWide(calls: readonly string[]): void {
+  const reach = calls.filter((call) => !/^systemctl --user (?:is-active|show|cat) /.test(call));
+  assert.deepEqual(reach, [], "a throwaway HOME is not a throwaway machine: onboard called a machine-wide program");
+}
+
+test("A11-163: onboard in a throwaway HOME never calls a machine-wide program that changes anything: no `tailscale serve`, `systemctl`, `launchctl` or `herdr` call that is not a read", async () => {
+  const local = scratchMachine();
+  const onboard = local.run("onboard", "--profile", "laptop", "--linear-key-file", local.keyFile, "--no-start", "--no-terminal", "--no-auto-update");
+  assert.equal(onboard.status, 0, `${onboard.stdout}\n${onboard.stderr}`);
+  assertNothingMachineWide(local.calls());
+  // The Tailscale exposure is the one that asks the machine: its steps read `tailscale` (is it there, is the operator right, is a port taken), and a read is all they may do.
+  const tailnet = scratchMachine();
+  const profile = JSON.parse(readFileSync(join(tailnet.state, "profiles", "laptop.json"), "utf8"));
+  writeFileSync(join(tailnet.state, "profiles", "laptop.json"), JSON.stringify({ ...profile, exposure: { provider: "tailscale" } }));
+  const served = tailnet.run("onboard", "--profile", "laptop", "--linear-key-file", tailnet.keyFile, "--no-start", "--no-terminal", "--no-auto-update");
+  assert.equal(served.status, 0, `${served.stdout}\n${served.stderr}`);
+  const tailscale = tailnet.calls().filter((call) => call.startsWith("tailscale"));
+  assert.ok(tailscale.length > 0, "POSITIVE CONTROL: the tailnet onboard does ask Tailscale, so the spy is on the path it takes");
+  const changes = tailscale.filter((call) => !/^tailscale (?:status|version|serve status)\b/.test(call));
+  assert.deepEqual(changes, [], "and it only reads: no serve, no off, no reset");
+  assert.deepEqual(tailnet.calls().filter((call) => !call.startsWith("tailscale")).filter((call) => !/^systemctl --user (?:is-active|show|cat) /.test(call)), []);
 });
