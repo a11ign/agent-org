@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { headsToRead, readBlockers, readHeads } from "./pool-start.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { moveOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
 import { startStackConflictRound } from "./pool-watch.ts";
@@ -168,6 +169,10 @@ async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
   const capped = roundsLeft(latest) ? undefined : MAX_FEEDBACK_ROUNDS;
   const recorded: MergeResult = !result.ok && result.conflict !== undefined && !roundable ? { ok: false, reason: result.reason } : result;
   update(ctx, (queue) => recordStackBase(queue, key, afterMerge(stackBaseIn(queue, key, current), head, recorded, now(), capped)));
+  if (result.ok && result.pushed !== undefined) {
+    const { from, to } = result.pushed;
+    update(ctx, (queue) => moveOutcomeHeads(queue, key, from, to));
+  }
   if (result.ok) return;
   if (result.conflict === undefined) {
     log(`${key}: the merge of ${found.key} ${result.reason}`);

@@ -16,7 +16,7 @@ export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T
 
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
-  ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit }>; waiting?: boolean;
+  ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
   trackerState?: string; pullStates?: Readonly<Record<string, string>>; queuedAt?: number; startedAt?: number; finishedAt?: number; workspace?: string;
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Why the plan of a queued run could not be downloaded, which holds it back (A11-125). */
@@ -56,7 +56,14 @@ export type ViewEntry = Readonly<{
   retargets?: Readonly<Record<string, string>>;
   /** The blocker branch a run was branched from, and what agent-org has done to keep it on that branch (A11-116). */
   stackBase?: StackBaseRecord;
+  /** The commit each open pull request of the run was at when it ended, by URL: what its question or work was about (A11-153). Unset until read. */
+  outcomeHeads?: Readonly<Record<string, string>>;
+  /** Each open pull request's head now, and whether the newest verdict on it is an approval, by URL, as the last watch read them (A11-153). */
+  pullHeads?: Readonly<Record<string, PullHead>>;
 }>;
+
+/** A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit. */
+export type PullHead = Readonly<{ head: string; approved: boolean }>;
 
 /**
  * The branch a run was branched from: the blocker's key, the repository and branch, the commit it has the blocker's branch merged in up to (`sha`), and what
@@ -350,12 +357,6 @@ export const CONCLUDED: ReadonlySet<string> = new Set(["checked", "done", "plann
 
 /** Outcomes that are a run's result, pull requests to show for it: a draft one, or one a review run saw through its review. */
 export const RESULT_KINDS: ReadonlySet<string> = new Set(["draft-pr", "ready-pr", "reviewed"]);
-
-/**
- * Outcomes whose pull requests complete their ticket when they merge, unless the run declares itself partial (A11-92): a worker's ready pull request,
- * or a review run's. A draft is not one: a person marks it ready through Approve, which ends the review run `reviewed`.
- */
-export const COMPLETING_KINDS: ReadonlySet<string> = new Set(["ready-pr", "reviewed"]);
 
 /** The pull requests a run is about: its result's, or, for a review run that has none yet, the ones the person approved. */
 export function pullsOf<T extends Readonly<{ url: string }>>(entry: Readonly<{ outcome?: Readonly<{ kind: string; prs?: readonly T[] }>; review?: readonly T[] }>): readonly T[] {

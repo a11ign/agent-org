@@ -1,4 +1,4 @@
-import { CONCLUDED, openPulls, RESULT_KINDS, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { CONCLUDED, openPulls, RESULT_KINDS, type PullHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isBeingPublished, isParked } from "../board-view/pull-status-and-notes.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
@@ -189,6 +189,14 @@ export type Entry = Readonly<{
    * worktree is made from the branch (`stack-base.json`), and carried through a review round, which the pool rebases before it starts.
    */
   stackBase?: StackBaseRecord;
+  /**
+   * The commit each open pull request of the run was at when it ended, by URL (A11-153): a pull request now at another head has been answered. Set from the
+   * read the end of the run makes, or, where that failed or the run was stored before this, from the first watch. Agent-org's own merge into the branch moves
+   * it. Dropped when the run ends again or is resumed, since a round records its own.
+   */
+  outcomeHeads?: Readonly<Record<string, string>>;
+  /** Each open pull request's head now, and whether it is approved at that head, by URL, as the last watch read them (A11-153). Written only when it changes. */
+  pullHeads?: Readonly<Record<string, PullHead>>;
   /** The Claude session the run's worker used, saved when the run ended, so a review run can resume the worker that wrote the code. */
   session?: string;
   /** Set on a review run: the pull requests a person approved, which the run marks ready and sees through their review. See {@link approve}. */

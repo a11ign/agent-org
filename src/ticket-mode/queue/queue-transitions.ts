@@ -1,4 +1,4 @@
-import { COMPLETING_KINDS, openPulls, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { openPulls, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isParked, isPublishing, isWatched, overlapWait, resumesOnConflict, runActions, runStatus, settledByPulls } from "../board-view/pull-status-and-notes.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictsIn } from "../worker-files.ts";
@@ -243,7 +243,8 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   const ranIn = session ?? (entry.review || entry.talk ? entry.session : undefined);
   // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, and any other
   // keeps what the run had: a review round's `reviewed` says nothing of it.
-  const { session: _earlier, working: _note, partial: _declared, talk: _talking, talkFrom: _replaced, ...kept } = entry;
+  // The heads of its pull requests belong to the outcome it replaces: the end of this run records its own (A11-153).
+  const { session: _earlier, working: _note, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, pullHeads: _read, ...kept } = entry;
   // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
   const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
   const { review: _borrowed, ...unborrowed } = kept;
@@ -284,7 +285,8 @@ export function batchPlanDone(queue: Queue, key: string, repo: string | null, wa
 /** A person answered a parked run's agent, which is working again: the run is live once more, and its old outcome and tracker state are dropped. */
 export function markResumed(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry)
-    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, pullStates: undefined, waiting: false, seenWorking: true }
+    ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, pullStates: undefined, outcomeHeads: undefined, pullHeads: undefined,
+      waiting: false, seenWorking: true }
     : entry));
 }
 
@@ -419,11 +421,11 @@ export function recordTrackerStates(queue: Queue, states: ReadonlyMap<string, st
 }
 
 /**
- * The finished runs whose ticket the board may complete itself (A11-92): an outcome that completes its ticket, not declared partial, whose pull requests
- * have all merged or closed with one merged, and whose ticket the tracker has not finished. PURE.
+ * The finished runs whose ticket the board may complete itself (A11-92, A11-153): not declared partial, whose pull requests have all merged or closed with
+ * one merged, whatever kind the run's outcome was, and whose ticket the tracker has not finished. PURE.
  */
 export function completableRuns(queue: Queue): Entry[] {
-  return queue.entries.filter((entry) => entry.phase === "finished" && COMPLETING_KINDS.has(entry.outcome?.kind ?? "") && entry.partial === undefined
+  return queue.entries.filter((entry) => entry.phase === "finished" && entry.partial === undefined
     && entry.closedByBoard !== true && !SETTLED.has(entry.trackerState ?? "") && settledByPulls(entry) === "completed");
 }
 

@@ -17,6 +17,12 @@ export type PullFeedback = Readonly<{
   failedAt: number | null;
   /** Whether it conflicts with its base: GitHub says `CONFLICTING` or `DIRTY`. `UNKNOWN` (still being computed) is not a conflict. */
   conflicting: boolean;
+  /** Whether GitHub says it merges cleanly: `MERGEABLE`. `UNKNOWN` (still being computed) is not mergeable, as it is not a conflict either. */
+  mergeable: boolean;
+  /** The commit its branch is at, or null when GitHub does not say. */
+  head: string | null;
+  /** Whether the newest approving or changes-requesting review on the head commit, by someone other than the board's account, approves. */
+  approvedAtHead: boolean;
   /** The branch it merges into, or null when GitHub does not say. */
   base: string | null;
   /** The files it changes, by path within its repository. */
@@ -33,11 +39,12 @@ export const MAX_FILE_PAGES = 10;
 
 const QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
   state
+  headRefOid
   mergeable
   mergeStateStatus
   baseRefName
   files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
-  reviews(last: ${LAST}) { nodes { state submittedAt author { login } } }
+  reviews(last: ${LAST}) { nodes { state submittedAt author { login } commit { oid } } }
   comments(last: ${LAST}) { nodes { createdAt author { login } } }
   reviewThreads(last: ${LAST}) { nodes { comments(last: 20) { nodes { createdAt author { login } } } } }
   commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
@@ -54,6 +61,8 @@ const FILES_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $curs
 
 /** A review is feedback when it asks for something: an approval or a dismissed review is not. */
 const FEEDBACK_REVIEWS: ReadonlySet<string> = new Set(["COMMENTED", "CHANGES_REQUESTED"]);
+/** The reviews that take a side on a commit: the newest of them on the head commit says whether it is approved. */
+const VERDICT_REVIEWS: ReadonlySet<string> = new Set(["APPROVED", "CHANGES_REQUESTED"]);
 /** The states of a commit status that mean it failed, read as a check run's conclusion so `red-pr.ts` can decide on it. */
 const FAILED_STATUSES: ReadonlySet<string> = new Set(["FAILURE", "ERROR"]);
 
@@ -143,6 +152,19 @@ function changedFiles(pull: { owner: string; repo: string; number: number }, fir
   }
 }
 
+type Review = { state: string; submittedAt?: string; author: Login; commit?: { oid?: string } | null };
+
+/** Whether `review` takes a side on commit `head`, and an author `counts` for wrote it. A review on an earlier commit says nothing of this one. */
+const rulesOn = (review: Review, head: string, counts: (author: Login) => boolean): boolean =>
+  VERDICT_REVIEWS.has(review.state) && review.commit?.oid === head && counts(review.author);
+
+/** Whether the newest review that {@link rulesOn} commit `head` is an approval. */
+function approvedAt(reviews: readonly Review[], head: string, counts: (author: Login) => boolean): boolean {
+  const at = (review: Review): number => time(review.submittedAt) ?? 0;
+  const newer = (latest: Review | null, review: Review): Review => (latest === null || at(review) >= at(latest) ? review : latest);
+  return reviews.filter((review) => rulesOn(review, head, counts)).reduce<Review | null>(newer, null)?.state === "APPROVED";
+}
+
 /** The feedback in one pull request as the query returns it, its files aside. Throws on an answer of another shape, which the caller reads as no reading. */
 function feedbackOf(pr: Record<string, any>, self: string): Omit<PullFeedback, "files" | "filesComplete"> {
   const others = (author: Login) => author?.login !== undefined && author.login !== self;
@@ -153,6 +175,8 @@ function feedbackOf(pr: Record<string, any>, self: string): Omit<PullFeedback, "
       .filter((c: { author: Login }) => others(c.author))
       .map((c: { createdAt: string; author: Login }) => ({ at: time(c.createdAt), author: c.author?.login ?? "" })),
   ];
+  // The branch's own head, which a review's commit is compared with: the commits connection can lag the ref by a few seconds after a push.
+  const head = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
   const failing = failingChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []);
   const newest = (times: (number | null)[]): number | null => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);
   return {
@@ -162,6 +186,9 @@ function feedbackOf(pr: Record<string, any>, self: string): Omit<PullFeedback, "
     failing: failing.map(({ name }) => name),
     failedAt: newest(failing.map(({ at }) => at)),
     conflicting: pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY",
+    mergeable: pr.mergeable === "MERGEABLE",
+    head,
+    approvedAtHead: head !== null && approvedAt(pr.reviews?.nodes ?? [], head, others),
     base: typeof pr.baseRefName === "string" ? pr.baseRefName : null,
   };
 }

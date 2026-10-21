@@ -1,12 +1,14 @@
-import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-types-and-filters.ts";
+import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, pullsOf, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-types-and-filters.ts";
 import { SCAFFOLD_DIRS } from "../../scaffold-dirs.ts";
+import { pullAnswer } from "./pull-answer.ts";
 
 /**
  * A finished run's status from its pull requests alone, once each has merged or closed: completed when any merged, cancelled when every one
- * closed unmerged. `null` while one is still open, and for a run with none.
+ * closed unmerged. `null` while one is still open, and for a run with none. The pull requests are the run's own ({@link pullsOf}), whatever its outcome
+ * was: its result's, or the round's it answered. Never every pull request the ticket links, since an earlier run's merged one is not this run's work (A11-153).
  */
 export function settledByPulls(entry: ViewEntry): RunStatus | null {
-  const states = (entry.outcome?.prs ?? []).map(({ url }) => entry.pullStates?.[url]);
+  const states = pullsOf(entry).map(({ url }) => entry.pullStates?.[url]);
   if (states.length === 0 || !states.every((state) => state === "merged" || state === "closed")) return null;
   return states.includes("merged") ? "completed" : "cancelled";
 }
@@ -266,17 +268,21 @@ export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): st
  * A run's status. A queued run is blocked while a ticket that blocks it is not done, and cannot be stacked on (`entries` is the whole queue, for {@link waitsOn}),
  * or while it waits on a path another run holds ({@link overlapWait}), or while its plan cannot be downloaded (`pathsFailure`). The
  * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
- * its pull requests: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests merged is done
- * even while its ticket is still in progress. Before either, the outcome decides. It never answers Publishing: that is {@link shownStatus}'s.
+ * its pull requests, whatever the outcome was: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests
+ * merged is done even while its ticket is still in progress (A11-153). Before either, the outcome decides, except that a `needs-human` run whose pull request
+ * was answered or approved is awaiting its review, not asking ({@link pullAnswer}). It never answers Publishing: that is {@link shownStatus}'s.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
+  const settled = settledByPulls(entry);
+  if (settled !== null) return settled;
   const kind = entry.outcome?.kind ?? "";
-  if (kind === "draft-pr" || kind === "ready-pr") return settledByPulls(entry) ?? "awaiting-review";
-  if (kind === "reviewed") return settledByPulls(entry) ?? (entry.handedBack !== undefined ? "needs-you" : entry.published ? "published" : "ready-to-merge");
+  if (kind === "draft-pr" || kind === "ready-pr") return "awaiting-review";
+  if (kind === "reviewed") return entry.handedBack !== undefined ? "needs-you" : entry.published ? "published" : "ready-to-merge";
+  if (kind === "needs-human" && pullAnswer(entry) !== null) return "awaiting-review";
   if (HANDED_BACK.has(kind)) return "needs-you";
   if (kind === "checked") return "checked";
   if (kind === "done") return "completed";

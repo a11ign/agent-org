@@ -8,12 +8,13 @@ import { ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-file
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, unpark } from "./queue/queue-transitions.ts";
 import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
+import { recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { productDecisionIn } from "./open-decisions.ts";
 import { closedNote } from "../herdr-agents.ts";
 import { mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
-import { CONCLUDED, HANDED_BACK, RESULT_KINDS } from "./board-view/view-types-and-filters.ts";
+import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./board-view/view-types-and-filters.ts";
 import { countTokens, findTranscript } from "./pool-transcripts.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
@@ -288,7 +289,7 @@ export function end(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
   const record = id === undefined ? {} : { session: id };
   // A batch's run spent its tokens once, so they are recorded on the ticket it was watched through, and not counted again on each of the rest.
   updateEach(ctx, runMembers(ctx, entry), (queue, key) => (parks ? park : finish)(queue, key, outcome, now(), key === entry.ticket.key ? { ...record, tokens } : record));
-  footprintAtEnd(ctx, entry.ticket.key, outcome);
+  recordPullsAtEnd(ctx, entry, outcome);
   // A run that is not handed back gives its ticket back now. A parked one keeps it In Progress while a person may answer it.
   if (!HANDED_BACK.has(outcome.kind)) for (const member of runMembers(ctx, entry)) void restoreAndLog(ctx, member.ticket.key);
   forgetRun(ctx, name);
@@ -303,24 +304,44 @@ export function pullFilesOf(open: readonly { url: string; read: PullFeedback }[]
 }
 
 /**
+ * The head of each open pull request that has one, with whether a reviewer approved it there, by URL, from the reads of them (A11-153). One that GitHub gave
+ * no head for is left out: nothing can be compared with it.
+ */
+export function pullHeadsOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, PullHead>> {
+  return Object.fromEntries(open.flatMap(({ url, read }) => (read.head === null ? [] : [[url, { head: read.head, approved: read.approvedAtHead }]])));
+}
+
+/** The commit each open pull request is at, by URL, from the reads of them (A11-153): {@link pullHeadsOf} without the approval. */
+export function headCommitsOf(open: readonly { url: string; read: PullFeedback }[]): Readonly<Record<string, string>> {
+  return Object.fromEntries(Object.entries(pullHeadsOf(open)).map(([url, { head }]) => [url, head]));
+}
+
+/**
  * A run that ends with a pull request open is footprinted at once (A11-125): the files of its open pull requests are read as the watch reads them and
  * recorded, so a queued run that shares one with it waits from now, not from the next watch. The read and the record are one synchronous block, so no
  * start pass can fall between the run ending and its files being recorded. When a read fails, nothing is recorded: the run holds its repository until
- * a watch records the files (`overlapWait`).
+ * a watch records the files (`overlapWait`). The same read records the head each open pull request is at as the run ends (`outcomeHeads`), which is what a
+ * later push answers (A11-153). That is for a draft or ready pull request, and for a run that ends `needs-human`, which has no result: its pull requests are the
+ * round's it continued. Only a draft or ready pull request's files are recorded, as before.
  */
-function footprintAtEnd(ctx: PoolContext, key: string, outcome: Outcome): void {
-  if (outcome.kind !== "draft-pr" && outcome.kind !== "ready-pr") return;
+function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
   const { feedbackGh, gh, ownLogin } = ctx;
+  const key = entry.ticket.key;
+  const isDraftOrReady = outcome.kind === "draft-pr" || outcome.kind === "ready-pr";
+  // Only a run that is asking (`needs-human`) is answered by a push, so no other kind pays for a read of its pull requests.
+  const pulls = isDraftOrReady || outcome.kind === "needs-human" ? pullsOf({ outcome, review: entry.review }) : [];
+  if (pulls.length === 0) return;
   ownLogin.value ??= readOwnLogin(gh);
   const self = ownLogin.value;
   if (self === null) return;
-  const reads = outcome.prs.map(({ url }) => ({ url, read: readPullFeedback(url, self, feedbackGh) }));
+  const reads = pulls.map(({ url }) => ({ url, read: readPullFeedback(url, self, feedbackGh) }));
   const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
   if (readable.length < reads.length) {
-    log(`${key}: the files of its pull requests could not be read, so its repository is held until the next watch reads them`);
+    log(`${key}: the files and heads of its pull requests could not be read, so its repository is held until the next watch reads them`);
     return;
   }
-  update(ctx, (queue) => recordPullFiles(queue, key, pullFilesOf(readable.filter(({ read }) => read.state === "open"))));
+  const open = readable.filter(({ read }) => read.state === "open");
+  update(ctx, (queue) => recordOutcomeHeads(isDraftOrReady ? recordPullFiles(queue, key, pullFilesOf(open)) : queue, key, headCommitsOf(open)));
 }
 
 /**

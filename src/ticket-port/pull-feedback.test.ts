@@ -14,8 +14,8 @@ function answering(pull: unknown) {
 }
 
 const pullWith = ({ state = "OPEN", reviews = [] as unknown[], comments = [] as unknown[], threads = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
-  mergeStateStatus = "CLEAN", base = "main", files = [] as string[] } = {}) => ({
-  state, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
+  mergeStateStatus = "CLEAN", base = "main", files = [] as string[], head = undefined as string | undefined } = {}) => ({
+  state, headRefOid: head, mergeable, mergeStateStatus, baseRefName: base, files: { nodes: files.map((path) => ({ path })), pageInfo: { hasNextPage: false, endCursor: null } },
   reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: threads.map((c) => ({ comments: { nodes: [c] } })) },
   commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: checks } } } }] },
 });
@@ -31,7 +31,7 @@ test("the newest review, conversation comment or inline comment by anyone but th
     threads: [{ createdAt: at(20), author: { login: "carol" } }],
   }));
   const read = readPullFeedback(URL, "worker-bot", run);
-  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failedAt: null, conflicting: false, base: "main", files: [], filesComplete: true },
+  assert.deepEqual(read, { state: "open", feedbackAt: ms(20), authors: ["carol", "bob", "a11ign-reviewer"], failing: [], failedAt: null, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true },
     "an approval and the workers' own comments are not feedback");
   assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
   assert.ok(calls[0].includes("owner=netboxlabs") && calls[0].includes("repo=nbl-ui-netbox") && calls[0].includes("number=806"));
@@ -102,4 +102,19 @@ test("the workers' account is the login gh acts as, and null when gh cannot say"
   assert.equal(readOwnLogin((args) => (args.join(" ") === "api user --jq .login" ? "worker-bot\n" : "")), "worker-bot");
   assert.equal(readOwnLogin(() => { throw new Error("not logged in"); }), null);
   assert.equal(readOwnLogin(() => "\n"), null);
+});
+
+test("A11-153: the head commit, whether GitHub says the pull request is mergeable, and whether a reviewer other than the workers' account approved that head are read", () => {
+  const read = (fields: Parameters<typeof pullWith>[0]) => readPullFeedback(URL, "worker-bot", answering(pullWith(fields)).run);
+  const review = (state: string, minute: number, oid: string, login = "a11ign-reviewer") => ({ state, submittedAt: at(minute), author: { login }, commit: { oid } });
+  assert.equal(read({ head: "h2" })?.head, "h2");
+  assert.equal(read({})?.head, null, "a pull request GitHub gives no head for has none");
+  assert.deepEqual(["MERGEABLE", "UNKNOWN", "CONFLICTING"].map((mergeable) => read({ mergeable })?.mergeable), [true, false, false], "UNKNOWN is not mergeable");
+  assert.equal(read({ head: "h2", reviews: [review("APPROVED", 5, "h2")] })?.approvedAtHead, true);
+  assert.equal(read({ head: "h2", reviews: [review("APPROVED", 5, "h1")] })?.approvedAtHead, false, "an approval of an earlier commit says nothing of the head");
+  assert.equal(read({ head: "h2", reviews: [review("APPROVED", 5, "h2"), review("CHANGES_REQUESTED", 9, "h2")] })?.approvedAtHead, false, "the newest verdict on the head decides");
+  assert.equal(read({ head: "h2", reviews: [review("CHANGES_REQUESTED", 5, "h2"), review("APPROVED", 9, "h2")] })?.approvedAtHead, true);
+  assert.equal(read({ head: "h2", reviews: [review("APPROVED", 5, "h2", "worker-bot")] })?.approvedAtHead, false, "the workers' own account does not approve its own work");
+  assert.equal(read({ head: "h2", reviews: [review("COMMENTED", 9, "h2"), review("APPROVED", 5, "h2")] })?.approvedAtHead, true, "a comment takes no side");
+  assert.equal(read({ reviews: [review("APPROVED", 5, "h2")] })?.approvedAtHead, false, "with no head to approve there is no approval");
 });

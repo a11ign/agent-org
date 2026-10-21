@@ -9,6 +9,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
 import { rebaseNote, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
+import { reasonOf } from "./board-view/run-reason.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
@@ -16,7 +17,7 @@ import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, completableRuns, finish, queuePublish, recordPullStates, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
+import { approve, completableRuns, finish, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { talk } from "./queue/talk.ts";
 import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
@@ -236,8 +237,8 @@ const SWEPT_REPO_PULL_2 = `https://github.com/${SWEPT_REPO}/pull/2`;
 
 /** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
 async function approvedRun(tickets: Record<string, unknown> = {},
-  { transcript = true, gh, reviewerPort }: { transcript?: boolean; gh?: (args: string[]) => string; reviewerPort?: ReviewerPort } = {}) {
-  const ctx = setup(1, ["NBF-1"], tickets, { gh, reviewerPort });
+  { transcript = true, gh, reviewerPort, tracker }: { transcript?: boolean; gh?: (args: string[]) => string; reviewerPort?: ReviewerPort; tracker?: TicketSource } = {}) {
+  const ctx = setup(1, ["NBF-1"], tickets, { gh, reviewerPort, source: tracker });
   const { pool, status, settings, root, store } = ctx;
   await pool.tick();
   status.set(herdrName("NBF-1"), "idle");
@@ -688,14 +689,19 @@ test("A11-92: a run declared partial leaves its ticket open when its pull reques
   assert.equal(entry().closedByBoard, undefined);
 });
 
-test("A11-92: a draft, a checked run and a run with an open pull request leave their tickets open", async () => {
-  const draft = completing({ kind: "draft-pr", prs: [{ repo: "r", url: MERGED_PR }] });
-  await draft.pool.refreshTracker();
+test("A11-92: a checked run and a run with an open pull request leave their tickets open", async () => {
   const checked = completing({ kind: "checked", reason: "nothing to change" });
   await checked.pool.refreshTracker();
   const open = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { pull: "open" });
   await open.pool.refreshTracker();
-  assert.deepEqual([draft.calls.length, checked.calls.length, open.calls.length], [0, 0, 0]);
+  assert.deepEqual([checked.calls.length, open.calls.length], [0, 0]);
+});
+
+test("A11-153: a draft whose pull request merged completes its ticket as a ready one does, whatever kind the outcome was", async () => {
+  const draft = completing({ kind: "draft-pr", prs: [{ repo: "r", url: MERGED_PR }] });
+  await draft.pool.refreshTracker();
+  assert.equal(draft.calls.length, 1);
+  assert.equal(draft.entry().closedByBoard, true);
 });
 
 test("A11-92: a ticket the tracker has already finished or canceled is left alone, and is not read again", async () => {
@@ -2272,7 +2278,7 @@ test("a check that failed on the head commit after the round ended starts a roun
 });
 
 test("what triggers a round names each pull request's new feedback and failed checks, and nothing older than the round", () => {
-  const read = { state: "open" as const, feedbackAt: 200, authors: ["alice", "bob"], failing: ["typecheck", "suite"], failedAt: 300, conflicting: false, base: "main", files: [], filesComplete: true };
+  const read = { state: "open" as const, feedbackAt: 200, authors: ["alice", "bob"], failing: ["typecheck", "suite"], failedAt: 300, conflicting: false, mergeable: true, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true };
   assert.equal(feedbackSince([{ url: "u1", read }], 100), "New review feedback on u1, the newest from alice.\ntypecheck, suite failed on the head commit of u1.");
   assert.equal(feedbackSince([{ url: "u1", read }], 250), "typecheck, suite failed on the head commit of u1.");
   assert.equal(feedbackSince([{ url: "u1", read }], 300), null);
@@ -2280,7 +2286,7 @@ test("what triggers a round names each pull request's new feedback and failed ch
 });
 
 test("A11-82: a pull request that conflicts with its base names its base on every watch, whatever the round's time, and a closed one is not named", () => {
-  const read = { state: "open" as const, feedbackAt: null, authors: [], failing: [], failedAt: null, conflicting: true, base: "main", files: [], filesComplete: true };
+  const read = { state: "open" as const, feedbackAt: null, authors: [], failing: [], failedAt: null, conflicting: true, mergeable: false, head: null, approvedAtHead: false, base: "main", files: [], filesComplete: true };
   const line = "https://github.com/acme/repo/pull/7 conflicts with its base branch main.";
   assert.equal(feedbackSince([{ url: "https://github.com/acme/repo/pull/7", read }], 900), line, "a conflict is a state, so no time passes it by");
   assert.equal(feedbackSince([{ url: "https://github.com/acme/repo/pull/7", read: { ...read, state: "merged" as const } }], 0), null);
@@ -2391,8 +2397,8 @@ test("A11-82: a merged pull request that reads conflicting gets no round, and a 
  * NBF-1, a review run that asked a person a question and parked: its worker wrote `needs-human` with its workspace still open, as a review run
  * whose checks did not start does. The worker's session is the one the review run resumed (`session-t-nbf-1`).
  */
-async function parkedOnQuestion(gh: (args: string[]) => string) {
-  const ctx = await approvedRun({}, { gh });
+async function parkedOnQuestion(gh: (args: string[]) => string, tracker?: TicketSource) {
+  const ctx = await approvedRun({}, { gh, tracker });
   ctx.status.set(herdrName("NBF-1"), "working");
   await ctx.pool.tick();
   writeFileSync(join(ctx.dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "which colour?" }));
@@ -4503,4 +4509,95 @@ test("a worker's brief has it do a design check on a machine with tickets.design
   const brief = readFileSync(join(allowed.dir, "brief.md"), "utf8");
   assert.match(brief, /If a design gate asks for a design check, do it/);
   assert.doesNotMatch(brief, /no design tool access/);
+});
+
+/** A tracker whose one pull request of NBF-1 is in `pull.state`, which a test moves as the pull request does; `completed` is each ticket the board completed. */
+function movingTracker() {
+  const pull = { state: "open" as PullState };
+  const completed: [string, string][] = [];
+  const tracker: TicketSource = { ...source,
+    stateTypes: async (keys) => new Map(keys.map((key) => [key, "started"])),
+    pullStates: async () => new Map([["NBF-1", { [approvedPr.url]: pull.state }]]),
+    complete: async (key, comment) => { completed.push([key, comment]); return null; } };
+  return { tracker, pull, completed };
+}
+
+/** The approval a reviewer other than the workers' account left on commit `oid`. */
+const approvalAt = (oid: string) => ({ state: "APPROVED", submittedAt: at(5), author: { login: "a11ign-reviewer" }, commit: { oid } });
+
+test("A11-153 done-when: a needs-human run goes from Needs you to Answered to Completed as its pull request is pushed to and merged, with no hand step", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
+  const { tracker, pull, completed } = movingTracker();
+  const { pool, entry } = await parkedOnQuestion(ghFor(pulls).run, tracker);
+  assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" }, "the head the pull request was at when the run ended is recorded by the end of the run");
+  pool.watchFeedback();
+  await pool.refreshTracker();
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["needs-you", "which colour?"], "nothing has answered it: a watch of an unchanged pull request changes nothing");
+  pulls[1] = feedbackPull({ head: "h2" });
+  pool.watchFeedback();
+  assert.deepEqual(entry("NBF-1").pullHeads, { [approvedPr.url]: { head: "h2", approved: false } });
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1"))], ["awaiting-review", { line: "Answered: awaiting review", question: "which colour?" }]);
+  assert.equal(completed.length, 0, "answered is not merged: the ticket is left open");
+  pull.state = "merged";
+  await pool.refreshTracker();
+  assert.deepEqual([runStatus(entry("NBF-1")), entry("NBF-1").closedByBoard], ["completed", true]);
+  assert.deepEqual(completed.map(([key]) => key), ["NBF-1"], "and its ticket was moved to done, once");
+});
+
+test("A11-153: a needs-human run whose pull request a reviewer approved at its head reads Approved, and a push after that approval reads Answered", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
+  const { pool, entry } = await parkedOnQuestion(ghFor(pulls).run);
+  pulls[1] = feedbackPull({ head: "h1", reviews: [approvalAt("h1")] });
+  pool.watchFeedback();
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["awaiting-review", "Approved"]);
+  pulls[1] = feedbackPull({ head: "h2", reviews: [approvalAt("h1")] });
+  pool.watchFeedback();
+  assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["awaiting-review", "Answered: awaiting review"], "an approval of an earlier head is no approval of this one");
+});
+
+test("A11-153: a run stored before heads were recorded, or whose end could not read its pull request, takes its first watch as the head it ended at", async () => {
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
+  const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls).run);
+  store.set({ ...store.get(), entries: store.get().entries.map(({ outcomeHeads: _recorded, ...rest }) => rest) });
+  pool.watchFeedback();
+  assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" });
+  pulls[1] = feedbackPull({ head: "h2" });
+  pool.watchFeedback();
+  assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" }, "a later head is not taken for the one it ended at");
+  assert.equal(runStatus(entry("NBF-1")), "awaiting-review");
+});
+
+test("A11-153: a conflict a stacked run records with its blocker's branch clears once its pull request is mergeable, and not while GitHub is still computing", async () => {
+  const stackBase = { key: "NBF-0", repo: approvedPr.repo, branch: "nbf-0", sha: "a".repeat(40), conflict: { head: "b".repeat(40), files: ["src/install/doctor.ts"] } };
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }) };
+  const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls).run);
+  store.set(recordStackBase(store.get(), "NBF-1", stackBase));
+  assert.equal(rebaseNote(entry("NBF-1")), "Resolving a conflict with NBF-0 in doctor.ts");
+  pool.watchFeedback();
+  assert.equal(rebaseNote(entry("NBF-1")), "Resolving a conflict with NBF-0 in doctor.ts", "UNKNOWN is not mergeable yet: the note stays");
+  pulls[1] = feedbackPull({ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" });
+  pool.watchFeedback();
+  assert.equal(rebaseNote(entry("NBF-1")), null, "the pull request is mergeable: the conflict is gone");
+  assert.deepEqual(entry("NBF-1").stackBase, { key: "NBF-0", repo: approvedPr.repo, branch: "nbf-0", sha: "b".repeat(40) }, "branched from the head that conflicted, so it is not merged again");
+});
+
+test("A11-153: a merge agent-org pushes to a finished run's branch moves its outcome head with it, so the push is not read as an answer", async () => {
+  const { pool, entry, worktree, setRun, moveBlocker } = stackedRun("ticket-pool-answer-");
+  const own = gitIn(worktree, ["rev-parse", "HEAD"]);
+  setRun({ ...FINISHED_WATCHED, outcome: { kind: "needs-human", reason: "which colour?" }, review: [PULL], outcomeHeads: { [PULL.url]: own } });
+  moveBlocker("blocker.txt", "one\ntwo\n");
+  await pool.rebaseStacked();
+  const merged = gitIn(worktree, ["rev-parse", "HEAD"]);
+  assert.notEqual(merged, own);
+  assert.deepEqual(entry("NBF-2").outcomeHeads, { [PULL.url]: merged });
+  setRun({ pullHeads: { [PULL.url]: { head: merged, approved: false } } });
+  assert.equal(runStatus(entry("NBF-2")), "needs-you", "its pull request is at the merge agent-org made, which answers nothing");
+});
+
+test("A11-153: the end of a run reads its pull requests' heads only for a draft or ready pull request and for a run that asks, and a review round that ends reviewed reads none", async () => {
+  const gh = ghFor({ 1: feedbackPull({ head: "h1" }) });
+  const { entry } = await readyRun(gh.run);
+  const reads = gh.calls.filter((args) => args[1] === "graphql").length;
+  assert.equal(reads, 1, "the draft's end read it once; the reviewed end of the round after it read nothing");
+  assert.equal(entry("NBF-1").outcomeHeads, undefined, "and a reviewed run records no heads");
 });

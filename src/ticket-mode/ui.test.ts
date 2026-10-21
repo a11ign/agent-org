@@ -6,6 +6,7 @@ import { runInNewContext } from "node:vm";
 import * as view_0 from "./board-view.ts";
 import * as view_1 from "./board-view/pull-status-and-notes.ts";
 import * as view_2 from "./board-view/view-types-and-filters.ts";
+import * as view_3 from "./board-view/run-reason.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -166,7 +167,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...labelFilters, ...assigneeFilter, ...settingsSearch, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...labelFilters, ...assigneeFilter, ...settingsSearch, document, fetch,
     window: { localStorage, open: browser.open, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
@@ -227,6 +228,26 @@ test("A11-119: a needs-human run shows its pull request's review state beside it
   assert.equal(p.$("pull-requests").hidden, false, "the section is shown for the one no run lists");
   assert.ok(p.$("pull-requests").text().includes("a11ign/agent-org #1800") && p.$("pull-requests").text().includes("reviewing"), "with its label and its review state");
   assert.equal(p.$("pull-requests").text().includes("#119"), false, "and not the one a run lists");
+});
+
+test("A11-153: a needs-human run its pull request answered says so in place of its question, which stays one click away, and a note on the card is said once", async () => {
+  const url = "https://github.com/a11ign/agent-org/pull/1800";
+  const review = [{ url, repo: "a11ign/agent-org" }];
+  const needsHuman = (fields: Record<string, unknown>, reason = "Does a copy run satisfy the done-when?") =>
+    entry("N-1", { phase: "finished", finishedAt: 7, outcome: { kind: "needs-human", reason }, review, pullStates: { [url]: "open" }, outcomeHeads: { [url]: "h1" }, ...fields });
+  const asking = await page(new Map(), { entries: [needsHuman({})] });
+  assert.ok(asking.$("runs").text().includes("Does a copy run satisfy the done-when?"), "unanswered, the question is the card's line");
+  assert.equal(asking.$("runs").all().some((n) => n.tag === "details"), false, "and there is nothing to open");
+  const answered = await page(new Map(), { entries: [needsHuman({ pullHeads: { [url]: { head: "h2", approved: false } } })] });
+  assert.ok(answered.$("runs").text().includes("Answered: awaiting review"), "a head that moved on reads Answered");
+  const [question] = answered.$("runs").all().filter((n) => n.tag === "details");
+  assert.ok(question.text().includes("The question it asked") && question.text().includes("Does a copy run satisfy the done-when?"), "the old question is under a disclosure");
+  const approved = await page(new Map(), { entries: [needsHuman({ pullHeads: { [url]: { head: "h1", approved: true } } })] });
+  assert.ok(approved.$("runs").text().includes("Approved"), "an approval at the head reads Approved");
+  const note = "Resolving a conflict with A11-144 in doctor.ts";
+  const stackBase = { key: "A11-144", repo: "agent-org", branch: "b", sha: "a".repeat(40), conflict: { head: "b".repeat(40), files: ["src/install/doctor.ts"] } };
+  const twice = await page(new Map(), { entries: [needsHuman({ stackBase }, note)] });
+  assert.equal(twice.$("runs").text().split(note).length - 1, 1, "a reason that is the rebase note is on the card once");
 });
 
 test("A11-119: the Pull requests section is hidden when every pull request the pool has read belongs to a run", async () => {
