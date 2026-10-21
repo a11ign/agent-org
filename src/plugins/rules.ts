@@ -7,7 +7,8 @@ import { CONCERN_LABEL, type Concern, REQUIRED_CONCERNS } from "./concerns.ts";
 import type { Catalog, CatalogPlugin } from "./manifest.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
 
-const quoted = (names: readonly string[]): string => names.map((name) => `"${name}"`).join(", ");
+/** Names as a refusal lists them: each in double quotes, separated by commas. */
+export const quoted = (names: readonly string[]): string => names.map((name) => `"${name}"`).join(", ");
 
 /** The sentence that says `plugin` is the only one of its concern that may be enabled, so it may not be disabled or uninstalled: null for a concern that may have none. */
 export function onlyOneSentence(concern: Concern, plugin: string): string | null {

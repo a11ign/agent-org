@@ -24,7 +24,7 @@ import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
 import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog, pluginNamed, pluginsOfConcern } from "../plugins/registry.ts";
-import { enableRefusal, onlyOneSentence } from "../plugins/rules.ts";
+import { enableRefusal, onlyOneSentence, quoted } from "../plugins/rules.ts";
 
 export { PROVIDER_BLOCKS, type ProviderBlock };
 
@@ -144,8 +144,6 @@ function choosable(block: ProviderBlock, catalog: Catalog): string[] {
   return concern === "publisher" || concern === "reviewer" ? [...names, "none"] : names;
 }
 
-const quoted = (names: readonly string[]): string => names.map((name) => `"${name}"`).join(", ");
-
 /** The settings a plugin takes besides `provider` and `enabled`. `none` takes the union of its concern's, so a stray one is refused as not applying (`publishOf`), not as unknown. */
 function declaredSettings(block: ProviderBlock, provider: string, catalog: Catalog): string[] {
   if (provider !== "none") return Object.keys(pluginNamed(catalog, provider)?.settings ?? {});
@@ -177,8 +175,10 @@ function providerOf(block: ProviderBlock, value: unknown, catalog: Catalog): Nam
     throw new TicketSettingsRefusal(`${at}.provider`, `is required: name the block's provider, one of ${quoted(names)}, as onboard does`);
   }
   const plugin = typeof provider === "string" ? pluginNamed(catalog, provider) : undefined;
-  const refused = catalog.refusals.find(({ plugin: refusedName }) => refusedName === provider);
-  if (typeof provider !== "string" || (!names.includes(provider) && (plugin?.concern !== CONCERN_OF_BLOCK[block]))) {
+  // A plugin of this concern that the pin keeps off the list is still named here, so the pin's own refusal below says why.
+  const namable = typeof provider === "string" && (names.includes(provider) || plugin?.concern === CONCERN_OF_BLOCK[block]);
+  if (!namable) {
+    const refused = catalog.refusals.find(({ plugin: refusedName }) => refusedName === provider);
     throw new TicketSettingsRefusal(`${at}.provider`, refused === undefined ? `must be one of ${quoted(names)}, not ${JSON.stringify(provider)}` : `names a plugin that was refused: ${refused.why}`);
   }
   const enabled = enabledOf(block, value, provider);
@@ -187,7 +187,7 @@ function providerOf(block: ProviderBlock, value: unknown, catalog: Catalog): Nam
   const allowed = declaredSettings(block, provider, catalog);
   for (const key of Object.keys(value)) {
     if (key !== "provider" && key !== "enabled" && !allowed.includes(key)) {
-      throw new TicketSettingsRefusal(`${at}.${key}`, `is not a setting of ${provider}: its settings are ${["provider", "enabled", ...allowed].join(", ")}`);
+      throw new TicketSettingsRefusal(`${at}.${key}`, `is not a setting of ${provider === "none" ? block : provider}: its settings are ${["provider", "enabled", ...allowed].join(", ")}`);
     }
   }
   return { provider, enabled };

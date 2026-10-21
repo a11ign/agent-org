@@ -625,3 +625,14 @@ test("--no-start: onboard writes the host file and starts no service", async () 
   await onboard(options({ repos: [repo], start: false }), d);
   assert.deepEqual(started, []);
 });
+
+// A11-158: a plugin the host file disables is not run, so onboard does not prompt for what it needs.
+test("A11-158: a disabled tailscale exposure and a disabled atomic reviewer ask for neither Tailscale nor Codex", async () => {
+  const base = deps({ which: () => null });
+  mkdirSync(join(base.home, ".agent-org"), { recursive: true });
+  writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify({ tickets: { providers: {
+    exposure: { provider: "tailscale", enabled: false }, reviewer: { provider: "atomic", enabled: false } } } }));
+  await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
+  assert.ok(!base.printed.some((line) => line.includes("tailscale is not on PATH")), "a disabled exposure serves nothing on the tailnet");
+  assert.ok(!base.printed.some((line) => /codex/i.test(line) && !line.includes("doctor")), "a disabled reviewer needs no Codex");
+});

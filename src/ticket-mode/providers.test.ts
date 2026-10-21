@@ -254,3 +254,7 @@ test("A11-158: a plugin takes the settings it declares and no others", () => {
   assert.equal(refusalOf({ tickets: { providers: { publish: { provider: "fake-publisher", run: RUN } } } }, unpinned()).field, "tickets.providers.publish.run");
   assert.match(refusalOf({ tickets: { providers: { tracker: { provider: "linear", port: 1 } } } }).message, /is not a setting of linear: its settings are provider, enabled, key, connectors, workingState, plannedState, takenStates/);
 });
+
+test("A11-158: a setting `none` does not take is refused naming the block, since `none` is no plugin", () => {
+  assert.match(refusalOf({ tickets: { providers: { reviewer: { provider: "none", model: "x" } } } }).message, /is not a setting of reviewer: its settings are provider, enabled/);
+});
