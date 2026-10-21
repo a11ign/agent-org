@@ -124,13 +124,14 @@ function askPerson(ctx: PoolContext, run: WriterRun, place: RunPlace, reason: st
 
 /**
  * Whether a stop hook is reading the outcome beside `dir` now: its `stop-active` mark holds the time the stop began. A mark older than
- * {@link STOP_ACTIVE_MS} is a hook that crashed before it removed it, and the board does not wait for it (A11-152).
+ * {@link STOP_ACTIVE_MS} is a hook that crashed before it removed it, and the board does not wait for it (A11-152). A mark that is there but cannot be
+ * read is not known to be old, so it holds the move as a fresh one does; no mark at all is no hook.
  */
 function stopHookRunning(dir: string, now: number): boolean {
   try {
     return now - Number.parseFloat(readFileSync(join(dir, STOP_ACTIVE_FILE), "utf8")) < STOP_ACTIVE_MS;
-  } catch {
-    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ENOENT";
   }
 }
 

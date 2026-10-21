@@ -1552,20 +1552,26 @@ test("A11-152: the watcher and the start never rename a file: the board moves an
   }
 });
 
-/** A Grill run that asks `needs-human` and goes idle, with `mark` (a stop-active time) left beside its outcome first, if given (A11-152). */
-async function grillAsks(id: string, mark?: string, now?: () => number) {
+/** A Grill run that asks `needs-human` and goes idle, with `beforeIdle` (the stop hook's marks, if any) set beside its outcome first (A11-152). */
+async function grillAsks(id: string, beforeIdle: (dir: string) => void = () => {}, now?: () => number) {
   const fixture = writing({ id, mode: "grill" }, WRITER, source, now);
   await fixture.pool.tick();
   await agentIs(fixture, fixture.name, "working");
   leaveOutcome(fixture.dir, { kind: "needs-human", reason: "Which goal does it serve?" });
-  if (mark !== undefined) writeFileSync(join(fixture.dir, STOP_ACTIVE_FILE), mark);
+  beforeIdle(fixture.dir);
   await agentIs(fixture, fixture.name, "idle");
   await writerSettled();
   return fixture;
 }
 
+test("A11-152: a stop-active mark the board cannot read holds the Grill question, as a fresh one does", async () => {
+  // A directory where the mark should be: it is there, and reading it fails.
+  const unreadable = await grillAsks("w5", (dir) => mkdirSync(join(dir, STOP_ACTIVE_FILE)));
+  assert.deepEqual([existsSync(join(unreadable.dir, "outcome.json")), existsSync(join(unreadable.dir, "asked.json"))], [true, false], "a mark that cannot be read is not known to be old: nothing is moved");
+});
+
 test("A11-152: a Grill question waits while its stop hook reads the outcome, and is taken once that hook has ended or crashed", async () => {
-  const held = await grillAsks("w3", "100");
+  const held = await grillAsks("w3", (dir) => writeFileSync(join(dir, STOP_ACTIVE_FILE), "100"));
   assert.deepEqual([existsSync(join(held.dir, "outcome.json")), existsSync(join(held.dir, "asked.json"))], [true, false], "the hook is reading: nothing is moved yet");
   rmSync(join(held.dir, STOP_ACTIVE_FILE));
   await agentIs(held, held.name, "idle");
@@ -1573,7 +1579,7 @@ test("A11-152: a Grill question waits while its stop hook reads the outcome, and
   assert.deepEqual([existsSync(join(held.dir, "outcome.json")), existsSync(join(held.dir, "asked.json"))], [false, true], "the hook has ended: the question is moved");
 
   // A hook that began over a minute before now crashed without removing its mark: the board does not wait for it.
-  const crashed = await grillAsks("w4", "100", () => 100_000);
+  const crashed = await grillAsks("w4", (dir) => writeFileSync(join(dir, STOP_ACTIVE_FILE), "100"), () => 100_000);
   assert.equal(existsSync(join(crashed.dir, "asked.json")), true, "a mark older than STOP_ACTIVE_MS is ignored");
 });
 
