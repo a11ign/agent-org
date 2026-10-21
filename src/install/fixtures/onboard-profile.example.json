@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "tracker": { "provider": "linear", "pick": { "team": "EXA" }, "workingState": "In Progress", "plannedState": "Planned" },
+  "codeHost": { "provider": "github", "reviewerApp": { "slug": "example-reviewer", "appId": 1, "installationId": 2 } },
+  "publish": { "provider": "none" },
+  "reviewer": { "provider": "atomic" },
+  "exposure": { "provider": "local" },
+  "conventions": { "plugin": "example@example-marketplace", "marketplace": "example-org/example-plugin" },
+  "repos": [ { "name": "example-app", "remote": "example-org/example-app", "path": "~/repos/example-app" } ]
+}

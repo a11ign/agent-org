@@ -35,6 +35,7 @@ import { loadQueue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { readAgents, herdrRun } from "../herdr-agents.ts";
 import { pinnedPnpm } from "./pnpm.ts";
+import { clearDeferral, deferralPath, runProgram, stateOfRecord, updateConventions, writeDeferral, type ConventionsUpdate, type Run } from "./plugin-install.ts";
 import { hostIsolation, midToolCall, readUpdateStatus, restartDecision, updateStatusPath, writeUpdateStatus, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
 
 export type Channel = "release" | "main";
@@ -62,10 +63,32 @@ export type UpdateDeps = Readonly<{
   status: Readonly<{ read: () => UpdateStatus | null; write: (status: UpdateStatus) => void }>;
   /** The gh stack extension the workers link stacked pull requests with, kept present on every run (A11-106). Never throws. */
   stackExtension: () => StackExtension;
+  /** The conventions plugins `tickets.plugins` names, updated from their repositories when no run is live (A11-145). Never throws. */
+  conventions: () => ConventionsUpdate;
+  /** The refresh a live run holds back, recorded for `doctor` to say so, and cleared once the refresh has run (A11-145). */
+  conventionsDeferral: Readonly<{ defer: (live: number) => void; clear: () => void }>;
   out: Pick<Console, "log" | "error">;
 }>;
 
 export class UpdateRefusal extends Error {}
+
+/**
+ * The production wiring of the conventions refresh (A11-145): the plugins of `settings` are refreshed through `claude`, and a wait is recorded under the
+ * agent-org home of `home`. A host with no conventions plugin has nothing to wait for, so it records nothing for doctor to say. Exported so the wiring is
+ * tested with a fake `claude`, not only the update around it.
+ */
+export function conventionsWiring(settings: Pick<TicketSettings, "plugins"> | null, env: NodeJS.ProcessEnv, home: string, run: Run = runProgram): Pick<UpdateDeps, "conventions" | "conventionsDeferral"> {
+  const record = deferralPath(env, home);
+  return {
+    conventions: () => (settings === null ? { said: [], failed: [] } : updateConventions(settings.plugins, { run, stateOf: stateOfRecord(home, { record: join(home, ".claude", "plugins", "installed_plugins.json") }) })),
+    conventionsDeferral: {
+      defer: (live) => {
+        if (settings !== null && settings.plugins.length > 0) writeDeferral(record, live, new Date());
+      },
+      clear: () => clearDeferral(record),
+    },
+  };
+}
 
 /**
  * Move the checkout and restart what ran, unless the running instance has a live run and `force` is not given: then nothing moves, and it says so.
@@ -77,6 +100,7 @@ export function update(options: { version: string | undefined; channel: Channel;
     return moveCheckout(options, deps);
   } finally {
     keepStackExtension(deps);
+    keepConventions(deps);
   }
 }
 
@@ -85,6 +109,24 @@ function keepStackExtension(deps: UpdateDeps): void {
   const stack = deps.stackExtension();
   if (stack.state === "installed") deps.out.log(`agent-org update: installed the ${STACK_EXTENSION} extension (${stack.version})`);
   if (stack.state === "failed") deps.out.error(`agent-org update: the ${STACK_EXTENSION} extension is missing and could not be installed: ${stack.reason}`);
+}
+
+/**
+ * The conventions plugins, refreshed from their repositories when no run is live (A11-145): a live run holds the refresh back, as it holds back a release, since
+ * a skill is read when it is invoked and a refresh would change a running worker's instructions. A plugin that moved is said with its versions, and a step that
+ * failed is said as an error. Neither fails the update, since the checkout has moved, or stays, either way.
+ */
+function keepConventions(deps: UpdateDeps): void {
+  const live = deps.liveRuns();
+  if (live !== null && live > 0) {
+    deps.conventionsDeferral.defer(live);
+    deps.out.log(`agent-org update: the conventions plugin refresh waits while ${live} ${live === 1 ? "run is" : "runs are"} live, and runs at the next update with none live`);
+    return;
+  }
+  deps.conventionsDeferral.clear();
+  const { said, failed } = deps.conventions();
+  for (const line of said) deps.out.log(`agent-org update: ${line}`);
+  for (const line of failed) deps.out.error(`agent-org update: ${line}`);
 }
 
 function moveCheckout({ version, channel, force = false }: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
@@ -306,6 +348,7 @@ function defaultUpdateDeps(): UpdateDeps {
       write: (status) => writeUpdateStatus(statusPath, status),
     },
     stackExtension: () => ensureStackExtension(asAccount(defaultGh, workerAccount(readOrNull(hostFilePath(process.env)), process.env))),
+    ...conventionsWiring(settings, process.env, homedir()),
     out: console,
   };
 }
