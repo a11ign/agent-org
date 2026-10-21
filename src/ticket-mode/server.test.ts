@@ -263,6 +263,17 @@ test("A11-168: a tracker that cannot be asked who holds a ticket answers 503 nam
   assert.deepEqual(await queueNbf1(b), [503, "could not ask the tracker who holds NBF-1: Linear answered 502"]);
   assert.deepEqual(b.store.get().entries, [], "nothing was queued");
   assert.equal((await listedTickets(b))[0].taken, undefined, "a claim that could not be read is not another instance's");
+  assert.deepEqual(await queueNbf1(b), [503, "could not ask the tracker who holds NBF-1: Linear answered 502"], "and the queue does not take the empty answer for a free ticket: it asks again, and says it could not");
+});
+
+test("A11-168: a ticket in work the list never read a claim for is read again before it is queued, and one the tracker has none of is not a 503", async () => {
+  const tracker = trackerClaimedBy(["NBF-1"], [inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  assert.deepEqual(await queueNbf1(b), [409, "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it"], "no list was read, so the board's copy knew nothing");
+  const vanishing: TicketSource = { assigned: async () => [inProgress("NBF-1")], read: async () => null, download: async () => [] };
+  const gone = board(4747, {}, {}, vanishing);
+  await listedTickets(gone);
+  await assert.rejects(gone.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }), /no ticket NBF-1/);
 });
 
 test("A11-168: a tracker whose ticket read fails answers 503 too, and a tracker with no claims takes no ticket", async () => {

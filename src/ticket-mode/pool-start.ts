@@ -456,7 +456,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     const { folder, dir, resume } = await prepare(ctx, round);
     if (!(await openRun(ctx, round, folder, dir, resume))) return;
     if (!isPlanning(ctx, entry)) moveTicketToWorkingState(ctx, entry.ticket.key);
-    if (entry.review === undefined) claimTicket(ctx, entry.ticket.key);
+    if (entry.review === undefined && entry.talk !== true) claimTicket(ctx, entry.ticket.key);
     await settleStart(ctx, runPlace(ctx, entry));
   } catch (err) {
     update(ctx, (queue) => finish(queue, entry.ticket.key, crashed(err), now()));

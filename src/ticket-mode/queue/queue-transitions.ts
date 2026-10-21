@@ -355,9 +355,14 @@ export function unpark(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry) ? { ...entry, ...lastTerminalOf(entry), workspace: undefined, pane: undefined } : entry));
 }
 
-/** The keys of finished runs that neither the tracker nor their pull requests have settled yet: the ones worth asking about again. */
+/**
+ * The keys of finished runs that neither the tracker nor their pull requests have settled yet: the ones worth asking about again. A run declared partial whose pull
+ * requests merged is not settled by them (A11-168): its ticket stays open and the board may queue its next step, so the tracker is asked again, and a ticket finished
+ * since the pull request was open is seen before a step is queued for it.
+ */
 export function unsettledKeys(queue: Queue): string[] {
-  return queue.entries.filter((entry) => entry.phase === "finished" && !SETTLED.has(entry.trackerState ?? "") && settledByPulls(entry) === null)
+  return queue.entries.filter((entry) => entry.phase === "finished" && !SETTLED.has(entry.trackerState ?? "")
+    && (settledByPulls(entry) === null || (entry.partial !== undefined && settledByPulls(entry) === "completed")))
     .map((entry) => entry.ticket.key);
 }
 

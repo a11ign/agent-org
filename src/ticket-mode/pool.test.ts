@@ -5583,13 +5583,26 @@ test("A11-168: a step that moves nowhere forward is not queued twice: the next s
   assert.equal(reasonOf(left).line, "Partial merged: step 1 of 3 again. Step 1 is not after step 1: nothing was queued");
 });
 
-test("A11-168: a partial run whose ticket the tracker finished queues no next step", async () => {
+test("A11-168: a partial run whose ticket the tracker finished queues no next step, even when the tracker finished it after the board last read it open", async () => {
   const { tracker, source: tracked } = stepsTracker();
   const { pool, entry } = await finishedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_1_PR }], partial: "step 1 of 2" }, tracked);
+  await pool.refreshTracker();
+  assert.equal(entry("NBF-1").trackerState, "unstarted", "the board last read the ticket open, with its pull request open");
   tracker.linkPull("NBF-1", STEP_1_PR, "merged");
   await tracker.complete!("NBF-1", "closed by a person");
   await pool.refreshTracker();
-  assert.deepEqual([entry("NBF-1").phase, runStatus(entry("NBF-1"))], ["finished", "completed"], "the tracker's word on the ticket wins: step 2 is not queued");
+  assert.deepEqual([entry("NBF-1").phase, runStatus(entry("NBF-1")), entry("NBF-1").trackerState], ["finished", "completed", "completed"], "the tracker's word on the ticket wins: step 2 is not queued");
+});
+
+test("A11-168: a merged partial run that is not queued keeps asking the tracker, so a ticket a person finishes later reads Completed, not Needs you for ever", async () => {
+  const { tracker, source: tracked } = stepsTracker();
+  const { pool, entry } = await finishedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_1_PR }], partial: "the docs" }, tracked);
+  tracker.linkPull("NBF-1", STEP_1_PR, "merged");
+  await pool.refreshTracker();
+  assert.equal(runStatus(entry("NBF-1")), "needs-you");
+  await tracker.complete!("NBF-1", "finished by hand");
+  await pool.refreshTracker();
+  assert.equal(runStatus(entry("NBF-1")), "completed");
 });
 
 test("A11-168: a run claims its ticket in the tracker as it starts, a planning run too and a review round not, and a refused claim goes to the log while the run goes on", async () => {

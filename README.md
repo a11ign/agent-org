@@ -424,8 +424,8 @@ request ends the ticket as any `Closes` does.
 <instance>.<install id>` (the Linear plugin's, contract 1.2), written only when the ticket's latest claim names another instance. Pick shows a ticket as taken, and the queue refuses
 it, only when it is In Progress, in a state `tickets.providers.tracker.takenStates` names, or in a state of the started type, and its latest claim names another instance. A
 ticket this instance ran is never taken, whatever its state, and neither is one with no claim: a ticket moved to In Progress by hand, or by an instance from before claims, can
-be queued, which is the cost of the rule. Before the queue refuses a ticket as taken, it reads the ticket and its claim again, so one moved to Todo since the list was read is
-queued; a tracker that cannot be asked answers 503, never "taken".
+be queued, which is the cost of the rule. Before the queue takes a ticket that is in work, it reads the ticket and its claim again, so one moved to Todo since the list was read is
+queued; a tracker that cannot be asked answers 503, never "taken" and never "free".
 
 **What a worker may not do** is enforced by `ticket:hook`, which the ticket folder's `.claude/settings.local.json` names, so a session herdr
 resumes after a restart keeps it. A stop with no outcome file is refused twice in a row. These are refused outright: a pull request that

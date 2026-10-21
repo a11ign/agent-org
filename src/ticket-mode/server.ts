@@ -220,12 +220,15 @@ function withDecision(ticket: Ticket): Ticket & Readonly<{ needsDecision?: Needs
   return open === null ? ticket : { ...ticket, needsDecision: open };
 }
 
+/** Whether this instance's queue holds a run for the ticket, in any phase. */
+const holdsRun = ({ store }: Pick<Board, "store">, key: string): boolean => store.get().entries.some((entry) => entry.ticket.key === key);
+
 /**
  * A ticket as the page is sent it, with `taken` where another instance holds it (A11-144, A11-168): the tracker shows it in a taken state and its latest claim, as the board
  * last read it, names another instance. A ticket this instance holds a run for is never taken. Pick shows the state and does not let the ticket be queued here.
  */
 function withTaken(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: Ticket): Ticket & Readonly<{ taken?: string }> {
-  const held = board.store.get().entries.some((entry) => entry.ticket.key === ticket.key);
+  const held = holdsRun(board, ticket.key);
   const state = held ? null : takenState(ticket, board.settings.takenStates, board.known.claims.get(ticket.key), board.claimant());
   return state === null ? ticket : { ...ticket, taken: state };
 }
@@ -236,9 +239,8 @@ function withTaken(board: Pick<Board, "settings" | "store" | "known" | "claimant
  * The queue route reads again before it refuses anything.
  */
 async function readClaims(board: Pick<Board, "settings" | "source" | "store" | "known">, tickets: readonly Ticket[]): Promise<void> {
-  const { known, settings, source, store } = board;
-  const held = new Set(store.get().entries.map((entry) => entry.ticket.key));
-  const keys = tickets.filter((ticket) => !held.has(ticket.key) && inWork(ticket, settings.takenStates)).map((ticket) => ticket.key);
+  const { known, settings, source } = board;
+  const keys = tickets.filter((ticket) => !holdsRun(board, ticket.key) && inWork(ticket, settings.takenStates)).map((ticket) => ticket.key);
   for (const key of keys) known.claims.delete(key);
   if (keys.length === 0 || source.claims === undefined) return;
   try {
@@ -254,34 +256,55 @@ type Refusal = Readonly<{ status: number; error: string }>;
 /** What {@link refuseTaken} found: the refusal, or null, and the tickets to queue, each the tracker's copy where the check read it again. */
 type TakenCheck = Readonly<{ refusal: Refusal | null; tickets: readonly Ticket[] }>;
 
+/** Keep what the tracker just said of `ticket` and its latest claim, so the list and the queue routes after it decide on the same copy. */
+function rememberHolder({ known }: Pick<Board, "known">, ticket: Ticket, claimant: string | undefined): void {
+  known.tickets.set(ticket.key, ticket);
+  if (claimant === undefined) known.claims.delete(ticket.key);
+  else known.claims.set(ticket.key, claimant);
+}
+
+/** The 503 a queue route answers with when the tracker cannot say who holds a ticket. */
+const unreadable = (key: string, err: unknown): Refusal => ({ status: 503, error: `could not ask the tracker who holds ${key}: ${String((err as Error)?.message ?? err)}` });
+
 /**
- * The first of `tickets` another instance holds, as the answer a queue route refuses with (A11-144, A11-168). A ticket the board's copy would refuse is read again, with
+ * The ticket and its latest claim as the tracker says them now, or the 503 a queue route answers with when it cannot be asked. A ticket the tracker has none of throws as
+ * `queuedTicket` does, so a route's own error handling words it.
+ */
+async function readHolder(source: TicketSource, key: string): Promise<Readonly<{ ticket: Ticket; claimant: string | undefined }> | Refusal> {
+  let ticket: Ticket | null;
+  try {
+    ticket = await source.read(key);
+  } catch (err) {
+    return unreadable(key, err);
+  }
+  if (ticket === null) throw new Error(`no ticket ${key}`);
+  try {
+    return { ticket, claimant: source.claims === undefined ? undefined : (await source.claims([key])).get(key) };
+  } catch (err) {
+    return unreadable(key, err);
+  }
+}
+
+/**
+ * The first of `tickets` another instance holds, as the answer a queue route refuses with (A11-144, A11-168). A ticket in work with no run here is read again, with
  * its claim, and decided on what the tracker says now: one moved to Todo since the list was read, or claimed by this instance, is queued, with the copy just read. A tracker
  * that cannot be asked is a 503, never "taken": the board does not say another instance holds a ticket it could not read.
  */
 async function refuseTaken(board: Pick<Board, "settings" | "source" | "store" | "known" | "claimant">, tickets: readonly Ticket[]): Promise<TakenCheck> {
-  const { known, settings, source } = board;
   const checked: Ticket[] = [];
   for (const listed of tickets) {
-    if (withTaken(board, listed).taken === undefined) {
+    // Every ticket in work with no run here is read again, not only one the list marked taken: a list whose claims could not be read marked nothing, and the board does not
+    // queue a ticket another instance may hold on a read that failed.
+    if (holdsRun(board, listed.key) || !inWork(listed, board.settings.takenStates)) {
       checked.push(listed);
       continue;
     }
-    let ticket: Ticket | null;
-    let claimant: string | undefined;
-    try {
-      ticket = await source.read(listed.key);
-      if (ticket === null) throw new Error(`no ticket ${listed.key}`);
-      claimant = source.claims === undefined ? undefined : (await source.claims([ticket.key])).get(ticket.key);
-    } catch (err) {
-      return { refusal: { status: 503, error: `could not ask the tracker who holds ${listed.key}: ${String((err as Error)?.message ?? err)}` }, tickets };
-    }
-    known.tickets.set(ticket.key, ticket);
-    if (claimant === undefined) known.claims.delete(ticket.key);
-    else known.claims.set(ticket.key, claimant);
-    const state = takenState(ticket, settings.takenStates, claimant, board.claimant());
-    if (state !== null && claimant !== undefined) return { refusal: { status: 409, error: takenRefusal(ticket.key, state, claimant) }, tickets };
-    checked.push(ticket);
+    const read = await readHolder(board.source, listed.key);
+    if ("status" in read) return { refusal: read, tickets };
+    rememberHolder(board, read.ticket, read.claimant);
+    const state = takenState(read.ticket, board.settings.takenStates, read.claimant, board.claimant());
+    if (state !== null && read.claimant !== undefined) return { refusal: { status: 409, error: takenRefusal(read.ticket.key, state, read.claimant) }, tickets };
+    checked.push(read.ticket);
   }
   return { refusal: null, tickets: checked };
 }
