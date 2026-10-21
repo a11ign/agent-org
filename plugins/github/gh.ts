@@ -33,10 +33,14 @@ export function ghRunner(deps: Pick<PluginDeps, "exec">, env: Readonly<Record<st
   };
 }
 
-/** Runs `gh` as `account`: its status and its output, never a throw. */
+/**
+ * Runs `gh` as `account`: its status and its output, never a throw. A call that did not succeed has no output and says why, as it did when the runner was made of one that threw: what `gh`
+ * printed on stderr, else the command that failed (`Command failed: gh extension list`), so the reason a caller quotes is never empty.
+ */
 export function accountRunner(deps: Pick<PluginDeps, "exec">, account: Account): ProgramRunner {
   return (args): Program => {
     const result = deps.exec("gh", args, { timeoutMs: GH_TIMEOUT_MS, env: account.GH_CONFIG_DIR === undefined ? {} : { GH_CONFIG_DIR: account.GH_CONFIG_DIR } });
-    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    if (result.status === 0) return { status: 0, stdout: result.stdout, stderr: "" };
+    return { status: result.status, stdout: "", stderr: result.stderr || `Command failed: gh ${args.join(" ")}` };
   };
 }

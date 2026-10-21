@@ -442,7 +442,24 @@ test("A11-160: a host whose extension is listed keeps nothing to say, and one th
   assert.deepEqual(programs, [{ args: ["extension", "list"], env: { GH_CONFIG_DIR: "/home/agent/workers/gh" } }]);
 });
 
-test("A11-160: a plugin that cannot be imported, and a keep that throws, are said as errors and never raised; a host file that cannot be read keeps nothing", async () => {
+test("A11-160: a host file that does not read as ticket settings still has the extension kept, for the account it names or the person's own, as update always kept it", async () => {
+  const runs: { args: readonly string[]; env: unknown }[] = [];
+  const exec: PluginDeps["exec"] = (_file, args, options) => {
+    runs.push({ args, env: options?.env });
+    return { status: 0, stdout: "x  github/gh-" + "stack  v0.2.1\n", stderr: "" };
+  };
+  const keepFor = async (hostText: string | null) => (await pluginUpkeep(null, {}, { deps: fakePluginDeps({ exec }), hostText }))();
+  runs.length = 0;
+  assert.deepEqual(await keepFor(JSON.stringify({ gh: { workers: "/home/agent/workers" }, tickets: { providers: { codeHost: { provider: "github" } } } })), []);
+  assert.deepEqual(runs, [{ args: ["extension", "list"], env: { GH_CONFIG_DIR: "/home/agent/workers/gh" } }], "a file with no clones, which the settings reader refuses, still names the workers' account");
+  for (const text of [null, "{ not json", JSON.stringify({ tickets: { providers: { codeHost: { provider: "gitlab" } } } })]) {
+    runs.length = 0;
+    await keepFor(text);
+    assert.deepEqual(runs, [{ args: ["extension", "list"], env: {} }], `${text}: no host file, one that is not JSON, and one the reader refuses are the person's own gh account`);
+  }
+});
+
+test("A11-160: a plugin that cannot be imported, and a keep that throws, are said as errors and never raised", async () => {
   const importing = async (url: string): Promise<unknown> => {
     if (url.endsWith("/plugins/linear/index.ts")) throw new Error("cannot import");
     return { create: () => ({}), doctorChecks: () => [], onboardSteps: [], keep: () => { throw new Error("gh exploded"); } };
@@ -452,5 +469,4 @@ test("A11-160: a plugin that cannot be imported, and a keep that throws, are sai
     [false, "the tracker plugin linear was refused: cannot import"],
     [false, "the github plugin could not be kept up: gh exploded"],
   ]);
-  assert.deepEqual((await pluginUpkeep(null))(), []);
 });

@@ -1,7 +1,7 @@
 // no-token: none -- pure: each host file is parsed here, and nothing is read from disk or the tracker
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ALIASES_REFUSED_FROM, isActive, resolveProviders } from "./providers.ts";
+import { ALIASES_REFUSED_FROM, isActive, providersOfText, resolveProviders } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
 import { buildCatalog } from "../plugins/registry.ts";
 import { parseTicketSettings } from "./settings.ts";
@@ -258,4 +258,13 @@ test("A11-158: a plugin takes the settings it declares and no others", () => {
 
 test("A11-158: a setting `none` does not take is refused naming the block, since `none` is no plugin", () => {
   assert.match(refusalOf({ tickets: { providers: { reviewer: { provider: "none", model: "x" } } } }).message, /is not a setting of reviewer: its settings are provider, enabled/);
+});
+
+test("A11-160: the providers of a host file's text are read leniently: a missing file, text that is not JSON and one the reader refuses are the defaults; a file that reads is its own", () => {
+  assert.equal(providersOfText(null).blocks.codeHost.provider, "github");
+  assert.equal(providersOfText("{ not json").blocks.codeHost.provider, "github");
+  const refused = providersOfText(JSON.stringify({ gh: { workers: "/w" }, tickets: { providers: { codeHost: { provider: "gitlab" } } } }));
+  assert.equal(refused.blocks.codeHost.settings.gh.value, undefined, "a refused file names no setting");
+  const reads = providersOfText(JSON.stringify({ gh: { workers: "/w" }, tickets: {} }));
+  assert.deepEqual(reads.blocks.codeHost.settings.gh.value, { workers: "/w" });
 });

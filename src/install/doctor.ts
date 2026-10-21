@@ -21,7 +21,7 @@ import { delimiter, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { parseTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
-import { PROVIDER_BLOCKS, type ProviderBlock, type Providers } from "../ticket-mode/providers.ts";
+import { PROVIDER_BLOCKS, type ProviderBlock, type Providers, providersOfText } from "../ticket-mode/providers.ts";
 import { blockOf } from "../plugins/concerns.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { messagingStateOfFile } from "../plugins/messaging-state.ts";
@@ -35,10 +35,10 @@ import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mod
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
 import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
 import { deferralPath, readDeferral, type Deferral } from "./plugin-install.ts";
+import { hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
-import { hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
 import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
@@ -112,7 +112,7 @@ export type DoctorDeps = Readonly<{
    */
   agentOrgPlugins: Readonly<{
     catalog: () => Catalog;
-    load: (providers: Providers, catalog: Catalog, deps: PluginDeps) => Promise<LoadResult>;
+    load: (providers: Providers, catalog: Catalog, deps: PluginDeps, blocks?: readonly ProviderBlock[]) => Promise<LoadResult>;
     messaging: () => Promise<MessagingState>;
   }>;
   now: () => number;
@@ -325,6 +325,21 @@ type PluginRows = Readonly<{ byBlock: Readonly<Record<ProviderBlock, readonly Ch
 
 const pluginFailed = (plugin: string, why: string, fix: string): Check => failed(`plugin ${plugin}`, why, fix);
 
+/** The host file's text, or null when it cannot be read: the file a worker's `gh` account is named in. */
+function hostText(deps: DoctorDeps): string | null {
+  try {
+    return deps.readFile(hostFilePath(deps.env, deps.home, (file) => {
+      try {
+        return deps.readFile(file);
+      } catch {
+        return null;
+      }
+    }));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The rows of the agent-org plugins (A11-158): one for each package the registry refused, one for each plugin whose contract major this agent-org does not read and that no block
  * enables (an enabled one is the host row's refusal), and, for each bundled plugin the host enables, the doctor checks it declares, which its provider row summarises. A plugin the loader
@@ -335,15 +350,20 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
   const catalog = catalogOf();
   const byBlock = Object.fromEntries(PROVIDER_BLOCKS.map((block) => [block, [] as Check[]])) as Record<ProviderBlock, Check[]>;
   const rows: Check[] = catalog.refusals.map(({ plugin, why }) => pluginFailed(plugin, why, "fix the plugin's package.json, or remove the plugin"));
-  // A host file the reader refused cannot say which plugins it enables, and its row already says why: an unread major is judged once the file reads.
-  if (settings === null) return { byBlock, rows };
-  const enabledNames = new Set(PROVIDER_BLOCKS.filter((block) => settings.providers.blocks[block].enabled).map((block) => settings.providers.blocks[block].provider));
-  for (const plugin of catalog.plugins.filter(({ concern, contract, name }) => !readsConcernContract(concern, contract) && !enabledNames.has(name))) {
-    rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
+  // A host file the reader refused cannot say which plugins it enables, and its row already says why: an unread major is judged once the file reads. The code host's rows are shown all
+  // the same, for the providers the file names or the defaults: they ran on whatever the host file said (the stacking extension is the person's own `gh` account's), and they are asked
+  // alone, since nothing else of the plugins is built for a file that does not read.
+  const providers = settings?.providers ?? providersOfText(hostText(deps));
+  const blocks: readonly ProviderBlock[] = settings === null ? ["codeHost"] : PROVIDER_BLOCKS;
+  if (settings !== null) {
+    const enabledNames = new Set(PROVIDER_BLOCKS.filter((block) => providers.blocks[block].enabled).map((block) => providers.blocks[block].provider));
+    for (const plugin of catalog.plugins.filter(({ concern, contract, name }) => !readsConcernContract(concern, contract) && !enabledNames.has(name))) {
+      rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
+    }
   }
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings.stateDir, log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, pick: settings.pick,
-    clones: settings.clones, policy: corePolicy() };
-  const loaded = await load(settings.providers, catalog, pluginDeps);
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode,
+    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy() };
+  const loaded = await load(providers, catalog, pluginDeps, blocks);
   // A plugin whose module imported but whose `create` threw has checks of its own, which say why (a key that cannot be read) with the fix: its refusal is a row only when none of them fails.
   const unbuilt = new Set(loaded.unbuilt.map(({ plugin }) => plugin.name));
   const addRefusal = ({ plugin, concern, why }: LoadResult["refusals"][number]): void => {
@@ -356,7 +376,7 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
   for (const { plugin, module } of [...loaded.loaded, ...loaded.unbuilt]) {
     const block = blockOf(plugin.concern);
     if (block === null) continue;
-    const checks = await module.doctorChecks(settingsOfBlock(settings.providers.blocks[block]), pluginDeps);
+    const checks = await module.doctorChecks(settingsOfBlock(providers.blocks[block]), pluginDeps);
     byBlock[block].push(...checks);
     rows.push(...checks);
     const refusal = loaded.refusals.find((candidate) => candidate.plugin === plugin.name);
@@ -733,7 +753,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     chromium: () => chromiumReport(),
     agentOrgPlugins: {
       catalog: defaultCatalog,
-      load: (providers, catalog, pluginDeps) => loadEnabled(providers, catalog, pluginDeps),
+      load: (providers, catalog, pluginDeps, blocks) => loadEnabled(providers, catalog, pluginDeps, undefined, blocks),
       messaging: () => messagingStateOfFile(hostFilePath(process.env, homedir(), readOrNull)),
     },
     now: () => Date.now(),

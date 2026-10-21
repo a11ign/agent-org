@@ -330,6 +330,18 @@ function exposureOf(block: unknown, tickets: Record<string, unknown>, read: Alia
 }
 
 /**
+ * The providers a host file's text names, read LEASHED: text that is missing, is not JSON or is refused by {@link resolveProviders} is the defaults. For a caller that acts on
+ * the plugins a machine has whether or not its host file reads as ticket settings (doctor shows the code host's rows, and update keeps its extension), as they always did.
+ */
+export function providersOfText(text: string | null, catalog: Catalog = defaultCatalog()): Providers {
+  try {
+    return resolveProviders(JSON.parse(text ?? "{}"), catalog);
+  } catch {
+    return resolveProviders({}, catalog);
+  }
+}
+
+/**
  * Each block's plugin and settings, and each old key still read, from the parsed host file. PURE: the caller reads and parses the file, and `catalog` is the
  * registry's (this checkout's, unless a test passes its own). Refused by name: a block that is not one of the five, a plugin that is not one of its concern's, one
  * whose contract major this agent-org does not read, one core is pinned off, a setting its plugin does not declare, `enabled: false` on the tracker or the code

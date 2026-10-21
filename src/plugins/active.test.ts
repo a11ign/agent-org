@@ -8,6 +8,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { resolveProviders } from "../ticket-mode/providers.ts";
 import { activatePlugins, forgetActivation, loadActive, PluginActivationRefusal, realExec, realMode, realPluginDeps } from "./active.ts";
 import { fakePluginDeps } from "./fakes/deps.ts";
+import { createFakeCodeHost } from "./fakes/code-host.ts";
 import { createFakeTracker, fakeTicket } from "./fakes/tracker.ts";
 import type { PluginModule } from "./manifest.ts";
 import { buildCatalog, defaultCatalog, type PackageFiles } from "./registry.ts";
@@ -95,4 +96,19 @@ test("A11-160: a program runs with the environment it is given laid over this pr
   assert.equal(realExec("node", ["-e", "process.stdout.write(process.env.AGENT_ORG_EXEC_PROBE ?? 'unset')"]).stdout, "unset");
   const long = realExec("node", ["-e", "process.stdout.write('x'.repeat(5 * 1024 * 1024))"]);
   assert.deepEqual([long.status, long.stdout.length], [0, 5 * 1024 * 1024], "five megabytes is more than the default buffer of one, and a listing that long is an answer");
+});
+
+test("A11-160: an activation narrowed to the code host builds it alone: the tracker's create, which reads a key, is never called, and a start that asks for everything is refused by it", async () => {
+  const catalog = catalogOf({ "my-tracker": "tracker", "my-host": "codeHost" });
+  const providers = resolveProviders(host({ tracker: { provider: "my-tracker" }, codeHost: { provider: "my-host" } }), catalog);
+  const codeHost = createFakeCodeHost();
+  const built: string[] = [];
+  const modules = importing({
+    [urlOf("my-tracker")]: moduleOf(() => { built.push("tracker"); throw new Error("no Linear key in the Keychain"); }),
+    [urlOf("my-host")]: moduleOf(() => { built.push("code host"); return codeHost; }),
+  });
+  const narrowed = await loadActive(providers, catalog, fakePluginDeps(), modules, ["codeHost"]);
+  assert.equal(narrowed.codeHost(), codeHost);
+  assert.deepEqual(built, ["code host"], "the tracker was not built, so its key was not read");
+  await assert.rejects(loadActive(providers, catalog, fakePluginDeps(), modules), /the tracker plugin my-tracker was refused: no Linear key in the Keychain/);
 });

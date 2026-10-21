@@ -46,3 +46,12 @@ test("an account's runner acts as the account's config directory, and answers a 
   accountRunner({ exec }, {})(["extension", "list"]);
   assert.deepEqual((calls[1].options as { env: unknown }).env, {}, "an account with no directory is the process's own");
 });
+
+test("an account's runner says why a call failed even when gh printed nothing, and drops the output of a failed call and the stderr of a good one", () => {
+  const silent = recording({ status: 1, stdout: "partial listing\n", stderr: "" });
+  assert.deepEqual(accountRunner({ exec: silent.exec }, {})(["extension", "list"]), { status: 1, stdout: "", stderr: "Command failed: gh extension list" });
+  const warned = recording({ status: 0, stdout: "listed\n", stderr: "a warning" });
+  assert.deepEqual(accountRunner({ exec: warned.exec }, {})(["extension", "list"]), { status: 0, stdout: "listed\n", stderr: "" });
+  const missing = recording({ status: null, stderr: "spawn gh ENOENT" });
+  assert.deepEqual(accountRunner({ exec: missing.exec }, {})(["extension", "list"]), { status: null, stdout: "", stderr: "spawn gh ENOENT" });
+});

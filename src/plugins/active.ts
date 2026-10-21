@@ -3,12 +3,13 @@
 //
 // THE LOADER IS ASYNC AND THE CONTRACTS ARE NOT. A plugin's entry module is imported with `import()`, but the tracker contract's `TicketSource` is used by code that already holds
 // one (`createBoard`'s `ctx.source`). So an entry that needs a plugin awaits `activatePlugins` once, at its start, and asks the result for the implementation: `ticket:serve`
-// for the board (its tracker and its code host), `pr:open` for the tracker it reads, `ticket:review` and `ticket:stack-live-check` for the code host, and nothing else on a call path. A
+// for the board (its tracker and its code host), `pr:open` for the tracker it reads, `ticket:review` for the code host alone, and nothing else on a call path. A
 // plugin's refusal refuses the start by name, as a refused host file does. A11-162 and A11-161 add the accessor of each concern they move to this module.
 //
 // MEMOIZED PER PROCESS: the second call returns the first's result, whatever it is given. A test calls `forgetActivation`.
 import { spawnSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
+import type { ProviderBlock } from "./concerns.ts";
 import type { Providers } from "../ticket-mode/providers.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { CodeHost } from "./contracts/code-host.ts";
@@ -42,17 +43,17 @@ function implementationOf<Implementation>(providers: Providers, loaded: readonly
 }
 
 /** Loads the bundled plugins `providers` enables and answers their implementations. REFUSES, naming each plugin, any the loader refuses. Not memoized: see {@link activatePlugins}. */
-export async function loadActive(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule): Promise<Active> {
-  const { loaded, refusals } = await loadEnabled(providers, catalog, deps, importModule);
+export async function loadActive(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule, blocks?: readonly ProviderBlock[]): Promise<Active> {
+  const { loaded, refusals } = await loadEnabled(providers, catalog, deps, importModule, blocks);
   if (refusals.length > 0) return refused(refusals.map(({ plugin, concern, why }) => `the ${concern} plugin ${plugin} was refused: ${why}`).join("; "));
   return { loaded, tracker: () => implementationOf<TicketSource>(providers, loaded, "tracker", "tracker"), codeHost: () => implementationOf<CodeHost>(providers, loaded, "codeHost", "code host") };
 }
 
 let activation: Promise<Active> | null = null;
 
-/** {@link loadActive}, once per process. */
-export function activatePlugins(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule): Promise<Active> {
-  activation ??= loadActive(providers, catalog, deps, importModule);
+/** {@link loadActive}, once per process. `blocks` narrows what is built to some blocks (`ticket:review` builds the code host alone). */
+export function activatePlugins(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule, blocks?: readonly ProviderBlock[]): Promise<Active> {
+  activation ??= loadActive(providers, catalog, deps, importModule, blocks);
   return activation;
 }
 

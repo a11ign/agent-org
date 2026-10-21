@@ -585,12 +585,21 @@ test("A11-160: the code host plugin's rows are in the report where doctor's own 
   assert.equal(row["code host (github)"].detail, "from aliases (gh), and its checks pass");
 });
 
-test("A11-160: a host file the reader refuses shows no plugin rows: they need the providers it names, and its own row says why", async () => {
-  const refused = await diagnose(deps({ readFile: () => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { providers: { codeHost: { provider: "gitlab" } } } }) }));
-  const names = refused.map(({ name }) => name);
-  assert.equal(names.includes("gh stack") || names.includes("stacked pull requests"), false);
-  assert.equal(refused.some(({ ok }) => !ok), true, "something fails, and it is the host file's row");
-  assert.match(refused.find(({ ok }) => !ok)?.detail ?? "", /tickets\.providers\.codeHost\.provider/);
+test("A11-160: a host file the reader refuses still shows the code host's rows, as doctor always did, for the account it names, and builds no other plugin; its own row says why", async () => {
+  const refusedText = JSON.stringify({ gh: { workers: "/home/agent/workers" }, tickets: {} });
+  const built: string[] = [];
+  const spying = fakeAgentOrgPlugins({ load: async (providers, catalog, pluginDeps, blocks) => { built.push(...(blocks ?? ["every block"])); return (await fakeAgentOrgPlugins().load(providers, catalog, pluginDeps, blocks)); } });
+  const refused = await diagnose(deps({ readFile: () => refusedText, agentOrgPlugins: spying }));
+  const row = byName(refused);
+  assert.equal(row["gh stack"].ok, true, "the row is shown though the file is refused");
+  assert.match(row["gh stack"].detail, /^github\/gh-stack v0\.2\.1 \(for GH_CONFIG_DIR=/);
+  assert.deepEqual(built, ["codeHost"], "only the code host is built: the tracker's key is not read for a file that does not read");
+  assert.equal(refused.find(({ name }) => name === "host file")?.ok, false, "the failing row is the host file's, which says why");
+  const unknownHost = byName(await diagnose(deps({ readFile: () => JSON.stringify({ gh: { workers: "/home/agent/workers" }, clones: { netbox: "/src/netbox" }, tickets: { providers: { codeHost: { provider: "gitlab" } } } }) })));
+  assert.match(unknownHost["gh stack"].detail, /\(for this machine's gh account\)$/, "a file whose providers are refused names no account, as the raw reading never did");
+  const unreadable = byName(await diagnose(deps({ readFile: () => { throw new Error("ENOENT"); } })));
+  assert.equal(unreadable["gh stack"].ok, true, "and for a host file that is not there");
+  assert.equal(unreadable["host file"].ok, false);
 });
 
 test("A11-160: a failing plugin row fails the code host's row, which says what the plugin found and its fix", async () => {

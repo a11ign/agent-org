@@ -26,7 +26,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { chooseReleaseTag, isReleaseTag, LATEST } from "../lib/release-tag.ts";
 import { installDependencies, updateTool, type DependencyInstall } from "../update-tool.ts";
 import { defaultServiceDeps, restartService, serviceState, TOOL_SERVICES, type ServiceName, type ServiceState } from "./service.ts";
-import { hostFilePath, TOOL_ROOT } from "./paths.ts";
+import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
 import { liveRunCount, type Queue } from "../ticket-mode/queue/queue-entries-and-outcomes.ts";
 import { loadQueue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
@@ -357,7 +357,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   try {
     const { values } = parseArgs({ args: process.argv.slice(2), strict: true, options: { version: { type: "string" }, channel: { type: "string", default: "release" }, force: { type: "boolean", default: false } } });
     if (values.channel !== "release" && values.channel !== "main") throw new UpdateRefusal(`--channel ${values.channel} is not release or main`);
-    update({ version: values.version, channel: values.channel, force: values.force }, defaultUpdateDeps(await pluginUpkeep(hostSettings())));
+    update({ version: values.version, channel: values.channel, force: values.force }, defaultUpdateDeps(await pluginUpkeep(hostSettings(), process.env, { hostText: readOrNull(hostFilePath(process.env)) })));
   } catch (err) {
     console.error(`agent-org update: ${(err as Error).message}`);
     process.exitCode = 2;

@@ -11,7 +11,7 @@ import { defaultCatalog } from "../registry.ts";
 export function fakeAgentOrgPlugins(over: Partial<DoctorDeps["agentOrgPlugins"]> = {}): DoctorDeps["agentOrgPlugins"] {
   return {
     catalog: defaultCatalog,
-    load: (providers, catalog, deps) => loadEnabled(providers, catalog, deps),
+    load: (providers, catalog, deps, blocks) => loadEnabled(providers, catalog, deps, undefined, blocks),
     messaging: async () => ({ provider: null, why: "this test declares no project" }),
     ...over,
   };

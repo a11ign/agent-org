@@ -62,8 +62,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     process.stderr.write(`ticket:review: the reviewer does not load on this host: ${refusal}\n`);
     process.exit(1);
   }
-  // The code host is the enabled plugin's, as the board's: the pull request is read through it, and so is each read the reviewer port makes.
-  const codeHost = (await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge }))).codeHost();
+  // The code host is the enabled plugin's, as the board's: the pull request is read through it, and so is each read the reviewer port makes. It alone is built: the tracker's key is
+  // not read for a command that asks it nothing, which is run from a shell with no Keychain (it was run from ssh).
+  const codeHost = (await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge }), undefined, ["codeHost"])).codeHost();
   const path = reviewerMemoryPath(settings.stateDir);
   const { memory } = readReviewerMemory(path);
   const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, codeHost, heads: memory.heads, clones: settings.clones, instance: claimantOf(settings) });

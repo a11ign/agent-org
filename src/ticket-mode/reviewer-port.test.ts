@@ -11,7 +11,7 @@ import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/pull-status-and-notes.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, earlierReviewWord, loadReviewerGate, readReviewerMemory, reviewWordAt, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, reviewWordAt, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";
 import { enqueue, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -608,4 +608,16 @@ test("A11-119: the reviewer's word on a head, and the newest word on an earlier 
   assert.deepEqual(earlierReviewWord(reviews, "91bf0677"), { head: "68bd2e8d", word: "changes requested" });
   assert.deepEqual(earlierReviewWord(reviews, "68bd2e8d"), { head: "91bf0677", word: "dismissed" }, "the newest on any other head");
   assert.equal(earlierReviewWord([review("CHANGES_REQUESTED", "68bd2e8d", 1)], "68bd2e8d"), null, "a head is never earlier than itself");
+});
+
+test("A11-160: the gate judges a pull request for the code host plugin: the fields the reviewer reads by, who is the org's own, and whether the checks settled, as the gate decides each", async () => {
+  await loadReviewerGate();
+  const judge = gateReviewJudge();
+  assert.equal(judge.fields, "headRefOid,reviews,author,isCrossRepository,isDraft,statusCheckRollup", "the fields the gate's own reader asks for");
+  assert.equal(judge.trustOf({ isCrossRepository: true, author: { login: "worker-bot" } }), "outside", "a fork is outside whoever its author is");
+  assert.equal(judge.trustOf({ isCrossRepository: false, author: { login: "a-stranger-nobody-declared" } }), "outside", "an author the host does not declare is outside");
+  assert.equal(judge.trustOf({ isCrossRepository: false, author: { login: "dependabot[bot]" } }), "inside", "a login the gate trusts by name is inside");
+  assert.equal(judge.settledOf({ statusCheckRollup: GREEN }), true);
+  assert.equal(judge.settledOf({ statusCheckRollup: [{ name: "gate", status: "IN_PROGRESS", conclusion: null }] }), false, "a pending check has not settled");
+  assert.equal(judge.settledOf({ statusCheckRollup: [] }), false, "no check at all is not settled green");
 });
