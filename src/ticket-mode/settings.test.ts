@@ -212,6 +212,8 @@ test("a bad field is refused by its name", () => {
     [{ deny: { pattern: "x", reason: "y" } }, "tickets.deny", "one rule, not a list"],
     [{ deny: [{ pattern: "x" }] }, "tickets.deny[0]", "a rule with no reason"],
     [{ deny: [{ pattern: "x", reason: "y" }, { pattern: "(", reason: "y" }] }, "tickets.deny[1].pattern", "not a regular expression"],
+    [{ linearKey: { path: "rel" } }, "tickets.linearKey.path", "a relative key file: refused at save, as before the key moved into its plugin"],
+    [{ providers: { tracker: { provider: "linear", key: { path: "rel" } } } }, "tickets.providers.tracker.key.path", "the same, in the tracker's block"],
     [{ terminal: "127.0.0.1:7318/?pane={pane}" }, "tickets.terminal", "not a web address"],
     [{ terminal: "http://127.0.0.1:7318/" }, "tickets.terminal", "names no run, so every link is the same"],
     [{ terminal: ["http://x/{pane}"] }, "tickets.terminal", "not a string"],

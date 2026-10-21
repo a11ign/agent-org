@@ -412,19 +412,23 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
   }
   const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings.stateDir, log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, pick: settings.pick };
   const loaded = await load(settings.providers, catalog, pluginDeps);
-  for (const { plugin, concern, why } of loaded.refusals) {
+  // A plugin whose module imported but whose `create` threw has checks of its own, which say why (a key that cannot be read) with the fix: its refusal is a row only when none of them fails.
+  const unbuilt = new Set(loaded.unbuilt.map(({ plugin }) => plugin.name));
+  const addRefusal = ({ plugin, concern, why }: LoadResult["refusals"][number]): void => {
     const block = blockOf(concern);
     const row = pluginFailed(plugin, why, "update agent-org, or the plugin");
     if (block !== null) byBlock[block].push(row);
     rows.push(row);
-  }
-  // A plugin whose `create` threw still has its checks: they say why (a key that cannot be read), which its refusal alone does not.
+  };
+  loaded.refusals.filter(({ plugin }) => !unbuilt.has(plugin)).forEach(addRefusal);
   for (const { plugin, module } of [...loaded.loaded, ...loaded.unbuilt]) {
     const block = blockOf(plugin.concern);
     if (block === null) continue;
     const checks = await module.doctorChecks(settingsOfBlock(settings.providers.blocks[block]), pluginDeps);
     byBlock[block].push(...checks);
     rows.push(...checks);
+    const refusal = loaded.refusals.find((candidate) => candidate.plugin === plugin.name);
+    if (unbuilt.has(plugin.name) && refusal !== undefined && checks.every((check) => check.ok)) addRefusal(refusal);
   }
   return { byBlock, rows };
 }

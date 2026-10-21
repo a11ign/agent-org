@@ -42,9 +42,12 @@ export function keyCheck(settings: PluginSettings, deps: PluginDeps): PluginChec
   return ok("tracker key", `readable from ${where}`);
 }
 
+/** `claude mcp list` connects to each server, so it is given a minute, as doctor always gave it. */
+const MCP_LIST_MS = 60_000;
+
 /** What `claude mcp list` printed, or null when it could not run. */
 function mcpList(deps: Pick<PluginDeps, "exec">): string | null {
-  const result = deps.exec("claude", ["mcp", "list"]);
+  const result = deps.exec("claude", ["mcp", "list"], { timeoutMs: MCP_LIST_MS });
   return result.status === 0 ? result.stdout : null;
 }
 

@@ -70,7 +70,9 @@ test("this checkout's Linear plugin loads from disk for the default host, and ac
 test("the real seams: a program that runs answers its status and output, one that cannot start answers no status, and a file's mode is its permission bits", () => {
   const ran = realExec("node", ["--version"]);
   assert.deepEqual([ran.status, /^v\d+\./.test(ran.stdout)], [0, true]);
-  assert.equal(realExec("agent-org-no-such-program", []).status, null);
+  const absent = realExec("agent-org-no-such-program", []);
+  assert.equal(absent.status, null);
+  assert.match(absent.stderr, /ENOENT/, "a program that cannot start says why, as the runner onboard used to");
   const dir = tmpDir("active-");
   const file = join(dir, "k");
   writeFileSync(file, "secret");

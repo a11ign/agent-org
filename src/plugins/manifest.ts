@@ -71,8 +71,11 @@ export type PluginDeps = Readonly<{
   stateDir: string;
   log: (line: string) => void;
   fetch: typeof fetch;
-  /** Runs `file` with `args`. `inherit` gives it this process's terminal, for a program that prompts (`security add-generic-password -w`). */
-  exec: (file: string, args: readonly string[], options?: Readonly<{ inherit?: boolean }>) => ExecResult;
+  /**
+   * Runs `file` with `args`. `inherit` gives it this process's terminal, for a program that prompts (`security add-generic-password -w`). `timeoutMs` bounds the run (ten minutes
+   * when absent); a program that cannot start answers no status and the reason in its stderr.
+   */
+  exec: (file: string, args: readonly string[], options?: Readonly<{ inherit?: boolean; timeoutMs?: number }>) => ExecResult;
   readFile: (path: string) => string;
   mode: (path: string) => number | null;
   pick: PickScope;

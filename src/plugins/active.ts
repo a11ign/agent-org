@@ -56,9 +56,14 @@ export function forgetActivation(): void {
   activation = null;
 }
 
-/** Runs `file` for real: the program's exit status (null when it could not start) and what it printed. `inherit` gives it this process's terminal. */
-export function realExec(file: string, args: readonly string[], options: Readonly<{ inherit?: boolean }> = {}): ExecResult {
-  const result = options.inherit === true ? spawnSync(file, [...args], { stdio: "inherit", encoding: "utf8" }) : spawnSync(file, [...args], { encoding: "utf8", timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] });
+/** How long a program may run when its caller names no limit: a Keychain prompt a person is reading, or a marketplace add, takes minutes. */
+const DEFAULT_EXEC_MS = 600_000;
+
+/** Runs `file` for real: the program's exit status (null when it could not start, with the reason in stderr) and what it printed. `inherit` gives it this process's terminal. */
+export function realExec(file: string, args: readonly string[], options: Readonly<{ inherit?: boolean; timeoutMs?: number }> = {}): ExecResult {
+  const timeout = options.timeoutMs ?? DEFAULT_EXEC_MS;
+  const result = options.inherit === true ? spawnSync(file, [...args], { stdio: "inherit", encoding: "utf8" }) : spawnSync(file, [...args], { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
+  if (result.error !== undefined) return { status: null, stdout: "", stderr: result.error.message };
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 

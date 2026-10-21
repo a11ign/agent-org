@@ -198,6 +198,26 @@ test("doctor tells a key it cannot read, and names the keychain command to store
   assert.equal(checks["tracker key"].fix, "security add-generic-password -a \"$USER\" -s agent-org-linear -w");
 });
 
+test("A11-159: a key the plugin cannot read is one failing row with the key's own fix, the tracker's row says the same, and no second row repeats it as a plugin refusal", async () => {
+  const checks = byName(await diagnose(deps({ exec: execOf({ key: null }) })));
+  assert.equal(checks["plugin linear"], undefined, "the plugin's own check says why create threw");
+  assert.equal(checks["tracker key"].fix, "security add-generic-password -a \"$USER\" -s agent-org-linear -w");
+  assert.equal(checks["tracker (linear)"].ok, false);
+  assert.equal(checks["tracker (linear)"].fix, checks["tracker key"].fix);
+  assert.equal(checks["linear mcp"].ok, true, "the MCP is still checked");
+});
+
+test("A11-159: a plugin whose create threw for a reason its own checks do not find is still a failing row, naming it", async () => {
+  const catalog = fakeAgentOrgPlugins().catalog();
+  const linear = catalog.plugins.find(({ name }) => name === "linear")!;
+  const module = { create: () => ({}), doctorChecks: () => [{ name: "tracker key", ok: true, detail: "readable", fix: null }], onboardSteps: [] };
+  const plugins = fakeAgentOrgPlugins({ load: async () => ({ loaded: [], unbuilt: [{ plugin: linear, module }], refusals: [{ plugin: "linear", concern: "tracker" as const, why: "create broke" }] }) });
+  const checks = byName(await diagnose(deps({ agentOrgPlugins: plugins })));
+  assertRow(checks, "plugin linear", { ok: false, detail: "create broke" });
+  assert.equal(checks["tracker key"].ok, true);
+  assert.equal(checks["tracker (linear)"].ok, false);
+});
+
 test("doctor tells a running service that does not answer, and names the log to read", async () => {
   const checks = byName(await diagnose(deps({ answers: async (port) => port !== 4800 })));
   assert.equal(checks["instance service"].ok, true);

@@ -44,7 +44,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_PROVIDER, isActive, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
 import { blockOf, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
-import { realExec } from "../plugins/active.ts";
+import { realExec, realMode } from "../plugins/active.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import type { Catalog, PluginDeps, PluginSettings } from "../plugins/manifest.ts";
@@ -456,8 +456,9 @@ function plannedProviders({ host, tickets, planned, catalog }: Readonly<{ host: 
 async function runPluginSteps({ options, host, tickets, planned, answered }: Readonly<{ options: OnboardOptions; host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; answered: boolean }>,
   deps: OnboardDeps): Promise<Record<string, Record<string, unknown>>> {
   const providers = plannedProviders({ host, tickets, planned, catalog: deps.catalog() });
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir: join(deps.home, ".local", "state", "agent-org"), log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
-    exec: deps.exec, readFile: deps.readFile, mode: () => null, pick: "assigned" };
+  const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
+    exec: deps.exec, readFile: deps.readFile, mode: realMode, pick: "assigned" };
   const result = await deps.loadPlugins(providers, pluginDeps);
   const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));
   const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));

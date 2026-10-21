@@ -20,9 +20,9 @@
 // the field, never answered with a guess.
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
-import { isActive, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
+import { isActive, PROVIDER_BLOCKS, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
-import { defaultCatalog, isTrackerConnector } from "../plugins/registry.ts";
+import { defaultCatalog, isTrackerConnector, pluginNamed } from "../plugins/registry.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { defaultTakenStates } from "./pick-taken.ts";
 import { randomBytes } from "node:crypto";
@@ -182,6 +182,23 @@ const settingOf = (report: BlockReport, name: string): Setting => report.setting
 function absolutePath(value: unknown, field: string): string {
   if (typeof value !== "string" || !isAbsolute(value)) throw new TicketSettingsRefusal(field, `must be an absolute path, not ${JSON.stringify(value)}`);
   return value;
+}
+
+/**
+ * A part of a plugin's setting that names a file of secret content (`secret: "path"` on a dotted entry, such as the tracker's `key.path`) must be an absolute path: refused by the name it was
+ * read under, as the tracker key's path was before the key moved into its plugin (A11-159). The rest of a key's shape is the plugin's to judge, when it is created at start.
+ */
+function refuseRelativeSecretPaths(providers: Providers, catalog: Catalog): void {
+  for (const block of PROVIDER_BLOCKS) {
+    const report = providers.blocks[block];
+    for (const [name, entry] of Object.entries(pluginNamed(catalog, report.provider)?.settings ?? {})) {
+      if (!name.includes(".") || entry.secret !== "path") continue;
+      const parent = report.settings[name.slice(0, name.lastIndexOf("."))];
+      const part = name.slice(name.lastIndexOf(".") + 1);
+      const value = parent !== undefined && isObject(parent.value) ? parent.value[part] : undefined;
+      if (value !== undefined) absolutePath(value, `${parent.at}.${part}`);
+    }
+  }
 }
 
 function positiveInteger(value: unknown, field: string, fallback: number): number {
@@ -529,6 +546,7 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
   const instance = instanceOf(tickets.instance, machine);
   const plan = planPattern(tickets.plan);
   const providers = resolveProviders(host, catalog);
+  refuseRelativeSecretPaths(providers, catalog);
   const { tracker, codeHost, publish, reviewer, exposure } = providers.blocks;
   const port = settingOf(exposure, "port");
   const uiPort = settingOf(exposure, "uiPort");

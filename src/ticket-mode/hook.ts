@@ -201,10 +201,11 @@ function writerFiling(toolName: string, input: Record<string, unknown>, run: Rea
 }
 
 /** The filing tools the board granted a new-ticket run, from its mark beside the outcome file: none where the mark names none or cannot be read. PURE over `read`. */
-export function writerGrants(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8"), writings: readonly TrackerWriting[] = trackerWritings()): string[] {
+export function writerGrants(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8"), writings?: readonly TrackerWriting[]): string[] {
   try {
     const { tools } = JSON.parse(read(join(ticketDir, WRITER_FILE))) as { tools?: unknown };
-    const granted = grantable(writings);
+    // The registry is read only for a run with a mark that names tools: every other tool call of every other run costs the hook nothing of it.
+    const granted = Array.isArray(tools) && tools.length > 0 ? grantable(writings ?? trackerWritings()) : [];
     return Array.isArray(tools) ? tools.filter((tool): tool is string => granted.includes(tool as string)) : [];
   } catch {
     return [];
