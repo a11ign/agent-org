@@ -61,6 +61,12 @@ const exampleLine = (example: Readonly<Record<string, unknown>>): string =>
 /** The example lines of the kinds a brief may have its worker write, one per line. PURE. */
 export const outcomeExamples = (kinds: readonly OutcomeKind[]): string => kinds.map((kind) => exampleLine(OUTCOME_EXAMPLES[kind])).join("\n");
 
+/**
+ * Whether an outcome file written at `mtime` (ms) is stale under `mark`, the time its run was marked stale: a file at or before the mark is the one the run
+ * parked on, so it is no outcome. No mark makes nothing stale, and a mark that is not a number makes everything stale (A11-152). PURE.
+ */
+export const isStale = (mtime: number, mark: string | undefined): boolean => mark !== undefined && !(mtime > Number.parseFloat(mark));
+
 /** Whether a value is text with something in it: the shape every named string field must have. */
 const nonEmpty = (value: unknown): value is string => typeof value === "string" && value.trim() !== "";
 

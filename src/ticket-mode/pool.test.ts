@@ -2,7 +2,7 @@
 import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
@@ -25,7 +25,7 @@ import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
-import { WRITER_FILE } from "./worker-files.ts";
+import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
@@ -832,7 +832,7 @@ test("a run that hands its ticket back is parked: its workspace and pane stay, a
   }
 });
 
-test("a parked run whose agent works again is resumed: its outcome is moved aside, its stop count cleared, and it ends again on a new one", async () => {
+test("a parked run whose agent works again is resumed: its outcome is marked stale and left in place, its stop count cleared, and it ends again on a new one", async () => {
   const { pool, status, entry, settings, h } = await endedOn({ kind: "needs-human", reason: "which colour?" });
   const dir = ticketDir(settings, "NBF-1");
   writeFileSync(join(dir, "stop-refusals"), "2");
@@ -841,9 +841,12 @@ test("a parked run whose agent works again is resumed: its outcome is moved asid
   status.set(herdrName("NBF-1"), "working");
   await pool.tick();
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome], ["running", undefined]);
-  assert.ok(!existsSync(join(dir, "outcome.json")), "the stop hook now asks for a new outcome");
-  assert.match(readFileSync(join(dir, "outcome.prev.json"), "utf8"), /which colour/);
+  assert.match(readFileSync(join(dir, "outcome.json"), "utf8"), /which colour/, "the worker's file is not moved");
+  assert.equal(readFileSync(join(dir, STALE_OUTCOME_FILE), "utf8"), "100\n", "marked stale at the time the run parked (the clock is 100)");
   assert.ok(!existsSync(join(dir, "stop-refusals")), "a fresh count, so the hook refuses a stop without an outcome again");
+  // The file was written before the run parked, as on a real clock, so the stop hook judges it stale and refuses the stop.
+  utimesSync(join(dir, "outcome.json"), 0.05, 0.05);
+  assert.equal(stopVerdict(dir).code, 2, "the stop hook asks for a new outcome");
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [{ repo: "nbl-ui-netbox", url: "https://github.com/x/pull/2" }] }));
   status.set(herdrName("NBF-1"), "idle");
   await pool.tick();
@@ -1499,6 +1502,81 @@ test("an order.json that fails its checks records no blockers and is logged, and
   assert.ok(written.some((line) => /order\.json was not used, so no order was recorded: its order goes round in a cycle: NBF-1 -> NBF-2 -> NBF-1/.test(line)), written.join(""));
 });
 
+test("A11-152: a worker that writes its outcome and ends its turn while the watcher runs is never told to write it again", async () => {
+  // The first rewrite is the outcome the run parked on, written again during the stop hook; the second is a new one. Neither is moved, and both pass the hook.
+  for (const written of [{ kind: "needs-human", reason: "which colour?" }, { kind: "needs-human", reason: "which shade?" }]) {
+    const { pool, status, settings } = await endedOn({ kind: "needs-human", reason: "which colour?" });
+    const dir = ticketDir(settings, "NBF-1");
+    status.set(herdrName("NBF-1"), "working");
+    writeFileSync(join(dir, "outcome.json"), JSON.stringify(written));
+    await pool.tick();
+    assert.ok(existsSync(join(dir, "outcome.json")), `the board does not move the worker's file (${written.reason})`);
+    assert.equal(stopVerdict(dir).code, 0, `the stop hook passes on the outcome the worker wrote (${written.reason})`);
+  }
+});
+
+test("A11-152: a resumed run whose worker ends its turn with no new outcome ends with no outcome, not on the one it parked on", async () => {
+  const { pool, status, entry, settings } = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  const dir = ticketDir(settings, "NBF-1");
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  utimesSync(join(dir, "outcome.json"), 0.05, 0.05);
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  assert.equal(entry("NBF-1").outcome?.kind, "no-outcome", "the stale file is not the worker's outcome");
+});
+
+test("A11-152: a talk session seen idle before it answers does not settle on the outcome its run finished on", async () => {
+  const { pool, status, entry } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  await pool.tick();
+  status.set(herdrName("NBF-1"), "idle");
+  await pool.tick();
+  assert.notEqual(entry("NBF-1").outcome?.kind, "draft-pr", "the file it finished on is no outcome of this session");
+});
+
+test("A11-152: an outcome the board marked stale is no outcome for the stop hook, and the watcher keeps the worker's file where it is", async () => {
+  const { pool, status, settings } = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  const dir = ticketDir(settings, "NBF-1");
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  assert.ok(existsSync(join(dir, STALE_OUTCOME_FILE)), "answered: the run is marked stale");
+  assert.ok(existsSync(join(dir, "outcome.json")), "the file it parked on stays");
+  utimesSync(join(dir, "outcome.json"), 0.05, 0.05);
+  assert.equal(stopVerdict(dir).code, 2, "the stop hook refuses the old outcome");
+});
+
+test("A11-152: the watcher and the start never rename a file: the board moves an outcome only for a Grill question", () => {
+  for (const file of ["pool-watch.ts", "pool-start.ts"]) {
+    assert.doesNotMatch(readFileSync(new URL(`./${file}`, import.meta.url), "utf8"), /\brenameSync\b/, file);
+  }
+});
+
+/** A Grill run that asks `needs-human` and goes idle, with `mark` (a stop-active time) left beside its outcome first, if given (A11-152). */
+async function grillAsks(id: string, mark?: string, now?: () => number) {
+  const fixture = writing({ id, mode: "grill" }, WRITER, source, now);
+  await fixture.pool.tick();
+  await agentIs(fixture, fixture.name, "working");
+  leaveOutcome(fixture.dir, { kind: "needs-human", reason: "Which goal does it serve?" });
+  if (mark !== undefined) writeFileSync(join(fixture.dir, STOP_ACTIVE_FILE), mark);
+  await agentIs(fixture, fixture.name, "idle");
+  await writerSettled();
+  return fixture;
+}
+
+test("A11-152: a Grill question waits while its stop hook reads the outcome, and is taken once that hook has ended or crashed", async () => {
+  const held = await grillAsks("w3", "100");
+  assert.deepEqual([existsSync(join(held.dir, "outcome.json")), existsSync(join(held.dir, "asked.json"))], [true, false], "the hook is reading: nothing is moved yet");
+  rmSync(join(held.dir, STOP_ACTIVE_FILE));
+  await agentIs(held, held.name, "idle");
+  await writerSettled();
+  assert.deepEqual([existsSync(join(held.dir, "outcome.json")), existsSync(join(held.dir, "asked.json"))], [false, true], "the hook has ended: the question is moved");
+
+  // A hook that began over a minute before now crashed without removing its mark: the board does not wait for it.
+  const crashed = await grillAsks("w4", "100", () => 100_000);
+  assert.equal(existsSync(join(crashed.dir, "asked.json")), true, "a mark older than STOP_ACTIVE_MS is ignored");
+});
+
 test("a batch's run that hands back hands back every ticket on its one workspace, which a person answers once and closes once", async () => {
   const { tracker } = batchTracker();
   const { pool, status, entry, settings, h } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
@@ -1511,7 +1589,7 @@ test("a batch's run that hands back hands back every ticket on its one workspace
   status.set(herdrName(BATCH), "working");
   await pool.tick();
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).phase), ["running", "running"], "answered once, both are live again");
-  assert.ok(existsSync(join(dir, "outcome.prev.json")), "the run's own outcome is moved aside");
+  assert.equal(readFileSync(join(dir, STALE_OUTCOME_FILE), "utf8"), "100\n", "the run's own outcome is marked stale, not moved");
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "still unsure" }));
   status.set(herdrName(BATCH), "idle");
   await pool.tick();
@@ -3702,8 +3780,8 @@ const WRITER = { writer: { run: "Run the a11ign:create-ticket skill for this req
 const WRITER_REQUEST: { id: string; request: string; mode: "quick" | "grill"; form: { repo?: string }; model?: string; effort?: string; ticket?: string; startedFrom?: string } = { id: "w1", request: "Show the requests a person made", mode: "quick", form: { repo: "nbl-ui-netbox" } };
 
 /** A pool with `request` queued as a new-ticket run, and the queue unpaused: its run's folder and herdr name are the test's to read. */
-function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source) {
-  const ctx = setup(2, [], tickets, { source: tracker });
+function writing(request: Partial<typeof WRITER_REQUEST> = {}, tickets: Record<string, unknown> = WRITER, tracker: TicketSource = source, now?: () => number) {
+  const ctx = setup(2, [], tickets, { source: tracker, now });
   ctx.store.set(queueWriter(ctx.store.get(), { ...WRITER_REQUEST, ...request }, 0));
   const name = herdrName(`writer-${request.id ?? WRITER_REQUEST.id}`);
   return { ...ctx, name, dir: writerDir(ctx.settings, request.id ?? WRITER_REQUEST.id), run: () => writerOf(ctx.store.get(), request.id ?? WRITER_REQUEST.id)! };
@@ -4336,8 +4414,8 @@ test("a person who talks to a finished draft's run resumes its own session, told
   assert.deepEqual(tail.slice(tail.indexOf("--resume"), tail.indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
   assert.equal(entry("NBF-1").phase, "running");
   assert.ok(entry("NBF-1").workspace !== undefined, "its terminal is open");
-  assert.equal(existsSync(join(dir, "outcome.json")), false, "the outcome it ended on is set aside, so the stop hook asks for a new one");
-  assert.equal(existsSync(join(dir, "outcome.prev.json")), true);
+  assert.equal(existsSync(join(dir, "outcome.json")), true, "the outcome it ended on stays where it is");
+  assert.equal(existsSync(join(dir, STALE_OUTCOME_FILE)), true, "and is marked stale, so the stop hook asks for a new one");
   assert.equal(h.calls.filter((args) => args.includes("create")).length, 1);
 });
 
@@ -4392,7 +4470,7 @@ test("a talk session whose agent waits for the person keeps the draft's pull req
   assert.deepEqual(entry("NBF-1").review?.map((pr) => pr.url), [approvedPr.url], "the draft stays linked");
 });
 
-test("a queued talk session taken off the board puts the finished run back, and a failed start puts its outcome file back", async () => {
+test("a queued talk session taken off the board puts the finished run back, and a failed start takes its stale mark off", async () => {
   const { pool, h, entry, dir } = await draftOfNbf1();
   pool.talk("NBF-1");
   await pool.remove("NBF-1");
@@ -4401,8 +4479,8 @@ test("a queued talk session taken off the board puts the finished run back, and 
   pool.talk("NBF-1");
   h.refused.add("start");
   await pool.tick();
-  assert.equal(existsSync(join(dir, "outcome.json")), true, "the outcome file set aside is put back");
-  assert.equal(existsSync(join(dir, "outcome.prev.json")), false);
+  assert.equal(existsSync(join(dir, "outcome.json")), true, "the outcome file was never moved");
+  assert.equal(existsSync(join(dir, STALE_OUTCOME_FILE)), false, "and the run is back on the board as it was, with no stale mark");
 });
 
 test("a worker's brief has it do a design check on a machine with tickets.designTools, and decline it otherwise", async () => {

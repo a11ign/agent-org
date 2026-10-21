@@ -20,8 +20,18 @@ import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
-/** Where a parked run's outcome is moved when a person answers its agent, so the stop hook asks for a new one. */
-export const PREVIOUS_OUTCOME_FILE = "outcome.prev.json";
+/**
+ * Beside the outcome file once a person answers a parked run or talks to a finished one: the time (ms) the outcome it parked on was final. The stop
+ * hook judges an outcome written at or before it as no outcome, so the worker writes a new one. Nothing is moved (A11-152).
+ */
+export const STALE_OUTCOME_FILE = "outcome-stale-before";
+/**
+ * Beside the outcome file while a stop hook reads it: the time (ms) the stop began, written by the hook and removed when it ends. The board does not
+ * move the outcome while it is fresh (A11-152).
+ */
+export const STOP_ACTIVE_FILE = "stop-active";
+/** How long a `stop-active` file holds the board off: an older one is a hook that crashed, which the board does not wait for. */
+export const STOP_ACTIVE_MS = 60_000;
 export const BRIEF_FILE = "brief.md";
 /** The stop hook's count of refused stops in a row, beside the outcome file. */
 export const STOP_COUNT_FILE = "stop-refusals";

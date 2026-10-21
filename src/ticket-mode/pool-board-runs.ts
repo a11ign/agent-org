@@ -17,7 +17,7 @@ import { type PoolContext } from "./pool-context.ts";
 import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ASKED_FILE, OUTCOME_FILE, WAITING_FILE } from "./worker-files.ts";
+import { ASKED_FILE, OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_ACTIVE_MS, WAITING_FILE } from "./worker-files.ts";
 
 /**
  * The run's outcome, read once its agent is idle (A11-135). The run filed its own tickets, so the outcome names the keys it made: each is checked against
@@ -109,15 +109,29 @@ async function settleGrill(ctx: PoolContext, run: WriterRun, place: RunPlace, ke
 
 /**
  * A grill run's `needs-human` is its question, not a failure (A11-129): the run waits for the person to answer in its terminal, with the reason as the
- * question. The question is written beside the outcome and the outcome moved aside, so the answer is not met by the same outcome read again.
+ * question. The question is written beside the outcome and the outcome moved aside, so the answer is not met by the same outcome read again. The move
+ * waits while a stop hook reads the outcome (A11-152), and the next pass asks again.
  */
 function askPerson(ctx: PoolContext, run: WriterRun, place: RunPlace, reason: string): void {
   const { now } = ctx;
   if (!writerAgentRunning(ctx, run.id)) return;
+  if (stopHookRunning(place.dir, now())) return;
   const question = reason.slice(0, QUESTION_CHARS);
   writeFileSync(join(place.dir, WAITING_FILE), `${JSON.stringify({ question, at: now() })}\n`);
   renameSync(join(place.dir, OUTCOME_FILE), join(place.dir, ASKED_FILE));
   update(ctx, (queue) => writerWaiting(queue, run.id, question, now()));
+}
+
+/**
+ * Whether a stop hook is reading the outcome beside `dir` now: its `stop-active` mark holds the time the stop began. A mark older than
+ * {@link STOP_ACTIVE_MS} is a hook that crashed before it removed it, and the board does not wait for it (A11-152).
+ */
+function stopHookRunning(dir: string, now: number): boolean {
+  try {
+    return now - Number.parseFloat(readFileSync(join(dir, STOP_ACTIVE_FILE), "utf8")) < STOP_ACTIVE_MS;
+  } catch {
+    return false;
+  }
 }
 
 /** Close a new-ticket run's workspace, and forget its run. */

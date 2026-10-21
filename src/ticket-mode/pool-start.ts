@@ -4,7 +4,7 @@
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
-import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_CREATE_TOOLS, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
+import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_CREATE_TOOLS, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
@@ -17,8 +17,8 @@ import { worktreePath } from "./worktree.ts";
 import { type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
 import { ticketDir } from "./ticket-paths.ts";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { markOutcomeStale, PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parsePaths } from "./overlap.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { talk, talkFailed } from "./queue/talk.ts";
@@ -386,7 +386,7 @@ async function openRun(ctx: PoolContext, entry: Entry, folder: string, dir: stri
 }
 
 /**
- * Open a finished run's saved session in a new pane, for a person to talk to its agent. The outcome it ended on is set aside, as when a person answers a
+ * Open a finished run's saved session in a new pane, for a person to talk to its agent. The outcome it ended on is marked stale, as when a person answers a
  * parked run, so the stop hook asks for a new one. A session that cannot start puts the finished run back on the board as it was, and says why in the log.
  */
 async function startTalk(ctx: PoolContext, entry: Entry): Promise<void> {
@@ -398,14 +398,14 @@ async function startTalk(ctx: PoolContext, entry: Entry): Promise<void> {
     const resume = talkSession(ctx, entry);
     if (resume === undefined) throw new Error(`${key} has no saved session to resume`);
     const outcome = join(place.dir, OUTCOME_FILE);
-    if (existsSync(outcome)) renameSync(outcome, join(place.dir, PREVIOUS_OUTCOME_FILE));
+    if (existsSync(outcome)) markOutcomeStale(place.dir, statSync(outcome).mtimeMs);
     rmSync(join(place.dir, STOP_COUNT_FILE), { force: true });
     if (await openRun(ctx, entry, place.folder, place.dir, resume)) await settleStart(ctx, place);
   } catch (err) {
-    // A failure after the pane opened leaves a run that is live: only one still starting goes back, and the outcome set aside is put back with it.
+    // A failure after the pane opened leaves a run that is live: only one still starting goes back, and its outcome mark is taken off with it.
     if (phaseOf(ctx, key) !== "starting") return log(`${key}: the talk session failed after it started (${messageOf(err)})`);
     const { dir } = runPlace(ctx, entry);
-    if (existsSync(join(dir, PREVIOUS_OUTCOME_FILE)) && !existsSync(join(dir, OUTCOME_FILE))) renameSync(join(dir, PREVIOUS_OUTCOME_FILE), join(dir, OUTCOME_FILE));
+    rmSync(join(dir, STALE_OUTCOME_FILE), { force: true });
     log(`${key}: the talk session could not start (${messageOf(err)}), so the run is back on the board as it was`);
     update(ctx, (queue) => talkFailed(queue, key));
   }

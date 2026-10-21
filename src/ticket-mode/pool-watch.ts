@@ -8,9 +8,9 @@ import { type RunPlace, worktreesIn } from "./pool-paths.ts";
 import { conflictRound, feedbackRound, finish, markResumed, observe, observePublish, publishFailed, recordPullFiles, recordRepos, roundsLeft, unpark, watchWorking } from "./queue/queue-transitions.ts";
 import { answerStartDialog, fill } from "./pool-start.ts";
 import { join } from "node:path";
-import { OUTCOME_FILE, PREVIOUS_OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
-import { existsSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { conflictLines, feedbackSince, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
+import { OUTCOME_FILE, STOP_COUNT_FILE, WAITING_FILE } from "./worker-files.ts";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { conflictLines, feedbackSince, markOutcomeStale, outcomeWritten, parseOutcome, publishResult, QUESTION_CHARS } from "./pool-outcome.ts";
 import { isParked, isWatched, resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
 import { type Background, BACKGROUND_GONE, BACKGROUND_GONE_MS, type Entry, isLive, proposedEdit, type WriterRun, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
 import { paneBackgroundWork } from "./background-work.ts";
@@ -97,7 +97,7 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     updateEach(ctx, runMembers(ctx, entry), (queue, member) => observe(queue, member, seen));
     const current = store.get().entries.find((e) => e.ticket.key === key) ?? entry;
     const outcomePath = join(dir, OUTCOME_FILE);
-    if ((seen === "idle" || seen === "done") && existsSync(outcomePath)) {
+    if ((seen === "idle" || seen === "done") && outcomeWritten(dir)) {
       settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8")));
       // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled.
       if (sameRun(ctx, current)) watchStall(ctx, current, seen);
@@ -177,10 +177,13 @@ function rereadUnreadable(ctx: PoolContext): void {
   }
 }
 
-/** A person answered a parked run: move its outcome aside, so the stop hook asks for a new one, and mark it live. */
+/**
+ * A person answered a parked run: its outcome is marked stale, so the stop hook asks for a new one, and the run is live again. The mark is when the run
+ * parked. A file the worker wrote after that is its new outcome, and the hook judges it as written; the file it parked on stays where it is (A11-152).
+ */
 function resume(ctx: PoolContext, entry: Entry): void {
   const { dir } = runPlace(ctx, entry);
-  if (existsSync(join(dir, OUTCOME_FILE))) renameSync(join(dir, OUTCOME_FILE), join(dir, PREVIOUS_OUTCOME_FILE));
+  markOutcomeStale(dir, entry.finishedAt ?? ctx.now());
   markLive(ctx, entry);
 }
 
