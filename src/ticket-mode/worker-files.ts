@@ -494,6 +494,15 @@ const DESIGN_CHECK_DECLINED = "7. If a design gate asks for a design check, decl
 /** Step 7 of the brief on a machine with `tickets.designTools: true`: a worker does the check, and declines it only when a design tool call is refused. */
 const DESIGN_CHECK_DONE = "7. If a design gate asks for a design check, do it: read the design's values with the design tool, measure your result in the running app, look at the design node, and fill in the check the gate gives you. Decline it only when a design tool call is refused, quoting the refusal in the pull request body.";
 
+/**
+ * Step 5a of the brief on a machine with `tickets.capture: true`, before step 6 opens the pull request: a change that alters a page of the board is captured, and the
+ * image is shown there, so the worker does not end `needs-human` to ask a person to look (A11-151). The image is committed under `.acceptance/`, which the
+ * board ignores, and linked by its commit's sha, which exists once it is committed.
+ */
+function captureStep(ticketDir: string): string {
+  return `5a. If your change alters what a page of the board looks like, capture each such page before you open the pull request in step 6: run \`agent-org ticket:capture <route> --size 1280x800 --out ${ticketDir}/captures/\`, where <route> is the board's route to the page, such as \`/settings\` for the Settings page or \`/\` for the board. The command prints the PNG's path, or names what stopped it: fix what it names and run it again. Commit each PNG as \`.acceptance/captures/<name>.png\` on your branch, and link it in the pull request body as \`![<name>](https://github.com/<owner>/<repo>/blob/<head sha>/.acceptance/captures/<name>.png?raw=true)\`, with the sha of the commit that adds it. If step 5 names a review skill, run it again after this commit, as step 5 says of any commit. Do not end \`needs-human\` to ask a person to look at the page: the capture is that check.`;
+}
+
 /** Step 6 of the brief for a worker that opens its pull requests as drafts, the default. */
 function draftPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords): string {
   return openPullRequestStep(`ONE DRAFT pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords);
@@ -524,10 +533,10 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
-  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
+  connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -564,7 +573,7 @@ ${plannedText({ planned })}1. Find the cause in the code. Fix it, with a test th
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 ${commitStep(prReview)}
-${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords)}
+${capture ? `${captureStep(ticketDir)}\n` : ""}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords)}
 ${designTools ? DESIGN_CHECK_DONE : DESIGN_CHECK_DECLINED}
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.

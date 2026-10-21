@@ -4601,3 +4601,10 @@ test("A11-153: the end of a run reads its pull requests' heads only for a draft 
   assert.equal(reads, 1, "the draft's end read it once; the reviewed end of the round after it read nothing");
   assert.equal(entry("NBF-1").outcomeHeads, undefined, "and a reviewed run records no heads");
 });
+
+test("a worker's brief has it capture a changed page on a machine with tickets.capture, and says nothing of capture otherwise", async () => {
+  const plain = await startedRun();
+  assert.doesNotMatch(readFileSync(join(plain.dir, "brief.md"), "utf8"), /ticket:capture/);
+  const capturing = await startedRun({ capture: true });
+  assert.match(readFileSync(join(capturing.dir, "brief.md"), "utf8"), /run `agent-org ticket:capture <route> --size 1280x800/);
+});

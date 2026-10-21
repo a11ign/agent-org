@@ -25,7 +25,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -126,6 +126,18 @@ test("a machine gives its workers no design tool unless it says so", () => {
   assert.equal(parseTicketSettings({ clones }).designTools, false);
   assert.equal(parseTicketSettings({ clones, tickets: { designTools: true } }).designTools, true);
   assert.equal(parseTicketSettings({ clones, tickets: { designTools: false } }).designTools, false);
+});
+
+test("a machine can capture the board for its workers only where both Chromium builds start, which onboard says by writing tickets.capture", () => {
+  assert.equal(parseTicketSettings({ clones }).capture, false, "absent is false, so a worker is not told to capture");
+  assert.equal(parseTicketSettings({ clones, tickets: { capture: true } }).capture, true);
+  assert.equal(parseTicketSettings({ clones, tickets: { capture: false } }).capture, false);
+});
+
+test("a capture value that is not true or false is refused by name", () => {
+  for (const capture of ["true", 1]) {
+    assert.throws(() => parseTicketSettings({ clones, tickets: { capture } }, "/home/me"), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.capture", String(capture));
+  }
 });
 
 test("a machine opens its pull requests as drafts unless it says otherwise, and starts no reviewer unless it names one", () => {
