@@ -23,9 +23,11 @@ Acceptance:
 A11Y_PRIVATE_TMP_BASE=/tmp/ao-private-tmp npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-port/review-claim.test.ts src/ticket-mode/review-claim-two-pools.test.ts src/ticket-mode/reviewer-port.test.ts src/ticket-mode/review-command.test.ts src/ticket-mode/settings.test.ts src/ticket-mode/board-view.test.ts src/ticket-port/stack-retarget.test.ts src/packaging/door-finalises-review-claim.test.ts
 ```
 
-## Live check (the done-when; not part of the Acceptance block)
+## After merge (chairman's session)
 
-The done-when, "with the agents host and the laptop both running, a new pull request gets exactly one review", needs two running instances on two hosts and a live reviewer on GitHub, so it cannot run inside a pull request's checks. The chairman session runs it after merge, or against this branch before merge, with these steps. Each step is a command; the pass is stated after them.
+This is not a merge condition. The corrected done-when, set by the chairman in Linear, is met before merge by the two-pools test, the claim and lease tests, and every Acceptance line mapped to a named test. The live check below needs two live instances on the released version, and the laptop has no instance until A11-145 merges, so the chairman runs it with the chairman's session after merge, once the laptop runs its own instance.
+
+The live check of the done-when, "with the agents host and the laptop both running, a new pull request gets exactly one review", needs two running instances on two hosts and a live reviewer on GitHub, so no pull request's checks can run it. Each step is a command; the pass is stated after them.
 
 1. Copy the agents host's `host.json` to `/tmp/a11-149-live/host.json` and change four keys in the copy: `tickets.instance` to `live-check`, `tickets.port` and `tickets.uiPort` to free ports, `stateDir` to `/tmp/a11-149-live/state`, and `tickets.herdrSession` to `a11-149-live`.
 2. Start the second instance against the copy: `AGENT_ORG_HOST=/tmp/a11-149-live/host.json agent-org ticket:serve` (in its own terminal, or as a unit).
