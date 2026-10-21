@@ -10,7 +10,7 @@
 // caller that starts the board throws on any refusal, and doctor says each as a row.
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { type Concern, PROVIDER_BLOCKS } from "./concerns.ts";
+import { type Concern, PROVIDER_BLOCKS, type ProviderBlock } from "./concerns.ts";
 import type { BlockReport, Providers } from "../ticket-mode/providers.ts";
 import type { Catalog, CatalogPlugin, LoadedPlugin, PluginDeps, PluginModule, PluginSettings } from "./manifest.ts";
 import { pluginNamed } from "./registry.ts";
@@ -54,14 +54,37 @@ async function importOne(plugin: CatalogPlugin, importModule: ImportModule): Pro
 }
 
 /**
- * Load the bundled plugins the host enables: for each block of `providers` that names a plugin and is enabled, import it and call `create`. A disabled block, a
- * block that names `none`, a built-in and a fake are skipped, and their code is not read.
+ * The entry modules of the bundled plugins the host enables, imported and NOT built: `create` is not called, so nothing is read or asked of the machine. A caller that needs only
+ * what a module exports (`agent-org update` asks each for what it `keep`s) uses this, so it does not read a tracker's key for it. A plugin that cannot be imported is a refusal, by name.
  */
-export async function loadEnabled(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule: ImportModule = (url) => import(url)): Promise<LoadResult> {
+export async function importEnabled(providers: Providers, catalog: Catalog, importModule: ImportModule = (url) => import(url)): Promise<Readonly<{
+  modules: readonly Readonly<{ plugin: CatalogPlugin; module: PluginModule }>[]; refusals: LoadResult["refusals"];
+}>> {
+  const modules: { plugin: CatalogPlugin; module: PluginModule }[] = [];
+  const refusals: { plugin: string; concern: Concern; why: string }[] = [];
+  for (const block of PROVIDER_BLOCKS) {
+    const report = providers.blocks[block];
+    const plugin = report.enabled ? pluginNamed(catalog, report.provider) : undefined;
+    if (plugin === undefined || plugin.where !== "bundled") continue;
+    try {
+      modules.push({ plugin, module: await importOne(plugin, importModule) });
+    } catch (error) {
+      refusals.push({ plugin: plugin.name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { modules, refusals };
+}
+
+/**
+ * Load the bundled plugins the host enables: for each block of `providers` that names a plugin and is enabled, import it and call `create`. A disabled block, a
+ * block that names `none`, a built-in and a fake are skipped, and their code is not read. `blocks` narrows it to some blocks, for a caller that needs one concern and
+ * must not build the others (`ticket:review` needs the code host, and must not read the tracker's key for it).
+ */
+export async function loadEnabled(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule: ImportModule = (url) => import(url), blocks: readonly ProviderBlock[] = PROVIDER_BLOCKS): Promise<LoadResult> {
   const loaded: LoadedPlugin[] = [];
   const unbuilt: { plugin: CatalogPlugin; module: PluginModule }[] = [];
   const refusals: { plugin: string; concern: Concern; why: string }[] = [];
-  for (const block of PROVIDER_BLOCKS) {
+  for (const block of blocks) {
     const report = providers.blocks[block];
     const plugin = report.enabled ? pluginNamed(catalog, report.provider) : undefined;
     if (plugin === undefined || plugin.where !== "bundled") continue;

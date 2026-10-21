@@ -1,7 +1,8 @@
 // module: the github/gh-stack extension a worker's stacked pull request needs, and GitHub's answer to whether stacked pull requests are available to a repository (A11-106).
-// PURE over the runner it is handed: this file names no GitHub CLI command and spawns nothing. The runner is the instance's own (`defaultGh`, which spawns), and
-// `asAccount` sets the workers' account for the one call it makes. The extension itself lives in the OS user's data directory, not under the account's config
-// directory, so an install made as one account is the one every account's `gh stack link` finds too.
+// PURE over the runner it is handed: this file spawns nothing. The runner is the plugin's (`accountRunner` in `gh.ts`), which acts as the workers' account for each call. The extension
+// itself lives in the OS user's data directory, not under the account's config directory, so an install made as one account is the one every account's stacking command finds too.
+// It moved here from `src/ticket-port/` with the rest of the code host's code (A11-160), and the account helpers from `install/stack-account.ts`.
+import { isAbsolute, join } from "node:path";
 
 /** A program's answer: a null status when it could not start, and its output otherwise. */
 export type Program = { status: number | null; stdout: string; stderr: string };
@@ -13,24 +14,23 @@ export type Account = Readonly<{ GH_CONFIG_DIR?: string }>;
 export const STACK_EXTENSION = "github/gh-stack";
 
 /**
- * A runner that acts as `account`, from a runner that throws on a failure (`defaultGh`). The directory is set on this process's environment for the one call, and
- * put back after it: the call is synchronous, so nothing else runs in between. A failure is its status and its error output, and never a throw.
+ * The account the workers act as: the `gh` folder inside the code host block's `gh.workers` folder, else the one this environment names, else none (the person's own `gh`). `gh` is
+ * the block's `gh` setting, whatever the host file holds there.
  */
-export function asAccount(run: (args: string[]) => string, account: Account): ProgramRunner {
-  return (args) => {
-    const saved = process.env.GH_CONFIG_DIR;
-    if (account.GH_CONFIG_DIR !== undefined) process.env.GH_CONFIG_DIR = account.GH_CONFIG_DIR;
-    try {
-      return { status: 0, stdout: run(args), stderr: "" };
-    } catch (err) {
-      const failure = err as { status?: number | null; stderr?: string | Buffer; message?: string };
-      return { status: failure.status ?? null, stdout: "", stderr: String(failure.stderr || failure.message || "") };
-    } finally {
-      if (saved === undefined) delete process.env.GH_CONFIG_DIR;
-      else process.env.GH_CONFIG_DIR = saved;
-    }
-  };
+export function workerAccount(gh: unknown, env: Readonly<Record<string, string | undefined>>): Account {
+  const workers = typeof gh === "object" && gh !== null ? (gh as { workers?: unknown }).workers : undefined;
+  const fromHost = typeof workers === "string" && isAbsolute(workers) ? join(workers, "gh") : null;
+  const dir = fromHost ?? (env.GH_CONFIG_DIR || null);
+  return dir === null ? {} : { GH_CONFIG_DIR: dir };
 }
+
+/** Whether the code host block requires the stacking extension: true unless its `stack` setting says false. */
+export const stackRequired = (settings: Readonly<Record<string, unknown>>): boolean => settings.stack !== false;
+
+/** The command that installs the extension for `account`, the one to paste when it is missing. */
+export const installCommand = (account: Account): string => (account.GH_CONFIG_DIR === undefined
+  ? `gh extension install ${STACK_EXTENSION}`
+  : `GH_CONFIG_DIR=${account.GH_CONFIG_DIR} gh extension install ${STACK_EXTENSION}`);
 
 /** The extension's version when `listing` (the output of `gh extension list`) names it, or null. A row's command is made of words of its own, so the repository is found as a word and the version is the word after it. PURE. */
 export function stackExtensionIn(listing: string): { version: string } | null {

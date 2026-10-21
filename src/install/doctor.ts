@@ -21,7 +21,7 @@ import { delimiter, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { parseTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
-import { PROVIDER_BLOCKS, type ProviderBlock, type Providers } from "../ticket-mode/providers.ts";
+import { PROVIDER_BLOCKS, type ProviderBlock, type Providers, providersOfText } from "../ticket-mode/providers.ts";
 import { blockOf } from "../plugins/concerns.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { messagingStateOfFile } from "../plugins/messaging-state.ts";
@@ -35,19 +35,17 @@ import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mod
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
 import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
 import { deferralPath, readDeferral, type Deferral } from "./plugin-install.ts";
+import { hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
-import { hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
-import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { asAccount, githubRepoOf, STACK_EXTENSION, stackExtensionIn, stacksOf, type Account, type ProgramRunner } from "../ticket-port/stack-extension.ts";
-import { installCommand, workerAccount } from "./stack-account.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
 import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { realExec } from "../plugins/active.ts";
+import { corePolicy } from "../plugins/policy.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -88,10 +86,6 @@ export type DoctorDeps = Readonly<{
   tailnetAnswers: (ip: string, name: string, port: number) => Promise<boolean>;
   /** The installed `gh` wrapper and each declared role's mint (A11-84). Loaded by the caller, so this file stays import-light. */
   ghWrapper: () => Promise<GhWrapperReport>;
-  /** The GitHub CLI as `account` (A11-106): the gh stack extension is listed, and stacked pull requests asked for each repository, through it. */
-  ghAs: (account: Account) => ProgramRunner;
-  /** The address of a clone's `origin` remote, or null when it has none. */
-  originOf: (path: string) => string | null;
   platform: NodeJS.Platform;
   /** Whether a restart of the instance reaches herdr's server of `session` (A11-90). */
   isolation: (session: string) => Isolation;
@@ -118,7 +112,7 @@ export type DoctorDeps = Readonly<{
    */
   agentOrgPlugins: Readonly<{
     catalog: () => Catalog;
-    load: (providers: Providers, catalog: Catalog, deps: PluginDeps) => Promise<LoadResult>;
+    load: (providers: Providers, catalog: Catalog, deps: PluginDeps, blocks?: readonly ProviderBlock[]) => Promise<LoadResult>;
     messaging: () => Promise<MessagingState>;
   }>;
   now: () => number;
@@ -231,45 +225,6 @@ function ghWrapperChecks(report: GhWrapperReport): Check[] {
   return [wrapper, ...mints];
 }
 
-/** The host file's text, or null when it cannot be read: the file a worker's `gh` account is named in. */
-function hostText(deps: DoctorDeps): string | null {
-  try {
-    return deps.readFile(hostFilePath(deps.env, deps.home, (file) => {
-      try {
-        return deps.readFile(file);
-      } catch {
-        return null;
-      }
-    }));
-  } catch {
-    return null;
-  }
-}
-
-const STACK_DOCS = "https://github.github.com/gh-stack/";
-
-/**
- * The `github/gh-stack` extension a worker's `gh stack link` needs (A11-106), listed for the workers' account: a failure with the install command when it is
- * missing. Once it is listed, each GitHub repository a clone names is asked whether GitHub makes stacked pull requests available to it.
- */
-function stackChecks(settings: TicketSettings | null, deps: DoctorDeps): Check[] {
-  if (settings !== null && !settings.stackRequired) return [];
-  const name = "gh stack";
-  const account = workerAccount(hostText(deps), deps.env);
-  const listing = deps.ghAs(account)(["extension", "list"]);
-  if (listing.status !== 0) {
-    const why = listing.stderr.trim().split("\n")[0] || `exit ${listing.status}`;
-    return [failed(name, `\`gh\` could not list its extensions, so the extension a worker links a stacked pull request with is not checked: ${why}`,
-      "install the GitHub CLI and put `gh` on PATH, then run `agent-org onboard`")];
-  }
-  const found = stackExtensionIn(listing.stdout);
-  if (found === null) {
-    return [failed(name, "`gh stack` is not installed, so a worker cannot link a stacked pull request", `${installCommand(account)}, or run \`agent-org onboard\``)];
-  }
-  const scope = account.GH_CONFIG_DIR === undefined ? "this machine's gh account" : `GH_CONFIG_DIR=${account.GH_CONFIG_DIR}`;
-  return [ok(name, `${STACK_EXTENSION} ${found.version} (for ${scope})`), ...stacksChecks(settings, account, deps)];
-}
-
 /** The contract mismatch's fix, as `preflight`'s: the board refuses a run while one stands. */
 const CONTRACT_FIX = "fix what the row says: the board refuses a run while a mismatch stands";
 const NOT_CHECKED = "not checked: Claude Code's install record cannot be read for it";
@@ -299,30 +254,6 @@ function pluginChecks(settings: TicketSettings | null, plugins: PluginProblems |
   });
   const unowned = rows.filter((row) => !settings.plugins.includes(row.plugin));
   return unowned.length === 0 ? checks : [...checks, failed("plugin contract", unowned.map((row) => row.why).join(" "), CONTRACT_FIX)];
-}
-
-/** Whether GitHub makes stacked pull requests available to each GitHub repository a clone names. A host file with no GitHub clone adds no check. */
-function stacksChecks(settings: TicketSettings | null, account: Account, deps: DoctorDeps): Check[] {
-  const name = "stacked pull requests";
-  if (settings === null) return [];
-  const repos = [...new Set(Object.values(settings.clones).flatMap((path) => {
-    const remote = deps.originOf(path);
-    const repo = remote === null ? null : githubRepoOf(remote);
-    return repo === null ? [] : [repo];
-  }))];
-  if (repos.length === 0) return [];
-  const run = deps.ghAs(account);
-  const readings = repos.map((repo) => [repo, stacksOf(run, repo)] as const);
-  const refused = readings.filter(([, reading]) => reading.kind === "refused").map(([repo]) => repo);
-  if (refused.length > 0) {
-    return [failed(name, `GitHub refuses stacked pull requests for ${refused.join(", ")}`,
-      `stacked pull requests are a GitHub preview that must be available to each repository: confirm ${refused.join(", ")} has access, or, where your organization controls previews, the organization, and that the workers' account can see it; see ${STACK_DOCS}`)];
-  }
-  const unread = readings.flatMap(([repo, reading]) => (reading.kind === "unknown" ? [`${repo}: ${reading.reason}`] : []));
-  if (unread.length > 0) {
-    return [failed(name, `GitHub's answer could not be read for ${unread.join("; ")}`, "run `gh api repos/<owner>/<repo>/stacks` with the workers' GH_CONFIG_DIR to see why")];
-  }
-  return [ok(name, `available for ${repos.join(", ")}`)];
 }
 
 /**
@@ -394,6 +325,21 @@ type PluginRows = Readonly<{ byBlock: Readonly<Record<ProviderBlock, readonly Ch
 
 const pluginFailed = (plugin: string, why: string, fix: string): Check => failed(`plugin ${plugin}`, why, fix);
 
+/** The host file's text, or null when it cannot be read: the file a worker's `gh` account is named in. */
+function hostText(deps: DoctorDeps): string | null {
+  try {
+    return deps.readFile(hostFilePath(deps.env, deps.home, (file) => {
+      try {
+        return deps.readFile(file);
+      } catch {
+        return null;
+      }
+    }));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The rows of the agent-org plugins (A11-158): one for each package the registry refused, one for each plugin whose contract major this agent-org does not read and that no block
  * enables (an enabled one is the host row's refusal), and, for each bundled plugin the host enables, the doctor checks it declares, which its provider row summarises. A plugin the loader
@@ -404,14 +350,20 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
   const catalog = catalogOf();
   const byBlock = Object.fromEntries(PROVIDER_BLOCKS.map((block) => [block, [] as Check[]])) as Record<ProviderBlock, Check[]>;
   const rows: Check[] = catalog.refusals.map(({ plugin, why }) => pluginFailed(plugin, why, "fix the plugin's package.json, or remove the plugin"));
-  // A host file the reader refused cannot say which plugins it enables, and its row already says why: an unread major is judged once the file reads.
-  if (settings === null) return { byBlock, rows };
-  const enabledNames = new Set(PROVIDER_BLOCKS.filter((block) => settings.providers.blocks[block].enabled).map((block) => settings.providers.blocks[block].provider));
-  for (const plugin of catalog.plugins.filter(({ concern, contract, name }) => !readsConcernContract(concern, contract) && !enabledNames.has(name))) {
-    rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
+  // A host file the reader refused cannot say which plugins it enables, and its row already says why: an unread major is judged once the file reads. The code host's rows are shown all
+  // the same, for the providers the file names or the defaults: they ran on whatever the host file said (the stacking extension is the person's own `gh` account's), and they are asked
+  // alone, since nothing else of the plugins is built for a file that does not read.
+  const providers = settings?.providers ?? providersOfText(hostText(deps));
+  const blocks: readonly ProviderBlock[] = settings === null ? ["codeHost"] : PROVIDER_BLOCKS;
+  if (settings !== null) {
+    const enabledNames = new Set(PROVIDER_BLOCKS.filter((block) => providers.blocks[block].enabled).map((block) => providers.blocks[block].provider));
+    for (const plugin of catalog.plugins.filter(({ concern, contract, name }) => !readsConcernContract(concern, contract) && !enabledNames.has(name))) {
+      rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
+    }
   }
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings.stateDir, log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, pick: settings.pick };
-  const loaded = await load(settings.providers, catalog, pluginDeps);
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode,
+    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy() };
+  const loaded = await load(providers, catalog, pluginDeps, blocks);
   // A plugin whose module imported but whose `create` threw has checks of its own, which say why (a key that cannot be read) with the fix: its refusal is a row only when none of them fails.
   const unbuilt = new Set(loaded.unbuilt.map(({ plugin }) => plugin.name));
   const addRefusal = ({ plugin, concern, why }: LoadResult["refusals"][number]): void => {
@@ -424,7 +376,7 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
   for (const { plugin, module } of [...loaded.loaded, ...loaded.unbuilt]) {
     const block = blockOf(plugin.concern);
     if (block === null) continue;
-    const checks = await module.doctorChecks(settingsOfBlock(settings.providers.blocks[block]), pluginDeps);
+    const checks = await module.doctorChecks(settingsOfBlock(providers.blocks[block]), pluginDeps);
     byBlock[block].push(...checks);
     rows.push(...checks);
     const refusal = loaded.refusals.find((candidate) => candidate.plugin === plugin.name);
@@ -460,11 +412,10 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
   const plugins = pluginsOf(settings, deps);
   const gh = noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper());
-  const stack = stackChecks(settings, deps);
   const terminal = await terminalChecks(settings, deps);
   const tailnet = await tailnetChecks(settings, deps);
   const extra = await pluginRows(settings, deps);
-  const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...stack, ...extra.byBlock.codeHost])];
+  const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...extra.byBlock.codeHost])];
   const tracker = settings === null ? [] : [providerRow(settings, "tracker", extra.byBlock.tracker)];
   const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...tailnet, ...extra.byBlock.exposure])];
   const publisher = settings === null ? [] : [providerRow(settings, "publish", extra.byBlock.publish)];
@@ -478,7 +429,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     host,
     ...aliasChecks(settings),
     ...gh,
-    ...stack,
+    // The code host plugin's own rows (for GitHub: the stacking extension and the stacks), where they were when doctor owned them, then the code host's row that summarises them.
+    ...extra.byBlock.codeHost,
     ...codeHost,
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     // The tracker plugin's own rows (for Linear: its key and its MCP), where they were when doctor owned them, then the tracker's row that summarises them.
@@ -495,7 +447,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...exposure,
     ...publisher,
     ...reviewer,
-    ...extra.rows.filter((row) => !extra.byBlock.tracker.includes(row)),
+    ...extra.rows.filter((row) => !extra.byBlock.tracker.includes(row) && !extra.byBlock.codeHost.includes(row)),
     await messagingRow(deps),
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
@@ -786,11 +738,6 @@ export function defaultDoctorDeps(): DoctorDeps {
         return { unchecked: String((cause as Error)?.message ?? cause).split("\n")[0] };
       }
     },
-    ghAs: (account) => asAccount(defaultGh, account),
-    originOf: (path) => {
-      const result = spawnSync("git", ["-C", path, "remote", "get-url", "origin"], { encoding: "utf8" });
-      return result.status === 0 ? result.stdout.trim() : null;
-    },
     platform: process.platform,
     isolation: (session) => hostIsolation(services, session),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
@@ -806,7 +753,7 @@ export function defaultDoctorDeps(): DoctorDeps {
     chromium: () => chromiumReport(),
     agentOrgPlugins: {
       catalog: defaultCatalog,
-      load: (providers, catalog, pluginDeps) => loadEnabled(providers, catalog, pluginDeps),
+      load: (providers, catalog, pluginDeps, blocks) => loadEnabled(providers, catalog, pluginDeps, undefined, blocks),
       messaging: () => messagingStateOfFile(hostFilePath(process.env, homedir(), readOrNull)),
     },
     now: () => Date.now(),

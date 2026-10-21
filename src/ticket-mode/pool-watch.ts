@@ -20,7 +20,7 @@ import { afterConflictCleared, stackBaseIn } from "./stack-rebase.ts";
 import { recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
 import { joined, observeWriter, writerEnded, writerResumed, writerWaiting } from "./queue.ts";
 import { openPulls } from "./board-view/view-types-and-filters.ts";
-import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
+import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 import { reviewerLines } from "./pool-reviewers.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { answerChecks, type CheckAnswer } from "./pool-checks.ts";
@@ -412,15 +412,15 @@ export async function tick(ctx: PoolContext): Promise<void> {
  * footprint while it is held (a draft too). A run whose pull request could not be read is asked again next time, and one merged or closed since is left alone.
  */
 export function watchFeedback(ctx: PoolContext): void {
-  const { feedbackGh, gh, now, store } = ctx;
+  const { codeHost, feedbackIgnores, now, store } = ctx;
   const finished = store.get().entries.filter((entry) => entry.phase === "finished" && openPulls(entry).length > 0);
   if (finished.length === 0) return;
-  ctx.ownLogin.value ??= readOwnLogin(gh);
+  ctx.ownLogin.value ??= codeHost.readOwnLogin();
   const self = ctx.ownLogin.value;
   if (self === null) return log("the GitHub account the workers use could not be read, so no pull request's feedback was read");
   let queued = false;
   for (const entry of finished) {
-    const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: readPullFeedback(pr.url, self, feedbackGh) }));
+    const reads = openPulls(entry).map((pr) => ({ url: pr.url, read: codeHost.readPullFeedback(pr.url, self, feedbackIgnores) }));
     const unread = reads.filter(({ read }) => read === null).map(({ url }) => url);
     if (unread.length > 0) {
       log(`${entry.ticket.key}: the feedback on ${unread.join(", ")} could not be read, so it was not checked; the next watch asks again`);

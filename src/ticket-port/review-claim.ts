@@ -1,7 +1,9 @@
 // module: the review claim -- a commit status on a pull request's head that says which instance is reviewing it (A11-149). Every instance reads it on GitHub,
 // so two instances that sweep the same pull request start one reviewer between them. THE PROTOCOL IS PURE over an injected `read` and `write`; the `gh`
 // calls that back them are below it, in this port, where the gh-call ratchet allows them.
-import { type Gh } from "./stack-retarget.ts";
+
+/** Runs the GitHub CLI with `args` and answers what it printed; it throws when the call fails. */
+export type Gh = (args: string[]) => string;
 
 /** The commit status context a claim is written under, and the one the door writes the verdict to. ONE SPELLING WITH `pr-review-verdict.sh`. */
 export const REVIEW_CLAIM_CONTEXT = "agent-org/review";

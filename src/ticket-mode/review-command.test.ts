@@ -3,10 +3,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { reviewOnDemand } from "./review-command.ts";
 import { atomicReviewerPort, loadReviewerGate, type ReviewerPort, type ReviewState } from "./reviewer-port.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 const URL = "https://github.com/a11ign/control/pull/119";
 const PLUGIN = "https://github.com/a11ign/plugin/pull/7";
 const HEAD = "3aeaba9bd".padEnd(40, "0");
+
+/** The code host the reviewer port reads the plugin's pull request through: open at `HEAD`, its author the org's own, and its checks settled green. */
+function pluginPull() {
+  const host = createFakeCodeHost();
+  host.seedPull("a11ign/plugin", 7, { head: HEAD, trust: "inside", settled: true });
+  return host;
+}
 
 /** A port that records what it was asked, and answers as told. */
 const port = (answer: ReturnType<ReviewerPort["start"]>, live = false) => {
@@ -110,10 +118,9 @@ test("ticket:review starts the reviewer for a repository the host clones and the
       statuses.push(`${statuses.length + 1}\t${new Date().toISOString()}\t${args.find((arg) => arg.startsWith("description="))!.slice("description=".length)}\n`);
       return "";
     }
-    return JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
-      statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] });
+    throw new Error(`unexpected gh ${args.join(" ")}`);
   };
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, declared: { exact: ["worker-bot"], pattern: [] },
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, codeHost: pluginPull(),
     clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }) });
   const r = reviewOnDemand({ url: "https://github.com/a11ign/plugin/pull/7", port, readState: () => stateAt(HEAD), started: new Set(), record: () => {} });
   assert.equal(r.code, 0, r.out);
@@ -131,10 +138,9 @@ function portHolding(statuses: string[], spawned: string[]) {
       statuses.push(`${statuses.length + 1}\t${new Date().toISOString()}\t${args.find((arg) => arg.startsWith("description="))!.slice("description=".length)}\n`);
       return "";
     }
-    return JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
-      statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }] });
+    throw new Error(`unexpected gh ${args.join(" ")}`);
   };
-  return atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, declared: { exact: ["worker-bot"], pattern: [] },
+  return atomicReviewerPort({ session: "tickets", instance: "work", run: () => JSON.stringify({ result: { agents: [], workspaces: [] } }), gh, claimGh: () => gh, mint: () => null, codeHost: pluginPull(),
     clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
 }
 

@@ -63,9 +63,11 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
     "exposure: tailscale (from tickets.providers.exposure)",
     "messaging: none (this machine declares no project, so messaging is not configured)",
   ]);
-  for (const fake of ["fake-codeHost", "fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.0 +fake`, "m"), fake);
+  for (const fake of ["fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.0 +fake`, "m"), fake);
   assert.match(out, /^ {2}fake-tracker +available +contract 1\.1 +fake/m);
+  assert.match(out, /^ {2}fake-codeHost +available +contract 1\.1 +fake/m);
   assert.match(out, /^ {2}linear +enabled +contract 1\.1 +plugins\/linear$/m);
+  assert.match(out, /^ {2}github +enabled +contract 1\.1 +plugins\/github$/m, "the code host is the bundled github, enabled by the default");
   assert.match(out, /^ {2}local +available +contract 1\.0 +core, until A11-162$/m);
   assert.match(out, /^ {2}fake-tracker +available.*refused: fake-tracker is an in-memory tracker for core's tests: it runs no host, so it cannot be installed or enabled/m);
 });

@@ -1,8 +1,9 @@
 # Bundled agent-org plugins
 
 Each directory here is one **agent-org plugin**: a code module behind one of the six versioned contracts (`src/plugins/contracts/`): tracker, code host, publisher,
-reviewer, exposure and messaging. It is not a Claude plugin (`tickets.plugins` lists those). The directory's name is the plugin's name. The first is `linear` (the tracker, A11-159), and
-A11-160 to A11-162 add the rest.
+reviewer, exposure and messaging. It is not a Claude plugin (`tickets.plugins` lists those). The directory's name is the plugin's name. The first is `linear` (the tracker, A11-159),
+the second is `github` (the code host, A11-160: ticket mode's reads of a pull request move in step by step, and the rest of the GitHub calls follow, so that `plugins/github` is the only place the
+repository starts a `gh` process), and A11-161 and A11-162 add the rest.
 
 A plugin is a directory with a `package.json`, found by the registry; it is not a member of a pnpm workspace. This repository has no `pnpm-workspace.yaml`: its layout check
 (`@a11ign/toolchain`'s `layout-check`, ADR 0043 Decision 7) requires one package at the root and no workspace file, and nothing needs the workspace, since a host links no plugin
@@ -43,8 +44,12 @@ priority numbers. It is data and not code because the PreToolUse hook is a proce
 
 **The entry module** exports `create(settings, deps)`, which returns the concern's contract implementation; `doctorChecks(settings, deps)`, which returns doctor rows; and
 `onboardSteps`, the steps onboard runs for it, in order, each given the settings the earlier steps chose, and answering what to say and the settings to write into the plugin's block. It
-imports core with `import type` only: every runtime helper arrives in `deps` (`fetch`, `exec`, `readFile`, `mode`, and the board's `pick` scope; an onboard step also has the prompts).
-`src/plugins/fakes/deps.ts` is the deps a test gives it.
+may also export `keep(settings, deps)`, what `agent-org update` keeps true on the machine at every update (the code host keeps its stacking extension present): safe to repeat, no prompt, never
+throws. It imports core with `import type` only: every runtime helper arrives in `deps` (`fetch`; `exec`, which runs a program with an optional `env` laid over this process's, and a `timeoutMs`;
+`readFile`, `mode`, the host's `clones`, the board's `pick` scope, and `policy`, which is what core decides about what a code host reports: which check is red, which run of one is newer, and how
+a reviewer judges a pull request; an onboard step also has the prompts). `src/plugins/fakes/deps.ts` is the deps a test gives it.
+
+A plugin may also bring a command: `src/commands.ts` can name its program by a path inside the plugin (`../plugins/github/stack-live-check-command.ts`).
 
 ## The rules
 

@@ -18,6 +18,7 @@ import { createBoard } from "./server.ts";
 import { herdrName } from "./pool.ts";
 import type { TicketSource } from "./source.ts";
 import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SERVER = realpathSync(join(HERE, "server.ts"));
@@ -299,7 +300,7 @@ test("on a ticket-only host, a new-ticket request runs the writer, which files i
   assert.equal(settings.writer?.model, "opus", "the writer's defaults, on a host that names no more");
   const source: TicketSource = createFakeTracker([fakeTicket("NBF-101", { title: "feat: show requests", url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog", team: "NBF" })]);
   const status = new Map<string, string>();
-  const board = createBoard({ settings, source, key: "k".repeat(48), queuePath: join(root, "state", "tickets", "queue.json"), choicePath: join(root, "state", "tickets", "choice.json"),
+  const board = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: "k".repeat(48), queuePath: join(root, "state", "tickets", "queue.json"), choicePath: join(root, "state", "tickets", "choice.json"),
     poolDeps: { herdr: herdrWith(status), wait: async () => {}, now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"),
       pluginRecord: join(root, "no-plugin-record.json"), hostFile: hostPath } });
   const [, asked] = await board.api("POST", "/api/writer", { request: "Show the requests a person made" }) as [number, any];

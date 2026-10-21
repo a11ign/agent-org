@@ -1,17 +1,22 @@
 // @ts-check
-// module: the code host contract, version 1.0 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.1 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
 // operations, which stay declared in `port.ts` (its source test holds that file to no import at all, a re-export included) and are named here by a type-only import. It
 // imports nothing else of core: `ReviewState` is declared here, and `ticket-mode/reviewer-port.ts` re-exports it.
 // An operation joins this contract only when a sibling ticket moves a call that needs it (A11-160 moves the gate's).
+//
+// ROW MODE'S GITHUB OPERATIONS will join as an optional `rows` group of this contract, not as a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
+//
+// 1.1 (A11-160): `readPullFeedback` takes the accounts whose feedback is not the worker's to answer besides its own (the reviewer's), which ticket mode filtered out of GitHub's
+// answer before the read moved into the plugin. A plugin of 1.0 is read as one that is given none.
 import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort } from "../../ticket-port/port.ts";
 
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.0";
+export const CODE_HOST_CONTRACT_VERSION = "1.1";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -75,8 +80,11 @@ export type RetargetRequest = Readonly<{
 export interface CodeHost extends CodeHostPort {
   /** The login of the account this host acts as, which is the board's workers' own, or null when it cannot be read. */
   readOwnLogin(): string | null;
-  /** The feedback on the pull request at `url`, leaving out what `self` wrote, or null for "could not ask". */
-  readPullFeedback(url: string, self: string): PullFeedback | null;
+  /**
+   * The feedback on the pull request at `url`, leaving out what `self` wrote and what `alsoIgnore` wrote (the reviewer's, which a worker does not answer and which must never
+   * move `feedbackAt`), or null for "could not ask".
+   */
+  readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[]): PullFeedback | null;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
   /** The pull request's state, `OPEN`, `MERGED` or `CLOSED`, or null when the host does not say. */

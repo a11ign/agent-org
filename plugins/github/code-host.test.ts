@@ -1,0 +1,108 @@
+// no-token: none -- `exec` answers from a recorded table: no GitHub CLI runs
+//
+// THE CODE HOST AS CORE USES IT (A11-160): what the plugin does that the contract suite does not ask of every code host.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
+import { corePolicy } from "../../src/plugins/policy.ts";
+import { createCodeHost } from "./code-host.ts";
+
+const URL = "https://github.com/netboxlabs/nbl-ui-netbox/pull/806";
+const HEAD = "b".repeat(40);
+const at = (minute: number) => `2026-10-16T12:${String(minute).padStart(2, "0")}:00Z`;
+
+/** The answer of GitHub's feedback query for a pull request at `HEAD` with these reviews and comments. */
+const feedbackAnswer = (reviews: unknown[], comments: unknown[] = []) => JSON.stringify({ data: { repository: { pullRequest: {
+  state: "OPEN", headRefOid: HEAD, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", baseRefName: "main", files: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+  reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] },
+} } } });
+
+const review = (state: string, minute: number, login: string) => ({ state, submittedAt: at(minute), author: { login }, commit: { oid: HEAD } });
+
+test("a read of feedback leaves out the accounts the board is told to ignore, as well as its own: the reviewer's verdict never moves feedbackAt or approves the head", () => {
+  const reviews = [review("COMMENTED", 10, "alice"), review("CHANGES_REQUESTED", 30, "a11ign-reviewer"), review("APPROVED", 20, "a11ign-reviewer")];
+  const comments = [{ createdAt: at(40), author: { login: "a11ign-reviewer" } }, { createdAt: at(15), author: { login: "worker-bot" } }];
+  const host = createCodeHost(fakePluginDeps({ exec: () => ({ status: 0, stdout: feedbackAnswer(reviews, comments), stderr: "" }) }));
+  const withReviewer = host.readPullFeedback(URL, "worker-bot");
+  assert.deepEqual([withReviewer?.feedbackAt, withReviewer?.authors, withReviewer?.approvedAtHead], [Date.parse(at(40)), ["a11ign-reviewer", "alice"], false],
+    "without the list, the reviewer's own comment is the newest feedback, and its newest verdict on the head is changes requested");
+  const without = host.readPullFeedback(URL, "worker-bot", ["a11ign-reviewer"]);
+  assert.deepEqual([without?.feedbackAt, without?.authors, without?.approvedAtHead], [Date.parse(at(10)), ["alice"], false],
+    "with it, only alice's is feedback, and the reviewer's approval does not approve the head");
+  const approved = createCodeHost(fakePluginDeps({ exec: () => ({ status: 0, stdout: feedbackAnswer([review("APPROVED", 20, "a11ign-reviewer"), review("APPROVED", 25, "alice")]), stderr: "" }) }));
+  assert.equal(approved.readPullFeedback(URL, "worker-bot", ["alice"])?.approvedAtHead, true, "the ignored accounts are the caller's to name: here the reviewer approved and alice is ignored");
+  assert.equal(approved.readPullFeedback(URL, "worker-bot", ["a11ign-reviewer", "alice"])?.approvedAtHead, false);
+});
+
+test("a read of a pull request's review state asks GitHub for the fields the policy names, and the policy judges what it read", () => {
+  const asked: string[][] = [];
+  const pull = { headRefOid: HEAD, reviews: [{ author: { login: "a11ign-reviewer" }, state: "APPROVED", commit: { oid: HEAD }, submittedAt: at(5) }], author: { login: "someone" }, isCrossRepository: true, statusCheckRollup: [] };
+  const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author", trustOf: (pr) => (pr.isCrossRepository === true ? "outside" : "inside"), settledOf: (pr) => pr.statusCheckRollup.length === 0 }));
+  const host = createCodeHost(fakePluginDeps({ policy, exec: (_file, args) => { asked.push([...args]); return { status: 0, stdout: JSON.stringify(pull), stderr: "" }; } }));
+  const state = host.readReviewState(URL);
+  assert.deepEqual(asked, [["pr", "view", "806", "--repo", "netboxlabs/nbl-ui-netbox", "--json", "headRefOid,reviews,author"]]);
+  assert.deepEqual([state?.head, state?.trust, state?.settled, state?.reviews, state?.view.number], [HEAD, "outside", true, [{ author: "a11ign-reviewer", state: "APPROVED", commit: HEAD, at: Date.parse(at(5)) }], 806]);
+});
+
+test("a host whose reviewer gate does not load refuses the read by the gate's own words before it asks GitHub anything", () => {
+  let asked = 0;
+  const refusing = corePolicy(() => { throw new Error("no primary project is declared"); });
+  const host = createCodeHost(fakePluginDeps({ policy: refusing, exec: () => { asked += 1; return { status: 0, stdout: "{}", stderr: "" }; } }));
+  assert.throws(() => host.readReviewState(URL), /no primary project is declared/);
+  assert.equal(asked, 0);
+  assert.equal(host.readPullState(URL), null, "a read that needs no judging is still answered (here: gh answered no state)");
+});
+
+test("a pull request GitHub does not say is null, never a reading: no head, an address that is none, and a refused gh", () => {
+  const policy = corePolicy(() => ({ fields: "headRefOid", trustOf: () => "inside", settledOf: () => true }));
+  const answering = (stdout: string, status = 0) => createCodeHost(fakePluginDeps({ policy, exec: () => ({ status, stdout, stderr: status === 0 ? "" : "gh: boom" }) }));
+  assert.equal(answering("{}").readReviewState(URL), null, "no head is no reading");
+  assert.equal(answering("{}", 1).readReviewState(URL), null);
+  assert.equal(answering("{}").readReviewState("https://linear.app/x/issue/NBF-1"), null);
+  assert.equal(answering(JSON.stringify({ state: "REOPENED" })).readPullState(URL), null, "a state that is none of OPEN, MERGED, CLOSED is unread");
+  assert.equal(answering("[]", 1).openPullUrlsOf("a/b"), null);
+  assert.equal(answering("not json").openPullUrlsOf("a/b"), null);
+  assert.equal(answering(JSON.stringify(Array.from({ length: 200 }, (_unused, index) => ({ number: index + 1, body: "" })))).openPullUrlsOf("a/b"), null, "a list at the limit may be cut short, so it is no reading");
+  assert.deepEqual(answering(JSON.stringify([{ number: 3, body: "Closes #1" }])).openPullUrlsOf("a/b"), ["https://github.com/a/b/pull/3"]);
+});
+
+test("the port's operations that ticket mode does not call are honest: no change is read, no review requested, no merge armed, and a subscription delivers nothing", () => {
+  const host = createCodeHost(fakePluginDeps());
+  const ref = { host: "github", id: URL };
+  assert.equal(host.readChange(ref), null, "could not ask: a caller acts on no guess");
+  assert.throws(() => host.requestReview(ref, "a-person"), /does not request a review yet/);
+  assert.throws(() => host.armMerge(ref), /does not arm a merge yet/);
+  const cancel = host.subscribe({}, () => assert.fail("a subscription is not delivered an event"));
+  assert.equal(typeof cancel, "function");
+  cancel();
+});
+
+const PR_URL = "https://github.com/a11ign/agent-org/pull/7";
+
+test("readPullState reads a pull request's state as GitHub names it, and null for one it cannot read", () => {
+  const answers: (string | Error)[] = [JSON.stringify({ state: "MERGED" }), JSON.stringify({ state: "OPEN" }), JSON.stringify({ state: "CLOSED" }), JSON.stringify({}), new Error("gh exited 1")];
+  const host = createCodeHost(fakePluginDeps({ exec: (_file, args) => {
+    assert.deepEqual(args.slice(0, 2), ["pr", "view"]);
+    const answer = answers.shift()!;
+    return answer instanceof Error ? { status: 1, stdout: "", stderr: answer.message } : { status: 0, stdout: answer, stderr: "" };
+  } }));
+  assert.equal(host.readPullState(PR_URL), "MERGED");
+  assert.equal(host.readPullState(PR_URL), "OPEN");
+  assert.equal(host.readPullState(PR_URL), "CLOSED");
+  assert.equal(host.readPullState(PR_URL), null, "an answer with no state is unread");
+  assert.equal(host.readPullState(PR_URL), null, "a refused read is unread");
+  assert.equal(host.readPullState("https://example.com/not-a-pull"), null, "a url that is no pull request is unread");
+});
+
+test("A11-119: a repository's open pull request urls are listed, and an unanswered or cut-short list is no reading", () => {
+  const listed = (answer: () => { status: number; stdout: string; stderr: string }) => createCodeHost(fakePluginDeps({ exec: (_file, args) => {
+    assert.deepEqual(args.slice(0, 5), ["pr", "list", "--repo", "a11ign/control", "--state"]);
+    return answer();
+  } })).openPullUrlsOf("a11ign/control");
+  const ok = (stdout: string) => () => ({ status: 0, stdout, stderr: "" });
+  assert.deepEqual(listed(ok(JSON.stringify([{ number: 119, body: "" }]))), ["https://github.com/a11ign/control/pull/119"]);
+  assert.deepEqual(listed(ok("[]")), [], "none open is a reading");
+  assert.equal(listed(() => ({ status: 1, stdout: "", stderr: "gh exited 1" })), null, "a refused gh is no reading");
+  assert.equal(listed(ok("not json")), null);
+  assert.equal(listed(ok(JSON.stringify(Array.from({ length: 200 }, (_, i) => ({ number: i, body: "" }))))), null, "a list at the limit may be cut short");
+});

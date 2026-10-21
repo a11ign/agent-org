@@ -18,7 +18,7 @@ import { agentOrgHome, type Env } from "./paths.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { pluginStates, type PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
-import type { ProgramRunner } from "../ticket-port/stack-extension.ts";
+import type { ProgramRunner } from "./gh-account.ts";
 import { repoViewArgs } from "../ticket-port/repo-args.ts";
 
 /** A program run with its arguments, as a `RunResult`. `claude` and `gh` are run through it. */

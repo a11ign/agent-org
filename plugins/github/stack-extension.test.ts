@@ -1,7 +1,7 @@
 // no-token: none -- every runner is a fake: no GitHub CLI runs, and no extension is installed
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { asAccount, ensureStackExtension, githubRepoOf, stackExtensionIn, stacksOf, type Program, type ProgramRunner } from "./stack-extension.ts";
+import { ensureStackExtension, githubRepoOf, installCommand, STACK_EXTENSION, stackExtensionIn, stacksOf, type Program, type ProgramRunner, workerAccount } from "./stack-extension.ts";
 
 const LISTED = "gh stack  github/gh-stack  v0.2.1\ngh dash  dlvhdr/gh-dash  v4.0.0\n";
 const ok = (stdout = ""): Program => ({ status: 0, stdout, stderr: "" });
@@ -53,25 +53,17 @@ test("A11-106: a listing that cannot run is a failure with its reason, and nothi
   assert.deepEqual(calls, [["extension", "list"]], "nothing is installed when the list cannot run");
 });
 
-test("A11-106: an account's runner sets the account's config directory for its call only, and puts the old value back", () => {
-  const before = process.env.GH_CONFIG_DIR;
-  process.env.GH_CONFIG_DIR = "/home/me/gh";
-  try {
-    let during: string | undefined;
-    const run = asAccount(() => { during = process.env.GH_CONFIG_DIR; return "listed"; }, { GH_CONFIG_DIR: "/home/agent/workers/gh" });
-    assert.deepEqual(run(["extension", "list"]), { status: 0, stdout: "listed", stderr: "" });
-    assert.equal(during, "/home/agent/workers/gh", "the call runs as the workers' account");
-    assert.equal(process.env.GH_CONFIG_DIR, "/home/me/gh", "and the environment is as it was");
-  } finally {
-    if (before === undefined) delete process.env.GH_CONFIG_DIR;
-    else process.env.GH_CONFIG_DIR = before;
-  }
+test("A11-106: the workers' account is the gh folder inside the block's gh.workers, else the environment's, else none", () => {
+  assert.deepEqual(workerAccount({ workers: "/home/agent/workers", leads: "/home/agent/leads" }, { GH_CONFIG_DIR: "/home/me/gh" }), { GH_CONFIG_DIR: "/home/agent/workers/gh" }, "the host file wins over the environment");
+  assert.deepEqual(workerAccount({ workers: "/home/agent/workers/" }, {}), { GH_CONFIG_DIR: "/home/agent/workers/gh" });
+  assert.deepEqual(workerAccount(undefined, { GH_CONFIG_DIR: "/home/me/gh" }), { GH_CONFIG_DIR: "/home/me/gh" }, "a laptop's host file declares no gh, and its gh is the environment's");
+  assert.deepEqual(workerAccount({ workers: "relative/dir" }, {}), {}, "a folder that is not absolute names no account");
+  assert.deepEqual(workerAccount(null, {}), {});
 });
 
-test("A11-106: an account's runner turns a failed call into its status and its error output, and does not throw", () => {
-  const failing = Object.assign(new Error("Command failed: gh api"), { status: 1, stderr: "gh: Not Found (HTTP 404)\n" });
-  const run = asAccount(() => { throw failing; }, {});
-  assert.deepEqual(run(["api", "repos/a11ign/nbl-ui-netbox/stacks"]), { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" });
+test("A11-106: the install command to paste names the account's folder when there is one", () => {
+  assert.equal(installCommand({}), `gh extension install ${STACK_EXTENSION}`);
+  assert.equal(installCommand({ GH_CONFIG_DIR: "/home/agent/workers/gh" }), `GH_CONFIG_DIR=/home/agent/workers/gh gh extension install ${STACK_EXTENSION}`);
 });
 
 test("A11-106: GitHub's answer for a repository is enabled on a list, refused on its 404, and unknown with the reason otherwise", () => {

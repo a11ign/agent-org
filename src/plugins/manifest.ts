@@ -10,6 +10,7 @@
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { Concern } from "./concerns.ts";
+import type { ReviewTrust } from "./contracts/code-host.ts";
 import type { TrackerWriting } from "./contracts/tracker.ts";
 
 /** One doctor row a plugin reports: its name, whether it passed, what it found and, when it failed, the one thing to do. The same shape as `Check` in `install/doctor.ts`, which a plugin may not import. */
@@ -61,6 +62,29 @@ export type PluginSettings = Readonly<Record<string, unknown>>;
 /** What running a program answered: its exit status (null when it could not start), and what it printed. */
 export type ExecResult = Readonly<{ status: number | null; stdout: string; stderr: string }>;
 
+/** What running a program may be asked: `inherit` gives it this process's terminal, `timeoutMs` bounds it, and `env` is laid over this process's environment for that one run. */
+export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>> }>;
+
+/** How a reviewer judges a pull request, as the gate's modules decide it: the `--json` fields it reads by, whether the author is the org's own, and whether the checks settled green. */
+export type ReviewJudge = Readonly<{
+  fields: string;
+  trustOf(pr: Readonly<Record<string, any>>): ReviewTrust;
+  settledOf(pr: Readonly<Record<string, any>>): boolean;
+}>;
+
+/**
+ * What core decides about what a code host reports, which a code host plugin reads GitHub's data with and does not own (A11-160): which of a pull request's checks are red
+ * (`red-pr.ts`, which row mode shares), which of two runs of a check is the newer, and how a reviewer judges a pull request. `review()` is asked once per read, and THROWS the gate's
+ * refusal on a host where the reviewer's gate does not load, as the read always did.
+ */
+export type CodeHostPolicy = Readonly<{
+  /** The checks of a pull request, from the rollup of its runs and contexts, that are red, each with when it failed (epoch ms, or NaN). */
+  redChecksOf(pr: Readonly<{ rollup: readonly unknown[]; labels: readonly unknown[] }>): readonly Readonly<{ name: string; failedAt: number }>[];
+  /** Whether check run `a` is at least as new as `b`, which decides the newest run of a check name. */
+  isAtLeastAsNew(a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): boolean;
+  review(): ReviewJudge;
+}>;
+
 /**
  * What a plugin is given by core to do its work: every runtime helper reaches it here, because it imports core's types only. `fetch` and `exec` are the two seams a plugin's I/O goes
  * through (a test injects each); `readFile` and `mode` read a file's text and permission bits (null when it cannot be read); `pick` is the board's `tickets.pick` scope, which a tracker
@@ -75,10 +99,14 @@ export type PluginDeps = Readonly<{
    * Runs `file` with `args`. `inherit` gives it this process's terminal, for a program that prompts (`security add-generic-password -w`). `timeoutMs` bounds the run (ten minutes
    * when absent); a program that cannot start answers no status and the reason in its stderr.
    */
-  exec: (file: string, args: readonly string[], options?: Readonly<{ inherit?: boolean; timeoutMs?: number }>) => ExecResult;
+  exec: (file: string, args: readonly string[], options?: ExecOptions) => ExecResult;
   readFile: (path: string) => string;
   mode: (path: string) => number | null;
   pick: PickScope;
+  /** The host's checkouts by repository name (`host.json`'s `clones`), which a code host asks the remote of. Empty on a host that names none. */
+  clones: Readonly<Record<string, string>>;
+  /** What core decides about what a code host reports (A11-160). */
+  policy: CodeHostPolicy;
 }>;
 
 /** What an onboard step is given besides the plugin's deps: the prompts and the machine's facts, and the flags onboard was started with that name this plugin's settings. */
@@ -111,11 +139,16 @@ export type StepResult = Readonly<{ ok: boolean; detail: string; settings?: Plug
  */
 export type OnboardStep = Readonly<{ name: string; explain: string; run(settings: PluginSettings, deps: OnboardStepDeps): Promise<StepResult> }>;
 
-/** The code half: what a bundled plugin's entry module exports. `create` returns the concern's contract implementation. */
+/**
+ * The code half: what a bundled plugin's entry module exports. `create` returns the concern's contract implementation. `keep` is optional: what `agent-org update` keeps true for the
+ * plugin on this machine, each result said as it is (an empty `detail` says nothing, and `ok: false` is said as an error). It runs at every update, so it must be safe to repeat, and
+ * must neither prompt nor throw (A11-160: the code host keeps its stacking extension present).
+ */
 export type PluginModule = Readonly<{
   create(settings: PluginSettings, deps: PluginDeps): unknown;
   doctorChecks(settings: PluginSettings, deps: PluginDeps): readonly PluginCheck[] | Promise<readonly PluginCheck[]>;
   onboardSteps: readonly OnboardStep[];
+  keep?(settings: PluginSettings, deps: PluginDeps): readonly StepResult[];
 }>;
 
 /** A plugin that was loaded: the plugin, the implementation `create` returned, and its doctor rows and onboard steps. */

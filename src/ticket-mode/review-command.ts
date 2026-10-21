@@ -14,7 +14,9 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { herdrRun } from "../herdr-agents.ts";
-import { atomicReviewerPort, loadReviewerGate, readReviewerMemory, readReviewState, reviewerMemoryPath, reviewerRefusal, reviewPostedAt, reviewWordAt, type ReviewerMemory, type ReviewerPort, type ReviewState, writeReviewerMemory } from "./reviewer-port.ts";
+import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
+import { atomicReviewerPort, gateReviewJudge, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, reviewerRefusal, reviewPostedAt, reviewWordAt, type ReviewerMemory, type ReviewerPort, type ReviewState, writeReviewerMemory } from "./reviewer-port.ts";
 import { claimantOf, readTicketSettings } from "./settings.ts";
 
 /** A pull request's address as GitHub prints it: `https://github.com/<owner>/<repo>/pull/<number>`. */
@@ -60,10 +62,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     process.stderr.write(`ticket:review: the reviewer does not load on this host: ${refusal}\n`);
     process.exit(1);
   }
+  // The code host is the enabled plugin's, as the board's: the pull request is read through it, and so is each read the reviewer port makes. It alone is built: the tracker's key is
+  // not read for a command that asks it nothing, which is run from a shell with no Keychain (it was run from ssh).
+  const codeHost = (await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge }), undefined, ["codeHost"])).codeHost();
   const path = reviewerMemoryPath(settings.stateDir);
   const { memory } = readReviewerMemory(path);
-  const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, heads: memory.heads, clones: settings.clones, instance: claimantOf(settings) });
-  const { code, out } = reviewOnDemand({ url, head, port, readState: (u) => readReviewState(u, defaultGh), started: memory.started, record: (label, key, at) => {
+  const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, codeHost, heads: memory.heads, clones: settings.clones, instance: claimantOf(settings) });
+  const { code, out } = reviewOnDemand({ url, head, port, readState: (u) => codeHost.readReviewState(u), started: memory.started, record: (label, key, at) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
     latest.heads.set(label, at);

@@ -26,6 +26,9 @@ import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { CodeHost, PullFeedback } from "../plugins/contracts/code-host.ts";
+import { corePolicy } from "../plugins/policy.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
 import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
@@ -78,7 +81,7 @@ function herdr(status: Map<string, string>, screen: { text: string } = { text: "
 /** `parents` gives a ticket its parent's key. A ticket without one is shaped as a run queued before tickets carried a parent. */
 function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<string, unknown> = {},
   { source: tracker = source, parents = {}, planFirst = [], batch = false, pluginRecord, gh, reviewerPort, preflight, now = () => 100, clones, wait }:
-    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: (args: string[]) => string;
+    { source?: TicketSource; parents?: Record<string, string>; planFirst?: string[]; batch?: boolean; pluginRecord?: string; gh?: World;
       reviewerPort?: ReviewerPort; preflight?: PreflightExec; now?: () => number; clones?: Record<string, string>; wait?: (ms: number) => Promise<void> } = {}) {
   const root = tmpDir("ticket-pool-");
   const settings = parseTicketSettings({ clones: clones ?? { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: join(root, "state"), tickets });
@@ -90,7 +93,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const screen = { text: "" };
   const h = herdr(status, screen);
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), ...(gh ? { gh } : {}), ...(reviewerPort ? { reviewerPort } : {}), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? createFakeCodeHost(), ...(gh ? { gh: gh.run } : {}), ...(reviewerPort ? { reviewerPort } : {}), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
   const pool = createPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
@@ -256,7 +259,7 @@ const SWEPT_REPO_PULL_2 = `https://github.com/${SWEPT_REPO}/pull/2`;
 
 /** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
 async function approvedRun(tickets: Record<string, unknown> = {},
-  { transcript = true, gh, reviewerPort, tracker }: { transcript?: boolean; gh?: (args: string[]) => string; reviewerPort?: ReviewerPort; tracker?: TicketSource } = {}) {
+  { transcript = true, gh, reviewerPort, tracker }: { transcript?: boolean; gh?: World; reviewerPort?: ReviewerPort; tracker?: TicketSource } = {}) {
   const ctx = setup(1, ["NBF-1"], tickets, { gh, reviewerPort, source: tracker });
   const { pool, status, settings, root, store } = ctx;
   await pool.tick();
@@ -454,7 +457,7 @@ test("a session whose herdr server does not answer is started once, and waited f
   };
   let queue = emptyQueue(1);
   const pool = createPool({ get: () => queue, set: (q) => { queue = q; } }, {
-    settings, source, hook: { node: "n", bin: "b" }, herdr: run, wait: async () => { up = true; }, startServer: (s) => started.push(s),
+    settings, source, codeHost: createFakeCodeHost(), hook: { node: "n", bin: "b" }, herdr: run, wait: async () => { up = true; }, startServer: (s) => started.push(s),
   });
   await pool.ensureSession();
   await pool.ensureSession();
@@ -552,7 +555,7 @@ test("a run stopped while it was starting stays stopped, and the workspace its s
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: root });
   // The person presses Stop while Claude is starting.
   const racing = stopDuringStart(resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0)), "NBF-1", {
-    settings, source, hook: { node: "n", bin: "b" }, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
+    settings, source, codeHost: createFakeCodeHost(), hook: { node: "n", bin: "b" }, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
   });
   await racing.pool.tick();
   assert.deepEqual(racing.store.get().entries[0].outcome, { kind: "stopped" });
@@ -584,7 +587,7 @@ test("the tracker is asked about finished runs only, its answer is recorded, and
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
   let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [] }, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   await pool.refreshTracker();
   assert.deepEqual(asked, [["NBF-1"]], "the queued NBF-2 is not asked about");
   assert.equal(queue.entries.find((e) => e.ticket.key === "NBF-1")!.trackerState, "completed");
@@ -608,7 +611,7 @@ test("a run whose pull request merged reads as completed while its ticket is sti
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
   let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [{ repo: "r", url }] }, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   await pool.refreshTracker();
   assert.equal(runStatus(queue.entries[0]), "completed");
   await pool.refreshTracker();
@@ -654,7 +657,7 @@ function completing(outcome: Outcome, { state = "started", pull = "merged", refu
   if (without === "complete") delete tracker.complete;
   let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", outcome, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source: tracker, hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   return { pool, calls, reads, entry: () => queue.entries[0] };
 }
 
@@ -833,7 +836,7 @@ test("a source that cannot read states never marks a run completed", async () =>
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
   let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", { kind: "draft-pr", prs: [] }, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
-  const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
+  const pool = createPool(store, { settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   await pool.refreshTracker();
   assert.equal(queue.entries[0].trackerState, undefined);
 });
@@ -1772,7 +1775,7 @@ test("a batch whose start fails crashes every ticket of it, and a stop while it 
   // The person presses Stop on the second ticket while the batch's Claude is starting.
   const racing = stopDuringStart(resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1"), ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0,
     { keys: new Set(["NBF-1", "NBF-2"]), choice: { model: "opus", effort: "max" }, batch: true })), "NBF-2", {
-    settings, source: batchTracker().tracker, hook: { node: "n", bin: "b" }, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
+    settings, source: batchTracker().tracker, codeHost: createFakeCodeHost(), hook: { node: "n", bin: "b" }, wait: async () => {}, load: () => ({ load: 0, cores: 1 }),
     pluginRecord: join(root, "none.json"),
   });
   await racing.pool.tick();
@@ -2024,27 +2027,6 @@ test("A11-150: a conflict the run's worker resolved by merging the blocker's bra
   assert.equal(entry("NBF-2").stackBase?.sha, moved, "the run is branched from the head the worker merged in");
 });
 
-/**
- * GitHub, as far as the pool's sweeps ask it: each pull request's head, base and state, the states of the pull requests on a head, and a base edit that
- * moves a pull request. `edits` is every edit asked, in order. Any other call is answered by the feedback fake, so an unexpected one fails the test.
- */
-function fakeGitHub(pulls: Record<string, { head: string; base: string; state: string }>) {
-  const edits: string[][] = [];
-  const answers = ghFor({});
-  const gh = (args: string[]) => {
-    if (args[0] === "repo") return "main\n";
-    if (args[0] === "pr" && args[1] === "view" && args[2] in pulls) return JSON.stringify({ baseRefName: pulls[args[2]].base, state: pulls[args[2]].state });
-    if (args[0] === "pr" && args[1] === "list") return JSON.stringify(Object.values(pulls).filter(({ head }) => head === args[args.indexOf("--head") + 1]).map(({ state }) => ({ state })));
-    if (args[0] === "pr" && args[1] === "edit") {
-      edits.push(args);
-      pulls[args[2]].base = args[4];
-      return "";
-    }
-    return answers.run(args);
-  };
-  return { gh, pulls, edits };
-}
-
 test("A11-116: two tickets of one project run in order over real repositories: the second starts on the first's pushed branch before any pull request, and once the first merges its own is retargeted to the default branch, so both merge in order", async () => {
   const { root, clone } = originAndClone("ticket-pool-two-tickets-");
   const pullOne = "https://github.com/x/nbl-ui-netbox/pull/1";
@@ -2054,8 +2036,11 @@ test("A11-116: two tickets of one project run in order over real repositories: t
   const tracker: TicketSource = { ...source,
     blockers: async (keys) => new Map(keys.map((key) => [key, key === "NBF-2" ? [{ key: "NBF-1", state: "started", status: "In Progress", branch: "nbf-1", pulls: { ...blockerPulls } }] : []])),
     projectSummaries: async (keys) => new Map(keys.map((key) => [key, "github.com/a11ign/nbl-ui-netbox"])) };
-  const { gh, pulls, edits } = fakeGitHub({ [pullOne]: { head: "nbf-1", base: "main", state: "OPEN" }, [pullTwo]: { head: "nbf-2", base: "nbf-1", state: "OPEN" } });
-  const { pool, entry, settings, status } = setup(2, ["NBF-1", "NBF-2"], { drafts: false, worktreeRoot: join(root, "tickets") }, { source: tracker, gh, clones: { "nbl-ui-netbox": clone } });
+  // The code host holds both pull requests: the second is stacked on the first's branch. Its sweep is the fake's, which moves a stacked pull request whose base merged to the default branch.
+  const github = ghFor({});
+  github.host.seedPull("x/nbl-ui-netbox", 1, { head: "nbf-1", base: "main" });
+  github.host.seedPull("x/nbl-ui-netbox", 2, { head: "nbf-2", base: "nbf-1" });
+  const { pool, entry, settings, status } = setup(2, ["NBF-1", "NBF-2"], { drafts: false, worktreeRoot: join(root, "tickets") }, { source: tracker, gh: github, clones: { "nbl-ui-netbox": clone } });
   await pool.tick();
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["running", "queued"], "the first starts; the second waits for its branch to be pushed");
   // The first's worker pushes its branch, with no pull request yet.
@@ -2082,21 +2067,21 @@ test("A11-116: two tickets of one project run in order over real repositories: t
   await pool.tick();
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-2").phase], ["finished", "finished"]);
   pool.retargetStacked();
-  assert.deepEqual(edits, [], "the first's pull request is still open: the second's base is current, so nothing moves");
+  assert.deepEqual(github.host.retargets, [], "the first's pull request is still open: the second's base is current, so nothing moves");
   // The first merges: its branch lands on the default branch, the tracker says so, and the second's pull request is moved to the default branch.
   gitIn(clone, ["checkout", "-q", "main"]);
   gitIn(clone, [...identity, "merge", "-q", "--no-ff", "-m", "merge NBF-1", "nbf-1"]);
   gitIn(clone, ["push", "-q", "origin", "main"]);
-  pulls[pullOne].state = "MERGED";
+  github.host.pullAt(pullOne)!.state = "merged";
   blockerPulls[pullOne] = "merged";
   await pool.refreshTracker();
   pool.retargetStacked();
-  assert.deepEqual(edits, [["pr", "edit", pullTwo, "--base", "main"]], "once the first merged, the second's pull request moves to the default branch, and nothing else moves");
-  assert.equal(pulls[pullTwo].base, "main");
+  assert.deepEqual(github.host.retargets, [{ url: pullTwo, base: "main" }], "once the first merged, the second's pull request moves to the default branch, and nothing else moves");
+  assert.equal(github.host.pullAt(pullTwo)?.base, "main");
   // The second merges after it, into the default branch that already holds the first's commits: no conflict, no hand edit.
   gitIn(clone, [...identity, "merge", "-q", "--no-ff", "-m", "merge NBF-2", "nbf-2"]);
   gitIn(clone, ["push", "-q", "origin", "main"]);
-  pulls[pullTwo].state = "MERGED";
+  github.host.pullAt(pullTwo)!.state = "merged";
   assert.deepEqual(gitIn(clone, ["log", "--format=%s", "origin/main"]).split("\n").filter((line) => line.startsWith("NBF-")), ["NBF-2: its work", "NBF-1: its work"], "both are on the default branch, the second's after the first's");
 });
 
@@ -2134,7 +2119,7 @@ test("a parked run stays parked on an outcome file written before it parked, and
 
 /** NBF-1 started on a machine that opens ready pull requests, its agent working: nothing has ended yet (A11-118). */
 async function workingReadyRun() {
-  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }).run });
+  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }) });
   await ctx.pool.tick();
   ctx.status.set(herdrName("NBF-1"), "working");
   await ctx.pool.tick();
@@ -2142,7 +2127,7 @@ async function workingReadyRun() {
 }
 
 test("A11-118: a pool that reads `pr` for `prs` records the one pull request it names: the stop hook refuses that file, and the pool is the safety net", async () => {
-  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }).run });
+  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }) });
   await ctx.pool.tick();
   ctx.status.set(herdrName("NBF-1"), "idle");
   writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", pr: approvedPr.url, reason: "the pull request is open" }));
@@ -2166,7 +2151,7 @@ test("A11-118: a parked run whose outcome file was unreadable, with its agent id
 });
 
 test("A11-118: a finished run with no workspace whose outcome file was unreadable is read again when the file changes; a file that is still wrong changes nothing", async () => {
-  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }).run });
+  const ctx = setup(1, ["NBF-1"], { drafts: false }, { gh: ghFor({ 1: feedbackPull({}) }) });
   const unreadable: Outcome = { kind: "needs-human", reason: "the worker's outcome file is not valid: ready-pr prs[0] needs url: a string, you wrote link", unreadable: true };
   ctx.store.set(finish(ctx.store.get(), "NBF-1", unreadable, 100));
   const file = join(ticketDir(ctx.settings, "NBF-1"), "outcome.json");
@@ -2211,29 +2196,85 @@ test("a parked run seen working after it wrote a new outcome keeps that outcome,
   assert.equal(runStatus(entry("NBF-1")), "ready-to-merge");
 });
 
-/** A gh that acts as `worker-bot` and answers each pull request's feedback read from `pulls`, by number; a number it has no answer for is refused. */
-function ghFor(pulls: Record<number, unknown>) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[1] === "user") return "worker-bot\n";
-    if (args[0] === "pr" && args[1] === "list") {
-      // The pull requests are in SWEPT_REPO only: every other repository the sweep asks about has none open.
-      const repo = args[args.indexOf("--repo") + 1];
-      if (repo !== SWEPT_REPO) return "[]";
-      return JSON.stringify(Object.keys(pulls).filter((number) => (pulls[Number(number)] as { state: string }).state === "OPEN").map((number) => ({ number: Number(number), body: "" })));
-    }
-    if (args[0] === "pr") {
-      const pull = pulls[Number(args[2])] as { state: string; headRefOid: string; reviews: { nodes: unknown[] }; commits: { nodes: { commit: { statusCheckRollup: { contexts: { nodes: unknown[] } } } }[] } } | undefined;
-      if (pull === undefined) throw new Error("gh exited 1");
-      return JSON.stringify({ state: pull.state, headRefOid: pull.headRefOid, reviews: pull.reviews.nodes, author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false,
-        statusCheckRollup: [GATE_GREEN, ...pull.commits.nodes[0].commit.statusCheckRollup.contexts.nodes] });
-    }
-    const number = Number(args.find((arg) => arg.startsWith("number="))?.slice("number=".length));
-    if (!(number in pulls)) throw new Error("gh exited 1");
-    return JSON.stringify({ data: { repository: { pullRequest: pulls[number] } } });
+/**
+ * GitHub as the pool's tests see it (A11-160): the pull requests `pulls` describes, by number, in GitHub's own shapes, held by the code host (the fake) for every read of one, and a
+ * `gh` for the calls the code host does not make yet, which only `withCi` answers (a failed check's job log, and its re-run). `pulls` is read as each read is made, so a test moves a pull
+ * request by changing it; a number it has no answer for is one the code host cannot read, as `gh` refusing it was. The fake holds what the plugin would have made of the answer: the
+ * feedback is worked out here from the description, as the plugin works it out from GitHub's (that is `plugins/github`'s own tests, not this file's).
+ */
+type World = { run: (args: string[]) => string; calls: string[][]; codeHost: CodeHost; host: ReturnType<typeof createFakeCodeHost> };
+
+type Node = { author?: { login?: string } | null; state?: string; submittedAt?: string; createdAt?: string; commit?: { oid?: string } };
+type Described = { state: string; headRefOid: string; mergeable: string; mergeStateStatus: string; baseRefName: string;
+  files: { pageInfo: { hasNextPage: boolean }; nodes: { path: string }[] }; reviews: { nodes: Node[] }; comments: { nodes: Node[] };
+  commits: { nodes: { commit: { statusCheckRollup: { contexts: { nodes: Record<string, any>[] } } } }[] } };
+
+/** The files a described page lists, and whether it is all of them: a page that is missing or of another shape lists none and is not complete, as the plugin reads one. */
+function filesOfDescribed(page: Partial<Described["files"]> | null | undefined): Pick<PullFeedback, "files" | "filesComplete"> {
+  const valid = page !== null && typeof page === "object" && Array.isArray(page.nodes) && page.nodes.every((file) => typeof file?.path === "string") && typeof page.pageInfo?.hasNextPage === "boolean";
+  return valid ? { files: page.nodes!.map(({ path }) => path), filesComplete: !page.pageInfo!.hasNextPage } : { files: [], filesComplete: false };
+}
+
+/** The feedback on a described pull request that is not `self`'s and not `ignored`'s: what the plugin reads of GitHub's answer. */
+function feedbackOfDescribed(pull: Described, self: string, ignored: readonly string[]): Partial<PullFeedback> {
+  const others = (author: Node["author"]) => author?.login !== undefined && author.login !== self && !ignored.includes(author.login);
+  const items = [
+    ...pull.reviews.nodes.filter((r) => ["COMMENTED", "CHANGES_REQUESTED"].includes(String(r.state)) && others(r.author)).map((r) => ({ at: Date.parse(r.submittedAt ?? ""), author: r.author!.login! })),
+    ...pull.comments.nodes.filter((c) => others(c.author)).map((c) => ({ at: Date.parse(c.createdAt ?? ""), author: c.author!.login! })),
+  ];
+  const contexts = pull.commits.nodes[0].commit.statusCheckRollup.contexts.nodes;
+  const required = new Set(contexts.filter((check) => check.isRequired === true).map((check) => String(check.name)));
+  const red = corePolicy().redChecksOf({ rollup: contexts, labels: [] }).map(({ name, failedAt }) => ({ name, at: Number.isNaN(failedAt) ? null : failedAt,
+    detailsUrl: (contexts.filter((check) => check.name === name).at(-1)?.detailsUrl ?? null) as string | null, counted: required.size === 0 || required.has(name) }));
+  const failing = red.filter(({ counted }) => counted);
+  const newest = (times: (number | null)[]) => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);
+  return {
+    feedbackAt: newest(items.map(({ at }) => at)), authors: [...new Set(items.sort((x, y) => y.at - x.at).map(({ author }) => author))],
+    failing: failing.map(({ name }) => name), failures: red.map(({ name, detailsUrl }) => ({ name, detailsUrl })), failedAt: newest(failing.map(({ at }) => at)),
+    conflicting: pull.mergeable === "CONFLICTING" || pull.mergeStateStatus === "DIRTY", mergeable: pull.mergeable === "MERGEABLE",
+    ...filesOfDescribed(pull.files),
   };
-  return { run, calls };
+}
+
+function ghFor(pulls: Record<number, unknown>): World {
+  const calls: string[][] = [];
+  const run = (args: string[]): string => {
+    calls.push(args);
+    throw new Error("gh exited 1");
+  };
+  const host = createFakeCodeHost("worker-bot");
+  const described = (url: string) => pulls[Number(/\/pull\/(\d+)/.exec(url)?.[1])] as Described | undefined;
+  /** The fake holds the pull request at `url` as it is described now, or says there is none. */
+  const hold = (url: string, feedback: Partial<PullFeedback> = {}): boolean => {
+    const pull = described(url);
+    const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
+    if (pull === undefined || match === null) return false;
+    const rollup = [GATE_GREEN, ...pull.commits.nodes[0].commit.statusCheckRollup.contexts.nodes];
+    host.seedPull(match[1], Number(match[2]), {
+      head: pull.headRefOid, base: pull.baseRefName, state: pull.state.toLowerCase() as "open" | "merged" | "closed", settled: rollup.every((check) => check.conclusion === "SUCCESS"), feedback,
+      reviews: pull.reviews.nodes.map((r) => ({ author: r.author?.login ?? "", state: String(r.state), commit: r.commit?.oid ?? "", at: Date.parse(r.submittedAt ?? "") || 0 })),
+    });
+    return true;
+  };
+  const codeHost: CodeHost = {
+    ...host,
+    readPullFeedback: (url, self, ignored = []) => {
+      const pull = described(url);
+      if (pull === undefined || !hold(url, feedbackOfDescribed(pull, self, ignored))) {
+        host.calls.push(`readPullFeedback ${url}`);
+        return null;
+      }
+      return host.readPullFeedback(url, self, ignored);
+    },
+    readReviewState: (url) => (hold(url) ? host.readReviewState(url) : null),
+    readPullState: (url) => (hold(url) ? host.readPullState(url) : null),
+    // The pull requests are in SWEPT_REPO only: every other repository the sweep asks about has none open.
+    openPullUrlsOf: (repository) => {
+      host.calls.push(`openPullUrlsOf ${repository}`);
+      return repository !== SWEPT_REPO ? [] : Object.keys(pulls).filter((number) => (pulls[Number(number)] as Described).state === "OPEN").map((number) => `https://github.com/${SWEPT_REPO}/pull/${number}`);
+    },
+  };
+  return { run, calls, codeHost, host };
 }
 const at = (ms: number) => new Date(ms).toISOString();
 const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
@@ -2245,7 +2286,7 @@ const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], 
 const GATE_GREEN = { name: "gate", status: "COMPLETED", conclusion: "SUCCESS" };
 
 /** NBF-1 Ready to merge at 100, its review run ended, watched with `gh`. */
-async function readyRun(gh: (args: string[]) => string, tickets: Record<string, unknown> = {}, reviewerPort?: ReviewerPort) {
+async function readyRun(gh: World, tickets: Record<string, unknown> = {}, reviewerPort?: ReviewerPort) {
   await loadReviewerGate();
   const ctx = await approvedRun(tickets, { gh, reviewerPort });
   ctx.status.set(herdrName("NBF-1"), "idle");
@@ -2267,7 +2308,7 @@ test("new review feedback on a run Ready to merge starts a feedback round that r
   const gh = ghFor({ 1: feedbackPull({
     reviews: [{ state: "COMMENTED", submittedAt: at(300), author: { login: "worker-bot" } }, { state: "CHANGES_REQUESTED", submittedAt: at(200), author: { login: "a11ign-reviewer" } }],
   }) });
-  const { pool, entry, dir, h } = await readyRun(gh.run);
+  const { pool, entry, dir, h } = await readyRun(gh);
   h.calls.length = 0;
   await watchRound(pool);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").review], ["running", 1, [approvedPr]]);
@@ -2277,7 +2318,7 @@ test("new review feedback on a run Ready to merge starts a feedback round that r
   assert.equal(tail[0], `New feedback reached this ticket's pull requests. Read ${dir}/brief.md and follow it.`);
   assert.deepEqual(tail.slice(tail.indexOf("--resume"), tail.indexOf("--resume") + 2), ["--resume", "session-t-nbf-1"]);
   assert.match(readFileSync(join(dir, "brief.md"), "utf8"), /feedback round for NBF-1/);
-  assert.equal(gh.calls.filter((args) => args[1] === "user").length, 1, "the account is read once");
+  assert.equal(gh.host.calls.filter((call) => call === "readOwnLogin").length, 1, "the account is read once");
 });
 
 test("feedback from before the run's last round ended, from the workers' own account, or on a pull request that could not be read starts no round", async () => {
@@ -2288,7 +2329,7 @@ test("feedback from before the run's last round ended, from the workers' own acc
     ["could not ask", {}],
   ] as const) {
     const gh = ghFor(pulls);
-    const { pool, entry } = await readyRun(gh.run);
+    const { pool, entry } = await readyRun(gh);
     const logged = await captureStderr(async () => { pool.watchFeedback(); await roundStarted(); });
     assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds], ["finished", undefined], why);
     const said = logged.some((line) => line.includes(`NBF-1: the feedback on ${approvedPr.url} could not be read, so it was not checked`));
@@ -2298,13 +2339,13 @@ test("feedback from before the run's last round ended, from the workers' own acc
 
 test("a check that is red at the head commit starts a round naming it, and a run the board does not watch is never read", async () => {
   const gh = ghFor({ 1: feedbackPull({ checks: [{ __typename: "CheckRun", name: "typecheck", conclusion: "FAILURE", completedAt: at(400), isRequired: false }] }) });
-  const { pool, entry } = await readyRun(gh.run);
+  const { pool, entry } = await readyRun(gh);
   pool.watchFeedback();
   assert.equal(entry("NBF-1").feedback, `typecheck failed on the head commit of ${approvedPr.url}; its log could not be read.`, "a check with no job page has no log to quote, and is named as such");
   const unwatched = ghFor({});
-  const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched.run });
+  const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched });
   other.watchFeedback();
-  assert.deepEqual(unwatched.calls, [], "nothing Ready to merge: GitHub is not asked, not even who the workers are");
+  assert.deepEqual([unwatched.calls, unwatched.host.calls], [[], []], "nothing Ready to merge: GitHub is not asked, not even who the workers are");
 });
 
 test("what triggers a round names each pull request's new feedback and nothing older than the round, and leaves failed checks to the check rule", () => {
@@ -2350,7 +2391,7 @@ function planFiles(paths: Record<string, string[]>, refuse: (key: string) => voi
 }
 
 /** NBF-1 started on `tickets`, then ended on pull requests of `kind` (draft or ready), watched with `gh` and not approved. */
-async function endedWithPulls(gh: (args: string[]) => string, tickets: Record<string, unknown>, kind: "draft-pr" | "ready-pr") {
+async function endedWithPulls(gh: World, tickets: Record<string, unknown>, kind: "draft-pr" | "ready-pr") {
   const ctx = setup(1, ["NBF-1"], tickets, { gh });
   await ctx.pool.tick();
   ctx.status.set(herdrName("NBF-1"), "idle");
@@ -2361,14 +2402,14 @@ async function endedWithPulls(gh: (args: string[]) => string, tickets: Record<st
 }
 
 /** NBF-1 finished with a draft pull request, watched with `gh` and not approved: a draft is read for its footprint, and never woken. */
-async function draftRun(gh: (args: string[]) => string) {
+async function draftRun(gh: World) {
   const ctx = await endedWithPulls(gh, {}, "draft-pr");
   assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
   return ctx;
 }
 
 /** NBF-1 finished with ready pull requests, on a machine that opens them ready, so no Approve comes and the board watches them. */
-async function readyPrRun(gh: (args: string[]) => string) {
+async function readyPrRun(gh: World) {
   const ctx = await endedWithPulls(gh, { drafts: false }, "ready-pr");
   assert.equal(runStatus(ctx.entry("NBF-1")), "awaiting-review");
   return ctx;
@@ -2376,7 +2417,7 @@ async function readyPrRun(gh: (args: string[]) => string) {
 
 test("A11-82: a pull request that conflicts with its base resumes its worker once, the round names the conflict and its base, and the brief has the worker merge the base in", async () => {
   const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) });
-  const { pool, entry, dir, h } = await readyRun(gh.run);
+  const { pool, entry, dir, h } = await readyRun(gh);
   h.calls.length = 0;
   pool.watchFeedback();
   pool.watchFeedback();
@@ -2394,10 +2435,10 @@ test("A11-82: a pull request that conflicts with its base resumes its worker onc
 
 test("A11-82: a conflict on a run awaiting review is a round too, and a draft's read records the files it changes without waking the worker", async () => {
   const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", files: ["src/ticket-mode/pool.ts"] }) });
-  const ready = await readyPrRun(gh.run);
+  const ready = await readyPrRun(gh);
   ready.pool.watchFeedback();
   assert.deepEqual([ready.entry("NBF-1").phase, ready.entry("NBF-1").rounds], ["queued", 1], "a ready-pr run waiting for review is watched");
-  const draft = await draftRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", files: ["src/ticket-mode/pool.ts"] }) }).run);
+  const draft = await draftRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", files: ["src/ticket-mode/pool.ts"] }) }));
   draft.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([draft.entry("NBF-1").phase, draft.entry("NBF-1").rounds, draft.entry("NBF-1").pullFiles], ["finished", undefined, { [approvedPr.url]: ["src/ticket-mode/pool.ts"] }],
@@ -2405,12 +2446,12 @@ test("A11-82: a conflict on a run awaiting review is a round too, and a draft's 
 });
 
 test("A11-82: a merged pull request that reads conflicting gets no round, and a run at its cap hands a conflict to a person, whose Respond to review starts again", async () => {
-  const merged = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) }).run);
+  const merged = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) }));
   merged.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([merged.entry("NBF-1").phase, merged.entry("NBF-1").rounds], ["finished", undefined], "merged: nothing to resolve");
 
-  const capped = await readyRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }).run);
+  const capped = await readyRun(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }));
   capped.store.set({ ...capped.store.get(), entries: capped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, rounds: 3 } : e)) });
   capped.h.calls.length = 0;
   capped.pool.watchFeedback();
@@ -2427,7 +2468,7 @@ test("A11-82: a merged pull request that reads conflicting gets no round, and a 
  * NBF-1, a review run that asked a person a question and parked: its worker wrote `needs-human` with its workspace still open, as a review run
  * whose checks did not start does. The worker's session is the one the review run resumed (`session-t-nbf-1`).
  */
-async function parkedOnQuestion(gh: (args: string[]) => string, tracker?: TicketSource) {
+async function parkedOnQuestion(gh: World, tracker?: TicketSource) {
   const ctx = await approvedRun({}, { gh, tracker });
   ctx.status.set(herdrName("NBF-1"), "working");
   await ctx.pool.tick();
@@ -2439,7 +2480,7 @@ async function parkedOnQuestion(gh: (args: string[]) => string, tracker?: Ticket
 }
 
 test("A11-89: a parked run whose pull request conflicts is resumed: its workspace is closed once, the same worker resumes once with the conflict named, and its brief merges the base in", async () => {
-  const { pool, entry, dir, h } = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) }).run);
+  const { pool, entry, dir, h } = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }) }));
   h.calls.length = 0;
   pool.watchFeedback();
   await watchRound(pool);
@@ -2461,7 +2502,7 @@ test("A11-89: a parked run whose pull request is clear, unknown, or has only new
     feedbackPull({ reviews: [{ state: "CHANGES_REQUESTED", submittedAt: at(300), author: { login: "a11ign-reviewer" } }] }),
   ];
   for (const pull of pulls) {
-    const { pool, entry, h } = await parkedOnQuestion(ghFor({ 1: pull }).run);
+    const { pool, entry, h } = await parkedOnQuestion(ghFor({ 1: pull }));
     h.calls.length = 0;
     pool.watchFeedback();
     await roundStarted();
@@ -2473,11 +2514,11 @@ test("A11-89: a parked run whose pull request is clear, unknown, or has only new
 
 test("A11-89: a parked run whose conflicting pull request merged, or whose run was stopped, gets no round", async () => {
   const gh = ghFor({ 1: feedbackPull({ state: "MERGED", mergeable: "CONFLICTING" }) });
-  const merged = await parkedOnQuestion(gh.run);
+  const merged = await parkedOnQuestion(gh);
   await watchRound(merged.pool);
   assert.deepEqual([merged.entry("NBF-1").phase, merged.entry("NBF-1").rounds], ["finished", undefined], "merged: nothing to resolve");
 
-  const stopped = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }).run);
+  const stopped = await parkedOnQuestion(ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) }));
   stopped.store.set({ ...stopped.store.get(), entries: stopped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, outcome: { kind: "stopped" as const } } : e)) });
   stopped.h.calls.length = 0;
   stopped.pool.watchFeedback();
@@ -2488,7 +2529,7 @@ test("A11-89: a parked run whose conflicting pull request merged, or whose run w
 
 test("A11-89: a parked run whose workspace herdr will not close stays parked, names it in the log, and the next watch asks again", async () => {
   const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) });
-  const { pool, entry, h } = await parkedOnQuestion(gh.run);
+  const { pool, entry, h } = await parkedOnQuestion(gh);
   h.refused.add("close");
   const logged = await captureStderr(async () => { pool.watchFeedback(); await roundStarted(); });
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").rounds, entry("NBF-1").workspace], ["finished", undefined, "w2"], "still parked, no round queued");
@@ -2501,7 +2542,7 @@ test("A11-89: a parked run whose workspace herdr will not close stays parked, na
 
 test("A11-89: a parked run at the cap of rounds is left parked: nothing is closed or started", async () => {
   const gh = ghFor({ 1: feedbackPull({ mergeable: "CONFLICTING" }) });
-  const capped = await parkedOnQuestion(gh.run);
+  const capped = await parkedOnQuestion(gh);
   capped.store.set({ ...capped.store.get(), entries: capped.store.get().entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, rounds: 3 } : e)) });
   capped.h.calls.length = 0;
   await watchRound(capped.pool);
@@ -2531,7 +2572,7 @@ test("A11-82: a run waits on a path a live run holds and starts once that run's 
 
 test("A11-82: a finished run's open pull request holds the files the watch read from it: a run that shares one waits until it merges", async () => {
   const gh = ghFor({ 1: feedbackPull({ files: ["src/ticket-mode/server.ts"] }) });
-  const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
+  const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh, source: planFiles({
     "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/ticket-mode/server.ts"],
   }) });
   await pool.tick();
@@ -2551,7 +2592,7 @@ test("A11-82: a finished run's open pull request holds the files the watch read 
 // A11-125: a run's pull request files are footprinted the moment its run ends, not at the next watch, so a run sharing one is held from then.
 test("A11-125: a run that has just finished with an open pull request holds that pull request's files before any watch, so a run sharing one waits from the moment it ends", async () => {
   const gh = ghFor({ 1: feedbackPull({ files: ["src/ticket-mode/server.ts"] }) });
-  const { pool, entry, store, status, settings } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
+  const { pool, entry, store, status, settings } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh, source: planFiles({
     "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:src/ticket-mode/server.ts"],
   }) });
   await pool.tick();
@@ -2569,7 +2610,7 @@ test("A11-125: a run that has just finished with an open pull request holds that
 // A11-125: when a finished run's pull request cannot be read at its end, it holds its repository until a watch reads its files.
 test("A11-125: when a run's pull request files cannot be read at its end, the run holds its repository until a watch reads them, and then only what it changes", async () => {
   const pulls: Record<number, unknown> = {};
-  const { pool, entry, store, status, settings } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: ghFor(pulls).run, source: planFiles({
+  const { pool, entry, store, status, settings } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: ghFor(pulls), source: planFiles({
     "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:docs/guide.md"],
   }) });
   await pool.tick();
@@ -2628,7 +2669,7 @@ test("A11-117: a pull request whose file list was cut short holds only the files
     ["a file among those read is NBF-2's: it waits on the listed file", feedbackPull({ files: ["docs/unrelated.md"], more: true }), "queued"],
   ] as const) {
     const gh = ghFor({ 1: pull });
-    const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh.run, source: planFiles({
+    const { pool, entry, store, status } = setup(1, ["NBF-1", "NBF-2"], { plan: "-plan-[^/]*\\.md$" }, { gh: gh, source: planFiles({
       "NBF-1": ["nbl-ui-netbox:src/a.ts"], "NBF-2": ["nbl-ui-netbox:docs/unrelated.md"],
     }) });
     await pool.tick();
@@ -2682,7 +2723,7 @@ const PUBLISH = { publish: { run: "Run the post-pr-to-slack skill on these pull 
 
 /** NBF-1 Ready to merge on a machine that publishes, Publish pressed for it, and the publish run started. */
 async function publishing() {
-  const ctx = await readyRun(ghFor({}).run, PUBLISH);
+  const ctx = await readyRun(ghFor({}), PUBLISH);
   const { pool, store, settings } = ctx;
   store.set(pauseQueue(queuePublish(store.get(), ["NBF-1"], 300)));
   ctx.h.calls.length = 0;
@@ -2759,7 +2800,7 @@ test("a parked run that wrote a new outcome while a dialog waits on a person is 
 });
 
 test("Respond to review resumes the worker, told a person asked it to answer the feedback", async () => {
-  const { pool, entry, dir, h, store } = await readyRun(ghFor({}).run);
+  const { pool, entry, dir, h, store } = await readyRun(ghFor({}));
   store.set(respond(store.get(), "NBF-1", 300));
   h.calls.length = 0;
   await pool.tick();
@@ -2812,16 +2853,17 @@ test("a drafts-off run's ticket dir carries the ready mark and a brief that open
 
 test("with no tickets.publish, Publish starts no run and posts nothing: the request fails saying so, and the runs stay Ready to merge", async () => {
   const gh = ghFor({});
-  const ctx = await readyRun(gh.run);
+  const ctx = await readyRun(gh);
   ctx.store.set(pauseQueue(queuePublish(ctx.store.get(), ["NBF-1"], 300)));
   ctx.h.calls.length = 0;
   gh.calls.length = 0;
+  gh.host.calls.length = 0;
   await ctx.pool.tick();
   const publish = ctx.store.get().publish!;
   assert.match(publish.failure ?? "", /tickets\.publish/, "the failure names the setting");
   assert.equal(ctx.h.calls.some((args) => args.includes("start")), false, "no publish agent starts");
   assert.equal(existsSync(join(publishDir(ctx.settings, publish.id), "brief.md")), false, "no publish run folder is written");
-  assert.equal(gh.calls.some((args) => args.some((arg) => ["comment", "review", "create", "edit", "merge"].includes(arg))), false, "GitHub is not written to");
+  assert.deepEqual([gh.calls, gh.host.reviewRequests, gh.host.armed, gh.host.retargets], [[], [], [], []], "GitHub is not written to: no gh call, no review requested, no merge armed, no base moved");
   assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the run stays Ready to merge, unpublished");
 });
 
@@ -2845,7 +2887,7 @@ function fakeReviewer() {
 
 /** NBF-1 Ready to merge with `port` as its reviewer and its pull requests read from `pulls`, after one feedback watch. */
 async function reviewedRun(port: ReviewerPort, pulls: Record<number, unknown>) {
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   return ctx;
@@ -2853,7 +2895,7 @@ async function reviewedRun(port: ReviewerPort, pulls: Record<number, unknown>) {
 
 /** NBF-1 Ready to merge, and one watch after it has started its reviewer for h1: `pulls` is read from then on. */
 async function startedFor(port: ReviewerPort, pulls: Record<number, unknown>) {
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
   await watchRound(ctx.pool);
   return ctx;
 }
@@ -2870,7 +2912,7 @@ test("a restarted pool starts no second reviewer on a head it already reviewed",
   const { port, starts } = fakeReviewer();
   const pulls = { 1: feedbackPull() };
   const gh = ghFor(pulls);
-  const ctx = await readyRun(gh.run, REVIEWING, port);
+  const ctx = await readyRun(gh, REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer starts once for h1");
@@ -2887,7 +2929,7 @@ test("a reviewer is recorded before it starts: an instance stopped while it star
   const starts: ReviewerRef[] = [];
   // The instance stops inside `start`, after the reviewer's workspace is open and before `start` returns.
   const port: ReviewerPort = { start(ref) { starts.push(ref); throw new Error("SIGTERM"); }, live: () => false, ...idleTeardown, ...idleVerdict };
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
   assert.throws(() => ctx.pool.watchFeedback(), /SIGTERM/);
   assert.ok(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.has(`${approvedPr.url}@h1`), "on disk before the start");
   ctx.restart().watchFeedback();
@@ -2899,7 +2941,7 @@ test("a reviewer herdr still lists for the head is adopted, not started, and sta
   const starts: ReviewerRef[] = [];
   let listed = true;
   const port: ReviewerPort = { start(ref) { starts.push(ref); return { label: "reviewer-7" }; }, live: ({ head }) => listed && head === "h1", ...idleTeardown, ...idleVerdict };
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts, [], "the reviewer already running for h1 is adopted");
@@ -2914,7 +2956,7 @@ test("a reviewer start the port refuses is not remembered, so the next watch tri
   const starts: ReviewerRef[] = [];
   let refuse = true;
   const port: ReviewerPort = { start(ref) { starts.push(ref); return refuse ? { refusal: "herdr did not list the session" } : { label: "reviewer-7" }; }, live: () => false, ...idleTeardown, ...idleVerdict };
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
   await captureStderr(async () => { ctx.pool.watchFeedback(); await roundStarted(); });
   assert.equal(readReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir)).memory.started.size, 0);
   refuse = false;
@@ -2926,7 +2968,7 @@ test("a reviewer start the port refuses is not remembered, so the next watch tri
 test("a restarted pool asks for no second round for a verdict it already answered", async () => {
   const { port } = fakeReviewer();
   const gh = ghFor({ 1: feedbackPull({ reviews: [{ state: "CHANGES_REQUESTED", submittedAt: at(200), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }] }) });
-  const ctx = await readyRun(gh.run, REVIEWING, port);
+  const ctx = await readyRun(gh, REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the reviewer's changes are asked for once");
@@ -2941,12 +2983,12 @@ test("a machine with tickets.drafts true starts no reviewer, and one with ticket
   for (const drafts of [true, false]) {
     const { port, starts } = fakeReviewer();
     const gh = ghFor({ 1: feedbackPull() });
-    const ctx = await readyRun(gh.run, { reviewer: "atomic", drafts }, port);
-    gh.calls.length = 0;
+    const ctx = await readyRun(gh, { reviewer: "atomic", drafts }, port);
+    gh.host.calls.length = 0;
     ctx.pool.watchFeedback();
     await roundStarted();
     assert.equal(starts.length, drafts ? 0 : 1, `drafts ${drafts}: the reviewer starts`);
-    assert.equal(gh.calls.some((args) => args[0] === "pr"), !drafts, `drafts ${drafts}: the pull request is read for a reviewer only when drafts is off`);
+    assert.equal(gh.host.calls.some((call) => call.startsWith("readReviewState")), !drafts, `drafts ${drafts}: the pull request is read for a reviewer only when drafts is off`);
   }
 });
 
@@ -2956,7 +2998,7 @@ test("the reviewer's own review never moves feedbackAt: its comment after the ro
       reviews: [{ state: "COMMENTED", submittedAt: at(300), author: { login: REVIEWER_LOGIN }, commit: { oid: "h1" } }],
       comments: [{ createdAt: at(commentAt), author: { login: "alice" } }],
     }) });
-    const ctx = await readyRun(gh.run, REVIEWING, fakeReviewer().port);
+    const ctx = await readyRun(gh, REVIEWING, fakeReviewer().port);
     ctx.pool.watchFeedback();
     await roundStarted();
     assert.equal(ctx.entry("NBF-1").rounds, rounds, why);
@@ -2973,7 +3015,7 @@ test("the reviewer's verdict on the head reaches the worker: changes requested s
 
 test("a reviewer memory file that cannot be read is said once in the board's log, nothing is remembered from it, and a valid one is written over it", async () => {
   const { port, starts } = fakeReviewer();
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.equal(starts.length, 1, "the reviewer starts once");
@@ -3458,7 +3500,7 @@ function reviewerWith({ closeAnswers = ["closed"], retire = () => ({ retired: tr
 test("a reviewer is closed once its verdict on its head is posted, and is not started again for that head", async () => {
   const { port, starts, closes } = reviewerWith();
   const pulls = { 1: feedbackPull() };
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started");
@@ -3504,7 +3546,7 @@ test("a not-convinced verdict closes its reviewer in the watch that starts the r
 /** A pool with no run at all, its reviewer on, and `pulls` open on nbl-ui-netbox: what reviews them is the sweep (A11-119). */
 async function sweptPool(port: ReviewerPort, pulls: Record<number, unknown>) {
   await loadReviewerGate();
-  const made = setup(1, [], REVIEWING, { gh: ghFor(pulls).run, reviewerPort: port });
+  const made = setup(1, [], REVIEWING, { gh: ghFor(pulls), reviewerPort: port });
   return made;
 }
 
@@ -3521,7 +3563,7 @@ test("A11-119: a new head after requested changes gets a reviewer, though its ru
   const { port, starts } = reviewerWith();
   await loadReviewerGate();
   const pulls = { 1: feedbackPull({ head: "h1", reviews: [reviewOn(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1")] }) };
-  const ctx = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], REVIEWING, { gh: ghFor(pulls).run, reviewerPort: port, clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } });
+  const ctx = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], REVIEWING, { gh: ghFor(pulls), reviewerPort: port, clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" } });
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts.map((ref) => ref.head), [], "h1 has its verdict, so nothing is started for it");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1");
@@ -3651,7 +3693,7 @@ test("a restarted pool retires a merged pull request from the memory read off di
 
 test("a reviewer the session lists with no memory of it is retired once its pull request has merged", async () => {
   const { port, retired, starts } = reviewerWith({ listedPulls: () => [approvedPr.url] });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED" }) }).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED" }) }), REVIEWING, port);
   ctx.pool.releaseReviewers();
   assert.deepEqual(retired, [approvedPr.url], "a reviewer a ticket:review start left is retired");
   assert.deepEqual(starts, [], "and nothing is started");
@@ -3659,7 +3701,7 @@ test("a reviewer the session lists with no memory of it is retired once its pull
 
 test("a reviewer is not started for a pull request that has merged, even one the pool has forgotten and the tracker still shows open", async () => {
   const { port, starts } = reviewerWith();
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED" }) }).run, REVIEWING, port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ state: "MERGED" }) }), REVIEWING, port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(starts, [], "no reviewer is started for a merged pull request");
@@ -3695,7 +3737,7 @@ const NOT_POSTED = "verdict not posted";
 test("a reviewer that ended with its verdict file written and no review at its head has the file posted again, once, and nothing more once it is on the pull request", async () => {
   const reviews: unknown[] = [];
   const made = unpostedReviewer({ reposts: [{ posted: true }] });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }).run, REVIEWING, made.port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }), REVIEWING, made.port);
   ctx.pool.watchFeedback();
   await roundStarted();
   assert.deepEqual(made.starts.map((ref) => ref.head), ["h1"], "the reviewer for h1 is started");
@@ -3713,7 +3755,7 @@ test("a reviewer that ended with its verdict file written and no review at its h
 test("a repost refused once and posted on the next watch leaves exactly one posting, and the attempts are forgotten once the review is on the pull request", async () => {
   const reviews: unknown[] = [];
   const made = unpostedReviewer({ reposts: [{ refusal: "the reviewer App token could not be minted: no key", final: false }, { posted: true }] });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }).run, REVIEWING, made.port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }), REVIEWING, made.port);
   for (let watch = 0; watch < 3; watch += 1) {
     ctx.pool.watchFeedback();
     await roundStarted();
@@ -3730,7 +3772,7 @@ test("a repost refused once and posted on the next watch leaves exactly one post
 test("three refusals surface `verdict not posted: <reason>` on the run, and nothing is posted again, even after a restart", async () => {
   const reason = "the reviewer App token could not be minted: no key file at /keys/reviewer.pem (exit 1)";
   const made = unpostedReviewer({ reposts: [1, 2, 3].map(() => ({ refusal: reason, final: false })) });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, made.port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, made.port);
   for (let watch = 0; watch < 4; watch += 1) {
     ctx.pool.watchFeedback();
     await roundStarted();
@@ -3746,7 +3788,7 @@ test("three refusals surface `verdict not posted: <reason>` on the run, and noth
 test("a verdict the door refuses for good is said at once, and is not posted again", async () => {
   const reason = "#7 already has a review at an equal patch: APPROVED at 2026-10-16T10:00:00Z";
   const made = unpostedReviewer({ reposts: [{ refusal: reason, final: true }] });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, made.port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, made.port);
   ctx.pool.watchFeedback();
   await roundStarted();
   ctx.pool.watchFeedback();
@@ -3773,7 +3815,7 @@ test("a reviewer that ended with no verdict file is prompted once, and the secon
 
 test("a reviewer still working is left alone: no repost, prompt or line on the run, and a review already at the head triggers nothing", async () => {
   const working = unpostedReviewer({ settled: "working" });
-  const ctx = await readyRun(ghFor({ 1: feedbackPull() }).run, REVIEWING, working.port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), REVIEWING, working.port);
   for (let watch = 0; watch < 3; watch += 1) {
     ctx.pool.watchFeedback();
     await roundStarted();
@@ -3782,7 +3824,7 @@ test("a reviewer still working is left alone: no repost, prompt or line on the r
   assert.equal(ctx.entry("NBF-1").verdictNotPosted, undefined);
 
   const reviewed = unpostedReviewer();
-  const approved = await readyRun(ghFor({ 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) }).run, REVIEWING, reviewed.port);
+  const approved = await readyRun(ghFor({ 1: feedbackPull({ reviews: [reviewOn(REVIEWER_LOGIN, "APPROVED", "h1")] }) }), REVIEWING, reviewed.port);
   for (let watch = 0; watch < 2; watch += 1) {
     approved.pool.watchFeedback();
     await roundStarted();
@@ -3794,7 +3836,7 @@ test("a reviewer still working is left alone: no repost, prompt or line on the r
 test("a head that moved is not unposted: nothing is posted for the head the reviewer was started for", async () => {
   const made = unpostedReviewer({ reposts: [{ posted: true }] });
   const pulls: Record<number, unknown> = { 1: feedbackPull() };
-  const ctx = await readyRun(ghFor(pulls).run, REVIEWING, made.port);
+  const ctx = await readyRun(ghFor(pulls), REVIEWING, made.port);
   ctx.pool.watchFeedback();
   await roundStarted();
   pulls[1] = feedbackPull({ head: "h2" });
@@ -3807,7 +3849,7 @@ test("a head that moved is not unposted: nothing is posted for the head the revi
 test("a review the reviewer posted at its head and a person dismissed is posted, so nothing is re-posted over the dismissal", async () => {
   const made = unpostedReviewer({ reposts: [{ posted: true }] });
   const reviews: unknown[] = [];
-  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }).run, REVIEWING, made.port);
+  const ctx = await readyRun(ghFor({ 1: feedbackPull({ reviews }) }), REVIEWING, made.port);
   ctx.pool.watchFeedback();
   await roundStarted();
   reviews.push(reviewOn(REVIEWER_LOGIN, "DISMISSED", "h1"));
@@ -4180,34 +4222,24 @@ test("a machine that names no writer starts no new-ticket run, and a run that ca
   assert.deepEqual([ctx.run().phase, ctx.run().failure], ["finished", "this machine names no tickets.writer"]);
 });
 
-test("A11-106: the sweep moves a stacked pull request to the default branch once its base merged, and keeps the note of one it cannot move", async () => {
-  const stacked = { base: "nbf-1-fit", refuse: false, edits: [] as string[][] };
-  const answers = ghFor({ 1: feedbackPull() });
-  const gh = (args: string[]) => {
-    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ baseRefName: stacked.base, state: "OPEN" });
-    if (args[0] === "repo") return "main\n";
-    if (args[0] === "pr" && args[1] === "list") return JSON.stringify([{ state: "MERGED" }]);
-    if (args[0] === "pr" && args[1] === "edit") {
-      stacked.edits.push(args);
-      if (stacked.refuse) throw new Error("gh: Resource not accessible by integration (HTTP 403)");
-      stacked.base = "main";
-      return "";
-    }
-    return answers.run(args);
-  };
-  const ctx = await readyPrRun(gh);
+test("A11-106: the sweep asks the code host about the open pull requests of a run stacked on its blocker's branch, and records the note it answers for one it cannot move", async () => {
+  const world = ghFor({ 1: feedbackPull() });
+  const asked: { urls: readonly string[]; stacked: string[] }[] = [];
+  const notes: Record<string, string> = {};
+  const codeHost: CodeHost = { ...world.codeHost, sweepRetargets: ({ urls, stacked }) => { asked.push({ urls, stacked: [...stacked] }); return { ...notes }; } };
+  const ctx = await readyPrRun({ ...world, codeHost });
   withBlockerOn(ctx.store, "NBF-1", "nbf-1-fit");
   ctx.pool.retargetStacked();
-  assert.deepEqual(stacked.edits, [["pr", "edit", approvedPr.url, "--base", "main"]], "one edit, to the default branch");
-  assert.equal(ctx.entry("NBF-1").retargets, undefined, "retargeted, so nothing is recorded on the run");
+  assert.deepEqual(asked, [{ urls: [approvedPr.url], stacked: ["nbf-1-fit"] }], "the run's open pull request is asked, with the branch of its blocker it was stacked on");
+  assert.equal(ctx.entry("NBF-1").retargets, undefined, "the host moved it and said nothing, so nothing is recorded on the run");
+  const note = `Needs retarget: ${approvedPr.url} still targets nbf-1-fit, whose pull request merged; retarget failed, and agent-org tries again: gh: Resource not accessible by integration (HTTP 403)`;
+  notes[approvedPr.url] = note;
   ctx.pool.retargetStacked();
-  assert.equal(stacked.edits.length, 1, "a pull request on the default branch is not edited again");
-
-  stacked.base = "nbf-1-fit";
-  stacked.refuse = true;
+  assert.equal(asked.length, 2, "it is asked again on the next sweep");
+  assert.deepEqual(ctx.entry("NBF-1").retargets, { [approvedPr.url]: note }, "the note the code host answered is the run's, and the board shows it");
+  delete notes[approvedPr.url];
   ctx.pool.retargetStacked();
-  assert.equal(stacked.edits.length, 2, "the refused edit is tried");
-  assert.match(ctx.entry("NBF-1").retargets?.[approvedPr.url] ?? "", /retarget failed, and agent-org tries again: gh: Resource not accessible/);
+  assert.equal(ctx.entry("NBF-1").retargets, undefined, "once the host says nothing, the note is cleared");
 });
 
 /** Gives the run `key` a blocker whose pull request is on `branch`, as a run stacked on that blocker keeps (`queue.ts`'s `ended` keeps its blockers). */
@@ -4218,20 +4250,15 @@ function withBlockerOn(store: { get: () => Queue; set: (next: Queue) => void }, 
 }
 
 test("A11-106: a run that has not finished is not swept, so its pull requests are not asked and its queue is not written", async () => {
-  const asked: string[][] = [];
-  const answers = ghFor({ 1: feedbackPull() });
-  const gh = (args: string[]) => {
-    asked.push(args);
-    return answers.run(args);
-  };
-  const ctx = await readyPrRun(gh);
+  const world = ghFor({ 1: feedbackPull() });
+  const asked: unknown[] = [];
+  const ctx = await readyPrRun({ ...world, codeHost: { ...world.codeHost, sweepRetargets: (sweep) => { asked.push(sweep); return {}; } } });
   withBlockerOn(ctx.store, "NBF-1", "nbf-1-fit");
   const finished = ctx.store.get();
   ctx.store.set({ ...finished, entries: finished.entries.map((entry) => ({ ...entry, phase: "running" })) });
-  asked.length = 0;
   const before = ctx.store.get();
   ctx.pool.retargetStacked();
-  assert.deepEqual(asked, [], "no pull request of a run that is not finished is read");
+  assert.deepEqual(asked, [], "no pull request of a run that is not finished is asked about");
   assert.equal(ctx.store.get(), before, "and the queue is not written: the same object comes back");
 });
 
@@ -4568,7 +4595,7 @@ const approvalAt = (oid: string) => ({ state: "APPROVED", submittedAt: at(5), au
 test("A11-153 done-when: a needs-human run goes from Needs you to Answered to Completed as its pull request is pushed to and merged, with no hand step", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
   const { tracker, pull, completed } = movingTracker();
-  const { pool, entry } = await parkedOnQuestion(ghFor(pulls).run, tracker);
+  const { pool, entry } = await parkedOnQuestion(ghFor(pulls), tracker);
   assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" }, "the head the pull request was at when the run ended is recorded by the end of the run");
   pool.watchFeedback();
   await pool.refreshTracker();
@@ -4586,7 +4613,7 @@ test("A11-153 done-when: a needs-human run goes from Needs you to Answered to Co
 
 test("A11-153: a needs-human run whose pull request a reviewer approved at its head reads Approved, and a push after that approval reads Answered", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
-  const { pool, entry } = await parkedOnQuestion(ghFor(pulls).run);
+  const { pool, entry } = await parkedOnQuestion(ghFor(pulls));
   pulls[1] = feedbackPull({ head: "h1", reviews: [approvalAt("h1")] });
   pool.watchFeedback();
   assert.deepEqual([runStatus(entry("NBF-1")), reasonOf(entry("NBF-1")).line], ["awaiting-review", "Approved"]);
@@ -4597,7 +4624,7 @@ test("A11-153: a needs-human run whose pull request a reviewer approved at its h
 
 test("A11-153: a run stored before heads were recorded, or whose end could not read its pull request, takes its first watch as the head it ended at", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }) };
-  const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls).run);
+  const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls));
   store.set({ ...store.get(), entries: store.get().entries.map(({ outcomeHeads: _recorded, ...rest }) => rest) });
   pool.watchFeedback();
   assert.deepEqual(entry("NBF-1").outcomeHeads, { [approvedPr.url]: "h1" });
@@ -4610,7 +4637,7 @@ test("A11-153: a run stored before heads were recorded, or whose end could not r
 test("A11-153: a conflict a stacked run records with its blocker's branch clears once its pull request is mergeable, and not while GitHub is still computing", async () => {
   const stackBase = { key: "NBF-0", repo: approvedPr.repo, branch: "nbf-0", sha: "a".repeat(40), conflict: { head: "b".repeat(40), files: ["src/install/doctor.ts"] } };
   const pulls: Record<number, unknown> = { 1: feedbackPull({ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }) };
-  const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls).run);
+  const { pool, entry, store } = await parkedOnQuestion(ghFor(pulls));
   store.set(recordStackBase(store.get(), "NBF-1", stackBase));
   assert.equal(rebaseNote(entry("NBF-1")), "Resolving a conflict with NBF-0 in doctor.ts");
   pool.watchFeedback();
@@ -4636,8 +4663,8 @@ test("A11-153: a merge agent-org pushes to a finished run's branch moves its out
 
 test("A11-153: the end of a run reads its pull requests' heads only for a draft or ready pull request and for a run that asks, and a review round that ends reviewed reads none", async () => {
   const gh = ghFor({ 1: feedbackPull({ head: "h1" }) });
-  const { entry } = await readyRun(gh.run);
-  const reads = gh.calls.filter((args) => args[1] === "graphql").length;
+  const { entry } = await readyRun(gh);
+  const reads = gh.host.calls.filter((call) => call.startsWith("readPullFeedback")).length;
   assert.equal(reads, 1, "the draft's end read it once; the reviewed end of the round after it read nothing");
   assert.equal(entry("NBF-1").outcomeHeads, undefined, "and a reviewed run records no heads");
 });
@@ -4654,8 +4681,8 @@ const RUNNER_LOST = stamped(["Run npm test", "##[error]The hosted runner lost co
 const BAD_GATEWAY = stamped(["Run gh api repos/x/y", "gh: HTTP 502: Server Error", "##[error]Process completed with exit code 1."]);
 const NETWORK_DOWN = stamped(["Run npm ci", "npm error code ECONNRESET", "npm error network aborted", "##[error]Process completed with exit code 1."]);
 
-/** A gh that answers the log of an Actions job from `logs` (by job id, refused for any other), records each read and each rerun of a workflow run, and leaves every other call to `base`. */
-function withCi(base: (args: string[]) => string, logs: Record<number, string>) {
+/** A world whose gh answers the log of an Actions job from `logs` (by job id, refused for any other), records each read and each rerun of a workflow run, and leaves every other call to `base`. */
+function withCi(base: World, logs: Record<number, string>): World & { reruns: string[][]; logReads: number[] } {
   const reruns: string[][] = [];
   const logReads: number[] = [];
   const run = (args: string[]) => {
@@ -4669,20 +4696,20 @@ function withCi(base: (args: string[]) => string, logs: Record<number, string>) 
       reruns.push(args);
       return "";
     }
-    return base(args);
+    return base.run(args);
   };
-  return { run, reruns, logReads };
+  return { ...base, run, reruns, logReads };
 }
 
 /** A run made by `make` over a gh that serves one pull request at `head` with `checks` failing and the logs of `logs` by job id; `pulls` is changed to change what it serves later. */
-async function redRun(checks: unknown[], logs: Record<number, string>, make: (gh: (args: string[]) => string) => ReturnType<typeof readyRun> = readyRun) {
+async function redRun(checks: unknown[], logs: Record<number, string>, make: (gh: World) => ReturnType<typeof readyRun> = readyRun) {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks }) };
-  const ci = withCi(ghFor(pulls).run, logs);
-  return { pulls, ci, ctx: await make(ci.run) };
+  const ci = withCi(ghFor(pulls), logs);
+  return { pulls, ci, ctx: await make(ci) };
 }
 
 /** NBF-1 ended needs-human after a round, with its pull request open and its workspace closed: the run of the incident (A11-145). */
-async function needsHumanRun(gh: (args: string[]) => string) {
+async function needsHumanRun(gh: World) {
   const ctx = await parkedOnQuestion(gh);
   ctx.pool.close("NBF-1");
   ctx.status.delete(herdrName("NBF-1"));
@@ -4692,14 +4719,14 @@ async function needsHumanRun(gh: (args: string[]) => string) {
 
 test("A11-154: a red check at the current head starts one fix round for a run Ready to merge, one that ended needs-human and one parked, naming the check and its log lines", async () => {
   const kinds = {
-    "Ready to merge": (gh: (args: string[]) => string) => readyRun(gh),
+    "Ready to merge": (gh: World) => readyRun(gh),
     "needs-human": needsHumanRun,
-    "parked on a question": (gh: (args: string[]) => string) => parkedOnQuestion(gh),
+    "parked on a question": (gh: World) => parkedOnQuestion(gh),
   };
   for (const [kind, make] of Object.entries(kinds)) {
     const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
-    const ci = withCi(ghFor(pulls).run, { 11: TEST_FAILED });
-    const ctx = await make(ci.run);
+    const ci = withCi(ghFor(pulls), { 11: TEST_FAILED });
+    const ctx = await make(ci);
     await watchRound(ctx.pool);
     assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").review], ["running", 1, [approvedPr]], `${kind}: one round`);
     assert.equal(ctx.entry("NBF-1").feedback, [`test failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"),
@@ -4744,35 +4771,35 @@ test("A11-154: a head that stays red after its round starts no second round, a r
 
 test("A11-154: red checks wake no run the board does not resume: a draft awaiting Approve, a run that concluded, a run a person stopped, and one whose pull request merged", async () => {
   const red = () => ghFor({ 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) });
-  const draft = withCi(red().run, { 11: TEST_FAILED });
-  const drafted = await draftRun(draft.run);
+  const draft = withCi(red(), { 11: TEST_FAILED });
+  const drafted = await draftRun(draft);
   await watchRound(drafted.pool);
   assert.deepEqual([drafted.entry("NBF-1").phase, drafted.entry("NBF-1").rounds, drafted.entry("NBF-1").checkHeads], ["finished", undefined, undefined], "a draft waits for Approve");
   assert.deepEqual(draft.logReads, [], "and its log is not read");
   for (const [why, outcome] of [["concluded", { kind: "checked" as const, reason: "nothing to do" }], ["stopped", { kind: "stopped" as const }]] as const) {
-    const ci = withCi(red().run, { 11: TEST_FAILED });
-    const ctx = await needsHumanRun(ci.run);
+    const ci = withCi(red(), { 11: TEST_FAILED });
+    const ctx = await needsHumanRun(ci);
     ctx.store.set({ ...ctx.store.get(), entries: ctx.store.get().entries.map((e) => ({ ...e, outcome })) });
     await watchRound(ctx.pool);
     assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", undefined], why);
     assert.deepEqual(ci.logReads, [], `${why}: its log is not read`);
   }
-  const merged = withCi(ghFor({ 1: feedbackPull({ state: "MERGED", head: HEAD_1, checks: [redCheck("test", 11)] }) }).run, { 11: TEST_FAILED });
-  const done = await needsHumanRun(merged.run);
+  const merged = withCi(ghFor({ 1: feedbackPull({ state: "MERGED", head: HEAD_1, checks: [redCheck("test", 11)] }) }), { 11: TEST_FAILED });
+  const done = await needsHumanRun(merged);
   await watchRound(done.pool);
   assert.deepEqual([done.entry("NBF-1").rounds, merged.logReads], [undefined, []], "a merged pull request has no checks to answer");
 });
 
 test("A11-154: a check whose log cannot be read is named as such, and a head with several failing checks names each with a share of the log lines", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("lint", 21), redCheck("typecheck", 22)] }) };
-  const ci = withCi(ghFor(pulls).run, { 22: TEST_FAILED });
-  const ctx = await readyRun(ci.run);
+  const ci = withCi(ghFor(pulls), { 22: TEST_FAILED });
+  const ctx = await readyRun(ci);
   await captureStderr(async () => { await watchRound(ctx.pool); });
   assert.equal(ctx.entry("NBF-1").feedback, [`lint failed on the head commit of ${approvedPr.url}; its log could not be read.`,
     `typecheck failed on the head commit of ${approvedPr.url}:`, "  not ok 3 - git spawn classification", "  AssertionError: expected 1 to equal 2"].join("\n"));
   const long = stamped(Array.from({ length: 100 }, (_, i) => `Error: failure number ${i}`));
   const many: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_2, checks: [redCheck("a", 31), redCheck("b", 32)] }) };
-  const heavy = await readyRun(withCi(ghFor(many).run, { 31: long, 32: long }).run);
+  const heavy = await readyRun(withCi(ghFor(many), { 31: long, 32: long }));
   await watchRound(heavy.pool);
   const quoted = (heavy.entry("NBF-1").feedback ?? "").split("\n").filter((line) => line.startsWith("  "));
   assert.equal(quoted.length, 40, "forty lines in all, the last of each log");
@@ -4780,9 +4807,9 @@ test("A11-154: a check whose log cannot be read is named as such, and a head wit
 });
 
 test("A11-154: at the round cap a red check hands any run to a person, who reads Needs you and answers with Respond", async () => {
-  for (const make of [(gh: (args: string[]) => string) => readyRun(gh), needsHumanRun, (gh: (args: string[]) => string) => parkedOnQuestion(gh)]) {
-    const ci = withCi(ghFor({ 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) }).run, { 11: TEST_FAILED });
-    const ctx = await make(ci.run);
+  for (const make of [(gh: World) => readyRun(gh), needsHumanRun, (gh: World) => parkedOnQuestion(gh)]) {
+    const ci = withCi(ghFor({ 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) }), { 11: TEST_FAILED });
+    const ctx = await make(ci);
     ctx.store.set({ ...ctx.store.get(), entries: ctx.store.get().entries.map((e) => ({ ...e, rounds: 3 })) });
     ctx.h.calls.length = 0;
     await watchRound(ctx.pool);
@@ -4842,11 +4869,11 @@ test("A11-154: a head with a check the code failed and a check the infrastructur
 
 test("A11-154: a rerun GitHub refuses names the check for a person and is not asked again, and a parked run's workspace is not touched by a rerun", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
-  const ci = withCi(ghFor(pulls).run, { 11: RUNNER_LOST });
-  const gh = (args: string[]) => {
+  const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST });
+  const gh = { ...ci, run: (args: string[]) => {
     if (args[0] === "run") throw new Error("gh: Resource not accessible by integration (HTTP 403)");
     return ci.run(args);
-  };
+  } };
   const ctx = await parkedOnQuestion(gh);
   ctx.h.calls.length = 0;
   const logged = await captureStderr(async () => { await watchRound(ctx.pool); });
@@ -4861,8 +4888,8 @@ test("A11-154: a rerun GitHub refuses names the check for a person and is not as
 
 test("A11-154: a name for a person is dropped once nothing fails on the head any more, and the head stays answered", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
-  const ci = withCi(ghFor(pulls).run, { 11: RUNNER_LOST });
-  const gh = (args: string[]) => (args[0] === "run" ? (() => { throw new Error("gh: HTTP 403"); })() : ci.run(args));
+  const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST });
+  const gh = { ...ci, run: (args: string[]) => (args[0] === "run" ? (() => { throw new Error("gh: HTTP 403"); })() : ci.run(args)) };
   const ctx = await readyRun(gh);
   await captureStderr(async () => { await watchRound(ctx.pool); });
   assert.match(checkNote(ctx.entry("NBF-1")) ?? "", /a person decides$/);
@@ -4873,15 +4900,15 @@ test("A11-154: a name for a person is dropped once nothing fails on the head any
 
 test("A11-154: a conflict and a rerun in one watch queue the conflict round and still record the rerun, so it is not made twice", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", checks: [redCheck("test", 11)] }) };
-  const ci = withCi(ghFor(pulls).run, { 11: RUNNER_LOST });
-  const ctx = await needsHumanRun(ci.run);
+  const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST });
+  const ctx = await needsHumanRun(ci);
   await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").feedback, ci.reruns.length], ["running", `${approvedPr.url} conflicts with its base branch main.`, 1]);
   assert.equal(ctx.entry("NBF-1").checkHeads?.[approvedPr.url]?.step, "rerun");
 });
 
 test("A11-154: Respond to review on a run that ended needs-human queues a round that resumes its worker, whatever the run ended on", async () => {
-  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   ctx.pool.respond("NBF-1");
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").review, ctx.entry("NBF-1").session], ["queued", true, [approvedPr], "session-t-nbf-1"]);
   await ctx.pool.tick();
@@ -4891,7 +4918,7 @@ test("A11-154: Respond to review on a run that ended needs-human queues a round 
 });
 
 test("A11-154: Respond to review on a parked run closes its workspace first, once, and then queues the round; a workspace herdr will not close leaves it parked and says why", async () => {
-  const ctx = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const ctx = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   ctx.h.refused.add("close");
   assert.throws(() => ctx.pool.respond("NBF-1"), /herdr could not close NBF-1's workspace/);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").workspace], ["finished", "w2"], "still parked, no round");
@@ -4905,12 +4932,12 @@ test("A11-154: Respond to review on a parked run closes its workspace first, onc
 });
 
 test("A11-154: Respond to review that cannot act says why and closes nothing: no pull request open, a settled ticket, a run still running", async () => {
-  const merged = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const merged = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   merged.store.set(recordPullStates(merged.store.get(), new Map([["NBF-1", { [approvedPr.url]: "merged" }]])));
   merged.h.calls.length = 0;
   assert.throws(() => merged.pool.respond("NBF-1"), /NBF-1 has no pull request open/);
   assert.deepEqual(merged.h.calls, [], "the parked workspace of a run Respond cannot act on is left open");
-  const settled = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const settled = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   settled.store.set({ ...settled.store.get(), entries: settled.store.get().entries.map((e) => ({ ...e, trackerState: "completed" })) });
   assert.throws(() => settled.pool.respond("NBF-1"), /NBF-1's ticket is completed in the tracker/);
   const running = setup(1, ["NBF-1"]);
@@ -4920,7 +4947,7 @@ test("A11-154: Respond to review that cannot act says why and closes nothing: no
 });
 
 test("A11-154: Respond to review on a draft acts as Approve", async () => {
-  const ctx = await draftRun(ghFor({ 1: feedbackPull() }).run);
+  const ctx = await draftRun(ghFor({ 1: feedbackPull() }));
   ctx.pool.respond("NBF-1");
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").review, ctx.entry("NBF-1").asked, ctx.entry("NBF-1").feedback], ["queued", [approvedPr], undefined, undefined], "the approved round, not an asked one");
 });
@@ -4930,7 +4957,7 @@ const talkLeftover = (status: string, fields: Partial<{ workspace_id: string; la
   ({ workspace_id: "w9", label: "t-nbf-1", name: "t-nbf-1", session: "session-t-nbf-1", status, ...fields });
 
 test("A11-154: a round never starts beside a Talk session that is working: it stays queued, says what it waits for, and starts once the session has ended", async () => {
-  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   ctx.pool.respond("NBF-1");
   ctx.h.extra.push(talkLeftover("working"));
   ctx.h.calls.length = 0;
@@ -4949,7 +4976,7 @@ test("A11-154: a round never starts beside a Talk session that is working: it st
 test("A11-154: a leftover that is idle, done or has no pane is closed before the round starts, in the log and on the run, and its note goes when the round ends", async () => {
   for (const [why, leftover] of [["idle", talkLeftover("idle")], ["done", talkLeftover("done")], ["no pane, held by the run's name alone", talkLeftover("unknown", { name: null, session: null })],
     ["held by the session alone, under another name", talkLeftover("idle", { label: "claude", name: null })]] as const) {
-    const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+    const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
     ctx.pool.respond("NBF-1");
     ctx.h.extra.push(leftover);
     ctx.h.calls.length = 0;
@@ -4965,14 +4992,14 @@ test("A11-154: a leftover that is idle, done or has no pane is closed before the
 });
 
 test("A11-154: what is not the run's own is left alone, and a workspace herdr will not close holds the round back, saying why", async () => {
-  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   ctx.pool.respond("NBF-1");
   ctx.h.extra.push(talkLeftover("idle", { workspace_id: "w7", label: "t-nbf-2", name: "t-nbf-2", session: "session-t-nbf-2" }));
   ctx.h.calls.length = 0;
   await ctx.pool.tick();
   assert.equal(closes(ctx.h, "w7"), 0, "another run's idle workspace is not this run's leftover");
   assert.equal(ctx.entry("NBF-1").phase, "running");
-  const held = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const held = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   held.pool.respond("NBF-1");
   held.h.extra.push(talkLeftover("idle"));
   held.h.refused.add("close");
@@ -4997,7 +5024,7 @@ test("A11-154: a Talk session never starts beside a working agent that holds the
 });
 
 test("A11-154: a Talk is refused while a round of the run is queued or running, and the refusal names the round", async () => {
-  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const ctx = await needsHumanRun(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   ctx.pool.respond("NBF-1");
   assert.throws(() => ctx.pool.talk("NBF-1"), /NBF-1 has a review round queued: talk to it once the round has ended, as the round and a talk session would share one session/);
   await ctx.pool.tick();
@@ -5012,7 +5039,7 @@ test("A11-154: a Talk is refused while a round of the run is queued or running, 
 });
 
 test("A11-154: a parked run whose agent drops out of herdr's listing has its workspace closed by its id as it is unparked, so no leftover keeps its name", async () => {
-  const ctx = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const ctx = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   ctx.h.calls.length = 0;
   ctx.status.delete(herdrName("NBF-1"));
   await ctx.pool.tick();
@@ -5020,7 +5047,7 @@ test("A11-154: a parked run whose agent drops out of herdr's listing has its wor
   await ctx.pool.tick();
   assert.deepEqual([ctx.entry("NBF-1").workspace, closes(ctx.h, "w2")], [undefined, 1], "two looks in a row: unparked, and its workspace closed");
   assert.equal(ctx.entry("NBF-1").outcome?.kind, "needs-human", "it keeps its outcome");
-  const refused = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const refused = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   refused.h.refused.add("close");
   refused.h.reasons.set("close", "workspace is busy");
   refused.status.delete(herdrName("NBF-1"));
@@ -5028,7 +5055,7 @@ test("A11-154: a parked run whose agent drops out of herdr's listing has its wor
   const logged = await captureStderr(async () => { await refused.pool.tick(); });
   assert.equal(refused.entry("NBF-1").workspace, undefined, "a close herdr refuses still unparks the run, as it did");
   assert.ok(logged.some((line) => line.includes("NBF-1: its workspace w2 could not be closed as the run was unparked (workspace is busy)")), logged.join("\n"));
-  const gone = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }).run);
+  const gone = await parkedOnQuestion(ghFor({ 1: feedbackPull({ head: HEAD_1 }) }));
   gone.h.refused.add("close");
   gone.status.delete(herdrName("NBF-1"));
   await gone.pool.tick();
@@ -5041,18 +5068,16 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
   const stacked = { base: "nbf-0-fit", blocker: "OPEN", edits: [] as string[][] };
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, base: stacked.base }) };
   const answers = ghFor(pulls);
-  const ci = withCi((args: string[]) => {
-    if (args[0] === "pr" && args[1] === "view" && args.includes("baseRefName,state")) return JSON.stringify({ baseRefName: stacked.base, state: "OPEN" });
-    if (args[0] === "repo") return "main\n";
-    if (args[0] === "pr" && args[1] === "list" && args.includes("--head")) return JSON.stringify([{ state: stacked.blocker }]);
-    if (args[0] === "pr" && args[1] === "edit") {
-      stacked.edits.push(args);
+  // The code host's sweep: once the blocker's pull request merged, a pull request stacked on its branch is moved to the default branch, as the plugin's own is (its tests, not this one's).
+  const sweeping: CodeHost = { ...answers.codeHost, sweepRetargets: ({ urls, stacked: bases }) => {
+    if (stacked.blocker === "MERGED" && bases.has(stacked.base)) {
+      stacked.edits.push([...urls]);
       stacked.base = "main";
-      return "";
     }
-    return answers.run(args);
-  }, { 11: TEST_FAILED });
-  const ctx = setup(1, ["NBF-1"], REVIEWING, { gh: ci.run, reviewerPort: port });
+    return {};
+  } };
+  const ci = withCi({ ...answers, codeHost: sweeping }, { 11: TEST_FAILED });
+  const ctx = setup(1, ["NBF-1"], REVIEWING, { gh: ci, reviewerPort: port });
   await ctx.pool.tick();
   ctx.status.set(herdrName("NBF-1"), "idle");
   writeFileSync(join(ticketDir(ctx.settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "ready-pr", prs: [approvedPr] }));
@@ -5068,7 +5093,7 @@ test("A11-154 Done-when: a stacked pull request whose checks fail after its base
   // 2. The blocker's pull request merges, the sweep moves this pull request to main, and its checks fail there.
   stacked.blocker = "MERGED";
   ctx.pool.retargetStacked();
-  assert.deepEqual(stacked.edits, [["pr", "edit", approvedPr.url, "--base", "main"]]);
+  assert.deepEqual(stacked.edits, [[approvedPr.url]], "the sweep moves the one pull request of the run");
   pulls[1] = feedbackPull({ head: HEAD_1, base: "main", checks: [redCheck("test", 11)] });
 
   // 3. Nobody presses anything and nothing is retried by hand: the next watch starts a fix round with the failing check and its log lines.

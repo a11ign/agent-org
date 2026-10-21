@@ -69,9 +69,17 @@ test("(d) INTERNAL is exactly the programs whose header says `(not a command)`, 
   }
 });
 
-test("every COMMANDS entry names a program that exists under src/, none climbs out of it, and every FIXED_ARGS key is a command", () => {
+/** A command's program is under `src/`, or is a bundled plugin's own (`../plugins/<name>/<file>`, A11-160): the one place the table may leave `src/`, and only into `plugins/`. */
+const staysInTree = (file: string): boolean => {
+  const inPlugin = file.startsWith("../plugins/") && !file.slice("../plugins/".length).split("/").includes("..");
+  return !file.startsWith("/") && (inPlugin || !file.split("/").includes(".."));
+};
+
+test("every COMMANDS entry names a program that exists under src/ or in a bundled plugin, none climbs out of those, and every FIXED_ARGS key is a command", () => {
+  assert.equal(staysInTree("../plugins/github/stack-live-check-command.ts"), true, "CONTROL: a bundled plugin's program is allowed");
+  for (const refused of ["../x.ts", "../plugins/../src/x.ts", "/etc/passwd", "ticket-mode/../../x.ts"]) assert.equal(staysInTree(refused), false, `${refused} leaves the tree`);
   for (const [name, file] of Object.entries(COMMANDS)) {
-    assert.ok(!file.startsWith("/") && !file.split("/").includes(".."), `${name} -> ${file} leaves src/`);
+    assert.ok(staysInTree(file), `${name} -> ${file} leaves src/ and plugins/`);
     assert.ok(existsSync(join(SRC, file)), `${name} -> ${file} does not exist`);
   }
   for (const name of Object.keys(FIXED_ARGS)) assert.ok(Object.hasOwn(COMMANDS, name), `FIXED_ARGS names ${name}, which is no command`);

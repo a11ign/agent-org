@@ -8,6 +8,10 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { ServiceName, ServiceState } from "./service.ts";
 import { conventionsWiring, dependencyInstalls, readLiveRuns, update, type UpdateDeps } from "./update.ts";
+import { pluginUpkeep } from "./plugin-upkeep.ts";
+import { fakePluginDeps } from "../plugins/fakes/deps.ts";
+import type { PluginDeps } from "../plugins/manifest.ts";
+import { parseTicketSettings } from "../ticket-mode/settings.ts";
 import { deferralPath, readDeferral } from "./plugin-install.ts";
 import { pinnedPnpm } from "./pnpm.ts";
 import { midToolCall, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
@@ -67,7 +71,7 @@ function deps(checkout: string, git: (args: string[]) => string, states: Partial
     maxDeferHours: 2,
     now: () => NOW,
     status: { read: () => statuses.at(-1) ?? null, write: (status) => { statuses.push(status); } },
-    stackExtension: () => ({ state: "present", version: "v0.2.1" }),
+    upkeep: () => [],
     conventions: () => ({ said: [], failed: [] }),
     conventionsDeferral: { defer: () => {}, clear: () => {} },
     out: { log: (line: string) => { said.push(line); }, error: (line: string) => { errors.push(line); } },
@@ -342,11 +346,11 @@ test("A11-90: a status that cannot be written after the move still restarts the 
   assert.deepEqual(restarted, ["instance", "ui"]);
 });
 
-test("A11-106: update keeps the stack extension present whether the checkout moved, did not move, or was deferred", () => {
+test("A11-106: update keeps what the plugins keep true, the stacking extension among it, whether the checkout moved, did not move, or was deferred", () => {
   for (const [live, moved] of [[0, true], [1, false]] as const) {
     const { checkout, git } = installed();
     const ensured: string[] = [];
-    const { deps: d } = deps(checkout, git, { instance: "running" }, live, { stackExtension: () => { ensured.push("ensured"); return { state: "present", version: "v0.2.1" }; } });
+    const { deps: d } = deps(checkout, git, { instance: "running" }, live, { upkeep: () => { ensured.push("ensured"); return []; } });
     assert.equal(update({ version: undefined, channel: "release" }, d), moved);
     assert.deepEqual(ensured, ["ensured"], `live ${live}, moved ${moved}`);
   }
@@ -354,19 +358,19 @@ test("A11-106: update keeps the stack extension present whether the checkout mov
 
 test("A11-106: an extension that was installed is said, and one that could not be installed is said as missing, without failing the update", () => {
   const { checkout, git } = installed();
-  const installedNow = deps(checkout, git, { instance: "running" }, 0, { stackExtension: () => ({ state: "installed", version: "v0.2.1" }) });
+  const installedNow = deps(checkout, git, { instance: "running" }, 0, { upkeep: () => [{ ok: true, detail: "installed the github/gh-stack extension (v0.2.1)" }] });
   assert.equal(update({ version: undefined, channel: "release" }, installedNow.deps), true);
   assert.ok(installedNow.said.includes("agent-org update: installed the github/gh-stack extension (v0.2.1)"));
 
   const fresh = installed();
-  const missing = deps(fresh.checkout, fresh.git, {}, 0, { stackExtension: () => ({ state: "failed", reason: "could not reach github.com" }) });
+  const missing = deps(fresh.checkout, fresh.git, {}, 0, { upkeep: () => [{ ok: false, detail: "the github/gh-stack extension is missing and could not be installed: could not reach github.com" }] });
   assert.equal(update({ version: undefined, channel: "release" }, missing.deps), true, "the move still happens: a failed extension does not stop it");
   assert.deepEqual(missing.errors, ["agent-org update: the github/gh-stack extension is missing and could not be installed: could not reach github.com"]);
 });
 
-test("A11-106: the stack extension is kept even when the update refuses, and its failure never replaces the refusal", () => {
+test("A11-106: what the plugins keep is kept even when the update refuses, and its failure never replaces the refusal", () => {
   const { checkout, git } = installed();
-  const refused = deps(checkout, git, {}, 0, { stackExtension: () => ({ state: "failed", reason: "no network" }) });
+  const refused = deps(checkout, git, {}, 0, { upkeep: () => [{ ok: false, detail: "the github/gh-stack extension is missing and could not be installed: no network" }] });
   assert.throws(() => update({ version: "v0.2", channel: "release" }, refused.deps), /not a release tag/);
   assert.equal(refused.errors.length, 1);
 });
@@ -407,4 +411,62 @@ test("A11-145: the production conventions wiring refreshes a GitHub-sourced plug
   assert.deepEqual(calls, ["claude plugin marketplace list --json", "claude plugin marketplace update example-marketplace", "claude plugin update example@example-marketplace"]);
   wiring.conventionsDeferral.clear();
   assert.deepEqual(readDeferral(deferralPath({}, home)), { kind: "none" });
+});
+
+// A11-160: what the plugins keep true is asked of each enabled plugin that says it keeps something, from the code loaded before the checkout moves.
+const settingsFor = (tickets: Record<string, unknown> = {}) => parseTicketSettings({ clones: { netbox: "/src/netbox" }, stateDir: "/state", tickets });
+
+test("A11-160: the upkeep asks the code host plugin to keep the stacking extension, as the workers' account, and reads no tracker key for it", async () => {
+  const programs: { file: string; args: readonly string[]; env: unknown }[] = [];
+  const exec: PluginDeps["exec"] = (file, args, options) => {
+    programs.push({ file, args, env: options?.env });
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const upkeep = await pluginUpkeep(settingsFor(), {}, { deps: fakePluginDeps({ exec }) });
+  assert.equal(programs.length, 0, "nothing runs until the update is done: the modules are imported, not built");
+  const said = upkeep();
+  assert.deepEqual([...new Set(programs.map(({ file }) => file))], ["gh"], "only gh is run: the Linear key is not read from the Keychain to ask what it keeps");
+  assert.deepEqual(programs.map(({ args }) => args.join(" ")), ["extension list", "extension install github/gh-stack", "extension list"], "the extension is missing, so it is installed, and read back");
+  assert.deepEqual(said.map(({ ok }) => ok), [false], "and the read-back found none, which is said as an error");
+  assert.match(said[0].detail, /the github\/gh-stack extension is missing and could not be installed: the install succeeded, but the extension list does not show github\/gh-stack/);
+});
+
+test("A11-160: a host whose extension is listed keeps nothing to say, and one that names the workers' account runs gh as it", async () => {
+  const programs: { args: readonly string[]; env: unknown }[] = [];
+  const exec: PluginDeps["exec"] = (_file, args, options) => {
+    programs.push({ args, env: options?.env });
+    return { status: 0, stdout: "gh stack  github/gh-stack  v0.2.1\n", stderr: "" };
+  };
+  const upkeep = await pluginUpkeep(settingsFor({ providers: { codeHost: { provider: "github", gh: { workers: "/home/agent/workers" } } } }), {}, { deps: fakePluginDeps({ exec }) });
+  assert.deepEqual(upkeep(), []);
+  assert.deepEqual(programs, [{ args: ["extension", "list"], env: { GH_CONFIG_DIR: "/home/agent/workers/gh" } }]);
+});
+
+test("A11-160: a host file that does not read as ticket settings still has the extension kept, for the account it names or the person's own, as update always kept it", async () => {
+  const runs: { args: readonly string[]; env: unknown }[] = [];
+  const exec: PluginDeps["exec"] = (_file, args, options) => {
+    runs.push({ args, env: options?.env });
+    return { status: 0, stdout: "x  github/gh-" + "stack  v0.2.1\n", stderr: "" };
+  };
+  const keepFor = async (hostText: string | null) => (await pluginUpkeep(null, {}, { deps: fakePluginDeps({ exec }), hostText }))();
+  runs.length = 0;
+  assert.deepEqual(await keepFor(JSON.stringify({ gh: { workers: "/home/agent/workers" }, tickets: { providers: { codeHost: { provider: "github" } } } })), []);
+  assert.deepEqual(runs, [{ args: ["extension", "list"], env: { GH_CONFIG_DIR: "/home/agent/workers/gh" } }], "a file with no clones, which the settings reader refuses, still names the workers' account");
+  for (const text of [null, "{ not json", JSON.stringify({ tickets: { providers: { codeHost: { provider: "gitlab" } } } })]) {
+    runs.length = 0;
+    await keepFor(text);
+    assert.deepEqual(runs, [{ args: ["extension", "list"], env: {} }], `${text}: no host file, one that is not JSON, and one the reader refuses are the person's own gh account`);
+  }
+});
+
+test("A11-160: a plugin that cannot be imported, and a keep that throws, are said as errors and never raised", async () => {
+  const importing = async (url: string): Promise<unknown> => {
+    if (url.endsWith("/plugins/linear/index.ts")) throw new Error("cannot import");
+    return { create: () => ({}), doctorChecks: () => [], onboardSteps: [], keep: () => { throw new Error("gh exploded"); } };
+  };
+  const said = (await pluginUpkeep(settingsFor(), {}, { deps: fakePluginDeps(), importModule: importing }))();
+  assert.deepEqual(said.map(({ ok, detail }) => [ok, detail]), [
+    [false, "the tracker plugin linear was refused: cannot import"],
+    [false, "the github plugin could not be kept up: gh exploded"],
+  ]);
 });

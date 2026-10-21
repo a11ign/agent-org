@@ -10,7 +10,7 @@
 //
 // NO DEFAULT COMMAND: a name that is not here is REFUSED by name, with this list, never answered by running something.
 
-/** Command name -> the program under `src/` it runs. */
+/** Command name -> the program it runs: under `src/`, or a bundled plugin's (`../plugins/<name>/<file>`, A11-160). */
 export const COMMANDS = {
   "agent-tool:update": "agent-tool-update.ts",
   "board:document": "board-document.ts",
@@ -62,7 +62,7 @@ export const COMMANDS = {
   "ticket:remote-info": "ticket-mode/remote-info-command.ts",
   "ticket:review": "ticket-mode/review-command.ts",
   "ticket:serve": "ticket-mode/server.ts",
-  "ticket:stack-live-check": "ticket-mode/stack-live-check-command.ts",
+  "ticket:stack-live-check": "../plugins/github/stack-live-check-command.ts",
   "ticket:ui": "ticket-mode/ui-server.ts",
   "ticket:worktree": "ticket-mode/worktree-command.ts",
   "trace": "trace/trace.ts",

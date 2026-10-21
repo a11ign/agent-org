@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { conflictLine, OUTCOME_FILE, PUBLISHED_FILE, STALE_OUTCOME_FILE } from "./worker-files.ts";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { checkOutcome, isStale } from "./outcome.ts";
-import { type PullFeedback } from "../ticket-port/pull-feedback.ts";
+import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 
 /** The largest file a planning run's plan may hold. A plan is prose; anything bigger is not one. */
 export const PLAN_FILE_BYTES = 1_000_000;

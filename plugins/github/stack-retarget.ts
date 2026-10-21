@@ -3,9 +3,10 @@
 // to the repository's default branch with `gh pr edit --base`, reads the base back, and never touches its head: no push, rebase or merge. A base with no merged
 // pull request behind it is not moved, since its work may never have landed: it is said as needing a retarget by hand. A base no pull request ever came from (a
 // long-lived branch) is nothing to say. Every call goes through the `gh` it is handed, which is the instance's, with the workers' account.
+import type { Gh } from "./gh.ts";
 import { pullOf } from "./pull-feedback.ts";
 
-export type Gh = (args: string[]) => string;
+export type { Gh };
 
 /**
  * What a pull request's base is, as GitHub and the repository say: `current` for the default branch or one an open pull request builds on, `merged` for one

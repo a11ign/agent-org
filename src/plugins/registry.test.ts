@@ -29,7 +29,7 @@ test("with no bundled plugin the catalog is today's providers and the fakes, eac
   assert.deepEqual(catalog.plugins.map(({ name, concern, where }) => `${name}:${concern}:${where}`), [
     ...BUILT_IN.map(({ name, concern }) => `${name}:${concern}:core`), ...FAKES.map(({ name, concern }) => `${name}:${concern}:fake`)]);
   assert.deepEqual(BUILT_IN.map(({ name, concern, movedBy }) => [name, concern, movedBy]), [
-    ["github", "codeHost", "A11-160"], ["slack", "publisher", "A11-161"], ["atomic", "reviewer", "A11-161"],
+    ["slack", "publisher", "A11-161"], ["atomic", "reviewer", "A11-161"],
     ["local", "exposure", "A11-162"], ["tailscale", "exposure", "A11-162"], ["telegram", "messaging", "A11-162"]]);
   assert.deepEqual(FAKES.map(({ name }) => name), ["fake-tracker", "fake-codeHost", "fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]);
   assert.deepEqual(catalog.refusals, []);
@@ -84,10 +84,10 @@ test("a bundled package that declares dependencies is refused by name, since a h
 });
 
 test("two plugins of one name are refused by name: the one found first stays", () => {
-  const catalog = catalogOf({ github: manifest({ concern: "codeHost" }) });
-  assert.equal(pluginNamed(catalog, "github")?.where, "bundled", "the bundled package is first");
-  assert.match(refusalOf(catalog, "github") ?? "", /plugin github is named twice, and plugin names are unique: the core plugin is refused, and the one found first stays/);
-  assert.equal(catalog.plugins.filter(({ name }) => name === "github").length, 1);
+  const catalog = catalogOf({ slack: manifest({ concern: "publisher" }) });
+  assert.equal(pluginNamed(catalog, "slack")?.where, "bundled", "the bundled package is first");
+  assert.match(refusalOf(catalog, "slack") ?? "", /plugin slack is named twice, and plugin names are unique: the core plugin is refused, and the one found first stays/);
+  assert.equal(catalog.plugins.filter(({ name }) => name === "slack").length, 1);
 });
 
 test("a plugin's name is its directory name, and a name that cannot be one is refused", () => {
@@ -96,7 +96,7 @@ test("a plugin's name is its directory name, and a name that cannot be one is re
 
 test("pins come from core's table unless a test passes its own", () => {
   assert.deepEqual(buildCatalog({ root: ROOT, files: checkout({}), pins: {} }).pins, {});
-  assert.deepEqual(Object.keys(CORE_RUNS), ["codeHost", "publisher", "reviewer", "exposure"], "messaging has no block, so no pin, and the tracker moved into plugins/linear");
+  assert.deepEqual(Object.keys(CORE_RUNS), ["publisher", "reviewer", "exposure"], "messaging has no block, so no pin, and the tracker and the code host moved into plugins/linear and plugins/github");
 });
 
 test("this checkout's catalog is read once, holds no refusal, and reads a real plugins folder from disk", () => {

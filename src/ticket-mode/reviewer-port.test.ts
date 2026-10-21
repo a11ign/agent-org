@@ -5,11 +5,13 @@ import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import { INSIDE, type DoorRun } from "../review-trust.ts";
 import { REPO } from "../project-identity.ts";
 import { runActions, runStatus } from "./board-view/pull-status-and-notes.ts";
 import { createPool, herdrName, ticketDir } from "./pool.ts";
-import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, earlierReviewWord, loadReviewerGate, openPullUrlsOf, readPullState, readReviewerMemory, reviewWordAt, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
+import { REVIEWER_LOGIN, REVIEW_CAUSE, atomicReviewerPort, clonedSeatOf, earlierReviewWord, gateReviewJudge, loadReviewerGate, readReviewerMemory, reviewWordAt, verdictFileIn, writeReviewerMemory, type ReviewerPort, type ReviewerRef } from "./reviewer-port.ts";
 import { emptyQueue } from "./queue.ts";
 import { enqueue, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
@@ -19,7 +21,6 @@ import { HOST_CONFIG_ENV, hostConfigPath } from "../host-config.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
-const DECLARED = { exact: ["worker-bot"], pattern: [] };
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 /** The tracker a pool is built over by default: the tracker contract's in-memory fake, holding no ticket (A11-159). */
 const source: TicketSource = createFakeTracker();
@@ -63,28 +64,43 @@ function statusCall(pr: { statuses?: Status[] }, args: string[]): string {
   return statuses.filter((status) => status.context === "agent-org/review").map((status) => `${status.id}\t${status.created_at}\t${status.description}\n`).join("");
 }
 
-/** The pull request as GitHub answers it: `head` is its commit, `reviews` its reviews, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its state (open by default), `statuses` its head's commit statuses. */
+/**
+ * GitHub as the reviewer's tests see it: the pull request `pr` describes, held by the code host (the fake) for every read of a pull request, and its head's commit statuses, which are
+ * still `gh`'s. `head` is its commit, `reviews` its reviews as GitHub lists them, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its
+ * state (open by default), `statuses` its head's commit statuses. A test moves the pull request by changing `pr`: each read holds it as it is then.
+ */
 function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[]; state?: string; statuses?: Status[] }) {
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);
     if (args[0] === "api" && args.some((arg) => arg.includes("/statuses"))) return statusCall(pr, args);
-    if (args[1] === "user") return "worker-bot\n";
-    if (args[0] === "pr") return JSON.stringify({ state: pr.state ?? "OPEN", headRefOid: pr.head, reviews: pr.reviews ?? [], author: { login: "worker-bot" }, isCrossRepository: pr.outside === true,
-      isDraft: false, statusCheckRollup: pr.checks ?? GREEN });
-    const number = Number(args.find((arg) => arg.startsWith("number="))?.slice("number=".length));
-    if (number !== 7) throw new Error("gh exited 1");
-    const nodes = pr.reviews ?? [];
-    return JSON.stringify({ data: { repository: { pullRequest: { state: "OPEN", reviews: { nodes }, comments: { nodes: [] }, reviewThreads: { nodes: [] }, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [] } } } }] } } } } });
+    throw new Error("gh exited 1");
   };
-  return { run, calls, pr };
+  const host = createFakeCodeHost("worker-bot");
+  type Reviewed = { author: { login: string }; state: string; commit: { oid: string }; submittedAt: string };
+  const hold = (url: string): void => {
+    const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(url);
+    if (match === null) return;
+    const checks = (pr.checks ?? GREEN) as { conclusion: string | null }[];
+    host.seedPull(match[1], Number(match[2]), {
+      head: pr.head, state: (pr.state ?? "OPEN").toLowerCase() as "open" | "merged" | "closed", trust: pr.outside === true ? "outside" : "inside", settled: checks.every(({ conclusion }) => conclusion === "SUCCESS"),
+      reviews: ((pr.reviews ?? []) as Reviewed[]).map((r) => ({ author: r.author.login, state: r.state, commit: r.commit.oid, at: Date.parse(r.submittedAt) })),
+    });
+  };
+  const codeHost: CodeHost = {
+    ...host,
+    readPullFeedback: (url, self, alsoIgnore) => { hold(url); return host.readPullFeedback(url, self, alsoIgnore); },
+    readReviewState: (url) => { hold(url); return host.readReviewState(url); },
+    readPullState: (url) => { hold(url); return host.readPullState(url); },
+  };
+  return { run, calls, pr, codeHost };
 }
 
 /**
  * The `gh` a port is given, and the `gh` its claims are written with (the reviewer role's, which the port makes from the reviewer's environment): one fake
  * for both, so a claim written through one is read back through the other, and no test reaches GitHub.
  */
-const claiming = (fake: ReturnType<typeof ghFor>) => ({ gh: fake.run, claimGh: () => fake.run, mint: () => null });
+const claiming = (fake: ReturnType<typeof ghFor>) => ({ gh: fake.run, codeHost: fake.codeHost, claimGh: () => fake.run, mint: () => null });
 
 /** A reviewer port that records each start and reports none live, so only the pool's own once-per-head memory stops a second start. */
 function fakePort() {
@@ -98,23 +114,23 @@ function fakePort() {
   return { port, starts };
 }
 
-function setup(gh: (args: string[]) => string, port: ReviewerPort, tickets: Record<string, unknown> = { drafts: false, reviewer: "atomic" }) {
+function setup(github: ReturnType<typeof ghFor>, port: ReviewerPort, tickets: Record<string, unknown> = { drafts: false, reviewer: "atomic" }) {
   const root = tmpDir("ticket-reviewer-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state"), tickets });
   let queue: Queue = resumeQueue(enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0, null));
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const status = new Map<string, string>();
   const h = herdr(status);
-  const pool = createPool(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: join(root, "no-plugin-record.json"), gh, reviewerPort: port });
+  const pool = createPool(store, { settings, source, codeHost: github.codeHost, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
+    pluginRecord: join(root, "no-plugin-record.json"), gh: github.run, reviewerPort: port });
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   return { settings, pool, status, h, entry, root };
 }
 
 /** NBF-1 run to a ready pull request: its worker wrote a `ready-pr` outcome and ended, with its transcript where a round would resume it. */
-async function readyPrRun(gh: (args: string[]) => string, port: ReviewerPort, tickets?: Record<string, unknown>) {
+async function readyPrRun(github: ReturnType<typeof ghFor>, port: ReviewerPort, tickets?: Record<string, unknown>) {
   await loadReviewerGate();
-  const made = setup(gh, port, tickets);
+  const made = setup(github, port, tickets);
   mkdirSync(join(made.root, "transcripts", "-Users-me-work"), { recursive: true });
   writeFileSync(join(made.root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
   await made.pool.tick();
@@ -131,7 +147,7 @@ const roundStarted = async () => { for (let i = 0; i < 50; i += 1) await new Pro
 test("a drafts-off run opens no draft and reaches the reviewer with no Approve", async () => {
   const reviewer = fakePort();
   const gh = ghFor({ head: "h1" });
-  const made = await readyPrRun(gh.run, reviewer.port);
+  const made = await readyPrRun(gh, reviewer.port);
   const dir = ticketDir(made.settings, "NBF-1");
   const brief = readFileSync(join(dir, "brief.md"), "utf8");
   assert.ok(brief.includes("open ONE READY pull request"), "the worker is told to open a ready pull request");
@@ -147,7 +163,7 @@ test("a drafts-off run opens no draft and reaches the reviewer with no Approve",
 test("the reviewer is started once per ready head: a second watch on the same head starts nothing, and a new head starts one", async () => {
   const reviewer = fakePort();
   const gh = ghFor({ head: "h1" });
-  const made = await readyPrRun(gh.run, reviewer.port);
+  const made = await readyPrRun(gh, reviewer.port);
   made.pool.watchFeedback();
   made.pool.watchFeedback();
   assert.deepEqual(reviewer.starts.map((ref) => ref.head), ["h1"], "the same head is not started again");
@@ -165,7 +181,7 @@ test("a not-convinced verdict resumes the same worker for a round with the revie
   for (const [verdict, reviews, resumes] of cases) {
     const reviewer = fakePort();
     const gh = ghFor({ head: "h1", reviews });
-    const made = await readyPrRun(gh.run, reviewer.port);
+    const made = await readyPrRun(gh, reviewer.port);
     made.h.calls.length = 0;
     made.pool.watchFeedback();
     await roundStarted();
@@ -188,7 +204,7 @@ test("the atomic reviewer refuses a pull request whose author is outside the org
   await loadReviewerGate();
   const herd = herdr(new Map());
   const spawned: unknown[] = [];
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1", outside: true })), declared: DECLARED,
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1", outside: true })),
     spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
     checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
   const started = port.start({ pr: PR_URL, head: "h1" });
@@ -202,7 +218,7 @@ test("the atomic reviewer starts the gate's reviewer in the tickets' session for
   const listed = new Map<string, string>();
   const herd = herdr(listed);
   const spawned: { order: unknown; cwd: unknown }[] = [];
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), declared: DECLARED,
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })),
     spawn: (order, _agents, options) => { spawned.push({ order, cwd: options.cwd }); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
     checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
   assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
@@ -218,7 +234,7 @@ test("the atomic reviewer starts the gate's reviewer in the tickets' session for
 test("the reviewer is asked the gate's own verdict prompt for the pull request and its head, which names the reviewer role file", async () => {
   await loadReviewerGate();
   const herd = herdr(new Map());
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), declared: DECLARED,
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })),
     spawn: (order) => ({ label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }),
     checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
   assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
@@ -232,7 +248,7 @@ test("the atomic reviewer starts nothing for a head whose checks have not settle
   const herd = herdr(new Map());
   const spawned: unknown[] = [];
   const checks = [{ name: "gate", status: "IN_PROGRESS", conclusion: null }];
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1", checks })), declared: DECLARED,
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1", checks })),
     spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
     checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
   const started = port.start({ pr: PR_URL, head: "h1" });
@@ -244,7 +260,7 @@ test("a port given the heads a pool remembers is live for the head its reviewer 
   await loadReviewerGate();
   const herd = herdr(new Map([["reviewer-7", "working"]]));
   const heads = new Map([["reviewer-7", "h1"]]);
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), declared: DECLARED, heads });
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), heads });
   assert.equal(port.live({ pr: PR_URL, head: "h1" }), true, "live for the remembered head");
   assert.equal(port.live({ pr: PR_URL, head: "h2" }), false, "not live for a head it was not started for");
 });
@@ -259,7 +275,7 @@ function teardownPort(status: Map<string, string>, { paths = [] as string[], pat
   const removed: { pr: number; session: string; key: string }[] = [];
   const heads = new Map([["reviewer-7", "h1"]]);
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: (args) => { if (args.includes("close")) events.push("close"); return herd.run(args); },
-    ...claiming(ghFor({ head: "h1" })), declared: DECLARED, heads, exists: () => true,
+    ...claiming(ghFor({ head: "h1" })), heads, exists: () => true,
     uncommittedPaths: () => { events.push("read"); if (pathsFail) throw new Error("fatal: not a git repository"); return paths; },
     removeCheckout: ({ pr, session, key }) => { events.push("removed"); removed.push({ pr, session: String(session), key: String(key) }); return removal; } });
   return { port, herd, events, removed, heads };
@@ -372,22 +388,6 @@ test("listedPulls names the pull request of each reviewer workspace the session 
   assert.deepEqual(made.port.listedPulls(), [PR_URL]);
 });
 
-test("readPullState reads a pull request's state as GitHub names it, and null for one it cannot read", async () => {
-  const answers: (string | Error)[] = [JSON.stringify({ state: "MERGED" }), JSON.stringify({ state: "OPEN" }), JSON.stringify({ state: "CLOSED" }), JSON.stringify({}), new Error("gh exited 1")];
-  const gh = (args: string[]) => {
-    assert.deepEqual(args.slice(0, 2), ["pr", "view"]);
-    const answer = answers.shift()!;
-    if (answer instanceof Error) throw answer;
-    return answer;
-  };
-  assert.equal(readPullState(PR_URL, gh), "MERGED");
-  assert.equal(readPullState(PR_URL, gh), "OPEN");
-  assert.equal(readPullState(PR_URL, gh), "CLOSED");
-  assert.equal(readPullState(PR_URL, gh), null, "an answer with no state is unread");
-  assert.equal(readPullState(PR_URL, gh), null, "a refused read is unread");
-  assert.equal(readPullState("https://example.com/not-a-pull", gh), null, "a url that is no pull request is unread");
-});
-
 // A11-83: a reviewer that ended without its verdict on the pull request. The verdict file is found by what it says, posted again through the
 // door with its token minted first, and a reviewer that ended with no file is prompted again.
 
@@ -402,7 +402,7 @@ const verdictLine = (head: string, word: string) => `**Review of #7 at \`${head.
 function verdictPort(tree: string, { status = new Map([["reviewer-7", "idle"]]), mint = (() => null) as (path: string) => string | null, door = (() => {}) as DoorRun } = {}) {
   const order: string[] = [];
   const herd = herdr(status);
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), declared: DECLARED, heads: new Map([["reviewer-7", "h1"]]),
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), heads: new Map([["reviewer-7", "h1"]]),
     checkoutOf: () => tree,
     mint: (path) => { order.push(`mint ${path}`); return mint(path); },
     door: (file, args, env) => { order.push("door"); door(file, args, env); } });
@@ -522,7 +522,7 @@ function clonedPort(listed: Map<string, string>, clones: Record<string, string> 
   const herd = herdr(listed);
   const checkouts: object[] = [];
   const spawned: { options: object; env: unknown; cwd: unknown }[] = [];
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), declared: DECLARED, clones,
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), clones,
     checkout: (args) => { checkouts.push(args); return { path: "/work/pr-7", head: "h1" }; },
     spawn: (order, _agents, options) => { spawned.push({ options, env: options.env, cwd: options.cwd }); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
   return { port, herd, checkouts, spawned };
@@ -542,7 +542,7 @@ test("a cloned-only reviewer is live for its head, is listed by its pull request
   await loadReviewerGate();
   const removed: object[] = [];
   const herd = herdr(new Map([["reviewer-plugin-7", "idle"], ["reviewer-foo-3", "idle"]]));
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), declared: DECLARED, clones: { plugin: "/repos/plugin" },
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(ghFor({ head: "h1" })), clones: { plugin: "/repos/plugin" },
     heads: new Map([["reviewer-plugin-7", "h1"]]), exists: () => false,
     removeCheckout: (args) => { removed.push(args); return null; } });
   assert.equal(port.live({ pr: PLUGIN_URL, head: "h1" }), true, "live for the head it was started for");
@@ -555,7 +555,7 @@ test("a verdict of a cloned-only reviewer is posted through the door with its re
   await loadReviewerGate();
   const { tree, file } = verdictTree("reviewer-clone-repost-", `${verdictLine(H1, "convinced")}\n\nbody\n`);
   const doorCalls: { args: string[]; env: Record<string, string> }[] = [];
-  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herdr(new Map()).run, ...claiming(ghFor({ head: "h1" })), declared: DECLARED, clones: { plugin: "/repos/plugin" },
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herdr(new Map()).run, ...claiming(ghFor({ head: "h1" })), clones: { plugin: "/repos/plugin" },
     checkoutOf: () => tree, mint: () => null, door: (_path, args, env) => { doorCalls.push({ args, env }); } });
   assert.deepEqual(port.repostVerdict({ pr: PLUGIN_URL, head: H1 }, file), { posted: true });
   assert.deepEqual(doorCalls.map((call) => call.args), [["7", "convinced", file]]);
@@ -610,11 +610,14 @@ test("A11-119: the reviewer's word on a head, and the newest word on an earlier 
   assert.equal(earlierReviewWord([review("CHANGES_REQUESTED", "68bd2e8d", 1)], "68bd2e8d"), null, "a head is never earlier than itself");
 });
 
-test("A11-119: a repository's open pull request urls are listed, and an unanswered or cut-short list is no reading", () => {
-  const listed = (answer: () => string) => openPullUrlsOf("a11ign/control", (args) => { assert.deepEqual(args.slice(0, 5), ["pr", "list", "--repo", "a11ign/control", "--state"]); return answer(); });
-  assert.deepEqual(listed(() => JSON.stringify([{ number: 119, body: "" }])), ["https://github.com/a11ign/control/pull/119"]);
-  assert.deepEqual(listed(() => "[]"), [], "none open is a reading");
-  assert.equal(listed(() => { throw new Error("gh exited 1"); }), null, "a refused gh is no reading");
-  assert.equal(listed(() => "not json"), null);
-  assert.equal(listed(() => JSON.stringify(Array.from({ length: 200 }, (_, i) => ({ number: i, body: "" })))), null, "a list at the limit may be cut short");
+test("A11-160: the gate judges a pull request for the code host plugin: the fields the reviewer reads by, who is the org's own, and whether the checks settled, as the gate decides each", async () => {
+  await loadReviewerGate();
+  const judge = gateReviewJudge();
+  assert.equal(judge.fields, "headRefOid,reviews,author,isCrossRepository,isDraft,statusCheckRollup", "the fields the gate's own reader asks for");
+  assert.equal(judge.trustOf({ isCrossRepository: true, author: { login: "worker-bot" } }), "outside", "a fork is outside whoever its author is");
+  assert.equal(judge.trustOf({ isCrossRepository: false, author: { login: "a-stranger-nobody-declared" } }), "outside", "an author the host does not declare is outside");
+  assert.equal(judge.trustOf({ isCrossRepository: false, author: { login: "dependabot[bot]" } }), "inside", "a login the gate trusts by name is inside");
+  assert.equal(judge.settledOf({ statusCheckRollup: GREEN }), true);
+  assert.equal(judge.settledOf({ statusCheckRollup: [{ name: "gate", status: "IN_PROGRESS", conclusion: null }] }), false, "a pending check has not settled");
+  assert.equal(judge.settledOf({ statusCheckRollup: [] }), false, "no check at all is not settled green");
 });

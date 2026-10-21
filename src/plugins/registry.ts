@@ -128,7 +128,8 @@ function settingsOf(concern: Concern, declared: unknown): Readonly<Record<string
   for (const [name, entry] of Object.entries(declared)) {
     if (!isSchemaEntry(entry)) return `agentOrg.settings.${name} must be a schema entry with a key, type, explanation, breaks and edit`;
     if (entry.key !== `tickets.providers.${block}.${name}`) return `agentOrg.settings.${name}.key must be tickets.providers.${block}.${name}, not ${JSON.stringify(entry.key)}`;
-    const parent = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : null;
+    // A part of a list's items (`gh.leadsWorkspaces[].id`) is a part of the list (`gh.leadsWorkspaces`).
+    const parent = name.includes(".") ? name.slice(0, name.lastIndexOf(".")).replace(/\[\]$/, "") : null;
     if (parent !== null && !(parent in declared)) return `agentOrg.settings.${name} is a part of ${parent}, which the manifest does not declare`;
   }
   return declared as Readonly<Record<string, SchemaEntry>>;

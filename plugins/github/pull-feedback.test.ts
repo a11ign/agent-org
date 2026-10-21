@@ -1,7 +1,11 @@
 // no-token: gh -- `readPullFeedback` and `readOwnLogin` are handed a stub `run`; nothing here spawns `gh` or needs a token.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MAX_FILE_PAGES, pullOf, readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { corePolicy } from "../../src/plugins/policy.ts";
+import { MAX_FILE_PAGES, pullOf, readOwnLogin, readPullFeedback as read } from "./pull-feedback.ts";
+
+/** The read, with core's own policy for which checks are red: what the plugin is given in a host. */
+const readPullFeedback = (url: string, self: string, run: (args: string[]) => string, alsoIgnore: readonly string[] = []) => read(url, self, run, corePolicy(), alsoIgnore);
 
 const URL = "https://github.com/netboxlabs/nbl-ui-netbox/pull/806";
 const at = (minute: number) => `2026-10-16T12:${String(minute).padStart(2, "0")}:00Z`;
