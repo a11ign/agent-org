@@ -1106,8 +1106,16 @@ test("A11-119: a pull request's review state reads as the board words it, for ea
     ["waiting for checks at 91bf0677", read({ settled: false })],
     ["not reviewed: no reviewer: its author is outside the org", read({ refusal: "no reviewer: its author is outside the org" })],
     ["awaiting review at 91bf0677", read({ earlier: { head: "68bd2e8daaaa", word: "approved" } })],
+    ["re-review asked by reply at 91bf0677", read({ reviewing: true, verdict: "changes requested", rereview: true })],
   ];
   for (const [text, state] of cases) assert.equal(pullReviewText(state), text);
+});
+
+test("A11-156: a re-review a reply asked for is worded before the reviewer being live and before the block it answers, and says the claim it took over", () => {
+  assert.equal(pullReviewText(read({ reviewing: true, verdict: "changes requested", rereview: true })), "re-review asked by reply at 91bf0677");
+  assert.equal(pullReviewText(read({ reviewing: true, verdict: "changes requested", rereview: true, tookOver: "took over the claim of pool-a" })), "re-review asked by reply at 91bf0677 (took over the claim of pool-a)");
+  assert.equal(pullReviewText(read({ verdict: "changes requested", rereview: false })), "changes requested at 91bf0677", "a re-review that has ended reads as the block that stands");
+  assert.equal(pullReviewText(read({ reviewing: true, verdict: "approved" })), "reviewing", "an approval's reviewer still being open reads as it always did");
 });
 
 test("A11-119: a verdict on the current head says so before a verdict on an earlier one, and a reviewer live beats both", () => {

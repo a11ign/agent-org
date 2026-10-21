@@ -1,4 +1,4 @@
-// module: the GitHub code host -- the six reads ticket mode makes of a pull request, and the sweep that retargets a stacked one (A11-160)
+// module: the GitHub code host -- the seven reads ticket mode makes of a pull request, and the sweep that retargets a stacked one (A11-160)
 //
 // ONE `gh` RUNNER (`gh.ts`) serves every operation, so this file is the one place a call to GitHub is made on ticket mode's behalf. The reads answer `null` for "could not ask", never
 // for "there is none", as the contract says.
@@ -11,6 +11,7 @@ import type { PluginDeps } from "../../src/plugins/manifest.ts";
 import { ghRunner } from "./gh.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { readReplies } from "./replies.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
 
@@ -24,6 +25,7 @@ export function createCodeHost(deps: PluginDeps): CodeHost {
   return {
     readOwnLogin: () => readOwnLogin(gh),
     readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, gh, deps.policy, alsoIgnore),
+    readReplies: (url, request) => readReplies(url, request, gh),
     readReviewState: (url) => readReviewState(url, gh, deps.policy),
     readPullState: (url) => readPullState(url, gh),
     openPullUrlsOf: (repository) => openPullUrlsOf(repository, gh),

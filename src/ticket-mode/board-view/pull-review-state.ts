@@ -12,7 +12,7 @@ export type ReviewWord = "approved" | "changes requested" | "dismissed";
  * What the pool read about one open pull request at its current head: the head, whether its checks have settled green, whether a reviewer is live for
  * that head, the verdict the reviewer posted on that head, the newest verdict on an earlier head, why the last start was refused (null when it was not), and
  * the verdict that is not on the pull request, as the pool says it (null when none), and the expired claim this instance took over on this head, as the pool
- * says it (absent when it took none, A11-149).
+ * says it (absent when it took none, A11-149). `rereview` is set while a re-review of the head is under way, asked by a reply to the reviewer's block with no new commit (A11-156).
  */
 export type PullRead = Readonly<{
   head: string;
@@ -23,6 +23,7 @@ export type PullRead = Readonly<{
   refusal: string | null;
   unposted: string | null;
   tookOver?: string;
+  rereview?: boolean;
 }>;
 
 /** What each open pull request's line says on a machine where reviews are required and the reviewer is off (A11-161). */
@@ -57,12 +58,13 @@ export function publishingOffLine(status: string, publisher: string | undefined)
 export const shortHead = (head: string): string => head.slice(0, 8);
 
 /**
- * The line a pull request's review state reads as. `null` read is a pull request whose state could not be read. In order: a reviewer live for the head is
- * `reviewing`, and says the claim it took over, if it took one; a verdict on the head is its word; a newest `changes requested` on an earlier head says the
+ * The line a pull request's review state reads as. `null` read is a pull request whose state could not be read. In order: a re-review a reply asked for is
+ * `re-review asked by reply` at the head, until it posts or ends (A11-156); a reviewer live for the head is `reviewing`, and says the claim it took over, if it took one; a verdict on the head is its word; a newest `changes requested` on an earlier head says the
  * new head is not reviewed yet; checks not settled say so; a refused start says why; otherwise the head is awaiting review.
  */
 export function pullReviewText(read: PullRead | null): string {
   if (read === null) return "review state not read";
+  if (read.rereview === true) return read.tookOver === undefined ? `re-review asked by reply at ${shortHead(read.head)}` : `re-review asked by reply at ${shortHead(read.head)} (${read.tookOver})`;
   if (read.reviewing) return read.tookOver === undefined ? "reviewing" : `reviewing (${read.tookOver})`;
   if (read.verdict !== null) return read.verdict === "changes requested" ? `changes requested at ${shortHead(read.head)}` : `${read.verdict} at ${shortHead(read.head)}`;
   if (read.earlier?.word === "changes requested") return `changes requested at ${shortHead(read.earlier.head)}, new head ${shortHead(read.head)} not yet reviewed`;

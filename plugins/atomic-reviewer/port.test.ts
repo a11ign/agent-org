@@ -16,6 +16,7 @@ import { REPO } from "../../src/project-identity.ts";
 import { loadReviewerGate } from "../../src/ticket-mode/reviewer-port.ts";
 import { homeProjectDeclaration } from "../../src/project-config.ts";
 import { HOST_CONFIG_ENV, hostConfigPath } from "../../src/host-config.ts";
+import { NO_TICKET_LINE, POST_MERGE_RULE } from "./prompt.ts";
 import { REVIEW_CAUSE, atomicReviewerPort as portOver, clonedSeatOf, type Seams, verdictFileIn as verdictFileOver } from "./port.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -149,8 +150,67 @@ test("the reviewer is asked the gate's own verdict prompt for the pull request a
     checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
   assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }), { label: "reviewer-7" });
   const prompt = herd.calls.find((args) => args.includes("prompt"))!;
-  assert.equal(prompt[prompt.length - 1], "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. "
-    + "Review it per .agent-org/roles/reviewer.md and post the verdict as it says.");
+  const GATE_WORDS = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
+  assert.equal(prompt[prompt.length - 1], `${GATE_WORDS}\n\n${NO_TICKET_LINE}\n\n${POST_MERGE_RULE}`, "the gate's own words, then (A11-156) what a start with no brief tells the reviewer");
+});
+
+/** A port over a green, ready pull request whose head carries `statuses`, and the herdr it prompts: the reviewer's start, as the re-review tests drive it. */
+function startingPort({ reviews = [] as unknown[], statuses = [] as Status[] } = {}) {
+  const herd = herdr(new Map());
+  const fake = ghFor({ head: "h1", reviews, statuses });
+  const spawned: unknown[] = [];
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(fake),
+    spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
+    checkout: () => ({ path: "/work/pr-7", head: "h1" }) });
+  const prompted = (): string => herd.calls.filter((args) => args.includes("prompt")).map((args) => args[args.length - 1]).at(-1) ?? "";
+  return { port, spawned, statuses: fake.pr.statuses ?? [], prompted };
+}
+const DONE_WHEN = "## Done-when\n\n### Before merge\n\n- the test\n\n### After merge (who runs it)\n\n- the chairman, after 0.9.0";
+const BLOCK_STATUS = (): Status => ({ id: 2, context: "agent-org/review", created_at: at(Date.now() - 30 * 60_000), description: `not-convinced by work at ${at(Date.now() - 30 * 60_000)}` });
+const FIRST_CLAIM = (): Status => ({ id: 1, context: "agent-org/review", created_at: at(Date.now() - 40 * 60_000), description: `claimed by work at ${at(Date.now() - 40 * 60_000)}, lease 60 min` });
+const REPLY = { author: "worker-bot", url: `${PR_URL}#issuecomment-9`, text: "Not a defect in this diff: the live run is after the release." };
+
+test("A11-156: a first review's prompt carries the ticket's Done-when and the post-merge rule after the gate's own words, and the reprompt does too", async () => {
+  await loadReviewerGate();
+  const { port, prompted } = startingPort();
+  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { label: "reviewer-7" });
+  const first = prompted();
+  assert.ok(first.startsWith("Ready (not a draft) #7 at `h1`"), "the gate's words come first");
+  assert.ok(first.includes(`The ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}`) && first.endsWith(POST_MERGE_RULE));
+  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { prompted: true });
+  assert.equal(prompted(), first, "the reprompt says what the first prompt did");
+  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }), { prompted: true });
+  assert.ok(prompted().includes(NO_TICKET_LINE) && prompted().endsWith(POST_MERGE_RULE), "and with no brief it still carries the rule");
+});
+
+test("A11-156: a head whose review is posted is refused a start, but not a re-review: it claims the head again after the verdict, starts the same reviewer, and sends the re-review brief", async () => {
+  await loadReviewerGate();
+  const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
+  const { port, spawned, statuses, prompted } = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()] });
+  const refused = port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN });
+  assert.match("refusal" in refused ? refused.refusal : "", /its review at h1 is already posted/, "the first review's claim ended in the verdict");
+  assert.deepEqual(spawned, []);
+  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.equal(spawned.length, 1);
+  assert.match(statuses.at(-1)?.description ?? "", /^claimed by work at /, "a claim is written after the verdict");
+  const words = prompted();
+  assert.ok(words.startsWith("This is a re-review of #7"), words);
+  assert.ok(words.includes(`- worker-bot (${PR_URL}#issuecomment-9):\n  ${REPLY.text}`) && words.includes(DONE_WHEN) && words.includes(POST_MERGE_RULE));
+  assert.ok(words.includes("Review it per .agent-org/roles/reviewer.md") && words.includes("Corrects review: Review of #7 at `h1`"), "and names the standing block the approval corrects, and the role file");
+  assert.ok(!words.includes("no verdict at that head"), "the gate's first-review sentence is not sent");
+});
+
+test("A11-156: a re-review another instance already holds is refused, and an approved head is refused a re-review", async () => {
+  await loadReviewerGate();
+  const otherClaim: Status = { id: 3, context: "agent-org/review", created_at: at(Date.now() - 5 * 60_000), description: `claimed by laptop at ${at(Date.now() - 5 * 60_000)}, lease 60 min` };
+  const held = startingPort({ statuses: [FIRST_CLAIM(), BLOCK_STATUS(), otherClaim] });
+  const heldAnswer = held.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: null, rereview: { replies: [REPLY] } });
+  assert.match("refusal" in heldAnswer ? heldAnswer.refusal : "", /another instance \(`laptop`\) holds the review/);
+  const approved: Status = { id: 4, context: "agent-org/review", created_at: at(Date.now() - 60_000), description: `convinced by work at ${at(Date.now() - 60_000)}` };
+  const done = startingPort({ statuses: [FIRST_CLAIM(), BLOCK_STATUS(), approved] });
+  const doneAnswer = done.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: null, rereview: { replies: [REPLY] } });
+  assert.match("refusal" in doneAnswer ? doneAnswer.refusal : "", /its review at h1 is already posted \(convinced by work/);
+  assert.deepEqual([held.spawned, done.spawned], [[], []]);
 });
 
 test("the atomic reviewer starts nothing for a head whose checks have not settled green", async () => {

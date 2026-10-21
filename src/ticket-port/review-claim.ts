@@ -100,10 +100,25 @@ function attempt<T>(action: () => T): Readonly<{ value: T }> | Readonly<{ unclai
 }
 
 /**
+ * What a re-review of a head that already has its verdict claims over: the entries after the newest verdict, or all of them when there is none. A newest verdict that is an approval is
+ * the end of the head, a re-review's included: the answer is then `finished`, since there is no block left for a re-review to answer.
+ */
+function afterNewestVerdict(entries: readonly ClaimEntry[]): Listing {
+  const ordered = inOrder(entries);
+  const last = ordered.findLastIndex((entry) => describedClaimOf(entry.description)?.kind === "finished");
+  const verdict = last === -1 ? null : describedClaimOf(ordered[last].description);
+  if (verdict?.kind === "finished" && verdict.verdict === "convinced") return { answer: { outcome: "finished", description: ordered[last].description } };
+  return { entries: ordered.slice(last + 1) };
+}
+
+/** What a listing of a head's claim entries came to: the entries to decide on, or the answer that ends the claim. */
+type Listing = Readonly<{ entries: readonly ClaimEntry[] }> | Readonly<{ answer: ClaimAnswer }>;
+
+/**
  * The statuses `read` lists, or the answer that ends the claim before anything is written: `finished` when a verdict is among them, `unclaimed` when the
  * read failed.
  */
-function listingOf(read: () => readonly ClaimEntry[]): Readonly<{ entries: readonly ClaimEntry[] }> | Readonly<{ answer: ClaimAnswer }> {
+function listingOf(read: () => readonly ClaimEntry[]): Listing {
   const listed = attempt(read);
   if ("unclaimed" in listed) return { answer: listed.unclaimed };
   const finished = listed.value.find((entry) => describedClaimOf(entry.description)?.kind === "finished");
@@ -111,10 +126,20 @@ function listingOf(read: () => readonly ClaimEntry[]): Readonly<{ entries: reado
 }
 
 /**
+ * The listing a re-review (A11-156) decides on: the one claim that starts after a verdict. The verdict it answers is not its end, and the claims before that verdict
+ * are the first review's, so only the entries after the newest verdict are read.
+ */
+function listingAfterVerdict(read: () => readonly ClaimEntry[]): Listing {
+  const listed = attempt(read);
+  return "unclaimed" in listed ? { answer: listed.unclaimed } : afterNewestVerdict(listed.value);
+}
+
+/**
  * Claims a head for `instance` (A11-149), or says why it cannot. PURE: `read` returns the claim's entries, and `write` posts a claim with the description it
  * is given, and throws when GitHub refuses it. In order:
  *
- * 1. A finished entry (a verdict) means the review is posted: `finished`, and nothing is started.
+ * 1. A finished entry (a verdict) means the review is posted: `finished`, and nothing is started. A `rereview` is the exception (A11-156): it claims the head again
+ *    after the verdict that stands, and only the entries after that verdict are read.
  * 2. The live claims (under the lease) are read in GitHub's order. When the earliest of them is another instance's, it holds the head: `held`. When it is
  *    this instance's own, the head is its own already (a restart): `won`, and nothing new is written.
  * 3. Otherwise (no live claim, or only expired ones) this instance writes its claim, reads the entries again, and takes the earliest live claim. A claim
@@ -124,10 +149,11 @@ function listingOf(read: () => readonly ClaimEntry[]): Readonly<{ entries: reado
  * no instance needs a clock that agrees with another's. A read or write that fails is `unclaimed`: a reviewer that cannot claim does not start, because the
  * second review it risks is the cost this removes.
  */
-export function claimHead({ instance, now, read, write }: {
-  instance: string; now: number; read: () => readonly ClaimEntry[]; write: (description: string) => void;
+export function claimHead({ instance, now, read, write, rereview = false }: {
+  instance: string; now: number; read: () => readonly ClaimEntry[]; write: (description: string) => void; rereview?: boolean;
 }): ClaimAnswer {
-  const first = listingOf(read);
+  const listingOfHead = rereview ? listingAfterVerdict : listingOf;
+  const first = listingOfHead(read);
   if ("answer" in first) return first.answer;
   const claims = claimsIn(first.entries);
   const live = claims.filter((claim) => now - claim.created < REVIEW_LEASE_MS);
@@ -137,7 +163,7 @@ export function claimHead({ instance, now, read, write }: {
   const expired = claims.filter((claim) => now - claim.created >= REVIEW_LEASE_MS && claim.instance !== instance).at(-1);
   const written = attempt(() => write(claimDescriptionOf({ instance, now })));
   if ("unclaimed" in written) return written.unclaimed;
-  const second = listingOf(read);
+  const second = listingOfHead(read);
   if ("answer" in second) return second.answer;
   const after = second.entries;
   // Our own claim was written a moment ago, so it is on the list unless GitHub's clock says it is older than the lease: then nothing can be said.

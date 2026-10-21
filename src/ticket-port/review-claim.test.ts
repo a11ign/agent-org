@@ -69,6 +69,32 @@ test("a verdict on the head means the review is posted: nothing starts, and noth
   assert.equal(head.store.length, 2);
 });
 
+test("A11-156: a re-review claims the head again after the verdict that stands, and reads only the entries after it", () => {
+  const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
+  const head = headOf([claimOf("work", NOW - 40 * 60_000, 1), block]);
+  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }).outcome, "finished", "a first review of this head is over: the verdict stands");
+  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write, rereview: true }), { outcome: "won", tookOver: null }, "a re-review claims it again");
+  assert.deepEqual(head.store.map((entry) => entry.description).slice(2), [`claimed by work at ${at(NOW)}, lease 60 min`], "with a claim written after the verdict");
+});
+
+test("A11-156: the first review's claim, even another instance's and unexpired, is no claim on a re-review; one written after the verdict is", () => {
+  const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
+  const before = headOf([claimOf("laptop", NOW - 40 * 60_000, 1), block]);
+  assert.equal(claimHead({ ...claimAs("work", NOW), read: before.read, write: before.write, rereview: true }).outcome, "won", "a claim before the verdict belongs to the review that ended in it");
+  const after = headOf([claimOf("laptop", NOW - 40 * 60_000, 1), block, claimOf("laptop", NOW - 5 * 60_000, 3)]);
+  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: after.read, write: after.write, rereview: true }), { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 }, "another instance's re-review holds the head");
+  assert.equal(after.store.length, 3, "and nothing is written");
+});
+
+test("A11-156: an approval is the end of a head, a re-review's included: there is no block left to answer", () => {
+  const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
+  const approved = { id: 4, description: finishedDescriptionOf({ verdict: "convinced", instance: "work", now: NOW - 60_000 }), created: NOW - 60_000 };
+  const head = headOf([claimOf("work", NOW - 40 * 60_000, 1), block, claimOf("work", NOW - 20 * 60_000, 3), approved]);
+  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write }).outcome, "finished", "a start that is not a re-review sees a head with its verdict");
+  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: head.write, rereview: true }), { outcome: "finished", description: approved.description }, "and so does a re-review");
+  assert.equal(head.store.length, 4, "nothing is written");
+});
+
 test("a verdict that lands after this instance wrote its claim means the review is posted, and the answer says so", () => {
   const posted = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "laptop", now: NOW }), created: NOW };
   const head = headOf();

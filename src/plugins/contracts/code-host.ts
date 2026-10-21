@@ -9,6 +9,7 @@
 //
 // ROW MODE'S GITHUB OPERATIONS will join as an optional `rows` group of this contract, not as a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
 //
+// 1.2 (A11-156): `readReplies` reads what a trusted account said on a pull request since a time, which is how the pool finds a reply to a review that asked for changes.
 // 1.1 (A11-160): `readPullFeedback` takes the accounts whose feedback is not the worker's to answer besides its own (the reviewer's), which ticket mode filtered out of GitHub's
 // answer before the read moved into the plugin. A plugin of 1.0 is read as one that is given none.
 import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort } from "../../ticket-port/port.ts";
@@ -16,7 +17,7 @@ import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHost
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.1";
+export const CODE_HOST_CONTRACT_VERSION = "1.2";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -53,6 +54,12 @@ export type PullFeedback = Readonly<{
   filesComplete: boolean;
 }>;
 
+/** A reply on a pull request: a conversation comment, a review in the commented state, or a comment in a review thread. `at` is epoch milliseconds, and `url` is where it can be read. */
+export type Reply = Readonly<{ author: string; at: number; url: string; text: string }>;
+
+/** Which replies to read: those posted after `since` (epoch milliseconds, exclusive) by an account in `authors`, named exactly. */
+export type RepliesRequest = Readonly<{ since: number; authors: readonly string[] }>;
+
 /** Whether a pull request's author is the org's own (`inside`) or not, which decides how much its reviewer trusts it (`review-trust.ts`). */
 export type ReviewTrust = "inside" | "outside";
 
@@ -87,6 +94,11 @@ export interface CodeHost extends CodeHostPort {
   readPullFeedback(url: string, self: string, alsoIgnore?: readonly string[]): PullFeedback | null;
   /** The pull request's state as the reviewer sees it, or null when the host does not say. Throws the reviewer's refusal when its gate does not load. */
   readReviewState(url: string): ReviewState | null;
+  /**
+   * The replies on the pull request at `url` that `request` names, oldest first, or null for "could not ask". A reply with no text is left out, and so is one by an account `request`
+   * does not name: its text goes into a reviewer's prompt, so the host never returns a stranger's. Null is never "no replies".
+   */
+  readReplies(url: string, request: RepliesRequest): readonly Reply[] | null;
   /** The pull request's state, `OPEN`, `MERGED` or `CLOSED`, or null when the host does not say. */
   readPullState(url: string): string | null;
   /** The URLs of a repository's open pull requests, or null for "could not ask" (a list at its limit is also null). */

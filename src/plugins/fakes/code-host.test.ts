@@ -16,7 +16,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
   const { host, probe } = seeded();
   const { passed, skipped } = await runCodeHostConformance(host, probe);
   assert.deepEqual(passed, [
-    "shape", "readOwnLogin names the account or answers null", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read",
+    "shape", "readOwnLogin names the account or answers null", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read", "readReplies answers a list of replies, and null for a pull request it cannot read",
     "readPullState names the state or answers null", "readReviewState reads the head, the reviews and whether the checks settled", "openPullUrlsOf lists a repository's open pull requests",
     "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes", "subscribe returns the function that cancels it",
     "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",

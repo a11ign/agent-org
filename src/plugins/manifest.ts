@@ -129,6 +129,8 @@ export type ReviewerGate = Readonly<{
     /** The gate's own verdict prompt for a pull request (as the code host read it, plus its repository's key) and its heads. */
     awaitingVerdictPrompt(pr: Readonly<Record<string, any>>, heads: any): string;
     reviewHeadsOf(pr: Readonly<Record<string, any>>, head: string, wait: "settled" | "running"): any;
+    /** The reviewer role file a pull request's reviewer reads, as the gate's prompt names it. */
+    reviewerRoleFile(pr: Readonly<Record<string, any>>): string;
   }>;
   doorPath: Readonly<{ reviewerDoorPath(): string }>;
   host: Readonly<{ HOST_CONFIG_ENV: string; hostConfigPath(): string }>;
@@ -171,7 +173,7 @@ export type ReviewerBoard = Readonly<{
   claims: Readonly<{
     REVIEW_LEASE_MS: number;
     claimEntriesOf(head: Readonly<{ repo: string; sha: string; gh: (args: string[]) => string }>): readonly Readonly<{ id: number; description: string; created: number }>[];
-    claimHead(claim: Readonly<{ instance: string; now: number; read: () => readonly Readonly<{ id: number; description: string; created: number }>[]; write: (description: string) => void }>): ReviewerClaimAnswer;
+    claimHead(claim: Readonly<{ instance: string; now: number; read: () => readonly Readonly<{ id: number; description: string; created: number }>[]; write: (description: string) => void; rereview?: boolean }>): ReviewerClaimAnswer;
     releasedDescriptionOf(release: Readonly<{ instance: string; now: number }>): string;
     writeClaimStatus(write: Readonly<{ repo: string; sha: string; description: string; gh: (args: string[]) => string }>): void;
   }>;

@@ -62,6 +62,16 @@ export function reviewerGate(): ReviewerGate {
 /** The account the gate's reviewer posts as. Its reviews are the reviewer's, never the feedback a worker answers. */
 export const REVIEWER_LOGIN = "a11ign-reviewer";
 
+/**
+ * The accounts whose reply to a block counts as one (A11-156): the board's own account, which is the run's worker, and the logins the org declares for its people (`declaredIdentities` of
+ * `review-trust.ts`, the same line that decides whether a pull request is the org's own). The reviewer's own account never counts, and a bot the declaration names only by pattern does not: the
+ * reply's text goes into a reviewer's prompt, and the org's repositories take comments from anyone. THROWS the gate's refusal when the gate does not load.
+ */
+export function replyAuthorsOf(ownLogin: string): string[] {
+  const { exact } = reviewerGate().trust.declaredIdentities();
+  return [...new Set([ownLogin, ...exact])].filter((login) => login !== REVIEWER_LOGIN);
+}
+
 /** The host's checkouts by repository name (`host.json`'s `clones`), which carry no owner: a name is one of this org's repositories. */
 type Clones = Readonly<Record<string, string>>;
 
@@ -83,6 +93,15 @@ export function reviewVerdict(reviews: readonly Review[], head: string): "convin
   const newest = reviews.filter((r) => r.author === REVIEWER_LOGIN && r.commit === head).sort((a, b) => b.at - a.at)[0];
   if (newest === undefined) return null;
   return newest.state === "APPROVED" ? "convinced" : newest.state === "CHANGES_REQUESTED" ? "not-convinced" : null;
+}
+
+/**
+ * The reviewer's block on `head`: its newest review there when that review asked for changes, else null (A11-156). A reply to a review that is not the newest answers nothing, so only the
+ * newest counts, and only when it is a block: a head the reviewer approved has no block to answer.
+ */
+export function standingBlock(reviews: readonly Review[], head: string): Review | null {
+  const newest = reviews.filter((r) => r.author === REVIEWER_LOGIN && r.commit === head).sort((a, b) => b.at - a.at)[0];
+  return newest?.state === "CHANGES_REQUESTED" ? newest : null;
 }
 
 /**
@@ -137,17 +156,20 @@ export type Repost = { attempts: number; reason?: string };
 
 /**
  * What a pool remembers of its reviewers across a restart: the head each seat's reviewer was started for (`heads`, by seat label), the reviewers
- * started (`started`, `url@head`), the verdicts a worker was asked to answer (`resumed`, `url@head`), and the re-posts of a verdict not on its pull request
- * (`reposts`, `url@head`). The pool holds it and the port reads `heads`.
+ * started (`started`, `url@head`), the verdicts a worker was asked to answer (`resumed`, `url@head`), the re-posts of a verdict not on its pull request
+ * (`reposts`, `url@head`), and the heads a reply to a block earned one re-review of (`rereviewed`, `url@head`, A11-156). The pool holds it and the port reads `heads`.
  */
-export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string>; reposts: Map<string, Repost> };
+export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string>; reposts: Map<string, Repost>; rereviewed: Set<string> };
+
+/** Nothing remembered: what a pool starts from when there is no file, and what a file it cannot read is read as. */
+export const noReviewerMemory = (): ReviewerMemory => ({ heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
 
 /**
  * The memory on disk. A file that is not there is nothing remembered yet; one that is there and is not what `writeReviewerMemory` writes is
  * `unreadable`, and is also nothing remembered. Neither throws.
  */
 export function readReviewerMemory(path: string): { memory: ReviewerMemory; unreadable: boolean } {
-  const nothing = ({ unreadable }: { unreadable: boolean; }) => ({ memory: { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>(), reposts: new Map<string, Repost>() }, unreadable });
+  const nothing = ({ unreadable }: { unreadable: boolean; }) => ({ memory: noReviewerMemory(), unreadable });
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -157,18 +179,19 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
   try {
     const data = JSON.parse(text);
     const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
-    // `reposts` is absent in a file written before A11-83: nothing was re-posted then.
+    // `reposts` is absent in a file written before A11-83: nothing was re-posted then. `rereviewed` is absent in a file written before A11-156: no head was re-reviewed then.
     const reposts: Record<string, unknown> = data?.reposts ?? {};
+    const rereviewed: unknown = data?.rereviewed ?? [];
     const repost = (value: any) => value !== null && typeof value === "object" && Number.isInteger(value.attempts) && value.attempts >= 0
       && (value.reason === undefined || typeof value.reason === "string");
     const isMalformedMemory = data === null || typeof data !== "object" || data.heads === null || typeof data.heads !== "object"
-      || !Object.values(data.heads).every((head) => typeof head === "string") || !strings(data.started) || !strings(data.resumed)
+      || !Object.values(data.heads).every((head) => typeof head === "string") || !strings(data.started) || !strings(data.resumed) || !strings(rereviewed)
       || reposts === null || typeof reposts !== "object" || !Object.values(reposts).every(repost);
     if (isMalformedMemory) {
       throw new Error("not a reviewer memory");
     }
     return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed),
-      reposts: new Map(Object.entries(reposts) as [string, Repost][]) }, unreadable: false };
+      reposts: new Map(Object.entries(reposts) as [string, Repost][]), rereviewed: new Set(rereviewed) }, unreadable: false };
   } catch {
     return nothing({ unreadable: true });
   }
@@ -179,6 +202,8 @@ export function writeReviewerMemory(path: string, memory: ReviewerMemory): void 
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(`${path}.tmp`, JSON.stringify({ heads: Object.fromEntries(memory.heads), started: [...memory.started], resumed: [...memory.resumed],
     // Written only when there is one, so a file for a pool that re-posted nothing reads as it always did.
-    ...(memory.reposts.size > 0 ? { reposts: Object.fromEntries(memory.reposts) } : {}) }));
+    ...(memory.reposts.size > 0 ? { reposts: Object.fromEntries(memory.reposts) } : {}),
+    // Likewise: a file for a pool that re-reviewed nothing reads as it always did.
+    ...(memory.rereviewed.size > 0 ? { rereviewed: [...memory.rereviewed] } : {}) }));
   renameSync(`${path}.tmp`, path);
 }

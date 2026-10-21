@@ -23,6 +23,7 @@ import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Ou
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
+import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
@@ -2209,7 +2210,7 @@ test("a parked run seen working after it wrote a new outcome keeps that outcome,
  */
 type World = { run: (args: string[]) => string; calls: string[][]; codeHost: CodeHost; host: ReturnType<typeof createFakeCodeHost> };
 
-type Node = { author?: { login?: string } | null; state?: string; submittedAt?: string; createdAt?: string; commit?: { oid?: string } };
+type Node = { author?: { login?: string } | null; state?: string; submittedAt?: string; createdAt?: string; commit?: { oid?: string }; body?: string; url?: string };
 type Described = { state: string; headRefOid: string; mergeable: string; mergeStateStatus: string; baseRefName: string;
   files: { pageInfo: { hasNextPage: boolean }; nodes: { path: string }[] }; reviews: { nodes: Node[] }; comments: { nodes: Node[] };
   commits: { nodes: { commit: { statusCheckRollup: { contexts: { nodes: Record<string, any>[] } } } }[] } };
@@ -2258,6 +2259,8 @@ function ghFor(pulls: Record<number, unknown>): World {
     host.seedPull(match[1], Number(match[2]), {
       head: pull.headRefOid, base: pull.baseRefName, state: pull.state.toLowerCase() as "open" | "merged" | "closed", settled: rollup.every((check) => check.conclusion === "SUCCESS"), feedback,
       reviews: pull.reviews.nodes.map((r) => ({ author: r.author?.login ?? "", state: String(r.state), commit: r.commit?.oid ?? "", at: Date.parse(r.submittedAt ?? "") || 0 })),
+      // The conversation comments that carry a text are the replies the plugin would read (A11-156); the fake keeps the ones the caller names.
+      replies: pull.comments.nodes.filter((c) => typeof c.body === "string" && c.body !== "").map((c) => ({ author: c.author?.login ?? "", at: Date.parse(c.createdAt ?? "") || 0, url: c.url ?? "", text: c.body! })),
     });
     return true;
   };
@@ -3586,7 +3589,7 @@ test("A11-119: a head with a posted review, or one ticket:review started, is not
   assert.deepEqual(starts, [], "a head with an approval is not started");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
   pulls[1] = feedbackPull({ head: "h2" });
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, [], "a head ticket:review started is not started again");
 });
@@ -3628,6 +3631,267 @@ test("A11-119: a refusal to start is said once for a head, and is asked again on
   const unsettled = await sweptPool(fakeReviewer().port, { 1: feedbackPull({ checks: [{ name: "ci", status: "IN_PROGRESS" }] }) });
   unsettled.pool.reviewNewHeads();
   assert.equal(unsettled.pool.pullReviews()[sweptPr], "waiting for checks at h1", "and it is not started");
+});
+
+// ---- A11-156: a reply to a block gets one re-review of the same head, and the reviewer is told the ticket's Done-when ----
+
+/** The Done-when a ticket writes in two parts: the reviewer is quoted both. */
+const TWO_PART_TICKET = [
+  "Fix the migration.", "", "## Acceptance", "", "- it migrates", "", "## Done-when", "", "### Before merge", "", "- the migration test passes", "",
+  "### After merge (who runs it)", "", "- the live host runs it. The chairman, after 0.9.0 is installed, with `agent-org migrate` and a `migrated` line.", "", "## Notes", "", "- not part of it",
+].join("\n");
+
+/** A review of `commit` by `login`, `minute` minutes into the hour: the reviewer's block and approval, and the order between them. */
+const reviewAt = (login: string, state: string, commit: string, minute: number) => ({ state, submittedAt: at(minute * 60_000), author: { login }, commit: { oid: commit } });
+/** A conversation comment by `login`, `minute` minutes into the hour: a reply when it follows the block. */
+const replyAt = (login: string, minute: number, body = "This is not a defect in this diff: the live migration is run after the release.") =>
+  ({ author: { login }, createdAt: at(minute * 60_000), body, url: `${sweptPr}#issuecomment-${minute}` });
+const BLOCK = (minute = 10) => reviewAt(REVIEWER_LOGIN, "CHANGES_REQUESTED", "h1", minute);
+
+/**
+ * A reviewer port for the re-review tests: it records each start with the brief it was given, and its reviewer stays open and `working` until a test ends its turn (`end`), and closes only
+ * once it has (a close of one still working is busy). `refuse` makes the next start refuse.
+ */
+function rereviewer() {
+  const starts: { ref: ReviewerRef; brief: ReviewBrief | undefined }[] = [];
+  const closes: ReviewerRef[] = [];
+  const reposts: string[] = [];
+  const prompts: ReviewerRef[] = [];
+  const control = { open: false, turn: "working" as ReviewerSettled, refuse: null as string | null, file: null as string | null };
+  const port: ReviewerPort = {
+    start(ref, brief) {
+      starts.push({ ref, brief });
+      if (control.refuse !== null) return { refusal: control.refuse };
+      control.open = true;
+      control.turn = "working";
+      return { label: "reviewer-7" };
+    },
+    live: () => control.open,
+    close(ref) {
+      closes.push(ref);
+      if (control.turn === "working") return { state: "busy" };
+      control.open = false;
+      return { state: "closed" };
+    },
+    retire: () => ({ retired: true, report: null }),
+    listedPulls: () => [],
+    settled: () => (control.open ? control.turn : "gone"),
+    verdictFileOf: () => control.file,
+    repostVerdict(ref, file) { reposts.push(file); return { posted: true }; },
+    reprompt(ref) { prompts.push(ref); return { prompted: true }; },
+  };
+  return { port, starts, closes, reposts, prompts, control, end: () => { control.turn = "ended"; } };
+}
+
+/** A swept pool whose queue holds NBF-1 with `description` and `sweptPr` as its pull request: the run the reviewer's Done-when is read from. */
+async function sweptWithTicket(port: ReviewerPort, pulls: Record<number, unknown>, description = TWO_PART_TICKET) {
+  await loadReviewerGate();
+  const ctx = setup(1, ["NBF-1"], REVIEWING, { gh: ghFor(pulls), reviewerPort: port });
+  const queue = ctx.store.get();
+  ctx.store.set({ ...queue, entries: [{ ...queue.entries[0], ticket: { ...queue.entries[0].ticket, description }, outcome: { kind: "ready-pr", prs: [{ repo: "nbl-ui-netbox", url: sweptPr }] } as Outcome }] });
+  return ctx;
+}
+
+test("A11-156: a reply to the reviewer's block with no new commit starts one re-review of that head, with the reply and the ticket's Done-when in its brief; the board says so, and the approval closes it", async () => {
+  const { port, starts, closes, end } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()] }) };
+  const ctx = await sweptWithTicket(port, pulls);
+  const path = reviewerMemoryPath(ctx.settings.stateDir);
+  ctx.pool.reviewNewHeads();
+  assert.equal(starts.length, 0, "a block with no reply asks for nothing");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1");
+  pulls[1] = feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
+  ctx.pool.reviewNewHeads();
+  assert.equal(starts.length, 1, "the reply starts a re-review");
+  assert.deepEqual(starts[0].ref, { pr: sweptPr, head: "h1" }, "of the same head, which has no new commit");
+  assert.deepEqual(starts[0].brief?.rereview?.replies, [{ author: "worker-bot", url: `${sweptPr}#issuecomment-20`, text: "This is not a defect in this diff: the live migration is run after the release." }]);
+  const doneWhen = starts[0].brief?.doneWhen ?? "";
+  assert.ok(doneWhen.startsWith("## Done-when") && doneWhen.includes("### Before merge") && doneWhen.includes("### After merge (who runs it)") && doneWhen.includes("after 0.9.0 is installed"), "the ticket's Done-when, both parts");
+  assert.ok(!doneWhen.includes("## Notes") && !doneWhen.includes("## Acceptance"), "and no other section");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "re-review asked by reply at h1");
+  assert.ok(readReviewerMemory(path).memory.rereviewed.has(`${sweptPr}@h1`), "recorded on disk");
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual([starts.length, closes.length], [1, 0], "the block at its head does not close the re-reviewer, and a second sweep starts nothing");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "re-review asked by reply at h1");
+  // The re-reviewer approves, naming the block, and ends its turn.
+  pulls[1] = feedbackPull({ reviews: [BLOCK(), reviewAt(REVIEWER_LOGIN, "APPROVED", "h1", 30)], comments: [replyAt("worker-bot", 20)] });
+  end();
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(closes, [{ pr: sweptPr, head: "h1" }], "the approval closes it");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
+  pulls[1] = feedbackPull({ reviews: [BLOCK(), reviewAt(REVIEWER_LOGIN, "APPROVED", "h1", 30)], comments: [replyAt("worker-bot", 20), replyAt("worker-bot", 40, "one more")] });
+  ctx.restart().reviewNewHeads();
+  assert.equal(starts.length, 1, "a second reply, after a restart, starts nothing more");
+});
+
+test("A11-156: a head is re-reviewed by reply once, whatever is posted after, and the record is kept across a restart", async () => {
+  const { port, starts, end, control } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
+  const ctx = await sweptWithTicket(port, pulls);
+  ctx.pool.reviewNewHeads();
+  assert.equal(starts.length, 1);
+  // The re-reviewer ends having posted nothing (its not-convinced was refused by the door), and is closed.
+  end();
+  ctx.pool.reviewNewHeads();
+  assert.equal(control.open, false, "closed once its turn ended");
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1", "and the board reads the standing block");
+  pulls[1] = feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20), replyAt("worker-bot", 50, "I disagree, again")] });
+  ctx.pool.reviewNewHeads();
+  ctx.restart().reviewNewHeads();
+  assert.equal(starts.length, 1, "a second reply, before or after a restart, starts no second re-review of h1");
+});
+
+test("A11-156: an unconvinced re-review is not read as a lost verdict: no repost, no `verdict not posted` line, no prompt, and the board reads changes requested", async () => {
+  const { port, starts, reposts, prompts, end, control } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
+  const ctx = await sweptWithTicket(port, pulls);
+  // The first reviewer started this head in an earlier sweep, so the pool holds it as started.
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
+  const logged = await captureStderr(async () => {
+    ctx.pool.reviewNewHeads();
+    end();
+    control.file = "/checkout/verdict.md";
+    ctx.pool.reviewNewHeads();
+    ctx.pool.reviewNewHeads();
+  });
+  assert.equal(starts.length, 1);
+  assert.deepEqual([reposts, prompts], [[], []], "the verdict file the door refused is not posted again, and the reviewer is not prompted");
+  assert.deepEqual(logged.filter((line) => line.includes("verdict not posted") || line.includes("is not posted")), []);
+  assert.equal(ctx.store.get().entries[0].verdictNotPosted, undefined);
+  assert.equal(ctx.pool.pullReviews()[sweptPr], "changes requested at h1");
+});
+
+test("A11-156: a reply that is not from the board's account or a declared person, was posted before the block, or comes with an approval already at the head starts nothing; a declared person's does", async () => {
+  const scenarios: [string, ReturnType<typeof feedbackPull>, boolean][] = [
+    ["an undeclared login", feedbackPull({ reviews: [BLOCK()], comments: [replyAt("a-stranger", 20)] }), false],
+    ["the reviewer's own comment", feedbackPull({ reviews: [BLOCK()], comments: [replyAt(REVIEWER_LOGIN, 20)] }), false],
+    ["a reply posted before the block", feedbackPull({ reviews: [BLOCK(30)], comments: [replyAt("worker-bot", 20)] }), false],
+    ["a reply with no text", feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20, "")] }), false],
+    ["an approval already at the head", feedbackPull({ reviews: [BLOCK(), reviewAt(REVIEWER_LOGIN, "APPROVED", "h1", 15)], comments: [replyAt("worker-bot", 20)] }), false],
+    ["a person the org declares", feedbackPull({ reviews: [BLOCK()], comments: [replyAt("DanBeckDev", 20, "The block is wrong: see the ticket's After-merge part.")] }), true],
+    ["the board's own account", feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }), true],
+  ];
+  for (const [why, pull, starts] of scenarios) {
+    const { port, starts: made } = rereviewer();
+    const ctx = await sweptWithTicket(port, { 1: pull });
+    ctx.pool.reviewNewHeads();
+    assert.equal(made.length, starts ? 1 : 0, why);
+  }
+});
+
+test("A11-156: a head that moved is a first review with no replies in its brief, not a re-review; the memory of the old head does not carry over", async () => {
+  const { port, starts, end } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
+  const ctx = await sweptWithTicket(port, pulls);
+  ctx.pool.reviewNewHeads();
+  assert.equal(starts[0].brief?.rereview !== undefined, true, "h1 is re-reviewed by reply");
+  end();
+  pulls[1] = feedbackPull({ head: "h2", reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
+  port.close({ pr: sweptPr, head: "h1" });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts.map(({ ref }) => ref.head), ["h1", "h2"]);
+  assert.equal(starts[1].brief?.rereview, undefined, "the new head is a first review");
+  assert.equal(starts[1].brief?.doneWhen?.startsWith("## Done-when"), true, "and still carries the ticket's Done-when");
+});
+
+test("A11-156: a first review of a pull request no run holds says its body is the only copy of the contract: the brief carries no Done-when", async () => {
+  const { port, starts } = rereviewer();
+  await loadReviewerGate();
+  const ctx = setup(1, [], REVIEWING, { gh: ghFor({ 1: feedbackPull() }), reviewerPort: port });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts.map(({ brief }) => brief), [{ doneWhen: null }]);
+  const other = rereviewer();
+  const noSection = await sweptWithTicket(other.port, { 1: feedbackPull() }, "A ticket with no Done-when section.");
+  noSection.pool.reviewNewHeads();
+  assert.deepEqual(other.starts.map(({ brief }) => brief), [{ doneWhen: null }], "a ticket with no such section has none to quote");
+});
+
+test("A11-156: a refused re-review start is not remembered, so the next sweep asks again; an unreadable reply read starts nothing and is asked again", async () => {
+  const { port, starts, control } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
+  const ctx = await sweptWithTicket(port, pulls);
+  const path = reviewerMemoryPath(ctx.settings.stateDir);
+  control.refuse = "another instance holds the review";
+  const logged = await captureStderr(async () => {
+    ctx.pool.reviewNewHeads();
+    ctx.pool.reviewNewHeads();
+  });
+  assert.equal(starts.length, 2, "asked again on the next sweep");
+  assert.equal(logged.filter((line) => line.includes("another instance holds the review")).length, 1, "and said once");
+  assert.equal(readReviewerMemory(path).memory.rereviewed.size, 0, "a refused start leaves no record");
+  control.refuse = null;
+  ctx.pool.reviewNewHeads();
+  assert.equal(starts.length, 3, "and starts once the refusal is gone");
+  assert.equal(readReviewerMemory(path).memory.rereviewed.has(`${sweptPr}@h1`), true);
+});
+
+test("A11-156: replies that cannot be read start nothing and are said once; the next sweep reads them", async () => {
+  const { port, starts } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
+  await loadReviewerGate();
+  const gh = ghFor(pulls);
+  const readable = gh.codeHost.readReplies;
+  let readableNow = false;
+  gh.codeHost.readReplies = (url, request) => (readableNow ? readable(url, request) : null);
+  const ctx = setup(1, [], REVIEWING, { gh, reviewerPort: port });
+  const logged = await captureStderr(async () => {
+    ctx.pool.reviewNewHeads();
+    ctx.pool.reviewNewHeads();
+  });
+  assert.equal(starts.length, 0, "null is not 'no reply' and not 'a reply'");
+  assert.equal(logged.filter((line) => line.includes("its replies could not be read")).length, 1, "said once across two sweeps");
+  readableNow = true;
+  ctx.pool.reviewNewHeads();
+  assert.equal(starts.length, 1, "and read on the next sweep");
+});
+
+test("A11-156: a long thread quotes the newest ten replies; a code host that reads no replies asks for no re-review and is said once", async () => {
+  const { port, starts } = rereviewer();
+  const thread = Array.from({ length: 14 }, (_, i) => replyAt("worker-bot", 20 + i, `reply ${i}`));
+  const ctx = await sweptWithTicket(port, { 1: feedbackPull({ reviews: [BLOCK()], comments: thread }) });
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(starts[0].brief?.rereview?.replies.map(({ text }) => text), thread.slice(-10).map(({ body }) => body), "the newest ten, oldest first");
+  const old = rereviewer();
+  await loadReviewerGate();
+  const gh = ghFor({ 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) });
+  (gh.codeHost as { readReplies?: unknown }).readReplies = undefined;
+  const legacy = setup(1, [], REVIEWING, { gh, reviewerPort: old.port });
+  const logged = await captureStderr(async () => {
+    legacy.pool.reviewNewHeads();
+    legacy.pool.reviewNewHeads();
+  });
+  assert.equal(old.starts.length, 0);
+  assert.equal(logged.filter((line) => line.includes("the code host does not read replies")).length, 1);
+});
+
+test("A11-156: a reply to a watched run's block starts the re-review from the watch too, and a re-review that stays unconvinced asks the worker for no new round", async () => {
+  const { port, starts, end } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()] }) };
+  const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${approvedPr.url}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the block asks the worker for one round");
+  await finishRound(ctx);
+  pulls[1] = feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
+  await watchRound(ctx.pool);
+  assert.equal(starts.length, 1, "the worker's reply starts the re-review from the watch");
+  end();
+  await watchRound(ctx.pool);
+  await watchRound(ctx.pool);
+  assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["finished", 1], "a re-review that stays unconvinced asks for no second round");
+});
+
+test("A11-156: the pool forgets a merged pull request's re-review record, and a record the file holds is not brought back", async () => {
+  const { port, starts } = rereviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
+  const ctx = await sweptWithTicket(port, pulls);
+  ctx.pool.reviewNewHeads();
+  const path = reviewerMemoryPath(ctx.settings.stateDir);
+  assert.equal(readReviewerMemory(path).memory.rereviewed.size, 1);
+  pulls[1] = feedbackPull({ state: "MERGED", reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] });
+  ctx.pool.releaseReviewers();
+  assert.equal(readReviewerMemory(path).memory.rereviewed.size, 0, "dropped from disk with the pull request");
+  assert.equal(starts.length, 1);
 });
 
 test("a merged pull request's reviewer is retired by the sweep, and what the pool remembers of it is dropped from disk", async () => {
@@ -5145,7 +5409,7 @@ test("A11-161: switched back on, the reviewer resumes on the next head: one revi
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }), 2: feedbackPull({ head: "h2" }), 3: feedbackPull({ head: "h3" }) };
   await loadReviewerGate();
   const made = setup(1, [], REVIEWING, { gh: ghFor(pulls), reviewerPort: fake });
-  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map() });
+  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
   const restarted = made.restart();
   restarted.reviewNewHeads();
   assert.deepEqual(fake.started.map(({ pr, head }) => `${pr}@${head}`).sort(), [`${sweptPr}@h1`, `${SWEPT_REPO_PULL_2}@h2`], "one for each head, and none for the head the memory says was started");

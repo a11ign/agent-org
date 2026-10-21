@@ -11,8 +11,9 @@ import { join } from "node:path";
 import type { ListedAgent } from "../../src/herdr-agents.ts";
 import type { DoorRun } from "../../src/review-trust.ts";
 import type { CodeHost, ReviewState } from "../../src/plugins/contracts/code-host.ts";
-import type { CloseAnswer, PromptAnswer, RepostAnswer, RetireAnswer, ReviewerPort, ReviewerRef, ReviewerSettled } from "../../src/plugins/contracts/reviewer.ts";
+import type { CloseAnswer, PromptAnswer, RepostAnswer, RetireAnswer, ReviewBrief, ReviewerPort, ReviewerRef, ReviewerSettled } from "../../src/plugins/contracts/reviewer.ts";
 import type { ReviewerBoard, ReviewerGate, ReviewerHelpers } from "../../src/plugins/manifest.ts";
+import { reviewWords, rereviewWords } from "./prompt.ts";
 
 /** The cause the reviewer is started for: the gate's `draft-awaiting-verdict`, the one a ready pull request is reviewed under. */
 export const REVIEW_CAUSE = "draft-awaiting-verdict";
@@ -218,14 +219,14 @@ export function atomicReviewerPort(helpers: ReviewerHelpers, seams: Seams = {}):
   const context: Context = { helpers, seams };
   return {
     live: (ref) => liveReviewer(context, ref),
-    start: (ref) => startReviewer(context, ref),
+    start: (ref, brief) => startReviewer(context, ref, brief),
     settled: (ref) => settledReviewer(context, ref),
     verdictFileOf: ({ pr, head }) => {
       const seat = seatOf(context, pr);
       return "refusal" in seat ? null : verdictFileIn(checkoutPathOf(context, seat.label), seat.number, head, boardOf(context).verdict);
     },
     repostVerdict: (ref, file) => repostReviewerVerdict(context, ref, file),
-    reprompt: (ref) => repromptReviewer(context, ref),
+    reprompt: (ref, brief) => repromptReviewer(context, ref, brief),
     close: (ref) => closeReviewer(context, ref),
     retire: (pr) => retireReviewer(context, pr),
     listedPulls: () => listedPullUrls(context),
@@ -244,10 +245,22 @@ function listedOf(context: Context): ListedAgent[] | null {
   return boardOf(context).herdr.readAgents(run, { session });
 }
 
-/** The gate's own verdict prompt, for a seat's repository, sent to the seat's agent: the same words the gate sends a reviewer for a ready pull request. */
-function sendPrompt(context: Context, seat: { label: string; key: string }, state: ReviewState, head: string): { sent: true } | { refusal: string } {
+/**
+ * What a seat's reviewer is sent (A11-156): the gate's own verdict prompt for the seat's repository, with the ticket's Done-when and the post-merge rule after it, or, for a re-review of a head that
+ * already has this reviewer's block, the re-review brief in its place (the gate's prompt says the head has no verdict, which is no longer true of it).
+ */
+function promptWords(context: Context, seat: { label: string; key: string }, state: ReviewState, { pr: url, head }: ReviewerRef, brief: ReviewBrief | undefined): string {
   const { orders } = gateOf(context);
-  const words = orders.awaitingVerdictPrompt({ ...state.view, repoKey: seat.key }, orders.reviewHeadsOf(state.view, head, "settled"));
+  const pr = { ...state.view, repoKey: seat.key };
+  if (brief?.rereview !== undefined) {
+    return rereviewWords({ number: Number(state.view.number), head, pr: url, roleFile: orders.reviewerRoleFile(pr), replies: brief.rereview.replies, doneWhen: brief.doneWhen });
+  }
+  return reviewWords(orders.awaitingVerdictPrompt(pr, orders.reviewHeadsOf(state.view, head, "settled")), brief);
+}
+
+/** Sends the seat's agent its prompt (`promptWords`). */
+function sendPrompt(context: Context, seat: { label: string; key: string }, state: ReviewState, ref: ReviewerRef, brief: ReviewBrief | undefined): { sent: true } | { refusal: string } {
+  const words = promptWords(context, seat, state, ref, brief);
   const { session, run } = boardOf(context);
   try {
     run(["--session", session, "agent", "prompt", seat.label, words]);
@@ -292,7 +305,7 @@ function claimWriterOf(context: Context, seat: Seat, { repo, sha, tree }: { repo
  * Claims the head for this instance before its reviewer starts (A11-149). A mint that fails is a refusal, as a claim that cannot be written is. Returns the takeover note when an expired claim
  * was taken over, or the refusal that starts nothing: another instance holds the head, the review is posted, or the claim could not be made.
  */
-function claimOf(context: Context, seat: Seat, { pr, head, tree }: { pr: string; head: string; tree: string }): Readonly<{ tookOver: string | null }> | Readonly<{ refusal: string }> {
+function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { pr: string; head: string; tree: string; rereview: boolean }): Readonly<{ tookOver: string | null }> | Readonly<{ refusal: string }> {
   const pull = pullOf(pr);
   if (pull === null) return { refusal: `no reviewer for ${pr}: it is not a pull request url` };
   const minted = mintOf(context, tree);
@@ -304,6 +317,7 @@ function claimOf(context: Context, seat: Seat, { pr, head, tree }: { pr: string;
     instance: board.instance, now: nowOf(context),
     read: () => claims.claimEntriesOf({ repo: repository, sha: head, gh: board.gh }),
     write: claimWriterOf(context, seat, { repo: repository, sha: head, tree }),
+    rereview,
   });
   switch (answer.outcome) {
     case "won": return { tookOver: answer.tookOver };
@@ -333,7 +347,8 @@ function releaseClaim(context: Context, seat: Seat, { pr, head, tree }: { pr: st
 /** The code host the board reads each pull request through: its head, its reviews, its trust and whether its checks settled. */
 const codeHostOf = (context: Context): CodeHost => boardOf(context).codeHost();
 
-function startReviewer(context: Context, { pr, head }: ReviewerRef): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }> {
+function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }> {
+  const { pr, head } = ref;
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return seat;
   const { trust } = gateOf(context);
@@ -351,7 +366,7 @@ function startReviewer(context: Context, { pr, head }: ReviewerRef): Readonly<{ 
   const tree = checkoutSeam(context)({ pr: seat.number, session: seat.label, trust: trust.INSIDE, ...rootOf(seat) });
   if ("refusal" in tree) return tree;
   // The claim comes before the spawn: an instance that holds the head starts nothing, and a claim that cannot be made starts nothing either (A11-149).
-  const claimed = claimOf(context, seat, { pr, head, tree: tree.path });
+  const claimed = claimOf(context, seat, { pr, head, tree: tree.path, rereview: brief?.rereview !== undefined });
   if ("refusal" in claimed) return claimed;
   const started = spawnOf(context)({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
     agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(context), cwd: tree.path, env: reviewerEnvOf(context, seat) });
@@ -359,7 +374,7 @@ function startReviewer(context: Context, { pr, head }: ReviewerRef): Readonly<{ 
     releaseClaim(context, seat, { pr, head, tree: tree.path });
     return started;
   }
-  const prompted = sendPrompt(context, seat, state, head);
+  const prompted = sendPrompt(context, seat, state, ref, brief);
   if ("refusal" in prompted) {
     releaseClaim(context, seat, { pr, head, tree: tree.path });
     return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
@@ -398,12 +413,13 @@ function repostReviewerVerdict(context: Context, { pr, head }: ReviewerRef, file
   }
 }
 
-function repromptReviewer(context: Context, { pr, head }: ReviewerRef): PromptAnswer {
+function repromptReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): PromptAnswer {
+  const { pr } = ref;
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return seat;
   const state = codeHostOf(context).readReviewState(pr);
   if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
-  const sent = sendPrompt(context, seat, state, head);
+  const sent = sendPrompt(context, seat, state, ref, brief);
   return "refusal" in sent ? { refusal: `no reprompt for ${pr}: ${sent.refusal}` } : { prompted: true };
 }
 
@@ -494,7 +510,7 @@ export function portWhereGateLoads(port: ReviewerPort, refusal: () => string | n
   const refused = (pr: string): string => `no reviewer for ${pr}: the reviewer's gate does not load on this host: ${refusal()}`;
   const loads = (): boolean => refusal() === null;
   return {
-    start: (ref) => (loads() ? port.start(ref) : { refusal: refused(ref.pr) }),
+    start: (ref, brief) => (loads() ? port.start(ref, brief) : { refusal: refused(ref.pr) }),
     live: (ref) => loads() && port.live(ref),
     close: (ref) => (loads() ? port.close(ref) : { refusal: refused(ref.pr) }),
     retire: (pr) => (loads() ? port.retire(pr) : { refusal: refused(pr) }),
@@ -502,6 +518,6 @@ export function portWhereGateLoads(port: ReviewerPort, refusal: () => string | n
     settled: (ref) => (loads() ? port.settled(ref) : "gone"),
     verdictFileOf: (ref) => (loads() ? port.verdictFileOf(ref) : null),
     repostVerdict: (ref, file) => (loads() ? port.repostVerdict(ref, file) : { refusal: refused(ref.pr), final: true }),
-    reprompt: (ref) => (loads() ? port.reprompt(ref) : { refusal: refused(ref.pr) }),
+    reprompt: (ref, brief) => (loads() ? port.reprompt(ref, brief) : { refusal: refused(ref.pr) }),
   };
 }

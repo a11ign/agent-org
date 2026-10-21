@@ -6,14 +6,21 @@
 // reviewed. `reviewerLines` does the same for the pull requests of a watched run, on `watchFeedback`, and adds the round a requested change asks for. Both go
 // through `reviewPull`, so there is one start rule: a head is started once (`reviewerStarted`, recorded before the start), and never when a review is already
 // posted on it.
+//
+// A REPLY TO A BLOCK GETS ONE RE-REVIEW OF THE SAME HEAD (A11-156). A head with the reviewer's `not convinced` review and no new commit stays blocked, and a worker that answers the review in a comment
+// (correctly, "not a defect in this diff") had nobody reading it. When the worker's own account, or a person the org declares, replies after the block, `rereviewFor` starts the reviewer once more for that head
+// with the replies in its brief, and records it (`reviewerRereviewed`, before the start) so the head is re-reviewed by reply once, whatever is posted after. No commit is needed to get a review.
 
-import { earlierReviewWord, readReviewerMemory, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, writeReviewerMemory } from "./reviewer-port.ts";
+import { earlierReviewWord, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { AWAITING_PERSON_LINE, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
-import { openPulls } from "./board-view/view-types-and-filters.ts";
+import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
+import { doneWhenOf } from "./done-when.ts";
+import type { Reply } from "../plugins/contracts/code-host.ts";
+import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
 
 /**
  * The attempts the pool makes to post a reviewer's verdict that is not on its pull request, per head (A11-83): a re-post of the verdict file, or the
@@ -57,7 +64,7 @@ function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, url: string, head
     // Nothing to post. The reviewer is prompted once, as a reviewer that has just started is; a second look with no file is the failure.
     if (repost.attempts > 0) return surfaced(NO_VERDICT_FILE);
     recordRepost({ attempts: 1, reason: NO_VERDICT_FILE });
-    const prompted = port.reprompt(ref);
+    const prompted = port.reprompt(ref, briefOf(ctx, url));
     if ("refusal" in prompted) log(`${url}: ${prompted.refusal}`);
     return null;
   }
@@ -74,38 +81,63 @@ function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, url: string, head
   return attempts >= MAX_REPOST_ATTEMPTS ? surfaced(answer.refusal) : null;
 }
 
+/** The most replies a re-review's prompt quotes, the newest: the prompt is one argument of one herdr call, and a head with a long thread must still be asked. */
+const MAX_REPLIES_QUOTED = 10;
+
+/** The key under which a dropped re-review is kept in `reviewerDropped`, which keys a first start by `url@head` alone: the two are dropped apart. */
+const rereviewKey = (key: string): string => `${key}#rereview`;
+
 /** What a start of a reviewer answered: the refusal that started none (null when there is none), and the expired claim it took over (null when it took none). */
 type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null }>;
 
 /**
- * Starts the reviewer for `url` at `head` (A11-119's one start path). Recorded BEFORE the start, so an instance stopped while the reviewer starts never
- * starts it again for this head; a refusal un-records it. One herdr already lists for this head is adopted, not started. The port claims the head for
+ * What the pool tells a reviewer of the ticket behind `url` (A11-156): the Done-when of the run that holds the pull request, since the reviewer cannot read the tracker. Null when no run holds
+ * it (one a person opened, or a run since removed) or its ticket has no such section: the reviewer is then told the pull request is the only copy of the contract it has.
+ */
+function briefOf(ctx: PoolContext, url: string): ReviewBrief {
+  const held = ctx.store.get().entries.find((entry) => pullsOf(entry).some((pull) => pull.url === url));
+  return { doneWhen: doneWhenOf(held?.ticket.description) };
+}
+
+/** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, and what it is called in a log line. */
+type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => string; says: string; brief: ReviewBrief; adopts: boolean }>;
+
+/**
+ * Starts the reviewer for `url` at `head` (A11-119's one start path, and A11-156's re-review by the same path). Recorded BEFORE the start, so an instance stopped while the reviewer starts never
+ * starts it again for this head; a refusal un-records it. A first review adopts one herdr already lists for this head, where a re-review has none to adopt. The port claims the head for
  * this instance first (A11-149), so a head another instance holds is refused here. A refusal is said once per `url@head`, so a sweep every few minutes does
  * not repeat it for a pull request that stays red.
  */
-function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string, key: string): StartAnswer {
-  const { refusedHeads, reviewerStarted } = ctx;
-  reviewerStarted.add(key);
-  ctx.reviewerDropped.delete(key);
+function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string, kind: StartKind): StartAnswer {
+  const { refusedHeads, reviewerDropped } = ctx;
+  const key = `${url}@${head}`;
+  const dropped = kind.droppedKey(key);
+  kind.recorded.add(key);
+  reviewerDropped.delete(dropped);
   rememberReviewers(ctx);
-  const adopted = reviewer.live({ pr: url, head });
-  const started = adopted ? null : reviewer.start({ pr: url, head });
+  const adopted = kind.adopts && reviewer.live({ pr: url, head });
+  const started = adopted ? null : reviewer.start({ pr: url, head }, kind.brief);
   if (started === null) return { refusal: null, tookOver: null };
   if (!("refusal" in started)) {
     // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
     rememberReviewers(ctx);
-    log(`${url}: started ${started.label} for ${head.slice(0, 8)}`);
+    log(`${url}: started ${started.label} ${kind.says} ${head.slice(0, 8)}`);
     if (started.tookOver !== undefined) log(`${url}: ${started.tookOver}`);
     return { refusal: null, tookOver: started.tookOver ?? null };
   }
-  reviewerStarted.delete(key);
-  ctx.reviewerDropped.add(key);
+  kind.recorded.delete(key);
+  reviewerDropped.add(dropped);
   rememberReviewers(ctx);
-  if (!refusedHeads.has(key)) {
-    refusedHeads.add(key);
+  if (!refusedHeads.has(dropped)) {
+    refusedHeads.add(dropped);
     log(started.refusal);
   }
   return { refusal: started.refusal, tookOver: null };
+}
+
+/** The first review of a head (A11-119): recorded in `reviewerStarted`, under the key `reviewerDropped` has always held it by. */
+function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string): StartAnswer {
+  return startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url), adopts: true });
 }
 
 /**
@@ -118,16 +150,84 @@ function tookOverOf(started: StartAnswer | null, kept: PullRead | undefined, hea
 }
 
 /**
+ * The replies to the reviewer's block, posted after it by the board's own account or a person the org declares (`replyAuthorsOf`), or null when they could not be asked: the account the board acts
+ * as cannot be read, or the code host does not answer. Null is never "no reply", so the head is asked about again on the next look; it is said once.
+ */
+function repliesAfter(ctx: PoolContext, url: string, key: string, since: number): readonly Reply[] | null {
+  const { codeHost, ownLogin, refusedHeads } = ctx;
+  const unasked = `${key}#replies`;
+  const said = (why: string) => {
+    if (refusedHeads.has(unasked)) return;
+    refusedHeads.add(unasked);
+    log(`${url}: ${why}, so a reply to its review is not looked for; the next look asks again`);
+  };
+  // A code host of contract 1.1 reads no replies: said once, as an unreadable answer is, and no re-review is asked.
+  if (typeof codeHost.readReplies !== "function") {
+    said("the code host does not read replies");
+    return null;
+  }
+  ownLogin.value ??= codeHost.readOwnLogin();
+  if (ownLogin.value === null) {
+    said("the account the board acts as could not be read");
+    return null;
+  }
+  const replies = codeHost.readReplies(url, { since, authors: replyAuthorsOf(ownLogin.value) });
+  if (replies === null) said("its replies could not be read");
+  else refusedHeads.delete(unasked);
+  return replies;
+}
+
+/**
+ * A RE-REVIEW OF A HEAD THAT STAYS BLOCKED, ASKED BY A REPLY (A11-156): when the reviewer's newest review at the head is its `not convinced`, no reviewer is live for the head, the checks are
+ * green, and a reply to the block has been posted since by the board's own account or a person the org declares, the reviewer is started once more for the same head, with the replies in its brief.
+ * Once: the head is recorded before the start, and is never re-reviewed by reply again whatever is posted after, so a reply the reviewer still rejects cannot summon it again without new work. A new
+ * head is a new first review and has no record. Returns the start's answer, or null when nothing was asked.
+ */
+function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer | null {
+  const { head } = state;
+  const key = `${url}@${head}`;
+  const block = standingBlock(state.reviews, head);
+  const asked = ctx.reviewerRereviewed.has(key) || reviewer.live({ pr: url, head });
+  if (block === null || asked || !state.settled) return null;
+  const replies = repliesAfter(ctx, url, key, block.at);
+  if (replies === null || replies.length === 0 || ctx.codeHost.readPullState(url) !== "OPEN") return null;
+  const brief: ReviewBrief = { ...briefOf(ctx, url), rereview: { replies: replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text })) } };
+  return startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false });
+}
+
+/**
+ * Once its verdict is posted, the reviewer for this head closes: its workspace goes, and its checkout stays (`close`). One still working is kept
+ * in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round, and no watch reads this run until it ends.
+ * A re-review's reviewer is the exception (A11-156): the block that stands at its head is the one it answers, so it closes once it has posted its own review, or has ended its turn.
+ */
+function closeAnsweredReviewer(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): void {
+  const { closing, reviewerRereviewed } = ctx;
+  const { head } = state;
+  const ref = { pr: url, head };
+  const key = `${url}@${head}`;
+  const verdict = reviewVerdict(state.reviews, head);
+  const awaitingOwn = reviewerRereviewed.has(key) && verdict === "not-convinced" && reviewer.settled(ref) === "working";
+  if (verdict === null || awaitingOwn || !reviewer.live(ref)) return;
+  const answer = reviewer.close(ref);
+  if ("refusal" in answer) {
+    log(answer.refusal);
+    closing.delete(key);
+  } else if (answer.state === "busy") closing.set(key, ref);
+  else closing.delete(key);
+}
+
+/**
  * One open pull request at its current head, as the pool looks at it (A11-119): a posted verdict is remembered, a reviewer that ended without one is looked
  * at (`unpostedVerdict`), a head whose checks have settled green gets its reviewer once (`startFor`), and a posted verdict closes its reviewer. What it
  * read is kept for the board (`pullReads`). Returns the state read and the verdict not posted, or null when GitHub did not say, which the caller says.
  */
 function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Readonly<{ state: ReviewState; unposted: string | null }> | null {
-  const { closing, codeHost, pullReads, reviewerReposts, reviewerStarted } = ctx;
+  const { codeHost, pullReads, reviewerReposts, reviewerRereviewed, reviewerStarted } = ctx;
   const state = codeHost.readReviewState(url);
   if (state === null) return null;
   const { head } = state;
   const key = `${url}@${head}`;
+  const ref = { pr: url, head };
   const posted = reviewPostedAt(state.reviews, head);
   let unposted: string | null = null;
   if (posted) {
@@ -139,22 +239,17 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   // does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads it open must not start a
   // reviewer for it again. A new head after requested changes has no posted review, so it is started here.
   const startable = state.settled && !posted && !reviewerStarted.has(key);
-  const started = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, head, key) : null;
+  const first = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, head) : null;
+  closeAnsweredReviewer(ctx, reviewer, url, state);
+  // The reply to a block asks for one more look at the same head, once the first reviewer has gone.
+  const rereview = first === null ? rereviewFor(ctx, reviewer, url, state) : null;
+  const started = first ?? rereview;
   const tookOver = tookOverOf(started, pullReads.get(url), head);
-  // Once its verdict is posted, the reviewer for this head closes: its workspace goes, and its checkout stays (`close`). One still working is kept
-  // in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round below, and no watch reads this run until it ends.
-  if (reviewVerdict(state.reviews, head) !== null && reviewer.live({ pr: url, head })) {
-    const ref = { pr: url, head };
-    const answer = reviewer.close(ref);
-    if ("refusal" in answer) {
-      log(answer.refusal);
-      closing.delete(key);
-    } else if (answer.state === "busy") closing.set(key, ref);
-    else closing.delete(key);
-  }
+  const reviewing = reviewer.live(ref);
   const read: PullRead = {
-    head, settled: state.settled, reviewing: reviewer.live({ pr: url, head }), verdict: reviewWordAt(state.reviews, head),
+    head, settled: state.settled, reviewing, verdict: reviewWordAt(state.reviews, head),
     earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }),
+    ...(reviewing && reviewerRereviewed.has(key) && reviewVerdict(state.reviews, head) === "not-convinced" ? { rereview: true } : {}),
   };
   pullReads.set(url, read);
   return { state, unposted };
@@ -197,9 +292,10 @@ export function reviewerLines(ctx: PoolContext, entry: Entry, urls: readonly str
 
 /** Takes in what the reviewer memory file says and the pool does not: a start `ticket:review` made, its `url@head` and its seat's head (A11-119). */
 function adoptRememberedReviewers(ctx: PoolContext): void {
-  const { reviewerDropped, reviewerFile, reviewerMemory, reviewerStarted } = ctx;
+  const { reviewerDropped, reviewerFile, reviewerMemory, reviewerRereviewed, reviewerStarted } = ctx;
   const { memory } = readReviewerMemory(reviewerFile);
   for (const key of memory.started) if (!reviewerDropped.has(key)) reviewerStarted.add(key);
+  for (const key of memory.rereviewed) if (!reviewerDropped.has(rereviewKey(key))) reviewerRereviewed.add(key);
   for (const [label, head] of memory.heads) reviewerMemory.heads.set(label, head);
 }
 
@@ -292,17 +388,19 @@ export function pullReviewsOf(ctx: PoolContext): Record<string, string> {
 }
 
 /**
- * Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed, re-posts) and any verdict still awaiting its close.
+ * Drops what the pool remembers of a pull request: its `url@head` keys (started, resumed, re-posts, re-reviewed) and any verdict still awaiting its close.
  */
 function forgetPull(ctx: PoolContext, url: string): void {
-  const { closing, reviewerDropped, reviewerReposts, reviewerResumed, reviewerStarted } = ctx;
+  const { closing, reviewerDropped, reviewerReposts, reviewerRereviewed, reviewerResumed, reviewerStarted } = ctx;
   const ofPull = (key: string) => key.startsWith(`${url}@`);
-  for (const key of [...reviewerStarted, ...reviewerResumed, ...reviewerReposts.keys()]) {
+  for (const key of [...reviewerStarted, ...reviewerResumed, ...reviewerReposts.keys(), ...reviewerRereviewed]) {
     if (ofPull(key)) {
       if (reviewerStarted.has(key)) reviewerDropped.add(key);
+      if (reviewerRereviewed.has(key)) reviewerDropped.add(rereviewKey(key));
       reviewerStarted.delete(key);
       reviewerResumed.delete(key);
       reviewerReposts.delete(key);
+      reviewerRereviewed.delete(key);
     }
   }
   for (const key of [...closing.keys()]) if (ofPull(key)) closing.delete(key);
@@ -316,14 +414,14 @@ function forgetPull(ctx: PoolContext, url: string): void {
  * remembered of it), while an open one is left, and one whose state cannot be read is asked again next sweep.
  */
 export function releaseReviewers(ctx: PoolContext): void {
-  const { closing, codeHost, reviewer, reviewerStarted } = ctx;
+  const { closing, codeHost, reviewer, reviewerRereviewed, reviewerStarted } = ctx;
   if (reviewer === undefined) return;
   for (const [key, ref] of [...closing]) {
     const answer = reviewer.close(ref);
     if ("refusal" in answer) log(answer.refusal);
     if ("refusal" in answer || answer.state !== "busy") closing.delete(key);
   }
-  const pulls = new Set([...reviewerStarted].map((key) => key.slice(0, key.lastIndexOf("@"))));
+  const pulls = new Set([...reviewerStarted, ...reviewerRereviewed].map((key) => key.slice(0, key.lastIndexOf("@"))));
   for (const url of reviewer.listedPulls()) pulls.add(url);
   for (const url of pulls) {
     const state = codeHost.readPullState(url);

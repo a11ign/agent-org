@@ -204,13 +204,27 @@ test("a not-convinced verdict resumes the same worker for a round with the revie
 test("the re-posts a pool remembers are kept on disk, and a memory file from before them reads with none", () => {
   const path = join(tmpDir("reviewer-memory-"), "reviewers.json");
   const memory = { heads: new Map([["reviewer-7", "h1"]]), started: new Set([`${PR_URL}@h1`]), resumed: new Set<string>(),
-    reposts: new Map([[`${PR_URL}@h1`, { attempts: 2, reason: "no key" }]]) };
+    reposts: new Map([[`${PR_URL}@h1`, { attempts: 2, reason: "no key" }]]), rereviewed: new Set([`${PR_URL}@h1`]) };
   writeReviewerMemory(path, memory);
   assert.deepEqual(readReviewerMemory(path), { memory, unreadable: false });
   writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [] }));
-  assert.deepEqual(readReviewerMemory(path), { memory: { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map() }, unreadable: false });
+  assert.deepEqual(readReviewerMemory(path), { memory: { heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set() }, unreadable: false });
   writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [], reposts: { k: { attempts: "two" } } }));
   assert.equal(readReviewerMemory(path).unreadable, true, "a malformed count is unreadable, never read as nothing remembered");
+});
+
+test("A11-156: the heads a reply earned a re-review of are kept on disk, a file from before them reads with none, and a malformed list is unreadable", () => {
+  const path = join(tmpDir("reviewer-memory-"), "reviewers.json");
+  const memory = { heads: new Map<string, string>(), started: new Set<string>(), resumed: new Set<string>(), reposts: new Map(), rereviewed: new Set([`${PR_URL}@h1`]) };
+  writeReviewerMemory(path, memory);
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).rereviewed, [`${PR_URL}@h1`], "written beside started and resumed");
+  assert.deepEqual(readReviewerMemory(path), { memory, unreadable: false }, "and read back");
+  writeReviewerMemory(path, { ...memory, rereviewed: new Set() });
+  assert.equal("rereviewed" in JSON.parse(readFileSync(path, "utf8")), false, "a pool that re-reviewed nothing writes the file it always wrote");
+  writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [] }));
+  assert.deepEqual([...readReviewerMemory(path).memory.rereviewed], [], "a file without the key reads as an empty set");
+  writeFileSync(path, JSON.stringify({ heads: {}, started: [], resumed: [], rereviewed: "h1" }));
+  assert.equal(readReviewerMemory(path).unreadable, true, "a list that is not strings is unreadable, never read as nothing remembered");
 });
 
 test("A11-119: the reviewer's word on a head, and the newest word on an earlier one, read off its reviews only", () => {
