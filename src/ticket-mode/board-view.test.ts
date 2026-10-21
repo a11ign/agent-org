@@ -590,16 +590,24 @@ test("A11-116: a blocker not pushed, canceled, or in a run with no repository ho
   assert.equal(waitNote(marked, [marked]), "Waits for NBF-1 to merge");
 });
 
-test("A11-116: the board says when a stacked run's branch was rebased, will be, or could not be rebased", () => {
+test("A11-150: the board says when a stacked run's blocker branch was merged in, will be, or conflicts with it", () => {
   const base = { key: "NBF-1", repo: "agent-org", branch: "nbf-1-fit", sha: "1111111aaaaaaaa" };
   assert.equal(rebaseNote(run({ phase: "finished" })), null, "a run stacked on nothing says nothing");
   assert.equal(rebaseNote(run({ phase: "finished", stackBase: base })), null, "a base that has not moved says nothing");
-  assert.equal(rebaseNote(run({ phase: "running", stackBase: { ...base, seen: "2222222bbbbbbbb" } })), "Will be rebased onto NBF-1 when the worker stops");
-  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, seen: "2222222bbbbbbbb" } })), null, "a finished run is rebased by the sweep, not noted");
+  assert.equal(rebaseNote(run({ phase: "running", stackBase: { ...base, seen: "2222222bbbbbbbb" } })), "Will have NBF-1 merged in when the worker stops");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, seen: "2222222bbbbbbbb" } })), null, "a finished run is merged by the sweep, not noted");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, sha: "2222222bbbbbbbb", merged: { from: base.sha, to: "2222222bbbbbbbb", at: 1 } } })),
+    "Merged NBF-1 into the branch by agent-org (1111111 → 2222222)");
   assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, sha: "2222222bbbbbbbb", rebased: { from: base.sha, to: "2222222bbbbbbbb", at: 1 } } })),
-    "Rebased onto NBF-1 by agent-org (1111111 → 2222222)");
-  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, failed: { head: "2222222bbbbbbbb", reason: "conflicted in src/pool.ts" } } })),
-    "Rebase onto NBF-1 conflicted in src/pool.ts: a person resolves it");
+    "Merged NBF-1 into the branch by agent-org (1111111 → 2222222)", "a record a rebase wrote reads as a merge");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, conflict: { head: "2222222bbbbbbbb", files: ["src/pool.ts"] } } })),
+    "Resolving a conflict with NBF-1 in pool.ts", "the conflict is named by its file, and the worker resolves it");
+  assert.equal(rebaseNote(run({ phase: "running", stackBase: { ...base, conflict: { head: "2222222bbbbbbbb", files: ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts", "src/e.ts"] } } })),
+    "Resolving a conflict with NBF-1 in a.ts, b.ts, c.ts and 2 more", "three files are named, then how many more");
+  assert.equal(rebaseNote(run({ phase: "finished", handedBack: "The pull requests keep getting feedback", stackBase: { ...base, conflict: { head: "2222222bbbbbbbb", files: ["src/pool.ts"], capped: 3 } } })),
+    "The board's 3 rounds are used up before the merge with NBF-1 was resolved: Respond to review starts another", "the cap is named, not the conflict, while the run is handed back");
+  assert.equal(rebaseNote(run({ phase: "finished", stackBase: { ...base, conflict: { head: "2222222bbbbbbbb", files: ["src/pool.ts"], capped: 3 } } })), null,
+    "a parked run at the cap has no Respond to review to name");
 });
 
 test("a pull request's repository is read from its GitHub URL, and anything else names none", () => {

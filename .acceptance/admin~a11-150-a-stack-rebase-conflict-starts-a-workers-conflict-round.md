@@ -1,0 +1,8 @@
+When a stacked run's blocker branch moves, agent-org merges it into the run's branch: no rebase and no force-push, and a clean merge is pushed as before. A merge that conflicts is aborted and starts the run's conflict round through the existing round machinery (the worker merges the base in, keeps both changes, re-runs the checks and pushes), and the board says "Resolving a conflict with NBF-1 in <file>" instead of "a person resolves it", which is removed from the code. The round cap applies: past it the run is handed back, and the note names the cap, not the conflict. Covered by real-git tests of the merge (a clean merge, an already-merged head that is not claimed as merged, a conflict aborted, a refused push, a remote branch the merge must not overwrite, a conflict a worker clears by hand) and by pool tests of the sweep (a clean merge, a conflicting merge that starts a round for a watched run, the cap, a finished run with no pull request merged clean, a draft whose conflict starts no round, a parked run whose workspace is left alone, a cleared conflict), plus the board note's wording, the brief of a round that merges first, and a check that no source says "a person resolves it".
+
+Acceptance:
+```bash
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/stack-rebase.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/worker-files.test.ts
+```
+
+Consumer-declaration: none -- no host file or record a person writes changes. A queue record the rebase wrote (`rebased`, `failed`) is read as a merge, so a queue written before this change still loads and is merged once more.

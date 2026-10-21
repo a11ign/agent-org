@@ -261,7 +261,7 @@ ${bases.map(stackLine).join("\n")}
 2. Open your pull request in place of the pull request step below, with its base set to that branch: ${opening}. It is stacked on the branch even when no pull request is under it.
 3. When the pull request of the one you build on exists by then, also link it, bottom first: \`gh stack link <its pull request url> <your pull request url>\`. Run no other \`gh stack\` command.
 4. Say in your pull request body which branch, and which pull request if there is one, yours is stacked on.
-5. The branch you build on may move while you work. Never rebase it, merge it in, or force-push: agent-org rebases your branch onto it for you after you stop, and a round after that starts on the rebased branch. If \`git fetch\` shows that branch rewritten, that is expected: finish your work.
+5. The branch you build on may move while you work. Never rebase it, merge it in, or force-push while you work: agent-org merges that branch into yours for you after you stop. If that merge conflicts, a round after that starts with the conflict, and that round merges the branch in by hand. If \`git fetch\` shows that branch rewritten, that is expected: finish your work.
 6. Once the pull request yours is stacked on has merged, agent-org retargets yours to the default branch itself. Until it does, or when that pull request's branch was merged without being deleted, your pull request's base can be a stale branch. That is expected, not a failure: do not retarget, rebase, push or merge to fix it.
 `;
 }
@@ -602,7 +602,7 @@ export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewN
   const who = resumed
     ? "You wrote these pull requests earlier in this conversation."
     : "Another worker wrote these pull requests, and its conversation could not be found: read each pull request's diff and the ticket before you change anything.";
-  const round = asked ? askedRound(who, conflict, prReview)
+  const round = asked ? askedRound(who, conflict, feedback, prReview)
     : feedback === undefined ? approvedRound(who, prReview)
     : answerRound(who, `New feedback reached your pull requests after your last round, so the board started this round to answer it.\n\nThis started the round:\n\n${quoted(feedback)}`,
       CONFLICT_LINE.test(feedback) ? MERGE_FIRST : null, prReview);
@@ -703,13 +703,15 @@ function answerRound(who: string, why: string, merge: string | null, prReview: s
 }
 
 /**
- * A round a person asked for. When the board handed the run back at its round cap for a conflict (`conflict`), the round says so and merges the base
- * in first, as a feedback round does; any other asked round keeps the brief it had, with no merge step.
+ * A round a person asked for. When the board handed the run back at its round cap for a conflict (`conflict`), the round says so. When its merge of the
+ * blocker's branch conflicted before it started (`feedback`, A11-150), the round says that. Either way it merges the base in first, as a feedback round does;
+ * any other asked round keeps the brief it had, with no merge step.
  */
-function askedRound(who: string, conflict: string | undefined, prReview: string | null): Round {
+function askedRound(who: string, conflict: string | undefined, feedback: string | undefined, prReview: string | null): Round {
   const asked = "A person asked you to answer the current feedback on your pull requests: their reviews, comments and failing checks.";
-  if (conflict === undefined) return answerRound(who, asked, null, prReview);
-  return answerRound(who, `${asked}\n\nThe board handed this run back because:\n\n${quoted(conflict)}`, MERGE_FIRST, prReview);
+  if (conflict !== undefined) return answerRound(who, `${asked}\n\nThe board handed this run back because:\n\n${quoted(conflict)}`, MERGE_FIRST, prReview);
+  if (feedback !== undefined) return answerRound(who, `${asked}\n\nThe merge of the blocker's branch into yours conflicted:\n\n${quoted(feedback)}`, MERGE_FIRST, prReview);
+  return answerRound(who, asked, null, prReview);
 }
 
 /**

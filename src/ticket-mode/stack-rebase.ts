@@ -1,10 +1,10 @@
 // @ts-check
-// module: the branch a stacked run was built on -- where it is recorded, when agent-org rebases the run onto it, and how the rebase is made
+// module: the branch a stacked run was built on -- where it is recorded, when agent-org merges the blocker's branch into the run, and how the merge is made
 //
-// A RUN STACKED ON A BLOCKER'S BRANCH IS REBASED BY AGENT-ORG, NEVER BY ITS WORKER. The worker is told not to rebase, merge the base in or force-push
-// (`worker-files.ts`), because a base rewritten under it would have its own commits replayed twice. So when the blocker's branch moves, the pool does it
-// here: from the commit the worktree was branched at (the recorded `sha`, never a merge-base, which after a force-push is an older commit), onto the
-// branch's new head, and pushes the run's own branch with a lease. A rebase that conflicts is aborted and left to a person.
+// A RUN STACKED ON A BLOCKER'S BRANCH HAS THE BLOCKER'S BRANCH MERGED IN BY AGENT-ORG, NEVER BY A REBASE AND NEVER BY A FORCE-PUSH (A11-150). The worker is
+// told not to rebase, merge the base in on its own initiative or force-push while it works (`worker-files.ts`). So when the blocker's branch moves, the pool
+// does it here: from the run's own branch, it merges the branch's new head in and pushes the run's own branch plainly. A merge that conflicts is aborted,
+// and the conflict is the run's worker's to resolve in a conflict round (`pool-watch.ts` `startStackConflictRound`).
 //
 // THE RECORD IS WRITTEN BY `ticket:worktree --from`, beside the ticket's files: `stack-base.json` says which repository, branch and commit the worktree
 // was made from. The pool reads it, and keeps that commit reachable in the clone (`refs/agent-org/stack/...`), so a force-pushed-away commit survives `gc`.
@@ -16,6 +16,7 @@ import type { StackBaseRecord } from "./board-view/view-types-and-filters.ts";
 import { find, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import type { TicketSettings } from "./settings.ts";
+import { conflictLine } from "./worker-files.ts";
 import type { Git } from "./worktree.ts";
 
 /** The file `ticket:worktree --from` writes beside a ticket's files: the repository, branch and commit its worktree was made from. */
@@ -24,7 +25,7 @@ export const STACK_BASE_FILE = "stack-base.json";
 /** What `stack-base.json` holds. */
 export type StackBaseFile = Readonly<{ repo: string; branch: string; sha: string }>;
 
-/** The stacked branch a run carries now, as the queue holds it: a rebase writes it back on top of what is there, not on a copy read before it. PURE. */
+/** The stacked branch a run carries now, as the queue holds it: a merge writes it back on top of what is there, not on a copy read before it. PURE. */
 export const stackBaseIn = (queue: Queue, key: string, fallback: StackBaseRecord): StackBaseRecord => find(queue, key)?.stackBase ?? fallback;
 
 /** The first line of an error, which is the one a board row can show. PURE. */
@@ -47,11 +48,11 @@ export async function remoteHead(git: Git, clone: string, branch: string): Promi
 }
 
 /**
- * Whether a run's stack is due a rebase: the blocker's branch is pushed (`head`) at a commit other than the one the run was branched from, and no rebase
- * has already failed against that head. Nothing is retried in a loop: a failure is tried again only once the branch is at another head. PURE.
+ * Whether a run's stack is due a merge: the blocker's branch is pushed (`head`) at a commit other than the one the run last merged in, and no conflict was
+ * found against that head. A conflict is the worker's to resolve, so the same head is not merged again. PURE.
  */
-export function rebaseDue(record: Pick<StackBaseRecord, "sha" | "failed">, head: string | null): head is string {
-  return head !== null && head !== record.sha && record.failed?.head !== head;
+export function mergeDue(record: Pick<StackBaseRecord, "sha" | "conflict">, head: string | null): head is string {
+  return head !== null && head !== record.sha && record.conflict?.head !== head;
 }
 
 /** The path of a ticket's `stack-base.json`, beside its brief. */
@@ -89,27 +90,19 @@ export async function releaseStack(git: Git, clone: string, ref: string): Promis
 }
 
 /**
- * Why a review round cannot start on its stacked branch: the rebase onto the blocker's branch failed against the head it is at now, so the round would
- * start on a base that conflicts, and a person resolves it instead. PURE.
+ * The result of merging a blocker's branch into a run's branch: the commit the stack was at and the commit it is at now, or why it was not made. `conflict`
+ * lists the files a merge left unmerged, which the run's worker resolves; any other failure (a fetch, a refused push) is tried again on the next sweep.
  */
-export function roundHeldBy(record: StackBaseRecord, head: string | null): string | null {
-  return record.failed !== undefined && record.failed.head === head ? `Rebase onto ${record.key} ${record.failed.reason}: a person resolves it` : null;
-}
+export type MergeResult = Readonly<{ ok: true; from: string; to: string; moved: boolean }> | Readonly<{ ok: false; reason: string; conflict?: readonly string[] }>;
 
 /**
- * The result of a rebase onto a blocker's branch: the commit the stack was at, the commit it is at now, or why it was not made. `conflict` is set when the
- * rebase conflicted, which a person resolves; any other failure (a fetch, a refused push) is tried again on the next sweep.
+ * Merge the blocker's branch, `base.branch` on the remote, into the run's branch, `own`, in `worktree`, and push the run's own branch to `own` plainly: no
+ * lease and no force, so a branch the remote moved on is refused. A merge that conflicts is aborted and the branch is left as it was, its files named. A
+ * refused push puts the branch back where it was before the merge. A merge with nothing to bring in pushes nothing.
  */
-export type RebaseResult = Readonly<{ ok: true; from: string; to: string }> | Readonly<{ ok: false; reason: string; conflict?: true }>;
-
-/**
- * Rebase the run's branch, `own`, in `worktree` onto `base.branch` on the remote, from the commit the worktree was branched at (`base.sha`), and push it with
- * a lease to `own`. A conflict is aborted and the branch is left as it was: its reason names the files. A refused push puts the branch back where it was
- * before the rebase. Never a merge-base: after a force-push the merge-base is an older commit, and replaying from it would repeat the blocker's commits.
- */
-export async function rebaseOnto({ git, clone, worktree, own, base }: {
-  git: Git; clone: string; worktree: string; own: string; base: Pick<StackBaseRecord, "branch" | "sha">;
-}): Promise<RebaseResult> {
+export async function mergeBaseIn({ git, worktree, own, base }: {
+  git: Git; worktree: string; own: string; base: Pick<StackBaseRecord, "branch" | "sha">;
+}): Promise<MergeResult> {
   try {
     await git(worktree, ["fetch", "--quiet", "origin", base.branch]);
   } catch (err) {
@@ -117,34 +110,69 @@ export async function rebaseOnto({ git, clone, worktree, own, base }: {
   }
   const to = (await git(worktree, ["rev-parse", `origin/${base.branch}`])).trim();
   const before = (await git(worktree, ["rev-parse", "HEAD"])).trim();
-  // The run's own branch, as the remote has it now: the lease expects that commit and no other.
-  const expect = (await remoteHead(git, clone, own)) ?? "";
-  // A rebase writes its commits with a committer: the one the run's own last commit was made with, so no identity is invented, and a machine with no git identity
-  // of its own (a CI runner, the instance's service) can still rebase.
+  // A merge writes its commit with a committer: the one the run's own last commit was made with, so no identity is invented, and a machine with no git identity
+  // of its own (a CI runner, the instance's service) can still merge.
   const committer = (await git(worktree, ["log", "-1", "--format=%cn%n%ce", "HEAD"])).split("\n");
   const identity = ["-c", `user.name=${committer[0]}`, "-c", `user.email=${committer[1]}`];
   try {
-    await git(worktree, [...identity, "rebase", "--onto", `origin/${base.branch}`, base.sha]);
+    await git(worktree, [...identity, "merge", "--no-edit", `origin/${base.branch}`]);
   } catch (err) {
     const files = (await git(worktree, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).trim().split("\n").filter((file) => file !== "");
-    await git(worktree, ["rebase", "--abort"]).catch(() => undefined);
-    return files.length > 0 ? { ok: false, reason: `conflicted in ${files.join(", ")}`, conflict: true } : { ok: false, reason: `could not be rebased: ${firstLine(err)}` };
+    await git(worktree, ["merge", "--abort"]).catch(() => undefined);
+    return files.length > 0 ? { ok: false, reason: `conflicted in ${files.join(", ")}`, conflict: files } : { ok: false, reason: `could not be merged: ${firstLine(err)}` };
   }
+  if ((await git(worktree, ["rev-parse", "HEAD"])).trim() === before) return { ok: true, from: base.sha, to, moved: false };
   try {
-    await git(worktree, ["push", `--force-with-lease=${own}:${expect}`, "origin", `HEAD:${own}`]);
+    await git(worktree, ["push", "origin", `HEAD:${own}`]);
   } catch (err) {
     await git(worktree, ["reset", "--hard", before]).catch(() => undefined);
     return { ok: false, reason: `was refused by the remote: ${firstLine(err)}` };
   }
-  return { ok: true, from: base.sha, to };
+  return { ok: true, from: base.sha, to, moved: true };
 }
 
 /**
- * The record after a rebase attempt: on success the run is branched from the new head, with the rebase kept for the board; on failure it keeps its branch and
- * records the head and the reason, so nothing is retried until the blocker's branch is at another head. PURE.
+ * Whether `head` is already in the run's branch, as a worker's round merged it in by hand (`git merge-base --is-ancestor`). The blocker's branch is fetched
+ * first, so `head` is there to ask about; a fetch that fails says no, and the next sweep asks again.
  */
-export function afterRebase(record: StackBaseRecord, head: string, result: RebaseResult, now: number): StackBaseRecord {
-  if (!result.ok) return result.conflict === true ? { ...record, seen: head, failed: { head, reason: result.reason } } : { ...record, seen: head };
-  const { seen: _seen, failed: _failed, ...kept } = record;
-  return { ...kept, sha: result.to, rebased: { from: result.from, to: result.to, at: now } };
+export async function mergedIn({ git, worktree, base, head }: {
+  git: Git; worktree: string; base: Pick<StackBaseRecord, "branch">; head: string;
+}): Promise<boolean> {
+  try {
+    await git(worktree, ["fetch", "--quiet", "origin", base.branch]);
+    await git(worktree, ["merge-base", "--is-ancestor", head, "HEAD"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The record after a merge attempt: on success the run is branched from the new head, with the merge kept for the board; a conflict is recorded against
+ * that head, and `capped` (the board's round cap) when the board's rounds were used up before it; any other failure keeps its branch and is tried again on
+ * the next sweep. A record a rebase wrote before is dropped. PURE.
+ */
+export function afterMerge(record: StackBaseRecord, head: string, result: MergeResult, now: number, capped?: number): StackBaseRecord {
+  const { failed: _failed, rebased: _rebased, ...rest } = record;
+  if (!result.ok) {
+    if (result.conflict === undefined) return { ...rest, seen: head };
+    return { ...rest, seen: head, conflict: { head, files: result.conflict, ...(capped === undefined ? {} : { capped }) } };
+  }
+  const { seen: _seen, conflict: _conflict, ...kept } = rest;
+  // A merge that brought nothing in (the worker already merged the head) is not a merge agent-org made: the run is branched from the head, and nothing is claimed.
+  return result.moved ? { ...kept, sha: result.to, merged: { from: result.from, to: result.to, at: now } } : { ...kept, sha: result.to };
+}
+
+/** The record once its conflicting head is in the run's branch: the run is branched from that head now, and the conflict is no longer named. PURE. */
+export function afterConflictCleared(record: StackBaseRecord): StackBaseRecord {
+  const { conflict, ...kept } = record;
+  return conflict === undefined ? record : { ...kept, sha: conflict.head };
+}
+
+/**
+ * The feedback a round starts with when a merge of a stacked branch conflicted: a conflict line for each open pull request of the run's repository (which
+ * the round's brief reads as a conflict to merge first), then the blocker and the files it conflicted in, named once. PURE.
+ */
+export function conflictFeedback(urls: readonly string[], record: Pick<StackBaseRecord, "key" | "branch">, files: readonly string[]): string {
+  return [...urls.map((url) => conflictLine(url, record.branch)), `Merging ${record.key}'s branch \`${record.branch}\` conflicted in ${files.join(", ")}.`].join("\n");
 }
