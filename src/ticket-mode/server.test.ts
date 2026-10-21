@@ -5,7 +5,7 @@ import { createServer, type Server } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { parseTicketSettings } from "./settings.ts";
+import { claimantOf, parseTicketSettings } from "./settings.ts";
 import { markPublishRunning, markPublishStarting, respond as respondQueued } from "./queue/queue-transitions.ts";
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
 import { remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
@@ -41,7 +41,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {},
   };
   const made = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
-  return { ...made, ticks, dir, hold: (now: typeof held.now) => { held.now = now; } };
+  return { ...made, ticks, dir, settings, hold: (now: typeof held.now) => { held.now = now; } };
 }
 
 /** Queues NBF-1 on board `b`, then sets its run finished with `outcome`. */
@@ -159,23 +159,43 @@ test("the tickets one press of Queue plans first are one batch when the planner 
   }
 });
 
-test("A11-144: a ticket another instance holds is marked taken in the list, and queueing it is refused with 409 naming its state", async () => {
-  const inProgress = { ...ticket("NBF-1"), status: "In Progress", statusType: "started" } as Ticket;
-  const tracker: TicketSource = { assigned: async () => [inProgress, ticket("NBF-2")], read: async (key) => (key === "NBF-1" ? inProgress : key === "NBF-2" ? ticket("NBF-2") : null), download: async () => [] };
+/** A tracker of the tickets given, with another instance's claim (`desk.99999999`) on each key `claimed` names. */
+function trackerClaimedBy(claimed: readonly string[], tickets: readonly Ticket[]) {
+  const tracker = createFakeTracker(tickets);
+  for (const key of claimed) tracker.setClaimant(key, "desk.99999999");
+  return tracker;
+}
+
+/** Queues NBF-1 on board `b`: the answer's status, and its refusal's sentence, when it has one. */
+async function queueNbf1(b: ReturnType<typeof board>): Promise<[number, string | undefined]> {
+  const [status, answer] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  return [status, answer.error];
+}
+
+/** The tickets the page lists on board `b`, each with `taken` where another instance holds it. */
+async function listedTickets(b: ReturnType<typeof board>): Promise<any[]> {
+  const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any[]];
+  return listed;
+}
+
+const inProgress = (key: string) => ({ ...ticket(key), status: "In Progress", statusType: "started" }) as Ticket;
+
+test("A11-144: a ticket another instance holds is marked taken in the list, and queueing it is refused with 409 naming its state and the claimant", async () => {
+  const tracker = trackerClaimedBy(["NBF-1"], [inProgress("NBF-1"), ticket("NBF-2")]);
   const b = board(4747, {}, {}, tracker);
   const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
   assert.equal(listed.find((t: any) => t.key === "NBF-1").taken, "In Progress");
   assert.equal(listed.find((t: any) => t.key === "NBF-2").taken, undefined, "a ticket no state marks is not taken");
   const [status, refused] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
   assert.equal(status, 409);
-  assert.equal(refused.error, "NBF-1 is In Progress in the tracker and this instance has no run for it, so another instance holds it");
+  assert.equal(refused.error, "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it");
   const [queuedStatus] = await b.api("POST", "/api/queue", { keys: ["NBF-2"], model: "sonnet", effort: "high" }) as [number, any];
   assert.equal(queuedStatus, 200, "a ticket that is not taken queues as before");
 });
 
-test("A11-144: a state the team's takenStates names marks its tickets taken, even without the started type", async () => {
+test("A11-144: a state the team's takenStates names marks its claimed tickets taken, even without the started type", async () => {
   const planned = { ...ticket("NBF-2"), status: "Planned" } as Ticket;
-  const tracker: TicketSource = createFakeTracker([planned]);
+  const tracker = trackerClaimedBy(["NBF-2"], [planned]);
   const b = board(4747, { providers: { tracker: { provider: "linear", takenStates: ["Planned"] } } }, {}, tracker);
   const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
   assert.equal(listed[0].taken, "Planned");
@@ -184,15 +204,88 @@ test("A11-144: a state the team's takenStates names marks its tickets taken, eve
   assert.equal(unlisted[0].taken, undefined, "an empty list takes no state that is not started");
 });
 
-test("A11-144: a ticket this instance holds a run for is not marked taken, though the tracker now shows it In Progress", async () => {
+test("A11-144: a ticket this instance holds a run for is not marked taken, though the tracker now shows it In Progress under another instance's claim", async () => {
   const tracker = createFakeTracker([ticket("NBF-1")]);
   const b = board(4747, {}, {}, tracker);
   await b.api("GET", "/api/tickets", {});
   const [queued] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
   assert.equal(queued, 200);
   tracker.seed({ ...tracker.ticketOf("NBF-1")!, status: "In Progress", statusType: "started" });
+  tracker.setClaimant("NBF-1", "desk.99999999");
   const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
   assert.equal(listed[0].taken, undefined, "this instance's own run holds it");
+});
+
+test("A11-168: a ticket In Progress from this instance's own dismissed run, claimed by this instance, is listed free and is queued", async () => {
+  const tracker = createFakeTracker([inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  tracker.setClaimant("NBF-1", claimantOf(b.settings));
+  const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(listed[0].taken, undefined, "its latest claim names this instance");
+  const [status, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(status, 200);
+  assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["NBF-1"]);
+});
+
+test("A11-168: a ticket In Progress with no claim at all, moved there by hand, is not taken and is queued", async () => {
+  const b = board(4747, {}, {}, createFakeTracker([inProgress("NBF-1")]));
+  const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(listed[0].taken, undefined);
+  const [status] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(status, 200);
+});
+
+test("A11-168: a ticket the list read as In Progress under another's claim, moved to Todo since, is read again and queued", async () => {
+  const tracker = trackerClaimedBy(["NBF-1"], [inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  const [, listed] = await b.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(listed[0].taken, "In Progress");
+  tracker.seed({ ...ticket("NBF-1") });
+  const [status, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(status, 200, "the tracker says Todo now, so the page's old copy does not refuse it");
+  assert.deepEqual(queue.entries.map((e: any) => [e.ticket.key, e.ticket.status]), [["NBF-1", "Backlog"]], "and the entry holds the fresh copy");
+});
+
+test("A11-168: a ticket the list read as claimed by another instance, claimed by this one since, is read again and queued", async () => {
+  const tracker = trackerClaimedBy(["NBF-1"], [inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  await b.api("GET", "/api/tickets", {});
+  tracker.setClaimant("NBF-1", claimantOf(b.settings));
+  const [status] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(status, 200);
+});
+
+test("A11-168: a tracker that cannot be asked who holds a ticket answers 503 naming why, never taken, and a list whose claims cannot be read marks nothing taken", async () => {
+  const tracker = trackerClaimedBy(["NBF-1"], [inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  assert.equal((await listedTickets(b))[0].taken, "In Progress");
+  tracker.claims = async () => { throw new Error("Linear answered 502"); };
+  assert.deepEqual(await queueNbf1(b), [503, "could not ask the tracker who holds NBF-1: Linear answered 502"]);
+  assert.deepEqual(b.store.get().entries, [], "nothing was queued");
+  assert.equal((await listedTickets(b))[0].taken, undefined, "a claim that could not be read is not another instance's");
+  assert.deepEqual(await queueNbf1(b), [503, "could not ask the tracker who holds NBF-1: Linear answered 502"], "and the queue does not take the empty answer for a free ticket: it asks again, and says it could not");
+});
+
+test("A11-168: a ticket in work the list never read a claim for is read again before it is queued, and one the tracker has none of is not a 503", async () => {
+  const tracker = trackerClaimedBy(["NBF-1"], [inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  assert.deepEqual(await queueNbf1(b), [409, "NBF-1 is In Progress in the tracker and desk.99999999 claimed it, so another instance holds it"], "no list was read, so the board's copy knew nothing");
+  const vanishing: TicketSource = { assigned: async () => [inProgress("NBF-1")], read: async () => null, download: async () => [] };
+  const gone = board(4747, {}, {}, vanishing);
+  await listedTickets(gone);
+  await assert.rejects(gone.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }), /no ticket NBF-1/);
+});
+
+test("A11-168: a tracker whose ticket read fails answers 503 too, and a tracker with no claims takes no ticket", async () => {
+  const tracker = trackerClaimedBy(["NBF-1"], [inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  await b.api("GET", "/api/tickets", {});
+  tracker.read = async () => { throw new Error("Linear is down"); };
+  assert.deepEqual(await queueNbf1(b), [503, "could not ask the tracker who holds NBF-1: Linear is down"]);
+  const bare: TicketSource = { assigned: async () => [inProgress("NBF-2")], read: async () => inProgress("NBF-2"), download: async () => [] };
+  const c = board(4747, {}, {}, bare);
+  const [, listed] = await c.api("GET", "/api/tickets", {}) as [number, any];
+  assert.equal(listed[0].taken, undefined, "a source that cannot name a claimant takes nothing");
 });
 
 test("queueing without plan first, or on a board that does not plan, plans nothing", async () => {
@@ -1088,7 +1181,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.1", "enabled"], ["github", "v1.2.3", "1.3", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.2", "enabled"], ["github", "v1.2.3", "1.3", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);

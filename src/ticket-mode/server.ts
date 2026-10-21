@@ -33,7 +33,7 @@ import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
 import { claimantOf } from "./settings.ts";
 import { defaultHerdr } from "./pool-herdr.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { takenRefusal, takenState } from "./pick-taken.ts";
+import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
@@ -197,7 +197,10 @@ type Board = Readonly<{
   store: { get: () => Queue; set: (next: Queue) => void };
   pool: NonNullable<BoardDeps["pool"]>;
   now: () => number;
-  known: { tickets: Map<string, Ticket> };
+  /** The tickets the page last listed, and the latest claim each in-work one without a run here carries, as the tracker last said (A11-168). */
+  known: { tickets: Map<string, Ticket>; claims: Map<string, string> };
+  /** This instance's name as a claim names it (`claimantOf`), read once. */
+  claimant: () => string;
   plans: boolean;
   wake: () => void;
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
@@ -217,23 +220,93 @@ function withDecision(ticket: Ticket): Ticket & Readonly<{ needsDecision?: Needs
   return open === null ? ticket : { ...ticket, needsDecision: open };
 }
 
+/** Whether this instance's queue holds a run for the ticket, in any phase. */
+const holdsRun = ({ store }: Pick<Board, "store">, key: string): boolean => store.get().entries.some((entry) => entry.ticket.key === key);
+
 /**
- * A ticket as the page is sent it, with `taken` where another instance holds it (A11-144): this instance holds no run for it and the tracker shows it in a
- * taken state, so Pick shows the state and does not let the ticket be queued here.
+ * A ticket as the page is sent it, with `taken` where another instance holds it (A11-144, A11-168): the tracker shows it in a taken state and its latest claim, as the board
+ * last read it, names another instance. A ticket this instance holds a run for is never taken. Pick shows the state and does not let the ticket be queued here.
  */
-function withTaken(board: Pick<Board, "settings" | "store">, ticket: Ticket): Ticket & Readonly<{ taken?: string }> {
-  const held = board.store.get().entries.some((entry) => entry.ticket.key === ticket.key);
-  const state = held ? null : takenState(ticket, board.settings.takenStates);
+function withTaken(board: Pick<Board, "settings" | "store" | "known" | "claimant">, ticket: Ticket): Ticket & Readonly<{ taken?: string }> {
+  const held = holdsRun(board, ticket.key);
+  const state = held ? null : takenState(ticket, board.settings.takenStates, board.known.claims.get(ticket.key), board.claimant());
   return state === null ? ticket : { ...ticket, taken: state };
 }
 
-/** The first of `tickets` another instance holds, as the sentence a queue route refuses with, or null when none is (A11-144). */
-function refuseTaken(board: Pick<Board, "settings" | "store">, tickets: readonly Ticket[]): string | null {
-  for (const ticket of tickets) {
-    const { taken } = withTaken(board, ticket);
-    if (taken !== undefined) return takenRefusal(ticket.key, taken);
+/**
+ * Read the claim of each of `tickets` a claim could matter for: in a taken state, with no run here. The answer replaces what the board kept for them. A source with no
+ * `claims` answers none, so none is taken; one that cannot be asked leaves none of these taken either, since a claim the board could not read is not another instance's.
+ * The queue route reads again before it refuses anything.
+ */
+async function readClaims(board: Pick<Board, "settings" | "source" | "store" | "known">, tickets: readonly Ticket[]): Promise<void> {
+  const { known, settings, source } = board;
+  const keys = tickets.filter((ticket) => !holdsRun(board, ticket.key) && inWork(ticket, settings.takenStates)).map((ticket) => ticket.key);
+  for (const key of keys) known.claims.delete(key);
+  if (keys.length === 0 || source.claims === undefined) return;
+  try {
+    for (const [key, claimant] of await source.claims(keys)) known.claims.set(key, claimant);
+  } catch (err) {
+    process.stderr.write(`ticket:serve: the tracker could not say who claimed the in-work tickets, so none is shown as taken: ${String((err as Error)?.message ?? err)}\n`);
   }
-  return null;
+}
+
+/** A queue route's answer when it refuses: the status and the sentence. */
+type Refusal = Readonly<{ status: number; error: string }>;
+
+/** What {@link refuseTaken} found: the refusal, or null, and the tickets to queue, each the tracker's copy where the check read it again. */
+type TakenCheck = Readonly<{ refusal: Refusal | null; tickets: readonly Ticket[] }>;
+
+/** Keep what the tracker just said of `ticket` and its latest claim, so the list and the queue routes after it decide on the same copy. */
+function rememberHolder({ known }: Pick<Board, "known">, ticket: Ticket, claimant: string | undefined): void {
+  known.tickets.set(ticket.key, ticket);
+  if (claimant === undefined) known.claims.delete(ticket.key);
+  else known.claims.set(ticket.key, claimant);
+}
+
+/** The 503 a queue route answers with when the tracker cannot say who holds a ticket. */
+const unreadable = (key: string, err: unknown): Refusal => ({ status: 503, error: `could not ask the tracker who holds ${key}: ${String((err as Error)?.message ?? err)}` });
+
+/**
+ * The ticket and its latest claim as the tracker says them now, or the 503 a queue route answers with when it cannot be asked. A ticket the tracker has none of throws as
+ * `queuedTicket` does, so a route's own error handling words it.
+ */
+async function readHolder(source: TicketSource, key: string): Promise<Readonly<{ ticket: Ticket; claimant: string | undefined }> | Refusal> {
+  let ticket: Ticket | null;
+  try {
+    ticket = await source.read(key);
+  } catch (err) {
+    return unreadable(key, err);
+  }
+  if (ticket === null) throw new Error(`no ticket ${key}`);
+  try {
+    return { ticket, claimant: source.claims === undefined ? undefined : (await source.claims([key])).get(key) };
+  } catch (err) {
+    return unreadable(key, err);
+  }
+}
+
+/**
+ * The first of `tickets` another instance holds, as the answer a queue route refuses with (A11-144, A11-168). A ticket in work with no run here is read again, with
+ * its claim, and decided on what the tracker says now: one moved to Todo since the list was read, or claimed by this instance, is queued, with the copy just read. A tracker
+ * that cannot be asked is a 503, never "taken": the board does not say another instance holds a ticket it could not read.
+ */
+async function refuseTaken(board: Pick<Board, "settings" | "source" | "store" | "known" | "claimant">, tickets: readonly Ticket[]): Promise<TakenCheck> {
+  const checked: Ticket[] = [];
+  for (const listed of tickets) {
+    // Every ticket in work with no run here is read again, not only one the list marked taken: a list whose claims could not be read marked nothing, and the board does not
+    // queue a ticket another instance may hold on a read that failed.
+    if (holdsRun(board, listed.key) || !inWork(listed, board.settings.takenStates)) {
+      checked.push(listed);
+      continue;
+    }
+    const read = await readHolder(board.source, listed.key);
+    if ("status" in read) return { refusal: read, tickets };
+    rememberHolder(board, read.ticket, read.claimant);
+    const state = takenState(read.ticket, board.settings.takenStates, read.claimant, board.claimant());
+    if (state !== null && read.claimant !== undefined) return { refusal: { status: 409, error: takenRefusal(read.ticket.key, state, read.claimant) }, tickets };
+    checked.push(read.ticket);
+  }
+  return { refusal: null, tickets: checked };
 }
 
 /**
@@ -308,11 +381,14 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
     if (!board.scopesOnDemand()) return [404, { error: "this instance lists every ticket it has at once, so a scope is not read on its own" }];
     const page = await source.scoped!(query.get("assignee") ?? "", query.get("after"));
     for (const ticket of page.tickets) known.tickets.set(ticket.key, ticket);
+    await readClaims(board, page.tickets);
     return [200, { ...page, tickets: page.tickets.map((ticket) => withTaken(board, withDecision(ticket))) }];
   }
   if (method === "GET" && path === "/api/tickets") {
     const tickets = await source.assigned();
     known.tickets = new Map(tickets.map((ticket) => [ticket.key, ticket]));
+    known.claims = new Map();
+    await readClaims(board, tickets);
     return [200, tickets.map((ticket) => withTaken(board, withDecision(ticket)))];
   }
   if (method === "GET" && path === "/api/parents") {
@@ -352,9 +428,9 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     const keys = Array.isArray(body.keys) ? body.keys.map(String) : [];
     const tickets: Ticket[] = [];
     for (const key of keys) tickets.push(await queuedTicket(board, key));
-    const refused = refuseTaken(board, tickets);
-    if (refused !== null) return [409, { error: refused }];
-    queueTickets(tickets, choice, { plan: body.plan === true });
+    const taken = await refuseTaken(board, tickets);
+    if (taken.refusal !== null) return [taken.refusal.status, { error: taken.refusal.error }];
+    queueTickets(taken.tickets, choice, { plan: body.plan === true });
     return [200, queueView(board)];
   }
   if (method === "POST" && path === "/api/queue-children") {
@@ -375,13 +451,13 @@ async function postRoute(board: Board, method: string, path: string, body: Json)
     // A sub-issue with an open decision is left out too, and named: a Grill on its own row settles it first (A11-134).
     const undecided = read.filter((ticket) => !nested.includes(ticket.key) && needsDecision(ticket) !== null).map((ticket) => ticket.key);
     const tickets = read.filter((ticket) => !nested.includes(ticket.key) && !undecided.includes(ticket.key));
-    const refused = refuseTaken(board, tickets);
-    if (refused !== null) return [409, { error: refused }];
-    queueTickets(tickets, choice, { plan: body.plan === true });
+    const taken = await refuseTaken(board, tickets);
+    if (taken.refusal !== null) return [taken.refusal.status, { error: taken.refusal.error }];
+    queueTickets(taken.tickets, choice, { plan: body.plan === true });
     const left = nested.length === 0 ? null : `${nested.join(", ")} ${nested.length === 1 ? "is itself a parent" : "are themselves parents"}, so not queued: queue ${nested.length === 1 ? "its" : "their"} children from ${nested.length === 1 ? "its" : "their"} own row`;
     const held = undecided.length === 0 ? null : `${undecided.join(", ")} ${undecided.length === 1 ? "holds" : "hold"} an open decision, so not queued: Grill ${undecided.length === 1 ? "it" : "them"} first`;
     const note = [order.note, left, held].filter((part) => part !== null).join("; ") || null;
-    return [200, { queue: queueView(board), keys: tickets.map((ticket) => ticket.key), note }];
+    return [200, { queue: queueView(board), keys: taken.tickets.map((ticket) => ticket.key), note }];
   }
   if (method === "POST" && path === "/api/choice") {
     // Only the part named is changed, so two pages open at once cannot undo each other's other half.
@@ -560,7 +636,9 @@ export function createBoard(deps: BoardDeps) {
   let queue: Queue = loadQueue(deps.queuePath, settings.max);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); } };
   const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, codeHost, hook: { node: process.execPath, bin: BIN } });
-  const known = { tickets: new Map<string, Ticket>() };
+  const known = { tickets: new Map<string, Ticket>(), claims: new Map<string, string>() };
+  let claimantName: string | undefined;
+  const claimant = (): string => (claimantName ??= claimantOf(settings));
   let warnedNoName = false;
   let viewer: Assignee | null = null;
 
@@ -622,7 +700,7 @@ export function createBoard(deps: BoardDeps) {
   }
 
   const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins });
-  const board: Board = { deps, settings, source, store, pool, now, known, plans, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
+  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
 
   async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
     return routeApi(board, method, path, body, query);

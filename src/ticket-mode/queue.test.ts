@@ -7,6 +7,7 @@ import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, checkRound, conflictRound, holdForSession, recordCheckHeads, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
+import { nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
 import { talk } from "./queue/talk.ts";
 import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
@@ -1059,4 +1060,60 @@ test("A11-154: a hand-back goes when the run is answered in its terminal and end
   const open = { review: [pr], pullStates: { [pr.url]: "open" } };
   assert.throws(() => respond(endedWith({ kind: "checked", reason: "nothing to do" }, open), "A", 9), /A concluded \(checked\): there is nothing for a worker to answer/);
   assert.throws(() => respond(endedWith({ kind: "stopped" }, open), "A", 9), /A was stopped/);
+});
+
+const PR_1 = "https://github.com/a11ign/agent-org/pull/1811";
+const PR_2 = "https://github.com/a11ign/agent-org/pull/1812";
+/** Ticket A, planned and run: a worker on a session ended on a partial pull request that merged, with its plan paths, a state move and an earlier step. */
+const mergedPartial = (partial: string, over: Partial<Queue["entries"][number]> = {}) => {
+  let queue = finish(markRunning(markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1), "A", "w1", "w1:p1"), "A", { kind: "ready-pr", prs: [{ repo: "agent-org", url: PR_1 }], partial }, 9);
+  queue = recordPullStates(recordMove(queue, "A", { from: "Todo", to: "In Progress" }), new Map([["A", { [PR_1]: "merged" as const }]]));
+  return { ...queue, entries: queue.entries.map((e) => ({ ...e, session: "session-1", planned: true, paths: ["agent-org:src/a.ts"], plannedRepo: "agent-org", projectRepo: "agent-org", ...over })) };
+};
+
+test("A11-168: queueNextStep appends the merged step and its pull requests, and drops partial, session, outcome, pull states and movedFrom", () => {
+  const finished = mergedPartial("step 1 of 2: the rest");
+  const [next] = queueNextStep(finished, "A", { step: 1, of: 2, prs: [PR_1] }, 50).entries;
+  assert.deepEqual(next.steps, [{ step: 1, of: 2, prs: [PR_1] }]);
+  assert.deepEqual([next.phase, next.queuedAt, next.ticket.key, next.model, next.effort, next.planned, next.paths, next.plannedRepo, next.projectRepo],
+    ["queued", 50, "A", "opus", "high", true, ["agent-org:src/a.ts"], "agent-org", "agent-org"], "the ticket, model, effort, plan paths and repositories are kept");
+  for (const dropped of ["session", "outcome", "partial", "pullStates", "movedFrom", "plan", "review", "trackerState", "finishedAt", "startedAt", "workspace"] as const) assert.equal(next[dropped], undefined, dropped);
+  const [second] = queueNextStep(mergedPartial("step 2 of 3", { steps: next.steps }), "A", { step: 2, of: 3, prs: [PR_2] }, 60).entries;
+  assert.deepEqual(second.steps?.map(({ step }) => step), [1, 2], "a later step is appended after the earlier one");
+});
+
+test("A11-168: a queued next step keeps its steps through a review round, a talk session and a retry, so each knows which step it is", () => {
+  const [next] = queueNextStep(mergedPartial("step 1 of 3"), "A", { step: 1, of: 3, prs: [PR_1] }, 50).entries;
+  const crashed = finish(markRunning(markStarting({ ...emptyQueue(1), entries: [next] }, "A", 51), "A", "w1", "w1:p1"), "A", { kind: "crashed", reason: "boom" }, 52);
+  assert.deepEqual(retry(crashed, "A", 60).entries[0].steps, next.steps, "a retried step is still that step");
+  const asked = finish({ ...crashed, entries: [{ ...crashed.entries[0], session: "s-2" }] }, "A", { kind: "draft-pr", prs: [{ repo: "agent-org", url: PR_2 }], partial: "step 2 of 3" }, 70);
+  assert.deepEqual(approve(asked, "A", 80).entries[0].steps, next.steps, "a review round carries them");
+});
+
+test("A11-168: a finished run whose partial pull request merged is due its next step, paired with the step it finished and the pull requests that merged", () => {
+  const due = nextStepRuns(mergedPartial("step 1 of 9 of the plan"));
+  assert.deepEqual(due.map(({ entry, step }) => [entry.ticket.key, step]), [["A", { step: 1, of: 9, prs: [PR_1] }]]);
+  const queue = queueNextStep(mergedPartial("step 1 of 9 of the plan"), "A", due[0].step, 70);
+  assert.deepEqual(queue.entries.map((e) => [e.phase, e.steps?.length]), [["queued", 1]]);
+  assert.deepEqual(nextStepRuns(queue), [], "a queued run is not due again");
+});
+
+test("A11-168: no next step is due for a run with no declaration, an unmerged or closed pull request, a settled ticket, a parked workspace, or a declaration that moves nowhere", () => {
+  assert.deepEqual(nextStepRuns(mergedPartial("step 1 of 9", { partial: undefined })), [], "no declaration: the pull request completes the ticket");
+  assert.deepEqual(nextStepRuns(recordPullStates(mergedPartial("step 1 of 9"), new Map([["A", { [PR_1]: "open" as const }]]))), [], "still open");
+  assert.deepEqual(nextStepRuns(recordPullStates(mergedPartial("step 1 of 9"), new Map([["A", { [PR_1]: "closed" as const }]]))), [], "closed unmerged");
+  assert.deepEqual(nextStepRuns(mergedPartial("step 1 of 9", { trackerState: "completed" })), [], "the tracker finished the ticket");
+  assert.deepEqual(nextStepRuns(mergedPartial("step 1 of 9", { workspace: "w1", pane: "w1:p1" })), [], "its workspace is still open");
+  for (const partial of ["the settings page", "step 9 of 9", "step 1 of 9"]) {
+    const steps = partial === "step 1 of 9" ? [{ step: 1, of: 9, prs: [PR_2] }] : undefined;
+    assert.deepEqual(nextStepRuns(mergedPartial(partial, { steps })), [], partial);
+  }
+});
+
+test("A11-168: a merged partial run is not Completed: it needs a person while nothing is queued for it, and a queued entry is untouched by queueNextStep unless finished", () => {
+  const [entry] = mergedPartial("the settings page").entries;
+  assert.equal(runStatus(entry), "needs-you");
+  assert.equal(runStatus({ ...entry, partial: undefined }), "completed", "a pull request with no declaration still completes the run");
+  const queued = queueNextStep(queuedA(), "A", { step: 1, of: 2, prs: [PR_1] }, 5);
+  assert.deepEqual(queued.entries.map((e) => e.steps), [undefined]);
 });

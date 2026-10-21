@@ -19,7 +19,8 @@ test("the fake tracker passes the tracker contract suite, and the checks that ra
     "viewer names the person whose key this is", "me names the person by id and name", "people counts who holds the open tickets", "scoped pages a scope's tickets",
     "stateTypes answers a Map of the keys it knows", "pullStates answers a Map by key", "blockers answers a Map, leaving out a key with no ticket",
     "projectSummaries answers a Map, leaving out a key with no project", "keywords name the words a pull request body is read by",
-    "updateTicketText writes the fields it is given and no others", "addBlockers records a relation once, and again without error", "complete finishes a ticket once and leaves a finished one alone",
+    "updateTicketText writes the fields it is given and no others", "addBlockers records a relation once, and again without error",
+    "claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing", "complete finishes a ticket once and leaves a finished one alone",
     "writing grants the create and attach tools, and its filing pattern covers every one", "writing refuses a creation that names an id, which would update a ticket",
     "writing reads a created ticket's key back by the shape it declares", "writing numbers every priority, and none is 0",
   ]);

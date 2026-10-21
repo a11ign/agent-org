@@ -1,3 +1,5 @@
+import type { MergedStep } from "./plan-steps.ts";
+
 export type ViewTicket = Readonly<{
   key: string; title: string; status: string; statusOrder: number; priority: number; project: string | null; parent?: string | null; uploads?: readonly string[];
   /** The keys of its open sub-issues, as the tracker last read them: see `source.ts`. */
@@ -35,6 +37,10 @@ export type ViewEntry = Readonly<{
   planned?: boolean;
   /** Set on a review run: the pull requests a person approved. */
   review?: readonly PullRef[];
+  /** What remains of the ticket, when the worker declared its pull requests partial: the run's merge does not finish the ticket (A11-92, A11-168). */
+  partial?: string;
+  /** The plan steps of this ticket whose pull requests merged, in order, with the pull requests that finished each: the run is the next step (A11-168). */
+  steps?: readonly MergedStep[];
   /** The repository its batch's planner said its work lands in, or null when it named none. */
   plannedRepo?: string | null;
   /** The repository its project names, or null when it names none: what a run without a planned repository stacks in (see `repoOf`). */

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { headsToRead, readBlockers, readHeads } from "./pool-start.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
 import { moveOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
@@ -43,12 +44,26 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       // the tracker could not be asked: the next refresh asks again
     }
   }
+  queueNextSteps(ctx);
   await completeMerged(ctx);
   // Last, so a restore the tracker is slow to answer delays none of the reads above.
   await restoreStranded(ctx);
   // The heads of the queued runs' stacked blockers come last of all: a git read per branch must not delay the tracker's own reads.
   const queued = store.get().entries.filter((entry) => entry.phase === "queued").map((entry) => entry.ticket.key);
   if (headsToRead(ctx, queued)) await readHeads(ctx, queued);
+}
+
+/**
+ * Queue the next plan step of each run whose partial pull requests merged (A11-168): the finished entry is replaced by a queued one on the same plan, which starts like any
+ * queued run, with the slot cap, its blockers and the overlap wait applying. Run on every sweep, ahead of {@link completeMerged}, which leaves a partial run's ticket open
+ * and so would have left the run on the board as finished. A run with no next step to queue is left finished, and the board says why on its card.
+ */
+function queueNextSteps(ctx: PoolContext): void {
+  const { now, store } = ctx;
+  for (const { entry, step } of nextStepRuns(store.get())) {
+    update(ctx, (queue) => queueNextStep(queue, entry.ticket.key, step, now()));
+    log(`${entry.ticket.key}: step ${step.step} of ${step.of} merged; step ${step.step + 1} queued`);
+  }
 }
 
 /**

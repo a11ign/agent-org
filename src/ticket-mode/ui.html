@@ -642,7 +642,7 @@ function renderPick() {
       }
       // A ticket with an open decision cannot be picked until a Grill settles it: its pill says so, and the reason is the pill's title (A11-134).
       // A ticket another instance holds shows its state, and is not selectable (A11-144).
-      const decision = taken === undefined && t.taken !== undefined ? el("span", { className: "pill", textContent: `Taken: ${t.taken}`, title: "Another instance holds this ticket: this one has no run for it" })
+      const decision = taken === undefined && t.taken !== undefined ? el("span", { className: "pill", textContent: `Taken: ${t.taken}`, title: "Another instance holds this ticket: its claim in the tracker names that instance, not this one" })
         : taken === undefined && t.needsDecision !== undefined ? el("span", { className: "pill", textContent: NEEDS_DECISION, title: t.needsDecision.reason }) : pill(standing);
       const tick = el("input", { type: "checkbox", checked: state.selected.has(t.key), disabled: !free(t) });
       tick.addEventListener("change", () => { tick.checked ? state.selected.add(t.key) : state.selected.delete(t.key); render(); });

@@ -1,5 +1,5 @@
 // @ts-check
-// module: the tracker contract, version 1.1 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
+// module: the tracker contract, version 1.2 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
 // A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
 // implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
@@ -8,9 +8,12 @@
 // 1.1 (A11-159) ADDS `TrackerWriting`, which a tracker plugin declares in its manifest (`agentOrg.tooling.writer`): the tools a new-ticket run files with, what the hook refuses of
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
+//
+// 1.2 (A11-168) ADDS the optional `claim` and `claims`: an instance records in the tracker that it started a ticket, and reads whose claim a ticket carries, so "another instance holds this ticket"
+// is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.1";
+export const TRACKER_CONTRACT_VERSION = "1.2";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -233,4 +236,16 @@ export interface TicketSource {
    * source without it cannot apply one. Throws when the tracker refuses.
    */
   updateTicketText?(key: string, text: Readonly<{ title?: string; description?: string }>): Promise<void>;
+  /**
+   * Record in the tracker that `claimant` holds the ticket, as a run starts on it (A11-168). The claimant is the instance's name (`claimantOf(settings)`). Nothing is
+   * written when the ticket's latest claim already names this claimant, so a ticket worked in nine steps carries one claim. Throws when the tracker refuses. A source
+   * without it records no claim, and the board's log says so once a run's claim fails.
+   */
+  claim?(key: string, claimant: string): Promise<void>;
+  /**
+   * The claimant each key's LATEST claim names, for the keys that carry one: a key with no claim is left out. A ticket is taken by another instance only when its latest claim
+   * names someone else, so a ticket moved to In Progress by hand has none and is not taken (A11-168). Throws when the tracker cannot be asked, which a caller never reads as
+   * "no claim".
+   */
+  claims?(keys: readonly string[]): Promise<ReadonlyMap<string, string>>;
 }

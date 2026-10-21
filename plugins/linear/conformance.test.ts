@@ -9,19 +9,20 @@ import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { defaultCatalog, pluginNamed } from "../../src/plugins/registry.ts";
 import { create } from "./index.ts";
 
-type Held = { id: string; identifier: string; title: string; description: string; state: string; blockedBy: string[] };
+type Held = { id: string; identifier: string; title: string; description: string; state: string; blockedBy: string[]; comments: { body: string; createdAt: string }[] };
 
 const STATES = [{ id: "s-todo", name: "Todo", type: "unstarted", position: 1 }, { id: "s-done", name: "Done", type: "completed", position: 5 }];
 const TYPE_OF: Record<string, string> = { Todo: "unstarted", Done: "completed" };
 
 /** A Linear workspace of the tickets named, and the `fetch` that answers the plugin's requests from it. */
 function workspace(...identifiers: string[]) {
-  const held = new Map<string, Held>(identifiers.map((identifier, index) => [identifier, { id: `uuid-${index + 1}`, identifier, title: `Title ${identifier}`, description: `About ${identifier}`, state: "Todo", blockedBy: [] }]));
+  const held = new Map<string, Held>(identifiers.map((identifier, index) => [identifier, { id: `uuid-${index + 1}`, identifier, title: `Title ${identifier}`, description: `About ${identifier}`, state: "Todo", blockedBy: [], comments: [] }]));
   const byId = (id: string) => [...held.values()].find((entry) => entry.id === id);
   const node = (entry: Held) => ({
     id: entry.id, identifier: entry.identifier, title: entry.title, description: entry.description, url: `https://linear.app/x/issue/${entry.identifier}`, branchName: entry.identifier.toLowerCase(), priority: 2,
     state: { name: entry.state, position: entry.state === "Done" ? 5 : 1, type: TYPE_OF[entry.state] }, team: { key: entry.identifier.split("-")[0], states: { nodes: STATES } },
     project: null, assignee: { id: "u-1", name: "Dan Beck" }, parent: null, children: { nodes: [] }, labels: { nodes: [] }, attachments: { nodes: [] },
+    comments: { nodes: entry.comments },
     inverseRelations: { nodes: entry.blockedBy.map((blocker) => ({ type: "blocks", issue: { identifier: blocker, branchName: blocker.toLowerCase(), state: { type: TYPE_OF[held.get(blocker)?.state ?? "Todo"], name: held.get(blocker)?.state ?? "Todo" }, attachments: { nodes: [] } } })) },
   });
   const open = () => [...held.values()].filter((entry) => TYPE_OF[entry.state] !== "completed");
@@ -52,13 +53,17 @@ function workspace(...identifiers: string[]) {
       if (input.description !== undefined) entry.description = input.description;
       return { issueUpdate: { success: true } };
     }
-    if (text.includes("commentCreate")) return { commentCreate: { success: true } };
+    if (text.includes("commentCreate")) {
+      byId(String(variables.issueId))!.comments.push({ body: String(variables.body), createdAt: new Date(Date.UTC(2026, 9, 21, 12, 0, comments += 1)).toISOString() });
+      return { commentCreate: { success: true } };
+    }
     if (text.includes("issueRelationCreate")) {
       byId(String(variables.relatedIssueId))!.blockedBy.push(byId(String(variables.issueId))!.identifier);
       return { issueRelationCreate: { success: true } };
     }
     throw new Error(`the workspace does not answer: ${text}`);
   };
+  let comments = 0;
   const requests: { query: string; variables: Record<string, unknown> }[] = [];
   const fetch = (async (_url: string, init: RequestInit = {}) => {
     const { query, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
@@ -81,5 +86,7 @@ test("the Linear plugin passes the tracker contract suite, every check of it tha
   assert.ok(result.passed.includes("writing reads a created ticket's key back by the shape it declares"));
   assert.ok(result.passed.includes("complete finishes a ticket once and leaves a finished one alone"));
   assert.ok(result.passed.includes("addBlockers records a relation once, and again without error"));
+  assert.ok(result.passed.includes("claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing"));
+  assert.deepEqual(world.held.get("TST-1")?.comments.map(({ body }) => body).filter((body) => body.startsWith("agent-org: claimed")), ["agent-org: claimed by conformance.a", "agent-org: claimed by conformance.b"], "the repeated claim wrote no comment");
   assert.equal(world.held.get("TST-1")?.state, "Done", "the suite's complete moved the ticket in the recorded workspace");
 });

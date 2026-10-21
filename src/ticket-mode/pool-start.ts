@@ -14,7 +14,7 @@ import { repoOfProject } from "./project-repo.ts";
 import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
 import { repoOf } from "./board-view/pull-status-and-notes.ts";
 import { worktreePath } from "./worktree.ts";
-import { type TicketSettings } from "./settings.ts";
+import { claimantOf, type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
 import { ticketDir } from "./ticket-paths.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -456,6 +456,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     const { folder, dir, resume } = await prepare(ctx, round);
     if (!(await openRun(ctx, round, folder, dir, resume))) return;
     if (!isPlanning(ctx, entry)) moveTicketToWorkingState(ctx, entry.ticket.key);
+    if (entry.review === undefined && entry.talk !== true) claimTicket(ctx, entry.ticket.key);
     await settleStart(ctx, runPlace(ctx, entry));
   } catch (err) {
     update(ctx, (queue) => finish(queue, entry.ticket.key, crashed(err), now()));
@@ -486,6 +487,7 @@ async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<vo
     // A stop of any ticket while it was starting stopped the whole batch.
     if (stoppedWhileStarting(ctx, lead.ticket.key, workspace)) return;
     updateEach(ctx, members, (queue, key) => markRunning(queue, key, workspace, pane));
+    for (const member of members) claimTicket(ctx, member.ticket.key);
     await settleStart(ctx, runPlace(ctx, lead));
   } catch (err) {
     updateEach(ctx, batch.filter(({ ticket }) => phaseOf(ctx, ticket.key) === "starting"), (queue, key) => finish(queue, key, crashed(err), now()));
@@ -510,6 +512,20 @@ function moveTicketToWorkingState(ctx: PoolContext, key: string): void {
     }, (err) => log(`${key} could not be moved to ${workingState}: ${messageOf(err)}`));
   pendingMoves.set(key, pending);
   void pending.then(() => { if (pendingMoves.get(key) === pending) pendingMoves.delete(key); });
+}
+
+/**
+ * Tell the tracker this instance holds the ticket, as a run starts on it to plan or to implement it (A11-168): another instance's queue reads the claim and does not queue the
+ * ticket, and this instance's own finished run is not taken for another's. The tracker writes nothing when this instance's claim is already the latest. As with the move to the
+ * working state, nothing waits on it and nothing turns on it: a failure goes to the board's log, and the run goes on.
+ */
+function claimTicket(ctx: PoolContext, key: string): void {
+  const { settings, source } = ctx;
+  const claim = source.claim?.bind(source);
+  if (claim === undefined) return;
+  // Started inside a promise, so even a source that throws before it answers cannot reach the run.
+  void Promise.resolve().then(() => claim(key, claimantOf(settings)))
+    .catch((err) => log(`${key} could not be claimed in the tracker: ${messageOf(err)}`));
 }
 
 /** Whether the ticket has a plan of its own in the tracker now. */

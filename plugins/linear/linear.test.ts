@@ -593,3 +593,42 @@ test("a Linear project has no field called summary: its short text is `descripti
     assert.ok(!text.includes("project {") || text.includes("summary: description"), "a project's text is read as `summary: description`");
   }
 });
+
+const claimed = (id: string, ...comments: { body: string; createdAt: string }[]) => ({ data: { issues: { nodes: [{ id, comments: { nodes: comments } }] } } });
+const claimComment = (claimant: string, createdAt: string) => ({ body: `agent-org: claimed by ${claimant}`, createdAt });
+
+test("A11-168: claim() posts `agent-org: claimed by <claimant>` on the ticket when it carries no claim, and reads only the comments that start with those words", async () => {
+  const { fetch, requests } = linear([claimed("uuid-1"), commented]);
+  await linearSource({ key: "k", fetch }).claim!("NBF-1", "laptop.ab12cd34");
+  const bodies = requests.map((r) => JSON.parse(String(r.init.body)));
+  assert.match(bodies[0].query, /comments\(first: 50, filter: \{ body: \{ startsWith: "agent-org: claimed by " \} \}\)/);
+  assert.deepEqual(bodies[1].variables, { issueId: "uuid-1", body: "agent-org: claimed by laptop.ab12cd34" });
+  assert.match(bodies[1].query, /commentCreate/);
+});
+
+test("A11-168: claim() writes nothing when the latest claim already names the claimant, so nine steps of one ticket make one comment", async () => {
+  const { fetch, requests } = linear([claimed("uuid-1", claimComment("laptop.ab12cd34", "2026-10-21T10:00:00Z"))]);
+  await linearSource({ key: "k", fetch }).claim!("NBF-1", "laptop.ab12cd34");
+  assert.equal(requests.length, 1, "only the read");
+});
+
+test("A11-168: claim() writes again when the latest claim names someone else, even if this claimant held the ticket before, and the latest is found by time, not by the order Linear lists", async () => {
+  const comments = [claimComment("desk.11111111", "2026-10-21T12:00:00Z"), claimComment("laptop.ab12cd34", "2026-10-21T10:00:00Z")];
+  const { fetch, requests } = linear([claimed("uuid-1", ...comments), commented]);
+  await linearSource({ key: "k", fetch }).claim!("NBF-1", "laptop.ab12cd34");
+  assert.equal(requests.length, 2, "the other instance's claim is the latest, so this claimant claims again");
+});
+
+test("A11-168: claim() is refused when Linear has no ticket by that key, or answers success false", async () => {
+  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).claim!("NBF-1", "c.1"), /Linear has no ticket NBF-1/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([claimed("uuid-1"), { data: { commentCreate: { success: false } } }]).fetch }).claim!("NBF-1", "c.1"), /Linear did not post a comment on NBF-1/);
+});
+
+test("A11-168: claims() answers the claimant of each key's latest claim in one aliased request, and leaves out a key with no claim, a missing ticket and a comment that names no claimant", async () => {
+  const empty = { data: { k0: { nodes: [{ comments: { nodes: [] } }] }, k1: { nodes: [] }, k2: { nodes: [{ comments: { nodes: [{ body: "agent-org: claimed by ", createdAt: "2026-10-21T10:00:00Z" }] } }] },
+    k3: { nodes: [{ comments: { nodes: [claimComment("old.1", "2026-10-20T10:00:00Z"), claimComment("new.2", "2026-10-21T10:00:00Z")] } }] } } };
+  const { fetch, requests } = linear([empty]);
+  const found = await linearSource({ key: "k", fetch }).claims!(["NBF-1", "NBF-404", "NBF-3", "NBF-4"]);
+  assert.deepEqual([...found], [["NBF-4", "new.2"]]);
+  assert.equal(requests.length, 1);
+});
