@@ -30,7 +30,7 @@ import { TicketSettingsRefusal } from "../ticket-mode/settings-refusal.ts";
 import { realPluginDeps } from "./active.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
 import type { ImportModule } from "./loader.ts";
-import type { Catalog, CatalogPlugin, PluginModule, PluginSettings } from "./manifest.ts";
+import type { Catalog, CatalogPlugin, PluginModule, PluginSettings, StepResult } from "./manifest.ts";
 import { configLines, type Plan, type PlanContext, planConfig, planDisable, planEnable, planInstall, PluginCommandRefusal, planUninstall } from "./manage.ts";
 import { messagingStateOf } from "./messaging-state.ts";
 import { defaultCatalog } from "./registry.ts";
@@ -50,7 +50,12 @@ const USAGE_TEXT = [
 ].join("\n");
 
 /** A plugin that is about to stop being the enabled one of its concern, loaded: the name it answers to on this machine (null when it has none), and its release. */
-export type Outgoing = Readonly<{ machineName: string | null; release: () => Readonly<{ ok: boolean; detail: string }> }>;
+export type Outgoing = Readonly<{
+  machineName: string | null;
+  release: () => StepResult;
+  /** Puts back what `release` removed, when the change is refused after it ran. Absent for a plugin that has none to put back. */
+  restore?: (released: StepResult) => StepResult;
+}>;
 
 /** What the command reads and writes: the host file, the catalog and where its words go. A test passes a scratch file and its own catalog. */
 export type PluginCliDeps = Readonly<{
@@ -108,7 +113,7 @@ export async function loadOutgoing(plugin: CatalogPlugin, settings: PluginSettin
       // A plugin that cannot be built has no name to give, and its release says why it cannot run.
     }
   }
-  return { machineName, release: () => {
+  return { machineName, restore: (released) => module.restore?.(settings, deps, released) ?? { ok: true, detail: "" }, release: () => {
     try {
       return module.release?.(settings, deps) ?? { ok: true, detail: "" };
     } catch (error) {
@@ -141,12 +146,36 @@ function refuseUnconfirmed(shown: readonly ChangeShown[], confirmed: readonly st
   if (unconfirmed !== undefined) throw new SettingsEditRefusal(`${unconfirmed.key} is dangerous and needs a second confirmation that names it. It can break this: ${unconfirmed.dangerous}`);
 }
 
-/** Releases the plugin a change leaves, now that the readers have accepted the change. REFUSES, with the plugin's words, when it cannot; the line it says on success, or "" when it had nothing to say. */
-function releasePlugin(plan: Plan, outgoing: Outgoing | null): string {
-  if (outgoing === null) return "";
+/** Releases the plugin a change leaves, now that the readers have accepted the change. REFUSES, with the plugin's words, when it cannot. */
+function releasePlugin(plan: Plan, outgoing: Outgoing | null): StepResult | null {
+  if (outgoing === null) return null;
   const released = outgoing.release();
   if (!released.ok) throw new PluginCommandRefusal(`${plan.leaves?.plugin.name} could not be released, so nothing was changed: ${released.detail}`);
-  return released.detail;
+  return released;
+}
+
+/** Whether a release took anything off the machine: one that said nothing took nothing, so there is nothing to put back. */
+const removedSomething = (released: StepResult | null): released is StepResult => released !== null && released.detail !== "";
+
+/** Puts the released plugin back, and says whether it could: a plugin without a `restore` has nothing to put back, and one that throws is a plugin that could not. */
+function putBack(outgoing: Outgoing | null, released: StepResult): StepResult {
+  try {
+    return outgoing?.restore?.(released) ?? { ok: true, detail: "" };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Saves the change; when the save fails AFTER a release (the file changed since the readers looked, or could not be written), the plugin is put back and the refusal says so, so the file and the machine agree. */
+async function saveOrRestore(save: () => ReturnType<typeof saveEdit>, plan: Plan, outgoing: Outgoing | null, released: StepResult | null): ReturnType<typeof saveEdit> {
+  try {
+    return await save();
+  } catch (error) {
+    if (!removedSomething(released)) throw error;
+    const back = putBack(outgoing, released);
+    const why = error instanceof Error ? error.message : String(error);
+    throw new SettingsEditRefusal(`${why}. ${plan.leaves?.plugin.name} had been released, so ${back.ok ? "it was put back" : "it could NOT be put back"}${back.detail === "" ? "" : `: ${back.detail}`}`);
+  }
 }
 
 /** Writes a plan through the page's path, and says what changed. A refusal of the readers, of a release or of a dangerous key is thrown as a command refusal. */
@@ -163,8 +192,8 @@ async function write(plan: Plan, deps: PluginCliDeps, confirmed: readonly string
     const preview = await previewEdit(options, file, changes);
     refuseUnconfirmed(preview.changes, confirmed);
     const released = releasePlugin(plan, outgoing);
-    const saved = await saveEdit(options, file, changes, { base: preview.base, confirmed });
-    if (released !== "") deps.log(released);
+    const saved = await saveOrRestore(() => saveEdit(options, file, changes, { base: preview.base, confirmed }), plan, outgoing, released);
+    if (released !== null && released.detail !== "") deps.log(released.detail);
     if (changes.length < plan.changes.length) deps.log(`dropped ${plan.ownTerminal?.key}, which named ${plan.leaves?.plugin.name}'s own address (${plan.ownTerminal?.address})`);
     deps.log(plan.said);
     for (const change of saved.changes) deps.log(`  ${change.key}: ${change.old} -> ${change.new}${change.changed ? "" : " (unchanged)"}`);

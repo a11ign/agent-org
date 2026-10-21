@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import type { OnboardStepDeps, PluginDeps } from "../../src/plugins/manifest.ts";
-import { NOT_ON_PATH, ONBOARD_STEPS, release } from "./onboard.ts";
+import { NOT_ON_PATH, ONBOARD_STEPS, release, restore } from "./onboard.ts";
 import { createTailscale, freshState, type TailscaleState } from "./stub.ts";
 
 const NAME = "agents.tail1234.ts.net";
@@ -13,6 +13,13 @@ const SETTINGS = { uiPort: 4801, terminal: "http://127.0.0.1:7318/?ws={workspace
 
 const depsOf = (state: TailscaleState): PluginDeps => fakePluginDeps({ exec: createTailscale(state), env: { USER: "agent" } });
 const stepDeps = (deps: PluginDeps): OnboardStepDeps => ({ ...deps, interactive: false, answered: true, ask: async () => "", askSecret: async () => "", writeFile: () => undefined, platform: "linux", home: "/home/agent", agentOrgHome: "/home/agent/.agent-org", flags: {} });
+/** A Tailscale that serves this board's two entries, the page and the terminal, on the default tailnet ports. */
+function boardServed(): TailscaleState {
+  const state = freshState();
+  state.web[`${NAME}:9443`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:4801" } } };
+  state.web[`${NAME}:9444`] = { Handlers: { "/": { Proxy: "http://127.0.0.1:7318" } } };
+  return state;
+}
 const step = (name: string) => ONBOARD_STEPS.find((candidate) => candidate.name === name)!;
 
 test("the plugin onboards in three steps, each with its explanation", () => {
@@ -62,7 +69,7 @@ test("release takes this board's two entries off the tailnet and no other, and s
   state.web[`${NAME}:443`] = { Handlers: { "/webhook": { Proxy: "http://127.0.0.1:8787" } } };
   state.funnel[`${NAME}:443`] = true;
   const result = release(SETTINGS, depsOf(state));
-  assert.deepEqual(result, { ok: true, detail: "took this board's tailscale serve entries off the tailnet: ui (port 9443), terminal (port 9444)" });
+  assert.deepEqual(result, { ok: true, detail: "took this board's tailscale serve entries off the tailnet: ui (port 9443), terminal (port 9444)", settings: { released: [{ service: "ui", port: 9443, local: 4801 }, { service: "terminal", port: 9444, local: 7318 }] } });
   assert.deepEqual(Object.keys(state.web), [`${NAME}:8443`, `${NAME}:443`], "the trace pages and the event feed's Funnel are not this board's");
   assert.equal(state.funnel[`${NAME}:443`], true);
   assert.deepEqual(state.calls.filter((args) => args.includes("off")), [["serve", "--https=9443", "off"], ["serve", "--https=9444", "off"]], "each removal names one port");
@@ -96,4 +103,32 @@ test("release is refused with the operator fix when Tailscale will not let this 
   const result = release(SETTINGS, fakePluginDeps({ exec: refusing, env: { USER: "agent" } }));
   assert.equal(result.ok, false);
   assert.match(result.detail, /cannot take the ui entry on tailnet port 9443 off: .*run `sudo tailscale set --operator=agent`/);
+});
+
+test("restore serves again exactly what release took off, so a change refused after the release leaves the tailnet as it was", () => {
+  const state = boardServed();
+  const before = structuredClone(state.web);
+  const released = release(SETTINGS, depsOf(state));
+  assert.deepEqual(Object.keys(state.web), [], "released");
+  const back = restore(SETTINGS, depsOf(state), released);
+  assert.equal(back.ok, true, back.detail);
+  assert.match(back.detail, /put this board's tailscale serve entries back on the tailnet: ui \(port 9443\), terminal \(port 9444\)/);
+  assert.deepEqual(state.web, before);
+});
+
+test("restore has nothing to serve when release removed nothing, and says nothing", () => {
+  const state = freshState();
+  assert.deepEqual(restore(SETTINGS, depsOf(state), release(SETTINGS, depsOf(state))), { ok: true, detail: "" });
+  assert.equal(state.calls.some((args) => args.includes("--https=9443") && !args.includes("status")), false);
+});
+
+test("release that cannot remove the second entry puts the first back, so a refusal leaves the tailnet as it was", () => {
+  const state = boardServed();
+  const before = structuredClone(state.web);
+  const exec = createTailscale(state);
+  const refusing: PluginDeps["exec"] = (file, args) => (args.includes("--https=9444") && args.includes("off") ? { status: 1, stdout: "", stderr: "busy" } : exec(file, args));
+  const result = release(SETTINGS, fakePluginDeps({ exec: refusing, env: { USER: "agent" } }));
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /cannot take the terminal entry on tailnet port 9444 off: .*; the entries already removed were put back/);
+  assert.deepEqual(state.web, before);
 });

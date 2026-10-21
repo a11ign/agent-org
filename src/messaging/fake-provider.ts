@@ -6,7 +6,7 @@
 //
 // TypeScript since a11ign/a11ign#3556: only tests import it, and node strips the types itself (README, "Source is TypeScript").
 
-import { AUDIENCE, AUDIENCES, type MessagingCapabilities } from "./provider-contract.ts";
+import { AUDIENCE, AUDIENCES, type ListenOptions, type MessagingCapabilities } from "./provider-contract.ts";
 
 const DEFAULT_MAX_TEXT = 4096;
 
@@ -25,6 +25,7 @@ export function createFakeProvider({ id = "fake", capabilities = {} }: { id?: st
   const failures: unknown[] = [];
   const edits: { messageRef: string; from: string; to: string }[] = [];
   const pinned: string[] = [];
+  const deleted: Record_[] = [];
 
   /** The record of a message this provider sent; one it never sent is what Telegram's "message to edit not found" is. */
   function sentRecord(messageRef: string): Record_ {
@@ -39,6 +40,8 @@ export function createFakeProvider({ id = "fake", capabilities = {} }: { id?: st
     sent,
     edits,
     pinned,
+    /** what the inbound loop was told to delete from the chat (a message that held a credential), in order */
+    deleted,
     /** the next `send` rejects with `error`, once */
     failNext(error: unknown) {
       failures.push(error);
@@ -84,8 +87,37 @@ export function createFakeProvider({ id = "fake", capabilities = {} }: { id?: st
     },
     async poll(cursor: number | undefined, signal?: AbortSignal) {
       const after = typeof cursor === "number" ? cursor : 0;
-      const updates = signal?.aborted ? [] : inbox.filter((update) => update.updateId > after);
-      return { updates, cursor: updates.reduce((highest, update) => Math.max(highest, update.updateId), after) };
+      const updates = signal?.aborted ? [] : inbox.filter((update) => idOf(update) > after);
+      return { updates, cursor: updates.reduce((highest, update) => Math.max(highest, idOf(update)), after) };
+    },
+    /** The inbound loop (messaging contract 1.1), generic: see {@link listenOver}. */
+    listen(options: ListenOptions): Promise<void> {
+      return listenOver(this, deleted, options);
     },
   };
 }
+
+/**
+ * Polls `provider`, hands each update to the core, and does what the core says (delete the message that held a credential, send the reply, forward what is accepted). It returns when the signal aborts
+ * or when `poll` has nothing more: an in-memory inbox has no long poll to wait on, so a test that receives its updates first runs to the end.
+ */
+async function listenOver(provider: { poll: (cursor: number | undefined, signal?: AbortSignal) => Promise<{ updates: Record_[]; cursor: number | undefined }>; send: (message: { text: string }) => Promise<unknown> }, deleted: Record_[], { inbound, offsets, onForward = () => {}, signal }: ListenOptions): Promise<void> {
+  let cursor = offsets.read();
+  while (signal?.aborted !== true) {
+    const batch = await provider.poll(cursor, signal);
+    if (batch.updates.length === 0) return;
+    for (const update of batch.updates) {
+      const action = inbound.handle(update);
+      if (action.action === "reply") {
+        if (action.deleteMessage !== null) deleted.push(action.deleteMessage);
+        await provider.send({ text: action.text });
+      }
+      if (action.action === "forward") await onForward(action.accepted);
+    }
+    if (batch.cursor !== undefined && batch.cursor !== cursor) offsets.write(batch.cursor);
+    cursor = batch.cursor;
+  }
+}
+
+/** An update's id: `updateId` as a test writes it, or `update_id` as the wire's updates carry it, which is what the core's inbound reads. */
+const idOf = (update: Record_): number => update.updateId ?? update.update_id;

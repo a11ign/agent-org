@@ -71,19 +71,45 @@ export function release(settings: PluginSettings, deps: PluginDeps): StepResult 
   const ports = exposure.ports();
   if (ports === null) return { ok: true, detail: "" };
   const local = localPortsOf(settings);
-  const removed: string[] = [];
+  // Everything is READ first, so a Tailscale that cannot say what it serves removes nothing at all.
+  const held: Held[] = [];
   for (const service of ["ui", "terminal"] as const) {
     const port = ports[service];
-    let state;
     try {
-      state = exposure.portState(port, local[service]);
+      if (exposure.portState(port, local[service]).kind === "ours") held.push({ service, port, local: local[service] });
     } catch (error) {
       return { ok: false, detail: `cannot take the ${service} entry on tailnet port ${port} off: ${error instanceof Error ? error.message : String(error)}` };
     }
-    if (state.kind !== "ours") continue;
-    const result = exposure.unserve(port);
-    if (result.status !== 0) return { ok: false, detail: `cannot take the ${service} entry on tailnet port ${port} off: ${result.refusal ?? result.stderr}` };
-    removed.push(`${service} (port ${port})`);
   }
-  return { ok: true, detail: removed.length === 0 ? "" : `took this board's tailscale serve entries off the tailnet: ${removed.join(", ")}` };
+  const removed: Held[] = [];
+  for (const entry of held) {
+    const result = exposure.unserve(entry.port);
+    if (result.status !== 0) {
+      // A second entry that will not go must not leave the first off while the file still names this plugin: the first is put back.
+      const back = restoreEntries(exposure, removed);
+      return { ok: false, detail: `cannot take the ${entry.service} entry on tailnet port ${entry.port} off: ${result.refusal ?? result.stderr}${removed.length === 0 ? "" : back.ok ? "; the entries already removed were put back" : `; ${back.detail}`}` };
+    }
+    removed.push(entry);
+  }
+  if (removed.length === 0) return { ok: true, detail: "" };
+  return { ok: true, detail: `took this board's tailscale serve entries off the tailnet: ${removed.map(({ service, port }) => `${service} (port ${port})`).join(", ")}`, settings: { released: removed } };
+}
+
+/** An entry this board held on the tailnet: the service, the tailnet port it was served on and the loopback port it proxied to. */
+type Held = Readonly<{ service: "ui" | "terminal"; port: number; local: number }>;
+
+/** Serves each entry again, as `agent-org start` served it. */
+function restoreEntries(exposure: ReturnType<typeof createExposure>, entries: readonly Held[]): StepResult {
+  const failed = entries.map((entry) => ({ entry, result: exposure.serve(entry.port, entry.local) })).filter(({ result }) => result.status !== 0);
+  return failed.length === 0 ? { ok: true, detail: entries.length === 0 ? "" : `put this board's tailscale serve entries back on the tailnet: ${entries.map(({ service, port }) => `${service} (port ${port})`).join(", ")}` }
+    : { ok: false, detail: `could not put back the ${failed.map(({ entry }) => `${entry.service} entry on tailnet port ${entry.port}`).join(" and the ")}: run \`agent-org start ${failed[0].entry.service}\`` };
+}
+
+/**
+ * The inverse of {@link release}, for a change that was refused AFTER the release (the file changed between the readers' look and the save): the entries `released` says it removed are served
+ * again, so the host file, which still names this plugin, and the machine agree.
+ */
+export function restore(settings: PluginSettings, deps: PluginDeps, released: StepResult): StepResult {
+  const entries = Array.isArray(released.settings?.released) ? (released.settings.released as Held[]) : [];
+  return restoreEntries(createExposure(settings, deps), entries);
 }

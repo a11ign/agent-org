@@ -43,6 +43,7 @@ import { createInbound } from "./inbound.ts";
 import { createLedger, describeError } from "./ledger.ts";
 import { createOffsetStore } from "./offsets.ts";
 import { messagingListener } from "./plugin.ts";
+import type { MessagingProvider } from "./provider-contract.ts";
 import { SecretFileRefusal } from "./secret.ts";
 import { accountIsDeclared, defaultLedgerPath, readChairman, trackerRepo } from "./state.ts";
 import type { Readers } from "./placeholders.ts";
@@ -219,6 +220,11 @@ export function tellingWhenUndelivered({ ledger, send, converse }: {
   };
 }
 
+/** The forwarder's `clearKeyboard` for a provider: the provider's own (messaging contract 1.1), and nothing to do for one without it, which draws no keyboards. */
+export function clearKeyboardOf(provider: Pick<MessagingProvider, "clearKeyboard">): (messageRef: string) => Promise<void> {
+  return async (messageRef) => { await provider.clearKeyboard?.(messageRef); };
+}
+
 /**
  * What the listener does with an accepted value: it answers a request on its row and tells the chairman what happened, and hands anything else to
  * `converse`. `send` speaks to the chairman's chat, so a reply needs no chat id, and a button press is NOT answered again here: `runListener` stops
@@ -290,7 +296,7 @@ async function listen(deps: Parameters<typeof main>[0], config: MessagingOn): Pr
     if (provider.listen === undefined) throw new Error(`messaging.provider ${config.provider} cannot listen: its plugin offers no inbound loop`);
     await provider.listen({
       inbound, offsets: createOffsetStore(join(state, OFFSET_FILE), { log: err }), chairman, sleep, log: err, signal: stoppableBy(signal),
-      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err, clearKeyboard: async (ref) => { await provider.clearKeyboard?.(ref); } }),
+      onForward: onForward ?? createForwarder({ answers, send, converse: tellingWhenUndelivered({ ledger, send, converse: converse ?? conversation.forward }), log: err, clearKeyboard: clearKeyboardOf(provider) }),
     });
   } finally {
     lock.release();

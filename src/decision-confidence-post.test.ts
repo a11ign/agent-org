@@ -1,17 +1,11 @@
-// #4755: the daily confidence reading's POST, over a fixture reading. The Telegram provider is the real one on a fetch that records the wire (the routing is read off the `chat_id` Telegram would have
-// received, as `messaging/audience.test.ts` does); `gh` is a function that records its argv. Nothing here reaches the network, `gh`, `herdr` or `git`.
+// #4755: the daily confidence reading's POST, over a fixture reading. The provider is the in-memory fake (the routing is read off the `destination` it records, as `messaging/audience.test.ts` does; the Telegram wire shape is `plugins/telegram`'s own tests); `gh` is a function that records its argv. Nothing here reaches the network, `gh`, `herdr` or `git`.
 // no-token: none -- the token is a fixture string, the chat ids are made up, and no process is started
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createFakeProvider } from "./messaging/fake-provider.ts";
 import { createLedger } from "./messaging/ledger.ts";
-import { createSecret, redactingFetch } from "./messaging/secret.ts";
 import { AUDIENCE } from "./messaging/provider-contract.ts";
-import { createTelegramProvider as createWithoutRedaction } from "../plugins/telegram/send.ts";
-
-/** The Telegram provider the plugin builds, with the core's `redactingFetch` it is given in `deps.messaging`: these tests pin where each message goes over the wire (A11-162 leaves them with the real wire shape on purpose). */
-const createTelegramProvider = (options: Omit<Parameters<typeof createWithoutRedaction>[0], "redactingFetch">) => createWithoutRedaction({ ...options, redactingFetch });
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { confidenceReading } from "./provider-confidence.ts";
 import {
@@ -22,9 +16,6 @@ import {
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const NOW = Date.parse("2026-10-10T08:00:00Z");
-const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
-const ASK_CHAT = 4242;
-const CHANNEL_CHAT = -1009876543210;
 const REPO = "a11ign/a11ign";
 const COMMENT_URL = `https://github.com/${REPO}/issues/${TRACKER_EPIC}#issuecomment-6100000001`;
 
@@ -45,23 +36,10 @@ const askedOf = (question: string, asked: number, held: number): unknown[] =>
 const SOME_READING = readingOf([...askedOf("score", 20, 7), ...askedOf("subsystems", 10, 1), decision({ covered: refused() })]);
 const EMPTY = readingOf([]);
 
-/** A fetch that records each request and answers every one with a fresh message id. */
-function fakeTelegram() {
-  const requests: { url: string; body: Record<string, any> }[] = [];
-  let nextMessageId = 100;
-  const fetchImpl = (async (url: string, init: { body: string }) => {
-    requests.push({ url, body: JSON.parse(init.body) });
-    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: nextMessageId += 1 } }), headers: { get: () => null } };
-  }) as unknown as typeof fetch;
-  return { fetch: fetchImpl, requests };
-}
-
-function telegram({ channel }: { channel: boolean }) {
-  const wire = fakeTelegram();
-  const provider = createTelegramProvider({
-    token: createSecret(TOKEN), chatId: ASK_CHAT, announcementsChatId: channel ? CHANNEL_CHAT : undefined, fetch: wire.fetch, sleep: async () => {}, log: () => {},
-  });
-  return { provider, requests: wire.requests };
+/** The in-memory provider with a channel of its own (two destinations) or only the chairman's chat (one); `requests` is what it was sent. */
+function chats({ channel }: { channel: boolean }) {
+  const provider = createFakeProvider({ capabilities: { destinations: channel ? 2 : 1 } });
+  return { provider, requests: provider.sent };
 }
 
 const messenger = (provider: any, config?: Extract<Delivery, { via: "messenger" }>["config"]): Extract<Delivery, { via: "messenger" }> =>
@@ -84,25 +62,25 @@ function posted(result: PostResult) {
   return result;
 }
 /** THE DESTINATION ASSERTION the control turns: the one message went to the channel and not to the chairman's chat. */
-function assertWentToTheChannel(requests: { body: Record<string, any> }[]): void {
+function assertWentToTheChannel(requests: Record<string, any>[]): void {
   assert.equal(requests.length, 1);
-  assert.equal(requests[0]?.body.chat_id, CHANNEL_CHAT, "the reading was not sent to the announcements channel");
+  assert.equal(requests[0]?.destination, AUDIENCE.announcement, "the reading was not sent to the announcements channel");
 }
 
 test("with the channel configured, the reading goes to the channel and returns its message id", async () => {
-  const { provider, requests } = telegram({ channel: true });
+  const { provider, requests } = chats({ channel: true });
   const result = posted(await post(messenger(provider)));
   assertWentToTheChannel(requests);
   assert.equal(result.destination, "channel");
-  assert.equal(result.ref, "101");
-  assert.equal(requests[0]?.body.text, result.text);
+  assert.equal(result.ref, "fake-1");
+  assert.equal(requests[0]?.text, result.text);
 });
 
 test("with only the chairman chat configured, the announcement audience sends it there", async () => {
-  const { provider, requests } = telegram({ channel: false });
+  const { provider, requests } = chats({ channel: false });
   const result = posted(await post(messenger(provider)));
   assert.equal(requests.length, 1);
-  assert.equal(requests[0]?.body.chat_id, ASK_CHAT);
+  assert.equal(requests[0]?.destination, AUDIENCE.ask);
   assert.equal(result.destination, "chairman-chat");
 });
 
@@ -122,20 +100,20 @@ test("with no messaging configured, it is one comment on the epic, carrying the 
 test("CONTROL: the destination assertion fails when the kind is declared ask", async () => {
   // An ask names a row or declares why it has none (a11ign/a11ign#4745): without `rowLess` the core refuses it before the destination is ever in question.
   const declaredAsk = { kinds: { [POST_KIND]: { audience: AUDIENCE.ask, rowLess: "a daily reading belongs to no one row" } } };
-  const wired = telegram({ channel: true });
+  const wired = chats({ channel: true });
   const { requests } = wired;
   // Without the asks' record: a kept ask also sends a pinned list, which is two more requests, and this control is about WHERE the reading went.
   const provider = { ...wired.provider, capabilities: { ...wired.provider.capabilities, edit: false, pin: false } };
   const result = posted(await post(messenger(provider, declaredAsk)));
   assert.throws(() => assertWentToTheChannel(requests), /not sent to the announcements channel/);
-  assert.equal(requests[0]?.body.chat_id, ASK_CHAT, "declared ask, it lands in the chairman's chat even with the channel configured");
+  assert.equal(requests[0]?.destination, AUDIENCE.ask, "declared ask, it lands in the chairman's chat even with the channel configured");
   assert.equal(result.destination, "chairman-chat");
   // and the positive control for the line above: the shipped declaration is the announcement one, which the first test has go to the channel
   assert.equal(CONFIDENCE_CONFIG.kinds[POST_KIND].audience, AUDIENCE.announcement);
 });
 
 test("one post per day through the messenger: a second run the same day sends nothing, the next day sends again", async () => {
-  const { provider, requests } = telegram({ channel: true });
+  const { provider, requests } = chats({ channel: true });
   const delivery = messenger(provider);
   posted(await post(delivery));
   const again = await post(delivery, { now: NOW + HOUR });
@@ -158,7 +136,7 @@ test("one post per day on the epic: a day whose marker comment is there posts no
 });
 
 test("a quiet day is still one message, saying so", async () => {
-  const { provider, requests } = telegram({ channel: true });
+  const { provider, requests } = chats({ channel: true });
   const result = posted(await post(messenger(provider), { reading: EMPTY }));
   assert.equal(requests.length, 1);
   assert.match(result.text, /no provider decisions in the window/);
@@ -166,7 +144,7 @@ test("a quiet day is still one message, saying so", async () => {
 
 test("no provider declared posts nothing: no message, no ledger line, no comment, and the delivery is never asked", async () => {
   // POSITIVE CONTROL for every emptiness below: the same inputs with `providerDeclared: true` post, in the first three tests of this file.
-  const { provider, requests } = telegram({ channel: true });
+  const { provider, requests } = chats({ channel: true });
   const viaMessenger = messenger(provider);
   assert.deepEqual(await post(viaMessenger, { providerDeclared: false }), { posted: false, why: "no-provider" });
   assert.equal(requests.length, 0);
@@ -183,10 +161,10 @@ test("the text asks the chairman nothing: no question mark, even from a question
   // positive control: the name was in the reading and is in the text, so the absence above is the removal and not a row that never rendered
   assert.ok(reading.rows.some((row) => row.question.includes("?")));
   assert.match(text, /is it routed/);
-  const { provider, requests } = telegram({ channel: true });
+  const { provider, requests } = chats({ channel: true });
   await post(messenger(provider), { reading });
-  assert.ok(!String(requests[0]?.body.text).includes("?"));
-  assert.equal(requests[0]?.body.reply_markup, undefined, "an announcement carries no button");
+  assert.ok(!String(requests[0]?.text).includes("?"));
+  assert.equal(requests[0]?.actions, undefined, "an announcement carries no button");
 });
 
 test("per use and question: the decisions asked, the share under the floor, the mean and the median", () => {
@@ -208,7 +186,7 @@ test("the names over #4750's line are the ones past 30% of at least 20, and the 
 
 test("a send the provider could not make is not a post, and says what happened", async () => {
   const fake = createFakeProvider();
-  fake.failNext(new Error("telegram is down"));
+  fake.failNext(new Error("the provider is down"));
   const result = await post(messenger(fake));
   assert.deepEqual(result, { posted: false, why: "not-sent", detail: "failed" });
   assert.equal(fake.sent.length, 0);

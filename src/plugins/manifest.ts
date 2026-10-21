@@ -179,6 +179,8 @@ export type PluginModule = Readonly<{
   onboardSteps: readonly OnboardStep[];
   keep?(settings: PluginSettings, deps: PluginDeps): readonly StepResult[];
   release?(settings: PluginSettings, deps: PluginDeps): StepResult;
+  /** The inverse of `release` (A11-162), called with what `release` answered when the change it was for is refused AFTER it ran: the plugin is put back on the machine, so the host file still naming it is true. */
+  restore?(settings: PluginSettings, deps: PluginDeps, released: StepResult): StepResult;
   /** A messaging plugin's own step of `messaging:pair` (messaging contract 1.1): the one-time code, and the chairman file written once it comes back right. */
   pair?: MessagingPair;
 }>;

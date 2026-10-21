@@ -3,8 +3,8 @@
 // The chairman's direction: one chat filling with everything makes it "really hard to keep track of what I'm needed for". So a kind is an
 // ASK (needs him: one message per ask, in the existing chat) or an ANNOUNCEMENT (told to him, asks nothing: a one-way channel).
 //
-// WHAT EACH BLOCK CAN FAIL ON: the routing is read off the WIRE (`chat_id` of the request Telegram would have received), not off what the core
-// believes it did, and every routing assertion is run once against a provider that IGNORES the audience to show it goes red (the control).
+// WHAT EACH BLOCK CAN FAIL ON: the routing is read off what the provider RECEIVED (`destination` on the fake's `sent`), not off what the core
+// believes it did (the same routing over Telegram's wire, `chat_id`, is `plugins/telegram/audience.test.ts`), and every routing assertion is run once against a provider that IGNORES the audience to show it goes red (the control).
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,44 +18,16 @@ import { EVENT_KINDS } from "./event.ts";
 import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, readLedgerLines } from "./ledger.ts";
 import { AUDIENCE, ConformanceError, runProviderConformance } from "./provider-contract.ts";
-import { createSecret, redactingFetch } from "./secret.ts";
-import { createTelegramProvider as createWithoutRedaction } from "../../plugins/telegram/send.ts";
-
-/** The Telegram provider the plugin builds, with the core's `redactingFetch` it is given in `deps.messaging`: these tests pin where each message goes over the wire (A11-162 leaves them with the real wire shape on purpose). */
-const createTelegramProvider = (options: Omit<Parameters<typeof createWithoutRedaction>[0], "redactingFetch">) => createWithoutRedaction({ ...options, redactingFetch });
 
 const START = Date.parse("2026-10-10T09:00:00Z");
-const TOKEN = "123456789:AAFk3x9Q-test_token_value_ZZ";
-const ASK_CHAT = 4242;
-const CHANNEL_CHAT = -1009876543210;
 const EVERY_ASK_KIND = ["request", "stall"];
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-audience-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let nextLedger = 0;
 
-type Wire = { url: string; body: Record<string, any> };
-
-/** A fetch that records each request and answers every one with a fresh message id. */
-function fakeTelegram() {
-  const requests: Wire[] = [];
-  let nextMessageId = 100;
-  const fetchImpl = (async (url: string, init: { body: string }) => {
-    requests.push({ url, body: JSON.parse(init.body) });
-    return { ok: true, status: 200, json: async () => ({ ok: true, result: { message_id: nextMessageId += 1 } }), headers: { get: () => null } };
-  }) as unknown as typeof fetch;
-  return { fetch: fetchImpl, requests };
-}
-
-function telegram({ announcementsChatId }: { announcementsChatId?: number } = {}) {
-  const wire = fakeTelegram();
-  const real = createTelegramProvider({
-    token: createSecret(TOKEN), chatId: ASK_CHAT, announcementsChatId, fetch: wire.fetch, sleep: async () => {}, log: () => {},
-  });
-  // These tests pin where each message goes, so they run the lifecycle without the asks' record (a11ign/a11ign#4745): the pinned list is a message of its own.
-  const provider = { ...real, capabilities: { ...real.capabilities, edit: false, pin: false } };
-  return { provider, requests: wire.requests };
-}
+/** The in-memory provider that declares one destination (the chairman's chat only) or two (a channel of its own), and the asks' record off: the pinned list is a message of its own. */
+const providerWith = (destinations: 1 | 2) => createFakeProvider({ capabilities: { destinations, edit: false, pin: false } });
 
 /** A messenger over `provider`, with the clock fixed at START so a kind's hold-down is the only thing that can delay a send. */
 function messengerOver(provider: any, config?: Parameters<typeof resolveConfig>[0]) {
@@ -69,9 +41,6 @@ function event(kind: string, more: Record<string, unknown> = {}) {
   const row = kind === "request" ? "#1" : "";
   return { key: `${kind}:audience-test${row}`, kind, severity: "info", firstSeenAt: START, text: `a ${kind} the chairman is told`, links: [], ...more };
 }
-
-/** The chat ids the requests went to, in order. */
-const chatsOf = (requests: Wire[]) => requests.map((request) => request.body.chat_id);
 
 describe("each kind declares its audience, and the plan carries it", () => {
   test("request and stall are asks; every other kind is an announcement -- and no kind is left undeclared", () => {
@@ -120,99 +89,90 @@ describe("a kind with no audience is refused at send, never defaulted", () => {
 });
 
 describe("routing: with one destination both audiences reach the same chat, with two each reaches its own", () => {
-  /** What every routing claim below asserts, given a way to send one ask and one announcement and read where each went. */
-  async function routedTo(provider: any, requests: () => number[]) {
+  /** What every routing claim below asserts, given a provider and the records of what it was sent: one ask and one announcement, and where each went. */
+  async function routedTo(provider: any, sent: Record<string, any>[]) {
     const run = messengerOver(provider);
     const decisions = await run.tick([event("request"), event("release")]);
     assert.deepEqual(decisions.map((decision) => decision.action), ["sent", "sent"], "the positive control: both were sent");
-    return requests();
+    return sent.map((message) => message.destination);
   }
 
   test("only chairmanFile (no announcements chat): both audiences go to the chairman chat, exactly as today", async () => {
-    const { provider, requests } = telegram();
+    const provider = providerWith(1);
     assert.equal(provider.capabilities.destinations, 1, "a provider with one destination says so");
-    assert.deepEqual(await routedTo(provider, () => chatsOf(requests)), [ASK_CHAT, ASK_CHAT]);
+    assert.deepEqual(await routedTo(provider, provider.sent), ["ask", "ask"]);
   });
 
   test("with both files: the ask goes to the chairman chat and the announcement to the channel", async () => {
-    const { provider, requests } = telegram({ announcementsChatId: CHANNEL_CHAT });
+    const provider = providerWith(2);
     assert.equal(provider.capabilities.destinations, 2);
-    assert.deepEqual(await routedTo(provider, () => chatsOf(requests)), [ASK_CHAT, CHANNEL_CHAT]);
-  });
-
-  test("the same routing through the fake provider, where a test reads `destination` off what was sent", async () => {
-    const provider = createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } });
-    await routedTo(provider, () => []);
-    assert.deepEqual(provider.sent.map((message) => message.destination), ["ask", "announcement"]);
-    const single = createFakeProvider({ capabilities: { edit: false, pin: false } });
-    await routedTo(single, () => []);
-    assert.deepEqual(single.sent.map((message) => message.destination), ["ask", "ask"]);
+    assert.deepEqual(await routedTo(provider, provider.sent), ["ask", "announcement"]);
   });
 
   test("CONTROL: the routing assertion goes red when the audience is ignored", async () => {
-    const { provider, requests } = telegram({ announcementsChatId: CHANNEL_CHAT });
-    const deaf = { ...provider, send: (message: { text: string }) => provider.send({ ...message, audience: undefined }) };
-    const chats = await routedTo(deaf, () => chatsOf(requests));
-    assert.notDeepEqual(chats, [ASK_CHAT, CHANNEL_CHAT], "an ignored audience sends the announcement to the ask chat, and the test above would have failed");
-    assert.deepEqual(chats, [ASK_CHAT, ASK_CHAT]);
+    const real = providerWith(2);
+    const deaf = { ...real, send: (message: { text: string }) => real.send({ ...message, audience: undefined }) };
+    const destinations = await routedTo(deaf, real.sent);
+    assert.notDeepEqual(destinations, ["ask", "announcement"], "an ignored audience sends the announcement to the ask chat, and the test above would have failed");
+    assert.deepEqual(destinations, ["ask", "ask"]);
   });
 });
 
 describe("an announcement is one-way", () => {
-  test("an announcement with actions is refused by the provider, in either configuration, and nothing is put on the wire", async () => {
-    for (const announcementsChatId of [undefined, CHANNEL_CHAT]) {
-      const { provider, requests } = telegram({ announcementsChatId });
+  test("an announcement with actions is refused by the provider, in either configuration, and nothing is sent", async () => {
+    for (const destinations of [1, 2] as const) {
+      const provider = providerWith(destinations);
       await assert.rejects(() => provider.send({ text: "told", audience: AUDIENCE.announcement, actions: [{ label: "Yes", data: "yes" }] }), /one-way and carries no actions/);
-      assert.equal(requests.length, 0, "nothing was put on the wire");
+      assert.equal(provider.sent.length, 0, "nothing was sent");
       await provider.send({ text: "asked", audience: AUDIENCE.ask, actions: [{ label: "Yes", data: "yes" }] });
-      assert.equal(requests.length, 1, "the positive control: the same buttons on an ask are drawn");
-      assert.equal(requests[0].body.reply_markup.inline_keyboard.length, 1);
+      assert.equal(provider.sent.length, 1, "the positive control: the same buttons on an ask are drawn");
+      assert.equal(provider.sent[0].actions.length, 1);
     }
   });
 
   test("through the core: an announcement that carries actions is a recorded failure, and the ask beside it is unharmed", async () => {
-    const { provider, requests } = telegram({ announcementsChatId: CHANNEL_CHAT });
+    const provider = providerWith(2);
     const actions = [{ label: "Yes", data: "yes" }];
     const run = messengerOver(provider);
     const decisions = await run.tick([event("release", { actions }), event("request", { actions })]);
     assert.deepEqual(decisions.map((decision) => decision.action), ["failed", "sent"]);
-    assert.deepEqual(chatsOf(requests), [ASK_CHAT], "the announcement never reached the channel");
+    assert.deepEqual(provider.sent.map((message) => message.destination), ["ask"], "the announcement never reached the channel");
     assert.match(run.lines().find((line) => line.status === "failed")?.error, /one-way and carries no actions/);
   });
 
   test("a reply into the channel is refused; the same reply with no channel threads, as an incident's cleared always did", async () => {
-    const withChannel = telegram({ announcementsChatId: CHANNEL_CHAT });
-    await assert.rejects(() => withChannel.provider.send({ text: "cleared", audience: AUDIENCE.announcement, replyTo: "101" }), /one-way and carries no replyTo/);
-    assert.deepEqual(withChannel.requests, []);
-    const single = telegram();
-    await single.provider.send({ text: "cleared", audience: AUDIENCE.announcement, replyTo: "101" });
-    assert.equal(single.requests[0].body.reply_parameters.message_id, 101);
+    const withChannel = providerWith(2);
+    await assert.rejects(() => withChannel.send({ text: "cleared", audience: AUDIENCE.announcement, replyTo: "fake-1" }), /one-way and carries no replyTo/);
+    assert.deepEqual(withChannel.sent, []);
+    const single = providerWith(1);
+    await single.send({ text: "cleared", audience: AUDIENCE.announcement, replyTo: "fake-1" });
+    assert.equal(single.sent[0].replyTo, "fake-1");
   });
 
   test("an incident's 'cleared' in the channel stands alone (no replyTo) and goes there; in one chat it threads as before", async () => {
-    for (const announcementsChatId of [CHANNEL_CHAT, undefined]) {
-      const { provider, requests } = telegram({ announcementsChatId });
+    for (const destinations of [2, 1] as const) {
+      const provider = providerWith(destinations);
       const run = messengerOver(provider, { kinds: { incident: { holdDownMs: 0 } } });
       await run.tick([event("incident")]);
       const [cleared] = await run.tick([event("incident", { resolved: true, firstSeenAt: START + 1 })]);
       assert.equal(cleared.action, "cleared", "the positive control: the clear was delivered, not failed");
-      const [original, clear] = requests as [Wire, Wire];
-      const expected = announcementsChatId ?? ASK_CHAT;
-      assert.deepEqual([original.body.chat_id, clear.body.chat_id], [expected, expected]);
-      assert.equal(clear.body.reply_parameters !== undefined, announcementsChatId === undefined);
+      const [original, clear] = provider.sent as [Record<string, any>, Record<string, any>];
+      const expected = destinations === 2 ? "announcement" : "ask";
+      assert.deepEqual([original.destination, clear.destination], [expected, expected]);
+      assert.equal(clear.replyTo !== undefined, destinations === 1);
     }
   });
 
   test("the ledger records which audience each line was for", async () => {
-    const run = messengerOver(createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } }));
+    const run = messengerOver(providerWith(2));
     await run.tick([event("request"), event("release")]);
     assert.deepEqual(run.lines().map((line) => [line.key, line.audience]), [["request:audience-test#1", "ask"], ["release:audience-test", "announcement"]]);
   });
 });
 
 describe("the contract holds a provider to the audience", () => {
-  test("the fake and the Telegram provider (with and without a channel) pass, and the audience checks RAN", async () => {
-    const providers = [createFakeProvider({ capabilities: { edit: false, pin: false } }), createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } }), telegram().provider, telegram({ announcementsChatId: CHANNEL_CHAT }).provider];
+  test("the fake (with and without a channel) passes, and the audience checks RAN", async () => {
+    const providers = [createFakeProvider({ capabilities: { edit: false, pin: false } }), createFakeProvider({ capabilities: { destinations: 2, edit: false, pin: false } })];
     for (const provider of providers) {
       const { passed } = await runProviderConformance(provider);
       for (const check of ["audience-is-honoured", "unknown-audience-is-refused", "announcement-refuses-actions", "announcement-reply-to-follows-its-destination"]) {

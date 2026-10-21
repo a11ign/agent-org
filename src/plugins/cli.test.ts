@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
 import { loadOutgoing, type Outgoing, runPlugin } from "./cli.ts";
 import { buildCatalog } from "./registry.ts";
-import type { CatalogPlugin, PluginSettings } from "./manifest.ts";
+import type { CatalogPlugin, PluginSettings, StepResult } from "./manifest.ts";
 
 const RUN = "post {prs} into {dir}";
 const NOTE = "a note the person wrote, which a write keeps";
@@ -481,4 +481,55 @@ test("A11-162: a plugin with nothing to release is not built to be left: a messa
   const telegram = buildCatalog().plugins.find(({ name }) => name === "telegram")!;
   const outgoing = await loadOutgoing(telegram, { tokenFile: "~/not-resolved" }, async () => ({ create: () => { throw new Error("create reads the token file"); }, doctorChecks: () => [], onboardSteps: [] }));
   assert.deepEqual([outgoing.machineName, outgoing.release()], [null, { ok: true, detail: "" }]);
+});
+
+/** The plugin a command leaves, when the host file is changed by someone else while it is being released: `restored` records what it was asked to put back. */
+function leavingWhileTheFileChanges(restored: StepResult[], putBack: StepResult = { ok: true, detail: "put back" }) {
+  const released: StepResult = { ok: true, detail: RELEASED, settings: { released: [{ service: "ui", port: 9500, local: 5001 }] } };
+  return (hostPath: string, left: Left[]) => async (plugin: CatalogPlugin, settings: PluginSettings): Promise<Outgoing> => {
+    left.push({ plugin: plugin.name, settings, hostBefore: readFileSync(hostPath, "utf8") });
+    return {
+      machineName: TAILNET,
+      release: () => { writeFileSync(hostPath, readFileSync(hostPath, "utf8").replace('"app"', '"other"')); return released; },
+      restore: (given) => { restored.push(given); return putBack; },
+    };
+  };
+}
+
+test("A11-162: a save refused after the release (the file changed since the readers looked) puts the released plugin back and says so, so the file and the machine agree", async () => {
+  const restored: StepResult[] = [];
+  const host = scratch(SWITCHED, undefined, leavingWhileTheFileChanges(restored));
+  const result = await host.run("enable", "local");
+  assert.equal(result.status, 1);
+  assert.match(result.err, /the file changed since you looked: read it again\. tailscale had been released, so it was put back: put back/);
+  assert.deepEqual(restored.map(({ settings }) => settings), [{ released: [{ service: "ui", port: 9500, local: 5001 }] }], "it was handed what its own release answered");
+  assert.equal(JSON.parse(host.text()).tickets.providers.exposure.provider, "tailscale", "the file still names tailscale, which is served again");
+});
+
+test("A11-162: a plugin that cannot be put back is named as not put back, with its words", async () => {
+  const host = scratch(SWITCHED, undefined, leavingWhileTheFileChanges([], { ok: false, detail: "run `agent-org start ui`" }));
+  const result = await host.run("enable", "local");
+  assert.equal(result.status, 1);
+  assert.match(result.err, /tailscale had been released, so it could NOT be put back: run `agent-org start ui`/);
+});
+
+test("A11-162: a plugin whose release removed nothing is not asked to put anything back", async () => {
+  const restored: StepResult[] = [];
+  const host = scratch(SWITCHED, undefined, (hostPath, left) => async (plugin, settings) => {
+    const outgoing = await leavingWhileTheFileChanges(restored)(hostPath, left)(plugin, settings);
+    return { ...outgoing, release: () => { outgoing.release(); return { ok: true, detail: "" }; } };
+  });
+  const result = await host.run("enable", "local");
+  assert.equal(result.status, 1);
+  assert.deepEqual([restored.length, /put back/.test(result.err)], [0, false]);
+});
+
+test("A11-162: a plugin whose restore throws is named as not put back, with the error's words, and the refusal still comes", async () => {
+  const host = scratch(SWITCHED, undefined, (hostPath, left) => async (plugin, settings) => {
+    const outgoing = await leavingWhileTheFileChanges([])(hostPath, left)(plugin, settings);
+    return { ...outgoing, restore: () => { throw new Error("tailscale is gone"); } };
+  });
+  const result = await host.run("enable", "local");
+  assert.equal(result.status, 1);
+  assert.match(result.err, /the file changed since you looked: read it again\. tailscale had been released, so it could NOT be put back: tailscale is gone/);
 });

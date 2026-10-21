@@ -21,4 +21,4 @@ export const doctorChecks = (settings: PluginSettings, deps: PluginDeps): Promis
 
 export const onboardSteps = ONBOARD_STEPS;
 
-export { release } from "./onboard.ts";
+export { release, restore } from "./onboard.ts";
