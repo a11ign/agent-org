@@ -43,7 +43,6 @@ export async function runAction(request: ActionRequest, deps: PluginCliDeps): Pr
   if (plan.changes.length > 0 && !request.confirmed && needsConfirmation(request, context)) {
     throw new PluginCommandRefusal(`${request.action} ${request.name} needs the person's confirmation first: ask again with it`);
   }
-  const lines: string[] = [];
-  const inForce = await writePlan(plan, { ...deps, log: (line) => lines.push(line) }, [], request.base);
+  const inForce = await writePlan(plan, { ...deps, log: () => undefined }, [], request.base);
   return { said: plan.said, changed: plan.changes.length > 0, inForce };
 }

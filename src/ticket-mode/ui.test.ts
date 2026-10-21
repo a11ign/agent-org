@@ -2555,3 +2555,11 @@ test("A11-163: Configure on a plugin whose settings are in the project's declara
   assert.match(pluginsNode(remote).text(), /Its files are changed on that machine, so this page offers no edit here\./);
   assert.deepEqual(buttonsIn(pluginRow(remote, "tailscale")).map((button) => button.text()), [], "a remote instance's plugins have no control");
 });
+
+test("A11-163: settings that cannot be read leave the Plugins section drawn, with its controls, and plugins that cannot be read leave the settings", async () => {
+  const p = await settingsPage({ config: SETTINGS, plugins: PLUGINS, refused: ["/api/settings"], errors: { "/api/settings": "Linear could not be reached" } });
+  assert.match(p.$("settings-notes").text(), /could not be read: Linear could not be reached/);
+  assert.match(pluginRow(p, "linear").text(), /State: enabled\./, "the plugins are independent of the settings");
+  assert.equal(buttonIn(pluginRow(p, "tailscale"), "Disable").disabled, false);
+  assert.equal(buttonsIn(pluginRow(p, "tailscale")).some((button) => button.text() === "Configure"), true, "Configure is still offered, and opens nothing the settings could not give");
+});

@@ -42,7 +42,7 @@ export type PluginsSeam = Readonly<{
 /** What the page is sent: the account of every plugin, a note when the host file is one the reader refuses, and the `base` of each file a change would write. */
 export type PluginsAnswer = PluginHealth & Readonly<{ note: string | null; bases: Readonly<Partial<Record<EditFile, string>>> }>;
 
-const isRefusal = (error: unknown): error is Error => error instanceof Error;
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** The text of the host file, or null when it cannot be read. */
 function readText(path: string): string | null {
@@ -60,7 +60,7 @@ function hostNote(text: string | null, catalog: Catalog): string | null {
     resolveProviders(JSON.parse(text), catalog);
     return null;
   } catch (error) {
-    return `the host file is refused, so the plugins are shown as their defaults: ${isRefusal(error) ? error.message : String(error)}`;
+    return `the host file is refused, so the plugins are shown as their defaults: ${messageOf(error)}`;
   }
 }
 

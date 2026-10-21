@@ -351,7 +351,7 @@ const state = {
   settingsShown: false, opener: "open-settings", boardHash: "",
   // The Settings search (A11-146): the query typed, the sections the person last left open or closed (by name; `Machine` starts closed), and the view last read,
   // which a query is applied to without reading the instance again. Kept across a redraw, so a save does not close what was open.
-  settingsSearch: { query: "", all: false, open: recall(storage, "ticket-mode.settings-open"), view: null, sections: [], others: [], providersBuilt: false },
+  settingsSearch: { query: "", all: false, open: recall(storage, "ticket-mode.settings-open"), view: null, sections: [], others: [], providers: [], providersBuilt: false, unreadable: false },
   // The Plugins section (A11-163), read by its own call: `phase` is reading, read or failed; `answer` is what `/api/plugins` sent; `outcome` and `refusal` say what the last action did.
   plugins: { phase: "reading", answer: null, failure: "" }, pluginOutcome: "", pluginRefusal: "",
   // Which tickets the list holds (the host file's `tickets.pick`, as the instance words it), and, when it holds none, the instance's word on why.
@@ -894,6 +894,7 @@ async function drawSettings() {
   // Until the rows are read, a search has nothing to filter, so it waits for them (drawSettingsView sets the view again).
   state.settingsSearch.view = null;
   state.settingsSearch.providersBuilt = false;
+  state.settingsSearch.unreadable = false;
   // The Plugins section is its own call, started now and never waited for: a plugin's checks run programs, and the rest of the page must not wait on them or fail with them.
   state.plugins = { phase: "reading", answer: null, failure: "" };
   readPlugins(chosen);
@@ -923,6 +924,18 @@ async function readPlugins(chosen) {
   if (state.connection !== chosen || !onSettingsPage()) return;
   layoutSettings();
 }
+/**
+ * The sections of the five provider groups. With the Plugins section read (`answer`), a group is a concern's settings: without the plugin and enabled lines, which the state and the
+ * controls show, and without the settings only another plugin of the concern declares. Without it, the group is drawn whole, where it always was.
+ */
+function providerSections(view, answer) {
+  return view.groups.filter((group) => PLUGIN_GROUPS.includes(group.group)).map((group) => {
+    const concern = answer === null ? null : answer.concerns.find((entry) => entry.concern === concernOfGroup(group.group)) ?? null;
+    const rows = concern === null ? group.rows : group.rows.filter((row) => !isProviderLine(row.key)).map((row) => ({ ...row, inUse: row.inUse && !ofAnotherPlugin(concern.plugins, row.key) }));
+    const section = settingsGroup({ group: group.group, rows }, view, concern === null ? {} : { label: `${group.group} settings` });
+    return section === null ? null : { ...section, concern: concern === null ? null : concern.concern };
+  }).filter((section) => section !== null);
+}
 /** The rows of the page: each group's keys, with what each says, and the plugins and connectors in words. With no view, an instance without the route is older than this page; any other failure is said. */
 function drawSettingsView(view, failure) {
   if (view === null) {
@@ -931,6 +944,8 @@ function drawSettingsView(view, failure) {
     const older = failure.startsWith("no route");
     const text = older ? "This instance is older than this page and cannot describe its settings. The controls above still change them." : `The settings could not be read: ${failure}`;
     $("settings-notes").replaceChildren(el("p", { className: "notice", textContent: text }));
+    state.settingsSearch.unreadable = true;
+    layoutSettings();
     return;
   }
   $("settings-refusals").hidden = view.refusals.length === 0;
@@ -949,17 +964,13 @@ function drawSettingsView(view, failure) {
  * are drawn where they always were, so no row goes missing. Safe to call again: the sections already built are kept as they are.
  */
 function layoutSettings() {
-  const view = state.settingsSearch.view;
-  if (view === null) return;
-  const { phase, answer } = state.plugins;
   const search = state.settingsSearch;
-  if (phase !== "reading" && !search.providersBuilt) {
-    search.providers = view.groups.filter((group) => PLUGIN_GROUPS.includes(group.group)).map((group) => {
-      const concern = phase === "read" ? answer.concerns.find((entry) => entry.concern === concernOfGroup(group.group)) ?? null : null;
-      const rows = concern === null ? group.rows : group.rows.filter((row) => !isProviderLine(row.key)).map((row) => ({ ...row, inUse: row.inUse && !ofAnotherPlugin(concern.plugins, row.key) }));
-      const section = settingsGroup({ group: group.group, rows }, view, concern === null ? {} : { label: `${group.group} settings` });
-      return section === null ? null : { ...section, concern: concern === null ? null : concern.concern };
-    }).filter((section) => section !== null);
+  const view = search.view;
+  // Settings that could not be read leave the Plugins section to be drawn alone, with no settings to open under Configure; settings not read yet leave the page as it is.
+  if (view === null && !search.unreadable) return;
+  const { phase, answer } = state.plugins;
+  if (view !== null && phase !== "reading" && !search.providersBuilt) {
+    search.providers = providerSections(view, phase === "read" ? answer : null);
     search.providersBuilt = true;
   }
   const providers = search.providersBuilt ? search.providers : [];
