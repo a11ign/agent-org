@@ -1570,6 +1570,13 @@ test("A11-152: a stop-active mark the board cannot read holds the Grill question
   assert.deepEqual([existsSync(join(unreadable.dir, "outcome.json")), existsSync(join(unreadable.dir, "asked.json"))], [true, false], "a mark that cannot be read is not known to be old: nothing is moved");
 });
 
+test("A11-152: a stop-active mark that holds no time holds the Grill question, as a fresh one does", async () => {
+  for (const [id, text] of [["w6", "not a time"], ["w7", ""]]) {
+    const malformed = await grillAsks(id, (dir) => writeFileSync(join(dir, STOP_ACTIVE_FILE), text));
+    assert.deepEqual([existsSync(join(malformed.dir, "outcome.json")), existsSync(join(malformed.dir, "asked.json"))], [true, false], `a mark reading ${JSON.stringify(text)} is not known to be old: nothing is moved`);
+  }
+});
+
 test("A11-152: a Grill question waits while its stop hook reads the outcome, and is taken once that hook has ended or crashed", async () => {
   const held = await grillAsks("w3", (dir) => writeFileSync(join(dir, STOP_ACTIVE_FILE), "100"));
   assert.deepEqual([existsSync(join(held.dir, "outcome.json")), existsSync(join(held.dir, "asked.json"))], [true, false], "the hook is reading: nothing is moved yet");
