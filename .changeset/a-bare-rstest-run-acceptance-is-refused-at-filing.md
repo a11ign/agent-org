@@ -1,5 +1,0 @@
----
-"agent-org": patch
----
-
-A row whose Acceptance runs `rstest run` against agent-org without `--config scripts/rstest/rstest.config.ts` is refused at filing (a11ign/agent-org#775). The `node:test` shim lives only in that config, so the bare form prints "No test suites found" for every test file there and the row can never pass; three rows carried it inside an hour (a11ign#4900, #4902, #4904) and a worker cannot amend a row under its own claim. `bareRstestRunReason(body, tool)` sits beside `wholeSuiteAcceptanceReason` and names the missing flag and the corrected command. It reads a command as agent-org's from a `cd` before the `rstest run` (by the directory's name: `~/repos/agent-org`, `/home/agent/repos/agent-org`), and otherwise from the Region's `agent-org:` key; `rstest run` in another repository's directory, `node --test`, and any command that passes `--config`/`-c` are not refused. `row-file` is the only caller, so rows already open are not shelved, and `row-file --promote=` refuses a backlog row that carries the shape, as it does for the whole suite.
