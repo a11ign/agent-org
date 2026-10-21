@@ -15,7 +15,7 @@
 // keeping the settings both declare. The plugin it leaves, if it was enabled, is released first (`leaves`): `PluginModule.release` runs while it is still the enabled one, before the file
 // is written, and a release that cannot refuses the change.
 import type { Change, EditFile } from "../ticket-mode/settings-edit.ts";
-import { DEFAULT_PROVIDER, isActive, type BlockReport, type Providers } from "../ticket-mode/providers.ts";
+import { concernSettingsOf, DEFAULT_PROVIDER, isActive, type BlockReport, type Providers } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, type Concern, type ProviderBlock } from "./concerns.ts";
 import type { Catalog, CatalogPlugin, PluginSettings } from "./manifest.ts";
 import { blockSettings, pluginNamed } from "./registry.ts";
@@ -75,7 +75,7 @@ function targetOf(name: string, { providers, catalog, messaging }: PlanContext):
 
 /** Refuses a fake, which the reader accepts (core's tests enable one) and which has no code to run on a host: unless the reader refuses it first, with its own, kinder, sentence. */
 function refuseFake(plugin: CatalogPlugin, catalog: Catalog): void {
-  const fake = enableRefusal(plugin, catalog) === null ? fakeRefusal(plugin) : null;
+  const fake = enableRefusal(plugin) === null ? fakeRefusal(plugin) : null;
   if (fake !== null) refuse(fake);
 }
 
@@ -113,6 +113,12 @@ function settingChanges(place: Place, sets: readonly string[]): Change[] {
   });
 }
 
+/** The settings a plugin's block takes: its own, and its concern's (the reviewer's `required`), which belong to the machine and move with the block from one plugin to another. */
+function takenSettings(plugin: CatalogPlugin): string[] {
+  const block = blockOf(plugin.concern);
+  return [...blockSettings(plugin), ...(block === null ? [] : concernSettingsOf(block))];
+}
+
 /** The settings the place holds, by name: what the file holds, and not what a setting defaults to. */
 const heldSettings = (report: BlockReport): [string, unknown][] => Object.entries(report.settings).filter(([, setting]) => setting.value !== undefined).map(([name, setting]) => [name, setting.value]);
 
@@ -138,7 +144,9 @@ export function planInstall(name: string, options: Readonly<{ sets: readonly str
     refuse(`the ${CONCERN_LABEL[plugin.concern]} is ${replaced} (${report.from === "block" ? keyOf(place) : "its default"}) and exactly one ${CONCERN_LABEL[plugin.concern]} plugin is installed: use --replace to replace ${replaced} with ${name}, which drops ${replaced}'s settings`);
   }
   const dropped: Change[] = replaced !== null && report.from === "block" ? [{ key: keyOf(place), remove: true }] : [];
-  const changes: Change[] = [...dropped, { key: keyOf(place, "provider"), value: plugin.name }, { key: keyOf(place, "enabled"), value: true }, ...settingChanges(place, options.sets)];
+  // The concern's own settings (`required`) are not the replaced plugin's: they are written back after the block is dropped.
+  const concernKept: Change[] = dropped.length === 0 ? [] : concernSettingsKept(target).map(([setting, value]) => ({ key: keyOf(place, setting), value }));
+  const changes: Change[] = [...dropped, { key: keyOf(place, "provider"), value: plugin.name }, { key: keyOf(place, "enabled"), value: true }, ...concernKept, ...settingChanges(place, options.sets)];
   const said = replaced === null ? `installed ${name} as the ${CONCERN_LABEL[plugin.concern]}` : `installed ${name} as the ${CONCERN_LABEL[plugin.concern]}, replacing ${replaced}`;
   return { changes, said, file: place.file, ...(replaced === null ? {} : { leaves: leavingOf(target, context.catalog) }) };
 }
@@ -149,7 +157,7 @@ export function planInstall(name: string, options: Readonly<{ sets: readonly str
  */
 function planSwitch(target: Target, context: PlanContext): Plan {
   const { plugin, place, report } = target;
-  const declared = blockSettings(plugin);
+  const declared = takenSettings(plugin);
   const held = heldSettings(report);
   const kept = held.filter(([name]) => declared.includes(name));
   const dropped = held.filter(([name]) => !declared.includes(name)).map(([name]) => name);
@@ -180,7 +188,7 @@ export function planInstallOrSwitch(name: string, context: PlanContext): Plan {
 export function replacementOf(name: string, context: PlanContext): Readonly<{ replaced: string; dropped: readonly string[] }> | null {
   const { plugin, report } = targetOf(name, context);
   if (report.provider === "none" || report.provider === name || report.from !== "block") return null;
-  const declared = blockSettings(plugin);
+  const declared = takenSettings(plugin);
   return { replaced: report.provider, dropped: heldSettings(report).map(([setting]) => setting).filter((setting) => !declared.includes(setting)) };
 }
 
@@ -225,15 +233,27 @@ export function planUninstall(name: string, context: PlanContext): Plan {
   const { place, plugin } = target;
   const fallback = plugin.concern === "messaging" ? "none" : DEFAULT_PROVIDER[blockOf(plugin.concern)!];
   const whole = plugin.concern === "messaging" ? ", and the whole messaging key goes with it (its summary and milestones too; project.json.bak holds it)" : "";
-  return { changes: [{ key: keyOf(place), remove: true }], file: place.file, leaves: leavingOf(target, context.catalog),
-    said: `uninstalled ${name}: the ${CONCERN_LABEL[plugin.concern]} falls back to its default, ${fallback}${whole}` };
+  // A setting of the CONCERN (the reviewer's `required`) is the machine's, not the plugin's, so it outlives the plugin: the block becomes `none` with it (A11-161).
+  const kept = concernSettingsKept(target);
+  const changes: Change[] = [{ key: keyOf(place), remove: true }, ...(kept.length === 0 ? [] : [{ key: keyOf(place, "provider"), value: fallback }, ...kept.map(([setting, value]): Change => ({ key: keyOf(place, setting), value }))])];
+  return { changes, file: place.file, leaves: leavingOf(target, context.catalog),
+    said: `uninstalled ${name}: the ${CONCERN_LABEL[plugin.concern]} falls back to its default, ${fallback}${kept.length === 0 ? "" : `, keeping ${kept.map(([setting, value]) => `${setting}: ${JSON.stringify(value)}`).join(", ")}, which is the ${CONCERN_LABEL[plugin.concern]}'s and not ${name}'s`}${whole}` };
+}
+
+/** The settings the place holds that are its concern's (`required`), which stay when the plugin goes. */
+function concernSettingsKept({ plugin, place, report }: Target): [string, unknown][] {
+  const block = blockOf(plugin.concern);
+  if (block === null || place.file !== "host.json") return [];
+  const own = concernSettingsOf(block);
+  return heldSettings(report).filter(([name]) => own.includes(name));
 }
 
 /** The settings a plugin's block holds, one `key: value` line each, for the keys named (all it declares when none): a value as JSON, and never the contents of a key file. */
 export function configLines(name: string, keys: readonly string[], context: PlanContext): readonly string[] {
   const target = targetOf(name, context);
   refuseUnlessInstalled(target);
-  const declared = blockSettings(target.plugin);
+  // The concern's own settings (the reviewer's `required`) are read and set beside the plugin's.
+  const declared = takenSettings(target.plugin);
   const unknown = keys.find((key) => !declared.includes(key));
   if (unknown !== undefined) refuse(`${unknown} is not a setting of ${name}: its settings are ${declared.join(", ") || "none"}`);
   return (keys.length === 0 ? declared : keys).map((key) => {

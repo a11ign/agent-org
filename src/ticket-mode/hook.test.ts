@@ -7,7 +7,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, readOutcomeFile, resolveWritePath, stopVerdict, toolVerdict, writerGrants } from "./hook.ts";
+import { MAX_STOP_REFUSALS, main, prReviewEvent, protectedFiles, publishConnectors, publisherSkills, readOutcomeFile, resolveWritePath, stopVerdict, toolVerdict, writerGrants } from "./hook.ts";
+import { buildCatalog, defaultCatalog } from "../plugins/registry.ts";
 import { PROTECTED_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE } from "./writer.ts";
 
@@ -464,6 +465,16 @@ test("a publish run may announce pull requests, with the skill and the connector
   for (const refused of ["gh pr merge 12 --squash", "gh pr review 12 --approve", "git push --force origin b", "gh workflow run ci.yml", "gh pr ready 12"]) {
     assert.equal(publish("Bash", { command: refused }), 2, refused);
   }
+});
+
+test("A11-161: the skills only a publish run may run are the catalog's publishers' (`tooling.skills` of each manifest, read as data): every other run is refused them, and a publisher added to the catalog is covered with no change to the hook", () => {
+  assert.deepEqual(publisherSkills(defaultCatalog()), ["post-pr-to-slack"], "the bundled slack plugin's skill, from its manifest");
+  assert.deepEqual(publisherSkills(buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false } })), [], "a catalog with no publisher refuses nothing");
+  const another = ["post-pr-to-slack", "announce-to-teams"];
+  assert.equal(toolVerdict("Skill", { skill: "announce-to-teams" }, { publisherSkills: another }).code, 2, "a second publisher's skill is refused to a run that is no publish run");
+  assert.equal(toolVerdict("Skill", { skill: "announce-to-teams" }, { publisherSkills: another, publish: [] }).code, 0, "and allowed to the publish run");
+  assert.equal(toolVerdict("Skill", { skill: "announce-to-teams" }, { publisherSkills: ["post-pr-to-slack"] }).code, 0, "a skill no publisher declares is not the hook's to refuse");
+  assert.match(toolVerdict("Skill", { skill: "plugin:post-pr-to-slack" }).say[0], /the plugin:post-pr-to-slack skill is refused: announcing a pull request is the person's/, "a skill under a plugin's prefix is refused as it was");
 });
 
 test("the hook treats a run as a publish run while the board's publish mark is beside its outcome file, and an unreadable mark lifts nothing", () => {

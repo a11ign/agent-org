@@ -49,8 +49,6 @@ const EXEMPT: Record<string, { lines: number; why: string }> = {
   "src/wake/reviewer-tokens-and-checkouts.ts": { lines: 2, why: "records: #2376 again -- the reviewer checkout's comment on the `npx` that died writing `~/.npm`, and the npm cache text the checkout prints" },
   "src/wake/pull-request-spawn-orders.ts": { lines: 1, why: "records: #2376, a reviewer's `npx` died writing `~/.npm`; the sentence is about what npx did" },
   "src/haiku-brief.ts": { lines: 1, why: "records: Anthropic's published Haiku 5.5 text, copied verbatim and sha256-pinned (`wake-haiku-brief.test.ts`); its `e.g. npm install` is an example in their sentence, not a remedy the tool prints" },
-  "src/install/doctor.ts": { lines: 1, why: "remedy that is meant: when Codex is missing, doctor names its install, `npm install -g @openai/codex` (Codex is published to npm and installed globally, not into a project)" },
-  "src/install/onboard.ts": { lines: 1, why: "remedy that is meant: Codex, which the atomic reviewer runs on, is published to npm as `@openai/codex` and installed globally with npm, not into a project" },
   "host/board-report.service.in": { lines: 2, why: "digest-pinned unit bytes (`host-project-paths.test.ts`): comment lines, see the header" },
   "host/gh": { lines: 1, why: "digest-pinned wrapper bytes (`host-project-paths.test.ts`): a comment line, see the header" },
   "host/work-tick.service.in": { lines: 1, why: "digest-pinned unit bytes (`host-project-paths.test.ts`): a comment line, see the header" },

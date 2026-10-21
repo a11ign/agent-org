@@ -313,6 +313,25 @@ test("Publish queues one publish run for the ticked runs Ready to merge on a mac
   }
 });
 
+test("A11-161: /api/config says whether the publisher is on, off (installed and switched off) or none, and the reviewer is on, off-required or none; with no publisher Publish is refused", async () => {
+  const publishing = { run: "Post {prs}, then write {dir}/published.json", connectors: ["^mcp__chat__send"] };
+  const states = async (tickets: Record<string, unknown>) => {
+    const b = board(4747, tickets);
+    const [, config] = await b.api("GET", "/api/config", {}) as [number, { publish: boolean; publisher: string; reviewer: string }];
+    return { b, said: [config.publish, config.publisher, config.reviewer] };
+  };
+  assert.deepEqual((await states({})).said, [false, "none", "none"], "no publisher and no reviewer: nothing extra is said");
+  assert.deepEqual((await states({ providers: { publish: { provider: "slack", ...publishing } } })).said, [true, "on", "none"]);
+  const off = await states({ providers: { publish: { provider: "slack", enabled: false, ...publishing } } });
+  assert.deepEqual(off.said, [false, "off", "none"], "installed and switched off: the Publish buttons are hidden, and the page says publishing is off");
+  await queueFinished(off.b, { kind: "reviewed", prs: [{ repo: "app", url: "https://github.com/x/app/pull/1" }] });
+  await assert.rejects(off.b.api("POST", "/api/publish", { keys: ["NBF-1"] }), /names no tickets.publish/, "and nothing can be queued to publish");
+  assert.deepEqual((await states({ providers: { reviewer: { provider: "atomic" } } })).said, [false, "none", "on"]);
+  assert.deepEqual((await states({ providers: { reviewer: { provider: "atomic", enabled: false } } })).said, [false, "none", "off-required"], "required, since the block names a reviewer plugin: the banner is the page's");
+  assert.deepEqual((await states({ providers: { reviewer: { provider: "atomic", enabled: false, required: false } } })).said, [false, "none", "none"], "not required: people review here, and nothing extra is said");
+  assert.deepEqual((await states({ providers: { reviewer: { provider: "none", required: true } } })).said, [false, "none", "off-required"]);
+});
+
 test("the queue the page reads carries the running publish run's workspace and pane, so each run it posts can link its terminal", async () => {
   const b = board(4747, { publish: { run: "Post {prs}, then write {dir}/published.json" } });
   const pr = { repo: "app", url: "https://github.com/x/app/pull/1" };
@@ -1069,7 +1088,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.1", "enabled"], ["github", "v1.2.3", "1.1", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.0", "not installed"]]);
+    [["linear", "v1.2.3", "1.1", "enabled"], ["github", "v1.2.3", "1.1", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1107,6 +1126,26 @@ test("A11-163: Disable and Enable round trip through the host file, keep the per
   const [, on] = await actOn(b, { action: "enable", name: "tailscale", base: after.bases["host.json"] });
   assert.match(on.said, /^enabled tailscale/);
   assert.equal(JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers.exposure.enabled, true);
+});
+
+test("A11-161: the Settings page lists slack and atomic with their folders and states, and Disable and Enable of each round trip through the host file, with the settings kept: no core change", async () => {
+  const publish = { provider: "slack", run: "post {prs} into {dir}", connectors: ["^mcp__chat__send"] };
+  const b = pluginsBoard({ ...FRESH_BLOCKS, publish, reviewer: { provider: "atomic" } });
+  const view = await readPlugins(b);
+  assert.deepEqual(["slack", "atomic"].map((name) => { const e = entryOf(view, name); return [name, e.where, e.contract, e.state]; }),
+    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.0", "enabled"]]);
+  const hostBlock = (block: string) => JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers[block];
+  const off = await saidBy(b, { action: "disable", name: "slack", base: view.bases["host.json"] });
+  assert.match(off, /^disabled slack: the board publishes nothing, and its settings are kept for `enable`$/);
+  assert.deepEqual(hostBlock("publish"), { ...publish, enabled: false }, "disabled, with its run and connectors kept");
+  const after = await readPlugins(b);
+  assert.equal(entryOf(after, "slack").state, "disabled");
+  assert.match(await saidBy(b, { action: "enable", name: "slack", base: after.bases["host.json"] }), /^enabled slack: it is the publisher again, with the settings it kept$/);
+  assert.deepEqual(hostBlock("publish"), { ...publish, enabled: true });
+  const reviewer = await readPlugins(b);
+  assert.match(await saidBy(b, { action: "disable", name: "atomic", base: reviewer.bases["host.json"] }), /^disabled atomic: the board starts no reviewer, and its settings are kept for `enable`$/);
+  assert.deepEqual(hostBlock("reviewer"), { provider: "atomic", enabled: false });
+  assert.equal(entryOf(await readPlugins(b), "atomic").state, "disabled");
 });
 
 test("A11-163: disabling the only tracker is refused with the CLI's sentence naming it, and nothing is written", async () => {

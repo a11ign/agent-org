@@ -1,41 +1,31 @@
-// no-token: none -- pure: the built-in table read as data
+// no-token: none -- pure: the contract versions and the fakes read as data, and the catalog of this checkout
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SCHEMA } from "../ticket-mode/config-schema.ts";
-import { BUILT_IN, CONTRACT_VERSIONS, CORE_RUNS, FAKES } from "./built-in.ts";
+import * as builtIn from "./built-in.ts";
+import { CONTRACT_VERSIONS, FAKES } from "./built-in.ts";
 import { blockOf, CONCERNS } from "./concerns.ts";
+import { defaultCatalog, pluginNamed } from "./registry.ts";
 
-test("every built-in setting is described by the schema entry of its block, which is what the Settings page shows", () => {
-  for (const plugin of BUILT_IN) {
-    for (const [name, entry] of Object.entries(plugin.settings)) {
-      assert.equal(entry.key, `tickets.providers.${blockOf(plugin.concern)}.${name}`);
-      assert.ok(SCHEMA.includes(entry), `${entry.key} is the schema's own entry, not a copy`);
-    }
-  }
-});
-
-test("the settings each built-in declares are exactly what its block took before the registry", () => {
-  const declared = Object.fromEntries(BUILT_IN.map(({ name, settings }) => [name, Object.keys(settings)]));
-  assert.deepEqual(declared, {
-    slack: ["run", "model", "effort", "connectors"], atomic: [],
-  });
-  assert.equal(BUILT_IN.some(({ concern }) => concern === "exposure" || concern === "messaging"), false, "local, tailscale and telegram are bundled packages since A11-162: the catalog finds them in plugins/");
-});
-
-test("every concern has a contract version and a fake, and every built-in concern a pin: only the publisher and the reviewer, which A11-161 moves: the tracker, the code host, the exposure and messaging are bundled packages", () => {
-  assert.deepEqual(CONCERNS.map((concern) => CONTRACT_VERSIONS[concern]), ["1.1", "1.1", "1.0", "1.0", "1.1", "1.1"]);
+test("every concern has a contract version and a fake, and the publisher's is 1.1: it gained agent()", () => {
+  assert.deepEqual(CONCERNS.map((concern) => CONTRACT_VERSIONS[concern]), ["1.1", "1.1", "1.1", "1.0", "1.1", "1.1"]);
   assert.deepEqual(FAKES.map(({ concern }) => concern), [...CONCERNS]);
-  assert.deepEqual(Object.keys(CORE_RUNS), CONCERNS.filter((concern) => blockOf(concern) !== null && BUILT_IN.some((plugin) => plugin.concern === concern)));
-  assert.equal(BUILT_IN.some(({ concern }) => concern === "tracker"), false, "the tracker has no built-in row: linear is a bundled package");
-  assert.equal(BUILT_IN.some(({ concern }) => concern === "codeHost"), false, "the code host has no built-in row: github is a bundled package");
-  assert.deepEqual(Object.keys(CORE_RUNS), ["publisher", "reviewer"], "the exposure is no longer pinned: any exposure plugin of the catalog may be enabled");
-  for (const [concern, pin] of Object.entries(CORE_RUNS)) {
-    const names = BUILT_IN.filter((plugin) => plugin.concern === concern).map(({ name }) => name);
-    assert.deepEqual(pin?.runs, names, `core runs every built-in of ${concern}, and only those`);
-    assert.match(pin?.until ?? "", /^A11-\d+$/);
+});
+
+test("A11-161: no built-in plugin and no pin remains: every concern's plugin is a bundled package the registry finds, and core runs whichever a host enables", () => {
+  assert.deepEqual(Object.keys(builtIn).sort(), ["CONTRACT_VERSIONS", "FAKES"], "BUILT_IN and CORE_RUNS are gone: slack and atomic were the last two rows");
+  const catalog = defaultCatalog();
+  assert.equal("pins" in catalog, false, "a catalog has no pin: nothing keeps a host file off a plugin of the concern");
+  for (const name of ["linear", "github", "slack", "atomic", "local", "tailscale", "telegram"]) assert.equal(pluginNamed(catalog, name)?.where, "bundled", `${name} is a bundled package`);
+  assert.deepEqual(catalog.plugins.filter(({ where }) => where !== "bundled" && where !== "fake"), []);
+});
+
+test("every plugin's settings are described by entries keyed in its concern's block, which is what the Settings page shows", () => {
+  for (const plugin of defaultCatalog().plugins) {
+    const block = blockOf(plugin.concern);
+    for (const [name, entry] of Object.entries(plugin.settings)) assert.equal(entry.key, `${block === null ? "messaging" : `tickets.providers.${block}`}.${name}`, `${plugin.name}.${name}`);
   }
 });
 
-test("every plugin of the catalog's built-ins and fakes declares the version its contract has in this release", () => {
-  for (const plugin of [...BUILT_IN, ...FAKES]) assert.equal(plugin.contract, CONTRACT_VERSIONS[plugin.concern], plugin.name);
+test("every fake declares the version its contract has in this release", () => {
+  for (const plugin of FAKES) assert.equal(plugin.contract, CONTRACT_VERSIONS[plugin.concern], plugin.name);
 });

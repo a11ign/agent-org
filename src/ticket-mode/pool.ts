@@ -73,7 +73,7 @@
 // with its reason, until the holder's pull request merges or closes. Runs of one pass see each other: the first one chosen holds for the rest.
 //
 // A PERSON'S PUBLISH STARTS ONE PUBLISH RUN. It posts the pull requests of every run ticked, all in one go, with the host file's
-// `tickets.publish`, in a folder of its own (`publishDir`), holding one slot. Only it may run the `post-pr-to-slack` skill and the connectors
+// `tickets.publish`, in a folder of its own (`publishDir`), holding one slot. Only it may run the publisher plugin's skill and the connectors
 // `tickets.publish.connectors` names (`hook.ts`). When it writes `published`, each run it posted shows Published with a link to the message.
 //
 // A RESTART OF THE INSTANCE LEAVES THE WORKERS ALONE (A11-78). The workers run in herdr's server, which this process starts outside its own
@@ -125,6 +125,7 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     reviewNewHeads: () => reviewNewHeads(ctx),
     /** The review state of each open pull request the pool has read, by url, as the board words it (A11-119). */
     pullReviews: () => pullReviewsOf(ctx),
+    reviewerState: () => ctx.reviewerState,
     retargetStacked: () => retargetStacked(ctx),
     rebaseStacked: () => rebaseStacked(ctx),
     applyEdit: (key: string) => applyEdit(ctx, key),

@@ -26,8 +26,10 @@ import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
-import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import type { CodeHost, PullFeedback } from "../plugins/contracts/code-host.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { createFakePublisher } from "../plugins/fakes/publisher.ts";
+import { createFakeReviewer, reviewerOver } from "../plugins/fakes/reviewer.ts";
 import { corePolicy } from "../plugins/policy.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
 import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
@@ -93,7 +95,9 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const screen = { text: "" };
   const h = herdr(status, screen);
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? createFakeCodeHost(), ...(gh ? { gh: gh.run } : {}), ...(reviewerPort ? { reviewerPort } : {}), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? createFakeCodeHost(), ...(gh ? { gh: gh.run } : {}), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
+    // The publisher plugin, as the fake: what the host file names as its connectors, model and effort (A11-161).
+    ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
   const pool = createPool(store, deps);
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   /** A pool started over the same queue and state directory, as the board's pool is after a restart. */
@@ -256,6 +260,7 @@ const approvedPr = { repo: "nbl-ui-netbox", url: "https://github.com/x/nbl-ui-ne
 const SWEPT_REPO = "a11ign/nbl-ui-netbox";
 const sweptPr = `https://github.com/${SWEPT_REPO}/pull/1`;
 const SWEPT_REPO_PULL_2 = `https://github.com/${SWEPT_REPO}/pull/2`;
+const SWEPT_REPO_PULL_3 = `https://github.com/${SWEPT_REPO}/pull/3`;
 
 /** A pool whose one run, NBF-1, ended with a draft pull request in a session herdr called `session-t-nbf-1`, then was approved. */
 async function approvedRun(tickets: Record<string, unknown> = {},
@@ -5117,4 +5122,114 @@ test("a worker's brief has it capture a changed page on a machine with tickets.c
   assert.doesNotMatch(readFileSync(join(plain.dir, "brief.md"), "utf8"), /ticket:capture/);
   const capturing = await startedRun({ capture: true });
   assert.match(readFileSync(join(capturing.dir, "brief.md"), "utf8"), /run `agent-org ticket:capture <route> --size 1280x800/);
+});
+
+// ---- A11-161: the reviewer and the publisher are plugins, and "none" is the absence of an enabled one. What the board does when the reviewer is switched off, and when the publisher is.
+
+const PLUGIN_REVIEWER_OFF = { providers: { reviewer: { provider: "atomic", enabled: false } }, drafts: false };
+
+test("A11-161: with the reviewer switched off the sweep starts no reviewer and says so: each open pull request reads \"waiting on the reviewer (off)\", one no run lists included, and the state is off-required", async () => {
+  const fake = createFakeReviewer();
+  await loadReviewerGate();
+  const world = ghFor({ 1: feedbackPull() });
+  const made = setup(1, [], PLUGIN_REVIEWER_OFF, { gh: world, reviewerPort: fake });
+  made.pool.reviewNewHeads();
+  assert.deepEqual(fake.started, [], "no reviewer starts");
+  assert.deepEqual(made.pool.pullReviews(), { [sweptPr]: "waiting on the reviewer (off)" });
+  assert.equal(made.pool.reviewerState(), "off-required");
+  assert.equal(world.host.calls.some((call) => call.startsWith("readReviewState")), false, "the pull request's review is not read: nothing is reviewed");
+});
+
+test("A11-161: switched back on, the reviewer resumes on the next head: one reviewer for each open pull request's current head, once per head, and none for a head the memory holds", async () => {
+  const fake = createFakeReviewer();
+  const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }), 2: feedbackPull({ head: "h2" }), 3: feedbackPull({ head: "h3" }) };
+  await loadReviewerGate();
+  const made = setup(1, [], REVIEWING, { gh: ghFor(pulls), reviewerPort: fake });
+  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map() });
+  const restarted = made.restart();
+  restarted.reviewNewHeads();
+  assert.deepEqual(fake.started.map(({ pr, head }) => `${pr}@${head}`).sort(), [`${sweptPr}@h1`, `${SWEPT_REPO_PULL_2}@h2`], "one for each head, and none for the head the memory says was started");
+  restarted.reviewNewHeads();
+  assert.equal(fake.started.length, 2, "a second sweep starts nothing for those heads");
+  pulls[1] = feedbackPull({ head: "h1b" });
+  restarted.reviewNewHeads();
+  assert.deepEqual(fake.started.slice(2).map(({ head }) => head), ["h1b"], "a new head is the next to start");
+  assert.equal(restarted.reviewerState(), "on");
+  assert.equal(made.settings.reviewerRequired, true, "a block that names a reviewer plugin is required");
+});
+
+test("A11-161: with reviews required and no reviewer (the block says none), the same line is shown; with the reviewer's block naming it and `required` false, people review there and nothing extra is said", async () => {
+  const required = setup(1, [], { providers: { reviewer: { provider: "none", required: true } }, drafts: false }, { gh: ghFor({ 1: feedbackPull() }) });
+  await loadReviewerGate();
+  required.pool.reviewNewHeads();
+  assert.equal(required.pool.reviewerState(), "off-required");
+  assert.deepEqual(required.pool.pullReviews(), { [sweptPr]: "waiting on the reviewer (off)" });
+  const notRequired = setup(1, [], { providers: { reviewer: { provider: "atomic", enabled: false, required: false } }, drafts: false }, { gh: ghFor({ 1: feedbackPull() }) });
+  notRequired.pool.reviewNewHeads();
+  assert.equal(notRequired.pool.reviewerState(), "none");
+  assert.deepEqual(notRequired.pool.pullReviews(), {}, "no pull request no run lists is shown: nothing extra is shown anywhere");
+});
+
+test("A11-161: a reviewer that refuses to start on this host is off, and required says it: the pool starts none, and the state follows the requirement", async () => {
+  await loadReviewerGate();
+  for (const [tickets, state] of [[{ ...REVIEWING }, "off-required"], [{ ...REVIEWING, providers: { reviewer: { provider: "atomic", required: false } } }, "none"]] as const) {
+    const fake = createFakeReviewer("the gate's modules do not load");
+    await fake.load();
+    const made = setup(1, [], tickets, { gh: ghFor({ 1: feedbackPull() }), reviewerPort: fake });
+    const refusing = createPool(made.store, { settings: made.settings, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: made.h.run, reviewer: fake, hostFile: "/work/.agent-org/host.json", now: () => 100,
+      load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(made.root, "transcripts"), wait: async () => {}, pluginRecord: join(made.root, "no-plugin-record.json") });
+    refusing.reviewNewHeads();
+    assert.deepEqual(fake.started, [], "nothing starts");
+    assert.equal(refusing.reviewerState(), state, JSON.stringify(tickets));
+  }
+});
+
+test("A11-161: with no reviewer and no requirement, a run's open pull requests read \"awaiting your review\" from the queue, with no read of GitHub, and no Pull requests section is listed", async () => {
+  const world = ghFor({ 1: feedbackPull() });
+  const ctx = await readyRun(world, { drafts: false });
+  assert.equal(ctx.pool.reviewerState(), "none");
+  world.host.calls.length = 0;
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(ctx.pool.pullReviews(), { [approvedPr.url]: "awaiting your review" }, "the run's own pull request, from the queue");
+  assert.deepEqual(world.host.calls, [], "nothing is read from GitHub to say it, and no repository's open pull requests are listed");
+});
+
+test("A11-161: with reviews required and the reviewer off, a run's open pull requests read waiting on the reviewer (off) too, listed or not", async () => {
+  const ctx = await readyRun(ghFor({ 1: feedbackPull() }), PLUGIN_REVIEWER_OFF);
+  assert.equal(ctx.pool.reviewerState(), "off-required");
+  assert.equal(ctx.pool.pullReviews()[approvedPr.url], "waiting on the reviewer (off)", "the run's own pull request, before any sweep");
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(ctx.pool.pullReviews(), { [approvedPr.url]: "waiting on the reviewer (off)", [sweptPr]: "waiting on the reviewer (off)" });
+});
+
+test("A11-161: a reviewer that was running when it was switched off is not stopped: its workspace stays, and the board that has it on again retires it once its pull request closes", async () => {
+  const fake = createFakeReviewer();
+  await loadReviewerGate();
+  const made = setup(1, [], REVIEWING, { gh: ghFor({ 1: feedbackPull({ head: "h1" }) }), reviewerPort: fake });
+  made.pool.reviewNewHeads();
+  assert.equal(fake.started.length, 1);
+  const off = setup(1, [], PLUGIN_REVIEWER_OFF, { gh: ghFor({ 1: feedbackPull({ head: "h1", state: "MERGED" }) }), reviewerPort: fake });
+  off.pool.releaseReviewers();
+  assert.deepEqual([fake.retired, fake.closed], [[], []], "a board with the reviewer off closes and retires nothing: it only stops new starts");
+  const on = setup(1, [], REVIEWING, { gh: ghFor({ 1: feedbackPull({ head: "h1", state: "MERGED" }) }), reviewerPort: fake });
+  on.pool.releaseReviewers();
+  assert.deepEqual(fake.retired, [sweptPr], "the reviewer, active again, retires it through listedPulls");
+});
+
+const PUBLISH_OFF = { providers: { publish: { provider: "slack", enabled: false, run: "post {prs} into {dir}", connectors: ["^mcp__chat__send"] } } };
+
+test("A11-161: a run Ready to merge waits through the publisher being off, and enabling it starts and queues no publish run: nothing is published retroactively", async () => {
+  const off = await readyRun(ghFor({}), PUBLISH_OFF);
+  assert.equal(off.settings.publish, null, "the publisher is off: the board has none");
+  const enabled = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox", "nbl-ui-platform-libs": "/repos/libs" }, stateDir: off.settings.stateDir,
+    tickets: { providers: { publish: { provider: "slack", run: "post {prs} into {dir}", connectors: ["^mcp__chat__send"] } } } });
+  assert.notEqual(enabled.publish, null);
+  off.h.calls.length = 0;
+  const board = createPool(off.store, { settings: enabled, source, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: off.h.run, hostFile: "/work/.agent-org/host.json", now: () => 400,
+    load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(off.root, "transcripts"), wait: async () => {}, pluginRecord: join(off.root, "no-plugin-record.json"),
+    publisher: createFakePublisher(["^mcp__chat__send"]) });
+  await board.tick();
+  assert.equal(off.store.get().publish, undefined, "no publish run is queued by enabling the publisher");
+  assert.equal(off.h.calls.some((args) => args.includes("start")), false, "and none is started");
+  assert.equal(runStatus(off.entry("NBF-1")), "ready-to-merge", "the run is as it was: a person's Publish is what publishes");
 });

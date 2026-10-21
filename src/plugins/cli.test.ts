@@ -74,8 +74,10 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
     "exposure: tailscale (from tickets.providers.exposure)",
     "messaging: none (this machine declares no project, so messaging is not configured)",
   ]);
-  for (const fake of ["fake-publisher", "fake-reviewer"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.0 +fake`, "m"), fake);
-  for (const fake of ["fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.1 +fake`, "m"), fake);
+  assert.match(out, /^ {2}fake-reviewer +available +contract 1\.0 +fake/m);
+  for (const fake of ["fake-publisher", "fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.1 +fake`, "m"), fake);
+  assert.match(out, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m, "the publisher is a bundled package since A11-161");
+  assert.match(out, /^ {2}atomic +available +contract 1\.0 +plugins\/atomic-reviewer$/m, "and so is the reviewer, whose folder is not its name");
   assert.match(out, /^ {2}fake-tracker +available +contract 1\.1 +fake/m);
   assert.match(out, /^ {2}fake-codeHost +available +contract 1\.1 +fake/m);
   assert.match(out, /^ {2}linear +enabled +contract 1\.1 +plugins\/linear$/m);
@@ -167,14 +169,6 @@ test("install over a block that names another plugin is refused unless --replace
   assert.equal(replaced.status, 0, replaced.err);
   assert.match(replaced.out, /installed local as the exposure, replacing tailscale/);
   assert.deepEqual(JSON.parse(host.text()).tickets.providers.exposure, { provider: "local", enabled: true });
-});
-
-test("install is refused by the reader for a plugin core is pinned off, naming the plugin and the ticket that moves the concern", async () => {
-  const host = scratch();
-  const { status, err } = await host.run("install", "fake-publisher", "--replace");
-  assert.equal(status, 1);
-  assert.match(err, /fake-publisher is a publisher plugin, but this release runs the publisher in core as slack until A11-161/);
-  assert.equal(host.text(), HOST);
 });
 
 test("a fake is neither installed nor enabled on a host, though the reader would accept it: it has no code to run, so the start would be refused", async () => {
@@ -461,8 +455,8 @@ test("A11-162: the plugin a command leaves is loaded from its entry module, aske
   assert.deepEqual(outgoing.release(), { ok: false, detail: "tickets.providers.exposure.tailnetPorts ui and terminal must be different ports" });
   const quiet = await loadOutgoing(tailscale, {}, async () => ({ create: () => ({}), doctorChecks: () => [], onboardSteps: [] }));
   assert.deepEqual([quiet.machineName, quiet.release()], [null, { ok: true, detail: "" }], "a plugin with no release has nothing to release, and one that cannot be built has no name");
-  const builtin = await loadOutgoing(catalog.plugins.find(({ name }) => name === "slack")!, {}, async () => { throw new Error("a built-in's code is not imported"); });
-  assert.deepEqual([builtin.machineName, builtin.release()], [null, { ok: true, detail: "" }]);
+  const fake = await loadOutgoing(catalog.plugins.find(({ name }) => name === "fake-publisher")!, {}, async () => { throw new Error("a fake's code is not imported"); });
+  assert.deepEqual([fake.machineName, fake.release()], [null, { ok: true, detail: "" }]);
 });
 
 test("A11-162: a write that the dangerous-key rule will refuse is refused BEFORE the plugin is released, so the board is not taken off the tailnet by a change that is not written", async () => {
@@ -532,4 +526,85 @@ test("A11-162: a plugin whose restore throws is named as not put back, with the 
   const result = await host.run("enable", "local");
   assert.equal(result.status, 1);
   assert.match(result.err, /the file changed since you looked: read it again\. tailscale had been released, so it could NOT be put back: tailscale is gone/);
+});
+
+// A11-161: the publisher and the reviewer are plugins like the rest: installed, enabled, disabled, configured and uninstalled with `agent-org plugin`, and the reviewer's `required` is the concern's own setting.
+const WITH_REVIEWER = HOST.replace('"exposure"', '"reviewer": { "provider": "atomic" },\n      "exposure"');
+
+test("A11-161: `plugin list` shows slack and atomic as bundled plugins, from the folders plugins/slack and plugins/atomic-reviewer, with the state their blocks give them", async () => {
+  const host = scratch(WITH_REVIEWER);
+  const { out } = await host.run("list");
+  for (const line of [/^publisher: slack \(from tickets\.providers\.publish\)$/m, /^reviewer: atomic \(from tickets\.providers\.reviewer\)$/m, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m,
+    /^ {2}atomic +enabled +contract 1\.0 +plugins\/atomic-reviewer$/m]) assert.match(out, line);
+});
+
+test("A11-161: the publisher is switched off and on, keeping its settings, and each change is read back from the file", async () => {
+  const host = scratch();
+  const off = await host.run("disable", "slack");
+  assert.equal(off.status, 0, off.err);
+  assert.match(off.out, /disabled slack: the board publishes nothing, and its settings are kept for `enable`/);
+  const disabled = JSON.parse(host.text()).tickets.providers.publish;
+  assert.deepEqual([disabled.provider, disabled.enabled, disabled.run, disabled.connectors], ["slack", false, RUN, ["^mcp__slack__send"]]);
+  assert.equal(settingsOf(host.text()).publish, null, "the board has no publisher while it is off");
+  const on = await host.run("enable", "slack");
+  assert.equal(on.status, 0, on.err);
+  assert.notEqual(settingsOf(host.text()).publish, null);
+  assert.equal(JSON.parse(host.text()).tickets.providers.publish.enabled, true);
+  assert.ok(host.text().includes(NOTE), "the person's note stays");
+});
+
+test("A11-161: slack is installed with its run and its connectors, and refused by the reader without them, naming the setting", async () => {
+  const host = scratch(HOST.replace(/\n      "publish": \{[^\n]*\},/, ""));
+  const refused = await host.run("install", "slack");
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /tickets\.providers\.publish\.run/);
+  assert.equal(host.text().includes('"publish"'), false, "nothing was written");
+  const installed = await host.run("install", "slack", "--set", `run=${RUN}`, "--set", 'connectors=["^mcp__chat__send"]', "--confirm");
+  assert.equal(installed.status, 0, installed.err);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.publish, { provider: "slack", enabled: true, run: RUN, connectors: ["^mcp__chat__send"] });
+  assert.deepEqual(settingsOf(host.text()).publish?.connectors, ["^mcp__chat__send"]);
+});
+
+test("A11-161: the reviewer is installed, switched off and on, and the board's reviewer follows each: settings.reviewer is the plugin's name, or null", async () => {
+  const host = scratch();
+  assert.equal(settingsOf(host.text()).reviewer, null);
+  const installed = await host.run("install", "atomic");
+  assert.equal(installed.status, 0, installed.err);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.reviewer, { provider: "atomic", enabled: true });
+  assert.equal(settingsOf(host.text()).reviewer, "atomic");
+  const off = await host.run("disable", "atomic");
+  assert.match(off.out, /disabled atomic: the board starts no reviewer/);
+  assert.deepEqual([settingsOf(host.text()).reviewer, settingsOf(host.text()).reviewerRequired], [null, true], "no reviewer, and reviews are still required: the block names one");
+  await host.run("enable", "atomic");
+  assert.equal(settingsOf(host.text()).reviewer, "atomic");
+});
+
+test("A11-161: `required` is the reviewer concern's setting: `plugin config atomic required=false` sets it while a reviewer is installed, reads back, and the reader refuses a value that is not true or false", async () => {
+  const host = scratch(WITH_REVIEWER);
+  assert.equal(settingsOf(host.text()).reviewerRequired, true, "absent, a reviewer plugin makes it true");
+  const set = await host.run("config", "atomic", "--set", "required=false");
+  assert.equal(set.status, 0, set.err);
+  assert.equal(JSON.parse(host.text()).tickets.providers.reviewer.required, false);
+  assert.equal(settingsOf(host.text()).reviewerRequired, false);
+  const read = await host.run("config", "atomic", "required");
+  assert.equal(read.out, "tickets.providers.reviewer.required: false");
+  const listed = await host.run("config", "atomic");
+  assert.equal(listed.out, "tickets.providers.reviewer.required: false", "the plugin declares no setting, and the concern's is the one listed");
+  const refused = await host.run("config", "atomic", "--set", "required=sometimes");
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /tickets\.providers\.reviewer\.required.*must be true or false/);
+  assert.equal(JSON.parse(host.text()).tickets.providers.reviewer.required, false, "nothing was written");
+});
+
+test("A11-161: uninstalling the reviewer keeps an explicit `required`: the block becomes none with it, since the setting is the concern's and not the plugin's", async () => {
+  const host = scratch(WITH_REVIEWER.replace('"reviewer": { "provider": "atomic" }', '"reviewer": { "provider": "atomic", "required": false }'));
+  const gone = await host.run("uninstall", "atomic");
+  assert.equal(gone.status, 0, gone.err);
+  assert.match(gone.out, /uninstalled atomic: the reviewer falls back to its default, none, keeping required: false, which is the reviewer's and not atomic's/);
+  assert.deepEqual(JSON.parse(host.text()).tickets.providers.reviewer, { provider: "none", required: false });
+  assert.deepEqual([settingsOf(host.text()).reviewer, settingsOf(host.text()).reviewerRequired], [null, false]);
+  const plain = scratch(WITH_REVIEWER);
+  await plain.run("uninstall", "atomic");
+  assert.equal(JSON.parse(plain.text()).tickets.providers.reviewer, undefined, "with no required to keep, the block goes whole");
+  assert.deepEqual([settingsOf(plain.text()).reviewer, settingsOf(plain.text()).reviewerRequired], [null, false], "and a machine with no reviewer block is not required");
 });

@@ -11,8 +11,9 @@ import type { Secret } from "../messaging/secret.ts";
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { Concern } from "./concerns.ts";
-import type { ReviewTrust } from "./contracts/code-host.ts";
+import type { CodeHost, ReviewTrust } from "./contracts/code-host.ts";
 import type { MessagingPair } from "./contracts/messaging.ts";
+import type { PublishResult, PublishedPull } from "./contracts/publisher.ts";
 import type { TrackerWriting } from "./contracts/tracker.ts";
 
 /** One doctor row a plugin reports: its name, whether it passed, what it found and, when it failed, the one thing to do. The same shape as `Check` in `install/doctor.ts`, which a plugin may not import. */
@@ -28,8 +29,8 @@ export type Tooling = Readonly<{ mcpServers: readonly string[]; connectors: read
 /** The tooling of a plugin that declares none. */
 export const NO_TOOLING: Tooling = Object.freeze({ mcpServers: [], connectors: [], skills: [] });
 
-/** Where a plugin's code lives: in core (a built-in, until its sibling ticket moves it), in `plugins/<name>` (bundled), or in `src/plugins/fakes` (a fake). */
-export type Where = "core" | "bundled" | "fake";
+/** Where a plugin's code lives: in `plugins/<name>` (bundled), or in `src/plugins/fakes` (a fake). */
+export type Where = "bundled" | "fake";
 
 /** The data half, as `package.json`'s `agentOrg` field holds it. `settings` is by setting name, each entry keyed `tickets.providers.<block>.<name>`. */
 export type ManifestData = Readonly<{
@@ -43,20 +44,14 @@ export type ManifestData = Readonly<{
   tooling: Tooling;
 }>;
 
-/** A plugin as the registry lists it. `movedBy` names the ticket that moves a built-in's code into `plugins/<name>`, and is null for the rest. */
-export type CatalogPlugin = ManifestData & Readonly<{ name: string; where: Where; dir: string | null; movedBy: string | null }>;
+/** A plugin as the registry lists it. */
+export type CatalogPlugin = ManifestData & Readonly<{ name: string; where: Where; dir: string | null }>;
 
 /** A plugin the registry refused, by name, and why. It is not in the catalog's plugins. */
 export type CatalogRefusal = Readonly<{ plugin: string; why: string }>;
 
-/**
- * While a concern is PINNED, core still runs that concern's built-in code, so only a plugin in `runs` may be enabled for it. `until` names the ticket that moves the
- * concern onto its contract and removes the pin.
- */
-export type Pin = Readonly<{ runs: readonly string[]; until: string }>;
-
-/** Every plugin agent-org knows, what it refused and which concerns are pinned. */
-export type Catalog = Readonly<{ plugins: readonly CatalogPlugin[]; refusals: readonly CatalogRefusal[]; pins: Readonly<Partial<Record<Concern, Pin>>> }>;
+/** Every plugin agent-org knows, and what it refused. */
+export type Catalog = Readonly<{ plugins: readonly CatalogPlugin[]; refusals: readonly CatalogRefusal[] }>;
 
 /** The value of a setting as the plugin is given it. A setting the host file does not hold is absent, and the plugin applies its default. */
 export type PluginSettings = Readonly<Record<string, unknown>>;
@@ -85,6 +80,120 @@ export type CodeHostPolicy = Readonly<{
   /** Whether check run `a` is at least as new as `b`, which decides the newest run of a check name. */
   isAtLeastAsNew(a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): boolean;
   review(): ReviewJudge;
+}>;
+
+/**
+ * What a publisher plugin needs of core at run time, since it imports core's types only (A11-161): THE PUBLISH PROTOCOL IS CORE'S, NOT SLACK'S. The brief the run is given (`publishBriefText`: its
+ * `published.json`, its outcome kinds and the line that says a missing skill is a failure) and the reading of its outcome (`publishResult`) say nothing of a chat service, so every publisher builds
+ * them the same way, through these.
+ */
+export type PublishingHelpers = Readonly<{
+  briefText(request: Readonly<{ dir: string; prs: readonly PublishedPull[]; run: string }>): string;
+  result(outcomeText: string, dir: string): PublishResult;
+}>;
+
+/** The verdict door's run: it throws on a non-zero exit, with the door's stderr. */
+export type DoorRun = (file: string, args: string[], env: Record<string, string>) => void;
+
+/** An agent herdr lists in a session: its label (the seat's) and its status. */
+export type ListedReviewer = { label: string; status: string; paneless?: boolean };
+
+/**
+ * The gate's modules as the reviewer plugin calls them, each as the function and its signature (STRUCTURAL, not `typeof import(...)`: this file is reached from nearly every part of core, and a type that
+ * names the gate's modules would make all of it depend on them). The real modules are checked against it where core builds the helpers (`reviewing-helpers.ts`), so a drift is a compile error there. They load on
+ * a host that has a `primary` (`loadGate`).
+ */
+export type ReviewerGate = Readonly<{
+  wake: Readonly<{
+    /** Starts the gate's reviewer in a workspace of the session `order.session` names, with `options.cwd` as its checkout: its label, workspace and profile, or the refusal. */
+    spawnReviewer(order: Readonly<{ session: string; cause?: string; causeKey?: string; trust?: ReviewTrust }>, agents: { label: string; status: string }[],
+      options: Readonly<{ run?: (args: string[]) => string; env?: Record<string, string>; cwd: string }>): Readonly<{ label: string; workspace: string; profile: Readonly<{ kind: string; model: string; effort: string }> }> | Readonly<{ refusal: string }>;
+    /** Makes (or re-points) the seat's review checkout at the pull request's head: its path and head, or the refusal. `repoRoot` is a clone the project does not declare. */
+    prepareReviewCheckout(options: Readonly<{ pr: number; session: string; trust?: ReviewTrust; repoRoot?: string }>): Readonly<{ path: string; head: string }> | Readonly<{ refusal: string }>;
+    /** Removes the seat's review checkout: null, or why it could not be removed. */
+    removeReviewCheckout(options: Readonly<{ pr: number; session: string; key?: string; repoRoot?: string }>): string | null;
+    uncommittedPathsOf(path: string): string[];
+    reviewCheckoutPath(session: string): string;
+    /** Closes every workspace under the seat's label: whether they all closed. */
+    closeReviewer(session: string, deps: Readonly<{ run: (args: string[]) => string; warn: (line: string) => void }>): boolean;
+    /** The environment the reviewer role runs with, `override` laid over it, in the checkout `tree`. */
+    reviewerEnvironment(session: string, override?: Record<string, string>, tree?: string): Record<string, string>;
+    /** The reviewer App's token mint: what it answers for a checkout is the reason it could not, or null when the checkout has a token. */
+    reviewerTokenMinter(app: unknown): (tree: string) => string | null;
+    reviewerAppOf(): unknown;
+  }>;
+  trust: Readonly<{ INSIDE: ReviewTrust; runDoor: DoorRun }>;
+  config: Readonly<{ homeProjectDeclaration(): Readonly<{ code: readonly Readonly<{ key: string; repo: string }>[] }> }>;
+  identity: Readonly<{ REPO: string }>;
+  orders: Readonly<{
+    /** The gate's own verdict prompt for a pull request (as the code host read it, plus its repository's key) and its heads. */
+    awaitingVerdictPrompt(pr: Readonly<Record<string, any>>, heads: any): string;
+    reviewHeadsOf(pr: Readonly<Record<string, any>>, head: string, wait: "settled" | "running"): any;
+  }>;
+  doorPath: Readonly<{ reviewerDoorPath(): string }>;
+  host: Readonly<{ HOST_CONFIG_ENV: string; hostConfigPath(): string }>;
+}>;
+
+/** What the claim on a head answers (`claimHead`): this instance won it, another holds it, a review is finished on it, or the claim could not be made. */
+export type ReviewerClaimAnswer = Readonly<{ outcome: "won"; tookOver: string | null }> | Readonly<{ outcome: "held"; instance: string; since: number }>
+  | Readonly<{ outcome: "finished"; description: string }> | Readonly<{ outcome: "unclaimed"; reason: string }>;
+
+/**
+ * What a reviewer needs of a BOARD: its herdr session and runner, the activated code host, the instance's name and the head each seat's reviewer was started for, and beside them the functions the atomic
+ * reviewer calls (seat names, the herdr listing, the claim on a head, the verdict reader, `ghWith`), each as the function and its signature (structural, as {@link ReviewerGate} is). Only a board has them.
+ */
+export type ReviewerBoard = Readonly<{
+  /** The herdr session the tickets' reviewers run in. */
+  session: string;
+  /** Runs `herdr` with the arguments, and answers what it printed (throws when it fails). */
+  run: (args: string[]) => string;
+  /** Runs `gh`, for the reads of a claim. */
+  gh: (args: string[]) => string;
+  /** The code host every read of a pull request goes through, asked when it is used (the code host is activated beside the reviewer). */
+  codeHost: () => CodeHost;
+  /** The host's checkouts by repository name (`host.json`'s `clones`). */
+  clones: Readonly<Record<string, string>>;
+  /** This instance's name (`tickets.instance`): the holder a head's claim names. */
+  instance: string;
+  /** The head each seat's reviewer was started for, by seat label, which the pool keeps across a restart. */
+  heads: Map<string, string>;
+  attribution: Readonly<{
+    /** The seat a reviewer's label names: the key of its repository (`""` for the primary's) and its pull request's number, or null for a label that is no reviewer's. */
+    reviewerInstance(label: string): Readonly<{ key: string; number: number }> | null;
+    reviewerSeat(seat: Readonly<{ repoKey: string; number: number }>): string;
+  }>;
+  herdr: Readonly<{
+    ORG_SESSION: string;
+    firstLine(error: unknown): string;
+    /** The agents herdr lists in `session`, or null when it lists none it can read. */
+    readAgents(run: (args: string[]) => string, options: Readonly<{ session: string }>): ListedReviewer[] | null;
+  }>;
+  claims: Readonly<{
+    REVIEW_LEASE_MS: number;
+    claimEntriesOf(head: Readonly<{ repo: string; sha: string; gh: (args: string[]) => string }>): readonly Readonly<{ id: number; description: string; created: number }>[];
+    claimHead(claim: Readonly<{ instance: string; now: number; read: () => readonly Readonly<{ id: number; description: string; created: number }>[]; write: (description: string) => void }>): ReviewerClaimAnswer;
+    releasedDescriptionOf(release: Readonly<{ instance: string; now: number }>): string;
+    writeClaimStatus(write: Readonly<{ repo: string; sha: string; description: string; gh: (args: string[]) => string }>): void;
+  }>;
+  verdict: Readonly<{
+    headMatches(stated: string | null | undefined, head: string): boolean;
+    /** The verdict a line of text carries: its word (`convinced`, `not-convinced`, or another reading) and the head it names. */
+    reviewVerdict(text: string): Readonly<{ verdict: string; head?: string | null }>;
+  }>;
+  /** The `gh` a claim is written with, as the reviewer role: given the reviewer's environment, a `gh` that runs with it. */
+  ghWith(env?: Readonly<Record<string, string>>): (args: string[]) => string;
+}>;
+
+/**
+ * What a reviewer plugin needs of core at run time, since it imports core's types only (A11-161): THE GATE STAYS CORE'S, shared with the org's own reviewer, so the plugin is handed its
+ * loader. `loadGate` reads the gate's modules and KEEPS a refusal (a host with no `primary` cannot load them) rather than throwing it; `gateRefusal` says it, once `loadGate` has run; `gate` is the modules, and
+ * throws the refusal. `board` is the board's collaborators and the functions it calls, and THROWS in a process that is not a board (doctor, onboard, the Settings page's checks), which asks nothing of it.
+ */
+export type ReviewerHelpers = Readonly<{
+  loadGate(): Promise<void>;
+  gateRefusal(): string | null;
+  gate(): ReviewerGate;
+  board(): ReviewerBoard;
 }>;
 
 /** `redactingFetch` of `src/messaging/secret.ts`: a fetch whose failures cannot carry the secret. */
@@ -133,6 +242,10 @@ export type PluginDeps = Readonly<{
   policy: CodeHostPolicy;
   /** What a messaging plugin needs of core (A11-162). */
   messaging: MessagingHelpers;
+  /** What a publisher plugin needs of core (A11-161). */
+  publishing: PublishingHelpers;
+  /** What a reviewer plugin needs of core (A11-161). */
+  reviewing: ReviewerHelpers;
 }>;
 
 /** What an onboard step is given besides the plugin's deps: the prompts and the machine's facts, and the flags onboard was started with that name this plugin's settings. */

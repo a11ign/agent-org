@@ -7,7 +7,7 @@ import { publishResult } from "../../ticket-mode/pool-outcome.ts";
 import { publishBriefText } from "../../ticket-mode/worker-files.ts";
 import type { PublishedPull, Publisher, PublishResult } from "../contracts/publisher.ts";
 
-export function createFakePublisher(connectors: readonly string[] = ["^mcp__fake_chat__"]) {
+export function createFakePublisher(connectors: readonly string[] = ["^mcp__fake_chat__"], agent: Readonly<{ model: string; effort: string }> = { model: "haiku", effort: "low" }) {
   const briefs: { dir: string; prs: readonly PublishedPull[]; run: string }[] = [];
   const results: PublishResult[] = [];
   const publisher: Publisher = {
@@ -16,6 +16,7 @@ export function createFakePublisher(connectors: readonly string[] = ["^mcp__fake
       return publishBriefText(request);
     },
     connectors: () => connectors,
+    agent: () => agent,
     result(outcomeText, dir) {
       const result = publishResult(outcomeText, dir);
       results.push(result);

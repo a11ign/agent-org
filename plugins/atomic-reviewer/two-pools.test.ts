@@ -1,19 +1,31 @@
 // no-token: gh -- one fake `gh` answers both pools from one table of statuses and one pull request; herdr, the spawn and the checkout are injected, and nothing is spawned
+//
+// TWO INSTANCES' POOLS OVER THE ATOMIC REVIEWER (A11-149, moved here by A11-161): the claim on a head is what keeps two boards from reviewing the same head, so the test drives each pool's sweep over
+// the plugin's real port, which core's own tests do not build. The pools are core's, the gate is loaded for real, and GitHub, herdr and the spawn are fakes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { tmpDir } from "../lib/tmp-fixture.ts";
-import { REPO } from "../project-identity.ts";
-import { REVIEW_LEASE_MINUTES } from "../ticket-port/review-claim.ts";
-import { atomicReviewerPort, loadReviewerGate } from "./reviewer-port.ts";
-import { newPoolContext, type PoolContext } from "./pool-context.ts";
-import { reviewNewHeads } from "./pool-reviewers.ts";
-import { pullReviewText } from "./board-view/pull-review-state.ts";
-import { parseTicketSettings } from "./settings.ts";
-import { emptyQueue } from "./queue.ts";
-import type { TicketSource } from "./source.ts";
-import { createFakeTracker } from "../plugins/fakes/tracker.ts";
-import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { tmpDir } from "../../src/lib/tmp-fixture.ts";
+import { REPO } from "../../src/project-identity.ts";
+import { REVIEW_LEASE_MINUTES } from "../../src/ticket-port/review-claim.ts";
+import { loadReviewerGate } from "../../src/ticket-mode/reviewer-port.ts";
+import { newPoolContext, type PoolContext } from "../../src/ticket-mode/pool-context.ts";
+import { reviewNewHeads } from "../../src/ticket-mode/pool-reviewers.ts";
+import { pullReviewText } from "../../src/ticket-mode/board-view/pull-review-state.ts";
+import { parseTicketSettings } from "../../src/ticket-mode/settings.ts";
+import { emptyQueue } from "../../src/ticket-mode/queue.ts";
+import type { TicketSource } from "../../src/ticket-mode/source.ts";
+import { createFakeTracker } from "../../src/plugins/fakes/tracker.ts";
+import { createFakeCodeHost } from "../../src/plugins/fakes/code-host.ts";
+import { reviewerOver } from "../../src/plugins/fakes/reviewer.ts";
+import { reviewingHelpers } from "../../src/plugins/reviewing-helpers.ts";
+import { atomicReviewerPort as portOver, type Seams } from "./port.ts";
+
+/** The port a board makes: over the real helpers of core, with the board's collaborators these options name. */
+function atomicReviewerPort({ session, run, gh, codeHost, clones, instance, ...seams }: Seams & Readonly<{ session: string; run: (args: string[]) => string; gh: (args: string[]) => string; codeHost: ReturnType<typeof createFakeCodeHost>;
+  clones: Record<string, string>; instance: string }>) {
+  return portOver(reviewingHelpers({ session, run, gh, codeHost: () => codeHost, clones, instance, heads: new Map<string, string>() }), seams);
+}
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
 const HEAD = "h1";
@@ -68,7 +80,7 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
       status.set(order.session, "working");
       return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } };
     } });
-  return newPoolContext(store, { settings, source, codeHost: github.host, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), gh: github.gh, now: () => clock.now, reviewerPort });
+  return newPoolContext(store, { settings, source, codeHost: github.host, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), gh: github.gh, now: () => clock.now, reviewer: reviewerOver(reviewerPort) });
 }
 
 /** Two instances' pools on one GitHub, one herdr, and one clock that starts at a fixed time, with the spawns each pool's reviewer makes. */

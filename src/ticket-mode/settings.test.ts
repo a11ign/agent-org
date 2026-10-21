@@ -27,7 +27,7 @@ test("only `clones` is required, every repository in it is offered, and every ot
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2 });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, reviewerRequired: false, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2 });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -409,7 +409,7 @@ test("A11-158: disabling the only tracker or code host refuses the host file at 
 });
 
 test("A11-158: a plugin of an unsupported contract major is refused at start, by the catalog the reader is given", () => {
-  const catalog = buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false }, pins: {} });
+  const catalog = buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false } });
   const unread: Catalog = { ...catalog, plugins: catalog.plugins.map((plugin) => (plugin.name === "fake-tracker" ? { ...plugin, contract: "2.0" } : plugin)) };
   assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { tracker: { provider: "fake-tracker" } } } }, "/home/me", "machine", unread),
     (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.providers.tracker.provider" && /plugin fake-tracker implements tracker contract 2\.0; this agent-org reads tracker 1\.x/.test(err.message));
@@ -419,4 +419,26 @@ test("A11-162: tailnetPorts are refused where they were: after the fields before
   const bad = { stallMinutes: 0, serve: "tailscale", servePorts: { ui: 9443, terminal: 9443 } };
   assert.throws(() => parseTicketSettings({ clones, tickets: bad }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.stallMinutes");
   assert.throws(() => parseTicketSettings({ clones, tickets: { ...bad, stallMinutes: 30 } }), (err: unknown) => err instanceof TicketSettingsRefusal && err.field === "tickets.servePorts");
+});
+
+// A11-161: whether this machine's pull requests wait for the reviewer is `tickets.providers.reviewer.required`, a setting of the reviewer concern that any provider takes, `none` included.
+test("A11-161: reviewerRequired is the block's `required` when it holds one, else true when the block or the old tickets.reviewer names a reviewer plugin (enabled or not), else false: no host file is migrated", () => {
+  const settingsOf = (tickets: Record<string, unknown>) => parseTicketSettings({ clones, tickets });
+  const read = (tickets: Record<string, unknown>) => { const settings = settingsOf(tickets); return [settings.reviewer, settings.reviewerRequired]; };
+  assert.deepEqual(read({}), [null, false], "no block: the work instance, where people review");
+  assert.deepEqual(read({ reviewer: "atomic" }), ["atomic", true], "the old key names the reviewer: the personal instance, as the live host file has it");
+  assert.deepEqual(read({ providers: { reviewer: { provider: "atomic" } } }), ["atomic", true]);
+  assert.deepEqual(read({ providers: { reviewer: { provider: "atomic", enabled: false } } }), [null, true], "switched off, a machine that names a reviewer still requires one");
+  assert.deepEqual(read({ providers: { reviewer: { provider: "none" } } }), [null, false]);
+  assert.deepEqual(read({ providers: { reviewer: { provider: "none", required: true } } }), [null, true], "`required` is valid under none, and decides");
+  assert.deepEqual(read({ providers: { reviewer: { provider: "atomic", required: false } } }), ["atomic", false], "and it overrides the default under a plugin");
+  assert.deepEqual(read({ providers: { reviewer: { provider: "atomic", enabled: false, required: false } } }), [null, false]);
+  assert.deepEqual(read({ reviewer: "atomic", providers: { reviewer: { provider: "atomic", required: false } } }), ["atomic", false], "the block's value wins over the alias's default");
+});
+
+test("A11-161: a `required` that is not true or false is refused by name, whichever provider the block names", () => {
+  for (const provider of ["atomic", "none"]) {
+    assert.throws(() => parseTicketSettings({ clones, tickets: { providers: { reviewer: { provider, required: "yes" } } } }), (error: unknown) => error instanceof TicketSettingsRefusal
+      && error.field === "tickets.providers.reviewer.required" && /must be true or false, not "yes"/.test(error.message), provider);
+  }
 });

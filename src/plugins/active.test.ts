@@ -18,7 +18,7 @@ const checkout = (concerns: Readonly<Record<string, string>>): PackageFiles => {
   const manifests = new Map(Object.entries(concerns).map(([name, concern]) => [`${ROOT}/plugins/${name}/package.json`, JSON.stringify({ agentOrg: { concern, contract: "1.1", description: `A ${concern}.`, entry: "index.ts" } })]));
   return { directories: (path) => (path === `${ROOT}/plugins` ? Object.keys(concerns).sort() : []), text: (path) => manifests.get(path) ?? null, isFile: (path) => path.endsWith("/index.ts") };
 };
-const catalogOf = (concerns: Record<string, string>) => buildCatalog({ root: ROOT, files: checkout(concerns), pins: {} });
+const catalogOf = (concerns: Record<string, string>) => buildCatalog({ root: ROOT, files: checkout(concerns) });
 const host = (providers: Record<string, unknown>) => ({ tickets: { providers } });
 const urlOf = (name: string) => pathToFileURL(`${ROOT}/plugins/${name}/index.ts`).href;
 const moduleOf = (create: PluginModule["create"]): PluginModule => ({ create, doctorChecks: () => [], onboardSteps: [] });
@@ -46,7 +46,7 @@ test("a plugin the loader refuses refuses the start, naming the concern, the plu
 });
 
 test("a block that names a plugin with no code to run on a host (a fake) is refused when its implementation is asked for, naming the block's concern and the plugin", async () => {
-  const catalog = buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false }, pins: {} });
+  const catalog = buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false } });
   const refusals = { tracker: ["tracker", "fake-tracker", "tracker"], codeHost: ["code host", "fake-codeHost", "codeHost"] } as const;
   for (const [concern, [label, fake, block]] of Object.entries(refusals)) {
     const providers = resolveProviders(host({ [block]: { provider: fake } }), catalog);
@@ -135,4 +135,44 @@ test("A11-162: a plugin that cannot be built for the exposure refuses the start,
   const providers = resolveProviders(host({ exposure: { provider: "tailscale" } }));
   const broken = { ...providers, blocks: { ...providers.blocks, exposure: { ...providers.blocks.exposure, settings: { ...providers.blocks.exposure.settings, tailnetPorts: { value: { ui: 1, terminal: 1 }, at: "tickets.providers.exposure.tailnetPorts" } } } } };
   await assert.rejects(loadActive(broken, defaultCatalog(), fakePluginDeps(), undefined, ["exposure"]), /the exposure plugin tailscale was refused: tickets\.providers\.exposure\.tailnetPorts ui and terminal must be different ports/);
+});
+
+// A11-161: the publisher and the reviewer are optional concerns. "None" is the absence of an enabled plugin, so each accessor answers null for a block that names none and for one that is disabled, and
+// a disabled plugin's code is not even imported.
+const PUBLISHING = { provider: "slack", run: "post {prs} into {dir}", connectors: ["^mcp__chat__send"] };
+
+/** An import that records each module it is asked for and then imports it for real. */
+const recording = () => {
+  const urls: string[] = [];
+  return { urls, importModule: async (url: string) => { urls.push(url); return import(url); } };
+};
+
+test("A11-161: with no publisher and no reviewer, or with each switched off, the accessors answer null and the plugins' code is not imported: none is the absence of an enabled plugin", async () => {
+  for (const providers of [host({}), host({ publish: { ...PUBLISHING, enabled: false }, reviewer: { provider: "atomic", enabled: false } }), host({ publish: { provider: "none" }, reviewer: { provider: "none" } })]) {
+    const { urls, importModule } = recording();
+    const active = await loadActive(resolveProviders(providers), defaultCatalog(), fakePluginDeps({ exec: () => ({ status: 0, stdout: "lin_api_x\n", stderr: "" }) }), importModule);
+    assert.deepEqual([active.publisher(), active.reviewer()], [null, null], JSON.stringify(providers));
+    assert.deepEqual(urls.filter((url) => /slack|atomic/.test(url)), [], "a plugin that is off is not imported");
+  }
+});
+
+test("A11-161: an enabled publisher and an enabled reviewer are the bundled plugins' implementations, built with the deps core gives them", async () => {
+  const providers = resolveProviders(host({ publish: PUBLISHING, reviewer: { provider: "atomic" } }));
+  const active = await loadActive(providers, defaultCatalog(), fakePluginDeps({ exec: () => ({ status: 0, stdout: "lin_api_x\n", stderr: "" }) }));
+  assert.deepEqual(active.loaded.map(({ plugin }) => plugin.name), ["linear", "github", "slack", "atomic", "local"]);
+  assert.deepEqual(active.publisher()?.connectors(), ["^mcp__chat__send"]);
+  assert.deepEqual(active.publisher()?.agent(), { model: "haiku", effort: "low" });
+  assert.equal(typeof active.reviewer()?.start, "function");
+  assert.equal(typeof active.reviewer()?.load, "function");
+});
+
+test("A11-161: a block that is on and names a plugin with no code to run on a host (a fake) is refused when its implementation is asked for, and an activation that did not build it says so", async () => {
+  const catalog = buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false } });
+  for (const [block, label, fake, ask] of [["publish", "publisher", "fake-publisher", (active: Awaited<ReturnType<typeof loadActive>>) => active.publisher()], ["reviewer", "reviewer", "fake-reviewer", (active: Awaited<ReturnType<typeof loadActive>>) => active.reviewer()]] as const) {
+    const active = await loadActive(resolveProviders(host({ [block]: { provider: fake } }), catalog), catalog, fakePluginDeps(), importing({}));
+    assert.throws(() => ask(active), (error: unknown) => error instanceof PluginActivationRefusal
+      && error.message === `the ${label} is ${fake}, which has no code to run on a host: name a bundled ${label} plugin in tickets.providers.${block} (\`agent-org plugin list\`)`);
+    const narrowed = await loadActive(resolveProviders(host({ [block]: { provider: fake } }), catalog), catalog, fakePluginDeps(), importing({}), ["codeHost"]);
+    assert.throws(() => ask(narrowed), new RegExp(`the ${label} was not built by this process: it asked for the other plugins only`));
+  }
 });

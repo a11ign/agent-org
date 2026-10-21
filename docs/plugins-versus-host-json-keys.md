@@ -210,5 +210,10 @@ The run start calls the same function, so the page and `clearRunDir` cannot disa
 > (Decision 4 of A11-157), and its manifest's `tooling` (its MCP servers, its read-only connector patterns, the tools a new-ticket run files with) declares what its own workers need. It does not
 > widen a connector allow-list by itself: `tickets.providers.tracker.connectors` is still the host file's key, onboard adds the plugin's read-only patterns to it, and the PreToolUse hook still
 > refuses every filing tool to a build worker.
+>
+> **A11-161 finished the move: no concern is built into core.** The publisher (`slack`, in `plugins/slack`) and the reviewer (`atomic`, in `plugins/atomic-reviewer`, whose name stays `atomic` through its manifest's
+> `agentOrg.name`) are bundled agent-org plugins like the rest. The `publish` row of the table below still stands for the KEY: `tickets.providers.publish` (and its old `tickets.publish`) is the host file's, and
+> `settings.ts` still validates it, but the settings it holds (`run`, `model`, `effort`, `connectors`) are the Slack plugin's, declared in its manifest and drawn from it by the Settings page. The built-in rows and
+> the pin that kept core on them (`CORE_RUNS`, until A11-161) are gone: `none` is the absence of an enabled plugin.
 
 The open question of A11-144 was whether the tracker and the code host are plugins, as the conventions plugin is, or built-in providers picked by name. They are built in. A11-143 Decision 1 settles it: the tracker and the code host are code that agent-org runs (API calls and auth), so each is a provider picked by name under `tickets.providers` (`tracker: linear`, `codeHost: github`), and a later tracker such as Jira is a code change behind the same provider interface. The "go, narrowly" of section 7 stands for the conventions plugin alone, which says how tickets are written and reviewed. Section 6's contract is not extended to the providers, and neither needs a `metadata.agentOrg` entry.

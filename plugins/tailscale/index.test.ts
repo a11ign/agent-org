@@ -14,7 +14,7 @@ import { createTailscale, freshState } from "./stub.ts";
 test("the registry finds the plugin as the bundled exposure tailscale, from its manifest alone, and the manifest brings the settings the Settings page drew", () => {
   const plugin = pluginNamed(defaultCatalog(), "tailscale");
   assert.ok(plugin !== undefined);
-  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry, plugin.movedBy], ["exposure", "bundled", "1.1", "index.ts", null]);
+  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry], ["exposure", "bundled", "1.1", "index.ts"]);
   assert.deepEqual(Object.keys(plugin.settings), ["port", "uiPort", "terminal", "tailnetPorts", "tailnetPorts.ui", "tailnetPorts.terminal"]);
   for (const [name, entry] of Object.entries(plugin.settings)) assert.equal(entry.key, `tickets.providers.exposure.${name}`);
 });

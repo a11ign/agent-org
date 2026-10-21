@@ -11,7 +11,7 @@ import { createFakePublisher } from "./publisher.ts";
 test("the fake publisher passes the publisher contract suite, and the checks that ran are the ones asserted", async () => {
   const { passed, skipped } = await runPublisherConformance(createFakePublisher());
   assert.deepEqual(passed, [
-    "shape", "briefText names every pull request and the run's folder", "connectors are patterns anchored at ^mcp__", "result reads the links of a published run",
+    "shape", "briefText names every pull request and the run's folder", "connectors are patterns anchored at ^mcp__", "agent names the model and effort the run runs on", "result reads the links of a published run",
     "result reads a run that handed back as a failure with its reason", "result is a failure when the outcome cannot be read", "result is a failure for published with no links file",
   ]);
   assert.deepEqual(skipped, []);
@@ -32,6 +32,17 @@ test("a publisher that reads a published run with no links as links fails by nam
 test("a publisher whose connector pattern is not anchored at ^mcp__ fails by name", async () => {
   await assert.rejects(runPublisherConformance(createFakePublisher(["mcp__slack__send"])), (error: unknown) => error instanceof ContractError
     && error.failures.map(({ check }) => check).join() === "connectors are patterns anchored at ^mcp__");
+});
+
+test("a publisher whose agent names no model fails by name", async () => {
+  const fake = createFakePublisher();
+  const nameless: Publisher = { ...fake, agent: () => ({ model: "", effort: "low" }) };
+  await assert.rejects(runPublisherConformance(nameless), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "agent names the model and effort the run runs on");
+});
+
+test("the fake's agent is haiku at low effort unless it is given another, as the publish run's default is", () => {
+  assert.deepEqual(createFakePublisher().agent(), { model: "haiku", effort: "low" });
+  assert.deepEqual(createFakePublisher([], { model: "sonnet", effort: "high" }).agent(), { model: "sonnet", effort: "high" });
 });
 
 test("the fake records the briefs it was asked for and the results it read", async () => {

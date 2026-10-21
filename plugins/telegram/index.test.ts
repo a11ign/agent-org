@@ -43,7 +43,7 @@ function telegram() {
 test("the registry finds the plugin as the bundled messaging telegram, from its manifest alone, and the manifest names the three files of the project's messaging key", () => {
   const plugin = pluginNamed(defaultCatalog(), "telegram");
   assert.ok(plugin !== undefined);
-  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry, plugin.movedBy], ["messaging", "bundled", "1.1", "index.ts", null]);
+  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry], ["messaging", "bundled", "1.1", "index.ts"]);
   assert.deepEqual(Object.keys(plugin.settings), ["tokenFile", "chairmanFile", "announcementsFile"]);
   for (const [name, entry] of Object.entries(plugin.settings)) assert.deepEqual([entry.key, entry.file], [`messaging.${name}`, "project.json"]);
   assert.deepEqual(onboardSteps, [], "the token is the person's to put in a file, and pairing stays `agent-org messaging:pair`");

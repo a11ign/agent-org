@@ -27,8 +27,8 @@
 // `tickets.deny` adds this machine's own command refusals. The pool copies both beside the outcome file. A refusal is exit 2 with the reason on
 // stderr, which Claude Code hands back to the model. A REVIEW RUN, which a person started by approving the pull requests, may mark THOSE
 // pull requests ready: the pool leaves `review-run` beside the outcome file naming them, no worker may write it, and nothing else of the
-// person's is lifted. A PUBLISH RUN, which a person started by pressing Publish, may run the `post-pr-to-slack` skill and call the connectors
-// the host file's `tickets.publish.connectors` names: the pool leaves `publish-run` beside its outcome file naming them, which no worker may
+// person's is lifted. A PUBLISH RUN, which a person started by pressing Publish, may run the publisher plugin's skill (its manifest's `tooling.skills`) and call the
+// connectors the host file's `tickets.providers.publish.connectors` names: the pool leaves `publish-run` beside its outcome file naming them, which no worker may
 // write either, and merging, reviewing, force-pushing and running a workflow stay refused.
 //
 // THE HOST'S OWN PROGRAMS (A11-84): a worker may not write the routing `gh` or the launcher `agent-org` in the host's bin directory, which the pool names in
@@ -176,9 +176,11 @@ export function resolveWritePath(path: string, real: (path: string) => string = 
   }
 }
 
-const SKILL_REFUSALS: readonly Refusal[] = [
-  { pattern: /post-pr-to-slack/, why: "announcing a pull request is the person's" },
-];
+/**
+ * The Claude Code skills the catalog's PUBLISHER plugins declare (`tooling.skills`), read as data: the hook is a process started for every tool call, and must not import a plugin to answer one.
+ * Announcing a pull request is the person's, so no run but a publish run (the one a person's Publish started) may run one of them, whichever publisher is enabled or whether any is (A11-161).
+ */
+export const publisherSkills = (catalog = defaultCatalog()): readonly string[] => catalog.plugins.flatMap(({ concern, tooling }) => (concern === "publisher" ? tooling.skills : []));
 
 /**
  * A filing call from a new-ticket run (A11-135): only a tool the board granted, and only the creation the run needs. A creation is `save_issue` with no
@@ -255,6 +257,8 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   approved?: readonly string[];
   /** The connector tool names a publish run may call, or null for a run that is no publish run. */
   publish?: readonly RegExp[] | null;
+  /** The skills only a publish run may run: every publisher plugin of the registry's catalog declares them when absent. */
+  publisherSkills?: readonly string[];
   /** A run on a machine with `tickets.drafts: false` may open its pull request ready. */
   ready?: boolean;
   /** The host's own programs a worker may not write, by path. */
@@ -274,8 +278,8 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   }
   if (toolName === "Skill") {
     const skill = String(input.skill ?? input.name ?? "");
-    const hit = publish === null ? SKILL_REFUSALS.find(({ pattern }) => pattern.test(skill)) : undefined;
-    return hit ? refuse(`the ${skill} skill is refused: ${hit.why}`) : ALLOW;
+    const refused = publish === null && (options.publisherSkills ?? publisherSkills()).some((name) => skill.includes(name));
+    return refused ? refuse(`the ${skill} skill is refused: announcing a pull request is the person's`) : ALLOW;
   }
   if (FILE_TOOLS.has(toolName)) {
     const file = String(input.file_path ?? input.notebook_path ?? "");

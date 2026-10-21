@@ -77,10 +77,10 @@ test("the example profile committed for the live check parses, and names no secr
 
 // ---- A11-163: a profile names plugins of the registry
 
-/** The catalog a test reads: this checkout's, with `plugin` added to it and no concern pinned to core's built-in. */
+/** The catalog a test reads: this checkout's, with `plugin` added to it. */
 const catalogWith = (plugin: Partial<CatalogPlugin> & Pick<CatalogPlugin, "name" | "concern">): Catalog => {
   const base = defaultCatalog();
-  return { ...base, pins: {}, plugins: [...base.plugins, { contract: "1.1", description: "A plugin.", entry: "index.ts", settings: {}, tooling: { mcpServers: [], connectors: [], skills: [] }, where: "bundled", dir: "/checkout/plugins/x", movedBy: null, ...plugin }] };
+  return { ...base, plugins: [...base.plugins, { contract: "1.1", description: "A plugin.", entry: "index.ts", settings: {}, tooling: { mcpServers: [], connectors: [], skills: [] }, where: "bundled", dir: "/checkout/plugins/x", ...plugin }] };
 };
 
 test("A11-163: a block's provider is checked against the registry: a bundled plugin of the concern is named by the profile, with no list written in the profile reader", () => {

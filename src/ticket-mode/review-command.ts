@@ -2,10 +2,10 @@
 // @ts-check
 // command: ticket:review -- start the atomic reviewer for one pull request now, at its current head
 //
-// THE SAME REVIEWER THE POOL STARTS, FOR A PULL REQUEST THE POOL DOES NOT KNOW. The pool starts the atomic reviewer on each new head of every open pull
-// request of the repositories the org holds (`reviewNewHeads`), and of a watched run's pull request (`reviewerLines`). This starts `atomicReviewerPort`
-// for one pull request by hand, with every refusal the port makes: an author outside the org, checks not settled green, a head that moved. It changes
-// nothing on GitHub itself; the reviewer posts.
+// THE SAME REVIEWER THE POOL STARTS, FOR A PULL REQUEST THE POOL DOES NOT KNOW. The pool starts the enabled reviewer plugin on each new head of every open pull
+// request of the repositories the org holds (`reviewNewHeads`), and of a watched run's pull request (`reviewerLines`). This starts that plugin's reviewer
+// for one pull request by hand, with every refusal it makes: an author outside the org, checks not settled green, a head that moved. It changes
+// nothing on GitHub itself; the reviewer posts. WITH NO REVIEWER PLUGIN ENABLED (none, or a disabled one) IT STARTS NOTHING and refuses by name, with the command that enables or installs one (A11-161).
 //
 // THE POOL'S MEMORY IS THE SHARED RECORD. A start is written to the reviewer memory file the pool reads on its sweep (`reviewerMemoryPath`), so the pool
 // does not start a second reviewer for the head this one started. A head with a posted review, or with a reviewer already, is said so and not started again.
@@ -15,12 +15,29 @@ import { refuseUnknownFlags } from "../lib/cli-flags.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { herdrRun } from "../herdr-agents.ts";
 import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
+import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
+import type { Reviewer } from "../plugins/contracts/reviewer.ts";
+import type { Catalog } from "../plugins/manifest.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
-import { atomicReviewerPort, gateReviewJudge, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, reviewerRefusal, reviewPostedAt, reviewWordAt, type ReviewerMemory, type ReviewerPort, type ReviewState, writeReviewerMemory } from "./reviewer-port.ts";
+import type { Providers } from "./providers.ts";
+import { enableReviewerCommand } from "./concern-states.ts";
+import { gateReviewJudge, readReviewerMemory, reviewerMemoryPath, reviewPostedAt, reviewWordAt, type ReviewerPort, type ReviewState, writeReviewerMemory } from "./reviewer-port.ts";
 import { claimantOf, readTicketSettings } from "./settings.ts";
 
 /** A pull request's address as GitHub prints it: `https://github.com/<owner>/<repo>/pull/<number>`. */
 const PULL_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/;
+
+/**
+ * The reviewer `ticket:review` starts, loaded, or the refusal that starts none (A11-161): this machine has no reviewer plugin enabled (the refusal names the command that enables or installs one),
+ * or the reviewer cannot start on this host (the gate does not load). A machine with `none`, or a disabled reviewer, starts nothing here, as the board starts nothing.
+ */
+export async function reviewerToStart(active: Pick<Awaited<ReturnType<typeof activatePlugins>>, "reviewer">, providers: Providers, catalog: Catalog): Promise<{ reviewer: Reviewer } | { refusal: string }> {
+  const reviewer = active.reviewer();
+  if (reviewer === null) return { refusal: `ticket:review: this machine has no reviewer, so none is started: run \`${enableReviewerCommand(providers, catalog)}\`` };
+  await reviewer.load();
+  const why = reviewer.refusal();
+  return why === null ? { reviewer } : { refusal: `ticket:review: the reviewer does not load on this host: ${why}` };
+}
 
 /**
  * Start the reviewer for `url` at `head`, or say why not. `head` is the pull request's current head when it is not given. A reviewer is started only for
@@ -56,18 +73,20 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   const head = flag === -1 ? undefined : args[flag + 1];
   const url = args.find((arg, i) => !arg.startsWith("--") && (flag === -1 || i !== flag + 1)) ?? "";
   const settings = readTicketSettings();
-  await loadReviewerGate();
-  const refusal = reviewerRefusal();
-  if (refusal !== null) {
-    process.stderr.write(`ticket:review: the reviewer does not load on this host: ${refusal}\n`);
-    process.exit(1);
-  }
-  // The code host is the enabled plugin's, as the board's: the pull request is read through it, and so is each read the reviewer port makes. It alone is built: the tracker's key is
-  // not read for a command that asks it nothing, which is run from a shell with no Keychain (it was run from ssh).
-  const codeHost = (await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge }), undefined, ["codeHost"])).codeHost();
   const path = reviewerMemoryPath(settings.stateDir);
   const { memory } = readReviewerMemory(path);
-  const port = atomicReviewerPort({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, codeHost, heads: memory.heads, clones: settings.clones, instance: claimantOf(settings) });
+  // The code host is the enabled plugin's, as the board's: the pull request is read through it, and so is each read the reviewer makes. Only it and the reviewer are built: the tracker's key
+  // is not read for a command that asks it nothing, which is run from a shell with no Keychain (it was run from ssh).
+  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: memory.heads });
+  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }), undefined, ["codeHost", "reviewer"]);
+  activated(active);
+  const chosen = await reviewerToStart(active, settings.providers, defaultCatalog());
+  if ("refusal" in chosen) {
+    process.stderr.write(`${chosen.refusal}\n`);
+    process.exit(1);
+  }
+  const port = chosen.reviewer;
+  const codeHost = active.codeHost();
   const { code, out } = reviewOnDemand({ url, head, port, readState: (u) => codeHost.readReviewState(u), started: memory.started, record: (label, key, at) => {
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);

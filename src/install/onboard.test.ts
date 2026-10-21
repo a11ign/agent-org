@@ -10,6 +10,7 @@ import { runPlugin } from "../plugins/cli.ts";
 import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import type { OnboardStep } from "../plugins/manifest.ts";
 import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "../plugins/registry.ts";
+import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import { onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 import { createTailscale, freshState } from "../../plugins/tailscale/stub.ts";
 import { PAIRING_STEPS } from "./terminal.ts";
@@ -114,6 +115,8 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
       }
       // The code host plugin's step runs `gh` through `exec` (A11-160): by default the extension is listed, as these tests have always seen it.
       if (file === "gh") return { status: 0, stdout: args[1] === "list" ? STACK_LISTED : "", stderr: "" };
+      // The atomic reviewer's step asks where Codex is (A11-161): by default it is installed, and logged in.
+      if (file === "which" && args[0] === "codex") return { status: 0, stdout: "/usr/local/bin/codex\n", stderr: "" };
       return value.run(file, [...args]);
     },
     catalog: defaultCatalog,
@@ -139,7 +142,6 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
       return (answers2[`${file} ${args[0]} ${args[1]}`] ?? (() => OK))(args);
     },
     which: () => "/usr/local/bin/tool",
-    codexStatus: () => 0,
     ghAs: () => listedGh(),
     replacements: async () => ({ ghWrapperDeclared: true, herdrOutsideInstance: true }),
     diagnose: async () => [],
@@ -479,6 +481,9 @@ function greenDoctor(home: string): DoctorDeps {
       if (file === "claude") return { status: 0, stdout: "linear: https://mcp.linear.app/mcp (HTTP) - Connected\n", stderr: "" };
       // The code host plugin's checks run `gh`: the stacking extension is listed, and no clone has a GitHub remote to ask about.
       if (file === "gh") return { status: 0, stdout: args[0] === "extension" ? STACK_LISTED : "[]", stderr: "" };
+      // The atomic reviewer's checks run `which codex` and `codex login status` (A11-161): Codex is installed and logged in.
+      if (file === "which" && args[0] === "codex") return { status: 0, stdout: "/usr/local/bin/codex\n", stderr: "" };
+      if (file === "codex") return { status: 0, stdout: "", stderr: "" };
       return { status: null, stdout: "", stderr: "cannot start" };
     },
     mode: () => 0o600, serviceState: () => "running", answers: async () => true, healthy: async () => true, unitProblem: () => null,
@@ -487,7 +492,7 @@ function greenDoctor(home: string): DoctorDeps {
     ghWrapper: async () => ({ divergence: null, mints: [] }), platform: "linux",
     isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
-    reviewerGate: async () => null, codexStatus: () => 0, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
+    reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
   };
 }
 
@@ -710,7 +715,7 @@ const STEPPED_FILES: PackageFiles = {
     settings: ["token", "mode"].reduce((all, name) => ({ ...all, [name]: { key: `tickets.providers.tracker.${name}`, file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } } }), {}) } }) : null),
   isFile: () => true,
 };
-const steppedCatalog = () => buildCatalog({ root: STEPPED_ROOT, files: STEPPED_FILES, pins: {} });
+const steppedCatalog = () => buildCatalog({ root: STEPPED_ROOT, files: STEPPED_FILES });
 const plugged = (steps: readonly OnboardStep[], { create = (): unknown => ({}) } = {}) => {
   const plugin = pluginNamed(steppedCatalog(), "stepped")!;
   const module = { create, doctorChecks: () => [], onboardSteps: steps };

@@ -112,9 +112,9 @@ export async function readTicketContext(env: TicketEnv, { settings = () => hostS
 /** The host file a run names: the pool gives it as `AGENT_ORG_TICKET_HOST`, else the host's own `AGENT_ORG_HOST`. */
 const hostSettingsOf = (env: TicketEnv): TicketSettings => readTicketSettings({ [HOST_FILE_ENV]: env[TICKET_ENV.host] ?? env[HOST_FILE_ENV] });
 
-/** The tracker the host file names: the enabled tracker plugin's source, built with the key its block names. */
+/** The tracker the host file names: the enabled tracker plugin's source, built with the key its block names. It alone is built: a command that reads one ticket needs no publisher or reviewer, whose plugin a broken package must not refuse it for. */
 const trackerOf = async (host: TicketSettings): Promise<TicketSource> =>
-  (await activatePlugins(host.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: host.stateDir, pick: host.pick }))).tracker();
+  (await activatePlugins(host.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: host.stateDir, pick: host.pick }), undefined, ["tracker"])).tracker();
 
 /** A downloaded file's name without the `attachment-<n>-` the download puts before the title the file was uploaded under. */
 const titleOf = (file: string): string => basename(file).replace(/^attachment-\d+-/, "");

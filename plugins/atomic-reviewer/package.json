@@ -1,0 +1,14 @@
+{
+  "name": "@agent-org/plugin-atomic-reviewer",
+  "private": true,
+  "version": "0.0.0",
+  "description": "The atomic reviewer: starts the gate's codex reviewer for each ready pull request of the tickets' board, once per head, in the tickets' herdr session.",
+  "type": "module",
+  "agentOrg": {
+    "name": "atomic",
+    "concern": "reviewer",
+    "contract": "1.0",
+    "description": "The gate's codex reviewer, started for each ready pull request.",
+    "entry": "index.ts"
+  }
+}

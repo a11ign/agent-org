@@ -8,6 +8,9 @@
 // A11-162 ADDS TWO MORE VOCABULARIES TO IT: Tailscale's (the `tailscale` command run by a program-running call, and tailnet host names ending `.ts.net`) and Telegram's (`api.telegram.org`).
 // They are the plugins' own: `plugins/tailscale` runs the command and `plugins/telegram` calls the API, and a name used as a value (`"tailscale"` in the exposure block's `provider`) is not a call.
 //
+// A11-161 ADDS SLACK'S: the skill its publish run uses (`post-pr-to-slack`), its MCP tool names (`mcp__<server>__slack…`) and its hosts (`slack.com`). They are `plugins/slack`'s manifest's (`tooling.skills`), which the
+// hook reads as data; a name used as a value (`"slack"` in the publish block's `provider`) is not one.
+//
 // THE OTHER HALF OF THE BOUNDARY (ADR 0001): a plugin imports core's types only. A runtime import of a file outside the plugin's folder is a finding.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -28,9 +31,12 @@ const TAILNET = /\.ts\.net\b/;
 /** Telegram's Bot API host: the vocabulary only the Telegram plugin speaks. */
 const TELEGRAM = /api\.telegram\.org/;
 
+/** Slack's publish skill, its MCP tool names and its hosts: the vocabulary only the Slack plugin speaks. */
+const SLACK = /post-pr-to-slack|mcp__\w*slack|slack\.com/i;
+
 /** The vocabularies a plugin owns, by what core's finding says. */
 const VOCABULARIES: readonly Readonly<{ pattern: RegExp; names: string }>[] = [
-  { pattern: LINEAR, names: "Linear's API or MCP" }, { pattern: TAILNET, names: "a tailnet host" }, { pattern: TELEGRAM, names: "Telegram's API" },
+  { pattern: LINEAR, names: "Linear's API or MCP" }, { pattern: TAILNET, names: "a tailnet host" }, { pattern: TELEGRAM, names: "Telegram's API" }, { pattern: SLACK, names: "Slack's skill, tools or hosts" },
 ];
 
 type Found = Readonly<{ specifier: string; typeOnly: boolean; at: string }>;
@@ -122,7 +128,7 @@ const isSource = (name: string) => /\.(ts|mjs)$/.test(name) && !/\.test\.(ts|mjs
 const walk = (dir: string): string[] => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && isSource(entry.name))
   .map((entry) => join(entry.parentPath, entry.name)).filter((path) => !path.split(sep).includes("node_modules")).sort();
 
-test("core imports no plugin's code, names no Linear endpoint or MCP tool, no tailnet host and no Telegram endpoint, and runs no tailscale: not a file of src/ or scripts/", () => {
+test("core imports no plugin's code, names no Linear endpoint or MCP tool, no tailnet host, no Telegram endpoint and no Slack skill, tool or host, and runs no tailscale: not a file of src/ or scripts/", () => {
   const files = [...walk(join(REPO, "src")), ...walk(join(REPO, "scripts"))];
   assert.ok(files.some((file) => file.endsWith(join("ticket-mode", "server.ts"))) && files.some((file) => file.endsWith(join("plugins", "registry.ts"))), "the walk sees core: an empty walk would pass for the wrong reason");
   const findings = files.flatMap((file) => coreFindings(file, readFileSync(file, "utf8")).map((finding) => `${relative(REPO, file)} ${finding}`));
@@ -179,4 +185,18 @@ test("A11-162 NEGATIVE CONTROL: a core file that runs tailscale, or names a tail
   assert.deepEqual(coreFindings(core, '// tailscale serve publishes agents.tail1234.ts.net, and api.telegram.org answers the bot\nexport const provider = "tailscale";\nconst same = provider !== "tailscale";\nexport const names = ["local", "tailscale", "telegram"].includes(provider);\n'), [],
     "prose, a comment, and the plugin's name as a value (the exposure block's provider) are not a call");
   assert.deepEqual(coreFindings(core, 'import { createTelegramProvider } from "../../plugins/telegram/send.ts";\n'), ["line 1: imports ../../plugins/telegram/send.ts, a plugin's code"]);
+});
+
+test("A11-161: the Slack plugin is where Slack's skill is named: its manifest declares it as data, and no core file does", () => {
+  const manifest = JSON.parse(readFileSync(join(PLUGINS, "slack", "package.json"), "utf8")) as { agentOrg: { tooling: { skills: string[] } } };
+  assert.deepEqual(manifest.agentOrg.tooling.skills, ["post-pr-to-slack"]);
+});
+
+test("A11-161 NEGATIVE CONTROL: a core file that names Slack's skill, a Slack tool or a Slack host is reported (twin: prose, a comment, and the plugin's name as a value are not)", () => {
+  const core = join(REPO, "src", "ticket-mode", "fixture.ts");
+  const named = (what: string) => [`names Slack's skill, tools or hosts at line 1: ${what}`];
+  for (const [source, what] of [["export const skill = /post-pr-to-slack/;\n", "/post-pr-to-slack/"], ['export const tool = "mcp__plugin_slack_slack__slack_send_message";\n', "mcp__plugin_slack_slack__slack_send_message"],
+    ["export const link = `https://x.slack.com/archives/C1/p1`;\n", "https://x.slack.com/archives/C1/p1"]]) assert.deepEqual(coreFindings(core, source), named(what), source);
+  assert.deepEqual(coreFindings(core, '// the post-pr-to-slack skill posts to x.slack.com through mcp__slack__send\nexport const provider = "slack";\nconst publishes = provider !== "slack";\n'), [], "prose, a comment, and the plugin's name as a value");
+  assert.deepEqual(coreFindings(core, 'import { create } from "../../plugins/slack/index.ts";\n'), ["line 1: imports ../../plugins/slack/index.ts, a plugin's code"]);
 });

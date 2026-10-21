@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { PUBLISHED_FILE, type Publisher } from "../contracts/publisher.ts";
 import { type ConformanceResult, expect, hasFunctions, isString, runChecks } from "./suite.ts";
 
-const OPERATIONS = ["briefText", "connectors", "result"] as const;
+const OPERATIONS = ["briefText", "connectors", "agent", "result"] as const;
 const PULLS = [{ repo: "owner/one", url: "https://github.com/owner/one/pull/1" }, { repo: "owner/two", url: "https://github.com/owner/two/pull/2" }];
 
 /** Runs `use` with a scratch folder standing for the run's, and removes it. */
@@ -34,6 +34,10 @@ const ALWAYS: Readonly<Record<string, (publisher: Publisher) => unknown>> = {
     const connectors = publisher.connectors();
     expect(Array.isArray(connectors) && connectors.every((pattern) => isString(pattern) && pattern.startsWith("^mcp__")), "connectors() must be a list of patterns anchored at \"^mcp__\"");
     for (const pattern of connectors) new RegExp(pattern);
+  },
+  "agent names the model and effort the run runs on": (publisher) => {
+    const { model, effort } = publisher.agent();
+    expect(isString(model) && model !== "" && isString(effort) && effort !== "", "agent() must name a model and an effort, each a non-empty word");
   },
   "result reads the links of a published run": (publisher) => withRun((dir) => {
     writeFileSync(join(dir, PUBLISHED_FILE), JSON.stringify({ links: ["https://example.invalid/message/1"] }));

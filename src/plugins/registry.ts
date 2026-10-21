@@ -1,10 +1,10 @@
 // @ts-check
 // module: the registry -- every agent-org plugin this checkout knows, and what it refuses (A11-158)
 //
-// THE CATALOG IS BUILT FROM THREE PLACES, in this order, and a name that is already taken refuses the later plugin by name:
-//   1. the bundled packages: each `plugins/<name>/package.json` of the tool's checkout with an `agentOrg` field (none until A11-159);
-//   2. the built-ins: today's providers, whose code is still in core (`built-in.ts`), each with the ticket that moves it;
-//   3. the fakes: one per concern, from `src/plugins/fakes/`.
+// THE CATALOG IS BUILT FROM TWO PLACES, in this order, and a name that is already taken refuses the later plugin by name:
+//   1. the bundled packages: each `plugins/<directory>/package.json` of the tool's checkout with an `agentOrg` field. The plugin's name is its directory's, unless `agentOrg.name` gives
+//      another (`plugins/atomic-reviewer` is `atomic`, the name live host files use);
+//   2. the fakes: one per concern, from `src/plugins/fakes/`.
 // Bundled packages are found in the CHECKOUT, not through `node_modules`: a host installs agent-org with `--ignore-workspace`, which links no workspace package
 // (ADR 0001). For the same reason a bundled package that declares `dependencies` is refused by name, since a host's install would not install them.
 //
@@ -17,7 +17,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import { blockOf, CONCERNS, type Concern } from "./concerns.ts";
-import { BUILT_IN, CORE_RUNS, FAKES } from "./built-in.ts";
+import { FAKES } from "./built-in.ts";
 import type { Providers } from "../ticket-mode/providers.ts";
 import { PRIORITIES, type TrackerWriting } from "./contracts/tracker.ts";
 import { type Catalog, type CatalogPlugin, type CatalogRefusal, type ManifestData, NO_TOOLING, type Tooling } from "./manifest.ts";
@@ -156,32 +156,45 @@ function manifestOf(declared: unknown, entryExists: (entry: string) => boolean):
   return { concern: concern as Concern, contract, description, entry, settings, tooling };
 }
 
+/**
+ * The name a package's plugin goes by: the optional `agentOrg.name`, else the package's directory (`plugins/atomic-reviewer` is the plugin `atomic`, since live host files name it so, A11-161).
+ * A declared name that is not text is the reason the package is refused, which then names the directory.
+ */
+function nameOf(declared: unknown, directory: string): string | { why: string } {
+  if (!isObject(declared) || declared.name === undefined) return directory;
+  return typeof declared.name === "string" ? declared.name : { why: "agentOrg.name must be the plugin's name as text" };
+}
+
 /** One bundled package: the plugin, or the refusal naming it. A directory with no `agentOrg` field is not a plugin and is skipped (null). */
-function readPackage(root: string, name: string, files: PackageFiles): CatalogPlugin | CatalogRefusal | null {
-  const dir = join(root, "plugins", name);
+function readPackage(root: string, directory: string, files: PackageFiles): CatalogPlugin | CatalogRefusal | null {
+  const dir = join(root, "plugins", directory);
   let text: string | null;
   try {
     text = files.text(join(dir, "package.json"));
   } catch (error) {
-    return { plugin: name, why: `plugin ${name}: package.json cannot be read: ${messageOf(error)}` };
+    return { plugin: directory, why: `plugin ${directory}: package.json cannot be read: ${messageOf(error)}` };
   }
   if (text === null) return null;
   let manifest: unknown;
   try {
     manifest = JSON.parse(text);
   } catch {
-    return { plugin: name, why: `plugin ${name}: package.json is not valid JSON` };
+    return { plugin: directory, why: `plugin ${directory}: package.json is not valid JSON` };
   }
   if (!isObject(manifest) || manifest.agentOrg === undefined) return null;
+  const named = nameOf(manifest.agentOrg, directory);
+  if (typeof named !== "string") return { plugin: directory, why: `plugin ${directory}: ${named.why}` };
+  const name = named;
   const refuse = (why: string): CatalogRefusal => ({ plugin: name, why: `plugin ${name}: ${why}` });
-  if (!PLUGIN_NAME.test(name)) return refuse("its directory name must be lower-case letters, digits and hyphens, starting with a letter: it is the plugin's name");
+  if (!PLUGIN_NAME.test(name)) return refuse(name === directory ? "its directory name must be lower-case letters, digits and hyphens, starting with a letter: it is the plugin's name"
+    : "its agentOrg.name must be lower-case letters, digits and hyphens, starting with a letter");
   const dependencies = isObject(manifest.dependencies) ? Object.keys(manifest.dependencies) : [];
   if (dependencies.length > 0) {
     return refuse(`package.json declares dependencies (${dependencies.join(", ")}), which a host's install does not install: a bundled plugin imports core's types only and declares none (ADR 0001)`);
   }
   const data = manifestOf(manifest.agentOrg, (entry) => files.isFile(join(dir, entry)));
   if (typeof data === "string") return refuse(data);
-  return Object.freeze({ ...data, name, where: "bundled", dir, movedBy: null });
+  return Object.freeze({ ...data, name, where: "bundled", dir });
 }
 
 /** Every bundled package of the checkout, or the refusal naming the plugins folder when it exists and cannot be listed. */
@@ -195,19 +208,19 @@ function packagesOf(root: string, files: PackageFiles): (CatalogPlugin | Catalog
 }
 
 /**
- * The catalog of a checkout: its bundled packages, then the built-ins, then the fakes. A name taken twice refuses the later plugin, by name. `root` and `files` are a
+ * The catalog of a checkout: its bundled packages, then the fakes. A name taken twice refuses the later plugin, by name. `root` and `files` are a
  * test's; the default is this checkout on disk.
  */
-export function buildCatalog({ root = TOOL_CHECKOUT, files = DISK, pins = CORE_RUNS }: Readonly<{ root?: string; files?: PackageFiles; pins?: Catalog["pins"] }> = {}): Catalog {
+export function buildCatalog({ root = TOOL_CHECKOUT, files = DISK }: Readonly<{ root?: string; files?: PackageFiles }> = {}): Catalog {
   const refusals: CatalogRefusal[] = [];
   const plugins: CatalogPlugin[] = [];
   const bundled = packagesOf(root, files);
-  for (const candidate of [...bundled, ...BUILT_IN, ...FAKES]) {
+  for (const candidate of [...bundled, ...FAKES]) {
     if ("why" in candidate) refusals.push(candidate);
     else if (plugins.some(({ name }) => name === candidate.name)) refusals.push({ plugin: candidate.name, why: `plugin ${candidate.name} is named twice, and plugin names are unique: the ${candidate.where} plugin is refused, and the one found first stays` });
     else plugins.push(candidate);
   }
-  return Object.freeze({ plugins: Object.freeze(plugins), refusals: Object.freeze(refusals), pins });
+  return Object.freeze({ plugins: Object.freeze(plugins), refusals: Object.freeze(refusals) });
 }
 
 let memo: Catalog | null = null;

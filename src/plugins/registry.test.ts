@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BUILT_IN, CORE_RUNS, FAKES } from "./built-in.ts";
+import { FAKES } from "./built-in.ts";
 import { resolveProviders } from "../ticket-mode/providers.ts";
 import { blockSettings, buildCatalog, defaultCatalog, isTrackerConnector, ownsConnector, type PackageFiles, pluginNamed, pluginsOfConcern, trackerWritingOf } from "./registry.ts";
 
@@ -24,22 +24,18 @@ const manifest = (over: Record<string, unknown> = {}) => ({ name: "@agent-org/pl
 const catalogOf = (packages: Record<string, unknown>, files?: readonly string[]) => buildCatalog({ root: ROOT, files: checkout(packages, files) });
 const refusalOf = (catalog: ReturnType<typeof buildCatalog>, plugin: string) => catalog.refusals.find((refusal) => refusal.plugin === plugin)?.why;
 
-test("with no bundled plugin the catalog is today's providers and the fakes, each tagged with where its code lives", () => {
+test("with no bundled plugin the catalog is the fakes alone, each tagged with where its code lives", () => {
   const catalog = catalogOf({});
-  assert.deepEqual(catalog.plugins.map(({ name, concern, where }) => `${name}:${concern}:${where}`), [
-    ...BUILT_IN.map(({ name, concern }) => `${name}:${concern}:core`), ...FAKES.map(({ name, concern }) => `${name}:${concern}:fake`)]);
-  assert.deepEqual(BUILT_IN.map(({ name, concern, movedBy }) => [name, concern, movedBy]), [
-    ["slack", "publisher", "A11-161"], ["atomic", "reviewer", "A11-161"]]);
+  assert.deepEqual(catalog.plugins.map(({ name, concern, where }) => `${name}:${concern}:${where}`), FAKES.map(({ name, concern }) => `${name}:${concern}:fake`));
   assert.deepEqual(FAKES.map(({ name }) => name), ["fake-tracker", "fake-codeHost", "fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]);
   assert.deepEqual(catalog.refusals, []);
-  assert.equal(catalog.pins, CORE_RUNS);
 });
 
 test("a bundled package with an agentOrg field is a plugin, read without importing any code, and listed before the built-ins", () => {
   const tooling = { mcpServers: ["example"], connectors: ["^mcp__example__"], skills: ["a11ign:example"] };
   const catalog = catalogOf({ example: manifest({ tooling }) });
   const plugin = pluginNamed(catalog, "example");
-  assert.deepEqual({ ...plugin, settings: undefined }, { name: "example", concern: "tracker", contract: "1.0", description: "An example tracker.", entry: "index.ts", settings: undefined, tooling, where: "bundled", dir: `${ROOT}/plugins/example`, movedBy: null });
+  assert.deepEqual({ ...plugin, settings: undefined }, { name: "example", concern: "tracker", contract: "1.0", description: "An example tracker.", entry: "index.ts", settings: undefined, tooling, where: "bundled", dir: `${ROOT}/plugins/example` });
   assert.equal(catalog.plugins[0].name, "example");
   assert.deepEqual(pluginsOfConcern(catalog, "tracker").map(({ name }) => name), ["example", "fake-tracker"]);
 });
@@ -84,19 +80,26 @@ test("a bundled package that declares dependencies is refused by name, since a h
 });
 
 test("two plugins of one name are refused by name: the one found first stays", () => {
-  const catalog = catalogOf({ slack: manifest({ concern: "publisher" }) });
-  assert.equal(pluginNamed(catalog, "slack")?.where, "bundled", "the bundled package is first");
-  assert.match(refusalOf(catalog, "slack") ?? "", /plugin slack is named twice, and plugin names are unique: the core plugin is refused, and the one found first stays/);
-  assert.equal(catalog.plugins.filter(({ name }) => name === "slack").length, 1);
+  const catalog = catalogOf({ "fake-publisher": manifest({ concern: "publisher" }) });
+  assert.equal(pluginNamed(catalog, "fake-publisher")?.where, "bundled", "the bundled package is first");
+  assert.match(refusalOf(catalog, "fake-publisher") ?? "", /plugin fake-publisher is named twice, and plugin names are unique: the fake plugin is refused, and the one found first stays/);
+  assert.equal(catalog.plugins.filter(({ name }) => name === "fake-publisher").length, 1);
+});
+
+test("A11-161: agentOrg.name gives a package's plugin its name, the directory's is the default, a name that cannot be one is refused, and a clash is refused by name", () => {
+  const catalog = catalogOf({ "atomic-reviewer": manifest({ concern: "reviewer", name: "atomic" }), slack: manifest({ concern: "publisher" }) });
+  const atomic = pluginNamed(catalog, "atomic");
+  assert.deepEqual([atomic?.where, atomic?.dir, pluginNamed(catalog, "atomic-reviewer")], ["bundled", `${ROOT}/plugins/atomic-reviewer`, undefined], "the plugin is `atomic`, from a folder that is not named so");
+  assert.equal(pluginNamed(catalog, "slack")?.dir, `${ROOT}/plugins/slack`, "with no name, the directory's is the plugin's");
+  assert.match(refusalOf(catalogOf({ other: manifest({ name: "Atomic" }) }), "Atomic") ?? "", /its agentOrg\.name must be lower-case letters, digits and hyphens/);
+  assert.match(refusalOf(catalogOf({ other: manifest({ name: 7 }) }), "other") ?? "", /agentOrg\.name must be the plugin's name as text/);
+  const clash = catalogOf({ "atomic-reviewer": manifest({ concern: "reviewer", name: "atomic" }), "atomic-two": manifest({ concern: "reviewer", name: "atomic" }) });
+  assert.match(refusalOf(clash, "atomic") ?? "", /plugin atomic is named twice, and plugin names are unique: the bundled plugin is refused, and the one found first stays/);
+  assert.equal(pluginNamed(clash, "atomic")?.dir, `${ROOT}/plugins/atomic-reviewer`, "the one found first stays");
 });
 
 test("a plugin's name is its directory name, and a name that cannot be one is refused", () => {
   assert.match(refusalOf(catalogOf({ Example: manifest() }), "Example") ?? "", /its directory name must be lower-case letters, digits and hyphens/);
-});
-
-test("pins come from core's table unless a test passes its own", () => {
-  assert.deepEqual(buildCatalog({ root: ROOT, files: checkout({}), pins: {} }).pins, {});
-  assert.deepEqual(Object.keys(CORE_RUNS), ["publisher", "reviewer"], "messaging has no block, so no pin, and the tracker, the code host and the exposure moved into plugins/");
 });
 
 test("this checkout's catalog is read once, holds no refusal, and reads a real plugins folder from disk", () => {
@@ -190,7 +193,7 @@ test("a connector pattern is a tracker's when it names a server its tooling decl
 
 test("the writer a host names is the tracker plugin's, and a tracker that declares none is refused by name", () => {
   const catalog = catalogOf({ example: manifest({ contract: "1.1", tooling: { mcpServers: [], connectors: [], skills: [], writer: writing } }), bare: manifest() });
-  const providers = (name: string) => resolveProviders({ tickets: { providers: { tracker: { provider: name } } } }, { ...catalog, pins: {} });
+  const providers = (name: string) => resolveProviders({ tickets: { providers: { tracker: { provider: name } } } }, { ...catalog });
   assert.deepEqual(trackerWritingOf(providers("example"), catalog), writing);
   assert.throws(() => trackerWritingOf(providers("bare"), catalog), /the tracker bare declares no writer tooling \(tracker contract 1\.1\), so a new-ticket run cannot file a ticket with it/);
 });

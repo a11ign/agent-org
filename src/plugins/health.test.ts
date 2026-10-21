@@ -37,7 +37,8 @@ test("A11-163: a row shows the name, agent-org's own version, the contract versi
   const linear = pluginOf(health, "linear");
   assert.deepEqual([linear.name, linear.version, linear.contract, linear.state, linear.where], ["linear", VERSION, "1.1", "enabled", "plugins/linear"]);
   assert.deepEqual([pluginOf(health, "github").state, pluginOf(health, "github").version], ["enabled", VERSION], "the bundled package.json's 0.0.0 is not shown");
-  assert.equal(pluginOf(health, "slack").where, "core, until A11-161", "a built-in says it is still core's");
+  assert.equal(pluginOf(health, "slack").where, "plugins/slack", "the publisher is a bundled package");
+  assert.equal(pluginOf(health, "atomic").where, "plugins/atomic-reviewer", "the reviewer's folder is not its name: it is `atomic`, which live host files name");
   assert.equal(pluginOf(health, "slack").state, "not installed");
 });
 
@@ -151,7 +152,7 @@ test("A11-163: a plugin whose create threw is failed with its own failing check'
 });
 
 test("A11-163: a plugin that implements a contract major this agent-org does not read is failed by name, and cannot be installed", () => {
-  const unread: CatalogPlugin = { ...defaultCatalog().plugins.find(({ name }) => name === "local")!, name: "far-future", contract: "2.0", dir: null, where: "core", movedBy: "A11-999" };
+  const unread: CatalogPlugin = { ...defaultCatalog().plugins.find(({ name }) => name === "local")!, name: "far-future", contract: "2.0", dir: "/checkout/plugins/far-future", where: "bundled" };
   const base = defaultCatalog();
   const catalog = { ...base, plugins: [...base.plugins, unread] };
   const health = healthOf(FRESH, { catalog });

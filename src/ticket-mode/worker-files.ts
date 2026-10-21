@@ -64,7 +64,7 @@ export const REVIEW_FILE = "review-run";
 export const REVIEW_WAIT_MINUTES = 30;
 /**
  * Present beside a PUBLISH RUN's outcome file, written by the board: the connector tool names it may call, as `{ "connectors": [...] }`. It lets
- * the PreToolUse hook allow the `post-pr-to-slack` skill and those connectors, which only a person's Publish makes a run's to use.
+ * the PreToolUse hook allow the publisher plugin's skill and those connectors, which only a person's Publish makes a run's to use.
  */
 export const PUBLISH_FILE = "publish-run";
 /**
