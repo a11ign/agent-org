@@ -24,8 +24,10 @@
 // injected from another file, so a search for the literal command alone would leave out calls the port must cover. A file that spawns with its arguments
 // built in another file has `spawns` and no shapes, which is a fact about the file and not a gap to be hidden.
 //
-// SCOPE: every non-test `.ts` and `.mjs` under `src/`, except `fixtures/` (test data some tests copy into a temporary tree; one spawns `gh` on purpose,
-// and a port is not cut against it). Shell scripts are outside it, and `host-units.ts`'s `shellSpawnsGh` is the reader for them.
+// SCOPE (widened by A11-160, which moves every call into `plugins/github`, so the rule "no file outside it calls gh" must see every file that could): every non-test `.ts` and `.mjs`
+// under `src/`, `scripts/` and `plugins/`, except `fixtures/` (test data some tests copy into a temporary tree; one spawns `gh` on purpose, and a port is not cut against it); and every
+// SHELL SCRIPT under `host/`, `src/` and `plugins/` (a `.sh` file, or one whose first line is a shell's shebang), read by `lib/shell-command-words.ts`'s `shellSpawnsGh`, which counts the
+// times it runs `gh` as a command word: a script has `spawns` and no shapes, since it writes its arguments after the word.
 //
 // WHICH TREE IS SCANNED: this repository's own. The gate lays the tool under a project and then rsyncs the project's helpers INTO `src/packaging/`
 // (`ci.yml`, `--ignore-existing`), so a walk of the laid-out copy counts files that are not this repository's and the committed file would differ
@@ -33,11 +35,12 @@
 // and `judgedRoot` is that tree where it is set. It is NOT a list of names to skip: the helpers' set moves with the pinned layer.
 //
 // THE DETECTOR THAT FILES A ROW WHEN A NEW DIRECT CALL APPEARS OUTSIDE THE ADAPTER IS NOT HERE: "outside the adapter" needs the adapter (D1b).
-import { readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
+import { shellCommandWords } from "../lib/shell-command-words.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The tree this file sits in: a checkout, or the gate's laid-out copy of one. */
@@ -113,21 +116,54 @@ export type Inventory = {
   causes: Record<string, CauseEntry>;
 };
 
-/** Every non-test source file under `root/src`, as `src/...` paths with forward slashes, sorted so the output does not depend on the directory order. */
-export function sourceFiles(root: string): string[] {
+/** The directories whose source files the scan reads: the tool's source, the scripts it is checked with, and the bundled plugins. */
+const SOURCE_DIRECTORIES = ["src", "scripts", "plugins"] as const;
+
+/** The directories whose shell scripts the scan reads: the host's programs, the source's scripts, and the plugins'. */
+const SHELL_DIRECTORIES = ["host", "src", "plugins"] as const;
+
+/** A first line that names a shell: `#!/bin/sh`, `#!/usr/bin/env bash`. */
+const SHELL_SHEBANG = /^#!.*\b(?:ba|z|da)?sh\b/;
+
+/** The files under the directories `root` has among `directories`, as paths from `root` with forward slashes, that `wanted` accepts, sorted so the output does not depend on the directory order. */
+function filesUnder(root: string, directories: readonly string[], wanted: (path: string, name: string) => boolean): string[] {
   const found: string[] = [];
   const walk = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
         if (!SKIPPED_DIRECTORIES.has(entry.name)) walk(path);
-      } else if (SOURCE_FILE.test(entry.name) && !TEST_FILE.test(entry.name)) {
+      } else if (wanted(path, entry.name)) {
         found.push(relative(root, path).split(sep).join("/"));
       }
     }
   };
-  walk(join(root, "src"));
+  for (const directory of directories) if (existsSync(join(root, directory))) walk(join(root, directory));
   return found.sort();
+}
+
+/** Every non-test source file under `root`'s `src/`, `scripts/` and `plugins/`, as paths from `root` with forward slashes, sorted so the output does not depend on the directory order. */
+export function sourceFiles(root: string): string[] {
+  return filesUnder(root, SOURCE_DIRECTORIES, (_path, name) => SOURCE_FILE.test(name) && !TEST_FILE.test(name));
+}
+
+/** Whether the file at `path` is a shell script: a `.sh` file, or one whose first line is a shell's shebang. */
+function isShellScript(path: string, name: string): boolean {
+  if (name.endsWith(".sh")) return true;
+  if (name.includes(".")) return false;
+  const [first = ""] = readFileSync(path, "utf8").split("\n", 1);
+  return SHELL_SHEBANG.test(first);
+}
+
+/** Every shell script under `root`'s `host/`, `src/` and `plugins/`, as paths from `root` with forward slashes, sorted. */
+export function shellFiles(root: string): string[] {
+  return filesUnder(root, SHELL_DIRECTORIES, isShellScript);
+}
+
+/** A shell script's entry: how many times it runs `gh` as a command word, by basename (`/usr/bin/gh` counts, `gh-real` does not). */
+function shellEntry(root: string, file: string): FileEntry {
+  const spawns = shellCommandWords(readFileSync(join(root, file), "utf8")).filter((word) => basename(word.replace(/^['"]|['"]$/g, "")) === GH_COMMAND).length;
+  return { spawns, calls: {}, labels: [], parsesCloses: false };
 }
 
 function parse(root: string, file: string): ts.SourceFile {
@@ -261,6 +297,10 @@ export function buildInventory(root: string = REPO_ROOT): Inventory {
     const entry = readFile(root, file);
     if (makesGhCalls(entry)) files[file] = entry;
   }
+  for (const file of shellFiles(root)) {
+    const entry = shellEntry(root, file);
+    if (makesGhCalls(entry)) files[file] = entry;
+  }
   const shapes: Record<string, number> = {};
   let spawns = 0;
   let calls = 0;
@@ -274,7 +314,7 @@ export function buildInventory(root: string = REPO_ROOT): Inventory {
   const ordered = Object.fromEntries(Object.entries(shapes).sort(([a, x], [b, y]) => y - x || a.localeCompare(b)));
   const declared = declaredCauses(root);
   const causes: Record<string, CauseEntry> = {};
-  const literals = new Map(Object.keys(files).map((file) => [file, literalsOf(root, file)] as const));
+  const literals = new Map(Object.keys(files).filter((file) => SOURCE_FILE.test(file)).map((file) => [file, literalsOf(root, file)] as const));
   for (const { cause, group } of declared) {
     causes[cause] = {
       group,

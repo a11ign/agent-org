@@ -19,7 +19,7 @@ import { countTokens, findTranscript } from "./pool-transcripts.ts";
 import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { type PullFeedback, readOwnLogin, readPullFeedback } from "../ticket-port/pull-feedback.ts";
+import type { PullFeedback } from "../plugins/contracts/code-host.ts";
 
 /**
  * A run's agent wrote `working`: its reason becomes the run's latest note, for every ticket in the run, and the run carries on. The file's own
@@ -325,16 +325,16 @@ export function headCommitsOf(open: readonly { url: string; read: PullFeedback }
  * round's it continued. Only a draft or ready pull request's files are recorded, as before.
  */
 function recordPullsAtEnd(ctx: PoolContext, entry: Entry, outcome: Outcome): void {
-  const { feedbackGh, gh, ownLogin } = ctx;
+  const { codeHost, feedbackIgnores, ownLogin } = ctx;
   const key = entry.ticket.key;
   const isDraftOrReady = outcome.kind === "draft-pr" || outcome.kind === "ready-pr";
   // Only a run that is asking (`needs-human`) is answered by a push, so no other kind pays for a read of its pull requests.
   const pulls = isDraftOrReady || outcome.kind === "needs-human" ? pullsOf({ outcome, review: entry.review }) : [];
   if (pulls.length === 0) return;
-  ownLogin.value ??= readOwnLogin(gh);
+  ownLogin.value ??= codeHost.readOwnLogin();
   const self = ownLogin.value;
   if (self === null) return;
-  const reads = pulls.map(({ url }) => ({ url, read: readPullFeedback(url, self, feedbackGh) }));
+  const reads = pulls.map(({ url }) => ({ url, read: codeHost.readPullFeedback(url, self, feedbackIgnores) }));
   const readable = reads.filter((pull): pull is { url: string; read: PullFeedback } => pull.read !== null);
   if (readable.length < reads.length) {
     log(`${key}: the files and heads of its pull requests could not be read, so its repository is held until the next watch reads them`);

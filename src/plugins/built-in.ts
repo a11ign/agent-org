@@ -4,9 +4,9 @@
 // A BUILT-IN IS A PLUGIN WHOSE CODE STILL LIVES IN CORE. A live host names `github`, `slack` and the rest in its host file, and no host file is migrated
 // (A11-157 Decision 7), so the catalog must know them. Each row names the ticket that moves its code into `plugins/<name>`; that ticket deletes the row and its concern's
 // pin. The settings each declares are exactly what `providers.ts` read for its block before the catalog, described by the entries of `config-schema.ts`. The tracker has no row
-// since A11-159: `linear` is the bundled package `plugins/linear`, and the catalog finds it there.
+// since A11-159: `linear` is the bundled package `plugins/linear`, and the catalog finds it there. The code host has none since A11-160: `github` is `plugins/github`.
 //
-// THE PIN. Core still runs the built-in of each concern that has a row, wired unconditionally (the code host at `pool-context.ts`). A host file that
+// THE PIN. Core still runs the built-in of each concern that has a row, wired unconditionally. A host file that
 // enabled a fake while core ran GitHub would say one thing and do another, so while a concern is pinned the reader refuses any other plugin enabled for it, naming the
 // ticket that moves it.
 import { SCHEMA, type SchemaEntry } from "../ticket-mode/config-schema.ts";
@@ -31,7 +31,6 @@ type Row = Readonly<{ name: string; concern: Concern; description: string; setti
 const EXPOSURE_SETTINGS = ["port", "uiPort", "terminal", "tailnetPorts"] as const;
 
 const ROWS: readonly Row[] = [
-  { name: "github", concern: "codeHost", description: "GitHub: pull requests, reviews and checks.", settings: ["identity", "gh", "stack"], movedBy: "A11-160" },
   { name: "slack", concern: "publisher", description: "Slack: announces the pull requests a person chose, through a publish run.", settings: ["run", "model", "effort", "connectors"], movedBy: "A11-161" },
   { name: "atomic", concern: "reviewer", description: "The gate's codex reviewer, started for each ready pull request.", settings: [], movedBy: "A11-161" },
   { name: "local", concern: "exposure", description: "Serves the board on loopback only.", settings: EXPOSURE_SETTINGS, movedBy: "A11-162" },
@@ -64,7 +63,6 @@ export const FAKES: readonly CatalogPlugin[] = Object.freeze(CONCERNS.map((conce
 
 /** What core still runs, by concern. A sibling ticket removes its concern's row when it moves the code. Messaging has no block, so no pin. */
 export const CORE_RUNS: Readonly<Partial<Record<Concern, Pin>>> = Object.freeze({
-  codeHost: { runs: ["github"], until: "A11-160" },
   publisher: { runs: ["slack"], until: "A11-161" },
   reviewer: { runs: ["atomic"], until: "A11-161" },
   exposure: { runs: ["local", "tailscale"], until: "A11-162" },

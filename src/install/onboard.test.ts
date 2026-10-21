@@ -12,7 +12,7 @@ import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "..
 import { onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 import { PAIRING_STEPS } from "./terminal.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
-import type { Account, Program, ProgramRunner } from "../ticket-port/stack-extension.ts";
+import type { ProgramRunner, Program } from "./gh-account.ts";
 import { diagnose, type DoctorDeps } from "./doctor.ts";
 import type { ProfileRepo } from "./onboard-profile.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
@@ -110,6 +110,8 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
         stored.set(`keychain:${args[args.indexOf("-s") + 1]}`, KEY);
         return OK;
       }
+      // The code host plugin's step runs `gh` through `exec` (A11-160): by default the extension is listed, as these tests have always seen it.
+      if (file === "gh") return { status: 0, stdout: args[1] === "list" ? STACK_LISTED : "", stderr: "" };
       return value.run(file, [...args]);
     },
     catalog: defaultCatalog,
@@ -403,15 +405,14 @@ test("a terminal the tailnet does not reach is said as running on loopback, not 
   assert.equal(lines, "started the instance service (systemd agent-org-instance.service)\nthe terminal service started on 127.0.0.1, but the tailnet does not reach it: refused");
 });
 
-/** A GitHub CLI for a test whose extension is listed once `install` has run, recording each call's account and command. */
+/** A machine whose `gh` lists the stacking extension once `install` has run, recording each call's environment and command, and whose host file names the workers' account. */
 function stackDeps(install: Program) {
   let listed = false;
-  const accounts: Account[] = [];
-  const commands: string[] = [];
+  const calls: { command: string; env: unknown }[] = [];
   const base = deps();
-  const ghAs = (account: Account): ProgramRunner => (args) => {
-    accounts.push(account);
-    commands.push(args.join(" "));
+  const exec: OnboardDeps["exec"] = (file, args, options) => {
+    if (file !== "gh") return base.deps.exec(file, args, options);
+    calls.push({ command: args.join(" "), env: options?.env });
     if (args[1] === "install") {
       if (install.status === 0) listed = true;
       return install;
@@ -421,40 +422,48 @@ function stackDeps(install: Program) {
   const workers = join(base.home, "workers");
   mkdirSync(join(base.home, ".agent-org"), { recursive: true });
   writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify({ clones: { netbox: base.repo }, tickets: {}, gh: { workers } }));
-  return { ...base, deps: { ...base.deps, ghAs }, accounts, commands, workers };
+  return { ...base, deps: { ...base.deps, exec }, calls, workers };
 }
 
-test("A11-106: onboard installs the stack extension for the workers' account when it is missing, and says so", async () => {
-  const { deps: d, repo, printed, accounts, commands, workers } = stackDeps({ status: 0, stdout: "", stderr: "" });
+test("A11-160: onboard runs the code host plugin's step, which installs the stacking extension for the workers' account when it is missing, and says so", async () => {
+  const { deps: d, repo, printed, calls, workers } = stackDeps({ status: 0, stdout: "", stderr: "" });
   await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
-  assert.ok(commands.includes("extension install github/gh-stack"), "the extension is installed");
-  assert.ok(accounts.every((account) => account.GH_CONFIG_DIR === join(workers, "gh")), "every call runs as the workers' account");
+  assert.ok(calls.some(({ command }) => command === "extension install github/gh-stack"), "the extension is installed");
+  assert.ok(calls.every(({ env }) => JSON.stringify(env) === JSON.stringify({ GH_CONFIG_DIR: join(workers, "gh") })), "every call runs as the workers' account");
   assert.ok(printed.includes("installed the github/gh-stack extension (v0.2.1), which a worker links a stacked pull request with"));
 });
 
-test("A11-106: onboard does not install the stack extension again where it is listed", async () => {
+test("A11-160: onboard does not install the stacking extension again where it is listed", async () => {
   const base = deps();
   const commands: string[] = [];
-  const ghAs = (): ProgramRunner => (args) => {
+  const exec: OnboardDeps["exec"] = (file, args, options) => {
+    if (file !== "gh") return base.deps.exec(file, args, options);
     commands.push(args.join(" "));
     return { status: 0, stdout: STACK_LISTED, stderr: "" };
   };
-  await onboard(options({ repos: [`netbox=${base.repo}`], keychain: "agent-org-linear", start: false }), { ...base.deps, ghAs });
+  await onboard(options({ repos: [`netbox=${base.repo}`], keychain: "agent-org-linear", start: false }), { ...base.deps, exec });
   assert.deepEqual(commands, ["extension list"], "a listed extension is not installed again");
   assert.ok(base.printed.includes("the github/gh-stack extension is installed (v0.2.1), which a worker links a stacked pull request with"));
 });
 
-test("A11-106: a stack extension that fails to install is said with its reason and the command to run, and onboard still completes", async () => {
+test("A11-160: a stacking extension that fails to install is said with its reason and the command to run, and onboard still completes", async () => {
   const { deps: d, repo, printed, workers } = stackDeps({ status: 1, stdout: "", stderr: "could not reach github.com\nmore" });
-  await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
+  const hostFile = await onboard(options({ repos: [`netbox=${repo}`], keychain: "agent-org-linear", start: false }), d);
   assert.ok(printed.includes(`could not install the github/gh-stack extension: could not reach github.com. Run \`GH_CONFIG_DIR=${join(workers, "gh")} gh extension install github/gh-stack\` by hand, then \`agent-org doctor\`.`));
+  assert.ok(existsSync(hostFile), "the host file is written all the same");
 });
 
-test("A11-145: a host that sets codeHost.stack to false is not asked for the stack extension", async () => {
-  const base = deps({ ghAs: () => { throw new Error("the stack extension must not be asked"); } });
+test("A11-145: a host that sets codeHost.stack to false is not asked for the stacking extension", async () => {
+  const base = deps();
+  const asked: string[] = [];
+  const exec: OnboardDeps["exec"] = (file, args, options) => {
+    if (file === "gh") asked.push(args.join(" "));
+    return base.deps.exec(file, args, options);
+  };
   mkdirSync(join(base.home, ".agent-org"), { recursive: true });
   writeFileSync(join(base.home, ".agent-org", "host.json"), JSON.stringify({ tickets: { providers: { codeHost: { provider: "github", stack: false } } } }));
-  await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
+  await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), { ...base.deps, exec });
+  assert.deepEqual(asked, [], "gh is not asked at all");
   assert.ok(!base.printed.some((line) => line.includes("gh-stack")));
 });
 
@@ -463,11 +472,16 @@ test("A11-145: a host that sets codeHost.stack to false is not asked for the sta
 function greenDoctor(home: string): DoctorDeps {
   return {
     env: {}, home, nodeVersion: () => "v24.21.0", which: () => "/usr/local/bin/tool", readFile: (path) => readFileSync(path, "utf8"),
-    exec: (file) => (file === "claude" ? { status: 0, stdout: "linear: https://mcp.linear.app/mcp (HTTP) - Connected\n", stderr: "" } : { status: null, stdout: "", stderr: "cannot start" }),
+    exec: (file, args) => {
+      if (file === "claude") return { status: 0, stdout: "linear: https://mcp.linear.app/mcp (HTTP) - Connected\n", stderr: "" };
+      // The code host plugin's checks run `gh`: the stacking extension is listed, and no clone has a GitHub remote to ask about.
+      if (file === "gh") return { status: 0, stdout: args[0] === "extension" ? STACK_LISTED : "[]", stderr: "" };
+      return { status: null, stdout: "", stderr: "cannot start" };
+    },
     mode: () => 0o600, serviceState: () => "running", answers: async () => true, healthy: async () => true, unitProblem: () => null,
     pnpmVersion: () => "10.34.5",
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
-    ghWrapper: async () => ({ divergence: null, mints: [] }), ghAs: () => listedGh(), originOf: () => null, platform: "linux",
+    ghWrapper: async () => ({ divergence: null, mints: [] }), platform: "linux",
     isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewerGate: async () => null, codexStatus: () => 0, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),

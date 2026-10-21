@@ -44,15 +44,18 @@ test("a plugin the loader refuses refuses the start, naming the concern, the plu
     /the tracker plugin my-tracker was refused: plugin my-tracker: index\.ts must export create, doctorChecks and onboardSteps/);
 });
 
-test("a tracker block that names a plugin with no code to run on a host (a fake) is refused when the tracker is asked for, naming it", async () => {
+test("a block that names a plugin with no code to run on a host (a fake) is refused when its implementation is asked for, naming the block's concern and the plugin", async () => {
   const catalog = buildCatalog({ root: "/none", files: { directories: () => [], text: () => null, isFile: () => false }, pins: {} });
-  const providers = resolveProviders(host({ tracker: { provider: "fake-tracker" } }), catalog);
-  const active = await loadActive(providers, catalog, fakePluginDeps(), importing({}));
-  assert.throws(() => active.tracker(), (error: unknown) => error instanceof PluginActivationRefusal
-    && error.message === "the tracker is fake-tracker, which has no code to run on a host: name a bundled tracker plugin in tickets.providers.tracker (`agent-org plugin list`)");
+  const refusals = { tracker: ["tracker", "fake-tracker", "tracker"], codeHost: ["code host", "fake-codeHost", "codeHost"] } as const;
+  for (const [concern, [label, fake, block]] of Object.entries(refusals)) {
+    const providers = resolveProviders(host({ [block]: { provider: fake } }), catalog);
+    const active = await loadActive(providers, catalog, fakePluginDeps(), importing({}));
+    assert.throws(() => (concern === "tracker" ? active.tracker() : active.codeHost()), (error: unknown) => error instanceof PluginActivationRefusal
+      && error.message === `the ${label} is ${fake}, which has no code to run on a host: name a bundled ${label} plugin in tickets.providers.${block} (\`agent-org plugin list\`)`);
+  }
 });
 
-test("this checkout's Linear plugin loads from disk for the default host, and activation is once per process", async () => {
+test("this checkout's Linear and GitHub plugins load from disk for the default host, and activation is once per process", async () => {
   forgetActivation();
   const providers = resolveProviders({ tickets: {} });
   const deps = fakePluginDeps({ exec: () => ({ status: 0, stdout: "lin_api_x\n", stderr: "" }) });
@@ -60,8 +63,9 @@ test("this checkout's Linear plugin loads from disk for the default host, and ac
   const second = activatePlugins(resolveProviders(host({ tracker: { provider: "linear", workingState: "x" } })), defaultCatalog(), deps);
   assert.equal(first, second, "the second call returns the first's activation, whatever it is given");
   const active = await first;
-  assert.deepEqual(active.loaded.map(({ plugin }) => [plugin.name, plugin.where]), [["linear", "bundled"]]);
+  assert.deepEqual(active.loaded.map(({ plugin }) => [plugin.name, plugin.where]), [["linear", "bundled"], ["github", "bundled"]]);
   assert.equal(typeof active.tracker().assigned, "function");
+  assert.equal(typeof active.codeHost().readPullFeedback, "function", "the code host is the bundled github's, built for the default host");
   forgetActivation();
   assert.notEqual(activatePlugins(providers, defaultCatalog(), deps), first, "forgetting starts again");
   forgetActivation();
@@ -80,5 +84,15 @@ test("the real seams: a program that runs answers its status and output, one tha
   assert.equal(realMode(file), 0o600);
   assert.equal(realMode(join(dir, "absent")), null);
   const deps = realPluginDeps({ env: { A: "b" }, stateDir: dir, pick: "assigned" });
-  assert.deepEqual([deps.env, deps.stateDir, deps.pick, deps.readFile(file)], [{ A: "b" }, dir, "assigned", "secret"]);
+  assert.deepEqual([deps.env, deps.stateDir, deps.pick, deps.readFile(file), deps.clones], [{ A: "b" }, dir, "assigned", "secret", {}]);
+  assert.deepEqual(realPluginDeps({ env: {}, stateDir: dir, pick: "assigned", clones: { netbox: "/src/netbox" } }).clones, { netbox: "/src/netbox" });
+});
+
+test("A11-160: a program runs with the environment it is given laid over this process's, for that run only, and a long answer is not cut off as a failure", () => {
+  const seen = realExec("node", ["-e", "process.stdout.write(process.env.AGENT_ORG_EXEC_PROBE ?? 'unset')"], { env: { AGENT_ORG_EXEC_PROBE: "set-for-the-run" } });
+  assert.deepEqual([seen.status, seen.stdout], [0, "set-for-the-run"]);
+  assert.equal(process.env.AGENT_ORG_EXEC_PROBE, undefined, "this process's environment is untouched");
+  assert.equal(realExec("node", ["-e", "process.stdout.write(process.env.AGENT_ORG_EXEC_PROBE ?? 'unset')"]).stdout, "unset");
+  const long = realExec("node", ["-e", "process.stdout.write('x'.repeat(5 * 1024 * 1024))"]);
+  assert.deepEqual([long.status, long.stdout.length], [0, 5 * 1024 * 1024], "five megabytes is more than the default buffer of one, and a listing that long is an answer");
 });

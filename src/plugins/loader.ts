@@ -54,6 +54,28 @@ async function importOne(plugin: CatalogPlugin, importModule: ImportModule): Pro
 }
 
 /**
+ * The entry modules of the bundled plugins the host enables, imported and NOT built: `create` is not called, so nothing is read or asked of the machine. A caller that needs only
+ * what a module exports (`agent-org update` asks each for what it `keep`s) uses this, so it does not read a tracker's key for it. A plugin that cannot be imported is a refusal, by name.
+ */
+export async function importEnabled(providers: Providers, catalog: Catalog, importModule: ImportModule = (url) => import(url)): Promise<Readonly<{
+  modules: readonly Readonly<{ plugin: CatalogPlugin; module: PluginModule }>[]; refusals: LoadResult["refusals"];
+}>> {
+  const modules: { plugin: CatalogPlugin; module: PluginModule }[] = [];
+  const refusals: { plugin: string; concern: Concern; why: string }[] = [];
+  for (const block of PROVIDER_BLOCKS) {
+    const report = providers.blocks[block];
+    const plugin = report.enabled ? pluginNamed(catalog, report.provider) : undefined;
+    if (plugin === undefined || plugin.where !== "bundled") continue;
+    try {
+      modules.push({ plugin, module: await importOne(plugin, importModule) });
+    } catch (error) {
+      refusals.push({ plugin: plugin.name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { modules, refusals };
+}
+
+/**
  * Load the bundled plugins the host enables: for each block of `providers` that names a plugin and is enabled, import it and call `create`. A disabled block, a
  * block that names `none`, a built-in and a fake are skipped, and their code is not read.
  */

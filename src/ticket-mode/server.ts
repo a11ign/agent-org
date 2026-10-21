@@ -27,7 +27,7 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
-import { loadReviewerGate } from "./reviewer-port.ts";
+import { gateReviewJudge, loadReviewerGate } from "./reviewer-port.ts";
 import { takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
@@ -38,6 +38,7 @@ import { type Change, type EditFile, previewEdit, restoreBackup, saveEdit } from
 import { isObject } from "./json-value.ts";
 import { cachedTailnetName, readTailnetName, runTailscale, tailnetTerminal } from "./tailnet.ts";
 import type { Assignee, People, Ticket, TicketSource } from "./source.ts";
+import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import { PRIORITIES } from "./writer.ts";
 import { type NeedsDecision, needsDecision } from "./open-decisions.ts";
 
@@ -56,13 +57,15 @@ const PEOPLE_FRESH_MS = 300_000;
 export type BoardDeps = Readonly<{
   settings: TicketSettings;
   source: TicketSource;
+  /** The enabled code host plugin's implementation, which the pool reads every pull request through (A11-160). */
+  codeHost: CodeHost;
   key: string;
   /** The host file the Settings page reads, fresh on each request: `AGENT_ORG_HOST`'s file when unset. */
   hostPath?: string;
   queuePath: string;
   choicePath: string;
   pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk">>;
-  poolDeps?: Omit<PoolDeps, "settings" | "source" | "hook">;
+  poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /** This machine's MagicDNS name, read when `tickets.serve` puts the board on the tailnet; null while it cannot be read. Only `/api/config` asks. */
   tailnet?: () => Promise<string | null>;
@@ -515,11 +518,11 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
 
 /** The request handler, with every dependency named, so a test drives it without a socket. */
 export function createBoard(deps: BoardDeps) {
-  const { settings, source, key } = deps;
+  const { settings, source, codeHost, key } = deps;
   const now = deps.now ?? Date.now;
   let queue: Queue = loadQueue(deps.queuePath, settings.max);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; saveQueue(deps.queuePath, next); } };
-  const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, hook: { node: process.execPath, bin: BIN } });
+  const pool = deps.pool ?? createPool(store, { ...deps.poolDeps, settings, source, codeHost, hook: { node: process.execPath, bin: BIN } });
   const known = { tickets: new Map<string, Ticket>() };
   let warnedNoName = false;
   let viewer: Assignee | null = null;
@@ -665,12 +668,14 @@ async function serve(): Promise<void> {
   if (startsReviewers(settings)) await loadReviewerGate();
   // A11-84: the routing wrapper is checked, and re-rendered when it has diverged, before the pool is made (see `checkGhWrapperAtStart`).
   checkGhWrapperAtStart();
-  // The tracker is the enabled tracker plugin's (`plugins/linear`, unless the host file names another): a plugin the loader refuses refuses the start, by name.
-  const source = (await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick }))).tracker();
+  // The tracker and the code host are the enabled plugins' (`plugins/linear` and `plugins/github`, unless the host file names others): a plugin the loader refuses refuses the start, by name.
+  const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge }));
+  const source = active.tracker();
+  const codeHost = active.codeHost();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
   const tailnet = settings.serve === null ? undefined : cachedTailnetName(async () => readTailnetName(runTailscale));
-  const board = createBoard({ settings, source, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), tailnet });
+  const board = createBoard({ settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), tailnet });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();

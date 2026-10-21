@@ -7,7 +7,7 @@
 // through `reviewPull`, so there is one start rule: a head is started once (`reviewerStarted`, recorded before the start), and never when a review is already
 // posted on it.
 
-import { earlierReviewWord, openPullUrlsOf, readPullState, readReviewState, readReviewerMemory, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, writeReviewerMemory } from "./reviewer-port.ts";
+import { earlierReviewWord, readReviewerMemory, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted } from "./queue/queue-transitions.ts";
@@ -122,8 +122,8 @@ function tookOverOf(started: StartAnswer | null, kept: PullRead | undefined, hea
  * read is kept for the board (`pullReads`). Returns the state read and the verdict not posted, or null when GitHub did not say, which the caller says.
  */
 function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Readonly<{ state: ReviewState; unposted: string | null }> | null {
-  const { closing, gh, pullReads, reviewerReposts, reviewerStarted } = ctx;
-  const state = readReviewState(url, gh);
+  const { closing, codeHost, pullReads, reviewerReposts, reviewerStarted } = ctx;
+  const state = codeHost.readReviewState(url);
   if (state === null) return null;
   const { head } = state;
   const key = `${url}@${head}`;
@@ -138,7 +138,7 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   // does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads it open must not start a
   // reviewer for it again. A new head after requested changes has no posted review, so it is started here.
   const startable = state.settled && !posted && !reviewerStarted.has(key);
-  const started = startable && readPullState(url, gh) === "OPEN" ? startFor(ctx, reviewer, url, head, key) : null;
+  const started = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, head, key) : null;
   const tookOver = tookOverOf(started, pullReads.get(url), head);
   // Once its verdict is posted, the reviewer for this head closes: its workspace goes, and its checkout stays (`close`). One still working is kept
   // in `closing`, which `releaseReviewers` asks again: a not-convinced verdict starts a round below, and no watch reads this run until it ends.
@@ -210,13 +210,13 @@ function adoptRememberedReviewers(ctx: PoolContext): void {
  * is adopted first, so the two never start a second reviewer for one head.
  */
 export function reviewNewHeads(ctx: PoolContext): void {
-  const { gh, pullReads, reviewer, settings } = ctx;
+  const { codeHost, pullReads, reviewer, settings } = ctx;
   if (reviewer === undefined) return;
   adoptRememberedReviewers(ctx);
   const listed = new Set<string>();
   let unlisted = false;
   for (const repository of reviewedRepositoriesOf(settings.clones)) {
-    const urls = openPullUrlsOf(repository, gh);
+    const urls = codeHost.openPullUrlsOf(repository);
     if (urls === null) {
       unlisted = true;
       log(`${repository}: its open pull requests could not be listed, so their reviewers are looked at on the next sweep`);
@@ -268,7 +268,7 @@ function forgetPull(ctx: PoolContext, url: string): void {
  * remembered of it), while an open one is left, and one whose state cannot be read is asked again next sweep.
  */
 export function releaseReviewers(ctx: PoolContext): void {
-  const { closing, gh, reviewer, reviewerStarted } = ctx;
+  const { closing, codeHost, reviewer, reviewerStarted } = ctx;
   if (reviewer === undefined) return;
   for (const [key, ref] of [...closing]) {
     const answer = reviewer.close(ref);
@@ -278,7 +278,7 @@ export function releaseReviewers(ctx: PoolContext): void {
   const pulls = new Set([...reviewerStarted].map((key) => key.slice(0, key.lastIndexOf("@"))));
   for (const url of reviewer.listedPulls()) pulls.add(url);
   for (const url of pulls) {
-    const state = readPullState(url, gh);
+    const state = codeHost.readPullState(url);
     if (state === null) {
       log(`${url}: its state could not be read, so its reviewer is kept; the next sweep asks again`);
       continue;

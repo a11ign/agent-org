@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { resolveProviders } from "../ticket-mode/providers.ts";
-import { loadEnabled, settingsOfBlock } from "./loader.ts";
+import { importEnabled, loadEnabled, settingsOfBlock } from "./loader.ts";
 import type { PluginDeps, PluginModule } from "./manifest.ts";
 import { fakePluginDeps } from "./fakes/deps.ts";
 import { buildCatalog, type PackageFiles } from "./registry.ts";
@@ -56,7 +56,7 @@ test("a disabled plugin's code is never imported, though its block names it and 
 
 test("a built-in is skipped, since core runs it, and so is a fake", async () => {
   const catalog = buildCatalog({ root: ROOT, files: checkout({}), pins: {} });
-  const providers = resolveProviders(host({ codeHost: { provider: "github" }, publish: { provider: "fake-publisher" }, exposure: { provider: "tailscale" } }), catalog);
+  const providers = resolveProviders(host({ publish: { provider: "slack" }, reviewer: { provider: "fake-reviewer" }, exposure: { provider: "tailscale" } }), catalog);
   const { urls, importModule } = recorder({});
   assert.deepEqual(await loadEnabled(providers, catalog, DEPS, importModule), { loaded: [], unbuilt: [], refusals: [] });
   assert.deepEqual(urls, []);
@@ -94,4 +94,24 @@ test("a plugin whose create throws is one refusal naming it", async () => {
   assert.deepEqual(result.refusals, [{ plugin: "my-tracker", concern: "tracker", why: "no key at /k/linear" }]);
   assert.deepEqual(result.unbuilt.map(({ plugin }) => plugin.name), ["my-tracker"], "its module imported, so doctor can still run its checks, which say why create threw");
   assert.deepEqual(result.loaded, []);
+});
+
+test("A11-160: importing the enabled plugins imports their entries and builds none: create is never called, a disabled plugin and a built-in are not read, and a refused one is named", async () => {
+  const catalog = catalogOf({ "my-tracker": "tracker", "off-publisher": "publisher", "bad-reviewer": "reviewer" });
+  const providers = resolveProviders(host({ tracker: { provider: "my-tracker" }, publish: { provider: "off-publisher", enabled: false }, reviewer: { provider: "bad-reviewer" }, exposure: { provider: "tailscale" } }), catalog);
+  let built = 0;
+  const { urls, importModule } = recorder({ [urlOf("my-tracker")]: moduleOf(() => { built += 1; return "the tracker"; }), [urlOf("bad-reviewer")]: { create: () => ({}) } });
+  const result = await importEnabled(providers, catalog, importModule);
+  assert.deepEqual(urls, [urlOf("my-tracker"), urlOf("bad-reviewer")], "the disabled publisher and the built-in exposure are not read");
+  assert.equal(built, 0, "nothing is built: a tracker's key is not read to ask what it keeps");
+  assert.deepEqual(result.modules.map(({ plugin }) => plugin.name), ["my-tracker"]);
+  assert.deepEqual(result.refusals, [{ plugin: "bad-reviewer", concern: "reviewer", why: "plugin bad-reviewer: index.ts must export create, doctorChecks and onboardSteps" }]);
+});
+
+test("A11-160: importing an unsupported contract major is refused by name, and imports nothing of that plugin", async () => {
+  const readable = catalogOf({ "my-tracker": "tracker" });
+  const providers = resolveProviders(host({ tracker: { provider: "my-tracker" } }), readable);
+  const { urls, importModule } = recorder({ [urlOf("my-tracker")]: moduleOf() });
+  const result = await importEnabled(providers, catalogOf({ "my-tracker": "tracker" }, "2.0"), importModule);
+  assert.deepEqual([urls, result.modules, result.refusals.map(({ plugin }) => plugin)], [[], [], ["my-tracker"]]);
 });

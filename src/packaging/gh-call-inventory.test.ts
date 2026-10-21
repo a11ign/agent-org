@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { sandboxGitEnv } from "@a11ign/toolchain/lib/git-env";
 import { stripComments } from "../lib/local-import-closure.ts";
 import { TOOL_REPO_ENV } from "../lib/pin-ratchet.ts";
-import { buildInventory, judgedRoot, render, sourceFiles, INVENTORY_PATH, REPO_ROOT, type Inventory } from "./gh-call-inventory.ts";
+import { buildInventory, judgedRoot, render, shellFiles, sourceFiles, INVENTORY_PATH, REPO_ROOT, type Inventory } from "./gh-call-inventory.ts";
 
 const COMMAND = "gh";
 
@@ -146,8 +146,57 @@ test("every non-test file that spawns the command is listed, and the reading is 
   assert.deepEqual(missingFromInventory(root, inventory), []);
   // The other direction, so the inventory cannot quietly grow files the independent reader would not call spawners: a file that is listed with
   // spawn sites must be one it found too. (Shape-only files, `spawns: 0`, call through an injected runner and are not in this population.)
-  const spawners = Object.entries(inventory.files).filter(([, entry]) => entry.spawns > 0).map(([file]) => file);
+  const shell = new Set(shellFiles(root));
+  const spawners = Object.entries(inventory.files).filter(([file, entry]) => entry.spawns > 0 && !shell.has(file)).map(([file]) => file);
   assert.deepEqual(spawners.filter((file) => !found.includes(file)), []);
+});
+
+/** The independent reader of shell: a script whose comment-stripped text has `gh` where a command goes, which shares no code with the scan's word splitter. */
+const COMMAND_POSITION = new RegExp(`(?:^|[;&|(\`]|\\$\\()\\s*(?:[A-Za-z_]\\w*=\\S*\\s+)*(?:\\S*/)?${COMMAND}(?=\\s)`, "m");
+const shellScriptsRunningGh = (root: string): string[] => shellFiles(root).filter((file) => COMMAND_POSITION.test(readFileSync(join(root, file), "utf8").replace(/^\s*#.*$/gm, "")));
+
+test("every shell script that runs the command is listed, and the reading of shell is not vacuous", () => {
+  const root = judgedRoot();
+  const inventory = buildInventory(root);
+  const found = shellScriptsRunningGh(root);
+  assert.ok(shellFiles(root).length >= 5, `the scan found ${shellFiles(root).length} shell scripts: a scan that finds none proves nothing`);
+  assert.ok(found.length >= 3, `the independent reader found ${found.length} scripts that run the command: a reader that finds none proves nothing`);
+  assert.deepEqual(found.filter((file) => !Object.hasOwn(inventory.files, file)), [], "a script the independent reader sees run the command, and the inventory does not list");
+  assert.deepEqual(Object.keys(inventory.files).filter((file) => shellFiles(root).includes(file) && !found.includes(file)), [], "and the other way: a listed script the independent reader does not see run it");
+});
+
+test("shell scripts are read by their command words: a comment, a path, a different binary and a quoted word are not a spawn, and a command substitution is", () => {
+  const { root, done } = tree({
+    "host/runs.sh": `#!/bin/sh\n${COMMAND} issue list\nRUN="$(${COMMAND} run list)"\n/usr/bin/${COMMAND} pr view 1\n`,
+    "host/mentions.sh": `#!/bin/sh\n# ${COMMAND} issue list\nB="agent/${COMMAND}-wrapper"\n${COMMAND}-real auth status\necho "${COMMAND}"\ncat docs/${COMMAND}-notes.md\n`,
+    "host/no-extension": `#!/usr/bin/env bash\n${COMMAND} pr list\n`,
+    "host/not-a-script.in": `${COMMAND} pr list\n`,
+    "src/packaging/fixtures/x/fixture.sh": `#!/bin/sh\n${COMMAND} pr list\n`,
+  });
+  try {
+    assert.deepEqual(shellFiles(root), ["host/mentions.sh", "host/no-extension", "host/runs.sh"], "scripts by extension or shebang; a template and a fixture are not read");
+    const inventory = buildInventory(root);
+    assert.deepEqual(Object.keys(inventory.files).sort(), ["host/no-extension", "host/runs.sh"]);
+    assert.equal(inventory.files["host/runs.sh"]!.spawns, 3, "a plain command, a command substitution and a path to the binary");
+    assert.equal(inventory.files["host/no-extension"]!.spawns, 1);
+  } finally {
+    done();
+  }
+});
+
+test("the scan reads src/, scripts/ and plugins/, and a missing directory is not an error", () => {
+  const { root, done } = tree({ "src/a.ts": spawn("execFileSync", ["issue", "list"]), "scripts/b.ts": spawn("execFileSync", ["pr", "view"]), "plugins/p/c.ts": spawn("spawnSync", ["run", "list"]), "docs/d.ts": spawn("spawnSync", ["pr", "list"]) });
+  try {
+    assert.deepEqual(sourceFiles(root), ["plugins/p/c.ts", "scripts/b.ts", "src/a.ts"]);
+  } finally {
+    done();
+  }
+  const bare = tree({ "src/a.ts": "export const x = 1;\n" });
+  try {
+    assert.deepEqual(sourceFiles(bare.root), ["src/a.ts"], "a tree with no scripts/ or plugins/ is read");
+  } finally {
+    bare.done();
+  }
 });
 
 test("negative control: a fixture tree with one extra file that spawns the command makes the check report that file as missing", () => {

@@ -12,7 +12,6 @@ import { startStackConflictRound } from "./pool-watch.ts";
 import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
 import { resumesOnConflict, settledByPulls } from "./board-view/pull-status-and-notes.ts";
 import { recordClosedByBoard } from "./queue.ts";
-import { sweepRetargets } from "../ticket-port/stack-retarget.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -190,7 +189,7 @@ async function mergeMoved({ ctx, entry, found, record, head, worktree }: {
  * pull requests whose base is one of those branches.
  */
 export function retargetStacked(ctx: PoolContext): void {
-  const { gh, store } = ctx;
+  const { codeHost, store } = ctx;
   const defaults = new Map<string, string>();
   for (const entry of store.get().entries) {
     // Only a finished run is asked: the board shows its note on a finished run alone, and a run that is not finished is not written to here. Only a run
@@ -200,7 +199,7 @@ export function retargetStacked(ctx: PoolContext): void {
     const urls = openPulls(entry).map(({ url }) => url);
     if (stacked.size === 0 || urls.length === 0) continue;
     const previous = entry.retargets ?? {};
-    const notes = sweepRetargets({ urls, previous, stacked, defaults, gh, log });
+    const notes = codeHost.sweepRetargets({ urls, previous, stacked, defaults, log });
     const next = Object.keys(notes).length === 0 ? undefined : notes;
     if (JSON.stringify(next ?? {}) !== JSON.stringify(previous)) update(ctx, (queue) => recordRetargets(queue, entry.ticket.key, next));
   }

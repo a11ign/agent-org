@@ -9,15 +9,18 @@ import { type HookCommand } from "./worker-files.ts";
 import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { type TicketSettings, HOST_FILE_ENV, claimantOf, plansInBatches } from "./settings.ts";
 import { type TicketSource } from "./source.ts";
+import type { CodeHost } from "../plugins/contracts/code-host.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync } from "./pool-herdr.ts";
 import { log } from "./pool-state.ts";
 import { defaultGit, type Git } from "./worktree.ts";
-import { atomicReviewerPort, reviewerMemoryPath, reviewerRefusal, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, withoutReviewerReviews } from "./reviewer-port.ts";
+import { atomicReviewerPort, reviewerMemoryPath, reviewerRefusal, readReviewerMemory, type ReviewerMemory, type ReviewerPort, type ReviewerRef, REVIEWER_LOGIN } from "./reviewer-port.ts";
 import { type PullRead } from "./board-view/pull-review-state.ts";
 
 export type PoolDeps = Readonly<{
   settings: TicketSettings;
   source: TicketSource;
+  /** The code host: the enabled code host plugin's, which every read of a pull request goes through (A11-160). */
+  codeHost: CodeHost;
   hook: HookCommand;
   herdr?: Herdr;
   /** `agent start`; when absent it is `herdr` itself if that was given, so a test that injects one injects both. */
@@ -35,7 +38,7 @@ export type PoolDeps = Readonly<{
   startServer?: (session: string) => void;
   /** Wait between looks at a just-started server or agent. */
   wait?: (ms: number) => Promise<void>;
-  /** `gh`, for the feedback on the pull requests of runs Ready to merge. */
+  /** `gh`, for the calls the code host does not make yet: a failed check's job log and its re-run, and the reviewer's claim (A11-160 moves them in its later steps). */
   gh?: (args: string[]) => string;
   /** `git` in a clone or worktree, for the heads of stacked blockers' branches and the rebase of a stacked run (A11-116). */
   git?: Git;
@@ -56,6 +59,7 @@ export type PoolContext = Readonly<{
   store: QueueStore;
   settings: TicketSettings;
   source: TicketSource;
+  codeHost: CodeHost;
   hook: HookCommand;
   deps: PoolDeps;
   herdr: Herdr;
@@ -67,7 +71,8 @@ export type PoolContext = Readonly<{
   transcripts: string;
   gh: (args: string[]) => string;
   git: Git;
-  feedbackGh: (args: string[]) => string;
+  /** The accounts whose feedback a worker does not answer besides its own: the reviewer's, so its verdict never moves `feedbackAt`. None on a machine with no reviewer. */
+  feedbackIgnores: readonly string[];
   hostFile: string | undefined;
   stallMs: number;
   session: { session: string };
@@ -104,7 +109,7 @@ export type PoolContext = Readonly<{
 
 /** Build a pool's context from its store and deps: the seams it is given, the state it keeps, and what it remembers of its reviewers. */
 export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
-  const { settings, source, hook } = deps;
+  const { settings, source, codeHost, hook } = deps;
   const hostFile = deps.hostFile ?? process.env[HOST_FILE_ENV];
   const herdr = deps.herdr ?? defaultHerdr;
   const injected = deps.herdr;
@@ -144,7 +149,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const gateRefusal = reviewerOn ? reviewerRefusal() : null;
   if (gateRefusal !== null) log(`tickets.reviewer is set, but no reviewer starts: ${gateRefusal}`);
   /** The reviewer a machine with `tickets.reviewer` starts for each settled head: the atomic one unless the caller injected another. */
-  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, heads: reviewerMemory.heads, clones: settings.clones, instance: claimantOf(settings) });
+  const reviewer = !reviewerOn || gateRefusal !== null ? undefined : deps.reviewerPort ?? atomicReviewerPort({ session: settings.herdrSession, run: herdr, gh, codeHost, heads: reviewerMemory.heads, clones: settings.clones, instance: claimantOf(settings) });
   /** The `url@head` keys a reviewer was started for, and whose not-convinced verdict already asked the worker for a round. */
   const { started: reviewerStarted, resumed: reviewerResumed, reposts: reviewerReposts } = reviewerMemory;
   /** The reviewers whose verdict is posted but whose workspace would not close yet (a reviewer still working), by `url@head`, which `releaseReviewers` asks again. */
@@ -154,13 +159,13 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const refusedHeads = new Set<string>();
   const reviewerDropped = new Set<string>();
   /** The feedback a worker answers is read without the reviewer's own reviews, so its verdict never moves `feedbackAt`. */
-  const feedbackGh = settings.reviewer === null ? gh : withoutReviewerReviews(gh);
+  const feedbackIgnores = settings.reviewer === null ? [] : [REVIEWER_LOGIN];
   /** Each live run's Claude session id by its workspace, as herdr last reported it (it changes when herdr restarts a session). */
   const claudeSessions = new Map<string, string>();
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackGh, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
+    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerStarted, reviewerResumed,
     reviewerReposts, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };

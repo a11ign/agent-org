@@ -1,12 +1,10 @@
 // The feedback on one pull request that ticket mode's board answers on its own: the newest review, conversation comment and inline comment
-// from anyone but the board's own account, and its failing checks. Read through an injected `run` (`gh`, as the caller hands it in). This file
-// names no `gh` and spawns nothing: `ticket-port.test.ts` (#484) holds the port to that, and the spawn stays with whoever owns the runner.
-// Which checks are red is `red-pr.ts`'s to decide (#2956), so this file asks it.
-import { brokenChecks } from "../red-pr.ts";
-import { isAtLeastAsNew } from "../newest-check-run.ts";
-import type { FailingCheck, PullFeedback } from "../plugins/contracts/code-host.ts";
+// from anyone but the board's own account, and its failing checks. Read through an injected `run` (the plugin's `gh`), so this file spawns nothing. It moved here from
+// `src/ticket-port/` with the rest of ticket mode's GitHub reads (A11-160). Which checks are red is core's to decide (`red-pr.ts`, #2956, which row mode shares), so this file
+// asks the `policy` it is given, since a plugin imports core's types only (ADR 0001).
+import type { FailingCheck, PullFeedback } from "../../src/plugins/contracts/code-host.ts";
+import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 
-// THE TYPE IS THE CODE HOST CONTRACT'S (`src/plugins/contracts/code-host.ts`, A11-158), re-exported so no caller changes.
 export type { FailingCheck, PullFeedback };
 
 /** How much of each list one read takes, newest last. Only the newest item of each counts, so a long history is not read. */
@@ -75,27 +73,27 @@ const time = (value: string | null | undefined): number | null => {
  * is still listed, so a round can name the job behind a roll-up that failed. A commit status is read as a check run: its context is its name, its failure its conclusion, and
  * its time its completion.
  */
-function failingChecks(contexts: readonly Check[]): { name: string; at: number | null; detailsUrl: string | null; counted: boolean }[] {
+function failingChecks(contexts: readonly Check[], policy: CodeHostPolicy): { name: string; at: number | null; detailsUrl: string | null; counted: boolean }[] {
   const nameOf = (check: Check): string => (check.__typename === "StatusContext" ? check.context : check.name) ?? "";
   const required = new Set(contexts.filter((check) => check.isRequired === true).map(nameOf));
   const asRuns = contexts.map((check) => (check.__typename === "StatusContext"
     ? { name: check.context ?? "", conclusion: FAILED_STATUSES.has(check.state ?? "") ? "FAILURE" : check.state, completedAt: check.createdAt }
     : check));
-  return brokenChecks({ statusCheckRollup: asRuns, labels: [] }).map(({ name, failedAt }) =>
-    ({ name, at: Number.isNaN(failedAt) ? null : failedAt, detailsUrl: detailsUrlOf(asRuns, name), counted: required.size === 0 || required.has(name) }));
+  return policy.redChecksOf({ rollup: asRuns, labels: [] }).map(({ name, failedAt }) =>
+    ({ name, at: Number.isNaN(failedAt) ? null : failedAt, detailsUrl: detailsUrlOf(asRuns, name, policy), counted: required.size === 0 || required.has(name) }));
 }
 
-/** The details address of the newest run of the check `name`, as `brokenChecks` reads the newest of each name, or null when it has none. */
-function detailsUrlOf(runs: readonly Check[], name: string): string | null {
-  const newest = runs.filter((run) => run.name === name).reduce<Check | null>((latest, run) => (latest === null || isAtLeastAsNew(run, latest) ? run : latest), null);
+/** The details address of the newest run of the check `name`, as the red-check decider reads the newest of each name, or null when it has none. */
+function detailsUrlOf(runs: readonly Check[], name: string, policy: CodeHostPolicy): string | null {
+  const newest = runs.filter((run) => run.name === name).reduce<Check | null>((latest, run) => (latest === null || policy.isAtLeastAsNew(run, latest) ? run : latest), null);
   return typeof newest?.detailsUrl === "string" ? newest.detailsUrl : null;
 }
 
 /**
- * THE FEEDBACK ON THE PULL REQUEST AT `url`, leaving out what `self` wrote, or null for "could not ask": an address that is not a GitHub pull
+ * THE FEEDBACK ON THE PULL REQUEST AT `url`, leaving out what `self` wrote and what `alsoIgnore` wrote, or null for "could not ask": an address that is not a GitHub pull
  * request, a refused `run`, and an answer without the pull request. Null is never "no feedback".
  */
-export function readPullFeedback(url: string, self: string, run: (args: string[]) => string): PullFeedback | null {
+export function readPullFeedback(url: string, self: string, run: (args: string[]) => string, policy: CodeHostPolicy, alsoIgnore: readonly string[] = []): PullFeedback | null {
   const pull = pullOf(url);
   if (pull === null) return null;
   try {
@@ -103,7 +101,7 @@ export function readPullFeedback(url: string, self: string, run: (args: string[]
     const pr = answer?.data?.repository?.pullRequest;
     if (pr === null || typeof pr !== "object" || typeof pr.state !== "string") return null;
     const files = changedFiles(pull, pr.files, run);
-    return { ...feedbackOf(pr, self), files: files.paths, filesComplete: files.complete };
+    return { ...feedbackOf(pr, self, alsoIgnore, policy), files: files.paths, filesComplete: files.complete };
   } catch {
     // An answer of an unexpected shape is no reading either.
     return null;
@@ -153,8 +151,8 @@ function approvedAt(reviews: readonly Review[], head: string, counts: (author: L
 }
 
 /** The feedback in one pull request as the query returns it, its files aside. Throws on an answer of another shape, which the caller reads as no reading. */
-function feedbackOf(pr: Record<string, any>, self: string): Omit<PullFeedback, "files" | "filesComplete"> {
-  const others = (author: Login) => author?.login !== undefined && author.login !== self;
+function feedbackOf(pr: Record<string, any>, self: string, alsoIgnore: readonly string[], policy: CodeHostPolicy): Omit<PullFeedback, "files" | "filesComplete"> {
+  const others = (author: Login) => author?.login !== undefined && author.login !== self && !alsoIgnore.includes(author.login);
   const items: { at: number | null; author: string }[] = [
     ...(pr.reviews?.nodes ?? []).filter((r: { state: string; author: Login }) => FEEDBACK_REVIEWS.has(r.state) && others(r.author))
       .map((r: { submittedAt: string; author: Login }) => ({ at: time(r.submittedAt), author: r.author?.login ?? "" })),
@@ -164,7 +162,7 @@ function feedbackOf(pr: Record<string, any>, self: string): Omit<PullFeedback, "
   ];
   // The branch's own head, which a review's commit is compared with: the commits connection can lag the ref by a few seconds after a push.
   const head = typeof pr.headRefOid === "string" ? pr.headRefOid : null;
-  const red = failingChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []);
+  const red = failingChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [], policy);
   const failing = red.filter(({ counted }) => counted);
   const newest = (times: (number | null)[]): number | null => times.reduce<number | null>((max, at) => (at !== null && (max === null || at > max) ? at : max), null);
   return {

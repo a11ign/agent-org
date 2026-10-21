@@ -228,13 +228,14 @@ test("A11-158: a plugin that implements a contract major this agent-org does not
 });
 
 test("A11-158: while core runs a concern's built-in, any other plugin enabled for it is refused, naming the plugin, the built-in and the ticket that moves it", () => {
-  const refused = refusalOf({ tickets: { providers: { codeHost: { provider: "fake-codeHost" } } } });
-  assert.equal(refused.field, "tickets.providers.codeHost.provider");
-  assert.match(refused.message, /is refused: fake-codeHost is a code host plugin, but this release runs the code host in core as github until A11-160: name "github"/);
+  const refused = refusalOf({ tickets: { providers: { reviewer: { provider: "fake-reviewer" } } } });
+  assert.equal(refused.field, "tickets.providers.reviewer.provider");
+  assert.match(refused.message, /is refused: fake-reviewer is a reviewer plugin, but this release runs the reviewer in core as atomic until A11-161: name "atomic"/);
   assert.match(refusalOf({ tickets: { providers: { exposure: { provider: "fake-exposure" } } } }).message, /fake-exposure is an exposure plugin, but this release runs the exposure in core as local or tailscale until A11-162/);
   assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "no pin, no refusal");
   assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } }).blocks.tracker.provider, "fake-tracker", "the tracker has no pin since A11-159: linear is a bundled package, and a fake is refused when a person installs or enables it, and at start");
   assert.equal(resolveProviders({ tickets: { providers: { publish: { provider: "fake-publisher", enabled: false } } } }).blocks.publish.enabled, false, "a disabled plugin is not run, so the pin has nothing to refuse");
+  assert.equal(resolveProviders({ tickets: { providers: { codeHost: { provider: "fake-codeHost" } } } }).blocks.codeHost.provider, "fake-codeHost", "the code host has no pin since A11-160: github is a bundled package, and a fake is refused at start");
 });
 
 test("A11-158: a plugin of another concern, and one the registry does not hold, are refused by name listing what the block may name", () => {

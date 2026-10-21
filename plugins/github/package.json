@@ -1,0 +1,253 @@
+{
+  "name": "@agent-org/plugin-github",
+  "private": true,
+  "version": "0.0.0",
+  "description": "GitHub as the code host: pull requests, reviews and checks are read and moved through the gh CLI, as the identity the host file names.",
+  "type": "module",
+  "agentOrg": {
+    "concern": "codeHost",
+    "contract": "1.1",
+    "description": "GitHub: pull requests, reviews and checks.",
+    "entry": "index.ts",
+    "settings": {
+      "identity": {
+        "key": "tickets.providers.codeHost.identity",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "object, keyed by role",
+        "absent": "default",
+        "default": "every role on user accounts",
+        "explanation": "The identity of each role: scheduler, workers, managers or reviewer.",
+        "breaks": "A key that is not a role is refused by name.",
+        "edit": {
+          "editable": false,
+          "why": "an object keyed by role: edit one role's key"
+        }
+      },
+      "identity.<role>": {
+        "key": "tickets.providers.codeHost.identity.<role>",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "object",
+        "absent": "default",
+        "default": "user-accounts",
+        "explanation": "One role's identity.",
+        "breaks": "A user-accounts role that names an app is refused, since the app would be ignored.",
+        "edit": {
+          "editable": false,
+          "why": "an object: edit one of its keys"
+        }
+      },
+      "identity.<role>.mode": {
+        "key": "tickets.providers.codeHost.identity.<role>.mode",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "\"user-accounts\" or \"github-apps\"",
+        "absent": "default",
+        "default": "user-accounts",
+        "explanation": "Whether the role acts as the person's account or as a GitHub App.",
+        "breaks": "Any other value is refused by name.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file",
+          "dangerous": "Switches the role between the person's account and a GitHub App, so its writes are authored as the other identity."
+        }
+      },
+      "identity.<role>.appId": {
+        "key": "tickets.providers.codeHost.identity.<role>.appId",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "the app's id as GitHub issued it",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The App's id. Required with github-apps.",
+        "breaks": "A missing or malformed id is refused by name, and the role cannot mint its token.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file"
+        }
+      },
+      "identity.<role>.keyPath": {
+        "key": "tickets.providers.codeHost.identity.<role>.keyPath",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "absolute path",
+        "absent": "unset",
+        "default": null,
+        "secret": "path",
+        "explanation": "The file of the App's private key. The key is never read by this page.",
+        "breaks": "Required with github-apps. A wrong path means the role cannot mint its token.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file",
+          "dangerous": "The App's private key file: a wrong path stops the role minting its token, and a key of another App writes as that App."
+        }
+      },
+      "identity.<role>.installationId": {
+        "key": "tickets.providers.codeHost.identity.<role>.installationId",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "the installation's id as GitHub issued it",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The installation of the App the token is minted for, when there is more than one.",
+        "breaks": "A malformed id is refused by name.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file"
+        }
+      },
+      "identity.<role>.slug": {
+        "key": "tickets.providers.codeHost.identity.<role>.slug",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "the app's slug, without [bot]",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The App's slug, as its page on GitHub names it. The writes are authored as the slug with [bot].",
+        "breaks": "Written with [bot], it is refused by name, since the suffix would be added twice.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file"
+        }
+      },
+      "gh": {
+        "key": "tickets.providers.codeHost.gh",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "object",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The routing gh: the folders of the workers' and the leads' accounts, and the leads' workspaces.",
+        "breaks": "Required. Without it the host file is refused by name.",
+        "edit": {
+          "editable": false,
+          "why": "an object: edit one of its keys"
+        }
+      },
+      "gh.workers": {
+        "key": "tickets.providers.codeHost.gh.workers",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "absolute path",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The folder of the workers' gh account.",
+        "breaks": "A wrong folder sends workers' GitHub calls to the wrong account.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file"
+        }
+      },
+      "gh.leads": {
+        "key": "tickets.providers.codeHost.gh.leads",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "absolute path",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The folder of the leads' gh account.",
+        "breaks": "A wrong folder sends the leads' GitHub calls to the wrong account.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file"
+        }
+      },
+      "gh.leadsHeader": {
+        "key": "tickets.providers.codeHost.gh.leadsHeader",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "list of text lines",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The comment lines at the top of the leads' workspaces file.",
+        "breaks": "Each line must be text; the file is rendered from it.",
+        "edit": {
+          "editable": true,
+          "input": "json",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file"
+        }
+      },
+      "gh.leadsWorkspaces": {
+        "key": "tickets.providers.codeHost.gh.leadsWorkspaces",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "list of { id, role }",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The leads' workspaces, each with the role it plays.",
+        "breaks": "Refused by name when an id is not one word.",
+        "edit": {
+          "editable": true,
+          "input": "json",
+          "applies": "unit",
+          "unit": "the units this machine installs for its host file"
+        }
+      },
+      "gh.leadsWorkspaces[].id": {
+        "key": "tickets.providers.codeHost.gh.leadsWorkspaces[].id",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "one word",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The workspace's id.",
+        "breaks": "An id with a space is refused by name.",
+        "edit": {
+          "editable": false,
+          "why": "a list is changed as a whole: edit tickets.providers.codeHost.gh.leadsWorkspaces"
+        }
+      },
+      "gh.leadsWorkspaces[].role": {
+        "key": "tickets.providers.codeHost.gh.leadsWorkspaces[].role",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "text",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The role the workspace plays.",
+        "breaks": "A missing role is refused by name.",
+        "edit": {
+          "editable": false,
+          "why": "a list is changed as a whole: edit tickets.providers.codeHost.gh.leadsWorkspaces"
+        }
+      },
+      "stack": {
+        "key": "tickets.providers.codeHost.stack",
+        "file": "host.json",
+        "group": "Code host",
+        "type": "true or false",
+        "absent": "default",
+        "default": "true",
+        "switch": true,
+        "explanation": "Whether doctor requires the gh stack extension for the workers' account, which a worker links a stacked pull request with, and checks that GitHub makes stacked pull requests available to each repository. False leaves both unchecked.",
+        "breaks": "Any value other than true or false is refused by name. False drops the two checks, so a missing extension is not reported.",
+        "edit": {
+          "editable": true,
+          "input": "boolean",
+          "applies": "now"
+        }
+      }
+    },
+    "tooling": {
+      "mcpServers": [],
+      "connectors": [],
+      "skills": []
+    }
+  }
+}

@@ -15,6 +15,7 @@ import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
 import type { Ticket, TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import type { View } from "./settings-view.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 const ticket = (key: string, title = key) => ({ key, title, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
 const KEY = "a".repeat(48);
@@ -38,7 +39,7 @@ function board(port = 4747, ticketSettings: Record<string, unknown> = {}, extra:
     remove: async (key: string) => { ticks.push(`remove ${key}`); made.store.set(removeQueued(made.store.get(), key)); },
     reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, reviewNewHeads: () => {},
   };
-  const made = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
+  const made = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7, ...extra });
   return { ...made, ticks, dir, hold: (now: typeof held.now) => { held.now = now; } };
 }
 
@@ -64,7 +65,7 @@ test("/api/parents reads the parents of the person's tickets that are not the pe
     download: async () => [],
   };
   const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {} };
-  const { api } = createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
+  const { api } = createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
   await api("GET", "/api/tickets", {});
   const [status, parents] = await api("GET", "/api/parents", {}) as [number, Ticket[]];
   assert.equal(status, 200);
@@ -134,7 +135,7 @@ function planningBoard(attachPlan: TicketSource["attachPlan"] | null = async () 
   const planned = { ...ticket("NBF-1"), uploads: ["NBF-1-0001-plan-x.md"] };
   const source: TicketSource = { assigned: async () => [planned, ticket("NBF-2"), ticket("NBF-3")], read: async () => null, download: async () => [], ...(attachPlan ? { attachPlan } : {}) };
   const pool = { tick: async () => {}, reviewNewHeads: () => {}, stopWriterRun: () => {}, stop: () => {}, close: () => {}, dismiss: async () => {}, remove: async () => {}, reconcile: () => {}, ensureSession: async () => {}, refreshTracker: async () => {}, watchFeedback: () => {}, releaseReviewers: () => {}, retargetStacked: () => {}, rebaseStacked: async () => {}, applyEdit: async () => {}, discardEdit: () => {}, respond: () => {} };
-  return createBoard({ settings, source, key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
+  return createBoard({ settings, source, codeHost: createFakeCodeHost(), key: KEY, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), pool, now: () => 7 });
 }
 
 test("queueing with plan first plans each ticket without a plan of its own, on the planning model and effort, and leaves the others to be worked", async () => {

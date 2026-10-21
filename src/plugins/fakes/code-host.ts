@@ -8,7 +8,7 @@ import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind
 /** A pull request as the fake holds it. */
 export type FakePull = {
   repository: string; number: number; state: "open" | "merged" | "closed"; base: string; head: string; files: string[];
-  feedback: Partial<PullFeedback>; reviews: ReviewState["reviews"]; settled: boolean; merge: { armed: boolean; mergeable: boolean | null };
+  feedback: Partial<PullFeedback>; reviews: ReviewState["reviews"]; settled: boolean; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
 };
 
 const HOST = "fake";
@@ -20,31 +20,37 @@ type Pulls = Map<string, FakePull>;
 type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref?: ChangeRef }>; handler: (event: CodeHostEvent) => void };
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
-function readsOf(pulls: Pulls, login: string | null, calls: string[]): Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readReviewState" | "readPullState" | "openPullUrlsOf" | "readChange"> {
+function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, calls: string[]): Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readReviewState" | "readPullState" | "openPullUrlsOf" | "readChange"> {
   return {
     readOwnLogin() {
       calls.push("readOwnLogin");
       return login;
     },
-    readPullFeedback(url, self) {
+    readPullFeedback(url, self, alsoIgnore = []) {
       calls.push(`readPullFeedback ${url}`);
       const pull = pulls.get(url);
       if (pull === undefined) return null;
-      // What `self` wrote is not feedback: it is left out, as the contract says.
-      const authors = (pull.feedback.authors ?? []).filter((author) => author !== self);
-      const approvedAtHead = pull.reviews.some((review) => review.commit === pull.head && review.state === "APPROVED" && review.author !== self);
+      // What `self` wrote, and what the accounts it is told to ignore wrote, is not feedback: it is left out, as the contract says.
+      const ignored = (author: string): boolean => author === self || alsoIgnore.includes(author);
+      const authors = (pull.feedback.authors ?? []).filter((author) => !ignored(author));
+      const approvedAtHead = pull.reviews.some((review) => review.commit === pull.head && review.state === "APPROVED" && !ignored(review.author));
       return { state: pull.state, feedbackAt: null, failing: [], failures: [], failedAt: null, conflicting: false, mergeable: pull.merge.mergeable === true, head: pull.head, approvedAtHead,
         base: pull.base, files: pull.files, filesComplete: true, ...pull.feedback, authors };
     },
     readReviewState(url) {
+      calls.push(`readReviewState ${url}`);
       const pull = pulls.get(url);
-      return pull === undefined ? null : { head: pull.head, trust: "inside", reviews: pull.reviews, settled: pull.settled, view: { number: pull.number } };
+      return pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled, view: { number: pull.number } };
     },
-    readPullState: (url) => pulls.get(url)?.state.toUpperCase() ?? null,
+    readPullState(url) {
+      calls.push(`readPullState ${url}`);
+      return pulls.get(url)?.state.toUpperCase() ?? null;
+    },
     openPullUrlsOf(repository) {
+      calls.push(`openPullUrlsOf ${repository}`);
       const inRepository = [...pulls.entries()].filter(([, pull]) => pull.repository === repository);
-      // A repository the fake was given no pull request of is one it cannot ask about: null, never "none are open".
-      return inRepository.length === 0 ? null : inRepository.filter(([, pull]) => pull.state === "open").map(([url]) => url);
+      // A repository the fake was given neither a pull request nor a `seedRepository` of is one it cannot ask about: null, never "none are open".
+      return inRepository.length === 0 && !repositories.has(repository) ? null : inRepository.filter(([, pull]) => pull.state === "open").map(([url]) => url);
     },
     readChange(ref) {
       const pull = pulls.get(ref.id);
@@ -110,20 +116,25 @@ const wants = ({ filter }: Subscriber, event: CodeHostEvent): boolean => (filter
 
 export function createFakeCodeHost(login: string | null = "fake-worker") {
   const pulls: Pulls = new Map();
+  const repositories = new Set<string>();
   const subscribers: Subscriber[] = [];
   const calls: string[] = [];
   const armed: string[] = [];
   const reviewRequests: { ref: ChangeRef; reviewer: string }[] = [];
   const retargets: { url: string; base: string }[] = [];
-  const host: CodeHost = { ...readsOf(pulls, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), sweepRetargets: sweepOf(pulls, retargets) };
+  const host: CodeHost = { ...readsOf(pulls, repositories, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), sweepRetargets: sweepOf(pulls, retargets) };
   return Object.assign(host, {
     /** Hold a pull request, open at head `head-<number>` on `main` unless a test says otherwise. Returns its address and its change ref. */
     seedPull(repository: string, number: number, over: Partial<FakePull> = {}) {
       const url = fakePullUrl(repository, number);
-      pulls.set(url, { repository, number, state: "open", base: "main", head: `head-${number}`, files: [], feedback: {}, reviews: [], settled: true, merge: { armed: false, mergeable: true }, ...over });
+      pulls.set(url, { repository, number, state: "open", base: "main", head: `head-${number}`, files: [], feedback: {}, reviews: [], settled: true, trust: "inside", merge: { armed: false, mergeable: true }, ...over });
       return { url, ref: { host: HOST, id: url } };
     },
     pullAt: (url: string): FakePull | undefined => pulls.get(url),
+    /** Say a repository can be asked about though it holds no pull request: its list of open ones is then empty, and not "could not ask". */
+    seedRepository(repository: string) {
+      repositories.add(repository);
+    },
     /** Deliver an event to every subscriber whose filter it matches. */
     emit(event: CodeHostEvent) {
       for (const subscriber of [...subscribers].filter((entry) => wants(entry, event))) subscriber.handler(event);

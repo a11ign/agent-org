@@ -1,6 +1,12 @@
 // no-token: none -- reads two JSON files and the source tree; nothing here reaches gh or herdr
 /**
- * (agent-org#826, Phase 0b of a11ign/a11ign#4505) A FILE OUTSIDE `src/ticket-port/` MAY NOT GAIN A `gh` CALL, AND THE FILES THAT HOLD ONE TODAY ARE A BASELINE THAT ONLY GOES DOWN.
+ * (agent-org#826, Phase 0b of a11ign/a11ign#4505; A11-160) A FILE OUTSIDE `plugins/github/` AND `src/ticket-port/` MAY NOT GAIN A `gh` CALL, AND THE FILES THAT HOLD ONE TODAY ARE A BASELINE THAT ONLY GOES DOWN.
+ *
+ * A11-160 MOVES EVERY `gh` CALL INTO `plugins/github` (Decision 2 of A11-157: core depends only on the contracts), step by step, and this ratchet is how each step is held. `plugins/github/` is
+ * exempt, by path, because it is where a `gh` call is meant to be. `src/ticket-port/` is exempt too while it still holds calls (the row mode adapter, and what only row mode imports); a
+ * step that moves a file out of it can only lower the count, never raise the baseline. The scan is WIDER than it was (`gh-call-inventory.ts`): `src/`, `scripts/` and `plugins/`, and every shell
+ * script of `host/`, `src/` and `plugins/`. The files that scan newly sees are in the baseline at the count they hold, which is not a new call and is held there: the last step of A11-160
+ * empties `files`, removes `src/ticket-port/`'s exemption, and the rule becomes "no file outside `plugins/github/` calls gh".
  *
  * THE RULE HELD IS THE LAST SENTENCE OF `ceo`'s ADR 0046 RULING (item 4, with decision 5's adapter): "the rule is new code only, held by agent-org#485's inventory and the detector
  * filed after #484". This is that detector. New GitHub-specific code goes through the ticket port or the code-host port, never into a file that is not the adapter.
@@ -34,8 +40,12 @@ import { buildInventory, judgedRoot, type Inventory } from "./gh-call-inventory.
 
 const COMMAND = "gh";
 const BASELINE_PATH = "docs/gh-call-baseline.json";
-/** The adapter's directory: exempt by path (item 3 of the row), because it is where a `gh` call is meant to be. */
+/** The adapter's directory: exempt by path (item 3 of the row), while it still holds calls (A11-160 moves them into the plugin, and the last step removes this exemption). */
 const PORT_DIRECTORY = "src/ticket-port/";
+/** The plugin's directory: exempt by path, because it is where a `gh` call is meant to be (A11-160). */
+const PLUGIN_DIRECTORY = "plugins/github/";
+/** What no baseline entry is needed for. */
+const isExempt = (file: string): boolean => file.startsWith(PORT_DIRECTORY) || file.startsWith(PLUGIN_DIRECTORY);
 
 type Allowance = { spawns: number; calls: number };
 type Baseline = { files: Record<string, Allowance> };
@@ -45,11 +55,11 @@ function allowanceOf(entry: Inventory["files"][string]): Allowance {
   return { spawns: entry.spawns, calls: Object.values(entry.calls).reduce((sum, count) => sum + count, 0) };
 }
 
-/** The baseline a tree would be written as: every inventory file outside the port. How `docs/gh-call-baseline.json` was first produced. */
+/** The baseline a tree would be written as: every inventory file outside the exemptions. How `docs/gh-call-baseline.json` was first produced. */
 function baselineOf(inventory: Inventory): Baseline {
   const files: Record<string, Allowance> = {};
   for (const [file, entry] of Object.entries(inventory.files)) {
-    if (!file.startsWith(PORT_DIRECTORY)) files[file] = allowanceOf(entry);
+    if (!isExempt(file)) files[file] = allowanceOf(entry);
   }
   return { files };
 }
@@ -58,7 +68,7 @@ function baselineOf(inventory: Inventory): Baseline {
 function offenders(inventory: Inventory, baseline: Baseline): string[] {
   const found: string[] = [];
   for (const [file, entry] of Object.entries(inventory.files)) {
-    if (file.startsWith(PORT_DIRECTORY)) continue;
+    if (isExempt(file)) continue;
     const have = allowanceOf(entry);
     const allowed = Object.hasOwn(baseline.files, file) ? baseline.files[file]! : undefined;
     if (allowed === undefined) {
@@ -70,7 +80,7 @@ function offenders(inventory: Inventory, baseline: Baseline): string[] {
   return found;
 }
 
-const WHERE_NEW_CODE_GOES = "Go through the ticket port (`src/ticket-port/`) or the code-host port (ADR 0046), not into a baselined file, and do not raise the baseline.";
+const WHERE_NEW_CODE_GOES = "A call to GitHub belongs in `plugins/github/`, behind the codeHost contract (`src/plugins/contracts/code-host.ts`): not into a baselined file, and do not raise the baseline.";
 
 const spawn = (callee: string, args: string[]): string => `${callee}("${COMMAND}", [${args.map((arg) => JSON.stringify(arg)).join(", ")}]);\n`;
 
@@ -100,25 +110,29 @@ function judge(before: Record<string, string>, after: Record<string, string>): {
 
 const BASE = { "src/a.ts": spawn("execFileSync", ["issue", "list"]), "src/b.ts": "export const none = 1;\n" };
 
-test("the committed baseline admits today's tree: the real inventory yields no offender, and the baseline is not empty", () => {
+test("the committed baseline admits today's tree: the real inventory yields no offender, and the scan is not vacuous", () => {
   const root = judgedRoot();
   const baseline: Baseline = JSON.parse(readFileSync(join(root, BASELINE_PATH), "utf8"));
   const inventory = buildInventory(root);
-  const outside = Object.keys(inventory.files).filter((file) => !file.startsWith(PORT_DIRECTORY));
-  // Positive controls: an empty baseline and an empty inventory would each make "no offenders" true of anything.
-  assert.ok(Object.keys(baseline.files).length > 90, `the baseline has ${Object.keys(baseline.files).length} entries: an empty one would admit nothing and prove nothing`);
-  assert.ok(outside.length > 90, `the inventory lists ${outside.length} files outside the port: a scan that finds none would also yield no offender`);
   const found = offenders(inventory, baseline);
   assert.deepEqual(found, [], `${found.join("\n")}\n${WHERE_NEW_CODE_GOES}`);
+  // Positive controls: a scan that finds nothing would yield no offender for anything. It must see the plugin (which is exempt, so the exemption has something to exempt), and each place the
+  // scan was widened to read: a script, and a shell script.
+  const plugin = Object.keys(inventory.files).filter((file) => file.startsWith(PLUGIN_DIRECTORY));
+  assert.ok(plugin.length > 0 && plugin.some((file) => inventory.files[file]!.spawns > 0), `${PLUGIN_DIRECTORY} is not in the inventory with a spawn: the scan does not see the plugin, so its exemption exempts nothing`);
+  assert.ok(Object.keys(inventory.files).some((file) => file.startsWith("scripts/")), "no file of scripts/ is in the inventory: the scan does not read it");
+  assert.ok(Object.keys(inventory.files).some((file) => /\.sh$/.test(file) || file === "host/gh"), "no shell script is in the inventory: the scan does not read them");
+  for (const file of Object.keys(baseline.files)) assert.ok(!isExempt(file), `${file} is in the baseline though its directory is exempt`);
 });
 
-test("the adapter is in the real inventory and is not in the baseline: the port's exemption is by path and is exercised on the real tree", () => {
+test("the adapter and the plugin are in the real inventory and are not in the baseline: the exemptions are by path and are exercised on the real tree", () => {
   const root = judgedRoot();
   const baseline: Baseline = JSON.parse(readFileSync(join(root, BASELINE_PATH), "utf8"));
   const inventory = buildInventory(root);
   const adapter = `${PORT_DIRECTORY}github-adapter.ts`;
   assert.ok(Object.hasOwn(inventory.files, adapter), `${adapter} is not in the inventory, so the exemption has nothing to exempt`);
-  assert.deepEqual(Object.keys(baseline.files).filter((file) => file.startsWith(PORT_DIRECTORY)), [], "the baseline lists a file under the port, which the exemption makes unnecessary");
+  assert.ok(Object.hasOwn(inventory.files, `${PLUGIN_DIRECTORY}gh.ts`), `${PLUGIN_DIRECTORY}gh.ts, where the gh process is started, is not in the inventory`);
+  assert.deepEqual(Object.keys(baseline.files).filter(isExempt), [], "the baseline lists a file under an exempt directory, which the exemption makes unnecessary");
 });
 
 test("negative control: a new file that spawns the command outside the port is reported by its name", () => {
@@ -148,6 +162,34 @@ test("negative control: either number rising alone is enough: a shape written be
   assert.equal(spawns.found.length, 1);
   assert.match(spawns.found[0]!, /spawns 2 \(baseline 1\)/);
   assert.match(spawns.found[0]!, /calls 1 \(baseline 1\)/);
+});
+
+test("a new file that spawns the command in plugins/ or scripts/ is reported by its name, unless it is the GitHub plugin's", () => {
+  const extra = spawn("spawnSync", ["pr", "view"]);
+  const other = judge(BASE, { ...BASE, "plugins/linear/extra.ts": extra });
+  assert.equal(other.found.length, 1, "another plugin may not call gh");
+  assert.match(other.found[0]!, /^plugins\/linear\/extra\.ts: /);
+  const script = judge(BASE, { ...BASE, "scripts/extra.ts": extra });
+  assert.equal(script.found.length, 1, "a script may not either");
+  assert.match(script.found[0]!, /^scripts\/extra\.ts: /);
+  const inPlugin = judge(BASE, { ...BASE, [`${PLUGIN_DIRECTORY}extra.ts`]: extra });
+  assert.ok(Object.hasOwn(inPlugin.inventory.files, `${PLUGIN_DIRECTORY}extra.ts`), "the inventory lists the file in the plugin, so an empty report is the exemption and not a file nobody saw");
+  assert.deepEqual(inPlugin.found, []);
+});
+
+test("a shell script that runs the command is reported by its name, and one that only mentions it is not", () => {
+  const runs = `#!/bin/sh\n# posts the report\n${COMMAND} issue comment 1 --body "$BODY"\nout="$(${COMMAND} run list)"\n`;
+  const mentions = `#!/bin/sh\n# ${COMMAND} issue list is how this was done\nbranch="agent/${COMMAND}-wrapper"\n${COMMAND}-real auth status\necho "${COMMAND}"\n`;
+  const without = judge(BASE, { ...BASE, "host/post.sh": mentions });
+  assert.ok(!Object.hasOwn(without.inventory.files, "host/post.sh"), "a comment, a branch name, a different binary and an echoed word are not a spawn");
+  assert.deepEqual(without.found, []);
+  const reported = judge(BASE, { ...BASE, "host/post.sh": runs });
+  assert.equal(reported.found.length, 1);
+  assert.match(reported.found[0]!, /^host\/post\.sh: a new file that calls the tracker's CLI \(spawns 2, calls 0\)/, "named, with both runs of the command word counted");
+  const named = judge(BASE, { ...BASE, "host/wrapper": `#!/usr/bin/env bash\n${COMMAND} pr list\n` });
+  assert.equal(named.found.length, 1, "a script with no extension is read by its shebang");
+  assert.deepEqual(judge(BASE, { ...BASE, "host/notes.txt": `${COMMAND} pr list\n` }).found, [], "CONTROL: a file that is no script is not read");
+  assert.deepEqual(judge(BASE, { ...BASE, [`${PLUGIN_DIRECTORY}install.sh`]: runs }).found, [], "a shell script in the plugin is the plugin's");
 });
 
 test("the same new file placed under src/ticket-port/ is NOT reported", () => {

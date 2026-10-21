@@ -1,5 +1,5 @@
 {
-  "about": "The most `gh` call sites each file outside src/ticket-port/ may hold, written once from docs/gh-call-inventory.json (agent-org#826). It only goes DOWN: lower an entry by hand when a file sheds calls. A rise is refused by src/packaging/gh-call-ratchet.test.ts, and new code goes through the ticket port or the code-host port (ADR 0046).",
+  "about": "The most `gh` call sites each file outside `plugins/github/` and `src/ticket-port/` may hold, written once from docs/gh-call-inventory.json (agent-org#826) and widened by A11-160, which moves every call into `plugins/github`: the scan reads `src/`, `scripts/` and `plugins/`, and every shell script of `host/`, `src/` and `plugins/` (a shell script's `spawns` is the number of times it runs `gh` as a command word). It only goes DOWN: lower an entry by hand when a file sheds calls. A rise is refused by src/packaging/gh-call-ratchet.test.ts, and a call to GitHub goes into `plugins/github/`, behind the codeHost contract (`src/plugins/contracts/code-host.ts`). The last step of A11-160 empties `files` and removes the `src/ticket-port/` exemption.",
   "phases": {
     "org-health": {
       "about": "The `gh` spawns of one org-health pass on the org-health fixture with a stub gh (agent-org#1225, src/packaging/tick-budget.test.ts). It only goes DOWN: lower it by hand when the phase sheds a read. A rise is refused by that test.",
@@ -7,6 +7,26 @@
     }
   },
   "files": {
+    "host/board-report-dispatch.sh": {
+      "spawns": 2,
+      "calls": 0
+    },
+    "host/gh": {
+      "spawns": 1,
+      "calls": 0
+    },
+    "host/manager-spend-post.sh": {
+      "spawns": 1,
+      "calls": 0
+    },
+    "host/trace-weekly-post.sh": {
+      "spawns": 3,
+      "calls": 0
+    },
+    "scripts/review-eval.ts": {
+      "spawns": 1,
+      "calls": 3
+    },
     "src/api-pool.ts": {
       "spawns": 0,
       "calls": 1
@@ -238,6 +258,10 @@
     "src/review-depth.ts": {
       "spawns": 0,
       "calls": 3
+    },
+    "src/reviewer/pr-review-verdict.sh": {
+      "spawns": 10,
+      "calls": 0
     },
     "src/route-guard.ts": {
       "spawns": 1,

@@ -12,14 +12,13 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, m
 import { dirname, join } from "node:path";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { ORG_SESSION, firstLine, readAgents, type ListedAgent } from "../herdr-agents.ts";
-import { openPullsOf } from "../ticket-port/open-pulls.ts";
-import { pullRequestFieldsOf } from "../ticket-port/pull-request-fields.ts";
 import { REVIEW_LEASE_MS, claimEntriesOf, claimHead, releasedDescriptionOf, writeClaimStatus } from "../ticket-port/review-claim.ts";
 import { ghWith } from "../lib/tool-version-agreement.ts";
 import { headMatches, reviewVerdict as verdictOfText } from "../review-verdict.ts";
 import type { DoorRun, ReviewTrust } from "../review-trust.ts";
 import type { ReviewWord } from "./board-view/pull-review-state.ts";
-import type { Review, ReviewState } from "../plugins/contracts/code-host.ts";
+import type { CodeHost, Review, ReviewState } from "../plugins/contracts/code-host.ts";
+import type { ReviewJudge } from "../plugins/manifest.ts";
 import type { ReviewerRef, ReviewerPort, ReviewerSettled, RepostAnswer, PromptAnswer, CloseAnswer, RetireAnswer } from "../plugins/contracts/reviewer.ts";
 
 // THE PORT IS THE REVIEWER CONTRACT'S (`src/plugins/contracts/reviewer.ts`, A11-158); its types are re-exported here, so no caller changes.
@@ -48,8 +47,6 @@ export async function loadReviewerGate(): Promise<void> {
     (refusal: unknown) => ({ ok: false as const, refusal }),
   );
 }
-
-type DeclaredIdentities = ReturnType<typeof import("../review-trust.ts").declaredIdentities>;
 
 /** Why the gate does not load on this host, or null when it does. A machine that asks for reviewers starts none while this is set. Needs `loadReviewerGate` first. */
 export function reviewerRefusal(): string | null {
@@ -170,36 +167,13 @@ function reviewerEnvOf(seat: Seat, instance: string): Record<string, string> {
 }
 
 /**
- * The pull request's state as the reviewer sees it: its head, whether its author is the org's own (`INSIDE`), and its reviews. Null when GitHub
- * does not say, which the caller reads as no reading rather than as a verdict. It throws the gate's refusal when the gate does not load (`reviewerRefusal`).
+ * How the gate judges a pull request the code host plugin reads for the reviewer (A11-160): the fields it reads by, whether its author is the org's own, and whether its checks have
+ * settled green. THROWS the gate's refusal when the gate does not load (`reviewerRefusal`), so a read that needs it refuses before it asks GitHub anything.
  */
-export function readReviewState(url: string, gh: (args: string[]) => string, declared: DeclaredIdentities = reviewerGate().trust.declaredIdentities()): ReviewState | null {
-  const pull = pullOf(url);
-  if (pull === null) return null;
+export function gateReviewJudge(): ReviewJudge {
   const { trust, orders } = reviewerGate();
-  const pr = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: orders.REVIEW_PULL_FIELDS, run: gh });
-  try {
-    if (typeof pr?.headRefOid !== "string") return null;
-    const reviews: Review[] = (pr.reviews ?? []).map((r: { author?: { login?: string }; state?: string; commit?: { oid?: string }; submittedAt?: string }) => ({
-      author: String(r.author?.login ?? ""), state: String(r.state ?? ""), commit: String(r.commit?.oid ?? ""),
-      at: Date.parse(String(r.submittedAt ?? "")) || 0,
-    }));
-    const settled = orders.settledGreenOf(pr);
-    return { head: pr.headRefOid, trust: trust.reviewTrustOf(pr, declared), reviews, settled, view: { ...pr, number: pull.number } };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The pull request's state as GitHub names it, `OPEN`, `MERGED` or `CLOSED`, or null when it does not say. A merged or closed pull request is the one
- * `retire` is for; an unreadable one is nothing to act on.
- */
-export function readPullState(url: string, gh: (args: string[]) => string): string | null {
-  const pull = pullOf(url);
-  if (pull === null) return null;
-  const state = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: "state", run: gh })?.state;
-  return state === "OPEN" || state === "MERGED" || state === "CLOSED" ? state : null;
+  const declared = trust.declaredIdentities();
+  return { fields: orders.REVIEW_PULL_FIELDS, trustOf: (pr) => trust.reviewTrustOf(pr, declared), settledOf: (pr) => orders.settledGreenOf(pr) };
 }
 
 /**
@@ -249,40 +223,6 @@ export function reviewedRepositoriesOf(clones: Clones): string[] {
   const owner = identity.REPO.split("/")[0];
   const declared = config.homeProjectDeclaration().code.map((code) => code.repo);
   return [...new Set([identity.REPO, ...declared, ...Object.keys(clones).map((name) => `${owner}/${name}`)])];
-}
-
-/**
- * The URLs of a repository's open pull requests, read through the ticket port's `openPullsOf`. Null for "could not ask", which `openPullsOf` also
- * answers for a list at its limit: `null` is never "none are open".
- */
-export function openPullUrlsOf(repository: string, gh: (args: string[]) => string): string[] | null {
-  const pulls = openPullsOf(repository, gh);
-  return pulls === null ? null : pulls.map(({ number }) => `https://github.com/${repository}/pull/${number}`);
-}
-
-/**
- * `gh`, answering a feedback read without the reviewer's own reviews, comments and review-thread comments. They are not feedback a worker
- * answers, and `feedbackOf` would otherwise take their times into `feedbackAt`. Everything else in the answer passes through unchanged.
- */
-export function withoutReviewerReviews(gh: (args: string[]) => string): (args: string[]) => string {
-  return (args) => {
-    const answer = gh(args);
-    let data: any;
-    try {
-      data = JSON.parse(answer);
-    } catch {
-      return answer;
-    }
-    const pull = data?.data?.repository?.pullRequest;
-    if (pull === null || typeof pull !== "object") return answer;
-    const keep = (connection: any) => Array.isArray(connection?.nodes) ? { ...connection, nodes: connection.nodes.filter((node: any) => node?.author?.login !== REVIEWER_LOGIN) } : connection;
-    pull.reviews = keep(pull.reviews);
-    pull.comments = keep(pull.comments);
-    if (Array.isArray(pull.reviewThreads?.nodes)) {
-      pull.reviewThreads = { ...pull.reviewThreads, nodes: pull.reviewThreads.nodes.map((thread: any) => thread?.comments ? { ...thread, comments: keep(thread.comments) } : thread) };
-    }
-    return JSON.stringify(data);
-  };
 }
 
 /** Where a pool keeps what it remembers of its reviewers: `tickets/reviewers.json` under the state directory. */
@@ -407,10 +347,12 @@ export function verdictFileIn(tree: string, number: number, head: string): strin
  * The head each reviewer was started for is in `heads` (by seat label), which the pool keeps across a restart, so a restart starts a reviewer again only for a
  * head it has not reviewed. It refuses a head whose checks have not settled green: the gate's verdict is asked only of settled checks.
  */
-export function atomicReviewerPort({ session, run, gh, declared = reviewerGate().trust.declaredIdentities(), spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>(),
+export function atomicReviewerPort({ session, run, gh, codeHost, spawn = reviewerGate().wake.spawnReviewer, checkout = reviewerGate().wake.prepareReviewCheckout, heads = new Map<string, string>(),
   removeCheckout = reviewerGate().wake.removeReviewCheckout, uncommittedPaths = reviewerGate().wake.uncommittedPathsOf, exists = existsSync,
   checkoutOf = reviewerGate().wake.reviewCheckoutPath, mint = reviewerTokenMintOf, door = reviewerGate().trust.runDoor, clones = {}, instance, now = Date.now, claimGh = ghWith }: {
-  session: string; run: (args: string[]) => string; gh: (args: string[]) => string; declared?: DeclaredIdentities;
+  session: string; run: (args: string[]) => string; gh: (args: string[]) => string;
+  /** The code host the reviewer reads each pull request through: its head, its reviews, its trust and whether its checks settled. */
+  codeHost: CodeHost;
   spawn?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").spawnReviewer; checkout?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").prepareReviewCheckout; heads?: Map<string, string>;
   removeCheckout?: typeof import("../wake/reviewer-tokens-and-checkouts.ts").removeReviewCheckout; uncommittedPaths?: (path: string) => string[]; exists?: (path: string) => boolean;
   /** Where a seat's reviewer keeps its checkout, which holds the verdict file it wrote. */
@@ -427,7 +369,7 @@ export function atomicReviewerPort({ session, run, gh, declared = reviewerGate()
   /** The `gh` a claim is written with, as the reviewer role: given the reviewer's environment, a `gh` that runs with it. */
   claimGh?: (env: Record<string, string>) => (args: string[]) => string;
 }): ReviewerPort {
-  const seams: AtomicSeams = { session, run, gh, declared, spawn, checkout, heads, removeCheckout, uncommittedPaths, exists, checkoutOf, mint, door, clones, instance, now, claimGh };
+  const seams: AtomicSeams = { session, run, gh, codeHost, spawn, checkout, heads, removeCheckout, uncommittedPaths, exists, checkoutOf, mint, door, clones, instance, now, claimGh };
   return {
     live: (ref) => liveReviewer(seams, ref),
     start: (ref) => startReviewer(seams, ref),
@@ -546,7 +488,7 @@ function startReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): Readonly<
   const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return seat;
   const { trust } = reviewerGate();
-  const state = readReviewState(pr, seams.gh, seams.declared);
+  const state = seams.codeHost.readReviewState(pr);
   if (state === null) return { refusal: `no reviewer for ${pr}: the pull request could not be read` };
   if (state.trust !== trust.INSIDE) return { refusal: `no reviewer for ${pr}: its author is outside the org, and the tickets' reviewer starts for the org's own pull requests only` };
   if (state.head !== head) return { refusal: `no reviewer for ${pr}: its head moved to ${state.head}, so ${head} is no longer to be reviewed` };
@@ -608,7 +550,7 @@ function repostReviewerVerdict(seams: AtomicSeams, { pr, head }: ReviewerRef, fi
 function repromptReviewer(seams: AtomicSeams, { pr, head }: ReviewerRef): PromptAnswer {
   const seat = seatOf(pr, seams.clones);
   if ("refusal" in seat) return seat;
-  const state = readReviewState(pr, seams.gh, seams.declared);
+  const state = seams.codeHost.readReviewState(pr);
   if (state === null) return { refusal: `no reprompt for ${pr}: the pull request could not be read` };
   const sent = sendPrompt(seams, seat, state, head);
   return "refusal" in sent ? { refusal: `no reprompt for ${pr}: ${sent.refusal}` } : { prompted: true };

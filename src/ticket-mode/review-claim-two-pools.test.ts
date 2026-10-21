@@ -13,19 +13,18 @@ import { parseTicketSettings } from "./settings.ts";
 import { emptyQueue } from "./queue.ts";
 import type { TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
 const HEAD = "h1";
-const DECLARED = { exact: ["worker-bot"], pattern: [] };
-const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
 const LEASE = REVIEW_LEASE_MINUTES * 60_000;
 /** The tracker a pool is built over by default: the tracker contract's in-memory fake, holding no ticket (A11-159). */
 const source: TicketSource = createFakeTracker();
 const store = { get: () => emptyQueue(1), set: () => {} };
 
 /**
- * One fake GitHub for every pool: a pull request on `REPO` at `HEAD` with green checks, and the statuses on its head. A status is written at the clock's
- * time, and read back as one line per status under the claim's context, as `claimEntriesOf` reads them.
+ * One fake GitHub for every pool: a pull request on `REPO` at `HEAD` with green checks, as the code host holds it (the fake), and the statuses on its head, which are still `gh`'s.
+ * A status is written at the clock's time, and read back as one line per status under the claim's context, as `claimEntriesOf` reads them.
  */
 function githubOf(clock: { now: number }) {
   const statuses: { id: number; context: string; created_at: string; description: string }[] = [];
@@ -36,11 +35,12 @@ function githubOf(clock: { now: number }) {
       statuses.push({ id: statuses.length + 1, context: field("context"), created_at: new Date(clock.now).toISOString(), description: field("description") });
       return "";
     }
-    if (args[0] === "pr" && args[1] === "list") return args[args.indexOf("--repo") + 1] === REPO ? JSON.stringify([{ number: 7, body: "" }]) : "[]";
-    if (args[0] === "pr") return JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, isDraft: false, statusCheckRollup: GREEN });
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
-  return { gh, statuses };
+  const host = createFakeCodeHost();
+  host.seedPull(REPO, 7, { head: HEAD, settled: true, trust: "inside" });
+  for (const other of ["a11ign/control", "a11ign/plugin", "a11ign/nbl-ui-netbox"]) host.seedRepository(other);
+  return { gh, statuses, host };
 }
 
 /** A herdr that lists each label in `status` as a running agent, and answers the workspace calls a close makes. */
@@ -60,7 +60,7 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
   refuseSpawn?: string;
 }): PoolContext {
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, instance), tickets: { drafts: false, reviewer: "atomic", instance } });
-  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, run: herdrOf(status), gh: github.gh, claimGh: () => github.gh, mint: () => null, declared: DECLARED,
+  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, run: herdrOf(status), gh: github.gh, codeHost: github.host, claimGh: () => github.gh, mint: () => null,
     clones: settings.clones, now: () => clock.now, checkout: () => ({ path: "/work/pr-7", head: HEAD }),
     spawn: (order) => {
       if (refuseSpawn !== undefined) return { refusal: refuseSpawn };
@@ -68,7 +68,7 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
       status.set(order.session, "working");
       return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } };
     } });
-  return newPoolContext(store, { settings, source, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), gh: github.gh, now: () => clock.now, reviewerPort });
+  return newPoolContext(store, { settings, source, codeHost: github.host, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), gh: github.gh, now: () => clock.now, reviewerPort });
 }
 
 /** Two instances' pools on one GitHub, one herdr, and one clock that starts at a fixed time, with the spawns each pool's reviewer makes. */

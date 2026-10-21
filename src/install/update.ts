@@ -26,10 +26,7 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { chooseReleaseTag, isReleaseTag, LATEST } from "../lib/release-tag.ts";
 import { installDependencies, updateTool, type DependencyInstall } from "../update-tool.ts";
 import { defaultServiceDeps, restartService, serviceState, TOOL_SERVICES, type ServiceName, type ServiceState } from "./service.ts";
-import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
-import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { asAccount, ensureStackExtension, STACK_EXTENSION, type StackExtension } from "../ticket-port/stack-extension.ts";
-import { workerAccount } from "./stack-account.ts";
+import { hostFilePath, TOOL_ROOT } from "./paths.ts";
 import { liveRunCount, type Queue } from "../ticket-mode/queue/queue-entries-and-outcomes.ts";
 import { loadQueue } from "../ticket-mode/queue.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
@@ -37,6 +34,8 @@ import { readAgents, herdrRun } from "../herdr-agents.ts";
 import { pinnedPnpm } from "./pnpm.ts";
 import { clearDeferral, deferralPath, runProgram, stateOfRecord, updateConventions, writeDeferral, type ConventionsUpdate, type Run } from "./plugin-install.ts";
 import { hostIsolation, midToolCall, readUpdateStatus, restartDecision, updateStatusPath, writeUpdateStatus, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
+import { pluginUpkeep } from "./plugin-upkeep.ts";
+import type { StepResult } from "../plugins/manifest.ts";
 
 export type Channel = "release" | "main";
 export type Git = (args: string[]) => string;
@@ -61,8 +60,8 @@ export type UpdateDeps = Readonly<{
   now: () => number;
   /** The status file `doctor` reads: read for the deferral's start, and written whole after each run. */
   status: Readonly<{ read: () => UpdateStatus | null; write: (status: UpdateStatus) => void }>;
-  /** The gh stack extension the workers link stacked pull requests with, kept present on every run (A11-106). Never throws. */
-  stackExtension: () => StackExtension;
+  /** What each enabled plugin keeps true on this machine, run at the end of every update: the code host keeps its stacking extension present (A11-106, A11-160). Never throws. */
+  upkeep: () => readonly StepResult[];
   /** The conventions plugins `tickets.plugins` names, updated from their repositories when no run is live (A11-145). Never throws. */
   conventions: () => ConventionsUpdate;
   /** The refresh a live run holds back, recorded for `doctor` to say so, and cleared once the refresh has run (A11-145). */
@@ -92,23 +91,24 @@ export function conventionsWiring(settings: Pick<TicketSettings, "plugins"> | nu
 
 /**
  * Move the checkout and restart what ran, unless the running instance has a live run and `force` is not given: then nothing moves, and it says so.
- * The stack extension is kept present whatever the move did (A11-106): a deferred or unmoved update still ensures it, and a failure to do so is said, never raised.
+ * What the plugins keep true is kept whatever the move did (the code host's stacking extension, A11-106): a deferred or unmoved update still runs it, and a failure to do so is said, never raised.
  * @returns whether the checkout moved
  */
 export function update(options: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
   try {
     return moveCheckout(options, deps);
   } finally {
-    keepStackExtension(deps);
+    keepPlugins(deps);
     keepConventions(deps);
   }
 }
 
-/** The stack extension, ensured for the workers: said when it was installed, and said as missing when it could not be (`doctor` fails on it). */
-function keepStackExtension(deps: UpdateDeps): void {
-  const stack = deps.stackExtension();
-  if (stack.state === "installed") deps.out.log(`agent-org update: installed the ${STACK_EXTENSION} extension (${stack.version})`);
-  if (stack.state === "failed") deps.out.error(`agent-org update: the ${STACK_EXTENSION} extension is missing and could not be installed: ${stack.reason}`);
+/** What the plugins keep true, said as each says it: an error for one that failed, and nothing for one with nothing to say. */
+function keepPlugins(deps: UpdateDeps): void {
+  for (const { ok, detail } of deps.upkeep()) {
+    if (detail === "") continue;
+    (ok ? deps.out.log : deps.out.error)(`agent-org update: ${detail}`);
+  }
 }
 
 /**
@@ -319,7 +319,7 @@ export function dependencyInstalls(root: string, git: Git, exec: Exec = execFile
   };
 }
 
-function defaultUpdateDeps(): UpdateDeps {
+function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"]): UpdateDeps {
   // Corepack fetches the pinned pnpm the first time; with no person at a prompt, it must not ask.
   process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT = "0";
   const root = TOOL_ROOT;
@@ -347,7 +347,7 @@ function defaultUpdateDeps(): UpdateDeps {
       },
       write: (status) => writeUpdateStatus(statusPath, status),
     },
-    stackExtension: () => ensureStackExtension(asAccount(defaultGh, workerAccount(readOrNull(hostFilePath(process.env)), process.env))),
+    upkeep,
     ...conventionsWiring(settings, process.env, homedir()),
     out: console,
   };
@@ -357,7 +357,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   try {
     const { values } = parseArgs({ args: process.argv.slice(2), strict: true, options: { version: { type: "string" }, channel: { type: "string", default: "release" }, force: { type: "boolean", default: false } } });
     if (values.channel !== "release" && values.channel !== "main") throw new UpdateRefusal(`--channel ${values.channel} is not release or main`);
-    update({ version: values.version, channel: values.channel, force: values.force }, defaultUpdateDeps());
+    update({ version: values.version, channel: values.channel, force: values.force }, defaultUpdateDeps(await pluginUpkeep(hostSettings())));
   } catch (err) {
     console.error(`agent-org update: ${(err as Error).message}`);
     process.exitCode = 2;

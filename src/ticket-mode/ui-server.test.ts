@@ -17,6 +17,7 @@ import type { Ticket, TicketSource } from "./source.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { assigneeFilterScript, boardViewScript, createUi, endedPage, isEnded, labelFiltersScript, pairedBy, sameTerminal } from "./ui-server.ts";
 import type { TerminalMint } from "./terminal-pair.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 const REMOTE_KEY = "c".repeat(48);
 const ticket = (key: string) => ({ key, title: key, description: "", url: "", branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
@@ -46,7 +47,7 @@ async function instance(mintTerminal?: () => Promise<TerminalMint>, { queue, ter
   const source: TicketSource = createFakeTracker([{ ...ticket("NBF-1"), labels: LABELS }]);
   const served = await listen((port) => {
     const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir, tickets: { port, terminal } });
-    const board = createBoard({ settings, source, key, queuePath: join(stateDir, "queue.json"), choicePath: join(stateDir, "choice.json"), pool, now: () => 7, mintTerminal });
+    const board = createBoard({ settings, source, codeHost: createFakeCodeHost(), key, queuePath: join(stateDir, "queue.json"), choicePath: join(stateDir, "choice.json"), pool, now: () => 7, mintTerminal });
     return (req, res) => { seen.push(req.headers); return board.handle(req, res); };
   });
   return { ...served, stateDir, key, seen };

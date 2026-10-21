@@ -56,8 +56,8 @@ import { defaultServiceDeps, ServiceRefusal, startService, TailnetRefusal, updat
 import { DEFAULT_TERMINAL_PORT, herdrConfigDir, PAIRING_STEPS, pluginRoot, TERMINAL_PLUGIN, terminalAddress } from "./terminal.ts";
 import { writeAtomic } from "./write-atomic.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
-import { asAccount, ensureStackExtension, STACK_EXTENSION, type Account, type ProgramRunner, type StackExtension } from "../ticket-port/stack-extension.ts";
-import { installCommand, workerAccount } from "./stack-account.ts";
+import { asAccount, type Account, type ProgramRunner } from "./gh-account.ts";
+import { corePolicy } from "../plugins/policy.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf, type Profile, type ProfileRepo, type ReviewerApp } from "./onboard-profile.ts";
 import { installConventions, runProgram, stateOfRecord, type ConventionsStep } from "./plugin-install.ts";
@@ -335,16 +335,6 @@ function setUpChromium(deps: OnboardDeps): boolean {
   return problems.length === 0;
 }
 
-/**
- * What onboard says of the stack extension, whatever the install did. A failure is said with its reason and the command to run by hand, and is not thrown:
- * the extension serves stacked pull requests only, and doctor fails on it until it is there.
- */
-function stackLine(stack: StackExtension, account: Account): string {
-  if (stack.state === "present") return `the ${STACK_EXTENSION} extension is installed (${stack.version}), which a worker links a stacked pull request with`;
-  if (stack.state === "installed") return `installed the ${STACK_EXTENSION} extension (${stack.version}), which a worker links a stacked pull request with`;
-  return `could not install the ${STACK_EXTENSION} extension: ${stack.reason}. Run \`${installCommand(account)}\` by hand, then \`agent-org doctor\`.`;
-}
-
 /** The lines of Codex the atomic reviewer needs, each with whether it is done already (A11-145). Onboard installs and logs in to neither. */
 function codexChecklist(deps: OnboardDeps): string[] {
   const installed = deps.which("codex") !== null;
@@ -453,12 +443,12 @@ function plannedProviders({ host, tickets, planned, catalog }: Readonly<{ host: 
  * step says. @returns the settings the steps chose, by block, for the caller to write. A plugin the loader refuses is refused by name, unless only its `create` threw (a key that is
  * not stored yet): onboard needs its module, not its implementation, and is the step that stores the key.
  */
-async function runPluginSteps({ options, host, tickets, planned, answered }: Readonly<{ options: OnboardOptions; host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; answered: boolean }>,
+async function runPluginSteps({ options, host, tickets, planned, answered, clones }: Readonly<{ options: OnboardOptions; host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; answered: boolean; clones: Readonly<Record<string, string>> }>,
   deps: OnboardDeps): Promise<Record<string, Record<string, unknown>>> {
   const providers = plannedProviders({ host, tickets, planned, catalog: deps.catalog() });
   const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
   const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
-    exec: deps.exec, readFile: deps.readFile, mode: realMode, pick: "assigned" };
+    exec: deps.exec, readFile: deps.readFile, mode: realMode, pick: "assigned", clones, policy: corePolicy() };
   const result = await deps.loadPlugins(providers, pluginDeps);
   const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));
   const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));
@@ -484,14 +474,12 @@ async function runPluginSteps({ options, host, tickets, planned, answered }: Rea
   return chosen;
 }
 
-/** What onboard does once the host file is written: the stack extension, Codex, the guards, the services, and the doctor's report. */
+/** What onboard does once the host file is written: Codex, the guards, the services, and the doctor's report. */
 async function finishOnboard({ next, options, terminal }: Readonly<{ next: Record<string, unknown>; options: OnboardOptions; terminal: boolean }>, deps: OnboardDeps) {
   const written = resolveProviders(next, deps.catalog()).blocks;
   if (isActive(written.exposure) && written.exposure.provider === "tailscale" && deps.which("tailscale") === null) {
     deps.out.log("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing");
   }
-  const account = workerAccount(JSON.stringify(next), deps.env);
-  if (written.codeHost.settings.stack.value !== false) deps.out.log(stackLine(ensureStackExtension(deps.ghAs(account)), account));
   if (isActive(written.reviewer) && written.reviewer.provider === "atomic") for (const line of codexChecklist(deps)) deps.out.log(line);
   const guards = await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements });
   for (const line of guards) deps.out.log(line);
@@ -510,7 +498,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
 
   const existing = resolveProviders(host, deps.catalog()).blocks;
   const planned = profile === null ? null : providerBlocksOf(profile);
-  const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null }, deps);
+  const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null, clones }, deps);
   const identity = await reviewerIdentity(planned?.reviewerApp, existing.codeHost.settings.identity.value, deps);
   const terminal = options.terminal && await setUpTerminal(deps);
   const capture = setUpChromium(deps);
@@ -523,7 +511,8 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
 
   const providers = providersWith(tickets, blocksOf({ planned, identity, terminal }));
   // A plugin's step decides its settings outright: it was given the block's own, so it keeps the ones it means to keep.
-  for (const [block, set] of Object.entries(stepped)) providers[block] = { ...fill(providers[block], {}), ...set };
+  // A plugin that chose nothing leaves its block alone: a block onboard has no reason to write (the code host's, on a host that names none) stays absent, which is the default plugin.
+  for (const [block, set] of Object.entries(stepped)) if (Object.keys(set).length > 0) providers[block] = { ...fill(providers[block], {}), ...set };
   const pluginKeys = plugin?.installPath === null || plugin === null ? {} : conventionKeys(profile?.conventions?.plugin ?? "", contract);
   const prReview = profile?.conventions?.prReview === true ? contract?.provides.prReview?.skill : undefined;
   // `tickets.capture` is written only where it is absent, and only as true: a machine whose browsers do not start keeps what the host file says, or nothing.
