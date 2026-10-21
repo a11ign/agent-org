@@ -1,5 +1,5 @@
 // @ts-check
-// module: Linear as a ticket source -- GraphQL over an injected `fetch`, with a personal API key
+// module: Linear as a ticket source -- GraphQL over an injected `fetch`, with a personal API key (the Linear plugin's, moved out of core by A11-159)
 //
 // A PERSONAL KEY, NOT AN APP. A Linear agent app is installed by a workspace admin, which a person on a work account cannot do, so ticket mode reads
 // as the person: their key, and by default the open tickets they can see, which the Pick view filters to their own (`tickets.pick` can narrow the list
@@ -11,11 +11,10 @@
 // own GitHub integration links each pull request, because the worker's branch is the ticket's `branchName`.
 //
 // THE KEY NEVER LEAVES THIS MODULE. It is read once, from the macOS Keychain or a file the host file names, and sent only to api.linear.app and uploads.linear.app.
-import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { KeySource, PickScope } from "./settings.ts";
-import type { Assignee, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "./source.ts";
+import type { PickScope } from "../../src/ticket-mode/settings.ts";
+import type { Assignee, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "../../src/plugins/contracts/tracker.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. */
@@ -46,22 +45,6 @@ const ISSUE_FIELDS = `identifier title description url branchName priority state
 const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 
 type Fetch = typeof fetch;
-
-/** The key, from where the host file says it lives. `security` prints the secret on stdout, which this returns and never logs. */
-export function readLinearKey(source: KeySource, security: (args: string[]) => string = (args) => execFileSync("security", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }),
-  read: (path: string) => string = (path) => readFileSync(path, "utf8")): string {
-  let stored: string;
-  try {
-    stored = "keychain" in source ? security(["find-generic-password", "-s", source.keychain, "-w"]) : read(source.path);
-  } catch {
-    throw new Error("keychain" in source
-      ? `ticket mode: no Linear key in the Keychain under ${source.keychain}. Store one with: security add-generic-password -a "$USER" -s ${source.keychain} -w`
-      : `ticket mode: the Linear key file ${source.path} cannot be read`);
-  }
-  const key = stored.trim();
-  if (key === "") throw new Error(`ticket mode: the Linear key at ${"keychain" in source ? `Keychain service ${source.keychain}` : source.path} is empty`);
-  return key;
-}
 
 type IssueNode = {
   identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;

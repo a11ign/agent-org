@@ -4032,6 +4032,17 @@ test("a grill run's first prompt asks its first question, and its brief names th
   assert.doesNotMatch(brief, /Nobody will answer/);
 });
 
+test("A11-159: a new-ticket run is granted the tools of the tracker the host names, and its record hook is matched on that tracker's create tool, not on Linear's", async () => {
+  const { pool, dir, run, settings } = writing({}, { ...WRITER, providers: { tracker: { provider: "fake-tracker" } } });
+  await pool.tick();
+  assert.equal(run().phase, "running");
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "writer-run"), "utf8")), { mode: "quick", tools: ["mcp__fake__create_ticket", "mcp__fake__prepare_upload", "mcp__fake__attach_upload"] });
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /create the ticket with `mcp__fake__create_ticket`, with no `id`\. Attach files with `mcp__fake__prepare_upload` and `mcp__fake__attach_upload`/);
+  const sessionSettings = JSON.parse(readFileSync(join(writerFolder(settings, "w1"), ".claude", "settings.local.json"), "utf8")) as { hooks: { PostToolUse: { matcher: string }[] } };
+  assert.deepEqual(sessionSettings.hooks.PostToolUse.map(({ matcher }) => matcher), ["mcp__fake__create_ticket"]);
+});
+
 test("a new-ticket run that never ends is failed after 30 minutes of running, and a grill run is not timed out before 4 hours", async () => {
   const { pool, status, name, store, run } = writing({ id: "w3" });
   await pool.tick();

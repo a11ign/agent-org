@@ -55,11 +55,13 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { escapeRegExp } from "../lib/escape-regexp.ts";
+import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
 import { lastAssistantText, liveBackgroundWork } from "./background-work.ts";
 import { checkOutcome, isStale } from "./outcome.ts";
 import type { DenyRule } from "./settings.ts";
 import { ASKED_FILE, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, PROTECTED_FILE, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PUBLISH_FILE, READY_FILE, REVIEW_FILE,
-  STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_CREATE_TOOLS, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
+  STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, STOP_COUNT_FILE, WAITING_FILE, WORKING_STOP_FILE, WRITER_FILE, defaultBinDir, protectedPaths } from "./worker-files.ts";
 import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdLine, readCreatedKeys } from "./writer.ts";
 
 export type HookResult = Readonly<{ code: 0 | 2; say: readonly string[] }>;
@@ -121,11 +123,18 @@ const READ_ONLY_CONNECTOR = /^mcp__[\w-]+__(get|list|search|extract|read|find|fe
 const PR_REVIEW_FILE_REFUSAL: Refusal = { pattern: new RegExp(`\\b(?:${[PR_REVIEW_FILE, PR_REVIEW_LOG_FILE].map(escapeRegExp).join("|")})\\b`),
   why: `${PR_REVIEW_FILE} and ${PR_REVIEW_LOG_FILE} are the pool's and the hook's: a worker may not write them, nor name them in a command` };
 /**
- * The tracker tools that file a ticket or attach to one, on either Linear server. Only a new-ticket run may call them, and only the ones the board granted
- * it (A11-135): a build worker is refused each by name, whatever `tickets.connectors` allows.
+ * What each tracker plugin of the registry declares a new-ticket run files with (`TrackerWriting`, tracker contract 1.1): read from the plugins' manifests and not from their
+ * code, because this hook is a process started for every tool call and must not import a plugin to answer one. Every plugin's, not the enabled one's: a tool that files a ticket in
+ * any known tracker is refused to a build worker, whichever tracker the host runs.
  */
-const FILING_TOOL = /^mcp__(?:linear|claude_ai_Linear)__(?:save_issue|create_attachment|create_attachment_from_upload|prepare_attachment_upload)$/;
-const FILING_REFUSAL = "workers file no tickets (Linear is read and comment only for them); to file one, use New ticket on the board";
+export const trackerWritings = (catalog = defaultCatalog()): readonly TrackerWriting[] => catalog.plugins.flatMap(({ concern, tooling }) => (concern === "tracker" && tooling.writer !== undefined ? [tooling.writer] : []));
+
+/** The tools a new-ticket run may be granted: each tracker's create tool and attach tools. */
+const grantable = (writings: readonly TrackerWriting[]): string[] => writings.flatMap(({ createTool, attachTools }) => [createTool, ...attachTools]);
+
+// The tracker tools that file a ticket or attach to one, on any server of a tracker (`filingTools`), are a new-ticket run's alone, and only the ones the board granted
+// it (A11-135): a build worker is refused each by name, whatever `tickets.connectors` allows.
+const filingRefusal = (label: string): string => `workers file no tickets (${label} is read and comment only for them); to file one, use New ticket on the board`;
 const FILE_TOOLS: ReadonlySet<string> = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 /** The commands that install the host's programs, which write its `gh` wrapper and launcher: the host's to run (A11-84). */
@@ -176,25 +185,27 @@ const SKILL_REFUSALS: readonly Refusal[] = [
  * `id`, and no `blocks`, which writes on another ticket. An attachment names a ticket this run created. A run's record it cannot read refuses the call,
  * since the check could not be made. PURE.
  */
-function writerFiling(toolName: string, input: Record<string, unknown>, run: Readonly<{ grants: readonly string[]; created: readonly string[] | null }>): HookResult {
-  const { grants, created } = run;
-  if (!grants.includes(toolName)) return refuse(`${toolName} is not a tool the board granted this new-ticket run: it files one ticket and attaches its plan, and nothing else`);
+function writerFiling(toolName: string, input: Record<string, unknown>, run: Readonly<{ grants: readonly string[]; created: readonly string[] | null; writings: readonly TrackerWriting[] }>): HookResult {
+  const { grants, created, writings } = run;
+  const writing = writings.find(({ createTool, attachTools }) => createTool === toolName || attachTools.includes(toolName));
+  if (!grants.includes(toolName) || writing === undefined) return refuse(`${toolName} is not a tool the board granted this new-ticket run: it files one ticket and attaches its plan, and nothing else`);
   if (created === null) return refuse(`${CREATED_FILE} cannot be read, so ${toolName} cannot be checked against the tickets this run created`);
-  if (toolName.endsWith("save_issue")) {
-    if ("id" in input) return refuse(`${toolName} is called with an id, which updates an existing ticket: a new-ticket run creates tickets and never updates one`);
-    if ("blocks" in input) return refuse(`${toolName} is called with blocks, which writes a relation on another ticket: a new-ticket run sets parentId, blockedBy and relatedTo only`);
+  if (toolName === writing.createTool) {
+    const refused = writing.refusedInputs.find(({ input: name }) => name in input);
+    if (refused !== undefined) return refuse(`${toolName} ${refused.refusal}`);
     if (created.length >= MAX_CREATED) return refuse(`this run has already created ${MAX_CREATED} tickets, the most a new-ticket run may create`);
     return ALLOW;
   }
-  const issue = String(input.issue ?? "");
+  const issue = String(input[writing.attachTicketInput] ?? "");
   return created.includes(issue) ? ALLOW : refuse(`${toolName} names ${issue || "no ticket"}, which this run did not create: a new-ticket run attaches only to a ticket it created`);
 }
 
 /** The filing tools the board granted a new-ticket run, from its mark beside the outcome file: none where the mark names none or cannot be read. PURE over `read`. */
-export function writerGrants(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8")): string[] {
+export function writerGrants(ticketDir: string, read: (path: string) => string = (p) => readFileSync(p, "utf8"), writings: readonly TrackerWriting[] = trackerWritings()): string[] {
   try {
     const { tools } = JSON.parse(read(join(ticketDir, WRITER_FILE))) as { tools?: unknown };
-    return Array.isArray(tools) ? tools.filter((tool): tool is string => WRITER_CREATE_TOOLS.includes(tool as string)) : [];
+    const granted = grantable(writings);
+    return Array.isArray(tools) ? tools.filter((tool): tool is string => granted.includes(tool as string)) : [];
   } catch {
     return [];
   }
@@ -205,9 +216,10 @@ export function writerGrants(ticketDir: string, read: (path: string) => string =
  * file, which the board checks the outcome's keys against and the PreToolUse hook counts. A result with no key, or a record that cannot be written, is
  * refused out loud, so the agent sees that a ticket it made is not recorded. A call that is not a creation by a new-ticket run is ignored.
  */
-export function recordCreated(ticketDir: string, toolName: string, response: unknown): HookResult {
-  if (toolName !== "mcp__linear__save_issue" || !existsSync(join(ticketDir, WRITER_FILE))) return ALLOW;
-  const key = createdKeyOf(response);
+export function recordCreated(ticketDir: string, toolName: string, response: unknown, writings: readonly TrackerWriting[] = trackerWritings()): HookResult {
+  const writing = writings.find(({ createTool }) => createTool === toolName);
+  if (writing === undefined || !existsSync(join(ticketDir, WRITER_FILE))) return ALLOW;
+  const key = createdKeyOf(response, writing.createdKey);
   if (key === null) {
     return refuse(`the ticket was created, but its key is not in the result, so it is not recorded and the board cannot show it: look it up in the tracker, and do not create it again`);
   }
@@ -234,6 +246,8 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
   writer?: boolean;
   /** The filing tools the board granted a new-ticket run, by name. */
   grants?: readonly string[];
+  /** What the tracker plugins declare a new-ticket run files with: every tracker plugin of the registry's catalog when absent. */
+  trackers?: readonly TrackerWriting[];
   /** The keys the run has created so far, from its record; null when the record cannot be read. */
   created?: readonly string[] | null;
   /** The pull requests a review run may mark ready, by URL. */
@@ -247,7 +261,9 @@ export function toolVerdict(toolName: string, input: Record<string, unknown>, op
 } = {}): HookResult {
   const { machine = [], connectors = [], approved = [], publish = null, ready = false, hostPrograms = [], writer = false, grants = [], created = [] } = options;
   if (toolName.startsWith("mcp__")) {
-    if (FILING_TOOL.test(toolName)) return writer ? writerFiling(toolName, input, { grants, created }) : refuse(FILING_REFUSAL);
+    const writings = options.trackers ?? trackerWritings();
+    const filed = writings.find(({ filingTools }) => new RegExp(filingTools).test(toolName));
+    if (filed !== undefined) return writer ? writerFiling(toolName, input, { grants, created, writings }) : refuse(filingRefusal(filed.label));
     if (writer) {
       return connectors.some((pattern) => pattern.test(toolName)) && READ_ONLY_CONNECTOR.test(toolName) ? ALLOW
         : refuse(`${toolName} may not be called by a new-ticket run: it reads the tracker, and creates nothing but the ticket it files and that ticket's plan`);

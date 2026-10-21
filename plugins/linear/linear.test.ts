@@ -3,9 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpDir } from "../lib/tmp-fixture.ts";
-import { LINEAR_API, downloadName, linearSource, pickQuery, scopedQuery, pullState, readLinearKey, uploadLinks } from "./linear.ts";
-import type { Ticket } from "./source.ts";
+import { tmpDir } from "../../src/lib/tmp-fixture.ts";
+import type { Ticket } from "../../src/plugins/contracts/tracker.ts";
+import { readLinearKey } from "./key.ts";
+import { LINEAR_API, downloadName, linearSource, pickQuery, scopedQuery, pullState, uploadLinks } from "./linear.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
   identifier, title: `Title ${identifier}`, description: null, url: `https://linear.app/x/issue/${identifier}`, branchName: identifier.toLowerCase(),

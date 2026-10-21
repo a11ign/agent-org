@@ -22,7 +22,8 @@ import { hasPlan } from "./board-view/view-types-and-filters.ts";
 import { readOrNull } from "../install/paths.ts";
 import { effectiveTerminal, localTerminalPort } from "../install/terminal.ts";
 import { mintTerminalCode, type TerminalMint, type TerminalRun, terminalRunOf } from "./terminal-pair.ts";
-import { linearSource, readLinearKey } from "./linear.ts";
+import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
 import { pickEmptyText, pickLabel } from "./pick-scope.ts";
 import { API_BODY_BYTES, readJson, refusal, sameSecret, sendJson, type Json } from "./local-http.ts";
 import { createPool, startsReviewers, type PoolDeps } from "./pool.ts";
@@ -663,7 +664,8 @@ async function serve(): Promise<void> {
   if (startsReviewers(settings)) await loadReviewerGate();
   // A11-84: the routing wrapper is checked, and re-rendered when it has diverged, before the pool is made (see `checkGhWrapperAtStart`).
   checkGhWrapperAtStart();
-  const source = linearSource({ key: readLinearKey(settings.linearKey), pick: settings.pick });
+  // The tracker is the enabled tracker plugin's (`plugins/linear`, unless the host file names another): a plugin the loader refuses refuses the start, by name.
+  const source = (await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick }))).tracker();
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
   const tailnet = settings.serve === null ? undefined : cachedTailnetName(async () => readTailnetName(runTailscale));

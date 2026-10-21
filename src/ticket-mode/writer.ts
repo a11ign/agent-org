@@ -7,16 +7,14 @@
 // really made. Nothing here creates a ticket, and nothing here reads the tracker.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
+
+export { PRIORITIES, type Priority } from "../plugins/contracts/tracker.ts";
 
 /** The file beside a writer run's outcome where the PostToolUse hook records each ticket the run created, one JSON line each. Only the hook writes it. */
 export const CREATED_FILE = "created-issues.jsonl";
 /** The file a Grill run writes its answers to, beside its outcome: the sections the board writes into the ticket (A11-134). */
 export const DECISIONS_FILE = "decisions.md";
-/** The priorities a writer's form may name, most urgent first. */
-export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
-export type Priority = (typeof PRIORITIES)[number];
-/** Linear's number for each priority: 0 is none, 1 the most urgent. The brief tells the run these numbers. */
-export const PRIORITY_NUMBER: Readonly<Record<Priority, number>> = Object.freeze({ urgent: 1, high: 2, medium: 3, low: 4, none: 0 });
 /** The most tickets one writer run may create: the hook refuses an eleventh creation. */
 export const MAX_CREATED = 10;
 
@@ -71,11 +69,11 @@ export function parseWriterOutcome(text: string): WriterOutcome | string {
 }
 
 /**
- * The key a creation's result names, from the result the tracker's tool returned: its JSON text, found in a content block or the result itself, with the
- * issue's `identifier` or, failing that, its `id` when that is a ticket key (the tracker's own tools answer with the key as `id`). Null when the result
- * names none. PURE.
+ * The key a creation's result names, from the result the tracker's tool returned: its JSON text, found in a content block or the result itself, with the ticket
+ * under the tracker's wrapper field when it names one, and the first of its fields that is a ticket key (`identifier`, or failing that `id`, for Linear's own tools,
+ * which answer with the key as `id`). Null when the result names none. `shape` is the tracker plugin's `createdKey` (`TrackerWriting`). PURE.
  */
-export function createdKeyOf(response: unknown): string | null {
+export function createdKeyOf(response: unknown, shape: TrackerWriting["createdKey"]): string | null {
   for (const text of textsOf(response)) {
     let parsed: unknown;
     try {
@@ -83,9 +81,10 @@ export function createdKeyOf(response: unknown): string | null {
     } catch {
       continue;
     }
-    const issue = isObject(parsed) && isObject(parsed.issue) ? parsed.issue : parsed;
+    const wrapped = shape.wrapper !== null && isObject(parsed) ? parsed[shape.wrapper] : undefined;
+    const issue = isObject(wrapped) ? wrapped : parsed;
     if (!isObject(issue)) continue;
-    const key = [issue.identifier, issue.id].find((candidate) => typeof candidate === "string" && TICKET_KEY.test(candidate));
+    const key = shape.fields.map((field) => issue[field]).find((candidate) => typeof candidate === "string" && TICKET_KEY.test(candidate));
     if (typeof key === "string") return key;
   }
   return null;

@@ -4,15 +4,20 @@
 // EVERY IMPLEMENTATION'S OWN TEST CALLS THIS, so "does Linear honour `read`" and "does the next tracker" are one question with one answer. A tracker cannot be asked
 // offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
 // write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
+//
+// CONTRACT 1.1 (A11-159): a tracker also declares what a new-ticket run files with (`TrackerWriting`, the plugin's manifest data). The caller passes it, and the suite checks that it
+// hangs together the way the hook and the brief use it: the tools it grants are covered by its filing pattern, a creation with an `id` is refused, a created key is read back by
+// the declared shape, and every priority has a number, `none` being 0.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Ticket, TicketSource } from "../contracts/tracker.ts";
+import { PRIORITIES, type Ticket, type TicketSource, type TrackerWriting } from "../contracts/tracker.ts";
+import { createdKeyOf } from "../../ticket-mode/writer.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 
 /** What the caller has seeded: the key of a ticket the tracker holds, a key it holds none of, and a second ticket the write checks may relate to the first. */
 export type TrackerProbe = Readonly<{ known: string; missing: string; other?: string }>;
-type Subject = Readonly<{ source: TicketSource; probe: TrackerProbe }>;
+type Subject = Readonly<{ source: TicketSource; probe: TrackerProbe; writing?: TrackerWriting }>;
 
 const REQUIRED_OPERATIONS = ["assigned", "read", "download"] as const;
 const TICKET_STRINGS = ["key", "title", "description", "url", "branch", "status", "team"] as const;
@@ -67,6 +72,39 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
       expect(Array.isArray(paths) && paths.every(isString), "download() must resolve a list of paths");
     });
   },
+};
+
+const declared = (subject: Subject): TrackerWriting => {
+  expect(subject.writing !== undefined, "the check applies only when the tracker declares its writing");
+  return subject.writing;
+};
+const withWriting = (run: (writing: TrackerWriting) => void): Conditional<Subject> => ({
+  applies: (subject) => subject.writing !== undefined, reason: "the caller passed no writer tooling (tracker contract 1.1)", run: (subject) => run(declared(subject)),
+});
+
+/** What a creation's answer looks like in the shape the tracker declares: the first field, under the wrapper when there is one. */
+const answerIn = ({ createdKey }: Pick<TrackerWriting, "createdKey">, key: string): unknown => (createdKey.wrapper === null ? { [createdKey.fields[0]]: key } : { [createdKey.wrapper]: { [createdKey.fields[0]]: key } });
+
+const WRITING: Readonly<Record<string, Conditional<Subject>>> = {
+  "writing grants the create and attach tools, and its filing pattern covers every one": withWriting((writing) => {
+    const filing = new RegExp(writing.filingTools);
+    for (const tool of [writing.createTool, ...writing.attachTools]) expect(filing.test(tool), `filingTools must cover the granted tool ${tool}, or a build worker could call it`);
+    expect(!writing.attachTools.includes(writing.createTool), "the create tool is not also an attach tool");
+  }),
+  "writing refuses a creation that names an id, which would update a ticket": withWriting((writing) => {
+    expect(writing.refusedInputs.some(({ input }) => input === "id"), "refusedInputs must name `id`: a new-ticket run creates tickets and never updates one (A11-135)");
+  }),
+  "writing reads a created ticket's key back by the shape it declares": withWriting((writing) => {
+    for (const field of writing.createdKey.fields) {
+      const shape = { createdKey: { ...writing.createdKey, fields: [field] } };
+      expect(createdKeyOf(answerIn(shape, "ABC-1"), writing.createdKey) === "ABC-1", `createdKey must read the key from an answer that names it as ${field}`);
+    }
+    expect(createdKeyOf({ content: "created" }, writing.createdKey) === null, "an answer with no key reads as none, so the hook refuses to record it");
+  }),
+  "writing numbers every priority, and none is 0": withWriting((writing) => {
+    for (const name of PRIORITIES) expect(Number.isInteger(writing.priorities[name]), `priorities.${name} must be a whole number`);
+    expect(writing.priorities.none === 0, "priorities.none must be 0: a ticket the form gave no priority has none");
+  }),
 };
 
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
@@ -137,13 +175,13 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
 };
 
 /**
- * Runs every check against `source`, so one run reports EVERY way a tracker is wrong.
+ * Runs every check against `source`, so one run reports EVERY way a tracker is wrong. `writing` is the plugin's manifest data (contract 1.1); the checks of it are skipped without.
  * @throws ContractError listing each failed check
  */
-export function runTrackerConformance(source: TicketSource, probe: TrackerProbe): Promise<ConformanceResult> {
-  return runChecks("tracker", { source, probe }, {
+export function runTrackerConformance(source: TicketSource, probe: TrackerProbe, writing?: TrackerWriting): Promise<ConformanceResult> {
+  return runChecks("tracker", { source, probe, writing }, {
     shape: ({ source: candidate }) => expect(hasFunctions(candidate, REQUIRED_OPERATIONS), `a tracker is an object with ${REQUIRED_OPERATIONS.join(", ")} functions`),
     always: ALWAYS,
-    conditional: CONDITIONAL,
+    conditional: { ...CONDITIONAL, ...WRITING },
   });
 }

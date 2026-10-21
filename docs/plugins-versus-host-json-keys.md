@@ -205,5 +205,10 @@ The run start calls the same function, so the page and `clearRunDir` cannot disa
 > Decision 1 answered ("a plugin, as the conventions plugin is, or a provider built in?") confused two things: a *Claude plugin* (what `tickets.plugins` lists and what this record is
 > about) and an *agent-org plugin* (code the tool runs). The tracker and the code host are agent-org plugins; the conventions plugin stays a Claude plugin, and the "go, narrowly" of
 > section 7 for it stands. The text below is kept as the record of what A11-144 decided at the time.
+>
+> **Rule 3 (a plugin may narrow, never widen) still holds for a Claude plugin, and says nothing against an agent-org plugin's `tooling` (A11-159).** An agent-org plugin is trusted code like core
+> (Decision 4 of A11-157), and its manifest's `tooling` (its MCP servers, its read-only connector patterns, the tools a new-ticket run files with) declares what its own workers need. It does not
+> widen a connector allow-list by itself: `tickets.providers.tracker.connectors` is still the host file's key, onboard adds the plugin's read-only patterns to it, and the PreToolUse hook still
+> refuses every filing tool to a build worker.
 
 The open question of A11-144 was whether the tracker and the code host are plugins, as the conventions plugin is, or built-in providers picked by name. They are built in. A11-143 Decision 1 settles it: the tracker and the code host are code that agent-org runs (API calls and auth), so each is a provider picked by name under `tickets.providers` (`tracker: linear`, `codeHost: github`), and a later tracker such as Jira is a code change behind the same provider interface. The "go, narrowly" of section 7 stands for the conventions plugin alone, which says how tickets are written and reviewed. Section 6's contract is not extended to the providers, and neither needs a `metadata.agentOrg` entry.

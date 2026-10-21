@@ -79,7 +79,7 @@ test("the release that refuses the old keys is recorded as a version, and until 
 
 test("the old keys parse to the settings they parsed to before, under the new names", () => {
   const settings = parseTicketSettings({ ...OLD_KEYS, tickets: { ...OLD_KEYS.tickets, max: 2 } });
-  assert.deepEqual(settings.linearKey, { path: "/k/linear" });
+  assert.deepEqual(settings.providers.blocks.tracker.settings.key, { value: { path: "/k/linear" }, at: "tickets.linearKey" });
   assert.deepEqual(settings.connectors, [LINEAR, SAVE, DESIGN]);
   assert.equal(settings.workingState, "In Progress");
   assert.equal(settings.planner?.state, "Planned");
@@ -119,7 +119,6 @@ test("a setting its provider does not take is refused by name, and so is a bad v
   refuses({ providers: { exposure: { provider: "tailscale", tailnetPorts: { ui: 9443, terminal: 9443 } } } }, "tickets.providers.exposure.tailnetPorts");
   refuses({ providers: { exposure: { provider: "tailscale", port: 0 } } }, "tickets.providers.exposure.port");
   refuses({ providers: { exposure: { provider: "local" } }, servePorts: { ui: 9443 } }, "tickets.servePorts");
-  refuses({ providers: { tracker: { provider: "linear", key: "file" } } }, "tickets.providers.tracker.key");
   refuses({ providers: { tracker: { provider: "linear", connectors: ["slack"] } } }, "tickets.providers.tracker.connectors[0]");
   refuses({ providers: { tracker: { provider: "linear", workingState: "  " } } }, "tickets.providers.tracker.workingState");
   refuses({ providers: { codeHost: { provider: "github", stack: "yes" } } }, "tickets.providers.codeHost.stack");
@@ -136,7 +135,7 @@ test("a provider's defaults are the ones a host file with no block takes, so an 
   assert.equal(settings.port, 4747);
   assert.equal(settings.uiPort, 4748);
   assert.equal(settings.terminal, null);
-  assert.deepEqual(settings.linearKey, { keychain: "agent-org-linear" }, "tracker linear with the Keychain service");
+  assert.equal(settings.providers.blocks.tracker.settings.key.value, undefined, "tracker linear, whose key the plugin defaults to the Keychain service");
   assert.deepEqual(settings.connectors, []);
   assert.equal(settings.stackRequired, true);
 });
@@ -223,17 +222,18 @@ test("A11-158: a plugin that implements a contract major this agent-org does not
   const refused = refusalOf({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } }, unread);
   assert.equal(refused.field, "tickets.providers.tracker.provider");
   assert.match(refused.message, /is refused: plugin fake-tracker implements tracker contract 2\.0; this agent-org reads tracker 1\.x: update agent-org, or use a plugin of a major it reads/);
-  const disabled = resolveProviders({ tickets: { providers: { tracker: { provider: "linear" }, publish: { provider: "fake-publisher", enabled: false } } } }, unread);
+  const disabled = resolveProviders({ tickets: { providers: { publish: { provider: "fake-publisher", enabled: false } } } }, unread);
   assert.equal(disabled.blocks.publish.enabled, false);
   assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "the same plugin at a major it reads is accepted");
 });
 
 test("A11-158: while core runs a concern's built-in, any other plugin enabled for it is refused, naming the plugin, the built-in and the ticket that moves it", () => {
-  const refused = refusalOf({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } });
-  assert.equal(refused.field, "tickets.providers.tracker.provider");
-  assert.match(refused.message, /is refused: fake-tracker is a tracker plugin, but this release runs the tracker in core as linear until A11-159: name "linear"/);
+  const refused = refusalOf({ tickets: { providers: { codeHost: { provider: "fake-codeHost" } } } });
+  assert.equal(refused.field, "tickets.providers.codeHost.provider");
+  assert.match(refused.message, /is refused: fake-codeHost is a code host plugin, but this release runs the code host in core as github until A11-160: name "github"/);
   assert.match(refusalOf({ tickets: { providers: { exposure: { provider: "fake-exposure" } } } }).message, /fake-exposure is an exposure plugin, but this release runs the exposure in core as local or tailscale until A11-162/);
   assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker", enabled: true } } } }, unpinned()).blocks.tracker.provider, "fake-tracker", "no pin, no refusal");
+  assert.equal(resolveProviders({ tickets: { providers: { tracker: { provider: "fake-tracker" } } } }).blocks.tracker.provider, "fake-tracker", "the tracker has no pin since A11-159: linear is a bundled package, and a fake is refused when a person installs or enables it, and at start");
   assert.equal(resolveProviders({ tickets: { providers: { publish: { provider: "fake-publisher", enabled: false } } } }).blocks.publish.enabled, false, "a disabled plugin is not run, so the pin has nothing to refuse");
 });
 

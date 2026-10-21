@@ -4,7 +4,27 @@
 // IT HOLDS TICKETS AND NOTHING ELSE. A test seeds them (`seed`), and reads what the board did to them (`ticketOf`, `comments`, `calls`) rather than what core believes it did.
 // It implements every optional operation, so a test of the board's planning, ordering or completion has a tracker that takes part; a test of a tracker that has none builds
 // its own object, which is a `TicketSource` too.
-import type { Assignee, Blocker, People, PullState, ScopePage, StateMove, Ticket, TicketSource } from "../contracts/tracker.ts";
+import type { Assignee, Blocker, People, PullState, ScopePage, StateMove, Ticket, TicketSource, TrackerWriting } from "../contracts/tracker.ts";
+
+/**
+ * What the fake declares a new-ticket run files with (contract 1.1): tools of an `mcp__fake__` server, the numbers the contract names, and refusals worded like a real tracker's.
+ * A core test of the writer, the hook or the brief builds on this, so it names no real tracker.
+ */
+export const FAKE_TRACKER_WRITING: TrackerWriting = Object.freeze({
+  label: "Fake",
+  createTool: "mcp__fake__create_ticket",
+  attachTools: ["mcp__fake__prepare_upload", "mcp__fake__attach_upload"],
+  filingTools: "^mcp__fake__(?:create_ticket|prepare_upload|attach_upload|attach_file)$",
+  refusedInputs: [
+    { input: "id", refusal: "is called with an id, which updates an existing ticket: a new-ticket run creates tickets and never updates one" },
+    { input: "blocks", refusal: "is called with blocks, which writes a relation on another ticket: a new-ticket run sets parentId, blockedBy and relatedTo only" },
+  ],
+  attachTicketInput: "ticket",
+  createdKey: Object.freeze({ wrapper: "ticket", fields: ["key"] }),
+  priorities: Object.freeze({ urgent: 1, high: 2, medium: 3, low: 4, none: 0 }),
+  readTools: ["mcp__fake__get_ticket"],
+  briefNote: "Use the `mcp__fake__` tools.",
+});
 
 /** A ticket as the fake holds it: the board's ticket, with the state type the tracker would name and the relations the fake records. */
 type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: string[] };

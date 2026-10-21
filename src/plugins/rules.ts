@@ -25,3 +25,8 @@ export function enableRefusal(plugin: CatalogPlugin, catalog: Catalog): string |
   const label = CONCERN_LABEL[plugin.concern];
   return `${plugin.name} is ${/^[aeiou]/.test(label) ? "an" : "a"} ${label} plugin, but this release runs the ${label} in core as ${pin.runs.join(" or ")} until ${pin.until}: name ${quoted(pin.runs)}`;
 }
+
+/** Why a fake may not be installed or enabled on a host: it is an in-memory implementation for core's tests, and has no code to run. Null for any other plugin. */
+export function fakeRefusal(plugin: CatalogPlugin): string | null {
+  return plugin.where === "fake" ? `${plugin.name} is an in-memory ${CONCERN_LABEL[plugin.concern]} for core's tests: it runs no host, so it cannot be installed or enabled` : null;
+}

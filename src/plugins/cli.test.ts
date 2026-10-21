@@ -63,10 +63,11 @@ test("`plugin list` shows each concern in order with the plugin enabled for it, 
     "exposure: tailscale (from tickets.providers.exposure)",
     "messaging: none (this machine declares no project, so messaging is not configured)",
   ]);
-  for (const fake of ["fake-tracker", "fake-codeHost", "fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.0 +fake`, "m"), fake);
-  assert.match(out, /^ {2}linear +enabled +contract 1\.0 +core, until A11-159$/m);
+  for (const fake of ["fake-codeHost", "fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]) assert.match(out, new RegExp(`^  ${fake} +available +contract 1\\.0 +fake`, "m"), fake);
+  assert.match(out, /^ {2}fake-tracker +available +contract 1\.1 +fake/m);
+  assert.match(out, /^ {2}linear +enabled +contract 1\.1 +plugins\/linear$/m);
   assert.match(out, /^ {2}local +available +contract 1\.0 +core, until A11-162$/m);
-  assert.match(out, /^ {2}fake-tracker +available.*refused: fake-tracker is a tracker plugin, but this release runs the tracker in core as linear until A11-159/m);
+  assert.match(out, /^ {2}fake-tracker +available.*refused: fake-tracker is an in-memory tracker for core's tests: it runs no host, so it cannot be installed or enabled/m);
 });
 
 test("`plugin list` reads messaging from the project's project.json, and says it is configured there", async () => {
@@ -154,9 +155,19 @@ test("install over a block that names another plugin is refused unless --replace
 
 test("install is refused by the reader for a plugin core is pinned off, naming the plugin and the ticket that moves the concern", async () => {
   const host = scratch();
-  const { status, err } = await host.run("install", "fake-tracker", "--replace");
+  const { status, err } = await host.run("install", "fake-exposure", "--replace");
   assert.equal(status, 1);
-  assert.match(err, /fake-tracker is a tracker plugin, but this release runs the tracker in core as linear until A11-159/);
+  assert.match(err, /fake-exposure is an exposure plugin, but this release runs the exposure in core as local or tailscale until A11-162/);
+  assert.equal(host.text(), HOST);
+});
+
+test("a fake is neither installed nor enabled on a host, though the reader would accept it: it has no code to run, so the start would be refused", async () => {
+  const host = scratch();
+  for (const argv of [["install", "fake-tracker", "--replace"], ["enable", "fake-tracker"]]) {
+    const { status, err } = await host.run(...argv);
+    assert.equal(status, 1, argv.join(" "));
+    assert.match(err, /fake-tracker is an in-memory tracker for core's tests: it runs no host, so it cannot be installed or enabled/);
+  }
   assert.equal(host.text(), HOST);
 });
 

@@ -4,7 +4,7 @@
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
-import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_CREATE_TOOLS, WRITER_FILE, writerBriefText, writerPrompt } from "./worker-files.ts";
+import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, publishBriefText, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
 import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
@@ -29,6 +29,7 @@ import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { needsDecision } from "./open-decisions.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { trackerWritingOf } from "../plugins/registry.ts";
 
 /** herdr waits on Claude's start; a slow one has been measured past 30 s (`wake.ts`'s start budget), so a start gets 90. */
 const START_TIMEOUT_MS = 90_000;
@@ -527,13 +528,14 @@ async function startWriter(ctx: PoolContext): Promise<void> {
     const model = queued.model ?? writer.model;
     const effort = queued.effort ?? writer.effort;
     const place = writerPlace(ctx, queued);
+    const writing = trackerWritingOf(settings.providers);
     // A Grill run's ticket is read as it is now: its brief is the grill of that text, and the run may file nothing (A11-134).
     const grilled = queued.ticket === undefined ? undefined : await readGrilled(source, queued.ticket);
     clearRunDir(ctx, place.folder, place.dir);
     writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, form: queued.form, clones: settings.clones,
-      dir: place.dir, pickTeam: pickTeamOf(settings.pick), ...(grilled === undefined ? {} : { ticket: grilled }) }));
-    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: grilled === undefined ? WRITER_CREATE_TOOLS : [] })}\n`);
-    writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model, writer: true });
+      dir: place.dir, pickTeam: pickTeamOf(settings.pick), writing, ...(grilled === undefined ? {} : { ticket: grilled }) }));
+    writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: grilled === undefined ? writerTools(writing) : [] })}\n`);
+    writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model, writer: writing });
     const tail = [writerPrompt(place.dir, queued.mode), ...workerFlags({ name: `writer-${queued.id}`, model, effort, addDirs: [place.dir] })];
     const { workspace, pane } = await startAgent(ctx, place, {}, tail, "the new-ticket run");
     if (writerOf(store.get(), queued.id)?.phase !== "starting") {

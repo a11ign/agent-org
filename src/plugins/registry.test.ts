@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUILT_IN, CORE_RUNS, FAKES } from "./built-in.ts";
-import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed, pluginsOfConcern } from "./registry.ts";
+import { resolveProviders } from "../ticket-mode/providers.ts";
+import { blockSettings, buildCatalog, defaultCatalog, isTrackerConnector, ownsConnector, type PackageFiles, pluginNamed, pluginsOfConcern, trackerWritingOf } from "./registry.ts";
 
 const ROOT = "/checkout";
 
@@ -28,7 +29,7 @@ test("with no bundled plugin the catalog is today's providers and the fakes, eac
   assert.deepEqual(catalog.plugins.map(({ name, concern, where }) => `${name}:${concern}:${where}`), [
     ...BUILT_IN.map(({ name, concern }) => `${name}:${concern}:core`), ...FAKES.map(({ name, concern }) => `${name}:${concern}:fake`)]);
   assert.deepEqual(BUILT_IN.map(({ name, concern, movedBy }) => [name, concern, movedBy]), [
-    ["linear", "tracker", "A11-159"], ["github", "codeHost", "A11-160"], ["slack", "publisher", "A11-161"], ["atomic", "reviewer", "A11-161"],
+    ["github", "codeHost", "A11-160"], ["slack", "publisher", "A11-161"], ["atomic", "reviewer", "A11-161"],
     ["local", "exposure", "A11-162"], ["tailscale", "exposure", "A11-162"], ["telegram", "messaging", "A11-162"]]);
   assert.deepEqual(FAKES.map(({ name }) => name), ["fake-tracker", "fake-codeHost", "fake-publisher", "fake-reviewer", "fake-exposure", "fake-messaging"]);
   assert.deepEqual(catalog.refusals, []);
@@ -41,7 +42,7 @@ test("a bundled package with an agentOrg field is a plugin, read without importi
   const plugin = pluginNamed(catalog, "example");
   assert.deepEqual({ ...plugin, settings: undefined }, { name: "example", concern: "tracker", contract: "1.0", description: "An example tracker.", entry: "index.ts", settings: undefined, tooling, where: "bundled", dir: `${ROOT}/plugins/example`, movedBy: null });
   assert.equal(catalog.plugins[0].name, "example");
-  assert.deepEqual(pluginsOfConcern(catalog, "tracker").map(({ name }) => name), ["example", "linear", "fake-tracker"]);
+  assert.deepEqual(pluginsOfConcern(catalog, "tracker").map(({ name }) => name), ["example", "fake-tracker"]);
 });
 
 test("a package with no agentOrg field is not a plugin and is skipped, and a folder with no package.json too", () => {
@@ -83,10 +84,10 @@ test("a bundled package that declares dependencies is refused by name, since a h
 });
 
 test("two plugins of one name are refused by name: the one found first stays", () => {
-  const catalog = catalogOf({ linear: manifest() });
-  assert.equal(pluginNamed(catalog, "linear")?.where, "bundled", "the bundled package is first");
-  assert.match(refusalOf(catalog, "linear") ?? "", /plugin linear is named twice, and plugin names are unique: the core plugin is refused, and the one found first stays/);
-  assert.equal(catalog.plugins.filter(({ name }) => name === "linear").length, 1);
+  const catalog = catalogOf({ github: manifest({ concern: "codeHost" }) });
+  assert.equal(pluginNamed(catalog, "github")?.where, "bundled", "the bundled package is first");
+  assert.match(refusalOf(catalog, "github") ?? "", /plugin github is named twice, and plugin names are unique: the core plugin is refused, and the one found first stays/);
+  assert.equal(catalog.plugins.filter(({ name }) => name === "github").length, 1);
 });
 
 test("a plugin's name is its directory name, and a name that cannot be one is refused", () => {
@@ -95,12 +96,14 @@ test("a plugin's name is its directory name, and a name that cannot be one is re
 
 test("pins come from core's table unless a test passes its own", () => {
   assert.deepEqual(buildCatalog({ root: ROOT, files: checkout({}), pins: {} }).pins, {});
-  assert.deepEqual(Object.keys(CORE_RUNS), ["tracker", "codeHost", "publisher", "reviewer", "exposure"], "messaging has no block, so no pin");
+  assert.deepEqual(Object.keys(CORE_RUNS), ["codeHost", "publisher", "reviewer", "exposure"], "messaging has no block, so no pin, and the tracker moved into plugins/linear");
 });
 
 test("this checkout's catalog is read once, holds no refusal, and reads a real plugins folder from disk", () => {
   assert.equal(defaultCatalog(), defaultCatalog());
   assert.deepEqual(defaultCatalog().refusals, []);
+  const linear = pluginNamed(defaultCatalog(), "linear");
+  assert.deepEqual([linear?.concern, linear?.where, linear?.contract, linear?.dir?.endsWith("/plugins/linear")], ["tracker", "bundled", "1.1", true], "linear is the bundled package, found on disk");
   const root = mkdtempSync(join(tmpdir(), "registry-"));
   try {
     mkdirSync(join(root, "plugins", "disk-plugin"), { recursive: true });
@@ -137,4 +140,55 @@ test("a plugins folder or a package.json that exists and cannot be read is refus
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+const writing = {
+  label: "Example", createTool: "mcp__example__create", attachTools: ["mcp__example__attach"], filingTools: "^mcp__example__(?:create|attach)$",
+  refusedInputs: [{ input: "id", refusal: "is called with an id" }], attachTicketInput: "ticket", createdKey: { wrapper: null, fields: ["key"] },
+  priorities: { urgent: 1, high: 2, medium: 3, low: 4, none: 0 }, readTools: ["mcp__example__get"], briefNote: "Use the example tools.",
+};
+
+test("a tracker declares what a new-ticket run files with as manifest data (contract 1.1), and a malformed declaration is refused by name", () => {
+  const catalog = catalogOf({ example: manifest({ contract: "1.1", tooling: { mcpServers: ["example"], connectors: ["^mcp__example__get"], skills: [], connectorServers: ["example", "example_app"], writer: writing } }) });
+  const tooling = pluginNamed(catalog, "example")?.tooling;
+  assert.deepEqual(tooling?.writer, writing);
+  assert.deepEqual(tooling?.connectorServers, ["example", "example_app"]);
+  const cases: [string, Record<string, unknown>, RegExp][] = [
+    ["a writer that is not an object", { writer: "yes" }, /agentOrg\.tooling\.writer must be an object/],
+    ["a create tool that is no tool name", { writer: { ...writing, createTool: "create" } }, /writer\.createTool must be a tool name starting "mcp__"/],
+    ["a filing pattern that does not cover a granted tool", { writer: { ...writing, filingTools: "^mcp__example__create$" } }, /writer\.filingTools must match every tool the writer is granted, and does not match mcp__example__attach/],
+    ["a filing pattern that is not anchored", { writer: { ...writing, filingTools: "mcp__example__" } }, /writer\.filingTools must be a regular expression anchored with \^ and \$/],
+    ["a priority left out", { writer: { ...writing, priorities: { urgent: 1 } } }, /writer\.priorities must give a number for each of urgent, high, medium, low, none/],
+    ["no created-key fields", { writer: { ...writing, createdKey: { wrapper: null, fields: [] } } }, /writer\.createdKey must be \{ wrapper, fields \}/],
+    ["server names that are not a list", { connectorServers: "example" }, /agentOrg\.tooling\.connectorServers must be a list of server names/],
+  ];
+  for (const [what, tooling, pattern] of cases) assert.match(refusalOf(catalogOf({ bad: manifest({ tooling }) }), "bad") ?? "", pattern, what);
+  assert.match(refusalOf(catalogOf({ bad: manifest({ concern: "publisher", tooling: { writer: writing } }) }), "bad") ?? "", /agentOrg\.tooling\.writer is a tracker's: publisher plugins file no tickets/);
+});
+
+test("a setting named with a dot is a part of the setting before it, which the manifest must declare, and the block does not hold it", () => {
+  const entry = (key: string) => ({ key, file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } });
+  const settings = { key: entry("tickets.providers.tracker.key"), "key.path": entry("tickets.providers.tracker.key.path") };
+  const catalog = catalogOf({ example: manifest({ settings }) });
+  const plugin = pluginNamed(catalog, "example");
+  assert.deepEqual(Object.keys(plugin?.settings ?? {}), ["key", "key.path"], "both are drawn on the Settings page");
+  assert.deepEqual(blockSettings(plugin!), ["key"], "and the block takes only the first");
+  assert.match(refusalOf(catalogOf({ bad: manifest({ settings: { "key.path": settings["key.path"] } }) }), "bad") ?? "", /agentOrg\.settings\.key\.path is a part of key, which the manifest does not declare/);
+});
+
+test("a connector pattern is a tracker's when it names a server its tooling declares, and the catalog's tracker plugins are asked", () => {
+  const catalog = catalogOf({ example: manifest({ tooling: { mcpServers: ["example"], connectors: [], skills: [], connectorServers: ["example", "example_app"] } }) });
+  assert.equal(isTrackerConnector(catalog, "^mcp__example__(get|list)_"), true);
+  assert.equal(isTrackerConnector(catalog, "^mcp__example_app__get_"), true);
+  assert.equal(isTrackerConnector(catalog, "^mcp__example_other__get_"), false, "a longer server name is another server");
+  assert.equal(isTrackerConnector(catalog, "^mcp__slack__send_"), false);
+  assert.equal(isTrackerConnector(catalog, 7), false, "and a value that is no pattern is nobody's");
+  assert.equal(ownsConnector({ tooling: { mcpServers: ["solo"], connectors: [], skills: [] } }, "^mcp__solo__get_"), true, "with no connectorServers a plugin's own MCP servers are the ones");
+});
+
+test("the writer a host names is the tracker plugin's, and a tracker that declares none is refused by name", () => {
+  const catalog = catalogOf({ example: manifest({ contract: "1.1", tooling: { mcpServers: [], connectors: [], skills: [], writer: writing } }), bare: manifest() });
+  const providers = (name: string) => resolveProviders({ tickets: { providers: { tracker: { provider: name } } } }, { ...catalog, pins: {} });
+  assert.deepEqual(trackerWritingOf(providers("example"), catalog), writing);
+  assert.throws(() => trackerWritingOf(providers("bare"), catalog), /the tracker bare declares no writer tooling \(tracker contract 1\.1\), so a new-ticket run cannot file a ticket with it/);
 });

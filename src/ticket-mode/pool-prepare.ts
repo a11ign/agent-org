@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
-import { DEFAULT_KEYWORDS, type Ticket } from "./source.ts";
+import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
 import { isPlanning, runChoice, runPlace } from "./pool-state.ts";
@@ -181,8 +181,8 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
  * The files a run the board starts for itself (a publish or a new-ticket run) is given beside its brief: its refusals, this machine's connectors, the
  * host's protected programs, and its settings file in the folder its agent starts in. The caller writes its own mark first.
  */
-export function writeBoardRunFiles(ctx: PoolContext, place: RunPlace, { deny, readDirs, model, writer = false }: Readonly<{
-  deny: readonly DenyRule[]; readDirs: readonly string[]; model: string; writer?: boolean;
+export function writeBoardRunFiles(ctx: PoolContext, place: RunPlace, { deny, readDirs, model, writer = null }: Readonly<{
+  deny: readonly DenyRule[]; readDirs: readonly string[]; model: string; writer?: Pick<TrackerWriting, "createTool"> | null;
 }>): void {
   const { hook, settings } = ctx;
   writeFileSync(join(place.dir, DENY_FILE), `${JSON.stringify(deny)}\n`);

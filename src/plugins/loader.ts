@@ -16,8 +16,15 @@ import type { Catalog, CatalogPlugin, LoadedPlugin, PluginDeps, PluginModule, Pl
 import { pluginNamed } from "./registry.ts";
 import { readsConcernContract, unreadMajorRefusal } from "./version.ts";
 
-/** What loading found: the plugins that loaded, and one refusal for each that did not, naming it. */
-export type LoadResult = Readonly<{ loaded: readonly LoadedPlugin[]; refusals: readonly Readonly<{ plugin: string; concern: Concern; why: string }>[] }>;
+/**
+ * What loading found: the plugins that loaded, and one refusal for each that did not, naming it. A plugin whose module imported but whose `create` threw is a refusal and also
+ * `unbuilt`, so doctor can still run its checks: the checks are how a person learns why `create` threw (a key that cannot be read), and they need no implementation.
+ */
+export type LoadResult = Readonly<{
+  loaded: readonly LoadedPlugin[];
+  unbuilt: readonly Readonly<{ plugin: CatalogPlugin; module: PluginModule }>[];
+  refusals: readonly Readonly<{ plugin: string; concern: Concern; why: string }>[];
+}>;
 
 /** Imports a module by its file URL: the default is `import()`, and a test passes its own. */
 export type ImportModule = (url: string) => Promise<unknown>;
@@ -36,13 +43,14 @@ function refusalOf(plugin: CatalogPlugin): string | null {
   return null;
 }
 
-async function loadOne(plugin: CatalogPlugin, report: BlockReport, deps: PluginDeps, importModule: ImportModule): Promise<LoadedPlugin> {
+/** A plugin's module, imported; or the reason it cannot be. */
+async function importOne(plugin: CatalogPlugin, importModule: ImportModule): Promise<PluginModule> {
   const refusal = refusalOf(plugin);
   if (refusal !== null) throw new Error(refusal);
   if (plugin.dir === null || plugin.entry === null) throw new Error(`plugin ${plugin.name} is bundled but names no entry module`);
   const module = await importModule(pathToFileURL(join(plugin.dir, plugin.entry)).href);
   if (!isPluginModule(module)) throw new Error(`plugin ${plugin.name}: ${plugin.entry} must export create, doctorChecks and onboardSteps`);
-  return { plugin, implementation: module.create(settingsOfBlock(report), deps), module };
+  return module;
 }
 
 /**
@@ -51,16 +59,20 @@ async function loadOne(plugin: CatalogPlugin, report: BlockReport, deps: PluginD
  */
 export async function loadEnabled(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule: ImportModule = (url) => import(url)): Promise<LoadResult> {
   const loaded: LoadedPlugin[] = [];
+  const unbuilt: { plugin: CatalogPlugin; module: PluginModule }[] = [];
   const refusals: { plugin: string; concern: Concern; why: string }[] = [];
   for (const block of PROVIDER_BLOCKS) {
     const report = providers.blocks[block];
     const plugin = report.enabled ? pluginNamed(catalog, report.provider) : undefined;
     if (plugin === undefined || plugin.where !== "bundled") continue;
+    let module: PluginModule | null = null;
     try {
-      loaded.push(await loadOne(plugin, report, deps, importModule));
+      module = await importOne(plugin, importModule);
+      loaded.push({ plugin, implementation: module.create(settingsOfBlock(report), deps), module });
     } catch (error) {
       refusals.push({ plugin: plugin.name, concern: plugin.concern, why: error instanceof Error ? error.message : String(error) });
+      if (module !== null) unbuilt.push({ plugin, module });
     }
   }
-  return { loaded, refusals };
+  return { loaded, unbuilt, refusals };
 }

@@ -15,7 +15,7 @@ test("the throwaway host file loads through the settings reader, with the two po
   assert.equal(settings.stateDir, "/tmp/cap/state");
   assert.equal(settings.binDir, "/tmp/cap/bin", "no gh wrapper is written to the real bin folder");
   assert.deepEqual(settings.clones, { "agent-org": "/work/agent-org" });
-  assert.deepEqual(settings.linearKey, { path: "/tmp/cap/linear-key" });
+  assert.deepEqual(settings.providers.blocks.tracker.settings.key.value, { path: "/tmp/cap/linear-key" });
   assert.equal(settings.serve, null, "a local exposure serves on loopback, never the tailnet");
   assert.equal(settings.terminal, null, "no worker terminal is linked from a throwaway board");
 });

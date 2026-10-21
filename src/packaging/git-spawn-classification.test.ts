@@ -195,6 +195,7 @@ const COMMAND_IS_NOT_GIT: Record<string, string> = {
   "src/board-snapshot.ts": "`defaultRun`'s command is always \"gh\": every seam call is run(\"gh\", args), and no production caller injects run",
   "src/host-kernel.ts": "the privileged command is REBOOT_ARGV (sudo systemctl reboot), compared by value before the spawn; the other argv literals are systemctl",
   "src/host-pnpm.ts": "the command is a PATH entry joined with \"pnpm\", so its basename is always pnpm",
+  "src/plugins/active.ts": "`realExec` runs the program a bundled plugin asks for through its deps: the Linear plugin's `security` (the Keychain) and `claude` (its MCP); never git",
   "src/install/plugin-install.ts": "`runProgram` is called only with the literals \"claude\" (plugin marketplace and install) and \"gh\" (repo view): every deps.run call in plugin-install.ts names one of them",
   "src/install/service.ts": "the seam's default is only called with the literals launchctl, systemctl, systemd-analyze or tailscale",
   "src/messaging/ask-ceo.ts": "pnpmCliInvocation returns process.execPath, a PATH file named pnpm, or corepack, and throws otherwise; never git",

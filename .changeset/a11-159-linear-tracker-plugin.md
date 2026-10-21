@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+Linear is now a bundled **agent-org plugin**, `plugins/linear`, behind the tracker contract (version 1.1). Its GraphQL client and key reader, the doctor rows of its key and its MCP (`tracker key`, `linear mcp`), the onboard steps that store the key and register the MCP for Claude Code, its connector patterns, its settings schema (the Settings page draws the same tracker rows) and the tools a new-ticket run files with (create, attach, the priority numbers, how a created key is read back) moved out of core. Core loads the enabled tracker plugin once at start (`ticket:serve`, `pr:open`), imports no plugin's code and names no Linear endpoint or MCP tool, and `src/plugins/boundary.test.ts` refuses both. The tracker contract grows by `tooling.writer` in a plugin's manifest, and the registry reads `tooling.connectorServers`. `agent-org plugin disable linear` is still refused while it is the only tracker, and a fake plugin (`fake-tracker`) can no longer be installed or enabled on a host. No host file changes: `provider: "linear"` and a missing tracker block both resolve to the bundled package.

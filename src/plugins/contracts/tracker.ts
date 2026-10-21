@@ -1,12 +1,16 @@
 // @ts-check
-// module: the tracker contract, version 1.0 -- ticket mode's `TicketSource`, moved as it was (A11-158)
+// module: the tracker contract, version 1.1 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
-// A TYPE FILE: it imports nothing at run time, so a plugin that implements it reaches no file of core. It is the `TicketSource` that `linearSource`
-// implements (`ticket-mode/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
+// A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
+// implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
 // `src/ticket-mode/source.ts` re-exports every name here, so no caller changed when the contract moved.
+//
+// 1.1 (A11-159) ADDS `TrackerWriting`, which a tracker plugin declares in its manifest (`agentOrg.tooling.writer`): the tools a new-ticket run files with, what the hook refuses of
+// them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
+// PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.0";
+export const TRACKER_CONTRACT_VERSION = "1.1";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -77,6 +81,38 @@ export type PullState = "open" | "merged" | "closed";
  * and `nonClosing`, which only links it. Linear reads `Closes` as the first and `Refs` as the second.
  */
 export type Keywords = Readonly<{ closing: string; nonClosing: string }>;
+
+/** The words a tracker reads in a pull request's body when it declares none: `Closes` completes the ticket on merge and `Refs` only links it. */
+export const DEFAULT_KEYWORDS: Keywords = Object.freeze({ closing: "Closes", nonClosing: "Refs" });
+
+/** The priorities a ticket writer's form may name, most urgent first. */
+export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+
+/**
+ * What a new-ticket run needs of the tracker (contract 1.1), declared by the plugin as manifest data (`agentOrg.tooling.writer`):
+ * - `label`: how the tracker is named in the brief and in doctor's words, such as `Linear`;
+ * - `createTool` and `attachTools`: the tool names a new-ticket run is granted, to file one ticket and attach its plan. No other tool of the tracker is granted;
+ * - `filingTools`: a regular expression, anchored at both ends, over every tool name that files or attaches on any server of the tracker. A build worker is refused each by name;
+ * - `refusedInputs`: an input the creation tool may not be called with, and the rest of the refusal's sentence (`<tool> <refusal>`);
+ * - `attachTicketInput`: the input of an attach tool that names the ticket, which must be one the run created;
+ * - `createdKey`: how a creation's answer names the ticket's key: the JSON field that wraps the ticket, if any, and the fields tried in order;
+ * - `priorities`: the tracker's number for each priority the form names;
+ * - `readTools`: the tool names a connector pattern must let through for the writer to check duplicates;
+ * - `briefNote`: one sentence the brief adds about which server's tools to use.
+ */
+export type TrackerWriting = Readonly<{
+  label: string;
+  createTool: string;
+  attachTools: readonly string[];
+  filingTools: string;
+  refusedInputs: readonly Readonly<{ input: string; refusal: string }>[];
+  attachTicketInput: string;
+  createdKey: Readonly<{ wrapper: string | null; fields: readonly string[] }>;
+  priorities: Readonly<Record<Priority, number>>;
+  readTools: readonly string[];
+  briefNote: string;
+}>;
 
 /**
  * A ticket that blocks another, as the tracker last saw it: its state's type and name, the branch it links pull requests by, and the state of each

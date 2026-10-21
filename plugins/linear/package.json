@@ -1,0 +1,176 @@
+{
+  "name": "@agent-org/plugin-linear",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Linear as the tracker: tickets are read and written through Linear's GraphQL API with a personal key, and workers read them through Linear's MCP.",
+  "type": "module",
+  "agentOrg": {
+    "concern": "tracker",
+    "contract": "1.1",
+    "description": "Linear: where tickets are kept and read.",
+    "entry": "index.ts",
+    "settings": {
+      "key": {
+        "key": "tickets.providers.tracker.key",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "{ \"keychain\": \"<service>\" } or { \"path\": \"/abs/file\" }",
+        "absent": "default",
+        "default": "{ \"keychain\": \"agent-org-linear\" }",
+        "explanation": "Where the tracker's key is read from: the macOS Keychain by service name, or a file. The key is never shown on this page.",
+        "breaks": "A shape that is neither is refused by name, and the board cannot read the tracker.",
+        "edit": {
+          "editable": false,
+          "why": "an object: change its path with tickets.providers.tracker.key.path"
+        }
+      },
+      "key.path": {
+        "key": "tickets.providers.tracker.key.path",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "absolute path",
+        "absent": "unset",
+        "default": null,
+        "secret": "path",
+        "explanation": "The file the tracker's key is in. The file must be readable by no one else.",
+        "breaks": "A wrong path means the board cannot read the tracker.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board",
+          "note": "the key file itself is never read by this page",
+          "dangerous": "The file the tracker's key is read from: a wrong path stops the board from reading the tracker."
+        }
+      },
+      "key.keychain": {
+        "key": "tickets.providers.tracker.key.keychain",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "service name in the macOS Keychain",
+        "absent": "unset",
+        "default": null,
+        "secret": "keychain",
+        "explanation": "The Keychain service that holds the tracker's key. This page names the service and does not read the key.",
+        "breaks": "A service with no key there means the board cannot read the tracker.",
+        "edit": {
+          "editable": false,
+          "why": "a secret's Keychain service: the ticket allows only the path to a key file to change"
+        }
+      },
+      "connectors": {
+        "key": "tickets.providers.tracker.connectors",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "list of patterns starting ^mcp__",
+        "absent": "default",
+        "default": "none",
+        "explanation": "The connector tools a worker may call to read or comment on a tracker ticket, each a regular expression anchored at the tool's name: the tracker's own, from Linear. tickets.connectors keeps the rest.",
+        "breaks": "A pattern not starting ^mcp__ is refused by name. A broad one lets a worker act in the person's connected accounts.",
+        "edit": {
+          "editable": true,
+          "input": "json",
+          "applies": "board",
+          "dangerous": "A broad pattern lets a worker act in the person's connected accounts."
+        }
+      },
+      "workingState": {
+        "key": "tickets.providers.tracker.workingState",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "a state's name in the tracker",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The state a ticket moves to as a worker starts implementing it, such as \"In Progress\", if it has not started yet. Absent leaves its state alone. A planning run moves nothing. The ticket goes back to the state it came from when its run ends without a pull request.",
+        "breaks": "A name the tracker lacks fails that move, not the run. A team with no state of that name keeps the ticket's state, and the board's log says so.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board"
+        }
+      },
+      "plannedState": {
+        "key": "tickets.providers.tracker.plannedState",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "a state's name in the tracker",
+        "absent": "unset",
+        "default": null,
+        "explanation": "The state a planned ticket moves to once its plan is attached, if it has not started. A team with no state of that name keeps the ticket's state, and the board's log says so, because teams name their states differently.",
+        "breaks": "A name the tracker lacks fails that move, not the plan.",
+        "edit": {
+          "editable": true,
+          "input": "text",
+          "applies": "board"
+        }
+      },
+      "takenStates": {
+        "key": "tickets.providers.tracker.takenStates",
+        "file": "host.json",
+        "group": "Tracker",
+        "type": "list of state names",
+        "absent": "default",
+        "default": "the working and planned states, where they are set",
+        "explanation": "The tracker states that mark a ticket as held by another instance in Pick: a ticket in one of them, with no run on this instance, is shown with its state and cannot be queued here. A state of the started type is always taken, so In Progress needs no entry. Listing [] takes none of these states.",
+        "breaks": "A name that is not a state's name is refused by name. A state left out lets another instance's ticket be queued here too.",
+        "edit": {
+          "editable": true,
+          "input": "json",
+          "applies": "board"
+        }
+      }
+    },
+    "tooling": {
+      "mcpServers": [
+        "linear"
+      ],
+      "connectors": [
+        "^mcp__linear__(get|list|search|extract)_",
+        "^mcp__linear__save_comment$"
+      ],
+      "connectorServers": [
+        "linear",
+        "claude_ai_Linear"
+      ],
+      "skills": [],
+      "writer": {
+        "label": "Linear",
+        "createTool": "mcp__linear__save_issue",
+        "attachTools": [
+          "mcp__linear__prepare_attachment_upload",
+          "mcp__linear__create_attachment_from_upload"
+        ],
+        "filingTools": "^mcp__(?:linear|claude_ai_Linear)__(?:save_issue|create_attachment|create_attachment_from_upload|prepare_attachment_upload)$",
+        "refusedInputs": [
+          {
+            "input": "id",
+            "refusal": "is called with an id, which updates an existing ticket: a new-ticket run creates tickets and never updates one"
+          },
+          {
+            "input": "blocks",
+            "refusal": "is called with blocks, which writes a relation on another ticket: a new-ticket run sets parentId, blockedBy and relatedTo only"
+          }
+        ],
+        "attachTicketInput": "issue",
+        "createdKey": {
+          "wrapper": "issue",
+          "fields": [
+            "identifier",
+            "id"
+          ]
+        },
+        "priorities": {
+          "urgent": 1,
+          "high": 2,
+          "medium": 3,
+          "low": 4,
+          "none": 0
+        },
+        "readTools": [
+          "mcp__linear__get_issue",
+          "mcp__claude_ai_Linear__get_issue"
+        ],
+        "briefNote": "Use the `mcp__linear__` tools, not the claude.ai Linear ones."
+      }
+    }
+  }
+}

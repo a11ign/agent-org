@@ -5,8 +5,11 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import type { KeySource } from "../ticket-mode/settings.ts";
-import { LINEAR_CONNECTORS, onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
+import { CONNECTORS as LINEAR_CONNECTORS } from "../../plugins/linear/connectors.ts";
+import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
+import type { OnboardStep } from "../plugins/manifest.ts";
+import { buildCatalog, defaultCatalog, type PackageFiles, pluginNamed } from "../plugins/registry.ts";
+import { onboard, onboardServices, startServices, type OnboardDeps, type OnboardOptions } from "./onboard.ts";
 import { PAIRING_STEPS } from "./terminal.ts";
 import { ServiceRefusal, TailnetRefusal, type RunResult } from "./service.ts";
 import type { Account, Program, ProgramRunner } from "../ticket-port/stack-extension.ts";
@@ -93,17 +96,24 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
   /** What each program answers, by its first two words; anything not named answers exit 0. */
   const answers2: Record<string, (args: string[]) => RunResult> = {};
   let plugins: string | null = null;
-  const keyAt = (source: KeySource) => ("keychain" in source ? `keychain:${source.keychain}` : `file:${source.path}`);
   const value: OnboardDeps = {
     env: {}, home, platform: "darwin", interactive: false,
     ask: async (question) => { asked.push(question); return answers.shift() ?? ""; },
     askHidden: async (question) => { hidden.push(question); return KEY; },
-    readKey: (source) => {
-      const key = stored.get(keyAt(source));
-      if (key === undefined) throw new Error("no key");
-      return key;
+    // The Keychain, as the Linear plugin's steps reach it: `security` finds a key stored under a service, and `add-generic-password` stores the one the person pastes.
+    exec: (file, args) => {
+      if (file === "security" && args[0] === "find-generic-password") {
+        const key = stored.get(`keychain:${args[2]}`);
+        return key === undefined ? { status: 44, stdout: "", stderr: "could not be found" } : { status: 0, stdout: `${key}\n`, stderr: "" };
+      }
+      if (file === "security" && args[0] === "add-generic-password") {
+        stored.set(`keychain:${args[args.indexOf("-s") + 1]}`, KEY);
+        return OK;
+      }
+      return value.run(file, [...args]);
     },
-    storeInKeychain: (service) => { stored.set(`keychain:${service}`, KEY); },
+    catalog: defaultCatalog,
+    loadPlugins: (providers, pluginDeps) => loadEnabled(providers, defaultCatalog(), pluginDeps),
     readFile: (path) => readFileSync(path, "utf8"),
     writeFile: (path, text) => {
       written.push(path);
@@ -452,9 +462,10 @@ test("A11-145: a host that sets codeHost.stack to false is not asked for the sta
 /** The doctor's readings of the fake home, each green: what `agent-org doctor` asks, answered for a machine with every secret and install in place. */
 function greenDoctor(home: string): DoctorDeps {
   return {
-    env: {}, home, nodeVersion: () => "v24.21.0", which: () => "/usr/local/bin/tool", readFile: (path) => readFileSync(path, "utf8"), readKey: () => KEY,
+    env: {}, home, nodeVersion: () => "v24.21.0", which: () => "/usr/local/bin/tool", readFile: (path) => readFileSync(path, "utf8"),
+    exec: (file) => (file === "claude" ? { status: 0, stdout: "linear: https://mcp.linear.app/mcp (HTTP) - Connected\n", stderr: "" } : { status: null, stdout: "", stderr: "cannot start" }),
     mode: () => 0o600, serviceState: () => "running", answers: async () => true, healthy: async () => true, unitProblem: () => null,
-    mcpList: () => "linear: https://mcp.linear.app/mcp (HTTP) - Connected\n", pnpmVersion: () => "10.34.5",
+    pnpmVersion: () => "10.34.5",
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }), ghAs: () => listedGh(), originOf: () => null, platform: "linux",
     isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
@@ -635,4 +646,78 @@ test("A11-158: a disabled tailscale exposure and a disabled atomic reviewer ask 
   await onboard(options({ repos: [base.repo], keychain: "agent-org-linear", start: false }), base.deps);
   assert.ok(!base.printed.some((line) => line.includes("tailscale is not on PATH")), "a disabled exposure serves nothing on the tailnet");
   assert.ok(!base.printed.some((line) => /codex/i.test(line) && !line.includes("doctor")), "a disabled reviewer needs no Codex");
+});
+
+// ---- A11-159: onboard runs the steps of each plugin the host will enable, and writes the settings they choose into the plugin's block
+const STEPPED_ROOT = "/checkout";
+const STEPPED_FILES: PackageFiles = {
+  directories: (path) => (path === `${STEPPED_ROOT}/plugins` ? ["stepped"] : []),
+  text: (path) => (path === `${STEPPED_ROOT}/plugins/stepped/package.json` ? JSON.stringify({ agentOrg: { concern: "tracker", contract: "1.1", description: "A tracker that steps.", entry: "index.ts",
+    settings: ["token", "mode"].reduce((all, name) => ({ ...all, [name]: { key: `tickets.providers.tracker.${name}`, file: "host.json", group: "Tracker", type: "text", absent: "unset", default: null, explanation: "e", breaks: "b", edit: { editable: false, why: "w" } } }), {}) } }) : null),
+  isFile: () => true,
+};
+const steppedCatalog = () => buildCatalog({ root: STEPPED_ROOT, files: STEPPED_FILES, pins: {} });
+const plugged = (steps: readonly OnboardStep[], { create = (): unknown => ({}) } = {}) => {
+  const plugin = pluginNamed(steppedCatalog(), "stepped")!;
+  const module = { create, doctorChecks: () => [], onboardSteps: steps };
+  return { plugin, module, load: async (): Promise<LoadResult> => ({ loaded: [{ plugin, implementation: {}, module }], unbuilt: [], refusals: [] }) };
+};
+const seedHost = (home: string, tracker: Record<string, unknown>) => {
+  mkdirSync(join(home, ".agent-org"), { recursive: true });
+  writeFileSync(join(home, ".agent-org", "host.json"), JSON.stringify({ tickets: { providers: { tracker: { provider: "stepped", ...tracker } } } }));
+};
+
+test("A11-159: onboard runs a plugin's steps in order, each given the settings the one before chose, prints what each says but the empty, and writes what they chose into the plugin's block", async () => {
+  const seen: unknown[] = [];
+  const steps: OnboardStep[] = [
+    { name: "one", explain: "first", run: async (settings, deps) => { seen.push(["one", settings, deps.flags, deps.answered, deps.interactive]); return { ok: true, detail: "step one says this", settings: { token: "t1", mode: undefined } }; } },
+    { name: "two", explain: "second", run: async (settings) => { seen.push(["two", settings]); return { ok: false, detail: "" }; } },
+    { name: "three", explain: "third", run: async (settings) => ({ ok: true, detail: `step three saw token ${String(settings.token)}`, settings: { mode: "fast" } }) },
+  ];
+  const { load } = plugged(steps);
+  const { deps: d, home, repo, printed } = deps({ catalog: steppedCatalog, loadPlugins: load });
+  seedHost(home, { mode: "slow" });
+  await onboard(options({ repos: [`netbox=${repo}`], keychain: "flagged", start: false }), d);
+  assert.deepEqual(seen, [
+    ["one", { mode: "slow" }, { keychain: "flagged", keyFile: undefined }, false, false],
+    ["two", { mode: "slow", token: "t1" }],
+  ], "the block's own settings first, then the first step's; the tracker plugin is told the key flags; nobody answered the questions for it");
+  assert.ok(printed.includes("step one says this") && printed.includes("step three saw token t1"));
+  assert.equal(printed.indexOf("step one says this") + 1, printed.indexOf("step three saw token t1"), "the second step's empty detail is not printed between them");
+  assert.deepEqual(hostOf(home).tickets.providers.tracker, { provider: "stepped", mode: "fast", token: "t1" }, "a step replaces the setting it returns, and one it returns undefined for keeps the block's");
+});
+
+test("A11-159: a plugin whose create threw (a key not stored yet) still has its steps run, since the step is what stores it; any other refusal refuses onboard by name and writes nothing", async () => {
+  const ran: string[] = [];
+  const { plugin, module } = plugged([{ name: "store", explain: "e", run: async () => { ran.push("store"); return { ok: true, detail: "stored" }; } }]);
+  const unbuilt = deps({ catalog: steppedCatalog, loadPlugins: async () => ({ loaded: [], unbuilt: [{ plugin, module }], refusals: [{ plugin: "stepped", concern: "tracker" as const, why: "no key" }] }) });
+  seedHost(unbuilt.home, {});
+  await onboard(options({ repos: [`netbox=${unbuilt.repo}`], start: false }), unbuilt.deps);
+  assert.deepEqual(ran, ["store"]);
+  const refused = deps({ catalog: steppedCatalog, loadPlugins: async () => ({ loaded: [], unbuilt: [], refusals: [{ plugin: "stepped", concern: "tracker" as const, why: "plugin stepped: index.ts must export create, doctorChecks and onboardSteps" }] }) });
+  seedHost(refused.home, {});
+  const before = readFileSync(join(refused.home, ".agent-org", "host.json"), "utf8");
+  await assert.rejects(onboard(options({ repos: [`netbox=${refused.repo}`], start: false }), refused.deps), /the tracker plugin stepped was refused: plugin stepped: index\.ts must export create, doctorChecks and onboardSteps/);
+  assert.equal(readFileSync(join(refused.home, ".agent-org", "host.json"), "utf8"), before, "the host file is as it was");
+  assert.deepEqual(refused.started, []);
+});
+
+test("A11-159: a profile answers onboard's questions, so a plugin's steps are told so; without a profile they are not", async () => {
+  const seen: boolean[] = [];
+  const probe: OnboardStep = { name: "probe", explain: "e", run: async (_settings, stepDeps) => { seen.push(stepDeps.answered); return { ok: true, detail: "" }; } };
+  const linear = pluginNamed(defaultCatalog(), "linear")!;
+  const loadPlugins = async (): Promise<LoadResult> => ({ loaded: [{ plugin: linear, implementation: {}, module: { create: () => ({}), doctorChecks: () => [], onboardSteps: [probe] } }], unbuilt: [], refusals: [] });
+  const flagged = deps({ loadPlugins });
+  await onboard(options({ repos: [`netbox=${flagged.repo}`], keychain: "agent-org-linear", start: false }), flagged.deps);
+  let home = "";
+  const plugin = pluginWorld(() => home);
+  const answers: string[] = [];
+  const profiled = deps({ platform: "linux", interactive: true, loadPlugins }, answers, plugin.runOver);
+  home = profiled.home;
+  const pem = join(home, "example-reviewer.pem");
+  writeFileSync(pem, PEM);
+  answers.push(pem);
+  seedProfile(home, profiled.repo);
+  await onboard(options({ profile: "example-laptop", start: false }), profiled.deps);
+  assert.deepEqual(seen, [false, true]);
 });

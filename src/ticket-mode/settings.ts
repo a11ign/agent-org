@@ -20,9 +20,9 @@
 // the field, never answered with a guess.
 import { DEFAULT_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS, type Preflight } from "./preflight.ts";
 import { defaultBinDir } from "./worker-files.ts";
-import { isActive, isLinearConnector, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
+import { isActive, PUBLISHER_SHAPE, resolveProviders, type BlockReport, type Providers, type Setting } from "./providers.ts";
 import type { Catalog } from "../plugins/manifest.ts";
-import { defaultCatalog } from "../plugins/registry.ts";
+import { defaultCatalog, isTrackerConnector } from "../plugins/registry.ts";
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { defaultTakenStates } from "./pick-taken.ts";
 import { randomBytes } from "node:crypto";
@@ -34,9 +34,6 @@ export { TicketSettingsRefusal };
 
 /** The variable that names the host file, as `project-config.ts` (`HOST_ENV`) spells it; restated so this module resolves nothing at import. */
 export const HOST_FILE_ENV = "AGENT_ORG_HOST";
-
-/** Where the tracker's key is read from: the macOS Keychain by service name, or a mode-600 file. */
-export type KeySource = Readonly<{ keychain: string } | { path: string }>;
 
 /** A command this machine's workers may not run: a regular expression matched against the whole Bash command, and the reason the worker is told. */
 export type DenyRule = Readonly<{ pattern: string; reason: string }>;
@@ -56,7 +53,6 @@ export type TicketSettings = Readonly<{
   stateDir: string;
   /** The host's `binDir`, where the routing `gh` and the launcher `agent-org` are installed. A worker may not write them (A11-84). */
   binDir: string;
-  linearKey: KeySource;
   /** A markdown file added to every worker's brief, or null. */
   brief: string | null;
   /** A markdown file added to every review run's brief, or null: how this machine's pull requests are checked and reviewed. */
@@ -194,16 +190,6 @@ function positiveInteger(value: unknown, field: string, fallback: number): numbe
   return value as number;
 }
 
-/** A tracker key's source, read from the key at `field`: a Keychain service, or a file's absolute path. Absent is the Keychain's default service. */
-function keySource(value: unknown, field: string): KeySource {
-  if (value === undefined) return { keychain: "agent-org-linear" };
-  const isKeychainKey = (candidate: unknown): candidate is { keychain: string } => isObject(candidate) && typeof candidate.keychain === "string"
-    && candidate.keychain !== "" && candidate.path === undefined;
-  if (isKeychainKey(value)) return { keychain: value.keychain };
-  if (isObject(value) && value.keychain === undefined) return { path: absolutePath(value.path, `${field}.path`) };
-  throw new TicketSettingsRefusal(field, "must be { \"keychain\": \"<service>\" } or { \"path\": \"/abs/file\" }");
-}
-
 const DENY_RULE_SHAPE = "{ \"pattern\": \"<regular expression>\", \"reason\": \"<why>\" }";
 
 function pluginList(value: unknown): readonly string[] {
@@ -279,7 +265,7 @@ function stateName(value: unknown, field: string): string | null {
   return value.trim();
 }
 
-const CONNECTOR_SHAPE = "a regular expression anchored at the tool's name, such as \"^mcp__claude_ai_Linear__(get|list|search)_\"";
+const CONNECTOR_SHAPE = "a regular expression anchored at the tool's name, such as \"^mcp__server__(get|list|search)_\"";
 
 /**
  * Each pattern must start `^mcp__`, so it is read from the start of a connector tool's name. An unanchored one, such as `Linear`, would also let
@@ -554,11 +540,10 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
   const trackerConnectors = settingOf(tracker, "connectors");
   const takenSetting = settingOf(tracker, "takenStates");
   const plannedSetting = settingOf(tracker, "plannedState");
-  // The Linear patterns of `tickets.connectors` belong to the tracker's block, whichever key the file holds them under, so only the rest is read here.
-  const otherConnectors = connectorPatterns(tickets.connectors).filter((pattern) => !isLinearConnector(pattern));
+  // The tracker plugins' patterns in `tickets.connectors` belong to the tracker's block, whichever key the file holds them under, so only the rest is read here.
+  const otherConnectors = connectorPatterns(tickets.connectors).filter((pattern) => !isTrackerConnector(catalog, pattern));
   const terminal = settingOf(exposure, "terminal");
   const workingState = settingOf(tracker, "workingState");
-  const linearKey = settingOf(tracker, "key");
   return Object.freeze({
     clones: Object.freeze(repos),
     max: positiveInteger(tickets.max, "tickets.max", 3),
@@ -569,7 +554,6 @@ export function parseTicketSettings(host: unknown, home: string = homedir(), mac
     binDir: host.binDir === undefined ? defaultBinDir(home) : absolutePath(host.binDir, "binDir"),
     worktreeRoot: tickets.worktreeRoot === undefined ? join(stateDir, "tickets", "worktrees") : absolutePath(tickets.worktreeRoot, "tickets.worktreeRoot"),
     stateDir,
-    linearKey: keySource(linearKey.value, linearKey.at),
     brief: tickets.brief === undefined ? null : absolutePath(tickets.brief, "tickets.brief"),
     review: tickets.review === undefined ? null : absolutePath(tickets.review, "tickets.review"),
     deny: denyRules(tickets.deny),

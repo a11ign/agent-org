@@ -22,12 +22,12 @@ test("only `clones` is required, every repository in it is offered, and every ot
   assert.equal(settings.herdrSession, "tickets", "never the org's own session");
   assert.equal(settings.stateDir, "/home/me/.local/state/agent-org");
   assert.equal(settings.worktreeRoot, "/home/me/.local/state/agent-org/tickets/worktrees");
-  assert.deepEqual(settings.linearKey, { keychain: "agent-org-linear" });
+  assert.equal(settings.providers.blocks.tracker.settings.key.value, undefined, "the key is the tracker plugin's: the block holds none, and the plugin defaults it to the Keychain service");
 });
 
 test("the `tickets` block and `stateDir` override the defaults", () => {
   const settings = parseTicketSettings({ clones, stateDir: "/state", tickets: { max: 5, port: 5000, herdrSession: "nbl", worktreeRoot: "/wt", linearKey: { path: "/keys/linear" } } });
-  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), linearKey: { path: "/keys/linear" }, brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
+  assert.deepEqual({ ...settings, clones: undefined, providers: undefined }, { clones: undefined, providers: undefined, stackRequired: true, takenStates: [], max: 5, port: 5000, uiPort: 4748, herdrSession: "nbl", instance: defaultInstance(), worktreeRoot: "/wt", stateDir: "/state", binDir: join(homedir(), ".local", "bin"), brief: null, review: null, deny: [], plugins: [], terminal: null, plan: null, planner: null, writer: null, preflight: [], workingState: null, connectors: [], publish: null, drafts: true, designTools: false, capture: false, prReview: null, reviewer: null, pick: "assigned", stallMinutes: 30, updateMaxDeferHours: 2, serve: null });
 });
 
 test("the page's port is its own: it can be moved, and is refused when it is the instance's", () => {
@@ -204,7 +204,6 @@ test("a bad field is refused by its name", () => {
   assert.equal(field({ clones, tickets: { instance: "has space" } }), "tickets.instance");
   assert.equal(field({ clones, tickets: { instance: "x".repeat(41) } }), "tickets.instance", "a name longer than 40 characters");
   assert.equal(field({ clones, tickets: { instance: 7 } }), "tickets.instance");
-  assert.equal(field({ clones, tickets: { linearKey: { keychain: "x", path: "/y" } } }), "tickets.linearKey");
   const refusals: [Record<string, unknown>, string, string?][] = [
     [{ brief: "notes.md" }, "tickets.brief", "a relative path"],
     [{ review: "review.md" }, "tickets.review", "a relative path"],
@@ -213,7 +212,6 @@ test("a bad field is refused by its name", () => {
     [{ deny: { pattern: "x", reason: "y" } }, "tickets.deny", "one rule, not a list"],
     [{ deny: [{ pattern: "x" }] }, "tickets.deny[0]", "a rule with no reason"],
     [{ deny: [{ pattern: "x", reason: "y" }, { pattern: "(", reason: "y" }] }, "tickets.deny[1].pattern", "not a regular expression"],
-    [{ linearKey: { path: "rel" } }, "tickets.linearKey.path"],
     [{ terminal: "127.0.0.1:7318/?pane={pane}" }, "tickets.terminal", "not a web address"],
     [{ terminal: "http://127.0.0.1:7318/" }, "tickets.terminal", "names no run, so every link is the same"],
     [{ terminal: ["http://x/{pane}"] }, "tickets.terminal", "not a string"],

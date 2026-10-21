@@ -5,6 +5,7 @@ import { outcomeExamples } from "./outcome.ts";
 import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
+import { FAKE_TRACKER_WRITING } from "../plugins/fakes/tracker.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
   branch: "nbf-1270-refresh", status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 3, parent: "NBF-1200" } as Ticket;
@@ -565,7 +566,7 @@ test("A11-82: both planner briefs tell the planner the ## Paths section, and a b
 
 const WRITER = { run: "Run the a11ign:create-ticket skill for this request: {request}.", clones: { "nbl-ui-netbox": "/r/netbox" } };
 /** The brief a run of `mode` is given, for the request "x" with nothing else chosen and the team `A11` on the Pick view. */
-const briefIn = (mode: WriterMode, pickTeam: string | null = "A11") => writerBriefText({ ...WRITER, request: "x", mode, form: {}, dir: "/d", pickTeam });
+const briefIn = (mode: WriterMode, pickTeam: string | null = "A11") => writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "x", mode, form: {}, dir: "/d", pickTeam });
 /** Each pattern is in the text: a brief is checked as one list of what it must say. */
 const says = (text: string, patterns: readonly RegExp[]): void => {
   for (const pattern of patterns) assert.match(text, pattern);
@@ -576,7 +577,7 @@ test("A11-135: the brief tells a run to run the create-ticket skill in full, in 
   const readme = "Run the a11ign:create-ticket skill, {mode}, for this request: {request}. Make the ticket and attach its plan.";
   for (const mode of ["quick", "grill"] as const) {
     for (const run of [WRITER.run, readme]) {
-      const brief = writerBriefText({ run, request: "x", mode, form: {}, clones: {}, dir: "/d", pickTeam: "A11" });
+      const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, run, request: "x", mode, form: {}, clones: {}, dir: "/d", pickTeam: "A11" });
       says(brief, [/Run the `a11ign:create-ticket` skill in full/, /call the tracker's create-or-update tool with an `id`/]);
       for (const banned of [/drafts only/i, /\bskip/i, /do not run the grill/i, /no plan/i, /create no ticket/i]) {
         assert.doesNotMatch(brief, banned, `${mode}: no instruction to skip a step (${banned})`);
@@ -589,8 +590,8 @@ test("A11-135: the brief states that the run files its own ticket, with the trac
   const brief = briefIn("quick");
   says(brief, [
     /You file the ticket yourself, through the tracker's tools/,
-    /`mcp__linear__save_issue`, with no `id`/,
-    /`mcp__linear__prepare_attachment_upload` and `mcp__linear__create_attachment_from_upload`, naming only a ticket this run created/,
+    /`mcp__fake__create_ticket`, with no `id`/,
+    /`mcp__fake__prepare_upload` and `mcp__fake__attach_upload`, naming only a ticket this run created\. Use the `mcp__fake__` tools\./,
     /Never set `blocks`: it writes a relation on another ticket/,
     /If the instruction above mentions draft files, ignore that: this run writes no draft/,
   ]);
@@ -598,7 +599,7 @@ test("A11-135: the brief states that the run files its own ticket, with the trac
 });
 
 test("A11-135: the brief says where each choice of the form lands on the ticket", () => {
-  const brief = writerBriefText({ ...WRITER, request: "Show the requests\nA person made", mode: "quick", form: { project: "Board", repo: "nbl-ui-netbox", goal: "Speed",
+  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "Show the requests\nA person made", mode: "quick", form: { project: "Board", repo: "nbl-ui-netbox", goal: "Speed",
     priority: "high", parent: "A11-12" }, dir: "/state/tickets/writer/w1", pickTeam: "A11" });
   says(brief, [
     /^# New ticket: Show the requests$/m,
@@ -621,7 +622,7 @@ test("A11-135: the team is the parent's, else the team the Pick view lists, and 
 
 test("A11-135: the brief keeps the duplicate check under Possible duplicates, and reads the tracker with read-only tools", () => {
   says(briefIn("quick"), [
-    /read-only Linear tools \(`get`, `list`, `search`, `extract`\)/,
+    /read-only Fake tools \(`get`, `list`, `search`, `extract`\)/,
     /Name each one under "Possible duplicates" in the description, with the reason/,
     /None\. The request decides each of these\./,
   ]);
@@ -664,7 +665,7 @@ test("A11-124: the brief names the board's mode, and says it wins over the instr
 });
 
 test("A11-124: a {mode} placeholder in the instruction is filled with the board's mode, and the instruction names no mode of its own", () => {
-  const brief = writerBriefText({ run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}.", request: "x", mode: "grill", form: {}, clones: {}, dir: "/d", pickTeam: null });
+  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, run: "Run the a11ign:create-ticket skill, {mode}, for this request: {request}.", request: "x", mode: "grill", form: {}, clones: {}, dir: "/d", pickTeam: null });
   assert.match(brief, /Run the a11ign:create-ticket skill, grill, for this request: x\./);
 });
 
@@ -679,8 +680,8 @@ test("A11-94: the writer's brief names the one repository list it may read, and 
 
 test("A11-135: a writer's settings record each creation as it returns, and no other run's settings do", () => {
   const base = { model: "opus", ticketDir: "/d", readDirs: [], hook: { node: "/usr/bin/node", bin: "/tool/src/bin.ts" } };
-  const writer = workerSettings({ ...base, writer: true }) as any;
-  assert.deepEqual(writer.hooks.PostToolUse, [{ matcher: "mcp__linear__save_issue", hooks: [{ type: "command", command: "/usr/bin/node",
+  const writer = workerSettings({ ...base, writer: FAKE_TRACKER_WRITING }) as any;
+  assert.deepEqual(writer.hooks.PostToolUse, [{ matcher: "mcp__fake__create_ticket", hooks: [{ type: "command", command: "/usr/bin/node",
     args: ["/tool/src/bin.ts", "ticket:hook", "post-tool-use", "/d"], timeout: 30 }] }]);
   assert.equal("PostToolUse" in (workerSettings(base) as any).hooks, false, "a build worker records nothing");
 });
@@ -705,14 +706,14 @@ test("A11-134: both planners end a ticket with a decision only a person can make
 
 test("A11-134: a Grill run's brief grills one ticket, asks its open line and its screen's behaviour, and files nothing: it ends decided", () => {
   const grilled = { ...ticket, description: "## Acceptance\n\n### 4. Decide whether to isolate the failing ticket or keep the stall\n\n**Screen:** yes\n" };
-  const brief = writerBriefText({ ...WRITER, request: "Grill NBF-1270", mode: "grill", form: {}, dir: "/d", pickTeam: "A11", ticket: grilled });
+  const brief = writerBriefText({ writing: FAKE_TRACKER_WRITING, ...WRITER, request: "Grill NBF-1270", mode: "grill", form: {}, dir: "/d", pickTeam: "A11", ticket: grilled });
   assert.match(brief, /^# Grill NBF-1270: Refresh Data gives no feedback\n/);
   assert.ok(brief.includes("`### 4. Decide whether to isolate the failing ticket or keep the stall`"));
   assert.match(brief, /the ticket changes a screen\. Ask the person what they see, what each control does/);
   assert.ok(brief.includes("/d/decisions.md"));
   assert.ok(brief.includes('{ "kind": "decided", "ticket": "NBF-1270" }'));
   assert.match(brief, /File no ticket, attach nothing, and change nothing in the tracker/);
-  assert.equal(brief.includes("mcp__linear__save_issue"), false);
+  assert.equal(brief.includes("mcp__fake__create_ticket"), false);
 });
 
 test("step 7 has a worker decline a design check by default, and do it on a machine with design tools", () => {

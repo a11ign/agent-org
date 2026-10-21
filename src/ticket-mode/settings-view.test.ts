@@ -3,7 +3,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { GROUPS, SCHEMA } from "./config-schema.ts";
+import { GROUPS } from "./config-schema.ts";
+import { defaultSchema } from "../plugins/schema.ts";
+
+/** The schema the page and the readers use: core's entries and the bundled plugins' settings (A11-159). */
+const SCHEMA = defaultSchema();
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { PAGE_ORDER, settingsView, type Row, type Section, type View, type ViewInput } from "./settings-view.ts";
 import type { PluginState } from "./plugins.ts";

@@ -149,6 +149,19 @@ test("ticket:serve starts on a host file with only clones and tickets, and no ti
   assert.doesNotMatch(outcome.stderr, /ProjectDeclarationRefusal/);
 });
 
+test("A11-159: the board runs on the tracker plugin: a tracker block that names a fake, a key the plugin cannot read and a key of the wrong shape each refuse the start, naming the plugin", async () => {
+  const fake = await serveFreshHost("serve-fake-tracker-", { providers: { tracker: { provider: "fake-tracker" } } });
+  assert.equal(fake.started, false);
+  assert.equal(fake.code, 1);
+  assert.match(fake.stderr, /ticket:serve: the tracker is fake-tracker, which has no code to run on a host: name a bundled tracker plugin in tickets\.providers\.tracker/);
+  const unreadable = await serveFreshHost("serve-no-key-", { linearKey: { path: "/nonexistent/linear.key" } });
+  assert.equal(unreadable.started, false);
+  assert.match(unreadable.stderr, /ticket:serve: the tracker plugin linear was refused: ticket mode: the Linear key file \/nonexistent\/linear\.key cannot be read/);
+  const relative = await serveFreshHost("serve-bad-key-", { providers: { tracker: { provider: "linear", key: { path: "relative.key" } } }, linearKey: undefined });
+  assert.equal(relative.started, false);
+  assert.match(relative.stderr, /the tracker plugin linear was refused: tickets\.providers\.tracker\.key\.path must be an absolute path/);
+});
+
 test("A11-94: ticket:serve starts on a ticket-only host that names tickets.writer, and no project is needed for the writer", async () => {
   const outcome = await serveFreshHost("serve-ticket-writer-start-", WRITER_HOST);
   assert.equal(outcome.started, true, outcome.stderr);

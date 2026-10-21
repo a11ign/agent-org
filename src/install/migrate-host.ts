@@ -8,6 +8,8 @@
 // refusal names the settings that differ. The file is backed up beside itself before the new one replaces it.
 import { resolveProviders, type AliasRead, type ProviderBlock } from "../ticket-mode/providers.ts";
 import { parseTicketSettings } from "../ticket-mode/settings.ts";
+import type { Catalog } from "../plugins/manifest.ts";
+import { defaultCatalog, isTrackerConnector } from "../plugins/registry.ts";
 import { writeAtomic } from "./write-atomic.ts";
 
 type Host = Record<string, unknown>;
@@ -17,8 +19,8 @@ const isObject = (value: unknown): value is Host => typeof value === "object" &&
 /** Each block's name in the file, and the place a value of a block's alias goes: `tickets.providers.<block>`. */
 const blockOf = (place: string): ProviderBlock => place.split(".")[2] as ProviderBlock;
 
-/** The Linear patterns of `tickets.connectors` (the tracker's), and the rest, which stay. */
-const isLinear = (pattern: unknown): boolean => typeof pattern === "string" && /^\^mcp__(linear__|claude_ai_Linear__)/.test(pattern);
+/** The tracker plugins' patterns of `tickets.connectors`, and the rest, which stay: a tracker's patterns are the ones its manifest's tooling names a server for. */
+const isTrackerPattern = (catalog: Catalog) => (pattern: unknown): boolean => isTrackerConnector(catalog, pattern);
 
 /** Each old key's value is removed from the file, and returned, or undefined when the file holds none. */
 function takeOld(host: Host, old: string): unknown {
@@ -68,15 +70,15 @@ function putNew(host: Host, place: string, value: unknown, provider: string): vo
 }
 
 /**
- * The host file with every alias moved to its place (A11-144). `connectors` moves only its Linear patterns, and a stale alias, whose block already holds
+ * The host file with every alias moved to its place (A11-144). `connectors` moves only its tracker plugins' patterns, and a stale alias, whose block already holds
  * the same value, is removed and not copied. The file it returns is not checked here: `planHostFix` checks it.
  */
-export function migrateHost(host: Host): Readonly<{ host: Host; moves: readonly AliasRead[] }> {
+export function migrateHost(host: Host, catalog: Catalog = defaultCatalog()): Readonly<{ host: Host; moves: readonly AliasRead[] }> {
   const next = structuredClone(host);
-  const resolved = resolveProviders(host);
+  const resolved = resolveProviders(host, catalog);
   for (const alias of resolved.aliases) {
     if (alias.old === "tickets.connectors") {
-      moveConnectors(next, alias, resolved.blocks.tracker.provider);
+      moveConnectors(next, alias, resolved.blocks.tracker.provider, catalog);
       continue;
     }
     const value = takeOld(next, alias.old);
@@ -87,20 +89,20 @@ export function migrateHost(host: Host): Readonly<{ host: Host; moves: readonly 
 }
 
 /** `tickets.connectors` moves its Linear patterns to the tracker, and keeps the rest; a stale alias is only removed. */
-function moveConnectors(host: Host, alias: AliasRead, provider: string): void {
+function moveConnectors(host: Host, alias: AliasRead, provider: string, catalog: Catalog): void {
   const tickets = host.tickets as Host;
   const list = Array.isArray(tickets.connectors) ? tickets.connectors : [];
-  const linear = list.filter(isLinear);
-  const rest = list.filter((pattern) => !isLinear(pattern));
+  const linear = list.filter(isTrackerPattern(catalog));
+  const rest = list.filter((pattern) => !isTrackerPattern(catalog)(pattern));
   if (rest.length > 0) tickets.connectors = rest;
   else delete tickets.connectors;
   if (!alias.stale && linear.length > 0) putNew(host, alias.new, linear, provider);
 }
 
 /** The settings a host file reads, compared the way the migration must keep them: `connectors` as a set, and each object's keys in order. */
-function settingsOf(text: string): string {
+function settingsOf(text: string, catalog: Catalog): string {
   try {
-    const { providers: _providers, ...flat } = parseTicketSettings(JSON.parse(text));
+    const { providers: _providers, ...flat } = parseTicketSettings(JSON.parse(text), undefined, undefined, catalog);
     return canonicalJson({ ...flat, connectors: [...flat.connectors].sort() });
   } catch (err) {
     return `refused: ${(err as Error).message}`;
@@ -130,11 +132,11 @@ function canonicalJson(value: unknown): string {
 }
 
 /** The settings two host files read that differ, by name, or none. */
-async function differences(before: string, after: string): Promise<string[]> {
+async function differences(before: string, after: string, catalog: Catalog): Promise<string[]> {
   // A file the ticket settings refuse has no settings to compare, so two refusals would agree by their text and prove nothing.
-  if (settingsOf(before).startsWith("refused:")) return ["the host file as it is, which the ticket settings refuse, so there are no settings to keep"];
+  if (settingsOf(before, catalog).startsWith("refused:")) return ["the host file as it is, which the ticket settings refuse, so there are no settings to keep"];
   const names = [];
-  if (settingsOf(before) !== settingsOf(after)) names.push("the ticket settings");
+  if (settingsOf(before, catalog) !== settingsOf(after, catalog)) names.push("the ticket settings");
   // A ticket-only host has no project for the strict reader to read, so only its ticket settings are compared there.
   if (hasPrimary(before) && (await hostConfigOf(before)) !== (await hostConfigOf(after))) names.push("the host file's own settings (the gh wrapper's and the units')");
   return names;
@@ -150,12 +152,12 @@ export type HostFix =
  * The move for a host file's text, or why there is none. A host with no alias to move is `nothing`, so a second run changes nothing. A move that
  * would read differently is `refused`, naming what differs, and nothing is written.
  */
-export async function planHostFix(text: string): Promise<HostFix> {
+export async function planHostFix(text: string, catalog: Catalog = defaultCatalog()): Promise<HostFix> {
   const host = JSON.parse(text) as Host;
-  const { host: next, moves } = migrateHost(host);
+  const { host: next, moves } = migrateHost(host, catalog);
   if (moves.length === 0) return { kind: "nothing", reason: "no key is read as an alias: the host file already names its providers" };
   const migrated = `${JSON.stringify(next, null, 2)}\n`;
-  const differing = await differences(text, migrated);
+  const differing = await differences(text, migrated, catalog);
   if (differing.length > 0) return { kind: "refused", reason: `the migrated host file would read differently, in ${differing.join(" and ")}, so nothing is written` };
   return { kind: "move", text: migrated, moves, lines: lineChanges(text, migrated) };
 }
