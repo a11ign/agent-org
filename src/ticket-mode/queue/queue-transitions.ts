@@ -1,4 +1,4 @@
-import { openPulls, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
+import { CONCLUDED, openPulls, type CheckHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
 import { isParked, isPublishing, isWatched, overlapWait, resumesOnConflict, runActions, runStatus, settledByPulls } from "../board-view/pull-status-and-notes.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictsIn } from "../worker-files.ts";
@@ -17,14 +17,35 @@ export function approve(queue: Queue, key: string, now: number): Queue {
 }
 
 /**
- * A person asked the worker to answer the current feedback on pull requests that are ready already: a run Ready to merge, Published, or handed
- * back because it reached the cap on rounds the board starts on its own. The ticket goes back on the queue, at the end, as a review round that
- * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it. A run handed back for a
- * conflict carries the conflict lines, so its round merges the base in first (A11-125).
+ * Why a person's Respond cannot act on `entry`, or null when it can (A11-154): the run is not on the board, is not finished, has a round queued already, its
+ * tracker has completed or canceled the ticket, or it has no pull request open. A parked run is not refused here: the pool closes its workspace first. PURE.
+ */
+function respondRefusal(key: string, entry: Entry | undefined): string | null {
+  if (entry === undefined) return `${key} is not on the board`;
+  if (entry.phase === "queued" && entry.talk === true) return `a talk session is already queued for ${key}: a round would share its session`;
+  if (entry.phase === "queued") return entry.review !== undefined ? `a round is already queued for ${key}` : `${key} has not run yet, so there is no pull request to answer`;
+  if (entry.phase !== "finished") return `${key} is still running: Respond answers a run that has finished`;
+  if (SETTLED.has(entry.trackerState ?? "")) return `${key}'s ticket is ${entry.trackerState === "completed" ? "completed" : "closed"} in the tracker, so there is nothing to respond to`;
+  if (openPulls(entry).length === 0) return `${key} has no pull request open, so there is no feedback to answer`;
+  const kind = entry.outcome?.kind ?? "";
+  if (CONCLUDED.has(kind) || kind === "stopped") return `${key} ${kind === "stopped" ? "was stopped" : `concluded (${kind})`}: there is nothing for a worker to answer`;
+  return null;
+}
+
+/**
+ * A person asked the worker to answer the current feedback on a finished run's open pull requests, whatever its outcome ended on: Ready to merge, Published,
+ * handed back after the board's own rounds, needs-human, crashed, or ready for review. The ticket goes back on the queue, at the end, as a review round that
+ * resumes the same worker, and the count of the board's own rounds begins again, so watching carries on after it. A run handed back for a conflict carries the
+ * conflict lines, so its round merges the base in first (A11-125). A run whose pull requests are drafts is approved, which marks them ready and starts the
+ * same round. Throws, naming why, for a run Respond cannot act on ({@link respondRefusal}), so the board says it. A parked run is the pool's: it closes the
+ * run's workspace, then asks this.
  */
 export function respond(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
-  if (entry === undefined || entry.outcome?.kind !== "reviewed" || !reviewable(entry)) return queue;
+  const refusal = respondRefusal(key, entry);
+  if (refusal !== null) throw new Error(refusal);
+  if (entry === undefined || isParked(entry)) throw new Error(`${key}'s workspace is open: it is closed before Respond acts`);
+  if (entry.outcome?.kind === "draft-pr") return approve(queue, key, now);
   const conflict = conflictsIn(entry.handedBack ?? "");
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), { ...reviewRound(entry, openPulls(entry), now), asked: true, ...(conflict === null ? {} : { conflict }) }] };
 }
@@ -47,21 +68,48 @@ export function startAnyway(queue: Queue, key: string, now: number): Queue {
 export const MAX_FEEDBACK_ROUNDS = 3;
 
 /**
- * New feedback reached a watched run's pull requests after its last round ended (`feedback` says what), or a pull request conflicts with its base
- * (`feedback` names it as a conflict): the ticket goes back on the queue, at
- * the end, as a review round that answers it, resuming the same worker. After {@link MAX_FEEDBACK_ROUNDS} such rounds since a person last
+ * New feedback reached a watched run's pull requests after its last round ended (`feedback` says what), a check is red at a head the board has not answered, or
+ * a pull request conflicts with its base (`feedback` names it as a conflict): the ticket goes back on the queue, at
+ * the end, as a review round that answers it, resuming the same worker. `heads` is what the board has answered the red checks at, which the round records
+ * (A11-154). After {@link MAX_FEEDBACK_ROUNDS} such rounds since a person last
  * approved, the next trigger hands the run to a person instead, who approves again to let the board carry on. A run the board does not watch
  * ({@link isWatched}) is left alone.
  */
-export function feedbackRound(queue: Queue, key: string, feedback: string, now: number): Queue {
+export function feedbackRound(queue: Queue, key: string, feedback: string, now: number, heads?: CheckHeads): Queue {
   const entry = find(queue, key);
   if (entry === undefined || entry.phase !== "finished" || !isWatched(entry)) return queue;
+  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now);
+}
+
+/** What the board has answered the red checks of a run's pull requests at, by URL (A11-154). */
+type CheckHeads = Readonly<Record<string, CheckHead>>;
+
+/** `entry` with the heads its red checks were answered at, or as it is when there are none to record. PURE. */
+const withHeads = (entry: Entry, heads: CheckHeads | undefined): Entry => (heads === undefined ? entry : { ...entry, checkHeads: heads });
+
+/** A round for `entry` that answers `feedback`, or, once the board has started {@link MAX_FEEDBACK_ROUNDS} of its own, the run handed to a person with the latest feedback named. */
+function roundOrHandBack(queue: Queue, entry: Entry, feedback: string, now: number): Queue {
   const rounds = entry.rounds ?? 0;
-  if (rounds >= MAX_FEEDBACK_ROUNDS) {
-    const handedBack = `The pull requests keep getting feedback: the board answered ${rounds} rounds on its own and stopped. Respond to review starts another. The latest: ${feedback}`;
-    return replace(queue, key, (e) => ({ ...e, handedBack }));
-  }
-  return queueRound(queue, entry, feedback, now);
+  if (rounds < MAX_FEEDBACK_ROUNDS) return queueRound(queue, entry, feedback, now);
+  const handedBack = `The pull requests keep getting feedback: the board answered ${rounds} rounds on its own and stopped. Respond to review starts another. The latest: ${feedback}`;
+  return replace(queue, entry.ticket.key, (e) => ({ ...e, handedBack, ...(entry.checkHeads === undefined ? {} : { checkHeads: entry.checkHeads }) }));
+}
+
+/**
+ * Red checks at a head the board has not answered reached a run that {@link resumesOnConflict} names, watched or not (A11-154): a run parked on a question, ended
+ * with no outcome, crashed, or handed back. The ticket goes back on the queue as a review round that names the failing checks, resuming the same worker, as
+ * {@link feedbackRound} does. At the cap on the board's own rounds the run is handed to a person whatever its outcome was, who answers with Respond to review.
+ * `heads` is recorded with the round, or with the hand-back, so the head is not answered twice.
+ */
+export function checkRound(queue: Queue, key: string, feedback: string, now: number, heads: CheckHeads): Queue {
+  const entry = find(queue, key);
+  if (entry === undefined || entry.phase !== "finished" || !resumesOnConflict(entry)) return queue;
+  return roundOrHandBack(queue, withHeads(entry, heads), feedback, now);
+}
+
+/** Record what the board did about the red checks of a finished run's pull requests, when it started no round for it: a rerun, or checks named for a person (A11-154). */
+export function recordCheckHeads(queue: Queue, key: string, heads: CheckHeads): Queue {
+  return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, checkHeads: heads } : entry));
 }
 
 /** Whether the board may start one more round of its own on `entry`: it has started fewer than {@link MAX_FEEDBACK_ROUNDS} since a person approved. */
@@ -140,7 +188,7 @@ const withoutWorkspace = ({ workspace: _closed, pane: _gone, ...publish }: Publi
  * The terminal a run's agent was in, once the run has ended and its workspace and pane are cleared: a link to it then says the run ended, rather than
  * spinning (A11-129). Empty when the run held no terminal.
  */
-export const lastTerminalOf = ({ workspace, pane }: Readonly<{ workspace?: string; pane?: string }>): Readonly<{ lastTerminal?: { workspace: string; pane: string } }> =>
+const lastTerminalOf = ({ workspace, pane }: Readonly<{ workspace?: string; pane?: string }>): Readonly<{ lastTerminal?: { workspace: string; pane: string } }> =>
   workspace === undefined || pane === undefined ? {} : { lastTerminal: { workspace, pane } };
 
 /** Whether the queued publish run starts now: it has a slot of its own free. It does not wait on Pause, because a person just asked for it. */
@@ -164,7 +212,19 @@ export function setMax(queue: Queue, max: number): Queue {
 }
 
 export function markStarting(queue: Queue, key: string, now: number): Queue {
-  return replace(queue, key, (entry) => ({ ...entry, phase: "starting", startedAt: now }));
+  return replace(queue, key, ({ sessionWait: _held, ...entry }) => ({ ...entry, phase: "starting", startedAt: now }));
+}
+
+/**
+ * A queued review round or talk session is held back by the agent of an earlier session in another workspace (`wait` says which), or is not (`wait` undefined);
+ * `note`, when given, says what the board closed of that earlier session first (A11-154). A run that is not queued is left alone. PURE.
+ */
+export function holdForSession(queue: Queue, key: string, wait: string | undefined, note?: string): Queue {
+  return replace(queue, key, (entry) => {
+    if (entry.phase !== "queued") return entry;
+    const { sessionWait: _held, ...rest } = entry;
+    return { ...rest, ...(wait === undefined ? {} : { sessionWait: wait }), ...(note === undefined ? {} : { sessionNote: note }) };
+  });
 }
 
 /** The repositories the worker has made worktrees in so far. */
@@ -233,7 +293,7 @@ export function watchWorking(queue: Queue, key: string, status: string, now: num
 }
 
 /** What the pool learned of a run as it ended: the tokens it spent and the Claude session it ran in. */
-export type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>;
+type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>;
 
 /**
  * A run that ended. Its session is the one it ran in. Where the pool did not learn it, a review run keeps the session it resumed, and any
@@ -244,7 +304,7 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, and any other
   // keeps what the run had: a review round's `reviewed` says nothing of it.
   // The heads of its pull requests belong to the outcome it replaces: the end of this run records its own (A11-153).
-  const { session: _earlier, working: _note, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, pullHeads: _read, ...kept } = entry;
+  const { session: _earlier, working: _note, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, pullHeads: _read, sessionNote: _closed, handedBack: _handed, ...kept } = entry;
   // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
   const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
   const { review: _borrowed, ...unborrowed } = kept;
@@ -286,7 +346,7 @@ export function batchPlanDone(queue: Queue, key: string, repo: string | null, wa
 export function markResumed(queue: Queue, key: string): Queue {
   return replace(queue, key, (entry) => (isParked(entry)
     ? { ...entry, phase: "running", outcome: undefined, finishedAt: undefined, trackerState: undefined, pullStates: undefined, outcomeHeads: undefined, pullHeads: undefined,
-      waiting: false, seenWorking: true }
+      handedBack: undefined, waiting: false, seenWorking: true }
     : entry));
 }
 

@@ -281,10 +281,15 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   what a review is on this machine.
 - **Watched once Ready to merge, and answered on its own.** Every 3 minutes the board reads the open pull requests of each run Ready to merge
   or Published. A review that comments or requests changes, a conversation comment or an inline comment newer than the run's last round, from
-  anyone but the GitHub account the workers use (`gh api user`), queues another review round. So does a check that failed on the head commit
-  since then: the required checks, or every check where none is required. The round resumes the same worker, names what started it, and has
+  anyone but the GitHub account the workers use (`gh api user`), queues another review round. So does a check that is red at the head commit
+  (the required checks, or every check where none is required), **once for each head**: the round's brief names each failing check and the error lines of its job's
+  log, the jobs behind a failed required `gate` in its place, and a head that stays red after its round, or after a restart, starts no second one (A11-154).
+  The same red check also wakes a run that ended needs-human, with no outcome, or crashed, or that is parked on a question, when its pull request is still open: its workspace
+  is closed first, as for a conflict. A check that failed for an infrastructure reason (a runner that was lost, a rate limit, a GitHub 5xx or a network error) is not handed to a worker: its
+  failed jobs are rerun once for the head, the run says so ("Reran test on 1a2b3c4d: a runner was lost or a rate limit was hit"), and red again on that head it is named for a person. The round
+  resumes the same worker, names what started it, and has
   the worker fix what is right with a test, answer what is wrong with evidence, push, and wait for the checks. The board starts at most 3 such
-  rounds. The next trigger hands the run to you as Needs you, saying its pull requests keep getting feedback. Feedback that arrived while a
+  rounds. The next trigger hands the run to you as Needs you, whatever its outcome was, saying its pull requests keep getting feedback. Feedback that arrived while a
   round was running is not answered twice. Merged or closed pull requests are never watched.
 - **A stacked pull request is retargeted when its base merges.** A run stacked on a blocker's pull request keeps that pull request's branch as its
   base. When the blocker merges and its branch is not deleted, GitHub does not retarget the stacked one, so the board does it: every 3 minutes it
@@ -292,11 +297,16 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   base back, and leaves the head as the worker pushed it. A base whose branch is gone with nothing merged on it is not moved, since its work may
   never have landed: the run says `Needs retarget` on the board, with the pull request and the branch, until a person retargets it. A retarget that
   is refused is said the same way, and tried again on the next sweep.
-- **Respond to review, for pull requests that are ready already.** A run Ready to merge, Published, or handed back after the board's 3 rounds,
-  offers Respond to review. It queues a review round straight away, resuming the same worker, told that you asked it to answer the current
-  feedback: reviews, comments and failing checks. It starts the count of the board's own rounds again, so watching carries on after it.
+- **Respond to review, for any run with a pull request open.** A finished run whose ticket the tracker has not completed or canceled, and that has a pull request open, offers
+  Respond to review, whatever its outcome was: Ready to merge, Published, handed back after the board's 3 rounds, needs-human, crashed or ended with no outcome. A parked run's
+  workspace is closed first. It queues a review round straight away, resuming the same worker, told that you asked it to answer the current
+  feedback: reviews, comments and failing checks. It starts the count of the board's own rounds again, so watching carries on after it. On a run whose pull requests are drafts it acts as
+  Approve. A press that cannot act says why on the board: the run has no pull request open, its ticket is completed or canceled, it is still running, or a round is queued already (A11-154).
   A run the board handed back at its cap because its pull request conflicts with its base merges that base in first, keeping both
   changes, and never rebases or force-pushes (A11-125).
+- **A round and a Talk never share a session.** A Talk is refused while a round of the run is queued or running. A queued round or Talk waits, saying "Waits for the Talk session in
+  <workspace> to end", while an agent that is working holds the run's Claude session or its herdr name; an agent that is idle, done or has no pane is the run's leftover, and its workspace is
+  closed first, said in the log and on the run. A parked run herdr no longer lists has its workspace closed as it is unparked (A11-154).
 - **Publish, once a run is Ready to merge.** On a machine that sets `tickets.publish`, each run Ready to merge has a Publish tick, and
   "Publish selected (N)" publishes every ticked run in one press. Nothing else can be ticked: nothing reaches a channel before you approved it
   and it passed its review and checks, and a Published run is never posted twice. The press starts one publish run, in its own folder
@@ -322,8 +332,8 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   not exist. At most three new-ticket requests are unfinished at once.
 - **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what
   it waits on, and holds no slot, while a run queued after it with nothing blocking it starts first. A blocker lets go once the tracker
-  completes it, or, when it is on the queue itself, once its run is Completed, which its pull requests merging is enough for. A canceled or
-  duplicate blocker never lets go, so a person decides. The blockers are read before a run first starts, and nothing starts while the tracker
+  completes it, once its run on the queue is Completed, or once its pull requests have merged, whatever state its ticket is in (a pull request that says `Refs` leaves the ticket In
+  Progress). A canceled or duplicate blocker never lets go, so a person decides. The blockers are read before a run first starts, and nothing starts while the tracker
   cannot say; they are read again every two minutes, so a relation changed in the tracker counts. A run that waited names its blockers and
   their pull requests in its brief, and checks that any release it depends on is out before relying on it. A run whose plan cannot be
   downloaded waits, saying why, and the board asks again on every pass; the other runs start, and it takes no slot (A11-125).

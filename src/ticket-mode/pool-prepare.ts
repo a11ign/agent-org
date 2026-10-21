@@ -36,7 +36,7 @@ function notesFile(path: string | null, setting: string): string | undefined {
  * The Claude session a review run resumes: the one its last run ended in, while its transcript is still there, or else the newest one Claude
  * Code kept for the ticket's folder. Undefined when there is none, and the review run starts a fresh worker.
  */
-function sessionToResume(ctx: PoolContext, entry: Entry): string | undefined {
+export function sessionToResume(ctx: PoolContext, entry: Entry): string | undefined {
   const { settings, transcripts } = ctx;
   if (entry.session !== undefined && findTranscript(transcripts, entry.session) !== null) return entry.session;
   return findFolderSession(transcripts, ticketFolder(settings, entry.ticket.key)) ?? undefined;
