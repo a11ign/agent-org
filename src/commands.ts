@@ -55,6 +55,7 @@ export const COMMANDS = {
   "stop": "install/service.ts",
   "stash:whose": "stash-whose.ts",
   "survey": "survey.ts",
+  "ticket:capture": "ticket-mode/capture-command.ts",
   "ticket:hook": "ticket-mode/hook.ts",
   "ticket:pair": "ticket-mode/pair-command.ts",
   "ticket:remote-info": "ticket-mode/remote-info-command.ts",

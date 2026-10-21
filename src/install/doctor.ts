@@ -40,6 +40,7 @@ import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
 import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
+import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -101,6 +102,8 @@ export type DoctorDeps = Readonly<{
   reviewerGate: () => Promise<string | null>;
   /** The exit status of `codex login status`, or null when it cannot run (A11-145): asked only when the reviewer is `atomic`. */
   codexStatus: () => number | null;
+  /** The Chromium builds this machine has, read now: each build is a check, and `ticket:capture` needs both (A11-151). */
+  chromium: () => ChromiumReport;
   /** Each plugin `tickets.plugins` names, as a session in `folder` gets it, and what is wrong with its contract (A11-140). A test injects one, so no install record, plugin file, version or `PATH` is read. */
   plugins: (input: { wanted: readonly string[]; folder: string; host: HostFacts }) => PluginProblems;
   now: () => number;
@@ -460,7 +463,23 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
     ...pluginRefreshChecks(deps),
+    ...chromiumChecks(deps),
   ];
+}
+
+/**
+ * One check per Chromium build, so each names what it lacks. A missing binary is fixed by the browser install, which the person runs; missing libraries by
+ * `install-deps`, which runs as root and is never run from here (A11-151). `ticket:capture` needs both builds, so each is checked.
+ */
+function chromiumChecks(deps: DoctorDeps): Check[] {
+  const report = deps.chromium();
+  if (report.unchecked !== null) return [failed("chromium", `cannot be checked: ${report.unchecked}`, "run `agent-org update`, which installs this checkout's dependencies")];
+  return report.builds.map((build) => {
+    const label = BUILD_LABELS[build.build];
+    if (buildStarts(build)) return ok(label, build.binary ?? "");
+    if (build.binary === null) return failed(label, "no browser is installed", `run \`node ${PLAYWRIGHT_CLI} install chromium\``);
+    return failed(label, `lacks ${build.missing.join(", ")}`, `run \`sudo node ${PLAYWRIGHT_CLI} install-deps chromium\``);
+  });
 }
 
 /**
@@ -750,6 +769,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       return port.reviewerRefusal();
     },
     codexStatus: () => spawnSync("codex", ["login", "status"], { encoding: "utf8", timeout: 60_000 }).status,
+    chromium: () => chromiumReport(),
     now: () => Date.now(),
   };
 }

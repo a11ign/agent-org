@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
+import type { ChromiumReport } from "./chromium.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
 import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
@@ -32,12 +33,43 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
-    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0, now: () => NOW,
+    plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewerGate: async () => null, codexStatus: () => 0,
+    chromium: () => BROWSERS_READY, now: () => NOW,
     ...over,
   };
 }
 
 const byName = (checks: Awaited<ReturnType<typeof diagnose>>) => Object.fromEntries(checks.map((check) => [check.name, check]));
+
+/** Both Chromium builds start: the default the doctor tests read. */
+const BROWSERS_READY: ChromiumReport = {
+  builds: [{ build: "chromium", binary: "/cache/chromium-1243/chrome", missing: [] }, { build: "chromium-headless-shell", binary: "/cache/shell/chrome-headless-shell", missing: [] }],
+  unchecked: null,
+};
+
+test("doctor checks each Chromium build, and fails the one that lacks libraries with the install command", async () => {
+  const lacking: ChromiumReport = { builds: [BROWSERS_READY.builds[0], { build: "chromium-headless-shell", binary: "/cache/shell", missing: ["libatk-1.0.so.0", "libcups.so.2"] }], unchecked: null };
+  const checks = byName(await diagnose(deps({ chromium: () => lacking })));
+  assert.equal(checks.chromium.ok, true);
+  assert.equal(checks["chromium headless shell"].ok, false);
+  assert.match(checks["chromium headless shell"].detail, /libatk-1\.0\.so\.0, libcups\.so\.2/);
+  assert.match(checks["chromium headless shell"].fix ?? "", /install-deps chromium/, "the fix is the install command, not a bare sentence");
+});
+
+test("doctor fails a Chromium build with no binary by the browser install, which the person runs without root", async () => {
+  const missing: ChromiumReport = { builds: [{ build: "chromium", binary: null, missing: [] }, BROWSERS_READY.builds[1]], unchecked: null };
+  const check = byName(await diagnose(deps({ chromium: () => missing })))["chromium"];
+  assert.equal(check.ok, false);
+  assert.equal(check.detail, "no browser is installed");
+  assert.match(check.fix ?? "", /node .*playwright-core\/cli\.js install chromium/);
+  assert.doesNotMatch(check.fix ?? "", /sudo/, "the browser install needs no root");
+});
+
+test("doctor passes both Chromium builds when they start", async () => {
+  const checks = byName(await diagnose(deps()));
+  assert.equal(checks.chromium.ok, true);
+  assert.equal(checks["chromium headless shell"].ok, true);
+});
 
 /** A host file as an install from before A11-144 wrote it: each concern's loose keys, no provider block. */
 const OLD_HOST = JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, terminal: TERMINAL } });
@@ -112,7 +144,7 @@ test("doctor passes every check on a working install, and never prints the key",
     ["herdr", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["exposure (local)", true], ["publisher (none)", true], ["reviewer (none)", true], ["pairing", true],
-    ["auto-update service", true], ["update lag", true],
+    ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
   ]);
   assert.ok(!report(checks).includes(KEY));
   assert.match(report(checks), /ok {4}ui answering: http:\/\/127\.0\.0\.1:4801 answers/);

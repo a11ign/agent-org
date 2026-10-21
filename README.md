@@ -182,6 +182,8 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   for `127.0.0.1` to every port there. An instance ignores a browser's cookie. Both files are made with mode 600, and a key file another
   user owns or can read is refused.
 
+- **Capture a page of the board.** `agent-org ticket:capture /settings --size 1280x800 --out <file-or-dir>` starts this checkout's instance and board on two free ports, from a throwaway host file and state folder, pairs a headless browser the way a browser pairs (a code the board mints, traded for a session), opens the route at the size, writes the PNG, and stops and removes everything it started, whether or not the capture worked. Nothing is signed in with a real account, nothing is uploaded, and a real instance is never touched: the throwaway environment answers herdr's one start question with no workspaces, so no herdr server starts. A capture needs both Chromium builds. `agent-org onboard` installs the browsers as the person who runs it, and the system libraries when it is root or `sudo -n` works; `agent-org doctor` names the command for whatever is missing. A worker is told to capture a page its change alters when `tickets.capture` is true, which onboard sets once both builds start.
+
 - **Pair the worker terminal.** The worker terminal (herdr web ui) has a pairing code of its own. `agent-org ticket:pair` prints it after the
   board's code when `tickets.serve` is set and `tickets.terminal` is this machine's own, and `agent-org ticket:pair --terminal` prints it
   alone (`--board` prints the board's alone). No path is typed: the command runs herdr web ui's own `pair` with the terminal service's
