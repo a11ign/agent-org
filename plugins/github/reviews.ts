@@ -6,7 +6,19 @@
 import type { Review, ReviewState } from "../../src/plugins/contracts/code-host.ts";
 import type { CodeHostPolicy } from "../../src/plugins/manifest.ts";
 import type { Gh } from "./gh.ts";
-import { pullRequestFieldsOf } from "./pull-request-fields.ts";
+
+/**
+ * The named `fields` (a `--json` list) of pull request `number` of `repo`, or null when they could not be had: a refused `gh`, or an answer that does not parse. Absence is not proof, so a
+ * caller reads null as no reading. Private: row mode's own read of the same fields stays in core (`src/ticket-port/pull-request-fields.ts`) until its callers move into this plugin, and a
+ * plugin imports core's types only (ADR 0001), so the two cannot be one file.
+ */
+function fieldsOf(repo: string, number: number, fields: string, gh: Gh): Record<string, any> | null {
+  try {
+    return JSON.parse(gh(["pr", "view", String(number), "--repo", repo, "--json", fields]));
+  } catch {
+    return null;
+  }
+}
 
 /** The pull request's repository (`owner/name`) and number, or null for a url that is none. */
 export function pullOf(url: string): { repository: string; number: number } | null {
@@ -22,7 +34,7 @@ export function readReviewState(url: string, gh: Gh, policy: CodeHostPolicy): Re
   const judge = policy.review();
   const pull = pullOf(url);
   if (pull === null) return null;
-  const pr = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: judge.fields, gh });
+  const pr = fieldsOf(pull.repository, pull.number, judge.fields, gh);
   try {
     if (typeof pr?.headRefOid !== "string") return null;
     const reviews: Review[] = (pr.reviews ?? []).map((r: { author?: { login?: string }; state?: string; commit?: { oid?: string }; submittedAt?: string }) => ({
@@ -43,6 +55,6 @@ export function readReviewState(url: string, gh: Gh, policy: CodeHostPolicy): Re
 export function readPullState(url: string, gh: Gh): string | null {
   const pull = pullOf(url);
   if (pull === null) return null;
-  const state = pullRequestFieldsOf({ repo: pull.repository, number: pull.number, fields: "state", gh })?.state;
+  const state = fieldsOf(pull.repository, pull.number, "state", gh)?.state;
   return state === "OPEN" || state === "MERGED" || state === "CLOSED" ? state : null;
 }
