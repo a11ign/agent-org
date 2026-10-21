@@ -567,7 +567,7 @@ async function main() {
     decisionDeps: { host, switchesPath: decisionSwitchesPath(PRIMARY_CHECKOUT), logPath: decisionLogPathFrom(ledgerPath) }, accountPause,
   });
   // A SEAT THE FIRST DELIVERY FOUND ENDED IS ENDED FOR THE SECOND (#3568): one `agent_not_found` per label per tick, not one per order.
-  // agent-org#1348: a live reviewer's token is refreshed BEFORE it expires, so `host/gh` in its sandbox never has to mint with the key. An outside
+  // agent-org#1348: a live reviewer's token is refreshed BEFORE it expires, so `plugins/github/wrapper/gh` in its sandbox never has to mint with the key. An outside
   // reviewer has no app, so it gets none; a failed refresh says so, and the token there is kept until it runs out.
   const reviewerMint = reviewerTokenMinter(reviewerAppOf());
   const reviewerRegistry: Record<string, ReviewerEntry> = readReviewerRegistry(reviewerPathsFrom(ledgerPath).registry);

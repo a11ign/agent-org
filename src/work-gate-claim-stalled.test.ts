@@ -190,7 +190,7 @@ test("#2470 a row comment counts only from the claim's OWN account and only afte
 
 const SCHEDULER = "a11ign-scheduler[bot]";
 const WORKERS = "a11ign-workers[bot]";
-/** A comment as `host/gh` posts it: the author's text, then the trailing `decided-by` line naming the seat and its run. */
+/** A comment as `plugins/github/wrapper/gh` posts it: the author's text, then the trailing `decided-by` line naming the seat and its run. */
 const marked = (minutesAgo: number, role: string, author = WORKERS, text = "the reading, as asked"): Comment =>
   said(minutesAgo, author, `${text}\n\n<!-- decided-by: ${role} run: 0b7a1c52-9d3e -->`);
 
@@ -214,7 +214,7 @@ test("#913 (2) a comment marked with ANOTHER session, one older than the claim r
   const second = { ...marked(100, "worker-7"), body: `${CLAIM_RECORD_MARKER}\n**Claim record** -- claimed by \`worker-7\`.\n\n<!-- decided-by: worker-7 -->` };
   assert.equal(commentMove([base, second], record, "worker-7"), null, "a claim record carrying the marker is still a record");
   assert.equal(decidedBy("no marker here"), null);
-  assert.equal(decidedBy("x\n\n<!-- decided-by: worker-7 -->"), "worker-7", "the run-less spelling host/gh writes when it has no run id");
+  assert.equal(decidedBy("x\n\n<!-- decided-by: worker-7 -->"), "worker-7", "the run-less spelling plugins/github/wrapper/gh writes when it has no run id");
 });
 
 test("#913 (3) through the REAL claimFactsFrom and claimReading: a nudge recorded BEFORE the marked comment is answered, and without it the same row releases", () => {

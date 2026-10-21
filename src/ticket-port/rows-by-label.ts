@@ -7,7 +7,7 @@
 //
 // `repository.issues(labels:)` is a CONNECTION, not a search: it is charged to the GraphQL points the gate already budgets, and it answers
 // when the search allowance is spent. This is the one reader for it, so the claim, the sweep freeze beside it and the other label reads on
-// the claim path ask in the same shape (and `host/gh` answers an IDENTICAL repeated read from disk, so the claim's second look is free).
+// the claim path ask in the same shape (and `plugins/github/wrapper/gh` answers an IDENTICAL repeated read from disk, so the claim's second look is free).
 //
 // THIS FILE LIVES IN THE PORT'S DIRECTORY, so `run` is handed in and nothing here spawns `gh` (`ticket-port.test.ts`, `gh-call-ratchet.test.ts`).
 //

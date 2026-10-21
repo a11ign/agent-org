@@ -20,11 +20,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH, SUPPORTED_SCHEMA, TICKET_ONLY_CHECKOUT } from "./project-config.ts";
 import { LATEST, isToolVersion } from "./lib/release-tag.ts";
-import { GITHUB_ROLES, type AppIdentity, type GithubRole } from "./app-token.ts";
 import { resolveProviders, type Setting } from "./ticket-mode/providers.ts";
 import { TicketSettingsRefusal } from "./ticket-mode/settings-refusal.ts";
-
-export { GITHUB_ROLES, type GithubRole };
 
 export const HOST_CONFIG_ENV = "AGENT_ORG_HOST";
 /** Where the host's declaration is, relative to a checkout, when `$AGENT_ORG_HOST` does not say. */
@@ -59,7 +56,16 @@ export type EventsDeclaration =
   | ({ source: "webhook", receiver: Readonly<EventsReceiver>, reconcileMinutes: number } & EventsTunnelFacts);
 export type UnitsDeclaration = { prefix: string, boardReportWorkflow: string, own: string[] };
 
-/** How a role authenticates (#4900). `user-accounts` is today's behaviour and the default; `github-apps` names the app (`app-token.ts`'s `AppIdentity`). */
+/**
+ * The four callers of `gh` that may each hold their own GitHub App: the gate and scripts, the engineer sessions, the decision-holders and the reviewer instances. The GitHub plugin holds the same list for
+ * its minter (`plugins/github/app-token.ts`, a program that imports nothing of core), and `plugins/github/wrapper.test.ts` holds the two to one.
+ */
+export const GITHUB_ROLES = Object.freeze(["scheduler", "workers", "managers", "reviewer"] as const);
+export type GithubRole = typeof GITHUB_ROLES[number];
+/** What mints a token: the app, the file its private key is in (a path, never the key) and, when it has several, the installation to use. `slug` is the app's URL name: the login its writes carry is `<slug>[bot]`. */
+export type AppIdentity = { appId: string, keyPath: string, installationId?: string, slug?: string };
+
+/** How a role authenticates (#4900). `user-accounts` is today's behaviour and the default; `github-apps` names the app (`AppIdentity`). */
 export type RoleIdentity = { mode: "user-accounts" } | ({ mode: "github-apps" } & AppIdentity);
 export type GithubDeclaration = { identity: Readonly<Record<GithubRole, Readonly<RoleIdentity>>> };
 
@@ -284,7 +290,7 @@ function readRoleIdentity(role: Record<string, unknown>, at: string, source: str
 }
 
 /**
- * An app's slug: what `https://github.com/apps/<slug>` carries, and the login its writes are authored as is `<slug>[bot]`, which `host/gh` answers
+ * An app's slug: what `https://github.com/apps/<slug>` carries, and the login its writes are authored as is `<slug>[bot]`, which `plugins/github/wrapper/gh` answers
  * `gh api user` with. REFUSED when written WITH the `[bot]` suffix (it would be appended twice, and the wrapper would then name a login nobody has).
  */
 const APP_SLUG = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
@@ -691,7 +697,6 @@ export function templateValues(host: HostConfig, units: UnitsDeclaration): Recor
     workersDir: host.gh.workers,
     leadsDir: host.gh.leads,
     prefix: units.prefix,
-    ...appTokenValues(host, primary.checkout),
     ...eventReceiverValues(host),
   };
 }
@@ -716,34 +721,6 @@ function eventReceiverValues(host: HostConfig): Record<string, string> {
     }
   }
   return { eventsPort: String(port), eventsSecretFile: secretPath, eventsQueue: queue };
-}
-
-/** A word a `sh` single-quoted string carries exactly, whatever the declaration holds. */
-const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
-
-/**
- * What `host/gh` needs to route a role to its app (#4900): which roles are app-backed, each one's app, where the minted tokens are cached
- * and the minter. The wrapper never reads `host.json` itself (a shell script parsing JSON on every `gh` call is what a rendered template is
- * for), so a host with no `github-apps` role renders `appRoles` empty and the wrapper takes none of the new paths.
- * `appDeclared` is the `case` statement that sets the app (a statement, so the raw template is itself valid `sh`), quoted for `sh`. The minter is the tool's own file: under `tool` on a host in the
- * installed form, else where the primary checkout has always carried it.
- * @param {HostConfig} host @param {string} checkout
- */
-function appTokenValues(host: HostConfig, checkout: string): Record<string, string> {
-  const arms = GITHUB_ROLES.flatMap((role) => {
-    const identity = roleIdentity(host, role);
-    if (identity.mode !== "github-apps") return [];
-    return [`    ${role}) app_id=${shellQuote(identity.appId)}; app_key=${shellQuote(identity.keyPath)}; app_inst=${shellQuote(identity.installationId ?? "")}; app_slug=${shellQuote(identity.slug ?? "")} ;;`];
-  });
-  return {
-    appRoles: GITHUB_ROLES.filter((role) => roleIdentity(host, role).mode === "github-apps").join(" "),
-    appDeclared: ["case \"$1\" in", ...arms, "    *) return 1 ;;", "  esac"].join("\n"),
-    appTokenDir: stateEntryPath("app-tokens", { host, home: host.home, env: {} }),
-    appTokenScript: host.tool === undefined ? join(checkout, "packages/agent-org/src/app-token.ts") : join(host.tool, "src/app-token.ts"),
-    // the authoring switch (agent-org#1666): the leaf that reads it, and the canary state it reads, in the state directory `org-health` writes
-    authorFlagScript: host.tool === undefined ? join(checkout, "packages/agent-org/src/gh-author-fallback.ts") : join(host.tool, "src/gh-author-fallback.ts"),
-    canaryStateFile: stateEntryPath(CANARY_STATE_NAME, { host, home: host.home, env: {} }),
-  };
 }
 
 /** The canary state's file name in the state directory. `org-health.ts` re-exports it as `CANARY_STATE_FILE` (it imports this module, not the reverse). */

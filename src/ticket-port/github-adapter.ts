@@ -102,7 +102,7 @@ export const ITEM_QUERY = `
   }
 `;
 
-/** The `<!-- decided-by: ... -->` line `host/gh` appends to a comment (agent-org#486), in the same grammar, so a posted decision is never stamped twice. */
+/** The `<!-- decided-by: ... -->` line `plugins/github/wrapper/gh` appends to a comment (agent-org#486), in the same grammar, so a posted decision is never stamped twice. */
 const DECIDED_BY = /<!--\s*decided-by:/;
 const HEADER_WORD = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -304,7 +304,7 @@ export function githubTicketAdapter(options: GithubAdapterOptions): GithubTicket
 
     postDecision(target, decision: Decision) {
       for (const [field, value] of [["role", decision.role], ["runId", decision.runId], ["kind", decision.kind]] as const) {
-        // NEVER A GUESS: a header is a statement of who decided, and one that cannot be written truthfully is not written (`host/gh`'s own rule).
+        // NEVER A GUESS: a header is a statement of who decided, and one that cannot be written truthfully is not written (`plugins/github/wrapper/gh`'s own rule).
         if (!HEADER_WORD.test(value)) throw new Error(`postDecision: \`${field}\` must be 1-64 characters of [A-Za-z0-9._-], got ${JSON.stringify(value)}`);
       }
       const body = `${decision.text.trimEnd()}\n\n<!-- decision-kind: ${decision.kind} -->\n<!-- decided-by: ${decision.role} run: ${decision.runId} -->`;

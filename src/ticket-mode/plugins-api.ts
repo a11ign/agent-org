@@ -83,7 +83,8 @@ async function basesOf(options: Readonly<{ hostPath: string; projectPath?: strin
 export function pluginsApi(options: Readonly<{ hostPath: string; settings: TicketSettings; seam?: PluginsSeam }>) {
   const { hostPath, settings, seam = {} } = options;
   const catalog = seam.catalog ?? defaultCatalog();
-  const deps = seam.deps ?? { ...realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones }), log: () => undefined };
+  // The page runs no machine probes of the code host's wrapper (a token mint per App on every load): `agent-org doctor` shows those rows.
+  const deps = seam.deps ?? { ...realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones }), log: () => undefined, place: async (): ReturnType<PluginDeps["place"]> => ({ kind: "skipped" }) };
   const load = seam.load ?? ((providers, cat, pluginDeps) => loadEnabled(providers, cat, pluginDeps));
   const messaging = seam.messaging ?? { state: () => messagingStateOfFile(hostPath, seam.projectPath), checks: () => messagingChecksOfFile(hostPath, { env: process.env, home: homedir() }) };
 

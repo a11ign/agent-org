@@ -1,21 +1,24 @@
+// module: the GitHub plugin's App-token minter (agent-org#4900, moved here by A11-160)
+//
 // #4900: A GITHUB APP'S INSTALLATION TOKEN, MINTED, CACHED AND REFRESHED BEFORE IT EXPIRES.
 //
 // Every session of a role shared one personal account's 5,000 points an hour and its secondary limit, so the gate and six workers could
 // starve each other (the tick ended 17 times in 30 minutes on `API rate limit already exceeded for user ID 328832207`). An installation token
-// of a GitHub App is a separate principal with its own pool. `host/gh` asks this file for a role's token and puts it in `GH_TOKEN`; this file
+// of a GitHub App is a separate principal with its own pool. The wrapper (`wrapper/gh`) asks this file for a role's token and puts it in `GH_TOKEN`; this file
 // does the three things that need code: sign the app's JWT, trade it for an installation token, and keep the token where the next call finds it.
 //
-// WHICH ROLE USES WHICH APP is `host.json`'s `github.identity` (`host-config.ts`); `user-accounts` is the default and this file is not
+// WHICH ROLE USES WHICH APP is the code host block's `identity` setting (`package.json`'s manifest); `user-accounts` is the default and this file is not
 // reached for it. THIS FILE NEVER FALLS BACK: it prints a token or it fails naming the stage, and the wrapper that called it is the one
 // that goes back to today's account and records the incident, because only the wrapper knows which account that is.
 //
 // A token is a SECRET: it is written to stdout for the wrapper and to a mode-600 file in a mode-700 directory, and appears in no message
 // this file builds. The same holds for the key: its PATH may be named in a failure, never its bytes.
 //
-// A LEAF, and `host-config.ts` imports it, never the reverse: `node:` modules only. The app's id and key path come from the wrapper's
-// environment, rendered into it from `host.json` at install time, because importing `host-config.ts` resolves the project's checkout from
+// A LEAF: `node:` modules only, and it is run as a program (`node app-token.ts <role>`), so it imports nothing of core. The app's id and key path come from the wrapper's
+// environment, rendered into it from the host file at install time, because importing the host file's reader resolves the project's checkout from
 // the working directory at import, and a minter that refused from `/tmp` would fall back to the shared account for a reason that has
-// nothing to do with the app.
+// nothing to do with the app. Core keeps a reader of the cache this file writes (`src/app-token-cache.ts`: wake refreshes the reviewer's token before it dies) until the reviewer's
+// identity moves in here too (A11-160, step 3); `app-token-cache.test.ts` holds the two to one format.
 import { createSign } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -35,13 +38,14 @@ const HTTP_CREATED = 201;
 
 /**
  * The four callers of `gh` that may each hold their own GitHub App: the gate and scripts, the engineer sessions, the decision-holders and the
- * reviewer instances (a11ign/a11ign#5044: the reviewer's approvals are authored by the machine USER `a11ign-bot` until this role is an App).
+ * reviewer instances (a11ign/a11ign#5044: the reviewer's approvals are authored by the machine USER `a11ign-bot` until this role is an App). The host file's reader holds the same list
+ * (`host-config.ts`'s `GITHUB_ROLES`): this file imports nothing of core, so `wrapper.test.ts` holds the two to one list.
  */
 export const GITHUB_ROLES = Object.freeze(["scheduler", "workers", "managers", "reviewer"] as const);
 export type GithubRole = typeof GITHUB_ROLES[number];
 /**
  * What mints a token: the app, the file its private key is in (a path, never the key) and, when it has several, the installation to use.
- * `slug` is the app's URL name, which the minter never reads: it is what `host/gh` answers `gh api user` with (`<slug>[bot]`, the login the app's
+ * `slug` is the app's URL name, which the minter never reads: it is what the wrapper answers `gh api user` with (`<slug>[bot]`, the login the app's
  * writes are authored as), because an installation token is refused `GET /user`. Absent, the wrapper answers nothing and the call goes through.
  */
 export type AppIdentity = { appId: string, keyPath: string, installationId?: string, slug?: string };
@@ -72,7 +76,7 @@ export function appJwt({ appId, privateKey, now }: { appId: string, privateKey: 
   return `${header}.${claims}.${base64url(signature)}`;
 }
 
-/** The file's format, which `host/gh` reads in shell: `<expiry epoch seconds> <token>`. */
+/** The file's format, which the wrapper reads in shell: `<expiry epoch seconds> <token>`. */
 export const formatTokenFile = ({ token, expiresAt }: InstallationToken) => `${expiresAt} ${token}\n`;
 
 /** A cached token, or `null` for a file that is not the format: a torn or foreign file is a miss, never a token. */
@@ -203,7 +207,7 @@ export async function main(argv: string[], env: Record<string, string | undefine
   }
   const { A11Y_APP_ID: appId, A11Y_APP_KEY_PATH: keyPath, A11Y_APP_TOKEN_DIR: cacheDir, A11Y_APP_INSTALLATION_ID: installationId } = env;
   if (!appId || !keyPath || !cacheDir) {
-    console.error("app token: A11Y_APP_ID, A11Y_APP_KEY_PATH and A11Y_APP_TOKEN_DIR must all be set; `host/gh` sets them from the host's declaration");
+    console.error("app token: A11Y_APP_ID, A11Y_APP_KEY_PATH and A11Y_APP_TOKEN_DIR must all be set; the wrapper sets them from the host's declaration");
     return 2;
   }
   try {

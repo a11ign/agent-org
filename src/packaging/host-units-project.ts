@@ -45,3 +45,10 @@ function buildProject(): string {
 /** The fixture project's root, and the process's `$AGENT_ORG_HOST` for as long as this file runs. */
 export const PROJECT_ROOT = buildProject();
 process.env.AGENT_ORG_HOST = join(PROJECT_ROOT, ".agent-org/host.json");
+
+// A11-160: THE `gh` WRAPPER IS THE CODE HOST PLUGIN'S, so the code that installs and compares it asks the code host the process activated (`plugins/active.ts`). A test of the installing, comparing and
+// re-writing runs on the fake code host's wrapper, which renders a one-line text of the declared roles; the tests that are about the real wrapper are the GitHub plugin's, or hand it in as `wrapper`.
+// Imported after the variable above is set, for the reason the variable is set first.
+const { substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+substituteCodeHost(createFakeCodeHost());

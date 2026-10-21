@@ -175,7 +175,7 @@ export const CODEOWNER_REVIEW_APPROVED_ONLY_ENV = "AGENT_ORG_CODEOWNER_REVIEW_AP
  * `decided-by` MARKER NAMES THE OWNER'S SEAT. A manager's review is authored by `a11ign-managers[bot]` since #4911's flip, which no comparison
  * with `a11ign-ai-leads` can match, so the cause re-fired on a head `ceo` had approved. The App is shared by `ceo`, `product-manager` and
  * `orchestrator`, so its login alone must NOT clear the cause (a `product-manager` approval is not the code owner's): the marker is the only
- * thing that names the seat, and `decidedBy` reads its LAST one, the line `host/gh` appends, so a quoted marker earlier in the body does not
+ * thing that names the seat, and `decidedBy` reads its LAST one, the line `plugins/github/wrapper/gh` appends, so a quoted marker earlier in the body does not
  * speak for the review. `seat` is the lane's role ("ceo").
  *
  * AUTHORSHIP IS NOT EXTENDED, and `pipelineCodeownerReviewMissing`'s own-PR exemption still compares with `login` alone: the App authors for

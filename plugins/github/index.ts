@@ -10,13 +10,17 @@ import type { CodeHost } from "../../src/plugins/contracts/code-host.ts";
 import type { PluginCheck, PluginDeps, PluginSettings } from "../../src/plugins/manifest.ts";
 import { stackChecks } from "./checks.ts";
 import { createCodeHost } from "./code-host.ts";
+import { wrapperChecks } from "./identity-checks.ts";
 import { ONBOARD_STEPS } from "./onboard.ts";
 
 /** The GitHub code host: it reads nothing until asked, so a host with no `gh` still starts, and doctor says what is missing. */
 export const create = (_settings: PluginSettings, deps: PluginDeps): CodeHost => createCodeHost(deps);
 
-/** The rows doctor shows for the plugin: the stacking extension for the workers' account, and whether GitHub makes stacked pull requests available. */
-export const doctorChecks = (settings: PluginSettings, deps: PluginDeps): readonly PluginCheck[] => stackChecks(settings, deps);
+/**
+ * The rows doctor shows for the plugin: the installed `gh` wrapper, the roles it routes to Apps and each App's token, then the stacking extension for the workers' account and whether GitHub makes
+ * stacked pull requests available.
+ */
+export const doctorChecks = async (settings: PluginSettings, deps: PluginDeps): Promise<readonly PluginCheck[]> => [...await wrapperChecks(settings, deps), ...stackChecks(settings, deps)];
 
 export const onboardSteps = ONBOARD_STEPS;
 

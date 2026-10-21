@@ -50,6 +50,7 @@ import { absentSeats } from "./herdr-agents.ts";
 import { persistentEntries } from "./project-roles.ts";
 import { kernelFindings } from "./host-kernel.ts";
 import { TEMPLATE_SUFFIX, homeHostConfig, readUnitsDeclaration } from "./host-config.ts";
+import { activateCodeHost } from "./plugins/activate-host.ts";
 import { HOST_DATA_ENTRIES, HOST_VARIABLE, INSTALLED_DIR, PROJECT_UNITS_DIR, REPO_ROOT, SHIPPED_DIR, TOOL_ENTRIES, execCommands, isUnit, namesIn, packageScripts, programCandidates, shippedContext, shippedUnitNames, shippedUnitText, startedByEnable, textOf, type ShippedDeps, type UnitsDeclaration, unitPrefix } from "./host-units/shipped-unit-texts-and-declarations.ts";
 import { ROW_REVIEW_SKILL_FILES, ROW_REVIEW_SKILL_SOURCE, hostIdentityInstall, hostNotes, readSeats, readSessionModels, reviewerDoorDrift, reviewerDoorInstall, tickAppRoleSilent, tickRerenderGhWrapper, toolVersionNotes, type SeatDeps, type SessionModelDeps, writeOwnedFile } from "./host-units/gh-wrapper-and-notes.ts";
 import { codexTrustDrift, defaultGit, defaultSystemctl, endedOnPurpose, hostIdentityDrift, humanLoginOnHost, identityDrift, orphanedUnits, readToolVersionAgreement, remedy, supersededHostScripts, systemdUserAvailable, toolVersionFindings, type Finding, type InstalledCopyState, type WindowEnd, unitDrift, unitState } from "./host-units/host-drift-findings-and-notes.ts";
@@ -956,8 +957,10 @@ function hostFindings() {
   return [...hostUnitDrift(), ...sessionModelDrift(), ...persistentSeatDrift(), ...kernelFindings()];
 }
 
-function main() {
+async function main() {
   refuseUnknownFlags(["--install", "--json", "--allow-no-apps"], { entry: import.meta.url, command: "pnpm run host:check" });
+  // The routing wrapper is the code host plugin's (A11-160): the plugin the host file names is activated once, and the checks below ask it for the wrapper's text and rules.
+  await activateCodeHost();
   if (process.argv.slice(2).includes("--json")) {
     process.stdout.write(jsonReport());
     return;
@@ -978,7 +981,7 @@ function main() {
   if (drift.length > 0) process.exitCode = 1;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) main();
+if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) await main();
 
 // The door the gate posts through is the door the host installs: one definition, re-exported here (#1311).
 export { reviewerDoorPath };

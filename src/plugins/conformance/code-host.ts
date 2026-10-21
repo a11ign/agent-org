@@ -4,11 +4,14 @@
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
 // (`repository`), a pull request address it holds nothing for (`missing`), and the login the host acts as (`self`). A code host is synchronous, as every reader of it is.
-import type { CodeHost, ChangeRef } from "../contracts/code-host.ts";
+import type { ChangeRef, CodeHost, WrapperInputs } from "../contracts/code-host.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 
-/** What the caller has seeded: an open pull request, its repository, one the host has none of, the account the host acts as, and optionally a change for the port's reads. */
-export type CodeHostProbe = Readonly<{ pull: string; repository: string; missing: string; self: string; change?: ChangeRef }>;
+/**
+ * What the caller has seeded: an open pull request, its repository, one the host has none of, the account the host acts as, and optionally a change for the port's reads and the inputs a wrapper is asked about
+ * (a host that installs no wrapper is not asked).
+ */
+export type CodeHostProbe = Readonly<{ pull: string; repository: string; missing: string; self: string; change?: ChangeRef; wrapper?: WrapperInputs }>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
 const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readChange", "requestReview", "armMerge", "subscribe"] as const;
@@ -73,6 +76,10 @@ const withChange = (reason: string, run: (subject: Subject & { change: ChangeRef
   applies: ({ probe }) => probe.change !== undefined, reason: `the probe names no change, so ${reason}`, run: (subject) => run({ ...subject, change: subject.probe.change! }),
 });
 
+const withWrapper = (reason: string, run: (subject: Subject & { inputs: WrapperInputs }) => unknown): Conditional<Subject> => ({
+  applies: ({ host, probe }) => host.wrapper !== undefined && probe.wrapper !== undefined, reason: `the code host has no wrapper or the probe names no inputs for one, so ${reason}`, run: (subject) => run({ ...subject, inputs: subject.probe.wrapper! }),
+});
+
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "readChange reads a change, and answers null for one it cannot": withChange("the port's reads are not asked", ({ host, change }) => {
     const facts = host.readChange(change);
@@ -81,6 +88,30 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   }),
   "armMerge arms the merge and says it is armed": withChange("the merge is not armed", ({ host, change }) => {
     expect(host.armMerge(change) === true, "armMerge must answer true once the merge is armed");
+  }),
+  "the wrapper is an owned file its own text agrees with": withWrapper("the wrapper is not asked", ({ host, inputs }) => {
+    const wrapper = host.wrapper!;
+    expect(hasFunctions(wrapper, ["file", "appRoles", "refusal", "divergence", "identityStale", "mintFailure"]), "a wrapper has file, appRoles, refusal, divergence, identityStale and mintFailure functions");
+    const { target, mode, expected } = wrapper.file(inputs);
+    expect(isString(target) && target !== "" && Number.isInteger(mode) && (expected === null || (isString(expected) && expected !== "")), "wrapper.file() must be { target, mode, expected }: expected is the text, or null when it cannot be read, never ''");
+    expect(wrapper.divergence(inputs, { target, installed: expected }) === null, "the wrapper is not diverged from its own text");
+    expect(isString(wrapper.divergence(inputs, { target, installed: null })), "wrapper.divergence() must say there is no wrapper where nothing is installed");
+    expect(Array.isArray(wrapper.appRoles(inputs)) && wrapper.appRoles(inputs).every(isString), "wrapper.appRoles() must be a list of roles");
+  }),
+  "the wrapper keeps its own text, and writes it": withWrapper("the wrapper is not asked", ({ host, inputs }) => {
+    const wrapper = host.wrapper!;
+    const { target, expected } = wrapper.file(inputs);
+    expect(expected !== null, "the probe's wrapper must have a text to write");
+    expect(wrapper.identityStale(inputs, expected!) === false, "the wrapper's own text is not stale");
+    expect(wrapper.refusal({ inputs, target, text: expected!, installed: expected, allowNoApps: false, under: false, realBin: "/nonexistent/real-bin" }) === null, "the wrapper must not refuse to write its own text over itself");
+  }),
+  "the wrapper answers whether each declared role mints": withWrapper("the wrapper is not asked", ({ host, inputs }) => {
+    const wrapper = host.wrapper!;
+    for (const role of wrapper.appRoles(inputs)) {
+      const failure = wrapper.mintFailure(inputs, role);
+      expect(failure === null || (isString(failure) && failure !== ""), `wrapper.mintFailure(${role}) must be the reason it cannot mint, or null`);
+    }
+    expect(wrapper.mintFailure(inputs, "no-such-role") === null, "a role with no App has nothing to fail to mint");
   }),
 };
 

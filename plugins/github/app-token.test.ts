@@ -1,13 +1,13 @@
 // no-token: gh -- the wrapper is RUN here against a stub `gh-real` (`A11Y_GH_REAL`) and a stub minter (`A11Y_APP_NODE`/`A11Y_APP_TOKEN_SCRIPT`);
 // the GitHub API is a recorder handed to `mintInstallationToken`, so no `gh` starts and nothing reaches the network or any account's config.
 //
-// #4900: A GITHUB APP PER ROLE. Four things are pinned, each by running the thing and not by reading it:
+// #4900: A GITHUB APP PER ROLE, moved from `src/app-token.test.ts` with the minter and the wrapper (A11-160). Four things are pinned, each by running the thing and not by reading it:
 //   1. MINTING: the JWT verifies against the app's public key, the installation is the declared one or the app's only one, and every
 //      refusal names the stage that failed;
 //   2. REFRESH: a token with more than the margin left is served from the file, one with less is replaced, a torn file is a miss;
 //   3. FALLBACK: a mint that fails sends the call through as today's account and leaves ONE `incident` ledger line, then is not asked
 //      again inside the window;
-//   4. ROUTING BY ROLE, and the config that decides it: both modes and a per-role mix, refused by field name.
+//   4. ROUTING BY ROLE: the wrapper rendered for hosts that declare Apps, run.
 // The positive control for every "the app was NOT used" assertion is the stub's own marker, so a wrapper that never reached the stub
 // cannot pass them.
 import { test } from "node:test";
@@ -17,23 +17,14 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { WrapperInputs } from "../../src/plugins/contracts/code-host.ts";
+import { parseLine } from "../../src/gh-ledger.ts";
+import { tmpDir, tmpDirForFile } from "../../src/lib/tmp-fixture.ts";
 import {
   AppTokenFailure, REFRESH_MARGIN_SECONDS, appJwt, appToken, formatTokenFile, mintInstallationToken, parseTokenFile, tokenPath,
   type AppIdentity, type Fetch,
 } from "./app-token.ts";
-import { parseLine } from "./gh-ledger.ts";
-import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
-
-// `host-config.ts` resolves the project's checkout from `$AGENT_ORG_HOST` or the working directory AT IMPORT (`project-config.ts`'s
-// `HOME_CHECKOUT`), and this file is run as `cd <the tool's own checkout> && npx rstest run src/app-token.test.ts`, which is in no project.
-// So the host file is named first and the two modules are imported after it: a static import would be hoisted above this and refuse.
-// `??=` leaves a host a caller already named alone. The MINTER (`app-token.ts`) is imported statically above because it is a leaf and
-// must stay one: a minter that needed this would refuse from `/tmp` for a reason that has nothing to do with the app.
-const SETUP = tmpDirForFile("app-token-4900-setup-");
-writeFileSync(join(SETUP, "host.json"), JSON.stringify({ projects: [{ id: "p", checkout: SETUP }], primary: "p" }));
-process.env.AGENT_ORG_HOST ??= join(SETUP, "host.json");
-const { HostConfigRefusal, parseHostConfig, renderTemplate, roleIdentity, templateValues } = await import("./host-config.ts");
-const { SUPPORTED_SCHEMA } = await import("./project-config.ts");
+import { createWrapper, wrapperRoles } from "./wrapper.ts";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" },
@@ -140,70 +131,43 @@ test("#4900: an unreadable key is a failure at the `key` stage, and nothing is w
   assert.equal(existsSync(tokenPath(dir, "scheduler")), false);
 });
 
-// ---- 4a. the config that decides the routing --------------------------------------------------------------------------------------
+// ---- 3. the wrapper's rendering ---------------------------------------------------------------------------------------------------
 
-const HOST = {
-  schema: SUPPORTED_SCHEMA, home: "/home/h", binDir: "/home/h/bin", primary: "p", projects: [{ id: "p", checkout: "/home/h/p" }],
-  gh: { workers: "/home/h/workers", leads: "/home/h/leads", leadsHeader: [], leadsWorkspaces: [] },
-};
-const UNITS = { prefix: "x-", boardReportWorkflow: "b.yml", own: [] };
-const parse = (extra: Record<string, unknown>) => parseHostConfig(JSON.stringify({ ...HOST, ...extra }), "host.json");
-const refusalField = (extra: Record<string, unknown>) => {
-  try { parse(extra); } catch (error) { return error instanceof HostConfigRefusal ? error.field : `not a refusal: ${error}`; }
-  return "not refused";
-};
+/** The roles, in the order the wrapper lists them. */
+const ROLES = ["scheduler", "workers", "managers", "reviewer"];
+/** A host whose tool is not installed (`tool` undefined), so the programs are found under the primary project's `packages/agent-org`, and whose state directory is undeclared. */
+const PLACE = { binDir: "/home/h/bin", tool: undefined, checkout: "/home/h/p", stateEntry: (name: string) => `/home/h/.cache/a11ign/${name}` };
+const inputsFor = (identity: Record<string, unknown>, place: WrapperInputs["place"] = PLACE): WrapperInputs => ({
+  place, accounts: { workers: "/home/h/workers", leads: "/home/h/leads" },
+  identity: Object.fromEntries(ROLES.map((role) => [role, identity[role] ?? { mode: "user-accounts" }])) as WrapperInputs["identity"],
+});
+const wrapper = createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} });
+/** The wrapper as the plugin renders it for a host that declares `identity`. */
+const textFor = (identity: Record<string, unknown>, place?: WrapperInputs["place"]): string => wrapper.file(inputsFor(identity, place)).expected as string;
 const SCHEDULER_APP = { mode: "github-apps", appId: "123456", keyPath: "/home/h/.config/agent-org/apps/a11ign-scheduler.pem" };
 
-test("#4900: a host that says nothing about `github` is `user-accounts` for every role, and an app on one role leaves the others there", () => {
-  const roles = ["scheduler", "workers", "managers", "reviewer"] as const;
-  assert.deepEqual(roles.map((r) => roleIdentity(parse({}), r).mode), ["user-accounts", "user-accounts", "user-accounts", "user-accounts"]);
-  assert.deepEqual(roles.map((r) => roleIdentity(parse({ github: {} }), r).mode), ["user-accounts", "user-accounts", "user-accounts", "user-accounts"]);
-  const mixed = parse({ github: { identity: { scheduler: SCHEDULER_APP, workers: { mode: "user-accounts" } } } });
-  assert.deepEqual(roles.map((r) => roleIdentity(mixed, r).mode), ["github-apps", "user-accounts", "user-accounts", "user-accounts"], "the per-role mix");
-  assert.deepEqual(roleIdentity(mixed, "scheduler"), SCHEDULER_APP);
+test("#4900: the shipped wrapper renders with the host's values, and `APP_ROLES` lists exactly the app-backed roles", () => {
+  const none = textFor({});
+  assert.match(none, /^APP_ROLES=\$\{A11Y_APP_ROLES-\}$/m, "no app declared: the wrapper takes none of the new paths");
+  assert.equal(none.includes("@@"), false, "every placeholder the wrapper carries has a value");
+  const some = textFor({ managers: SCHEDULER_APP, scheduler: SCHEDULER_APP });
+  assert.deepEqual(wrapperRoles(some), ["scheduler", "managers"]);
+  assert.match(some, /^  app_dir=\$\{A11Y_APP_TOKEN_DIR:-\/home\/h\/\.cache\/a11ign\/app-tokens\}$/m, "undeclared stateDir: the directory the units have always used");
+  assert.match(some, /^  app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-\/home\/h\/p\/packages\/agent-org\/plugins\/github\/app-token\.ts\}$/m, "the minter is the plugin's, under the primary project's tool");
+  const installed = textFor({}, { binDir: "/home/h/bin", tool: "/home/h/agent-org", checkout: "/home/h/p", stateEntry: (name) => `/home/h/state/${name}` });
+  assert.match(installed, /app_dir=\$\{A11Y_APP_TOKEN_DIR:-\/home\/h\/state\/app-tokens\}/);
+  assert.match(installed, /app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-\/home\/h\/agent-org\/plugins\/github\/app-token\.ts\}/);
 });
 
-test("#4900: an app id written as the integer a hand-written file holds is read as its string; an installation id is kept", () => {
-  const host = parse({ github: { identity: { workers: { ...SCHEDULER_APP, appId: 987, installationId: 55 } } } });
-  assert.deepEqual(roleIdentity(host, "workers"), { ...SCHEDULER_APP, appId: "987", installationId: "55" });
-});
-
-test("#4900: the declaration is refused by FIELD NAME: a role that is not one, a missing id or key, a relative key, a half-flipped role", () => {
-  const role = (value: unknown, name = "scheduler") => ({ github: { identity: { [name]: value } } });
-  assert.equal(refusalField(role(SCHEDULER_APP, "worker")), "github.identity.worker", "a typo would leave a role on the shared account looking migrated");
-  assert.equal(refusalField(role({ mode: "github-app" })), "github.identity.scheduler.mode");
-  assert.equal(refusalField(role({ mode: "github-apps", keyPath: SCHEDULER_APP.keyPath })), "github.identity.scheduler.appId");
-  assert.equal(refusalField(role({ mode: "github-apps", appId: "1" })), "github.identity.scheduler.keyPath");
-  assert.equal(refusalField(role({ ...SCHEDULER_APP, keyPath: "keys/a.pem" })), "github.identity.scheduler.keyPath");
-  assert.equal(refusalField(role({ ...SCHEDULER_APP, appId: "a b" })), "github.identity.scheduler.appId");
-  assert.equal(refusalField(role({ mode: "user-accounts", appId: "1" })), "github.identity.scheduler.appId", "an app named under user-accounts would be ignored");
-  assert.equal(refusalField({ github: "github-apps" }), "github");
-  assert.equal(refusalField(role(SCHEDULER_APP)), "not refused", "POSITIVE CONTROL: the valid form is not refused by any of the above");
-});
-
-test("#4900: the shipped wrapper renders with the host's values, and `appRoles` lists exactly the app-backed roles", () => {
-  const text = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
-  const none = templateValues(parse({}), UNITS);
-  assert.equal(none.appRoles, "", "no app declared: the wrapper takes none of the new paths");
-  assert.doesNotThrow(() => renderTemplate(text, none, "gh"), "every placeholder the wrapper carries has a value");
-  const some = templateValues(parse({ github: { identity: { managers: SCHEDULER_APP, scheduler: SCHEDULER_APP } } }), UNITS);
-  assert.equal(some.appRoles, "scheduler managers");
-  assert.equal(some.appTokenDir, "/home/h/.cache/a11ign/app-tokens", "undeclared stateDir: the directory the units have always used");
-  assert.equal(some.appTokenScript, "/home/h/p/packages/agent-org/src/app-token.ts");
-  const installed = templateValues(parse({ stateDir: "/home/h/state", tool: "/home/h/agent-org" }), UNITS);
-  assert.deepEqual([installed.appTokenDir, installed.appTokenScript], ["/home/h/state/app-tokens", "/home/h/agent-org/src/app-token.ts"]);
-});
-
-// ---- 3 and 4b. the wrapper, run ---------------------------------------------------------------------------------------------------
+// ---- 4. the wrapper, run ---------------------------------------------------------------------------------------------------
 
 /**
- * The wrapper RENDERED THROUGH `templateValues` from a host that declares an app for every role, so the table the minter is handed is the one
+ * The wrapper RENDERED by the plugin from a host that declares an app for every role, so the table the minter is handed is the one
  * the installed wrapper would carry. Every directory the wrapper takes from the host is overridden by an environment variable in every call.
  */
 const wrapperFor = (identity: Record<string, unknown>) => {
-  const text = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("app-token-4900-wrapper-"), "gh");
-  writeFileSync(rendered, renderTemplate(text, templateValues(parse({ github: { identity } }), UNITS), "gh"), { mode: 0o755 });
+  writeFileSync(rendered, textFor(identity), { mode: 0o755 });
   return rendered;
 };
 const THREE_APPS = Object.fromEntries(["scheduler", "workers", "managers"].map((role) => [role, {

@@ -1,5 +1,5 @@
 // a11ign/a11ign#3516, #3589: the `gh` call ledger as a source of the trace store, keyed by the session id on each line. Fixtures only: nothing here reads a real ledger, `~/.claude` or GitHub.
-// no-token: gh -- every ledger is a file this test writes in the shipped line shape (`host/gh`'s: time, account, resource, cost, status, argv[1] argv[2], workspace, the calling process's command line, the session id).
+// no-token: gh -- every ledger is a file this test writes in the shipped line shape (`plugins/github/wrapper/gh`'s: time, account, resource, cost, status, argv[1] argv[2], workspace, the calling process's command line, the session id).
 //
 // POSITIVE CONTROLS, named where they live: a call is keyed by the id on its line, and the case that proves it is a second at which TWO sessions were running a tool (a keyer that ignores the id and reads the time is on
 // `ambiguous` there, and RED); a call is keyed to the session it names and not to the first turn (the sessions below carry different rows, and the second call must be on the second); the cost of a call survives the
@@ -26,7 +26,7 @@ const T9001 = "0b5e7f10-9001-4a00-8000-000000000001";
 const T9002 = "0b5e7f10-9002-4a00-8000-000000000002";
 const TORCH = "0b5e7f10-0000-4a00-8000-0000000000aa";
 
-/** One ledger line in the shape `host/gh` writes it: the 8 fields, and the session id as the 9th when the call had one. */
+/** One ledger line in the shape `plugins/github/wrapper/gh` writes it: the 8 fields, and the session id as the 9th when the call had one. */
 const line = ({ time, account = WORKERS, resource = "graphql", cost = "", status = 0, command = "issue view", workspace = "w1AX", caller = SHELL, sessionId }:
   { time: string, account?: string, resource?: string, cost?: string | number, status?: number, command?: string, workspace?: string, caller?: string, sessionId?: string }): string =>
   [time, account, resource, cost, status, command, workspace, caller, ...(sessionId === undefined ? [] : [sessionId])].join("\t");
@@ -103,7 +103,7 @@ test("KEYED: the turn that ISSUED a call is not its next turn: the call is keyed
   assert.deepEqual([call.row, call.keyedBy], [9007, "session"], "a keyer that took the first turn at or after the call's second is on the issuing turn's row, 9001");
 });
 
-/** A host: a scratch store and a ledger each of two accounts, written the way `host/gh` appends. */
+/** A host: a scratch store and a ledger each of two accounts, written the way `plugins/github/wrapper/gh` appends. */
 function host(): { root: string, ledgers: Record<"workers" | "leads" | "absent", string>, store: ReturnType<typeof openStore>, state: { current: ReturnType<typeof emptyState> }, run: (now: number, files?: string[]) => ReturnType<typeof ingestGhCalls>["report"] } {
   const root = tmpDir("gh-calls-3516-");
   mkdirSync(join(root, "workers"));

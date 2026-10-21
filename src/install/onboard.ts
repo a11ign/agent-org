@@ -43,7 +43,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { type BlockReport, DEFAULT_PROVIDER, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
-import { realExec, realMode, realProbe } from "../plugins/active.ts";
+import { realExec, realMode, realPlace, realProbe } from "../plugins/active.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
@@ -61,7 +61,7 @@ import { writeAtomic } from "./write-atomic.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { asAccount, type Account, type ProgramRunner } from "./gh-account.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
-import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf, type Profile, type ProfileRepo, type ReviewerApp } from "./onboard-profile.ts";
+import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf, type Profile, type ProfileRepo } from "./onboard-profile.ts";
 import { installConventions, runProgram, stateOfRecord, type ConventionsStep } from "./plugin-install.ts";
 import { houseNotes } from "./house-notes.ts";
 import { retireGuards, type Replacements } from "./interim-guards.ts";
@@ -237,34 +237,6 @@ async function askRepositories(deps: OnboardDeps): Promise<string[]> {
   return repos;
 }
 
-/**
- * The reviewer App's identity, as the host file holds it: the one already there when its key is readable, else the App the profile names with its key copied
- * to `<AGENT_ORG_HOME>/apps/<slug>.pem` (mode 600). The key's path is asked for, and its text is never printed. Null when there is no App to name, or no key.
- */
-async function reviewerIdentity(app: ReviewerApp | undefined, existing: unknown, deps: OnboardDeps): Promise<Record<string, unknown> | null> {
-  const current = isObject(existing) && isObject(existing.reviewer) ? existing.reviewer : null;
-  if (current !== null && typeof current.keyPath === "string" && deps.exists(current.keyPath)) return current;
-  if (app === undefined) return null;
-  if (!deps.interactive) {
-    deps.out.log(`NO reviewer App key is set for ${app.slug}. Run \`agent-org onboard --profile <name>\` at a terminal, which asks for the path of the App's downloaded .pem file.`);
-    return null;
-  }
-  const answer = (await deps.ask(`Path to the downloaded private key (.pem) of the reviewer App ${app.slug}, or an empty line to add it later: `)).trim();
-  if (answer === "") return null;
-  const source = expandHome(answer, deps.home);
-  if (!isAbsolute(source)) throw new OnboardRefusal("the reviewer App's key must be an absolute path");
-  let key: string;
-  try {
-    key = deps.readFile(source);
-  } catch {
-    throw new OnboardRefusal(`the reviewer App's key cannot be read at ${source}`);
-  }
-  const keyPath = join(agentOrgHome(deps.env, deps.home), "apps", `${app.slug}.pem`);
-  deps.writeFile(keyPath, key);
-  deps.out.log(`copied the reviewer App's key to ${keyPath}, mode 600; its text is not shown`);
-  return { mode: "github-apps", slug: app.slug, appId: app.appId, installationId: app.installationId, keyPath };
-}
-
 /** The services onboard starts: the instance and the ui always, then the terminal when it is set up and auto-update unless opted out. */
 export function onboardServices({ terminal, autoUpdate }: { terminal: boolean; autoUpdate: boolean; }): ServiceName[] {
   return ["instance", "ui", ...(terminal ? ["terminal" as const] : []), ...(autoUpdate ? ["auto-update" as const] : [])];
@@ -393,10 +365,10 @@ const installed = (block: Record<string, unknown>): Record<string, unknown> => (
  * read; each optional concern whose choice is not `none` too. The profile's reviewer identity and the terminal the exposure takes are added. The tracker's own settings are its plugin's
  * steps' (`runPluginSteps`).
  */
-function blocksOf({ planned, identity, terminal }: Readonly<{ planned: PlannedBlocks | null; identity: Record<string, unknown> | null; terminal: boolean }>): Record<string, Record<string, unknown> | undefined> {
+function blocksOf({ planned, terminal }: Readonly<{ planned: PlannedBlocks | null; terminal: boolean }>): Record<string, Record<string, unknown> | undefined> {
   return {
     tracker: installed(planned?.tracker ?? { provider: DEFAULT_PROVIDER.tracker }),
-    codeHost: { ...installed(planned?.codeHost ?? { provider: DEFAULT_PROVIDER.codeHost }), identity: identity === null ? undefined : { reviewer: identity } },
+    codeHost: installed(planned?.codeHost ?? { provider: DEFAULT_PROVIDER.codeHost }),
     publish: planned === null ? undefined : installed(planned.publish),
     reviewer: planned === null ? undefined : installed(planned.reviewer),
     exposure: { ...installed(planned?.exposure ?? { provider: "local" }), terminal: terminal ? terminalAddress(DEFAULT_TERMINAL_PORT) : undefined },
@@ -424,8 +396,14 @@ function writeHostFiles({ hostFile, next, updateChannel }: Readonly<{ hostFile: 
   deps.out.log(`wrote ${hostFile}: ${names.length} repositories (${names.join(", ")})`);
 }
 
-/** The flags onboard was started with that name a plugin's settings: the tracker's key (`--linear-keychain`, `--linear-key-file`). */
-const flagsOf = (block: ProviderBlock, options: OnboardOptions): PluginSettings => (block === "tracker" ? { keychain: options.keychain, keyFile: options.keyFile } : {});
+/**
+ * What a person named for a plugin's settings, on the command line or in the profile: the tracker's key (`--linear-keychain`, `--linear-key-file`), and the App the profile names for the reviewer
+ * (`reviewerApp`, which the code host's step copies the key of).
+ */
+const flagsOf = (block: ProviderBlock, options: OnboardOptions, planned: PlannedBlocks | null): PluginSettings => {
+  if (block === "tracker") return { keychain: options.keychain, keyFile: options.keyFile };
+  return block === "codeHost" && planned?.reviewerApp !== undefined ? { reviewerApp: planned.reviewerApp } : {};
+};
 
 /** The providers the host file will hold once onboard has written it, as far as which plugin each block names: the profile's blocks beside the file's own. */
 function plannedProviders({ host, tickets, planned, catalog }: Readonly<{ host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; catalog: Catalog }>): Providers {
@@ -467,7 +445,7 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
   const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
   const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
     exec: deps.exec, readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy(),
-    publishing: publishingHelpers(), reviewing: gateHelpers() };
+    publishing: publishingHelpers(), reviewing: gateHelpers(), place: realPlace };
   const result = await deps.loadPlugins(providers, pluginDeps);
   const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));
   const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));
@@ -477,11 +455,12 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
     const block = blockOf(plugin.concern);
     if (block === null) continue;
     const stepDeps = { ...pluginDeps, interactive: deps.interactive, answered, ask: deps.ask, askSecret: deps.askHidden, writeFile: deps.writeFile, platform: deps.platform, home: deps.home,
-      agentOrgHome: agentOrgHome(deps.env, deps.home), flags: flagsOf(block, options) };
+      agentOrgHome: agentOrgHome(deps.env, deps.home), flags: flagsOf(block, options, planned) };
     let current = settingsOfBlock(providers.blocks[block]);
     const set: Record<string, unknown> = {};
     for (const step of module.onboardSteps) {
-      const answer = await step.run(current, stepDeps);
+      // A step that THROWS refuses onboard by its sentence: it asked for something that cannot be done (a key's path that is not absolute), and nothing is written.
+      const answer = await step.run(current, stepDeps).catch((error: unknown) => { throw new OnboardRefusal(error instanceof Error ? error.message : String(error)); });
       if (answer.detail !== "") deps.out.log(answer.detail);
       // A setting a step leaves `undefined` is one it has no opinion on: the block keeps what it holds.
       const decided = Object.fromEntries(Object.entries(answer.settings ?? {}).filter(([, value]) => value !== undefined));
@@ -514,7 +493,6 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   const planned = profile === null ? null : providerBlocksOf(profile);
   sayInstalls(plannedProviders({ host, tickets, planned, catalog: deps.catalog() }), existing, deps);
   const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null, clones }, deps);
-  const identity = await reviewerIdentity(planned?.reviewerApp, existing.codeHost.settings.identity.value, deps);
   const terminal = options.terminal && await setUpTerminal(deps);
   const capture = setUpChromium(deps);
   const plugin = profile?.conventions === undefined ? null : installPlugin(profile.conventions, deps);
@@ -524,7 +502,7 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   for (const line of notes?.lines ?? []) deps.out.log(line);
   for (const write of notes?.writes ?? []) deps.writeFile(write.path, write.text);
 
-  const providers = providersWith(tickets, blocksOf({ planned, identity, terminal }));
+  const providers = providersWith(tickets, blocksOf({ planned, terminal }));
   // A plugin's step decides its settings outright: it was given the block's own, so it keeps the ones it means to keep.
   // A plugin that chose nothing leaves its block alone: the blocks onboard installs are written above (`blocksOf`), so this only adds what a plugin's steps chose.
   for (const [block, set] of Object.entries(stepped)) if (Object.keys(set).length > 0) providers[block] = { ...fill(providers[block], {}), ...set };
@@ -576,11 +554,21 @@ function herdrSessionOf(env: Env, home: string): string {
   }
 }
 
+/** Whether the installed `gh` wrapper is the one the host file declares, asked of the code host plugin's wrapper; a host that cannot be asked (no declaration, a plugin the loader refuses) has not proven it. */
+async function wrapperDeclared(): Promise<boolean> {
+  try {
+    const { activateCodeHost } = await import("../plugins/activate-host.ts");
+    await activateCodeHost();
+    const { ghWrapperDivergence } = await import("../host-units/gh-wrapper-and-notes.ts");
+    return ghWrapperDivergence() === null;
+  } catch {
+    return false;
+  }
+}
+
 async function replacementsNow(env: Env, home: string): Promise<Replacements> {
-  const { ghWrapperReport } = await import("../host-units/gh-wrapper-and-notes.ts");
-  const wrapper: { divergence?: unknown } = await ghWrapperReport();
   return {
-    ghWrapperDeclared: "divergence" in wrapper && wrapper.divergence === null,
+    ghWrapperDeclared: await wrapperDeclared(),
     herdrOutsideInstance: hostIsolation(defaultServiceDeps(), herdrSessionOf(env, home)).kind === "outside",
   };
 }

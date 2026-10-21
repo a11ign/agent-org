@@ -2,7 +2,7 @@
  * A11-83 (from the 2026-10-17 incident on agent-org#1738): THE DOOR RETRIES ONE FAILED TOKEN MINT, AND NAMES A FAILURE IT DOES NOT RETRY.
  *
  * `reviewer-agent-org-1738` posted its verdict through the door and the post failed with HTTP 401: the reviewer App token had never been minted,
- * and the wrapper refused the call (`app_refuse` in host/gh). The door now posts once more when that is the cause, after the failed-mint memo is
+ * and the wrapper refused the call (`app_refuse` in plugins/github/wrapper/gh). The door now posts once more when that is the cause, after the failed-mint memo is
  * cleared so the second post is a mint and not the memo's refusal; a second failure exits 6 and names the cause.
  *
  * NO CAPABILITY DECLARATION: nothing here reaches the network. `gh` is a shell stub first on `PATH`. Its `pr review` answers from a list of

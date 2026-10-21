@@ -11,7 +11,7 @@
 // THE QUESTION IS "CALLS IN THE WINDOW, AND NONE OF THEM AS THE APP". A role that made no call in the window is NOT an incident (nothing to be silent about), and neither is a ledger nobody could read:
 // both are an empty list here, which is `silent: []` and not "every role is fine" -- the caller says an unreadable ledger on its own channel.
 import { parseLine, type LedgerEntry } from "./gh-ledger.ts";
-import type { GithubRole } from "./app-token.ts";
+import type { GithubRole } from "./host-config.ts";
 import type { FailureEvent } from "./failure-ledger.ts";
 
 /** The failure-ledger class key, an event kind like `main-red` (the ledger's keys are event kinds, not `failure-classes.json`'s row-defect ids). */
@@ -22,9 +22,9 @@ export const APP_ROLE_SILENT_MINUTES = 10;
 export const APP_ROLE_SILENT_MS = APP_ROLE_SILENT_MINUTES * 60_000;
 
 /**
- * One ledger file as the caller read it, and the role a call of a workspace in it belongs to when it did not act as an app. THE FILE IS WHAT SEPARATES THEM: `host/gh` keeps one ledger per
+ * One ledger file as the caller read it, and the role a call of a workspace in it belongs to when it did not act as an app. THE FILE IS WHAT SEPARATES THEM: `plugins/github/wrapper/gh` keeps one ledger per
  * account directory, a workspace on the leads list writes to the leads account's (`managers`) and every other workspace to the workers' (`workers`), and the line itself carries the
- * account's LOGIN, which is a host's own string and names no role. A call with no workspace id is a unit's or a script's and is the `scheduler`'s in either file (`app_role` in `host/gh`).
+ * account's LOGIN, which is a host's own string and names no role. A call with no workspace id is a unit's or a script's and is the `scheduler`'s in either file (`app_role` in `plugins/github/wrapper/gh`).
  * `AGENT_ORG_GH_ROLE`, which a caller may set to name another role, is not in the line: such a call reads as the role its workspace says unless it ran as the app.
  */
 export type LedgerSource = { role: Extract<GithubRole, "workers" | "managers">, lines: readonly string[] };
@@ -39,7 +39,7 @@ const NO_WORKSPACE = "-";
 const INCIDENT_RESOURCE = "incident";
 const APP_ACCOUNT = "app:";
 const MINT_COMMAND = "app-token ";
-// The wrapper's caller field for a failed mint: `app-token <role> failed, <outcome>: <reason> (exit <n>)`, where the outcome names no colon (`host/gh`, `app_token`).
+// The wrapper's caller field for a failed mint: `app-token <role> failed, <outcome>: <reason> (exit <n>)`, where the outcome names no colon (`plugins/github/wrapper/gh`, `app_token`).
 const MINT_CALLER = /^app-token \S+ failed, [^:]*: (.*) \(exit (-?\d+)\)$/;
 
 const mintOf = (entry: LedgerEntry): MintFailure => {

@@ -1,4 +1,4 @@
-// a11ign/a11ign#3516 (slice of #3494): THE `gh` CALL LEDGER AS A SOURCE OF THE TRACE STORE. `host/gh` appends one TAB-separated line per call to `gh-calls.tsv` in the calling account's config
+// a11ign/a11ign#3516 (slice of #3494): THE `gh` CALL LEDGER AS A SOURCE OF THE TRACE STORE. `plugins/github/wrapper/gh` appends one TAB-separated line per call to `gh-calls.tsv` in the calling account's config
 // directory (#3466); `../gh-ledger.ts` parses it and is imported here, never edited. Every call becomes ONE record, `source: "gh-ledger"`, so a row's trace can show the calls and the
 // GraphQL points beside its tokens and dollars. The ledger files are READ, never written.
 //
@@ -6,7 +6,7 @@
 // file incrementally through `ingest-state.ts` (#3526), and a trim reads as a shrink, which is read again from byte 0 and SAID: safe, because a record's id is made of the line and not of
 // where it sits, so a line already held is the same record.
 //
-// THE KEY IS THE SESSION ID ON THE LINE (#3589). `host/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) as the last field of each line, and that is the file name of the session's transcript, which
+// THE KEY IS THE SESSION ID ON THE LINE (#3589). `plugins/github/wrapper/gh` writes `CLAUDE_CODE_SESSION_ID` (a Codex session's `CODEX_THREAD_ID`) as the last field of each line, and that is the file name of the session's transcript, which
 // every turn carries (`transcript`). So a call is on the session whose transcript has that name and, through that session's NEXT turn, on a row: exact, however many sessions were waiting on a tool at its second.
 // Before it the key was INFERRED from time (a call from a session's shell that exactly one session's tool window covered), which named 27 of 11,751 calls on this host (measured 2026-10-05, a11ign/agent-org#209): that rule,
 // `toolWindows`, `keyCalls` and `viaShell`, is deleted. A line with no id is a unit or script outside any session, or was written before the wrapper named its session (the ledgers keep 2 MiB, so those age out); it is

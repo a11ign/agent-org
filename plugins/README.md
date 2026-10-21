@@ -9,7 +9,7 @@ the only place the repository runs `tailscale`), and `telegram` (messaging: the 
 | Plugin | Concern | What it is |
 | --- | --- | --- |
 | `linear` | tracker | Linear: where tickets are kept and read |
-| `github` | code host | GitHub: pull requests, reviews and checks |
+| `github` | code host | GitHub: pull requests, reviews and checks, and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up; contract 1.3) |
 | `local` | exposure | serves nothing: the board listens on `127.0.0.1`; refuses `serve` by name |
 | `tailscale` | exposure | `tailscale serve` for the page and the terminal, never Funnel; a path open to the internet for the event receiver (contract 1.1) |
 | `telegram` | messaging | Telegram: asks and announcements for the chairman, configured in `project.json`'s `messaging` key |
@@ -65,7 +65,7 @@ install command and these, and no Install button.
 `onboardSteps`, the steps onboard runs for it, in order, each given the settings the earlier steps chose, and answering what to say and the settings to write into the plugin's block. It
 may also export `keep(settings, deps)`, what `agent-org update` keeps true on the machine at every update (the code host keeps its stacking extension present): safe to repeat, no prompt, never
 throws. It imports core with `import type` only: every runtime helper arrives in `deps` (`fetch`; `exec`, which runs a program with an optional `env` laid over this process's, and a `timeoutMs`;
-`readFile`, `mode`, the host's `clones`, the board's `pick` scope, and `policy`, which is what core decides about what a code host reports: which check is red, which run of one is newer, and how
+`readFile`, `mode`, the host's `clones`, the board's `pick` scope, `place` (where the host file says the machine keeps what a code host's wrapper is rendered from, asked only by a code host's doctor rows) and `policy`, which is what core decides about what a code host reports: which check is red, which run of one is newer, and how
 a reviewer judges a pull request; `publishing`, the publish protocol a publisher builds its run's brief and reads its outcome with (`briefText`, `result`), which stays core's and says nothing of a chat service; `reviewing`,
 what a reviewer needs of core, below; an onboard step also has the prompts). `src/plugins/fakes/deps.ts` is the deps a test gives it.
 
@@ -79,6 +79,11 @@ rows ask) and, for a messaging plugin, `deps.messaging`: the secret by reference
 (a host with no `primary` cannot load them) rather than throwing it, `gateRefusal()` says it and `gate()` is the modules, which throw it. Beside them are the functions the atomic reviewer calls (seat names, the herdr listing, the claim on a head, the verdict reader, `ghWith`), and `board()`: the board's
 collaborators (its herdr session and runner, the activated code host, the instance's claimant name, and the head each seat's reviewer was started for), which a process that is not a board does not have, and which refuses by name when a reviewer asks. A reviewer built at activation asks the gate only when it
 is used, and `refusal()` after `load()` says whether it can start here: the pool starts none while it does.
+
+**A code host's `wrapper`** (code host contract 1.3, optional) is the routing `gh` of an org host: the plugin renders it, core writes it. The plugin answers where it is installed and the text it must hold for the host's place, accounts and
+identities (`file`), why a write of it must be refused (`refusal`: the A11-84 rules that keep a wrapper naming no App off a host that declares one), what is wrong with an installed copy (`divergence`, `identityStale`), and whether a
+role's App can mint (`mintFailure`); core's `host:install`, `host:check`, the tick and the instance's start-up ask it, and write the file themselves. The plugin's doctor rows and onboard steps do the rest (`gh wrapper`, `wrapper roles`, `app token <role>`, the App's key). The programs the wrapper runs (`app-token.ts`, `author-flag.ts`)
+are run by their paths under the installed tool, never imported.
 
 A plugin may also bring a command: `src/commands.ts` can name its program by a path inside the plugin (`../plugins/github/stack-live-check-command.ts`).
 

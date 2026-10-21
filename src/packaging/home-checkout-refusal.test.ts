@@ -69,6 +69,10 @@ if (process.env[HOST_VARIABLE] === undefined) {
 const { ProjectDeclarationRefusal, resolveHomeCheckout } = await import("../project-config.ts");
 const { hostUnitDrift, hostUnitsInstall, hostVariableAsRun, unitsWithoutHostVariable } = await import("../host-units.ts");
 const { parseHostConfig } = await import("../host-config.ts");
+// A11-160: `hostUnitDrift` also compares the routing wrapper, which is the code host plugin's: this file is about units, so the code host is the fake's.
+const { substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+substituteCodeHost(createFakeCodeHost());
 
 test("the variable's name here is the one the tool reads", async () => {
   const { HOST_ENV } = await import("../project-config.ts");

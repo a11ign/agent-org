@@ -10,7 +10,7 @@
  *   (1) THE WAVE (`readWithFirstWaveTogether`, `foldIntoOpenRows`): a label's list is made from the open list when the open list is COMPLETE and names every field
  *       the label's read asked for. The control is shown first: the folded readers' answers equal the answers a server-side by-label read gives, row for row,
  *       and the number of calls a wave sends is counted, not remembered. A full open list (it may have been cut) is NOT folded, and a row beyond the cut is still found.
- *   (2) THE WRAPPER (`host/gh`, `etag_eligible`/`etag_settle`): a plain `gh api <path>` GET past its 20 s entry is asked with `If-None-Match`; a 304 is replayed
+ *   (2) THE WRAPPER (`plugins/github/wrapper/gh`, `etag_eligible`/`etag_settle`): a plain `gh api <path>` GET past its 20 s entry is asked with `If-None-Match`; a 304 is replayed
  *       from the stored body with exit 0, nothing on stderr and a `etag` line in the ledger (which spends no point). A second identical read INSIDE the 20 s is
  *       a `cache` hit and makes no request at all. A call the wrapper cannot strip a header block off byte for byte is left exactly as it was.
  */
@@ -162,7 +162,7 @@ const WORKERS = "a11ign-ai-workers";
 const NOW = "2026-10-10T20:00:00Z";
 
 const WRAPPER = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
+  const text = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("gh-etag-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;

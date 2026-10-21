@@ -166,7 +166,7 @@ export function sessionPrOutsideReadings({ now, enabled, prs }: SessionPrOutside
  * A POOL AT EXACTLY THE FRACTION IS NOT RAISED (at or above clears), and a limit of 0 is unread and never a divide. Keyed on the account, the pool and the
  * reset time, so one spent window is one signal however many ticks it lasts and the next window starts a new one.
  *
- * (#4148) A LOW POOL NAMES ITS SPENDER: for a GRAPHQL pool the detail adds who spent that account's last hour, off the `host/gh` ledger beside the config this tick ran under
+ * (#4148) A LOW POOL NAMES ITS SPENDER: for a GRAPHQL pool the detail adds who spent that account's last hour, off the `plugins/github/wrapper/gh` ledger beside the config this tick ran under
  * (`spenderOf`; the default reads it). "Low" with no name is a signal nobody can act on, and the first reading of the burner took a hand-run awk. Only the DETAIL carries it:
  * the discriminator is unchanged, so one spent window is still one signal. A ledger that cannot be read leaves the detail as it was and says so, never a guess.
  *
@@ -184,14 +184,14 @@ export function poolLowReading({ pools, spenderOf = (account, used) => ledgerSpe
     detail: `${low.length} API pool(s) are below ${Math.round(POOL_LOW_FRACTION * 100)}% of their limit: ${named.join("; ")}${spendersOf(low, spenderOf)}` };
 }
 
-/** The config directory `host/gh` writes this process's ledger under: the one `gh` itself reads, else the default. */
+/** The config directory `plugins/github/wrapper/gh` writes this process's ledger under: the one `gh` itself reads, else the default. */
 const ledgerDir = () => process.env.GH_CONFIG_DIR ?? join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "gh");
 
 /** @param {HostConfig} host @returns {string} the reviewer's `gh` config directory, `<home>/reviewer/gh` */
 export const reviewerGhDir = (host: HostConfig): string => join(host.home, "reviewer", "gh");
 
 /**
- * (#4916) EVERY LEDGER A DECLARED ROLE'S CALLS ARE WRITTEN TO: this process's own config directory and the workers', leads' and reviewer's (`host/gh` routes a role to
+ * (#4916) EVERY LEDGER A DECLARED ROLE'S CALLS ARE WRITTEN TO: this process's own config directory and the workers', leads' and reviewer's (`plugins/github/wrapper/gh` routes a role to
  * whichever of them its session runs under, and `app:<role>` lines are in each). A directory that does not exist is not a ledger of this host and is left out; this
  * process's own stays, so a ledger it cannot read is still said. The reviewer's is `wake.ts`'s `REVIEWER_GH_CONFIG_DIR`, derived from `home` because `wake.ts` imports
  * this file; `org-health-app-spender.test.ts` pins the two together.

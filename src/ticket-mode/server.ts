@@ -648,10 +648,12 @@ export function createBoard(deps: BoardDeps) {
 }
 
 /**
- * The child's program (A11-84): load the host module and run the start-up check of the routing wrapper. A process boundary keeps the gate's closure out of this instance, as
+ * The child's program (A11-84): activate the code host plugin (the wrapper is its), load the host module and run the start-up check of the routing wrapper. A process boundary keeps the gate's closure out of this instance, as
  * `work-gate.ts` does for `host:check`, and a host the module cannot load on (no declaration of its project) is one line on stderr, never a stack: the instance starts anyway.
  */
-const STARTUP_PROGRAM = `import(${JSON.stringify(new URL("../host-units/gh-wrapper-and-notes.ts", import.meta.url).href)})`
+const STARTUP_PROGRAM = `import(${JSON.stringify(new URL("../plugins/activate-host.ts", import.meta.url).href)})`
+  + ".then((activation) => activation.activateCodeHost())"
+  + `.then(() => import(${JSON.stringify(new URL("../host-units/gh-wrapper-and-notes.ts", import.meta.url).href)}))`
   + ".then((host) => host.startupGhWrapper())"
   + ".catch((cause) => { process.stderr.write(`ERROR gh wrapper: cannot be checked (${String(cause?.message ?? cause).split(\"\\n\")[0]})\\n`); });";
 

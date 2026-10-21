@@ -141,6 +141,10 @@ The roles are chosen one at a time, so a host can move the scheduler first and l
 limit as the workers' account). A role that is not one of the four, a `github-apps` role without `appId` and `keyPath`, and a `user-accounts` role that names an app are refused by
 field name when `host.json` is read. A role outside any agent workspace is the scheduler; `AGENT_ORG_GH_ROLE=scheduler|workers|managers|reviewer` states the role when that guess is wrong, and is the only way the `reviewer` is named (its own config directory names none).
 
+The wrapper that routes each role, the minter that mints its token and the checks of both are the GitHub plugin's (`plugins/github`, the code host): `agent-org doctor` shows `gh wrapper`,
+`wrapper roles` (the roles the installed wrapper routes to an App, against the roles `host.json` declares) and `app token <role>` under the code host's section, on a ticket-only host too, and
+`agent-org onboard` copies the reviewer App's key into place as the plugin's step.
+
 How it behaves:
 
 - **A separate pool per role.** Each app's installation token spends the app's own rate limit, not the personal account's.

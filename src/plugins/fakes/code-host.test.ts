@@ -3,13 +3,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCodeHostConformance } from "../conformance/code-host.ts";
 import { ContractError } from "../conformance/suite.ts";
-import type { CodeHost } from "../contracts/code-host.ts";
+import type { CodeHost, WrapperInputs } from "../contracts/code-host.ts";
 import { createFakeCodeHost, fakePullUrl } from "./code-host.ts";
+
+/** The inputs a wrapper is asked about: a place outside any temporary directory, and the workers' role an App. */
+const INPUTS: WrapperInputs = {
+  place: { binDir: "/opt/host/bin", tool: "/opt/agent-org", checkout: "/opt/project", stateEntry: (name) => `/opt/state/${name}` }, accounts: { workers: "/opt/workers", leads: "/opt/leads" },
+  identity: { scheduler: { mode: "user-accounts" }, workers: { mode: "github-apps", appId: "1", keyPath: "/opt/workers.pem" }, managers: { mode: "user-accounts" }, reviewer: { mode: "user-accounts" } },
+};
 
 function seeded() {
   const host = createFakeCodeHost("fake-worker");
   const { url, ref } = host.seedPull("owner/repo", 7, { feedback: { authors: ["a-person", "fake-worker"] } });
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS } };
 }
 
 test("the fake code host passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
@@ -20,6 +26,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     "readPullState names the state or answers null", "readReviewState reads the head, the reviews and whether the checks settled", "openPullUrlsOf lists a repository's open pull requests",
     "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes", "subscribe returns the function that cancels it",
     "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
+    "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped, []);
 });
@@ -30,6 +37,38 @@ test("without a change in the probe the port's reads are skipped with the reason
   assert.deepEqual(skipped.map(({ check }) => check), ["readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"]);
   assert.ok(skipped.every(({ reason }) => /the probe names no change/.test(reason)));
   assert.ok(!passed.includes("armMerge arms the merge and says it is armed"));
+});
+
+test("without wrapper inputs in the probe the wrapper's checks are skipped with the reason, not passed", async () => {
+  const { host, probe } = seeded();
+  const { passed, skipped } = await runCodeHostConformance(host, { ...probe, wrapper: undefined });
+  assert.deepEqual(skipped.map(({ check }) => check), ["the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints"]);
+  assert.ok(skipped.every(({ reason }) => /the code host has no wrapper or the probe names no inputs for one/.test(reason)));
+  assert.ok(!passed.some((check) => check.startsWith("the wrapper")));
+});
+
+test("a wrapper that refuses to write its own text fails by name", async () => {
+  const { host, probe } = seeded();
+  host.wrapperState.refusal = "no";
+  await assert.rejects(runCodeHostConformance(host, probe), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "the wrapper keeps its own text, and writes it");
+});
+
+test("a wrapper that answers an empty reason for a role that cannot mint fails by name", async () => {
+  const { host, probe } = seeded();
+  host.wrapperState.mintFailures.workers = "";
+  await assert.rejects(runCodeHostConformance(host, probe), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "the wrapper answers whether each declared role mints");
+});
+
+test("the fake's wrapper is stale when the installed text is not its own, and says what the roles are", () => {
+  const { host } = seeded();
+  const { wrapper } = host;
+  const { target, expected } = wrapper!.file(INPUTS);
+  assert.equal(target, "/opt/host/bin/gh");
+  assert.deepEqual(wrapper!.appRoles(INPUTS), ["workers"]);
+  assert.equal(wrapper!.identityStale(INPUTS, expected!), false);
+  assert.equal(wrapper!.identityStale(INPUTS, "#!/bin/sh\n"), true);
+  assert.equal(wrapper!.divergence(INPUTS, { target, installed: "#!/bin/sh\n" }), "/opt/host/bin/gh is not the fake's wrapper");
+  assert.equal(wrapper!.divergence(INPUTS, { target, installed: null }), "there is no gh wrapper at /opt/host/bin/gh");
 });
 
 test("the fake leaves out what the caller's own login wrote, as the contract says", () => {

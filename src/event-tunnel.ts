@@ -24,13 +24,30 @@
 //
 // A DELIVERY READ answers "is the feed live" from GitHub's side (`GET /app/hook/deliveries`): a `ping` is answered 200 by the receiver and, by design, never queued, so its proof is its
 // status here and the receiver's heartbeat, while a `pull_request` is proven by its `deliveryId` in the queue.
-import { randomBytes, randomUUID } from "node:crypto";
+import { createSign, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { GITHUB_API, appJwt } from "./app-token.ts";
 import type { Exposure } from "./plugins/contracts/exposure.ts";
 import { hostExposure } from "./plugins/host-exposure.ts";
+
+/** GitHub's API. */
+const GITHUB_API = "https://api.github.com";
+/** GitHub refuses a JWT living past ten minutes; `iat` is set a minute back for the clock skew it also refuses. */
+const JWT_LIFETIME_SECONDS = 540;
+const JWT_BACKDATE_SECONDS = 60;
+const base64url = (input: Buffer | string) => Buffer.from(input).toString("base64url");
+
+/**
+ * The App's RS256 JWT, which authenticates it (not an installation) for the calls below. THE GITHUB PLUGIN'S MINTER SIGNS THE SAME JWT (`plugins/github/app-token.ts`), which is a program that imports nothing
+ * of core, and core imports no plugin's code, so the signer is written twice until this file's GitHub calls move into the plugin with the event feed (A11-160, step 8): `app-token.test.ts` holds the two to one token.
+ */
+export function appJwt({ appId, privateKey, now }: { appId: string, privateKey: string, now: number }): string {
+  const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claims = base64url(JSON.stringify({ iat: now - JWT_BACKDATE_SECONDS, exp: now + JWT_LIFETIME_SECONDS, iss: appId }));
+  const signature = createSign("RSA-SHA256").update(`${header}.${claims}`).sign(privateKey);
+  return `${header}.${claims}.${base64url(signature)}`;
+}
 
 const SECRET_BYTES = 32;
 const SECRET_FILE_MODE = 0o600;

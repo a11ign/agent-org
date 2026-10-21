@@ -19,24 +19,27 @@ import { parseLine } from "./gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 // `host-config.ts` resolves the project's checkout from `$AGENT_ORG_HOST` or the working directory AT IMPORT, so the host file is named first and the
-// module imported after it (`app-token.test.ts` does the same); `??=` leaves a host a caller already named alone.
+// module imported after it (`plugins/github/app-token.test.ts` does the same); `??=` leaves a host a caller already named alone.
 const SETUP = tmpDirForFile("gh-identity-791-setup-");
 writeFileSync(join(SETUP, "host.json"), JSON.stringify({ projects: [{ id: "p", checkout: SETUP }], primary: "p" }));
 process.env.AGENT_ORG_HOST ??= join(SETUP, "host.json");
-const { HostConfigRefusal, parseHostConfig, renderTemplate, roleIdentity, templateValues } = await import("./host-config.ts");
+const { HostConfigRefusal, parseHostConfig, roleIdentity } = await import("./host-config.ts");
+const { wrapperInputsOf } = await import("./plugins/host-place.ts");
+const { renderWrapper } = await import("../plugins/github/wrapper.ts");
 const { SUPPORTED_SCHEMA } = await import("./project-config.ts");
 
 const HOST = {
   schema: SUPPORTED_SCHEMA, home: "/home/h", binDir: "/home/h/bin", primary: "p", projects: [{ id: "p", checkout: "/home/h/p" }],
   gh: { workers: "/home/h/workers", leads: "/home/h/leads", leadsHeader: [], leadsWorkspaces: [] },
 };
-const UNITS = { prefix: "x-", boardReportWorkflow: "b.yml", own: [] };
 const parse = (extra: Record<string, unknown>) => parseHostConfig(JSON.stringify({ ...HOST, ...extra }), "host.json");
 const refusalField = (extra: Record<string, unknown>) => {
   try { parse(extra); } catch (error) { return error instanceof HostConfigRefusal ? error.field : `not a refusal: ${error}`; }
   return "not refused";
 };
 const APP = { mode: "github-apps", appId: "123456", keyPath: "/home/h/.config/agent-org/apps/a.pem" };
+/** The wrapper as the GitHub plugin renders it for a host (A11-160: the renderer is the plugin's). */
+const renderedFor = (host: ReturnType<typeof parse>) => renderWrapper(wrapperInputsOf(host)) as string;
 
 // ---- 3. the declaration -----------------------------------------------------------------------------------------------------------
 
@@ -60,22 +63,20 @@ test("#791: a `slug` that is not one is refused BY FIELD NAME: the `[bot]` suffi
 });
 
 test("#791: the rendered wrapper carries each role's slug beside its app, and an empty one for a role declared without", () => {
-  const values = templateValues(parse({ github: { identity: { workers: { ...APP, slug: "a11ign-workers" }, managers: APP } } }), UNITS);
-  const arms = values.appDeclared.split("\n");
-  assert.match(arms.find((l) => l.includes("workers)")) ?? "", /app_slug='a11ign-workers' ;;$/);
-  assert.match(arms.find((l) => l.includes("managers)")) ?? "", /app_slug='' ;;$/);
+  const arms = renderedFor(parse({ github: { identity: { workers: { ...APP, slug: "a11ign-workers" }, managers: APP } } })).split("\n");
+  assert.match(arms.find((l) => l.startsWith("    workers) app_id=")) ?? "", /app_slug='a11ign-workers' ;;$/);
+  assert.match(arms.find((l) => l.startsWith("    managers) app_id=")) ?? "", /app_slug='' ;;$/);
 });
 
 // ---- 1 and 2. the wrapper, run ------------------------------------------------------------------------------------------------------
 
-/** The wrapper RENDERED THROUGH `templateValues`, as the installed one is, from a host declaring an app (and a slug, unless `slug` is null) per role. */
+/** The wrapper RENDERED by the plugin, as the installed one is, from a host declaring an app (and a slug, unless `slug` is null) per role. */
 function wrapperFor(slugs: Record<string, string | null>) {
-  const text = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
   const identity = Object.fromEntries(["scheduler", "workers", "managers"].map((role) => [role, {
     ...APP, appId: `id-${role}`, keyPath: `/nonexistent-791/${role}.pem`, ...(slugs[role] === null ? {} : { slug: slugs[role] }),
   }]));
   const rendered = join(tmpDirForFile("gh-identity-791-wrapper-"), "gh");
-  writeFileSync(rendered, renderTemplate(text, templateValues(parse({ github: { identity } }), UNITS), "gh"), { mode: 0o755 });
+  writeFileSync(rendered, renderedFor(parse({ github: { identity } })), { mode: 0o755 });
   return rendered;
 }
 const SLUGS = { scheduler: "a11ign-scheduler", workers: "a11ign-workers", managers: "a11ign-managers" };

@@ -510,7 +510,7 @@ export const boardingPortOf = (scope: string): TicketPort => githubTicketAdapter
 } });
 
 /**
- * (#4898) THE REFUSED-CALL QUEUE'S TICK, said on stderr where the tick log reads it. A write GitHub refused for a rate limit was held by `host/gh`; the
+ * (#4898) THE REFUSED-CALL QUEUE'S TICK, said on stderr where the tick log reads it. A write GitHub refused for a rate limit was held by `plugins/github/wrapper/gh`; the
  * gate makes it once the reset has passed and writes the 70% incident for a pool nearly spent. NEVER FAILS THE TICK: a queue that cannot be read is a line,
  * and the orders this tick would have sent are not held behind it.
  */

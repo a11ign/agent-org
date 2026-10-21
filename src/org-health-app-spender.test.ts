@@ -1,6 +1,6 @@
 // no-token: gh -- ledgers are files this test writes under a scratch directory; no `gh` starts and nothing reaches the network or any account's config.
 //
-// #4916: `api-pool-low` NAMES AN APP'S CALLS. A pool read off an App's token reports the login `<slug>[bot]`, and `host/gh` ledgers that App's calls under
+// #4916: `api-pool-low` NAMES AN APP'S CALLS. A pool read off an App's token reports the login `<slug>[bot]`, and `plugins/github/wrapper/gh` ledgers that App's calls under
 // `app:<role>`, so the filter by the pool's login matched nothing and the sentence read "no graphql point is recorded" over a ledger holding 2,320 of them. And the
 // reader looked in ONE config directory, where the scheduler's calls are in the workers'. Each case carries its control: the positive names a caller and the
 // negatives are the same ledger with the identity moved or a directory unreadable.
@@ -39,7 +39,7 @@ const HOST_CONFIG = parseHostConfig(JSON.stringify(HOST));
 const SCHEDULER_BOT = "a11ign-scheduler[bot]";
 const TICK = "/usr/bin/node /x/src/work-tick.ts";
 const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
-/** One ledger line as `host/gh` writes it (nine fields). */
+/** One ledger line as `plugins/github/wrapper/gh` writes it (nine fields). */
 const line = (account: string, { ago = 5, command = "issue list", caller = TICK } = {}) => [minutesAgo(ago), account, "graphql", "", "0", command, "-", caller, "-"].join("\t");
 const ledgerOf = (dir: string, lines: string[]) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "gh-calls.tsv"), `${lines.join("\n")}\n`); };
 const poolOf = (account: string) => [{ account, resource: "graphql", remaining: 920, limit: 5000, resetAt: "2026-10-11T00:00:00Z" }];
@@ -100,7 +100,7 @@ test("#4916: an ordinary account is read as it always was, and an unreadable hos
 // --- agent-org#1395: THE SENTENCE ACCOUNTS FOR THE POOL, WITHIN 10% --------------------------------------------------------------------------------------------------------
 //
 // MEASURED 2026-10-13 (`a11ign-scheduler[bot]`, tripped at 20:08Z): the pool read 5 of 5000 and this sentence read 1,557 floor points, 30%, because no line carried a `cost`.
-// The lines now carry the pool's own counter (`host/gh`, 11th and 12th fields), and the sentence names the points the counter moved, by whom it could say.
+// The lines now carry the pool's own counter (`plugins/github/wrapper/gh`, 11th and 12th fields), and the sentence names the points the counter moved, by whom it could say.
 
 /** One ledger line with the pool's counter after it (twelve fields); `used` left out is a call whose response the wrapper did not ask the counter of. */
 const counted = (account: string, { ago, command = "api graphql", caller = "/usr/bin/node /x/src/work-gate.ts", used }: { ago: number; command?: string; caller?: string; used?: number }) =>

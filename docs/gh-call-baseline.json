@@ -11,10 +11,6 @@
       "spawns": 2,
       "calls": 0
     },
-    "host/gh": {
-      "spawns": 1,
-      "calls": 0
-    },
     "host/manager-spend-post.sh": {
       "spawns": 1,
       "calls": 0

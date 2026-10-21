@@ -14,6 +14,7 @@ import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
 import { readReplies } from "./replies.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
+import { createWrapper } from "./wrapper.ts";
 
 const notYet = (operation: string, ref: ChangeRef): never => {
   throw new Error(`the GitHub plugin does not ${operation} yet (${ref.id})`);
@@ -34,5 +35,6 @@ export function createCodeHost(deps: PluginDeps): CodeHost {
     requestReview: (ref) => notYet("request a review", ref),
     armMerge: (ref) => notYet("arm a merge", ref),
     subscribe: () => () => undefined,
+    wrapper: createWrapper(deps),
   };
 }

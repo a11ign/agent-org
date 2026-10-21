@@ -27,7 +27,7 @@ import { type ConcernEntry, type PluginEntry, type PluginHealth, sectionHeader, 
 import { readPluginHealth, toolVersionOf } from "../plugins/health-read.ts";
 import { type LoadResult, loadEnabled } from "../plugins/loader.ts";
 import { messagingChecksOfFile, messagingStateOfFile } from "../plugins/messaging-state.ts";
-import type { Catalog, PluginDeps, ProbeRequest, ReviewerHelpers } from "../plugins/manifest.ts";
+import type { Catalog, HostPlaceReading, PluginDeps, ProbeRequest, ReviewerHelpers } from "../plugins/manifest.ts";
 import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { publishingHelpers } from "../plugins/publishing-helpers.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
@@ -47,7 +47,7 @@ import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type S
 import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
-import { realExec, realProbe } from "../plugins/active.ts";
+import { realExec, realPlace, realProbe } from "../plugins/active.ts";
 import { corePolicy } from "../plugins/policy.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -57,12 +57,6 @@ export const MIN_NODE_MAJOR = 24;
  * section of its own. A row with no section is a machine check.
  */
 export type Check = Readonly<{ name: string; ok: boolean; detail: string; fix: string | null; section?: string }>;
-
-/**
- * The installed `gh` wrapper, read by the host's own module (`host-units.ts`, A11-84): whether it is the one `host.json` declares, and each declared role's token
- * mint. `unchecked` is said when that module would not load or the host file would not read, which is never a pass.
- */
-export type GhWrapperReport = Readonly<{ unchecked: string }> | Readonly<{ divergence: string | null; mints: readonly Readonly<{ role: string; failure: string | null }>[] }>;
 
 export type DoctorDeps = Readonly<{
   /** Runs one `tickets.preflight` command; a shell when absent. A test injects one so no process runs. */
@@ -89,8 +83,8 @@ export type DoctorDeps = Readonly<{
   pnpmVersion: () => string | null;
   /** GETs `/` of a host and port for a plugin's checks (an exposure asks whether a served port answers): the status, or null when nothing answered. */
   probe: (request: ProbeRequest) => Promise<number | null>;
-  /** The installed `gh` wrapper and each declared role's mint (A11-84). Loaded by the caller, so this file stays import-light. */
-  ghWrapper: () => Promise<GhWrapperReport>;
+  /** Where the host file says the machine keeps what the code host's `gh` wrapper is rendered from, or why there is none (A11-160). Loaded by the caller, so this file stays import-light. */
+  hostPlace: () => Promise<HostPlaceReading>;
   platform: NodeJS.Platform;
   /** Whether a restart of the instance reaches herdr's server of `session` (A11-90). */
   isolation: (session: string) => Isolation;
@@ -217,19 +211,6 @@ function writerCheck(settings: TicketSettings | null, plugins: PluginProblems | 
   return ok("ticket writer", `yes: New ticket is shown, and ${grill}; its skill is provided by ${writers[0].entry}`);
 }
 
-/**
- * The `gh` wrapper's checks (A11-84): the installed copy is the one `host.json` declares, and each declared role mints. A role whose mint fails names the reason the
- * minter printed first, so a key that moved or an App that was removed is the one thing to fix.
- */
-function ghWrapperChecks(report: GhWrapperReport): Check[] {
-  if ("unchecked" in report) return [failed("gh wrapper", `cannot be checked: ${report.unchecked}`, "run `agent-org doctor` from the checkout that host.json's `tool` names")];
-  const wrapper = report.divergence === null ? ok("gh wrapper", "the installed wrapper is the one host.json declares")
-    : failed("gh wrapper", report.divergence, "run `agent-org host:install`, which renders the wrapper from host.json and writes it, or start the instance, which re-renders it");
-  const mints = report.mints.map(({ role, failure }) => failure === null ? ok(`app token ${role}`, `the ${role} App mints a token`)
-    : failed(`app token ${role}`, `the ${role} App's token mint failed: ${failure}`, `fix the key or the App host.json declares for ${role}, then run \`agent-org host:install\``));
-  return [wrapper, ...mints];
-}
-
 /** The contract mismatch's fix, as `preflight`'s: the board refuses a run while one stands. */
 const CONTRACT_FIX = "fix what the row says: the board refuses a run while a mismatch stands";
 const NOT_CHECKED = "not checked: Claude Code's install record cannot be read for it";
@@ -328,10 +309,10 @@ function hostText(deps: DoctorDeps): string | null {
  * providers the file names or the defaults: they ran on whatever the host file said (the stacking extension is the person's own `gh` account's), and they are asked alone, since nothing
  * else of the plugins is built for a file that does not read. Nothing here prints a secret: a plugin's rows are its own.
  */
-async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps): Promise<PluginHealth> {
+async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps, place: HostPlaceReading): Promise<PluginHealth> {
   const { catalog, load, messaging, messagingChecks } = deps.agentOrgPlugins;
   const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
-    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(), publishing: publishingHelpers(), reviewing: deps.reviewing };
+    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(), publishing: publishingHelpers(), reviewing: deps.reviewing, place: () => Promise.resolve(place) };
   return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
     version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });
 }
@@ -388,7 +369,7 @@ function messagingSections(health: PluginHealth): Check[] {
 }
 
 /** The machine checks a provider's row summarises beside its plugin's own rows. */
-type Machine = Readonly<{ gh: readonly Check[]; terminal: readonly Check[] }>;
+type Machine = Readonly<{ terminal: readonly Check[] }>;
 
 /** The registry's refusals, in a section of their own: they name no concern, so no plugin's section holds them. */
 const registrySection = (health: PluginHealth): Check[] => under("refused by the registry", health.refused.map(({ plugin, failure }) => pluginFailed(plugin, failure.why, failure.fix)));
@@ -403,11 +384,11 @@ function hostlessSections(health: PluginHealth): Check[] {
 }
 
 /** Every plugin section, in the order tracker, code host, publisher, reviewer, exposure, messaging, then what the registry refused. */
-function pluginSections(settings: TicketSettings, health: PluginHealth, { gh, terminal }: Machine, deps: DoctorDeps): Check[] {
+function pluginSections(settings: TicketSettings, health: PluginHealth, { terminal }: Machine, deps: DoctorDeps): Check[] {
   const summarise = (block: ProviderBlock, machine: readonly Check[] = []) => (_entry: PluginEntry | undefined, rows: readonly Check[]): Check[] => [providerRow(settings, block, [...machine, ...rows], deps.agentOrgPlugins.catalog())];
   return [
     ...concernSections(concernOf(health, "tracker"), summarise("tracker")),
-    ...concernSections(concernOf(health, "codeHost"), summarise("codeHost", gh)),
+    ...concernSections(concernOf(health, "codeHost"), summarise("codeHost")),
     ...concernSections(concernOf(health, "publisher"), summarise("publish")),
     ...concernSections(concernOf(health, "reviewer"), summarise("reviewer")),
     ...concernSections(concernOf(health, "exposure"), summarise("exposure", terminal)),
@@ -435,10 +416,10 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const instance = await serviceChecks("instance", settings?.port ?? 4747, instanceState, deps);
   const ui = await serviceChecks("ui", settings?.uiPort ?? 4748, deps.serviceState("ui"), deps);
   const plugins = pluginsOf(settings, deps);
-  const gh = noProject ? [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper")] : ghWrapperChecks(await deps.ghWrapper());
+  const place: HostPlaceReading = noProject ? { kind: "no-project" } : await deps.hostPlace().catch((cause: unknown): HostPlaceReading => ({ kind: "unreadable", reason: String((cause as Error)?.message ?? cause).split("\n")[0] }));
   const terminal = await terminalChecks(settings, deps);
-  const health = await pluginHealthOf(settings, deps);
-  const sections = settings === null ? hostlessSections(health) : pluginSections(settings, health, { gh, terminal }, deps);
+  const health = await pluginHealthOf(settings, deps, place);
+  const sections = settings === null ? hostlessSections(health) : pluginSections(settings, health, { terminal }, deps);
   return [
     nodeCheck(deps),
     pnpmCheck(deps),
@@ -447,7 +428,6 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
       : ok("launcher", launcher),
     host,
     ...aliasChecks(settings),
-    ...gh,
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
     writerCheck(settings, plugins),
     ...pluginChecks(settings, plugins),
@@ -696,14 +676,7 @@ export function defaultDoctorDeps(): DoctorDeps {
       return result.status === 0 ? result.stdout.trim() : null;
     },
     probe: realProbe,
-    ghWrapper: async () => {
-      try {
-        const { ghWrapperReport } = await import("../host-units/gh-wrapper-and-notes.ts");
-        return ghWrapperReport();
-      } catch (cause) {
-        return { unchecked: String((cause as Error)?.message ?? cause).split("\n")[0] };
-      }
-    },
+    hostPlace: realPlace,
     platform: process.platform,
     isolation: (session) => hostIsolation(services, session),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),

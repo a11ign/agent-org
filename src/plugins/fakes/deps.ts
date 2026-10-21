@@ -21,6 +21,7 @@ export function fakePluginDeps(over: Partial<PluginDeps> = {}): PluginDeps {
     mode: () => null,
     probe: () => Promise.resolve(null),
     messaging: messagingHelpers(), publishing: publishingHelpers(), reviewing: gateHelpers(),
+    place: () => Promise.resolve({ kind: "no-project" }),
     ...over,
   };
 }

@@ -1,7 +1,7 @@
 // no-token: gh -- the wrapper is RUN here against a stub `gh-real` the test writes (`A11Y_GH_REAL`), and `defaultGh` against a stub `gh` first on PATH;
 // no real `gh` starts and nothing reaches the network or any account's config.
 //
-// #4397: `host/gh` REFUSES `gh pr create` unless `A11Y_PR_OPEN` is set, and `pr:open` sets it on its own `gh` child. A raw create skips the
+// #4397: `plugins/github/wrapper/gh` REFUSES `gh pr create` unless `A11Y_PR_OPEN` is set, and `pr:open` sets it on its own `gh` child. A raw create skips the
 // session label, the `Acceptance:`/`Closes` check and the Region check (agent-org#436 was opened that way). The positive control for every
 // "never reached gh-real" assertion is the stub's own marker file: the same call WITH the variable must leave it, so a wrapper that
 // refuses everything, or a stub that never runs, cannot pass.
@@ -17,7 +17,7 @@ import { PR_OPEN_ENV } from "./pr-open.ts";
 import { tmpDirForFile } from "./lib/tmp-fixture.ts";
 
 const STUB_EXIT = 7; // a status nothing else here returns, so it can only have come from the stub
-const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../host/gh", import.meta.url)), "utf8");
+const WRAPPER_TEXT = readFileSync(fileURLToPath(new URL("../plugins/github/wrapper/gh", import.meta.url)), "utf8");
 const WRAPPER = (() => {
   const rendered = join(tmpDirForFile("pr-open-only-creates-render-"), "gh");
   writeFileSync(rendered, WRAPPER_TEXT.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });

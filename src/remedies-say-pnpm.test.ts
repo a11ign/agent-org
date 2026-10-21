@@ -50,7 +50,6 @@ const EXEMPT: Record<string, { lines: number; why: string }> = {
   "src/wake/pull-request-spawn-orders.ts": { lines: 1, why: "records: #2376, a reviewer's `npx` died writing `~/.npm`; the sentence is about what npx did" },
   "src/haiku-brief.ts": { lines: 1, why: "records: Anthropic's published Haiku 5.5 text, copied verbatim and sha256-pinned (`wake-haiku-brief.test.ts`); its `e.g. npm install` is an example in their sentence, not a remedy the tool prints" },
   "host/board-report.service.in": { lines: 2, why: "digest-pinned unit bytes (`host-project-paths.test.ts`): comment lines, see the header" },
-  "host/gh": { lines: 1, why: "digest-pinned wrapper bytes (`host-project-paths.test.ts`): a comment line, see the header" },
   "host/work-tick.service.in": { lines: 1, why: "digest-pinned unit bytes (`host-project-paths.test.ts`): a comment line, see the header" },
 };
 
@@ -63,7 +62,7 @@ const TEST_FILE = /\.test\.(?:ts|mjs)$/;
  */
 const NOT_THE_TOOLS = "src/packaging";
 
-/** Every non-test file under `src/` and `host/`, repo-relative. */
+/** Every non-test file under `src/` and `host/`, repo-relative. (The `gh` wrapper's template is the GitHub plugin's since A11-160: it is pinned by digest in `host-project-paths.test.ts`, which is what the `host/` exemption was for.) */
 function toolFiles(dir = ""): string[] {
   return readdirSync(join(TOOL_ROOT, dir || "."), { withFileTypes: true }).flatMap((entry) => {
     const path = dir === "" ? entry.name : `${dir}/${entry.name}`;

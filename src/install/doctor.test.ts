@@ -63,7 +63,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     pnpmVersion: () => "10.34.5",
     healthy: async (port) => port === 7318, unitProblem: () => null,
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
-    ghWrapper: async () => ({ divergence: null, mints: [] }),
+    hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
     platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
@@ -175,9 +175,9 @@ test("A11-144: a provider row fails when a check it summarises fails, with that 
 test("doctor passes every check on a working install, and never prints the key", async () => {
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
-    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["gh wrapper", true], ["herdr", true], ["ticket writer", true], ["instance service", true],
+    ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["ticket writer", true], ["instance service", true],
     ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
-    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh stack", true], ["code host (github)", true],
+    ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
   ]);
@@ -503,30 +503,26 @@ test("A11-162: a loopback exposure that does not answer fails its ports row, and
   assert.deepEqual([exposure.ok, exposure.fix], [false, "run `agent-org start ui`"]);
 });
 
-// A11-84: the installed `gh` wrapper and each declared role's mint are checked, and each failure names its fix.
+// A11-84, A11-160: the installed `gh` wrapper and each declared role's mint are the GitHub plugin's rows (`plugins/github/identity-checks.test.ts` holds the rows themselves); what doctor owns is handing the plugin the host's place.
 
-test("doctor fails a gh wrapper that diverges from host.json, naming the fix, and passes each role that mints", async () => {
-  const checks = await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ divergence: "/home/me/.local/bin/gh names no App role, but host.json declares scheduler",
-    mints: [{ role: "scheduler", failure: null }, { role: "workers", failure: null }] }) }));
-  const byCheck = byName(checks);
-  assert.equal(byCheck["gh wrapper"].ok, false);
-  assert.equal(byCheck["gh wrapper"].detail, "/home/me/.local/bin/gh names no App role, but host.json declares scheduler");
-  assert.match(byCheck["gh wrapper"].fix ?? "", /agent-org host:install/);
-  assert.equal(byCheck["app token scheduler"].ok, true, "a role that mints is a pass, whatever the wrapper says");
+/** The place of a host whose tool is installed under /opt, as the host file's reader hands it over. */
+const PLACE = { binDir: "/home/me/.local/bin", tool: "/opt/agent-org", checkout: "/home/me/project", stateEntry: (name: string) => `/home/me/state/${name}` };
+
+test("doctor hands the code host plugin the host's place, and its wrapper rows are in the code host's section", async () => {
+  const wrapperPath = "/home/me/.local/bin/gh";
+  const checks = await diagnose(deps({ readFile: (path) => { if (path === wrapperPath) throw new Error(`ENOENT: ${path}`); return path.endsWith("plugins/github/wrapper/gh") ? readFileSync(path, "utf8") : HOST_WITH_PROJECT; },
+    hostPlace: async () => ({ kind: "place", place: PLACE }) }));
+  const wrapper = checks.find((check) => check.name === "gh wrapper");
+  assert.equal(wrapper?.ok, false);
+  assert.equal(wrapper?.detail, `there is no gh wrapper at ${wrapperPath}`, "the plugin asked for the place's bin directory");
+  assert.match(wrapper?.fix ?? "", /agent-org host:install/);
+  assert.equal(wrapper?.section?.startsWith("code host: github"), true, "the row is under the plugin's header, and no longer a machine row of its own");
+  assert.equal(checks.find((check) => check.name === "wrapper roles")?.ok, true, "no role is declared as an App, and no wrapper is installed");
 });
 
-test("doctor fails a role whose token mint fails, and says the reason the minter printed", async () => {
-  const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ divergence: null,
-    mints: [{ role: "reviewer", failure: "could not read the key /home/me/.config/agent-org/apps/a11ign-reviewer.pem (exit 2)" }] }) })));
-  assert.equal(checks["gh wrapper"].ok, true);
-  assert.equal(checks["app token reviewer"].ok, false);
-  assert.equal(checks["app token reviewer"].detail, "the reviewer App's token mint failed: could not read the key /home/me/.config/agent-org/apps/a11ign-reviewer.pem (exit 2)");
-  assert.match(checks["app token reviewer"].fix ?? "", /host:install/);
-});
-
-test("doctor passes the gh wrapper check as not applicable on a host that declares no project, and does not ask the wrapper", async () => {
+test("doctor passes the gh wrapper check as not applicable on a host that declares no project, and does not ask for the place", async () => {
   let asked = false;
-  const checks = byName(await diagnose(deps({ ghWrapper: async () => { asked = true; return { unchecked: "field `primary` REFUSED: it is missing" }; } })));
+  const checks = byName(await diagnose(deps({ hostPlace: async () => { asked = true; return { kind: "unreadable", reason: "field `primary` REFUSED: it is missing" }; } })));
   assert.equal(checks["gh wrapper"].ok, true);
   assert.match(checks["gh wrapper"].detail, /not applicable: host.json declares no project/);
   assert.equal(asked, false);
@@ -535,23 +531,24 @@ test("doctor passes the gh wrapper check as not applicable on a host that declar
 test("doctor does not skip the gh wrapper check on a host file that is not accepted, and says the host file is wrong", async () => {
   for (const unaccepted of ["{}", "not json"]) {
     let asked = false;
-    const checks = byName(await diagnose(deps({ readFile: () => unaccepted, ghWrapper: async () => { asked = true; return { unchecked: "x" }; } })));
+    const checks = byName(await diagnose(deps({ readFile: () => unaccepted, hostPlace: async () => { asked = true; return { kind: "unreadable", reason: "x" }; } })));
     assert.equal(checks["host file"].ok, false, unaccepted);
-    assert.equal(asked, true, `${unaccepted}: the wrapper is still asked`);
+    assert.equal(asked, true, `${unaccepted}: the place is still asked`);
   }
 });
 
-test("doctor still checks the gh wrapper on a host that declares a primary project", async () => {
-  const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ unchecked: "ENOENT: host.json" }) })));
-  assert.equal(checks["gh wrapper"].ok, false);
+test("doctor says a gh wrapper is not a pass when reading the host's place throws, and still prints the rest of the report", async () => {
+  const checks = await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, hostPlace: async () => { throw new Error("field `primary` REFUSED: it is missing\nsecond line"); } }));
+  const row = byName(checks)["gh wrapper"];
+  assert.deepEqual([row.ok, row.detail], [false, "cannot be checked: field `primary` REFUSED: it is missing"]);
+  assert.ok(checks.some((check) => check.name === "pairing"), "the report goes on");
 });
 
 test("doctor says a gh wrapper it could not check is not a pass", async () => {
-  const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, ghWrapper: async () => ({ unchecked: "ENOENT: host.json" }) })));
+  const checks = byName(await diagnose(deps({ readFile: () => HOST_WITH_PROJECT, hostPlace: async () => ({ kind: "unreadable", reason: "ENOENT: host.json" }) })));
   assert.equal(checks["gh wrapper"].ok, false);
   assert.equal(checks["gh wrapper"].detail, "cannot be checked: ENOENT: host.json");
 });
-
 
 /** A host file whose `tickets` block is `tickets`, over the ports and key every doctor test here uses. */
 const hostWith = (tickets: Record<string, unknown>) => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { port: 4800, uiPort: 4801, linearKey: { keychain: "agent-org-linear" }, ...tickets } });
@@ -620,10 +617,10 @@ test("A11-139: the instruction's words do not decide the writer check: a mode wo
 const WORKERS_HOST = JSON.stringify({ gh: { workers: "/home/agent/workers" }, clones: { netbox: "/src/netbox" }, tickets: { providers: { tracker: { provider: "linear", key: { keychain: "agent-org-linear" } }, exposure: { provider: "local", port: 4800, uiPort: 4801, terminal: TERMINAL } } } });
 const GITHUB_ORIGIN = "git@github.com:a11ign/nbl-ui-netbox.git";
 
-test("A11-160: the code host plugin's rows are in the code host's section, after the machine's wrapper check and before the code host's row that summarises them", async () => {
+test("A11-160: the code host plugin's rows, the wrapper's and then the stacking's, are in the code host's section, before the code host's row that summarises them", async () => {
   const checks = await diagnose(deps({ readFile: () => WORKERS_HOST, exec: execOf({ origin: GITHUB_ORIGIN }) }));
   const names = checks.map(({ name }) => name);
-  assert.deepEqual(names.filter((name) => ["gh wrapper", "gh stack", "stacked pull requests", "code host (github)", "herdr"].includes(name)), ["gh wrapper", "herdr", "gh stack", "stacked pull requests", "code host (github)"]);
+  assert.deepEqual(names.filter((name) => ["gh wrapper", "gh stack", "stacked pull requests", "code host (github)", "herdr"].includes(name)), ["herdr", "gh wrapper", "gh stack", "stacked pull requests", "code host (github)"]);
   const row = byName(checks);
   assert.deepEqual([row["gh stack"].ok, row["gh stack"].detail], [true, "github/gh-stack v0.2.1 (for GH_CONFIG_DIR=/home/agent/workers/gh)"], "the row is the plugin's, with the words it had");
   assert.deepEqual([row["stacked pull requests"].ok, row["stacked pull requests"].detail], [true, "available for a11ign/nbl-ui-netbox"]);
@@ -955,7 +952,7 @@ test("A11-163: doctor prints a section per agent-org plugin in concern order, ea
   const headers = lines.filter((line) => /^[a-z][a-z ]*: /.test(line) && !/^(?:ok|FAIL) /.test(line));
   assert.deepEqual(headers, [
     "tracker: linear (enabled, contract 1.1, plugins/linear)",
-    "code host: github (enabled, contract 1.2, plugins/github)",
+    "code host: github (enabled, contract 1.3, plugins/github)",
     "publisher: none",
     "reviewer: none",
     "exposure: local (enabled, contract 1.1, plugins/local)",
@@ -990,7 +987,7 @@ test("A11-163: a plugin that failed to load is a FAIL row in its own section wit
   assert.equal(lines[at + 1], `  FAIL  plugin fake-tracker: ${refusal.why}`);
   assert.equal(lines[at + 2], "        fix: update agent-org, or the plugin");
   assert.match(lines[at + 3], /^ {2}FAIL {2}tracker \(fake-tracker\): /, "the concern's row fails with it");
-  assert.ok(lines.includes("code host: github (enabled, contract 1.2, plugins/github)"), "the code host's section is untouched");
+  assert.ok(lines.includes("code host: github (enabled, contract 1.3, plugins/github)"), "the code host's section is untouched");
   assert.equal(checks.every((check) => check.ok), false, "a failing plugin fails the run");
   assert.equal((await diagnose(deps())).every((check) => check.ok), true, "and a working install is still green");
 });

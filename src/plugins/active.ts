@@ -21,7 +21,7 @@ import type { Publisher } from "./contracts/publisher.ts";
 import type { Reviewer } from "./contracts/reviewer.ts";
 import type { TicketSource } from "./contracts/tracker.ts";
 import { type ImportModule, loadDefault, loadEnabled } from "./loader.ts";
-import type { Catalog, CodeHostPolicy, ExecOptions, ExecResult, LoadedPlugin, PluginDeps, ProbeRequest, ReviewerHelpers } from "./manifest.ts";
+import type { Catalog, CodeHostPolicy, ExecOptions, ExecResult, HostPlaceReading, LoadedPlugin, PluginDeps, ProbeRequest, ReviewerHelpers } from "./manifest.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { corePolicy } from "./policy.ts";
 import { publishingHelpers } from "./publishing-helpers.ts";
@@ -103,16 +103,38 @@ export async function loadActive(providers: Providers, catalog: Catalog, deps: P
 }
 
 let activation: Promise<Active> | null = null;
+/** What the activation answered, once it has: the synchronous accessors read it. */
+let activated: Active | null = null;
+/** A code host a test put in place of the activated one. */
+let substitute: CodeHost | null = null;
 
 /** {@link loadActive}, once per process. `blocks` narrows what is built to some blocks (`ticket:review` builds the code host alone). */
 export function activatePlugins(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule, blocks?: readonly ProviderBlock[]): Promise<Active> {
-  activation ??= loadActive(providers, catalog, deps, importModule, blocks);
+  activation ??= loadActive(providers, catalog, deps, importModule, blocks).then((active) => (activated = active));
   return activation;
 }
 
-/** Forgets the activation, so a test starts from none. */
+/** Forgets the activation, and any code host a test substituted, so a test starts from none. */
 export function forgetActivation(): void {
   activation = null;
+  activated = null;
+  substitute = null;
+}
+
+/**
+ * THE CODE HOST FOR CODE WITH NO DEPS CHAIN TO CARRY IT (A11-160): the host's own programs (`host:install`, `host:check`, the instance's start-up check) reach GitHub's wrapper from many places that are
+ * called, not constructed. The entry point that needs one awaits {@link activatePlugins} (or `activateCodeHost`, which reads the host file's providers) first; this answers the implementation it built,
+ * and REFUSES by name when nothing was activated, so a caller that forgot is told and never silently given a default.
+ */
+export function activeCodeHost(): CodeHost {
+  if (substitute !== null) return substitute;
+  if (activated === null) throw new PluginActivationRefusal("no code host is active in this process: its entry point activates the plugins before it asks (agent-org plugin list shows the code host)");
+  return activated.codeHost();
+}
+
+/** Puts `host` where {@link activeCodeHost} answers it, for a test; `null` takes it away. {@link forgetActivation} takes it away too. */
+export function substituteCodeHost(host: CodeHost | null): void {
+  substitute = host;
 }
 
 /** How long a program may run when its caller names no limit: a Keychain prompt a person is reading, or a marketplace add, takes minutes. */
@@ -161,6 +183,10 @@ export function realProbe({ host, port, tls, servername, hostHeader, timeoutMs }
   });
 }
 
+/** Where this machine's host file says it keeps what a code host's wrapper is rendered from: read when asked, so the host file's reader is imported only by a process that asks (doctor's rows). */
+export const realPlace = (): Promise<HostPlaceReading> => import("./host-place.ts").then(({ readHostPlace }) => readHostPlace())
+  .catch((cause: unknown): HostPlaceReading => ({ kind: "unreadable", reason: String((cause as Error)?.message ?? cause).split("\n")[0] }));
+
 /**
  * The deps core gives a plugin on this machine: the real `fetch`, programs and files. `pick` is the board's `tickets.pick`, `clones` the host's checkouts, `review` how a reviewer
  * judges a pull request, which only a process that loaded the gate can give (`corePolicy` says what the others do), and `reviewing` the reviewer's helpers with the board's collaborators
@@ -168,5 +194,5 @@ export function realProbe({ host, port, tls, servername, hostHeader, timeoutMs }
  */
 export function realPluginDeps({ env, stateDir, pick, clones = {}, review, reviewing }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"]; reviewing?: ReviewerHelpers }>): PluginDeps {
   return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), exec: realExec, readFile: (path) => readFileSync(path, "utf8"), mode: realMode, probe: realProbe, messaging: messagingHelpers(),
-    publishing: publishingHelpers(), reviewing: reviewing ?? gateHelpers() };
+    publishing: publishingHelpers(), reviewing: reviewing ?? gateHelpers(), place: realPlace };
 }

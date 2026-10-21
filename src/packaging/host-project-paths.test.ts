@@ -51,9 +51,13 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
-const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, leadsListText, shippedScriptText, shippedUnitText, shippedUnits } = await import("../host-units/shipped-unit-texts-and-declarations.ts");
+const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, leadsListText, shippedUnitText, shippedUnits } = await import("../host-units/shipped-unit-texts-and-declarations.ts");
 const { hostUnitDrift, unclassifiedEntries } = await import("../host-units.ts");
 const { identityDrift, ownedIdentityFiles } = await import("../host-units/host-drift-findings-and-notes.ts");
+const { wrapperInputsOf } = await import("../plugins/host-place.ts");
+const { createWrapper } = await import("../../plugins/github/wrapper.ts");
+/** The GitHub plugin's wrapper, reading its template from disk (A11-160: the renderer is the plugin's). */
+const githubWrapper = () => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} });
 const { HostConfigRefusal, hostConfigPath, leadsWorkspacesText, parseHostConfig, parseUnitsDeclaration, readUnitsDeclaration, renderTemplate, renderedName, templateValues } =
   await import("../host-config.ts");
 
@@ -70,7 +74,9 @@ const HOME_LITERAL = /\/home\/[A-Za-z_][\w.-]*/;
 
 /** The three files of the tool's own source this row edited, and every entry of the tool's host directory. */
 const TOOL_SOURCES = ["host-units.ts", "host-config.ts", "board-snapshot-scope.ts"];
-const toolFiles = () => [...TOOL_SOURCES.map((name) => join(TOOL_SRC, name)), ...TOOL_ENTRIES.map((name) => join(SHIPPED_DIR, name))];
+/** The wrapper's template and its renderer are the GitHub plugin's since A11-160, and are still the tool's own files that name no host. */
+const PLUGIN_SOURCES = ["wrapper/gh", "wrapper.ts"].map((name) => fileURLToPath(new URL(`../../plugins/github/${name}`, import.meta.url)));
+const toolFiles = () => [...TOOL_SOURCES.map((name) => join(TOOL_SRC, name)), ...PLUGIN_SOURCES, ...TOOL_ENTRIES.map((name) => join(SHIPPED_DIR, name))];
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -78,7 +84,7 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
 test("#2620: no home-directory literal remains in the tool's sources, its templates or its scripts", () => {
   const files = toolFiles();
-  assert.equal(files.length, 3 + 37, "POSITIVE CONTROL: forty files are scanned (three sources, thirty-seven host entries --the event receiver's funnel, a11ign/a11ign#5197, the after-crash unit's service, a11ign#5127, the trace store's clock pair, a11ign/agent-org#498, the two the shadow window added, #2867, the two chairman-watch templates, #2901, the listener's, #2907, the agent-org launcher, #3532, the weekly report's pair and script, a11ign/a11ign#3627, the trace pages' pair, a11ign/a11ign#3515, the trace pages' server, a11ign/agent-org#1159, the /tmp janitor's pair and tmpfiles rule, a11ign/a11ign#3849, the OTel receiver's service, a11ign/a11ign#4071, and the kernel reboot's pair, a11ign/a11ign#4053, and the daily confidence reading's pair, a11ign/a11ign#4885, the GitHub event receiver's service, agent-org#980, and the daily manager-spend reading's pair and script, agent-org#912, included), so an emptiness below is not a scan of nothing, the `claude` seat wrapper, a11ign#4823");
+  assert.equal(files.length, 3 + 2 + 36, "POSITIVE CONTROL: forty-one files are scanned (three sources, the wrapper's template and its renderer, which are the GitHub plugin's since A11-160, thirty-six host entries --the event receiver's funnel, a11ign/a11ign#5197, the after-crash unit's service, a11ign#5127, the trace store's clock pair, a11ign/agent-org#498, the two the shadow window added, #2867, the two chairman-watch templates, #2901, the listener's, #2907, the agent-org launcher, #3532, the weekly report's pair and script, a11ign/a11ign#3627, the trace pages' pair, a11ign/a11ign#3515, the trace pages' server, a11ign/agent-org#1159, the /tmp janitor's pair and tmpfiles rule, a11ign/a11ign#3849, the OTel receiver's service, a11ign/a11ign#4071, and the kernel reboot's pair, a11ign/a11ign#4053, and the daily confidence reading's pair, a11ign/a11ign#4885, the GitHub event receiver's service, agent-org#980, and the daily manager-spend reading's pair and script, agent-org#912, included), so an emptiness below is not a scan of nothing, the `claude` seat wrapper, a11ign#4823");
   const offenders = files.filter((file) => HOME_LITERAL.test(readFileSync(file, "utf8")));
   assert.deepEqual(offenders, [], "each of these names a host path the tool must read from host.json instead");
 });
@@ -97,12 +103,7 @@ test("#2620: a host.json's values are what `templateValues` hands the templates,
   assert.deepEqual(templateValues(host, units), {
     home: "/home/agent", binDir: "/home/agent/.local/bin", checkout: "/home/agent/repos/a11y-witness",
     workersDir: "/home/agent/workers", leadsDir: "/home/agent/leads", prefix: "a11ign-",
-    // #4900: the four values the wrapper's app block renders from; a host that declares no `github-apps` role has `appRoles` empty and the block does nothing.
-    appRoles: "", appDeclared: "case \"$1\" in\n    *) return 1 ;;\n  esac", appTokenDir: "/home/agent/.cache/a11ign/app-tokens",
-    appTokenScript: "/home/agent/repos/a11y-witness/packages/agent-org/src/app-token.ts",
-    // agent-org#1666: the flag reader the wrapper runs, and the canary state it reads (the recorded host declares no `stateDir`, so the state sits under `.cache/a11ign`).
-    authorFlagScript: "/home/agent/repos/a11y-witness/packages/agent-org/src/gh-author-fallback.ts",
-    canaryStateFile: "/home/agent/.cache/a11ign/machinery-canary.json",
+    // A11-160: the routing wrapper's own values (#4900's app block, #1666's flag reader and canary state) are rendered by the GitHub plugin, which holds the wrapper: `plugins/github/wrapper.ts`.
   });
   assert.deepEqual(host.gh.leadsWorkspaces.map((w) => w.id), ["w6", "w2", "w5"], "the leads list is the file it replaced");
 });
@@ -173,7 +174,11 @@ test("#2620: the three tool units, the wrapper and the leads list render to TODA
   for (const [unit, digest] of Object.entries(TODAYS_TEXT)) {
     assert.equal(sha256(shippedUnitText(unit, rendering) ?? ""), digest, `${unit} is not byte-identical to the unit the host runs`);
   }
-  assert.equal(sha256(shippedScriptText("gh", rendering) ?? ""), TODAYS_GH_WRAPPER, "the wrapper installed at ~/.local/bin/gh");
+  // A11-160: the wrapper is the GitHub plugin's, which renders the same template byte for byte but for the two programs it runs, which moved with it into `plugins/github/`: the minter and the authoring switch's reader.
+  const rendered = githubWrapper().file(wrapperInputsOf(plainHost as never)).expected ?? "";
+  assert.ok(rendered.includes("/packages/agent-org/plugins/github/app-token.ts") && rendered.includes("/packages/agent-org/plugins/github/author-flag.ts"), "POSITIVE CONTROL: the two moved programs are named where they now are");
+  const asItWas = rendered.replace("/packages/agent-org/plugins/github/app-token.ts", "/packages/agent-org/src/app-token.ts").replace("/packages/agent-org/plugins/github/author-flag.ts", "/packages/agent-org/src/gh-author-fallback.ts");
+  assert.equal(sha256(asItWas), TODAYS_GH_WRAPPER, "the wrapper installed at ~/.local/bin/gh, with its two programs at the paths they had");
   assert.equal(sha256(leadsListText(rendering)), TODAYS_LEADS_LIST, "the leads list installed at ~/leads/workspaces.txt");
 });
 
@@ -226,11 +231,11 @@ testEach("#2620: the tool's 35 entries are classified -- the original 8, the tra
   assert.equal(inTool.filter(c.matches).length, c.count, c.message);
 });
 
-test("#2620: the tool's directory holds the original eight beside those classified above, and the host-data entry is host.json's, not a file", () => {
+test("#2620: the tool's directory holds the original eight (seven since the `gh` wrapper moved to plugins/github, A11-160) beside those classified above, and the host-data entry is host.json's, not a file", () => {
   // (#3233) The row also counted eight entries in the PROJECT's `.agent-org/units/` and asserted them equal to a11ign's `units.own`: that is a11ign's tree, and moved there.
   const inTool = readdirSync(SHIPPED_DIR).sort();
   const hostData = Object.keys(HOST_DATA_ENTRIES);
-  assert.equal(inTool.length - CLASSIFIED_BEYOND_THE_EIGHT.reduce((total, c) => total + inTool.filter(c.matches).length, 0), 8, "POSITIVE CONTROL: eight entries stay in the tool's host directory");
+  assert.equal(inTool.length - CLASSIFIED_BEYOND_THE_EIGHT.reduce((total, c) => total + inTool.filter(c.matches).length, 0), 7, "POSITIVE CONTROL: seven entries stay in the tool's host directory, the eighth, the `gh` wrapper, being the GitHub plugin's since A11-160");
   assert.equal(hostData.length, 1, "POSITIVE CONTROL: one is host data");
   assert.deepEqual(inTool, [...TOOL_ENTRIES].sort(), "the tool's directory holds exactly what the tool records");
   for (const name of hostData) assert.ok(!existsSync(join(SHIPPED_DIR, name)), `${name} is host.json's now, not a file`);
@@ -269,7 +274,7 @@ test("#2620: an entry classified nowhere is REFUSED, in either directory, and th
 test("#2620: `host:check` carries the refusal -- an unclassified entry is a FINDING, and the clean fixture has none", () => {
   const { root, tool, deps } = classifiedFixture();
   try {
-    const asked = { ...deps, systemctl: (() => "LANG=C\n") as never, installedDir: join(root, "installed"), git: (() => "") as never };
+    const asked = { ...deps, systemctl: (() => "LANG=C\n") as never, installedDir: join(root, "installed"), git: (() => "") as never, wrapper: githubWrapper() };
     const unclassified = () => hostUnitDrift(asked).filter((f: { problem: string }) => f.problem === "UNCLASSIFIED ENTRY");
     assert.deepEqual(unclassified(), []);
     writeFileSync(join(tool, "stray.service"), "");
@@ -296,9 +301,10 @@ test("#2620: a fixture project's paths and prefix change the units, the wrapper 
   assert.match(shippedUnitText("acme-work-tick.timer", ACME) ?? "", /^Requires=acme-work-tick\.service$/m);
   assert.deepEqual(shippedUnits(SHIPPED_DIR, { projectUnitsDir: null, prefix: "acme-", declaredKeys: new Set() }).filter((u) => u.endsWith(".service")),
     ["acme-board-report.service", "acme-confidence-post.service", "acme-crash-recover.service", "acme-kernel-reboot.service", "acme-manager-spend-post.service", "acme-otel-receiver.service", "acme-shadow-window.service", "acme-tmp-prune.service", "acme-trace-ingest.service", "acme-trace-publish-serve.service", "acme-trace-publish.service", "acme-trace-weekly.service", "acme-work-tick.service", "acme-worktree-prune.service"], "the prefix names the tool's units");
-  for (const text of [work, shippedScriptText("gh", ACME) ?? ""]) assert.doesNotMatch(text, /\/home\/agent/, "and none of a11ign's host survives");
-  assert.match(shippedScriptText("gh", ACME) ?? "", /A11Y_GH_REAL:-\/srv\/ci\/bin\/gh-real/);
-  const files = ownedIdentityFiles(ACME);
+  const acmeWrapper = githubWrapper().file(wrapperInputsOf(ACME_HOST)).expected ?? "";
+  for (const text of [work, acmeWrapper]) assert.doesNotMatch(text, /\/home\/agent/, "and none of a11ign's host survives");
+  assert.match(acmeWrapper, /A11Y_GH_REAL:-\/srv\/ci\/bin\/gh-real/);
+  const files = ownedIdentityFiles({ ...ACME, wrapper: githubWrapper() });
   assert.deepEqual(files.map((f) => f.target), ["/srv/ci/bin/gh", "/srv/ci/.opencode/bin/claude", "/srv/ci/leads/workspaces.txt", "/srv/ci/workers/README.md"]);
   assert.equal(files[2].expected, "# acme's leads\n# x1 lead\nx1\n");
   assert.equal(leadsWorkspacesText(ACME_HOST), files[2].expected);

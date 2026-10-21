@@ -15,8 +15,20 @@ import { PROJECT_ROOT } from "./packaging/host-units-project.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
 import { APP_ROLE_SILENT, APP_ROLE_SILENT_MS, appRoleSilent, appRoleSilentEvents, type LedgerSource } from "./app-role-silent.ts";
 import { parseHostConfig } from "./host-config.ts";
-import { hostIdentityInstall, rerenderGhWrapper, tickAppRoleSilent, tickRerenderGhWrapper, wrapperIdentity } from "./host-units/gh-wrapper-and-notes.ts";
-import { shippedScriptText } from "./host-units/shipped-unit-texts-and-declarations.ts";
+import * as core from "./host-units/gh-wrapper-and-notes.ts";
+import type { CodeHostWrapper } from "./plugins/contracts/code-host.ts";
+import { wrapperInputsOf } from "./plugins/host-place.ts";
+import { createWrapper, wrapperIdentity } from "../plugins/github/wrapper.ts";
+
+/** The GitHub plugin's wrapper, its template read from `template` (the shipped one unless a test says another), so what the tick re-renders is what the plugin renders (A11-160: the renderer is the plugin's). */
+const githubWrapper = (read: (path: string) => string = (path) => readFileSync(path, "utf8")): CodeHostWrapper =>
+  createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: read, env: {} });
+const { tickAppRoleSilent } = core;
+const hostIdentityInstall = (deps: Parameters<typeof core.hostIdentityInstall>[0] = {}) => core.hostIdentityInstall({ wrapper: githubWrapper(), ...deps });
+const rerenderGhWrapper = (deps: Parameters<typeof core.rerenderGhWrapper>[0] = {}) => core.rerenderGhWrapper({ wrapper: githubWrapper(), ...deps });
+const tickRerenderGhWrapper = (deps: Parameters<typeof core.tickRerenderGhWrapper>[0] = {}) => core.tickRerenderGhWrapper({ wrapper: githubWrapper(), ...deps });
+/** The wrapper as the plugin renders it for a host. */
+const wrapperText = (host: ReturnType<typeof parseHostConfig>) => githubWrapper().file(wrapperInputsOf(host)).expected;
 
 // ---- the detector ---------------------------------------------------------------------------------------------------------------
 
@@ -26,7 +38,7 @@ const MIN = 60_000;
 const WORKER_LOGIN = "a11ign-ai-workers";
 const LEADS_LOGIN = "a11ign-ai-leads";
 
-/** One ledger line as `host/gh` writes it: time, account, resource, cost, status, command, workspace, caller, session. */
+/** One ledger line as `plugins/github/wrapper/gh` writes it: time, account, resource, cost, status, command, workspace, caller, session. */
 const line = (at: string, account: string, { workspace = "w9", resource = "core", command = "pr list", caller = "node work-gate.ts" } = {}) =>
   [at, account, resource, "", "0", command, workspace, caller, "-"].join("\t");
 const workers = (...lines: string[]): LedgerSource => ({ role: "workers", lines });
@@ -202,7 +214,7 @@ function installed(roles: string[]) {
   mkdirSync(join(root, "workers"), { recursive: true });
   mkdirSync(join(root, "leads"), { recursive: true });
   const target = join(root, "bin", "gh");
-  writeFileSync(target, shippedScriptText("gh", { host: host(roles) }) as string, { mode: 0o755 });
+  writeFileSync(target, wrapperText(host(roles)) as string, { mode: 0o755 });
   const sentinels = { [join(root, "workers", "README.md")]: "a README somebody edited\n", [join(root, "leads", "workspaces.txt")]: "w1\n", [join(root, "bin", "claude")]: "#!/bin/sh\n" };
   for (const [path, text] of Object.entries(sentinels)) writeFileSync(path, text);
   const untouched = () => Object.entries(sentinels).every(([path, text]) => readFileSync(path, "utf8") === text);
@@ -217,7 +229,7 @@ test("#790 POSITIVE: a wrapper that lacks `scheduler)` while host.json declares 
   const written = rerenderGhWrapper({ host: h.host(["scheduler"]) });
   assert.equal(written, h.target);
   assert.equal(armOf(h.text(), "scheduler"), true);
-  assert.equal(h.text(), shippedScriptText("gh", { host: h.host(["scheduler"]) }), "byte-identical to what `host:install` renders for this file");
+  assert.equal(h.text(), wrapperText(h.host(["scheduler"])), "byte-identical to what `host:install` renders for this file");
   assert.equal(statSync(h.target).mode & 0o777, 0o755);
   assert.deepEqual(readdirSync(join(h.root, "bin")).sort(), ["claude", "gh"], "no temp file left, and no other file written");
   assert.equal(h.untouched(), true, "every other owned file is as it was");
@@ -239,6 +251,19 @@ test("#790 NEGATIVE: a wrapper that differs in a line that is not identity is le
   assert.equal(h.text(), edited);
   assert.equal(rerenderGhWrapper({ host: h.host(["workers", "managers"]) }), h.target, "but a declared role it lacks is mended, and the hand edit goes with the rewrite, as with host:install");
   assert.doesNotMatch(h.text(), /# hand-edited/);
+});
+
+test("A11-160: a wrapper whose identity agrees but whose programs are where an older tool kept them is re-rendered by the tick, and one that declares no App is not", () => {
+  const h = installed(["workers"]);
+  const old = h.text().replace(/\/plugins\/github\/app-token\.ts/, "/src/app-token.ts").replace(/\/plugins\/github\/author-flag\.ts/, "/src/gh-author-fallback.ts");
+  assert.notEqual(old, h.text(), "the control: the copy names the old programs");
+  writeFileSync(h.target, old);
+  assert.equal(rerenderGhWrapper({ host: h.host(["workers"]) }), h.target, "the minter the copy runs is gone, so every mint would fail until somebody re-ran the installer");
+  assert.equal(h.text(), wrapperText(h.host(["workers"])));
+  const none = installed([]);
+  const oldNone = none.text().replace(/\/plugins\/github\/app-token\.ts/, "/src/app-token.ts");
+  writeFileSync(none.target, oldNone);
+  assert.equal(rerenderGhWrapper({ host: none.host([]) }), null, "a host with no App runs neither program, so there is nothing to mend");
 });
 
 test("#790 + A11-84: SWITCHING A ROLE TO `user-accounts` AND BACK: the tick REFUSES to drop the app, and `host:install --allow-no-apps` takes the switch (the scratch host.json is the test's, never the live one)", () => {
@@ -264,9 +289,9 @@ test("#790 NOT WRITTEN: no wrapper installed, an unreadable shipped copy, and a 
   const missing = tmpDir("app-role-silent-790-nowrapper-");
   assert.equal(rerenderGhWrapper({ host: hostOf(missing, ["workers"]), write: noWrite, rename: noWrite }), null);
   assert.equal(existsSync(join(missing, "bin", "gh")), false, "a tick does not create the file every agent's PATH resolves");
-  const emptyShipped = tmpDir("app-role-silent-790-noshipped-");
+  const unreadable = githubWrapper(() => { throw new Error("ENOENT: the plugin's shipped copy"); });
   const before = h.text();
-  assert.equal(rerenderGhWrapper({ host: h.host(["workers"]), shippedDir: emptyShipped, write: noWrite, rename: noWrite }), null);
+  assert.equal(rerenderGhWrapper({ host: h.host(["workers"]), wrapper: unreadable, write: noWrite, rename: noWrite }), null);
   assert.equal(h.text(), before, "an empty gh on every PATH is worse than a stale one");
   writeFileSync(h.target, "#!/bin/sh\nexec /usr/bin/gh \"$@\"\n");
   assert.equal(wrapperIdentity(h.text()), null);
@@ -281,9 +306,8 @@ test("#790 tick: the re-render is a NOTE, and a template that will not render is
   assert.deepEqual(notes.map((n) => [n.unit, n.problem]), [[h.target, "RE-RENDERED -- ITS IDENTITY DID NOT MATCH host.json"]]);
   assert.match(said.join(""), /^re-rendered .*\/bin\/gh/);
   assert.deepEqual(tickRerenderGhWrapper({ host: h.host(["managers"]), err: (l) => said.push(l) }), [], "the next tick has nothing to say");
-  const broken = tmpDir("app-role-silent-790-broken-");
-  writeFileSync(join(broken, "gh"), "#!/bin/sh\n@@noSuchValue@@\n");
+  const broken = githubWrapper(() => "#!/bin/sh\n@@noSuchValue@@\n");
   said.length = 0;
-  assert.deepEqual(tickRerenderGhWrapper({ host: h.host(["workers"]), shippedDir: broken, err: (l) => said.push(l) }), []);
+  assert.deepEqual(tickRerenderGhWrapper({ host: h.host(["workers"]), wrapper: broken, err: (l) => said.push(l) }), []);
   assert.match(said.join(""), /could not re-render the gh wrapper: .*noSuchValue/);
 });

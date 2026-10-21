@@ -1,9 +1,9 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, renameSync, chmodSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { readFileSync, mkdirSync, writeFileSync, renameSync, chmodSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AppIdentity } from "../app-token.ts";
+import type { CodeHostWrapper } from "../plugins/contracts/code-host.ts";
+import { wrapperInputsOf } from "../plugins/host-place.ts";
 import { reviewerDoorPath } from "../reviewer-door-path.ts";
 import { agreementReport } from "../lib/tool-version-agreement.ts";
 import { appRoleSilent, appRoleSilentEvents, type LedgerSource, type MintFailure, type SilentRole } from "../app-role-silent.ts";
@@ -11,8 +11,8 @@ import { FAILURE_LEDGER_FILE, recordFailures } from "../failure-ledger.ts";
 import { readAgents, herdrRun } from "../herdr-agents.ts";
 import { persistentRoles } from "../project-roles.ts";
 import { kernelNotes } from "../host-kernel.ts";
-import { GITHUB_ROLES, type GithubRole, HostConfigRefusal, homeHostConfig, roleIdentity, stateEntryPath } from "../host-config.ts";
-import { compileCacheNotes, endedOnPurpose, ghWrapperFile, hostIdentityNotes, ownedIdentityFiles, readToolVersionAgreement, seatWrapperNotes, type Finding, unitState } from "./host-drift-findings-and-notes.ts";
+import { type AppIdentity, GITHUB_ROLES, type GithubRole, HostConfigRefusal, homeHostConfig, roleIdentity, stateEntryPath } from "../host-config.ts";
+import { compileCacheNotes, endedOnPurpose, hostIdentityNotes, ownedIdentityFiles, readToolVersionAgreement, requiredWrapper, seatWrapperNotes, type Finding, unitState, wrapperFile, wrapperOf } from "./host-drift-findings-and-notes.ts";
 import { shippedUnitNames, textOf, type HostConfig } from "./shipped-unit-texts-and-declarations.ts";
 
 /** The reading when no runner is behind: reported, never a failure, and never silent (an unreadable runner is named). @param {ReturnType<typeof readToolVersionAgreement>} reading @returns {Finding[]} */
@@ -52,10 +52,11 @@ export function hostIdentityInstall({ mkdir = mkdirSync, write = writeFileSync, 
         mkdir?: typeof mkdirSync; write?: typeof writeFileSync;
         chmod?: typeof chmodSync; rename?: typeof renameSync; out?: (line: string) => void; allowNoApps?: boolean;
     } = {}): string[] {
-  const gh = ghWrapperFile(where).target;
+  const wrapper = wrapperOf(where);
+  const gh = wrapper === null ? null : wrapperFile(wrapper, where).target;
   return ownedIdentityFiles(where).map(({ label, target, mode, expected }) => {
     if (expected === null) throw new Error(`cannot install ${label}: the shipped copy could not be read`);
-    if (target === gh) writeGhWrapper({ target, mode, text: expected, host: where.host ?? homeHostConfig(), allowNoApps, mkdir, write, chmod, rename, read: where.read });
+    if (wrapper !== null && target === gh) writeGhWrapper({ target, mode, text: expected, host: where.host ?? homeHostConfig(), allowNoApps, mkdir, write, chmod, rename, read: where.read, wrapper });
     else writeOwnedFile({ target, mode, text: expected, mkdir, write, chmod, rename });
     out(`installed ${target}\n`);
     return target;
@@ -77,182 +78,70 @@ export function writeOwnedFile({ target, mode, text, mkdir, write, chmod, rename
 // INCIDENT 2026-10-17: from 19:39Z to 20:59Z `~/.local/bin/gh` held a rendering whose App role table was empty, so no App token was minted for any role and every
 // call went out as the account or unauthenticated (agent-org#1738's two verdicts did not post). The rendering came from a host declaration that named no App, and the
 // tick wrote it over a wrapper that named four, because `rerenderGhWrapper` rewrites any identity block that differs. So every path that puts this file on the host
-// goes through `writeGhWrapper`, which refuses, writes nothing and says why, when the text it would write holds no App while the host declares one, when it would
-// drop the Apps the installed copy names (unless `host:install --allow-no-apps` says the host really dropped them), or when it runs its minter from a temporary
-// directory, which is a scratch checkout's. A test run may not write the real home's bin directory at all (`AGENT_ORG_UNDER_TEST`, set by the rstest config).
+// goes through `writeGhWrapper`, which asks the code host plugin's wrapper whether the write may happen (`refusal`: A11-160 moved the rules there, with the text), and
+// refuses, writes nothing and says why. A test run may not write the real home's bin directory at all (`AGENT_ORG_UNDER_TEST`, set by the rstest config).
 
 /** The Apps a host declares, as the roles `GITHUB_ROLES` names that are `github-apps`. */
 function appRolesOf(host: Readonly<HostConfig>): GithubRole[] {
   return GITHUB_ROLES.filter((role) => roleIdentity(host, role).mode === "github-apps");
 }
 
-/** The default of `APP_ROLES` in a rendered wrapper, the one place a role table is written as a list. */
-const WRAPPER_ROLE_DEFAULT = /^APP_ROLES=\$\{A11Y_APP_ROLES-([^}\n]*)\}$/m;
-/** An arm of `app_declared()`: one role, one app. A table with no arm mints nothing, whatever `APP_ROLES` says. */
-const WRAPPER_APP_ARM = /^ {4}[a-z]+\) app_id=/gm;
-/** The minter's path, as the rendered wrapper names it: the one default the mint reads. */
-const WRAPPER_MINT_SCRIPT = /^  app_script=\$\{A11Y_APP_TOKEN_SCRIPT:-([^}\n]+)\}$/m;
-/** The defaults of the two scripts a rendered wrapper RUNS: the App minter and the authoring switch's flag script (`${TMPDIR:-/tmp}` is a scratch file, not a script). */
-const WRAPPER_SCRIPT_DEFAULTS = /\$\{(?:A11Y_APP_TOKEN_SCRIPT|A11Y_GH_FLAG_SCRIPT):-([^}\n]+)\}/g;
-
 /**
- * The roles a rendered or installed wrapper routes to an App: `[]` for an empty table, and `null` for text with no role table at all (a copy from before #4900).
- * @param {string} text @returns {string[] | null}
- */
-export function wrapperRoles(text: string): string[] | null {
-  const roles = WRAPPER_ROLE_DEFAULT.exec(text)?.[1];
-  if (roles === undefined) return null;
-  return [...text.matchAll(WRAPPER_APP_ARM)].length === 0 ? [] : roles.split(" ").filter((role) => role !== "");
-}
-
-/**
- * The first path a rendered wrapper defaults into `/tmp`, or `null`: the scratch-checkout wrapper the incident's copy was (`/tmp/claude-1000/...`). It is the system
- * `/tmp` and not `os.tmpdir()`, because a test run's own temporary directory is a fixture's, and every such fixture renders from one.
- */
-function temporaryDefault(text: string): string | null {
-  const temp = resolve("/tmp");
-  for (const [, value] of text.matchAll(WRAPPER_SCRIPT_DEFAULTS)) {
-    if (value === temp || value.startsWith(`${temp}/`)) return value;
-  }
-  return null;
-}
-
-/** The real home's `.local/bin`, found by the account's home and NOT by `$HOME`, which a test overrides (the incident's `binDir` came in through a copied host file). */
-const realBinDirectory = () => join(userInfo().homedir, ".local", "bin");
-
-/**
- * THE ONE WRITER OF `gh`: write the routing wrapper `text` to `target`, ATOMICALLY, or refuse and write nothing. Refuses, each with its reason, when
- *   1. the text names no App while `host` declares `github-apps` roles (the render is broken, or the declaration is not the host's);
- *   2. the text names no App and the installed copy names some, unless `allowNoApps` (the downgrade: the incident's case, which `host:install --allow-no-apps` takes);
- *   3. (production, not a test run) the text runs its minter from a temporary directory;
- *   4. `under` (a test run) and the target is inside the real home's bin directory.
- * A refusal is a `HostConfigRefusal` and never a partial write. The tick turns it into a note, and the instance's start-up and `doctor` say it.
- * @param {{ target: string, mode: number, text: string, host: Readonly<HostConfig>, allowNoApps?: boolean, under?: boolean, realBin?: string,
+ * THE ONE WRITER OF `gh`: write the routing wrapper `text` to `target`, ATOMICALLY, or refuse and write nothing. The wrapper of the activated code host says whether it may (`refusal`: the text names no App
+ * while `host` declares `github-apps` roles, would drop the Apps the installed copy names unless `allowNoApps`, runs its minter from a temporary directory, or, in a test run, is inside the real home's bin
+ * directory). A refusal is a `HostConfigRefusal` and never a partial write. The tick turns it into a note, and the instance's start-up and `doctor` say it.
+ * @param {{ target: string, mode: number, text: string, host: Readonly<HostConfig>, allowNoApps?: boolean, under?: boolean, realBin?: string, wrapper?: CodeHostWrapper,
  *           mkdir?: typeof mkdirSync, write?: typeof writeFileSync, chmod?: typeof chmodSync, rename?: typeof renameSync, read?: typeof readFileSync }} request
  */
-export function writeGhWrapper({ target, mode, text, host, allowNoApps = false, under = process.env.AGENT_ORG_UNDER_TEST === "1", realBin = realBinDirectory(),
+export function writeGhWrapper({ target, mode, text, host, allowNoApps = false, under, realBin, wrapper = requiredWrapper(),
   mkdir = mkdirSync, write = writeFileSync, chmod = chmodSync, rename = renameSync, read = readFileSync }: {
-    target: string; mode: number; text: string; host: Readonly<HostConfig>; allowNoApps?: boolean; under?: boolean; realBin?: string;
+    target: string; mode: number; text: string; host: Readonly<HostConfig>; allowNoApps?: boolean; under?: boolean; realBin?: string; wrapper?: CodeHostWrapper;
     mkdir?: typeof mkdirSync; write?: typeof writeFileSync; chmod?: typeof chmodSync; rename?: typeof renameSync; read?: typeof readFileSync;
   }): void {
-  const refuse = (why: string): never => {
-    throw new HostConfigRefusal("gh", `${why}, so ${target} is not written`, target);
-  };
-  const inside = relative(resolve(realBin), resolve(target));
-  const isInside = under && inside !== "" && !inside.startsWith("..") && !isAbsolute(inside);
-  if (isInside) {
-    refuse("a test run may not write the real home's bin directory: a test takes its bin directory from a fixture");
-  }
-  // Production only: a test run's fixtures are checkouts in the runner's own temporary directory, so under a test run the real-bin tripwire above is the guard,
-  // and it refuses the one write that matters (the machine's own wrapper).
-  const scratch = temporaryDefault(text);
-  if (!under && scratch !== null) refuse(`the wrapper runs ${scratch}, which is in a temporary directory, so it was rendered from a scratch checkout`);
-  const rendered = wrapperRoles(text) ?? refuse("the rendered text has no App role table to check");
-  const declared = appRolesOf(host);
-  if (rendered.length === 0 && declared.length > 0) {
-    refuse(`host.json declares github-apps roles (${declared.join(", ")}), but the rendered wrapper names none`);
-  }
-  if (rendered.length === 0 && !allowNoApps) {
-    const installed = textOf(target, read);
-    const named = installed === null ? [] : wrapperRoles(installed) ?? [];
-    if (named.length > 0) {
-      refuse(`the rendered wrapper names no App role and the installed one names ${named.join(", ")}: that drops their identity. `
-        + "`host:install --allow-no-apps` writes it, for a host that really dropped its Apps");
-    }
-  }
+  const refusal = wrapper.refusal({ inputs: wrapperInputsOf(host), target, text, installed: textOf(target, read), allowNoApps, ...(under === undefined ? {} : { under }), ...(realBin === undefined ? {} : { realBin }) });
+  if (refusal !== null) throw new HostConfigRefusal("gh", `${refusal}, so ${target} is not written`, target);
   writeOwnedFile({ target, mode, text, mkdir, write, chmod, rename });
 }
 
 /**
  * What is wrong with the installed `gh` wrapper, said as a reason, or `null` when it is the one `host.json` declares: no file, a file that is not the shipped
  * rendering of the declaration, or a table that names no App while the host declares one. The reason says which, so `doctor` and the start-up can name the fix.
+ * A code host with no wrapper has nothing to diverge from.
  * @param {Parameters<typeof ownedIdentityFiles>[0] & { read?: typeof readFileSync }} [deps] @returns {string | null}
  */
 export function ghWrapperDivergence(deps: Parameters<typeof ownedIdentityFiles>[0] & { read?: typeof readFileSync } = {}): string | null {
+  const wrapper = wrapperOf(deps);
+  if (wrapper === null) return null;
   const host = deps.host ?? homeHostConfig();
   const { read = readFileSync } = deps;
-  const { target, expected } = ghWrapperFile({ ...deps, host });
-  if (expected === null) return "the repository's gh wrapper could not be read, so this host cannot be compared to it";
-  const installed = textOf(target, read);
-  if (installed === null) return `there is no gh wrapper at ${target}`;
-  if (installed === expected) return null;
-  const declared = appRolesOf(host);
-  const named = wrapperRoles(installed) ?? [];
-  if (named.length === 0 && declared.length > 0) {
-    return `${target} names no App role, but host.json declares ${declared.join(", ")}, so no App token is minted for any of them`;
-  }
-  return wrapperIdentity(installed) === wrapperIdentity(expected)
-    ? `${target} is not the wrapper this repository renders from host.json, though its App roles agree`
-    : `${target} names ${named.join(", ") || "no App"}, and host.json declares ${declared.join(", ") || "no App"}`;
-}
-
-/** What `mintFailure` runs: the wrapper's minter with the declared app and a token directory of its own, and what it printed. */
-export type MintRun = (script: string, role: string, env: Record<string, string>) => { status: number | null; stdout: string; stderr: string };
-
-/** The default `MintRun`: `node` runs the minter, as `host/gh` runs it, with no stdin, so the probe never reads a caller's. */
-const runMinter: MintRun = (script, role, env) => {
-  const result = spawnSync(process.env.A11Y_APP_NODE ?? "node", [script, role], { encoding: "utf8", timeout: 30_000, input: "", env: { ...process.env, ...env } });
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr || (result.error?.message ?? "") };
-};
-
-/**
- * Why `role`'s token mint fails, or `null` when it mints (or the host declares no App for it). It runs the minter the INSTALLED wrapper would run, with the declared
- * app, into a token directory of its own, so the probe never reads or writes the cache the wrapper reads.
- * @param {GithubRole} role @param {{ host?: Readonly<HostConfig>, run?: MintRun }} [deps] @returns {string | null}
- */
-export function mintFailure(role: GithubRole, { host = homeHostConfig(), run = runMinter }: { host?: Readonly<HostConfig>; run?: MintRun } = {}): string | null {
-  const identity = roleIdentity(host, role);
-  if (identity.mode !== "github-apps") return null;
-  const script = WRAPPER_MINT_SCRIPT.exec(ghWrapperFile({ host }).expected ?? "")?.[1];
-  if (script === undefined) return "the wrapper names no minter, so no App token can be minted";
-  const dir = mkdtempSync(join(tmpdir(), "gh-mint-probe-"));
-  try {
-    const result = run(script, role, { A11Y_APP_ID: identity.appId, A11Y_APP_KEY_PATH: identity.keyPath,
-      A11Y_APP_INSTALLATION_ID: identity.installationId ?? "", A11Y_APP_TOKEN_DIR: dir });
-    const token = result.stdout.trim();
-    if (result.status === 0 && token !== "" && !/\s/.test(token)) return null;
-    return result.stderr.split("\n").find((line) => line.trim() !== "") ?? `the minter exited ${result.status}`;
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-/**
- * THE DETECTOR, as `doctor` and the instance's start-up read it: the installed wrapper's divergence and each declared role's mint. A host file that cannot be read
- * throws, which the caller says as "cannot be checked".
- * @param {Parameters<typeof ghWrapperDivergence>[0] & { run?: MintRun }} [deps]
- * @returns {{ divergence: string | null, mints: { role: string, failure: string | null }[] }}
- */
-export function ghWrapperReport(deps: Parameters<typeof ghWrapperDivergence>[0] & { run?: MintRun } = {}) {
-  const host = deps.host ?? homeHostConfig();
-  return {
-    divergence: ghWrapperDivergence({ ...deps, host }),
-    mints: appRolesOf(host).map((role) => ({ role, failure: mintFailure(role, { host, run: deps.run }) })),
-  };
+  const { target } = wrapperFile(wrapper, { ...deps, host });
+  return wrapper.divergence(wrapperInputsOf(host), { target, installed: textOf(target, read) });
 }
 
 /**
  * THE INSTANCE'S START-UP (A11-84): the detector's reading, LOUDLY (an `ERROR` line), then a re-render of the whole wrapper through `writeGhWrapper` when it has
  * diverged, logged as a re-render. A refused re-render is logged and returned, and the instance stays up: it must never run silent, and it need not die for it.
  * Every declared role whose mint fails is logged with its reason, on every start.
- * @param {Parameters<typeof ghWrapperReport>[0] & { err?: (line: string) => void }} [deps]
+ * @param {Parameters<typeof ghWrapperDivergence>[0] & { err?: (line: string) => void }} [deps]
  * @returns {{ divergence: string | null, rerendered: string | null, refused: string | null, mints: { role: string, failure: string | null }[] }}
  */
-export function startupGhWrapper({ err = (l) => process.stderr.write(l), ...deps }: Parameters<typeof ghWrapperReport>[0] & { err?: (line: string) => void } = {}) {
+export function startupGhWrapper({ err = (l) => process.stderr.write(l), ...deps }: Parameters<typeof ghWrapperDivergence>[0] & { err?: (line: string) => void } = {}) {
+  const wrapper = wrapperOf(deps);
+  if (wrapper === null) return { divergence: null, rerendered: null, refused: null, mints: [] };
   const host = deps.host ?? homeHostConfig();
-  const divergence = ghWrapperDivergence({ ...deps, host });
+  const divergence = ghWrapperDivergence({ ...deps, host, wrapper });
   let rerendered: string | null = null;
   let refused: string | null = null;
   if (divergence !== null) {
     err(`ERROR gh wrapper: ${divergence}\n`);
-    const { target, mode, expected } = ghWrapperFile({ ...deps, host });
+    const { target, mode, expected } = wrapperFile(wrapper, { ...deps, host });
     // A start never CREATES the wrapper: a missing file is what `host:install` is for, as the tick has always said (`rerenderGhWrapper`).
     if (textOf(target, deps.read ?? readFileSync) === null) {
       refused = `there is no wrapper at ${target}, and a start does not create the file every agent's PATH resolves`;
     } else {
       try {
         if (expected === null) throw new Error("the shipped copy could not be read");
-        writeGhWrapper({ target, mode, text: expected, host, read: deps.read });
+        writeGhWrapper({ target, mode, text: expected, host, read: deps.read, wrapper });
         rerendered = target;
         err(`re-rendered ${target} from host.json: ${divergence}\n`);
       } catch (cause) {
@@ -261,7 +150,8 @@ export function startupGhWrapper({ err = (l) => process.stderr.write(l), ...deps
     }
     if (refused !== null) err(`ERROR gh wrapper NOT re-rendered: ${refused}. The instance starts anyway, and no App token is minted until \`agent-org host:install\` is run.\n`);
   }
-  const mints = appRolesOf(host).map((role) => ({ role, failure: mintFailure(role, { host, run: deps.run }) }));
+  const inputs = wrapperInputsOf(host);
+  const mints = appRolesOf(host).map((role) => ({ role, failure: wrapper.mintFailure(inputs, role) }));
   for (const { role, failure } of mints) {
     if (failure !== null) err(`ERROR app role ${role}: its token mint failed: ${failure}\n`);
   }
@@ -275,21 +165,6 @@ export function startupGhWrapper({ err = (l) => process.stderr.write(l), ...deps
 // app role that is not in effect is the one drift whose cost is silent and immediate (the workers' gate sees through the app's pool or it does not), so it is the one
 // drift the tick mends itself, and ONLY that file: the unit files, the other owned files and every service are left alone, so a tick never restarts anything for this.
 
-/** The two places the wrapper carries `github.identity`: the roles line and the `app_declared()` body (`host/gh`, rendered from `appRoles` and `appDeclared`). */
-const WRAPPER_APP_ROLES = /^APP_ROLES=.*$/m;
-const WRAPPER_APP_DECLARED = /^app_declared\(\) \{\n[\s\S]*?\n\}$/m;
-
-/**
- * The identity a rendered wrapper carries, as the text of those two places, or `null` for a wrapper that has neither (a copy from before #4900). Compared as TEXT so the comparison and the
- * render cannot disagree: both are the one template filled by `appTokenValues`.
- * @param {string} text @returns {string | null}
- */
-export function wrapperIdentity(text: string): string | null {
-  const roles = WRAPPER_APP_ROLES.exec(text)?.[0];
-  const declared = WRAPPER_APP_DECLARED.exec(text)?.[0];
-  return roles === undefined || declared === undefined ? null : `${roles}\n${declared}`;
-}
-
 /**
  * Re-render `~/.local/bin/gh` when its identity block is not the one `host.json` declares, and say whether it did. The WHOLE wrapper is written, as `host:install` writes it (a half-patched
  * file is a wrapper nobody reviewed), but only when the identity block differs: any other divergence is still `host:check`'s to report and `host:install`'s to fix, so a release
@@ -297,24 +172,22 @@ export function wrapperIdentity(text: string): string | null {
  *
  * NOT WRITTEN, each for its own reason: no wrapper installed (that is `NOT INSTALLED`, and a tick has no business creating the file every agent's PATH resolves); a shipped copy or a
  * template that cannot be rendered (`hostIdentityDrift` says `SHIPPED COPY UNREADABLE`, and an empty `gh` on every PATH is worse than a stale one); a wrapper with no identity block
- * on a host that declares no app (the two behave the same, so there is nothing to take effect).
+ * on a host that declares no app (the two behave the same, so there is nothing to take effect). The wrapper says which of these an installed copy is (`identityStale`).
  * @param {Parameters<typeof ownedIdentityFiles>[0] & { mkdir?: typeof mkdirSync, write?: typeof writeFileSync, chmod?: typeof chmodSync, rename?: typeof renameSync }} [deps]
  * @returns {string | null} the path it wrote, or `null` when it wrote nothing
  */
 export function rerenderGhWrapper({ mkdir = mkdirSync, write = writeFileSync, chmod = chmodSync, rename = renameSync, ...where }:
     Parameters<typeof ownedIdentityFiles>[0] & { mkdir?: typeof mkdirSync; write?: typeof writeFileSync; chmod?: typeof chmodSync; rename?: typeof renameSync; } = {}): string | null {
+  const wrapper = wrapperOf(where);
+  if (wrapper === null) return null;
   const { read = readFileSync } = where;
-  const { target, mode, expected } = ghWrapperFile(where);
+  const host = where.host ?? homeHostConfig();
+  const { target, mode, expected } = wrapperFile(wrapper, { ...where, host });
   if (expected === null) return null;
   const installed = textOf(target, read);
-  if (installed === null) return null;
-  const wanted = wrapperIdentity(expected);
-  if (wanted === null) return null;
-  const has = wrapperIdentity(installed);
-  const host = where.host ?? homeHostConfig();
-  if (has === wanted || (has === null && appRolesOf(host).length === 0)) return null;
+  if (installed === null || !wrapper.identityStale(wrapperInputsOf(host), installed)) return null;
   // A11-84: a refusal THROWS, and `tickRerenderGhWrapper` says it as a note; the tick never passes `allowNoApps`.
-  writeGhWrapper({ target, mode, text: expected, host, mkdir, write, chmod, rename, read });
+  writeGhWrapper({ target, mode, text: expected, host, mkdir, write, chmod, rename, read, wrapper });
   return target;
 }
 

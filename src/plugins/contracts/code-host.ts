@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.1 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.3 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,9 @@
 //
 // ROW MODE'S GITHUB OPERATIONS will join as an optional `rows` group of this contract, not as a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
 //
+// 1.3 (A11-160, step 2): `wrapper`, an OPTIONAL group: the routing wrapper every `gh` process of an org host runs through (which account or App a role acts as), as an owned file of the host. Core asks the plugin
+// for the wrapper's text and its install target and for the rules about writing it, and the plugin's own `doctorChecks` and `onboardSteps` say the rest (wrapper roles, App tokens, the App's key). A code host
+// with no `wrapper` installs none. A plugin of 1.2 is read as one that has none.
 // 1.2 (A11-156): `readReplies` reads what a trusted account said on a pull request since a time, which is how the pool finds a reply to a review that asked for changes.
 // 1.1 (A11-160): `readPullFeedback` takes the accounts whose feedback is not the worker's to answer besides its own (the reviewer's), which ticket mode filtered out of GitHub's
 // answer before the read moved into the plugin. A plugin of 1.0 is read as one that is given none.
@@ -17,7 +20,7 @@ import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHost
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.2";
+export const CODE_HOST_CONTRACT_VERSION = "1.3";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -81,6 +84,56 @@ export type RetargetRequest = Readonly<{
   log: (line: string) => void;
 }>;
 
+/** How a role authenticates: as the person's account, or as an installation token of a GitHub App named by id, key file and, when it has several, the installation (`slug` is the login the App's writes carry, without `[bot]`). */
+export type RoleIdentity = Readonly<{ mode: "user-accounts" }> | Readonly<{ mode: "github-apps"; appId: string; keyPath: string; installationId?: string; slug?: string }>;
+
+/**
+ * Where this machine keeps what a code host's routing is rendered from: the host file's own facts, which are not the plugin's settings and which a plugin cannot import the reader of. `stateEntry(name)` is
+ * where the host keeps one named entry of its state directory.
+ */
+export type HostPlace = Readonly<{
+  /** Where the host puts the programs it ships on PATH. */
+  binDir: string;
+  /** The installed tool's checkout, or undefined on a host that runs the primary project's own `packages/agent-org`. */
+  tool: string | undefined;
+  /** The primary project's checkout, where the tool's programs are found when `tool` is undefined. */
+  checkout: string;
+  stateEntry(name: string): string;
+}>;
+
+/** What the wrapper is rendered from: the place, the folders of the workers' and the leads' accounts, and each role's identity as the host file declares it (every role is present). */
+export type WrapperInputs = Readonly<{ place: HostPlace; accounts: Readonly<{ workers: string; leads: string }>; identity: Readonly<Record<string, RoleIdentity>> }>;
+
+/** The wrapper as an owned file: where it is installed, its mode and the text it must hold, which is null when the plugin's shipped copy cannot be read (never the empty string). */
+export type WrapperFile = Readonly<{ target: string; mode: number; expected: string | null }>;
+
+/**
+ * One write of the wrapper that is about to happen: `text` over what `installed` holds at `target` (null: nothing there). `allowNoApps` is the host's say-so that it really dropped its Apps.
+ * `under` and `realBin` are for a test run: `under` says the process is one, and `realBin` is the real home's bin directory, which a test run may never write.
+ */
+export type WrapperWrite = Readonly<{ inputs: WrapperInputs; target: string; text: string; installed: string | null; allowNoApps: boolean; under?: boolean; realBin?: string }>;
+
+/**
+ * The routing wrapper (contract 1.3). Every operation is synchronous and answers about the inputs it is given; none writes: core writes the file, after asking {@link CodeHostWrapper.refusal}.
+ */
+export interface CodeHostWrapper {
+  /** The wrapper as an owned file. THROWS, naming it, when the shipped text cannot be rendered from the inputs. */
+  file(inputs: WrapperInputs): WrapperFile;
+  /** The roles the inputs declare as Apps, in the order the wrapper lists them. */
+  appRoles(inputs: WrapperInputs): readonly string[];
+  /**
+   * Why `write.text` must not be written, or null when it may be. A wrapper that names no App while the inputs declare one is refused, and so is one that would drop the Apps the installed copy names unless
+   * `allowNoApps`, one that runs its minter from a temporary directory, and, in a test run, any write into the real home's bin directory.
+   */
+  refusal(write: WrapperWrite): string | null;
+  /** What is wrong with the wrapper installed at `target`, said as a reason, or null when it is the one the inputs declare. `installed` is null when there is no file there. */
+  divergence(inputs: WrapperInputs, current: Readonly<{ target: string; installed: string | null }>): string | null;
+  /** Whether the installed wrapper's identity block is not the one the inputs declare, which is the one drift a tick mends itself. */
+  identityStale(inputs: WrapperInputs, installed: string): boolean;
+  /** Why `role`'s token cannot be minted with the App the inputs declare for it, or null when it can mint or the role has no App. */
+  mintFailure(inputs: WrapperInputs, role: string): string | null;
+}
+
 /**
  * A code host plugin. Every read answers `null` for "could not ask", never for "there is none": a caller that acts on `null` acts on a guess.
  */
@@ -108,4 +161,6 @@ export interface CodeHost extends CodeHostPort {
    * base whose branch is gone is said. A pull request that cannot be read keeps the note it had, and its head is never touched.
    */
   sweepRetargets(sweep: RetargetRequest): Record<string, string>;
+  /** The routing wrapper of an org host (contract 1.3), or absent for a code host that installs none. */
+  readonly wrapper?: CodeHostWrapper;
 }
