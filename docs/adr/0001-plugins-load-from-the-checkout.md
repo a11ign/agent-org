@@ -22,6 +22,10 @@ The host's install stays as it is, and keeps its protection against a parent `pn
 
 A plugin that genuinely needs a dependency reopens this decision.
 
+## Note (A11-158)
+
+The registry needs no `pnpm-workspace.yaml`, and the repository must not have one: the CI layout check (ADR 0043 Decision 7) fails a workspace file that resolves to the root package alone, and with `plugins/*` listed beside `.` changesets and pnpm still resolve the root. A bundled plugin is therefore a directory under `plugins/` with a `package.json`, not a workspace package; nothing links it, and the loader imports its entry by file URL.
+
 ## Paths
 
 - `agent-org:src/plugins/`

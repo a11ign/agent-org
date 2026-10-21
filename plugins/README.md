@@ -4,6 +4,10 @@ Each directory here is one **agent-org plugin**: a code module behind one of the
 reviewer, exposure and messaging. It is not a Claude plugin (`tickets.plugins` lists those). The directory's name is the plugin's name. There are none yet: A11-159 adds the
 first (Linear), and A11-160 to A11-162 add the rest.
 
+A plugin is a directory with a `package.json`, found by the registry; it is not a member of a pnpm workspace. This repository has no `pnpm-workspace.yaml`: its layout check
+(`@a11ign/toolchain`'s `layout-check`, ADR 0043 Decision 7) requires one package at the root and no workspace file, and nothing needs the workspace, since a host links no plugin
+and installs none of its dependencies (below).
+
 ## What a plugin package holds
 
 ```

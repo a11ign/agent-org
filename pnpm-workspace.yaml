@@ -1,7 +1,0 @@
-# The agent-org plugins bundled with the tool: one package per plugin under `plugins/` (A11-158, Decision 3 of A11-157). A host does NOT install them as workspace packages:
-# it installs the tool with `--ignore-workspace`, so the registry reads `plugins/*/package.json` from the checkout instead (docs/adr/0001-plugins-load-from-the-checkout.md).
-# THE ROOT IS LISTED TOO. With a workspace file, changesets takes only the listed packages as the workspace, so without "." the tool's own package `agent-org` is "not in the
-# workspace" and `changeset version` (the release dry run) refuses every changeset.
-packages:
-  - "."
-  - "plugins/*"
