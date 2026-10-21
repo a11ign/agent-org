@@ -11,7 +11,8 @@
 // machine is a refusal of the project section, never the note of a machine that declares none.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { SCHEMA, type ChoicePart } from "./config-schema.ts";
+import type { ChoicePart } from "./config-schema.ts";
+import { defaultSchema } from "../plugins/schema.ts";
 import { pluginProblems } from "./plugins.ts";
 import { hostFactsOf } from "./plugin-contract.ts";
 import { ticketFolder } from "./ticket-paths.ts";
@@ -148,7 +149,7 @@ function viewOver(options: SettingsReadOptions, sections: Sections): View {
   const pluginRecord = options.pluginRecord === undefined ? {} : { record: options.pluginRecord };
   const plugins = pluginProblems({ wanted: options.settings.plugins, folder: ticketFolder(options.settings, "<ticket>"), host: hostFactsOf(options.settings) }, pluginRecord);
   return settingsView({
-    entries: SCHEMA,
+    entries: defaultSchema(),
     host: sections.host,
     tickets: sections.tickets,
     project: sections.project,

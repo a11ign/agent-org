@@ -5,7 +5,7 @@
 // IT ASKS FOR WHAT NO PROFILE OR FLAG GAVE, and only at a terminal. With `--profile <name>` (A11-145), onboard reads `<AGENT_ORG_HOME>/profiles/<name>.json` (or
 // the path it names): a saved answer file that holds no secret. A profile that is absent is asked for at a terminal and written there, mode 600, so a copy
 // of it sets up another machine; without one, it is refused by name. A profile holds the answers, the flags override them, and the ONLY questions asked of a
-// complete profile are for the secrets: the Linear key, and the reviewer App's private key when its file is not there yet.
+// complete profile are for the secrets: the tracker's key, and the reviewer App's private key when its file is not there yet.
 //
 // WITHOUT `--profile`, onboard keeps what it did before: `--repo <name>=<path>` (repeated) names the checkouts a worker can choose from, and
 // `--linear-keychain <service>` or `--linear-key-file <path>` names where the Linear key is read from. Without a terminal, what no flag gave is kept from the
@@ -29,9 +29,9 @@
 //   - THE HOST FILE'S PATH, in `<home>/host-file` (A11-68), so a shell with no `AGENT_ORG_HOST` finds it.
 //   - AUTO-UPDATE: the `auto-update` service runs `agent-org update` every hour. `--no-auto-update` leaves it unregistered, and `--update-channel main` makes it follow `main`.
 //
-// IT NEVER ECHOES A KEY. It stores one only when none is readable and a person is at the terminal: into the Keychain by `security`'s own prompt,
-// which does not echo, or into a mode-600 file from a prompt that does not echo. It then reads the key back to check it is there, and says WHERE
-// it is, never what it is. The reviewer App's key is copied and never printed.
+// IT NEVER ECHOES A KEY. A plugin's step stores one only when none is readable and a person is at the terminal (the Linear plugin: into the Keychain by `security`'s own prompt,
+// which does not echo, or into a mode-600 file from a prompt that does not echo), then reads it back to check it is there, and says WHERE it is, never what it is. The reviewer
+// App's key is copied and never printed.
 //
 // IT ENDS BY DIAGNOSING: the same checks `agent-org doctor` runs are printed, so the person sees whether the machine is ready.
 import { spawnSync } from "node:child_process";
@@ -42,9 +42,12 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { readLinearKey } from "../ticket-mode/linear.ts";
-import type { KeySource } from "../ticket-mode/settings.ts";
-import { isActive, resolveProviders } from "../ticket-mode/providers.ts";
+import { DEFAULT_PROVIDER, isActive, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
+import { blockOf, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
+import { realExec, realMode } from "../plugins/active.ts";
+import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
+import type { Catalog, PluginDeps, PluginSettings } from "../plugins/manifest.ts";
 import { readPluginContract, type Contract } from "../ticket-mode/plugin-contract.ts";
 import { agentOrgHome, hostFilePath, hostPointerPath, readOrNull, type Env } from "./paths.ts";
 import { ensureBun } from "./bun.ts";
@@ -63,11 +66,6 @@ import { retireGuards, type Replacements } from "./interim-guards.ts";
 import { defaultDoctorDeps, diagnose, report, type Check } from "./doctor.ts";
 import { hostIsolation } from "./update-safety.ts";
 import { repoCloneArgs } from "../ticket-port/repo-args.ts";
-
-export const DEFAULT_KEYCHAIN_SERVICE = "agent-org-linear";
-export const LINEAR_MCP_URL = "https://mcp.linear.app/mcp";
-/** Linear's MCP tools a worker may call: its reads, and a comment on its own ticket. Never a save of an issue, a state or a relation. */
-export const LINEAR_CONNECTORS = Object.freeze(["^mcp__linear__(get|list|search|extract)_", "^mcp__linear__save_comment$"]);
 
 export type OnboardOptions = Readonly<{
   repos: readonly string[];
@@ -93,9 +91,12 @@ export type OnboardDeps = Readonly<{
   ask: (question: string) => Promise<string>;
   /** Ask without echoing what is typed. */
   askHidden: (question: string) => Promise<string>;
-  readKey: (source: KeySource) => string;
-  /** Store a key in the Keychain under `service`, by `security`'s own prompt. */
-  storeInKeychain: (service: string) => void;
+  /** Runs a program for a plugin's onboard steps (`security`, `claude mcp`): its exit status and what it printed. `inherit` gives it this terminal, for a prompt that does not echo. */
+  exec: PluginDeps["exec"];
+  /** The registry's catalog (A11-158): which plugins a provider block may name. A test passes its own. */
+  catalog: () => Catalog;
+  /** The bundled plugins the providers enable, loaded (A11-159): a test injects its own, so no plugin module is imported. */
+  loadPlugins: (providers: Providers, pluginDeps: PluginDeps) => Promise<LoadResult>;
   readFile: (path: string) => string;
   writeFile: (path: string, text: string) => void;
   /** Whether a path exists: the profile, the guards, the plugin's record. */
@@ -185,7 +186,7 @@ async function currentHost(path: string, deps: OnboardDeps): Promise<Record<stri
     throw new OnboardRefusal(`${path} is not valid JSON, so onboard will not write over it. Fix or move it, then run onboard again.`);
   }
   if (!isObject(parsed)) throw new OnboardRefusal(`${path} does not hold a JSON object`);
-  const fix = await planHostFix(text);
+  const fix = await planHostFix(text, deps.catalog());
   if (fix.kind === "refused") throw new OnboardRefusal(`${path}: ${fix.reason}`);
   if (fix.kind === "nothing") return parsed;
   const backup = writeHostFix(path, text, fix.text, 0o600, deps.now(), (file, body) => deps.writeFile(file, String(body)));
@@ -234,61 +235,6 @@ async function askRepositories(deps: OnboardDeps): Promise<string[]> {
   const repos: string[] = [];
   for (let line = (await deps.ask("Repository: ")).trim(); line !== ""; line = (await deps.ask("Repository: ")).trim()) repos.push(line);
   return repos;
-}
-
-/** The key source a flag or the host file names, or undefined when neither does. */
-function explicitKeySource(options: OnboardOptions, existing: unknown, deps: OnboardDeps): KeySource | undefined {
-  if (options.keychain !== undefined && options.keyFile !== undefined) throw new OnboardRefusal("give --linear-keychain or --linear-key-file, not both");
-  if (options.keychain !== undefined) return { keychain: keychainService(options.keychain) };
-  if (options.keyFile !== undefined) {
-    const path = expandHome(options.keyFile, deps.home);
-    if (!isAbsolute(path)) throw new OnboardRefusal("--linear-key-file must be an absolute path");
-    return { path };
-  }
-  return typeof existing === "object" && existing !== null ? (existing as KeySource) : undefined;
-}
-
-/** Where the OS keeps the Linear key when no one names it: the Keychain on a Mac, a mode-600 file elsewhere. */
-function fallbackKeySource(deps: OnboardDeps): KeySource {
-  return deps.platform === "darwin" ? { keychain: DEFAULT_KEYCHAIN_SERVICE } : { path: join(agentOrgHome(deps.env, deps.home), "linear.key") };
-}
-
-/** The place a person names at a terminal for the Linear key, or the fallback when they name none. */
-async function askKeySource(deps: OnboardDeps): Promise<KeySource> {
-  const fallback = fallbackKeySource(deps);
-  const answer = (await deps.ask(`Where is the Linear key read from? A Keychain service name, or an absolute file path [${"keychain" in fallback ? fallback.keychain : fallback.path}]: `)).trim();
-  if (answer === "") return fallback;
-  const path = expandHome(answer, deps.home);
-  return isAbsolute(path) ? { path } : { keychain: keychainService(answer) };
-}
-
-/** A Keychain service name is printed in a command to paste, so it is held to characters a shell reads as they are. */
-function keychainService(name: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new OnboardRefusal(`\`${name}\` is not a Keychain service name: use letters, digits, \`.\`, \`_\` and \`-\``);
-  return name;
-}
-
-const describe = (source: KeySource) => ("keychain" in source ? `the Keychain service ${source.keychain}` : `the file ${source.path}`);
-
-function keyReadable(source: KeySource, deps: OnboardDeps): boolean {
-  try {
-    deps.readKey(source);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Store a key where `source` says, by a prompt that does not echo. Only called with a person at the terminal. */
-async function storeKey(source: KeySource, deps: OnboardDeps) {
-  if ("keychain" in source) {
-    deps.out.log(`Paste your Linear personal API key at the Keychain prompt (it is not shown). It is stored under ${source.keychain}.`);
-    deps.storeInKeychain(source.keychain);
-    return;
-  }
-  const key = (await deps.askHidden(`Paste your Linear personal API key (it is not shown). It is written to ${source.path}, mode 600: `)).trim();
-  if (key === "") return;
-  deps.writeFile(source.path, `${key}\n`);
 }
 
 /**
@@ -342,9 +288,6 @@ export function startServices(names: readonly ServiceName[], start: (name: Servi
   }).join("\n");
 }
 
-/** `text` with every occurrence of `secret` replaced by `<key>`, for a message a program that was handed the key may echo. */
-const scrub = (text: string, secret: string) => (secret === "" ? text : text.split(secret).join("<key>"));
-
 /**
  * Install bun and herdr web ui when they are missing. @returns whether the terminal service can run. A step that fails is said, with why,
  * and answers false: the web terminal is a convenience, and an install without it still runs tickets.
@@ -392,19 +335,6 @@ function setUpChromium(deps: OnboardDeps): boolean {
   return problems.length === 0;
 }
 
-/** Register Linear's MCP for Claude Code at user scope, unless a `linear` MCP is there already. Says what it did, never the key. */
-function registerLinearMcp(source: KeySource, deps: OnboardDeps) {
-  if (deps.run("claude", ["mcp", "get", "linear"]).status === 0) {
-    deps.out.log("Claude Code has a `linear` MCP already, so onboard left it as it is");
-    return;
-  }
-  const key = deps.readKey(source).trim();
-  const added = deps.run("claude", ["mcp", "add", "--scope", "user", "--transport", "http", "linear", LINEAR_MCP_URL, "--header", `Authorization: Bearer ${key}`]);
-  deps.out.log(added.status === 0
-    ? `registered Linear's MCP for Claude Code (user scope), authenticated by the key in ${describe(source)}`
-    : `could not register Linear's MCP for Claude Code: ${scrub(firstLine(added), key)}. Workers cannot read Linear until it is; run \`agent-org onboard\` again, or \`claude mcp add --scope user --transport http linear ${LINEAR_MCP_URL} --header "Authorization: Bearer <key>"\``);
-}
-
 /**
  * What onboard says of the stack extension, whatever the install did. A failure is said with its reason and the command to run by hand, and is not thrown:
  * the extension serves stacked pull requests only, and doctor fails on it until it is there.
@@ -441,13 +371,6 @@ function contractOf(installPath: string, deps: OnboardDeps): Contract | null {
   return null;
 }
 
-/** `connectors` with Linear's read and comment tools added where absent. A value that is not a list is left for the host reader to refuse. */
-function withLinearConnectors(connectors: unknown): unknown {
-  if (connectors === undefined) return [...LINEAR_CONNECTORS];
-  if (!Array.isArray(connectors)) return connectors;
-  return [...connectors, ...LINEAR_CONNECTORS.filter((pattern) => !connectors.includes(pattern))];
-}
-
 /** The keys a conventions plugin sets: the plugin, and the plan's file pattern with the planner and writer runs its contract provides (A11-137). */
 function conventionKeys(plugin: string, contract: Contract | null): Record<string, unknown> {
   const planner = contract?.provides.planner;
@@ -480,10 +403,10 @@ async function clonesOf(options: OnboardOptions, profile: Profile | null, host: 
   return clones;
 }
 
-/** The provider blocks onboard fills: the profile's, with the Linear key's place, the reviewer's identity and the terminal the exposure takes. */
-function blocksOf({ planned, source, identity, terminal }: Readonly<{ planned: PlannedBlocks | null; source: KeySource; identity: Record<string, unknown> | null; terminal: boolean }>): Record<string, Record<string, unknown> | undefined> {
+/** The provider blocks onboard fills: the profile's, with the reviewer's identity and the terminal the exposure takes. The tracker's own settings are its plugin's steps' (`runPluginSteps`). */
+function blocksOf({ planned, identity, terminal }: Readonly<{ planned: PlannedBlocks | null; identity: Record<string, unknown> | null; terminal: boolean }>): Record<string, Record<string, unknown> | undefined> {
   return {
-    tracker: { ...(planned?.tracker ?? { provider: "linear" }), key: source },
+    tracker: planned?.tracker ?? { provider: DEFAULT_PROVIDER.tracker },
     codeHost: planned === null ? undefined : { ...planned.codeHost, identity: identity === null ? undefined : { reviewer: identity } },
     publish: planned?.publish,
     reviewer: planned?.reviewer,
@@ -503,12 +426,6 @@ function providersWith(tickets: Record<string, unknown>, blocks: Record<string, 
   return providers;
 }
 
-/** The tracker block with Linear's read and comment tools in its connectors where absent: a list an old key moved into it still lacks them. */
-function withLinearReads(tracker: unknown): Record<string, unknown> {
-  const block = fill(tracker, {});
-  return { ...block, connectors: withLinearConnectors(block.connectors) };
-}
-
 /** The host file, its pointer and, when one is given, the update channel: each written whole, and the repositories it offers said. */
 function writeHostFiles({ hostFile, next, updateChannel }: Readonly<{ hostFile: string; next: Record<string, unknown>; updateChannel: UpdateChannel | undefined }>, deps: OnboardDeps) {
   deps.writeFile(hostFile, `${JSON.stringify(next, null, 2)}\n`);
@@ -518,26 +435,63 @@ function writeHostFiles({ hostFile, next, updateChannel }: Readonly<{ hostFile: 
   deps.out.log(`wrote ${hostFile}: ${names.length} repositories (${names.join(", ")})`);
 }
 
-/** Where the Linear key is, once it reads. Says where, never what. */
-const keyFoundLine = (source: KeySource) => `the Linear key is readable from ${describe(source)}`;
+/** The flags onboard was started with that name a plugin's settings: the tracker's key (`--linear-keychain`, `--linear-key-file`). */
+const flagsOf = (block: ProviderBlock, options: OnboardOptions): PluginSettings => (block === "tracker" ? { keychain: options.keychain, keyFile: options.keyFile } : {});
 
-/** The command that stores a Linear key the machine cannot read yet, said with where it goes. */
-function keyMissingLine(source: KeySource): string {
-  const store = "keychain" in source ? `Store one with: security add-generic-password -a "$USER" -s ${source.keychain} -w` : `Write it to ${source.path} with mode 600`;
-  return `NO LINEAR KEY is readable from ${describe(source)}. ${store}, then run \`agent-org doctor\`.`;
+/** The providers the host file will hold once onboard has written it, as far as which plugin each block names: the profile's blocks beside the file's own. */
+function plannedProviders({ host, tickets, planned, catalog }: Readonly<{ host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; catalog: Catalog }>): Providers {
+  const names = providersWith(tickets, { tracker: planned?.tracker ?? { provider: DEFAULT_PROVIDER.tracker }, codeHost: planned?.codeHost, publish: planned?.publish, reviewer: planned?.reviewer, exposure: planned?.exposure });
+  try {
+    return resolveProviders({ ...host, tickets: { ...tickets, providers: names } }, catalog);
+  } catch (err) {
+    throw new OnboardRefusal(`the providers onboard would write are refused, so nothing is written: ${(err as Error).message}`);
+  }
 }
 
-/** What onboard does once the host file is written: the stack extension, the key, Linear's MCP, Codex, the guards, the services, and the doctor's report. */
-async function finishOnboard({ next, options, source, terminal }: Readonly<{ next: Record<string, unknown>; options: OnboardOptions; source: KeySource; terminal: boolean }>, deps: OnboardDeps) {
-  const written = resolveProviders(next).blocks;
+/**
+ * Runs the onboard steps of each bundled plugin the host will enable (A11-159), in block order, giving each the block's settings as the steps before it left them, and says what each
+ * step says. @returns the settings the steps chose, by block, for the caller to write. A plugin the loader refuses is refused by name, unless only its `create` threw (a key that is
+ * not stored yet): onboard needs its module, not its implementation, and is the step that stores the key.
+ */
+async function runPluginSteps({ options, host, tickets, planned, answered }: Readonly<{ options: OnboardOptions; host: Record<string, unknown>; tickets: Record<string, unknown>; planned: PlannedBlocks | null; answered: boolean }>,
+  deps: OnboardDeps): Promise<Record<string, Record<string, unknown>>> {
+  const providers = plannedProviders({ host, tickets, planned, catalog: deps.catalog() });
+  const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
+    exec: deps.exec, readFile: deps.readFile, mode: realMode, pick: "assigned" };
+  const result = await deps.loadPlugins(providers, pluginDeps);
+  const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));
+  const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));
+  if (refused.length > 0) throw new OnboardRefusal(refused.map(({ plugin, concern, why }) => `the ${concern} plugin ${plugin} was refused: ${why}`).join("; "));
+  const chosen: Record<string, Record<string, unknown>> = {};
+  for (const { plugin, module } of [...result.loaded, ...result.unbuilt]) {
+    const block = blockOf(plugin.concern);
+    if (block === null) continue;
+    const stepDeps = { ...pluginDeps, interactive: deps.interactive, answered, ask: deps.ask, askSecret: deps.askHidden, writeFile: deps.writeFile, platform: deps.platform, home: deps.home,
+      agentOrgHome: agentOrgHome(deps.env, deps.home), flags: flagsOf(block, options) };
+    let current = settingsOfBlock(providers.blocks[block]);
+    const set: Record<string, unknown> = {};
+    for (const step of module.onboardSteps) {
+      const answer = await step.run(current, stepDeps);
+      if (answer.detail !== "") deps.out.log(answer.detail);
+      // A setting a step leaves `undefined` is one it has no opinion on: the block keeps what it holds.
+      const decided = Object.fromEntries(Object.entries(answer.settings ?? {}).filter(([, value]) => value !== undefined));
+      Object.assign(set, decided);
+      current = { ...current, ...decided };
+    }
+    chosen[block] = set;
+  }
+  return chosen;
+}
+
+/** What onboard does once the host file is written: the stack extension, Codex, the guards, the services, and the doctor's report. */
+async function finishOnboard({ next, options, terminal }: Readonly<{ next: Record<string, unknown>; options: OnboardOptions; terminal: boolean }>, deps: OnboardDeps) {
+  const written = resolveProviders(next, deps.catalog()).blocks;
   if (isActive(written.exposure) && written.exposure.provider === "tailscale" && deps.which("tailscale") === null) {
     deps.out.log("tailscale is not on PATH: the board and the terminal are served on the tailnet once Tailscale is installed and `tailscale up` has run. `agent-org doctor` says what is missing");
   }
   const account = workerAccount(JSON.stringify(next), deps.env);
   if (written.codeHost.settings.stack.value !== false) deps.out.log(stackLine(ensureStackExtension(deps.ghAs(account)), account));
-  const readable = keyReadable(source, deps);
-  deps.out.log(readable ? keyFoundLine(source) : keyMissingLine(source));
-  if (readable) registerLinearMcp(source, deps);
   if (isActive(written.reviewer) && written.reviewer.provider === "atomic") for (const line of codexChecklist(deps)) deps.out.log(line);
   const guards = await retireGuards({ platform: deps.platform, env: deps.env, home: deps.home, exists: deps.exists, remove: deps.removeFile, run: deps.run, replacements: deps.replacements });
   for (const line of guards) deps.out.log(line);
@@ -554,12 +508,9 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   const tickets = ticketsOf(host);
   const clones = await clonesOf(options, profile, host, deps);
 
-  const existing = resolveProviders(host).blocks;
-  const source = explicitKeySource(options, existing.tracker.settings.key.value, deps) ?? (profile === null && deps.interactive ? await askKeySource(deps) : fallbackKeySource(deps));
-  if (!keyReadable(source, deps) && deps.interactive) await storeKey(source, deps);
-  const readable = keyReadable(source, deps);
-
+  const existing = resolveProviders(host, deps.catalog()).blocks;
   const planned = profile === null ? null : providerBlocksOf(profile);
+  const stepped = await runPluginSteps({ options, host, tickets, planned, answered: profile !== null }, deps);
   const identity = await reviewerIdentity(planned?.reviewerApp, existing.codeHost.settings.identity.value, deps);
   const terminal = options.terminal && await setUpTerminal(deps);
   const capture = setUpChromium(deps);
@@ -570,16 +521,15 @@ export async function onboard(options: OnboardOptions, deps: OnboardDeps): Promi
   for (const line of notes?.lines ?? []) deps.out.log(line);
   for (const write of notes?.writes ?? []) deps.writeFile(write.path, write.text);
 
-  const providers = providersWith(tickets, blocksOf({ planned, source, identity, terminal }));
-  // A flag names the key outright, as it always did: it replaces the one the host file holds. Without a flag, the host file's key is kept.
-  if (options.keychain !== undefined || options.keyFile !== undefined) providers.tracker = { ...fill(providers.tracker, {}), key: source };
-  if (readable) providers.tracker = withLinearReads(providers.tracker);
+  const providers = providersWith(tickets, blocksOf({ planned, identity, terminal }));
+  // A plugin's step decides its settings outright: it was given the block's own, so it keeps the ones it means to keep.
+  for (const [block, set] of Object.entries(stepped)) providers[block] = { ...fill(providers[block], {}), ...set };
   const pluginKeys = plugin?.installPath === null || plugin === null ? {} : conventionKeys(profile?.conventions?.plugin ?? "", contract);
   const prReview = profile?.conventions?.prReview === true ? contract?.provides.prReview?.skill : undefined;
   // `tickets.capture` is written only where it is absent, and only as true: a machine whose browsers do not start keeps what the host file says, or nothing.
   const next = { ...host, clones, tickets: fill({ ...tickets, providers }, { pick: planned?.pick, ...pluginKeys, prReview, ...(notes?.keys ?? {}), capture: capture || undefined }) };
   writeHostFiles({ hostFile, next, updateChannel: options.updateChannel }, deps);
-  await finishOnboard({ next, options, source, terminal }, deps);
+  await finishOnboard({ next, options, terminal }, deps);
   return hostFile;
 }
 
@@ -650,12 +600,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       terminal: !values["no-terminal"], autoUpdate: !values["no-auto-update"], updateChannel: channel,
     }, {
       env: process.env, home, platform: process.platform, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-      ask, askHidden, readKey: (source) => readLinearKey(source),
-      storeInKeychain: (service) => {
-        // `security` prompts for the password itself when `-w` is last and has no value, and does not echo it.
-        const result = spawnSync("security", ["add-generic-password", "-U", "-a", process.env.USER ?? "", "-s", service, "-w"], { stdio: "inherit" });
-        if (result.status !== 0) throw new OnboardRefusal(`security add-generic-password exited ${result.status}`);
-      },
+      ask, askHidden, exec: realExec, catalog: defaultCatalog, loadPlugins: (providers, pluginDeps) => loadEnabled(providers, defaultCatalog(), pluginDeps),
       readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
       exists: (path) => existsSync(path), removeFile: (path) => rmSync(path, { force: true }),
       isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(), now: () => new Date(),

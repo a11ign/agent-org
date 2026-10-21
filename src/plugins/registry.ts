@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import { blockOf, CONCERNS, type Concern } from "./concerns.ts";
 import { BUILT_IN, CORE_RUNS, FAKES } from "./built-in.ts";
+import type { Providers } from "../ticket-mode/providers.ts";
+import { PRIORITIES, type TrackerWriting } from "./contracts/tracker.ts";
 import { type Catalog, type CatalogPlugin, type CatalogRefusal, type ManifestData, NO_TOOLING, type Tooling } from "./manifest.ts";
 import { CONTRACT_VERSION } from "./version.ts";
 
@@ -60,20 +62,64 @@ const DISK: PackageFiles = {
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-/** The tooling a manifest declares, or the reason it is wrong. An absent field is none. */
-function toolingOf(declared: unknown): Tooling | string {
+const isText = (value: unknown): value is string => typeof value === "string" && value !== "";
+const compiles = (pattern: string): boolean => {
+  try {
+    new RegExp(pattern);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isAnchoredPattern = (value: unknown): value is string => isText(value) && value.startsWith("^") && value.endsWith("$") && compiles(value);
+const isRefusedInput = (item: unknown): boolean => isObject(item) && isText(item.input) && isText(item.refusal);
+const isCreatedKeyShape = (value: unknown): boolean => isObject(value) && (value.wrapper === null || isText(value.wrapper)) && isStrings(value.fields) && value.fields.length > 0;
+const namesEveryPriority = (value: unknown): boolean => isObject(value) && PRIORITIES.every((name) => typeof value[name] === "number");
+
+/** The `writer` a tracker's tooling declares (contract 1.1, `TrackerWriting`), or the reason it is wrong. */
+function writerOf(declared: Record<string, unknown>): TrackerWriting | string {
+  const at = "agentOrg.tooling.writer";
+  const { label, createTool, attachTools, filingTools, refusedInputs, attachTicketInput, createdKey, priorities, readTools, briefNote } = declared;
+  if (!isText(label) || !isText(briefNote) || !isText(attachTicketInput)) return `${at} must name a label, a briefNote and the attachTicketInput`;
+  if (!isText(createTool) || !createTool.startsWith("mcp__")) return `${at}.createTool must be a tool name starting \"mcp__\"`;
+  if (!isStrings(attachTools) || !attachTools.every((tool) => tool.startsWith("mcp__"))) return `${at}.attachTools must be a list of tool names starting \"mcp__\"`;
+  if (!isAnchoredPattern(filingTools)) return `${at}.filingTools must be a regular expression anchored with ^ and $`;
+  const filing = new RegExp(filingTools);
+  const ungranted = [createTool, ...attachTools].find((tool) => !filing.test(tool));
+  if (ungranted !== undefined) return `${at}.filingTools must match every tool the writer is granted, and does not match ${ungranted}`;
+  if (!Array.isArray(refusedInputs) || !refusedInputs.every(isRefusedInput)) return `${at}.refusedInputs must be a list of { input, refusal }`;
+  if (!isCreatedKeyShape(createdKey)) return `${at}.createdKey must be { wrapper, fields }`;
+  if (!namesEveryPriority(priorities)) return `${at}.priorities must give a number for each of ${PRIORITIES.join(", ")}`;
+  if (!isStrings(readTools) || readTools.length === 0) return `${at}.readTools must be a list of the tool names the writer reads duplicates with`;
+  return { label, createTool, attachTools, filingTools, refusedInputs: refusedInputs as TrackerWriting["refusedInputs"], attachTicketInput,
+    createdKey: createdKey as TrackerWriting["createdKey"], priorities: priorities as TrackerWriting["priorities"], readTools, briefNote };
+}
+
+/** The tooling a manifest declares, or the reason it is wrong. An absent field is none. A `writer` is a tracker's only. */
+function toolingOf(declared: unknown, concern: Concern): Tooling | string {
   if (declared === undefined) return NO_TOOLING;
   if (!isObject(declared)) return "agentOrg.tooling must be an object of mcpServers, connectors and skills";
-  const { mcpServers = [], connectors = [], skills = [] } = declared;
+  const { mcpServers = [], connectors = [], skills = [], connectorServers, writer } = declared;
   if (!isStrings(mcpServers)) return "agentOrg.tooling.mcpServers must be a list of server names";
   if (!isStrings(connectors) || !connectors.every((pattern) => pattern.startsWith("^mcp__"))) return "agentOrg.tooling.connectors must be a list of patterns anchored at \"^mcp__\"";
   if (!isStrings(skills)) return "agentOrg.tooling.skills must be a list of Claude Code skill names";
-  return { mcpServers, connectors, skills };
+  if (connectorServers !== undefined && !isStrings(connectorServers)) return "agentOrg.tooling.connectorServers must be a list of server names";
+  if (writer === undefined) return { mcpServers, connectors, skills, ...(connectorServers === undefined ? {} : { connectorServers }) };
+  if (concern !== "tracker") return `agentOrg.tooling.writer is a tracker's: ${concern} plugins file no tickets`;
+  if (!isObject(writer)) return "agentOrg.tooling.writer must be an object";
+  const written = writerOf(writer);
+  if (typeof written === "string") return written;
+  return { mcpServers, connectors, skills, ...(connectorServers === undefined ? {} : { connectorServers }), writer: written };
 }
 
 const isSchemaEntry = (value: unknown): value is SchemaEntry => isObject(value) && ["key", "type", "explanation", "breaks"].every((field) => typeof value[field] === "string") && isObject(value.edit);
 
-/** The settings a manifest declares, each keyed `tickets.providers.<block>.<name>`, or the reason one is wrong. Messaging has no block, so it declares none. */
+/**
+ * The settings a manifest declares, each keyed `tickets.providers.<block>.<name>`, or the reason one is wrong. Messaging has no block, so it declares none. A name with a dot
+ * (`key.path`) is a part of the setting before the dot, which the Settings page draws as a row of its own: it must follow a setting the manifest declares, and it is not a setting of
+ * the block (`blockSettings`).
+ */
 function settingsOf(concern: Concern, declared: unknown): Readonly<Record<string, SchemaEntry>> | string {
   if (declared === undefined) return {};
   if (!isObject(declared)) return "agentOrg.settings must be an object of settings by name";
@@ -82,6 +128,8 @@ function settingsOf(concern: Concern, declared: unknown): Readonly<Record<string
   for (const [name, entry] of Object.entries(declared)) {
     if (!isSchemaEntry(entry)) return `agentOrg.settings.${name} must be a schema entry with a key, type, explanation, breaks and edit`;
     if (entry.key !== `tickets.providers.${block}.${name}`) return `agentOrg.settings.${name}.key must be tickets.providers.${block}.${name}, not ${JSON.stringify(entry.key)}`;
+    const parent = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : null;
+    if (parent !== null && !(parent in declared)) return `agentOrg.settings.${name} is a part of ${parent}, which the manifest does not declare`;
   }
   return declared as Readonly<Record<string, SchemaEntry>>;
 }
@@ -97,7 +145,7 @@ function manifestOf(declared: unknown, entryExists: (entry: string) => boolean):
   if (!entryExists(entry)) return `agentOrg.entry ${JSON.stringify(entry)} is not a file in the package`;
   const settings = settingsOf(concern as Concern, declared.settings);
   if (typeof settings === "string") return settings;
-  const tooling = toolingOf(declared.tooling);
+  const tooling = toolingOf(declared.tooling, concern as Concern);
   if (typeof tooling === "string") return tooling;
   return { concern: concern as Concern, contract, description, entry, settings, tooling };
 }
@@ -162,6 +210,30 @@ let memo: Catalog | null = null;
 export function defaultCatalog(): Catalog {
   memo ??= buildCatalog();
   return memo;
+}
+
+/** The names of the settings a plugin takes in its block: its declared settings, less the parts of one (`key.path`), which the Settings page draws and the block does not hold. */
+export const blockSettings = (plugin: Pick<CatalogPlugin, "settings">): string[] => Object.keys(plugin.settings).filter((name) => !name.includes("."));
+
+/** Whether a connector pattern of the host file names a tool of a server the plugin's tooling declares (`^mcp__<server>__...`): the pattern is the plugin's, and belongs in its block's `connectors`. */
+export function ownsConnector(plugin: Pick<CatalogPlugin, "tooling">, pattern: string): boolean {
+  const servers = plugin.tooling.connectorServers ?? plugin.tooling.mcpServers;
+  return servers.some((server) => pattern.startsWith(`^mcp__${server}__`));
+}
+
+/** Whether a connector pattern is one of the catalog's trackers: `tickets.providers.tracker.connectors` takes it, and `tickets.connectors` keeps the rest. */
+export const isTrackerConnector = (catalog: Catalog, pattern: unknown): boolean => typeof pattern === "string"
+  && catalog.plugins.some((plugin) => plugin.concern === "tracker" && ownsConnector(plugin, pattern));
+
+/**
+ * What the tracker plugin the host names files a new-ticket run's tickets with (tracker contract 1.1, `TrackerWriting`), read from its manifest. REFUSES, naming the plugin, a tracker
+ * that declares none: it cannot be asked to file a ticket.
+ */
+export function trackerWritingOf(providers: Providers, catalog: Catalog = defaultCatalog()): TrackerWriting {
+  const { provider } = providers.blocks.tracker;
+  const writing = pluginNamed(catalog, provider)?.tooling.writer;
+  if (writing === undefined) throw new Error(`the tracker ${provider} declares no writer tooling (tracker contract 1.1), so a new-ticket run cannot file a ticket with it`);
+  return writing;
 }
 
 /** The plugin of this name, or undefined. */

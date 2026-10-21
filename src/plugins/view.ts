@@ -7,7 +7,7 @@ import { isActive, type BlockReport, type Providers } from "../ticket-mode/provi
 import { blockOf, CONCERN_LABEL, CONCERNS, type Concern } from "./concerns.ts";
 import type { Catalog, CatalogPlugin } from "./manifest.ts";
 import { pluginsOfConcern } from "./registry.ts";
-import { enableRefusal } from "./rules.ts";
+import { enableRefusal, fakeRefusal } from "./rules.ts";
 
 /** A plugin's state for its concern: in force, named by a block but switched off, or not named by any block. */
 export type PluginState = "enabled" | "disabled" | "available";
@@ -45,7 +45,7 @@ function stateOf(plugin: CatalogPlugin, report: BlockReport): PluginState {
 }
 
 function viewOfPlugin(plugin: CatalogPlugin, report: BlockReport, catalog: Catalog): PluginView {
-  return { name: plugin.name, state: stateOf(plugin, report), contract: plugin.contract, where: whereOf(plugin), description: plugin.description, refusal: enableRefusal(plugin, catalog) };
+  return { name: plugin.name, state: stateOf(plugin, report), contract: plugin.contract, where: whereOf(plugin), description: plugin.description, refusal: enableRefusal(plugin, catalog) ?? fakeRefusal(plugin) };
 }
 
 function viewOfBlock(concern: Concern, providers: Providers, catalog: Catalog): ConcernView {

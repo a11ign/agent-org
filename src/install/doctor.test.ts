@@ -24,13 +24,25 @@ const GH_LISTING = "gh stack  github/gh-stack  v0.2.1\n";
 const ghFake = (listing = GH_LISTING, stacks: (repo: string) => { status: number | null; stdout: string; stderr: string } = () => ({ status: 0, stdout: "[]", stderr: "" })) =>
   (args: string[]) => (args[0] === "extension" ? { status: 0, stdout: listing, stderr: "" } : stacks(args[1].split("/").slice(1, 3).join("/")));
 
+/**
+ * The programs the Linear plugin's checks run, as the doctor tests see them (A11-159): `security` prints `key` (or fails, for null), and `claude mcp list` prints `mcp` (or cannot run,
+ * for null). Any other program cannot start.
+ */
+function execOf({ key = KEY, mcp = MCP_LIST }: { key?: string | null; mcp?: string | null } = {}): DoctorDeps["exec"] {
+  return (file, args) => {
+    if (file === "security" && args[0] === "find-generic-password") return key === null ? { status: 44, stdout: "", stderr: "could not be found" } : { status: 0, stdout: `${key}\n`, stderr: "" };
+    if (file === "claude" && args.join(" ") === "mcp list") return mcp === null ? { status: null, stdout: "", stderr: "claude: command not found" } : { status: 0, stdout: mcp, stderr: "" };
+    return { status: null, stdout: "", stderr: `${file} cannot start` };
+  };
+}
+
 function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
   return {
     env: { AGENT_ORG_HOST: "/home/me/.agent-org/host.json" }, home: "/home/me",
     nodeVersion: () => "v24.7.0", which: (name) => `/home/me/.local/bin/${name}`,
-    readFile: () => HOST, readKey: () => KEY, mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
+    readFile: () => HOST, exec: execOf(), mode: () => 0o600, serviceState: () => "running", answers: async (port) => port === 4800 || port === 4801,
     pnpmVersion: () => "10.34.5",
-    healthy: async (port) => port === 7318, unitProblem: () => null, mcpList: () => MCP_LIST,
+    healthy: async (port) => port === 7318, unitProblem: () => null,
     tailscale: () => ({ status: 1, stdout: "", stderr: "not used" }), tailnetAnswers: async () => false,
     ghWrapper: async () => ({ divergence: null, mints: [] }),
     ghAs: () => ghFake(), originOf: () => null,
@@ -168,22 +180,42 @@ test("doctor reports a missing Node, and one older than 24, as failures with the
   assert.equal(old.node.detail, "v22.11.0 is older than 24");
 });
 
-test("doctor names the fix for a missing launcher, herdr, host file, key and service", async () => {
+test("doctor names the fix for a missing launcher, herdr, host file and service", async () => {
   const checks = byName(await diagnose(deps({
     which: () => null, readFile: () => { throw new Error("ENOENT"); }, serviceState: () => "not-registered",
   })));
   assert.match(checks.launcher.fix ?? "", /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   assert.equal(checks.herdr.ok, false);
   assert.match(checks["host file"].fix ?? "", /agent-org onboard/);
-  assert.equal(checks["tracker key"].ok, false);
+  assert.equal(checks["tracker key"], undefined, "a host file that does not read names no tracker, so no tracker plugin's check runs: the host file's row is the failure");
   assert.equal(checks["instance service"].fix, "run `agent-org start instance`");
   assert.equal(checks["ui service"].fix, "run `agent-org start ui`");
   assert.equal(checks["instance answering"].ok, false);
 });
 
 test("doctor tells a key it cannot read, and names the keychain command to store it", async () => {
-  const checks = byName(await diagnose(deps({ readKey: () => { throw new Error("no key"); } })));
+  const checks = byName(await diagnose(deps({ exec: execOf({ key: null }) })));
   assert.equal(checks["tracker key"].fix, "security add-generic-password -a \"$USER\" -s agent-org-linear -w");
+});
+
+test("A11-159: a key the plugin cannot read is one failing row with the key's own fix, the tracker's row says the same, and no second row repeats it as a plugin refusal", async () => {
+  const checks = byName(await diagnose(deps({ exec: execOf({ key: null }) })));
+  assert.equal(checks["plugin linear"], undefined, "the plugin's own check says why create threw");
+  assert.equal(checks["tracker key"].fix, "security add-generic-password -a \"$USER\" -s agent-org-linear -w");
+  assert.equal(checks["tracker (linear)"].ok, false);
+  assert.equal(checks["tracker (linear)"].fix, checks["tracker key"].fix);
+  assert.equal(checks["linear mcp"].ok, true, "the MCP is still checked");
+});
+
+test("A11-159: a plugin whose create threw for a reason its own checks do not find is still a failing row, naming it", async () => {
+  const catalog = fakeAgentOrgPlugins().catalog();
+  const linear = catalog.plugins.find(({ name }) => name === "linear")!;
+  const module = { create: () => ({}), doctorChecks: () => [{ name: "tracker key", ok: true, detail: "readable", fix: null }], onboardSteps: [] };
+  const plugins = fakeAgentOrgPlugins({ load: async () => ({ loaded: [], unbuilt: [{ plugin: linear, module }], refusals: [{ plugin: "linear", concern: "tracker" as const, why: "create broke" }] }) });
+  const checks = byName(await diagnose(deps({ agentOrgPlugins: plugins })));
+  assertRow(checks, "plugin linear", { ok: false, detail: "create broke" });
+  assert.equal(checks["tracker key"].ok, true);
+  assert.equal(checks["tracker (linear)"].ok, false);
 });
 
 test("doctor tells a running service that does not answer, and names the log to read", async () => {
@@ -282,12 +314,12 @@ test("doctor asks the health route on the port tickets.terminal names, and leave
 // A11-71: Linear's MCP, read from `claude mcp list`.
 test("doctor checks claude mcp list shows linear connected", async () => {
   assert.equal(byName(await diagnose(deps()))["linear mcp"].ok, true);
-  const absent = byName(await diagnose(deps({ mcpList: () => "bookctx: http://x - ✔ Connected\n" })))["linear mcp"];
+  const absent = byName(await diagnose(deps({ exec: execOf({ mcp: "bookctx: http://x - ✔ Connected\n" }) })))["linear mcp"];
   assert.equal(absent.ok, false);
   assert.match(absent.fix ?? "", /agent-org onboard/);
-  const failing = byName(await diagnose(deps({ mcpList: () => "linear: https://mcp.linear.app/mcp (HTTP) - ✘ Failed to connect\n" })))["linear mcp"];
+  const failing = byName(await diagnose(deps({ exec: execOf({ mcp: "linear: https://mcp.linear.app/mcp (HTTP) - ✘ Failed to connect\n" }) })))["linear mcp"];
   assert.equal(failing.ok, false);
-  assert.equal(byName(await diagnose(deps({ mcpList: () => null })))["linear mcp"].ok, false);
+  assert.equal(byName(await diagnose(deps({ exec: execOf({ mcp: null }) })))["linear mcp"].ok, false);
 });
 
 // A11-90: how far behind the newest release the install is, and the herdr server's place in the instance's cgroup.
@@ -754,7 +786,7 @@ test("A11-158: the doctor checks of an enabled bundled plugin are rows, and a fa
   const seen: string[] = [];
   const plugins = fakeAgentOrgPlugins({
     catalog: () => catalogWith([bundled]),
-    load: async (providers) => { seen.push(providers.blocks.tracker.provider); return { loaded: [{ plugin: bundled, implementation: tracker, module }], refusals: [] }; },
+    load: async (providers) => { seen.push(providers.blocks.tracker.provider); return { loaded: [{ plugin: bundled, implementation: tracker, module }], unbuilt: [], refusals: [] }; },
   });
   const checks = byName(await diagnose(deps({ readFile: () => hostWithProviders({ tracker: { provider: "fake-tracker" } }), agentOrgPlugins: plugins })));
   assert.deepEqual(seen, ["fake-tracker"]);
@@ -764,7 +796,7 @@ test("A11-158: the doctor checks of an enabled bundled plugin are rows, and a fa
 
 test("A11-158: a plugin the loader refuses fails its provider's row, naming the plugin", async () => {
   const bundled = fakeOf("fake-tracker", { where: "bundled", dir: "/checkout/plugins/fake-tracker", entry: "index.ts" });
-  const plugins = fakeAgentOrgPlugins({ catalog: () => catalogWith([bundled]), load: async () => ({ loaded: [], refusals: [{ plugin: "fake-tracker", concern: "tracker" as const, why: "plugin fake-tracker: index.ts must export create, doctorChecks and onboardSteps" }] }) });
+  const plugins = fakeAgentOrgPlugins({ catalog: () => catalogWith([bundled]), load: async () => ({ loaded: [], unbuilt: [], refusals: [{ plugin: "fake-tracker", concern: "tracker" as const, why: "plugin fake-tracker: index.ts must export create, doctorChecks and onboardSteps" }] }) });
   const checks = byName(await diagnose(deps({ readFile: () => hostWithProviders({ tracker: { provider: "fake-tracker" } }), agentOrgPlugins: plugins })));
   assert.equal(checks["plugin fake-tracker"].ok, false);
   assert.equal(checks["tracker (fake-tracker)"].ok, false);

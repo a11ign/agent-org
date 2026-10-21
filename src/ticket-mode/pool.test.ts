@@ -25,11 +25,18 @@ import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { parseTicketSettings } from "./settings.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
 import type { PullState, Ticket, TicketSource } from "./source.ts";
+import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import { CREATED_FILE, DECISIONS_FILE } from "./writer.ts";
 import { STALE_OUTCOME_FILE, STOP_ACTIVE_FILE, WRITER_FILE } from "./worker-files.ts";
 
 const ticket = (key: string) => ({ key, title: key, description: "", url: `https://linear.app/x/${key}`, branch: key.toLowerCase(), status: "Backlog", statusOrder: 0, team: "NBF", project: null, priority: 0 }) as Ticket;
-const source: TicketSource = { assigned: async () => [], read: async () => null, download: async () => [] };
+/**
+ * The tracker a pool is built over by default: the tracker contract's in-memory fake (A11-159), holding no ticket, with the operations the contract requires and its keywords. The fake's
+ * optional reads (`blockers`, `projectSummaries`) are left out: with them a start goes on in the background after a test has ended and writes into the state folder the test removed, and
+ * the tests that exercise those reads name them (`{ ...source, blockers }`).
+ */
+const fake = createFakeTracker();
+const source: TicketSource = { assigned: fake.assigned, read: fake.read, download: fake.download, keywords: fake.keywords };
 
 /** A herdr that opens workspaces and starts agents, and reports each label's status from `status`. A verb in `refused` fails as herdr does. */
 function herdr(status: Map<string, string>, screen: { text: string } = { text: "" }) {
@@ -4052,6 +4059,17 @@ test("a grill run's first prompt asks its first question, and its brief names th
   assert.match(brief, /## The mode\n\nThe board chose this run's mode, and it decides how the run works, whatever the instruction under "What to do" says: `grill`\./);
   assert.match(brief, /Mode: grill\./, "the instruction's {mode} is filled with the board's mode");
   assert.doesNotMatch(brief, /Nobody will answer/);
+});
+
+test("A11-159: a new-ticket run is granted the tools of the tracker the host names, and its record hook is matched on that tracker's create tool, not on Linear's", async () => {
+  const { pool, dir, run, settings } = writing({}, { ...WRITER, providers: { tracker: { provider: "fake-tracker" } } });
+  await pool.tick();
+  assert.equal(run().phase, "running");
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "writer-run"), "utf8")), { mode: "quick", tools: ["mcp__fake__create_ticket", "mcp__fake__prepare_upload", "mcp__fake__attach_upload"] });
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /create the ticket with `mcp__fake__create_ticket`, with no `id`\. Attach files with `mcp__fake__prepare_upload` and `mcp__fake__attach_upload`/);
+  const sessionSettings = JSON.parse(readFileSync(join(writerFolder(settings, "w1"), ".claude", "settings.local.json"), "utf8")) as { hooks: { PostToolUse: { matcher: string }[] } };
+  assert.deepEqual(sessionSettings.hooks.PostToolUse.map(({ matcher }) => matcher), ["mcp__fake__create_ticket"]);
 });
 
 test("a new-ticket run that never ends is failed after 30 minutes of running, and a grill run is not timed out before 4 hours", async () => {

@@ -11,8 +11,8 @@ import type { Change } from "../ticket-mode/settings-edit.ts";
 import { DEFAULT_PROVIDER, isActive, type BlockReport, type Providers } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, CONCERN_OF_BLOCK, type ProviderBlock } from "./concerns.ts";
 import type { Catalog, CatalogPlugin } from "./manifest.ts";
-import { pluginNamed } from "./registry.ts";
-import { onlyOneSentence } from "./rules.ts";
+import { blockSettings, pluginNamed } from "./registry.ts";
+import { enableRefusal, fakeRefusal, onlyOneSentence } from "./rules.ts";
 
 /** A command the plugin CLI refuses, with the sentence that says why and what to do. */
 export class PluginCommandRefusal extends Error {}
@@ -42,6 +42,12 @@ function targetOf(name: string, { providers, catalog }: PlanContext): Target {
     return refuse(`${name} is a ${CONCERN_LABEL[plugin.concern]} plugin, which project.json's messaging key configures: agent-org plugin does not write it until A11-162 moves messaging onto the registry`);
   }
   return { plugin, block, report: providers.blocks[block] };
+}
+
+/** Refuses a fake, which the reader accepts (core's tests enable one) and which has no code to run on a host: unless the reader refuses it first, with its own, kinder, sentence. */
+function refuseFake(plugin: CatalogPlugin, catalog: Catalog): void {
+  const fake = enableRefusal(plugin, catalog) === null ? fakeRefusal(plugin) : null;
+  if (fake !== null) refuse(fake);
 }
 
 /** Refuses while any old key still stands for a setting of the block: the block would be written beside it, and the reader refuses a block and an alias that disagree. */
@@ -85,6 +91,7 @@ function settingChanges(block: ProviderBlock, sets: readonly string[]): Change[]
 export function planInstall(name: string, options: Readonly<{ sets: readonly string[]; replace: boolean }>, context: PlanContext): Plan {
   const target = targetOf(name, context);
   const { plugin, block, report } = target;
+  refuseFake(plugin, context.catalog);
   refuseWhileAliased(block, context.providers);
   const replaced = report.provider !== "none" && report.provider !== plugin.name ? report.provider : null;
   if (replaced !== null && !options.replace) {
@@ -98,6 +105,7 @@ export function planInstall(name: string, options: Readonly<{ sets: readonly str
 /** Switches an installed plugin on. One that is on is left as it is. */
 export function planEnable(name: string, context: PlanContext): Plan {
   const target = targetOf(name, context);
+  refuseFake(target.plugin, context.catalog);
   refuseWhileAliased(target.block, context.providers);
   refuseUnlessInstalled(target);
   if (target.report.enabled) return { changes: [], said: `${name} is already enabled` };
@@ -135,7 +143,7 @@ export function planUninstall(name: string, context: PlanContext): Plan {
 export function configLines(name: string, keys: readonly string[], context: PlanContext): readonly string[] {
   const target = targetOf(name, context);
   refuseUnlessInstalled(target);
-  const declared = Object.keys(target.plugin.settings);
+  const declared = blockSettings(target.plugin);
   const unknown = keys.find((key) => !declared.includes(key));
   if (unknown !== undefined) refuse(`${unknown} is not a setting of ${name}: its settings are ${declared.join(", ") || "none"}`);
   return (keys.length === 0 ? declared : keys).map((key) => {

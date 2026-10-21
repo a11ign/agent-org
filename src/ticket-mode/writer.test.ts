@@ -7,6 +7,10 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { CREATED_FILE, createdKeyOf, createdKeysOf, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
 import { inPickScope } from "./pick-scope.ts";
 
+/** How a tracker's creation names the ticket it made: under `issue` when it wraps it, as `identifier` or else `id` (the shape a tracker plugin declares in its manifest). */
+const SHAPE = { wrapper: "issue", fields: ["identifier", "id"] };
+const keyOf = (response: unknown): string | null => createdKeyOf(response, SHAPE);
+
 test("A11-135: a created outcome names the keys it made, and a run that made none cannot end created", () => {
   assert.deepEqual(parseWriterOutcome('{ "kind": "created", "created": ["A11-140", "A11-141"] }'), { kind: "created", created: ["A11-140", "A11-141"] });
   assert.match(parseWriterOutcome('{ "kind": "created", "created": [] }') as string, /names no ticket/);
@@ -29,18 +33,20 @@ test("A11-135: a needs-human outcome gives its reason, and keeps any ticket it m
 });
 
 test("A11-135: a creation's key is read from the result the tracker's tool returned, in any of its shapes", () => {
-  assert.equal(createdKeyOf({ identifier: "A11-140", title: "x" }), "A11-140");
+  assert.equal(keyOf({ identifier: "A11-140", title: "x" }), "A11-140");
   // Linear's own MCP answers with the key as `id`, as its get_issue does.
-  assert.equal(createdKeyOf({ id: "A11-135", title: "x", url: "https://linear.app/x" }), "A11-135");
-  assert.equal(createdKeyOf([{ type: "text", text: JSON.stringify({ issue: { identifier: "A11-141" } }) }]), "A11-141");
-  assert.equal(createdKeyOf({ content: [{ type: "text", text: JSON.stringify({ id: "A11-142" }) }] }), "A11-142");
-  assert.equal(createdKeyOf(JSON.stringify({ identifier: "A11-143" })), "A11-143");
+  assert.equal(keyOf({ id: "A11-135", title: "x", url: "https://linear.app/x" }), "A11-135");
+  assert.equal(keyOf([{ type: "text", text: JSON.stringify({ issue: { identifier: "A11-141" } }) }]), "A11-141");
+  assert.equal(keyOf({ content: [{ type: "text", text: JSON.stringify({ id: "A11-142" }) }] }), "A11-142");
+  assert.equal(keyOf(JSON.stringify({ identifier: "A11-143" })), "A11-143");
+  assert.equal(createdKeyOf({ issue: { identifier: "A11-144" } }, { wrapper: null, fields: ["key"] }), null, "a shape with no wrapper reads the answer itself, and only the fields it names");
+  assert.equal(createdKeyOf({ ticket: { key: "A11-145" } }, { wrapper: "ticket", fields: ["key"] }), "A11-145", "another tracker's shape is its manifest's");
 });
 
 test("A11-135: a result that names no ticket key gives none, so the hook refuses to record it", () => {
-  assert.equal(createdKeyOf({ content: [{ type: "text", text: "Created the issue." }] }), null);
-  assert.equal(createdKeyOf({ id: "7d1c5e2a-0000-4000-8000-000000000001" }), null);
-  assert.equal(createdKeyOf(undefined), null);
+  assert.equal(keyOf({ content: [{ type: "text", text: "Created the issue." }] }), null);
+  assert.equal(keyOf({ id: "7d1c5e2a-0000-4000-8000-000000000001" }), null);
+  assert.equal(keyOf(undefined), null);
 });
 
 test("A11-135: the record reads one key per line, and a line that is not a key makes the whole record unreadable", () => {

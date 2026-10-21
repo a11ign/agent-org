@@ -23,7 +23,7 @@
 import { TicketSettingsRefusal } from "./settings-refusal.ts";
 import { CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
 import type { Catalog } from "../plugins/manifest.ts";
-import { defaultCatalog, pluginNamed, pluginsOfConcern } from "../plugins/registry.ts";
+import { blockSettings, defaultCatalog, isTrackerConnector, pluginNamed, pluginsOfConcern } from "../plugins/registry.ts";
 import { enableRefusal, onlyOneSentence, quoted } from "../plugins/rules.ts";
 
 export { PROVIDER_BLOCKS, type ProviderBlock };
@@ -72,12 +72,6 @@ export type Providers = Readonly<{ blocks: Readonly<Record<ProviderBlock, BlockR
 
 /** The shape a publish block takes, named in each refusal of one. */
 export const PUBLISHER_SHAPE = "must be { \"run\": \"<the publish run's instruction, naming {prs} and {dir}>\", \"model\": \"<optional, haiku>\", \"effort\": \"<optional, low>\", \"connectors\": [\"^mcp__...\"] }";
-
-/** A Linear connector's pattern: the tracker's own reads, which move into the `tracker` block. */
-const LINEAR_CONNECTOR = /^\^mcp__(linear__|claude_ai_Linear__)/;
-
-/** Whether a connector pattern is one of the tracker's, as `tracker.connectors` takes them. */
-export const isLinearConnector = (pattern: string): boolean => LINEAR_CONNECTOR.test(pattern);
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -136,18 +130,18 @@ function blocksOf(tickets: Record<string, unknown>): Record<string, unknown> {
   return providers;
 }
 
-/** The plugins a block may name, as the refusal lists them: the catalog's plugins of its concern that the pin lets run, and `none` where a concern may have no plugin. */
+/** The plugins a block may name, as the refusal lists them: the catalog's plugins of its concern that the pin lets run, never a fake (it runs no host), and `none` where a concern may have no plugin. */
 function choosable(block: ProviderBlock, catalog: Catalog): string[] {
   const concern = CONCERN_OF_BLOCK[block];
   const pin = catalog.pins[concern];
-  const names = pluginsOfConcern(catalog, concern).map(({ name }) => name).filter((name) => pin === undefined || pin.runs.includes(name));
+  const names = pluginsOfConcern(catalog, concern).filter(({ where }) => where !== "fake").map(({ name }) => name).filter((name) => pin === undefined || pin.runs.includes(name));
   return concern === "publisher" || concern === "reviewer" ? [...names, "none"] : names;
 }
 
 /** The settings a plugin takes besides `provider` and `enabled`. `none` takes the union of its concern's, so a stray one is refused as not applying (`publishOf`), not as unknown. */
 function declaredSettings(block: ProviderBlock, provider: string, catalog: Catalog): string[] {
-  if (provider !== "none") return Object.keys(pluginNamed(catalog, provider)?.settings ?? {});
-  return [...new Set(pluginsOfConcern(catalog, CONCERN_OF_BLOCK[block]).flatMap(({ settings }) => Object.keys(settings)))];
+  if (provider !== "none") return blockSettings(pluginNamed(catalog, provider) ?? { settings: {} });
+  return [...new Set(pluginsOfConcern(catalog, CONCERN_OF_BLOCK[block]).flatMap((plugin) => blockSettings(plugin)))];
 }
 
 /** `enabled` of a block: absent is true, anything but true or false is refused by name, and the tracker and the code host may not be disabled. */
@@ -210,17 +204,25 @@ type Named = Readonly<{ provider: string; enabled: boolean }>;
 /** A concern's default plugin, enabled: what a block that is missing, with no alias, is. */
 const defaultNamed = (block: ProviderBlock): Named => ({ provider: DEFAULT_PROVIDER[block], enabled: true });
 
+/** The settings the tracker plugin declares beyond the five core reads by name: each at its own key in the block, so the plugin is given them (a plugin's `create` reads only its block). */
+function ownSettingsOf(provider: string, catalog: Catalog, own: (name: string) => Found | undefined): Record<string, Setting> {
+  const named = pluginNamed(catalog, provider);
+  const core = new Set(["key", "connectors", "workingState", "plannedState", "takenStates"]);
+  return Object.fromEntries(blockSettings(named ?? { settings: {} }).filter((name) => !core.has(name)).map((name) => [name, plain(own(name), `tickets.providers.tracker.${name}`)]));
+}
+
 function trackerOf(block: unknown, tickets: Record<string, unknown>, read: AliasRead[], catalog: Catalog): BlockReport {
   const provider = providerOf("tracker", block, catalog) ?? defaultNamed("tracker");
   const own = (name: string) => ownOf(block, "tracker", name);
-  const linear = Array.isArray(tickets.connectors) ? tickets.connectors.filter((pattern) => typeof pattern === "string" && isLinearConnector(pattern)) : [];
+  const trackers = Array.isArray(tickets.connectors) ? tickets.connectors.filter((pattern) => isTrackerConnector(catalog, pattern)) : [];
   const planner = isObject(tickets.planner) ? tickets.planner : {};
   const settings = {
     key: choose({ own: own("key"), alias: found(tickets.linearKey, "tickets.linearKey"), newAt: "tickets.providers.tracker.key" }, read),
-    connectors: choose({ own: own("connectors"), alias: linear.length > 0 ? found(linear, "tickets.connectors") : undefined, newAt: "tickets.providers.tracker.connectors", same: sameList }, read),
+    connectors: choose({ own: own("connectors"), alias: trackers.length > 0 ? found(trackers, "tickets.connectors") : undefined, newAt: "tickets.providers.tracker.connectors", same: sameList }, read),
     workingState: choose({ own: own("workingState"), alias: found(tickets.workingState, "tickets.workingState"), newAt: "tickets.providers.tracker.workingState" }, read),
     plannedState: choose({ own: own("plannedState"), alias: found(planner.state, "tickets.planner.state"), newAt: "tickets.providers.tracker.plannedState" }, read),
     takenStates: plain(own("takenStates"), "tickets.providers.tracker.takenStates"),
+    ...ownSettingsOf(provider.provider, catalog, own),
   };
   return reportOf(provider, settings, sourceOf(block, read));
 }

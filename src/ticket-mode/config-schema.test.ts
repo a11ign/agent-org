@@ -1,7 +1,12 @@
 // no-token: gh -- reads the schema and runs the readers on a fixture; the readers' own reads are recorded, so no file outside the test is read
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GROUPS, SCHEMA, type SchemaEntry } from "./config-schema.ts";
+import { GROUPS, type SchemaEntry } from "./config-schema.ts";
+import { defaultSchema } from "../plugins/schema.ts";
+import { keySource } from "../../plugins/linear/key.ts";
+
+/** The schema the page and the readers use: core's entries and the bundled plugins' settings (A11-159). */
+const SCHEMA = defaultSchema();
 import { parseTicketSettings } from "./settings.ts";
 import { parseHostConfig, parseBeforeTick, parseUnitsDeclaration } from "../host-config.ts";
 import { parseProjectDeclaration } from "../project-config.ts";
@@ -121,6 +126,8 @@ function hostReads(): Set<string> {
   readsOf(reads, () => parseHostConfig(text, "host.json"));
   // The ticket block's reader takes the parsed object, so it is recorded here rather than through `JSON.parse`.
   parseTicketSettings(recording(HOST, "", reads) as typeof HOST, "/home/a");
+  // The tracker's key is the Linear plugin's to read (A11-159): core hands the block's value over, and the plugin's own reader is what asks it for `keychain` and `path`.
+  keySource(recording(HOST.tickets.providers.tracker.key, "tickets.providers.tracker.key", reads));
   readsOf(reads, () => haikuBriefEnabled({ ...quiet, read: () => text }));
   readsOf(reads, () => ceoOneShotEnabled({ ...quiet, read: () => text }));
   readsOf(reads, () => orchestratorOneShotEnabled({ ...quiet, read: () => text }));

@@ -16,7 +16,8 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { HOST_FILE_ENV, readTicketSettings } from "./settings.ts";
 import { createBoard } from "./server.ts";
 import { herdrName } from "./pool.ts";
-import type { Ticket, TicketSource } from "./source.ts";
+import type { TicketSource } from "./source.ts";
+import { createFakeTracker, fakeTicket } from "../plugins/fakes/tracker.ts";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SERVER = realpathSync(join(HERE, "server.ts"));
@@ -147,6 +148,19 @@ test("ticket:serve starts on a host file with only clones and tickets, and no ti
   assert.equal(outcome.started, true, outcome.stderr);
   assert.doesNotMatch(outcome.stderr, STACK);
   assert.doesNotMatch(outcome.stderr, /ProjectDeclarationRefusal/);
+});
+
+test("A11-159: the board runs on the tracker plugin: a tracker block that names a fake, a key the plugin cannot read and a key of a shape the plugin does not know each refuse the start, naming the plugin", async () => {
+  const fake = await serveFreshHost("serve-fake-tracker-", { providers: { tracker: { provider: "fake-tracker" } } });
+  assert.equal(fake.started, false);
+  assert.equal(fake.code, 1);
+  assert.match(fake.stderr, /ticket:serve: the tracker is fake-tracker, which has no code to run on a host: name a bundled tracker plugin in tickets\.providers\.tracker/);
+  const unreadable = await serveFreshHost("serve-no-key-", { linearKey: { path: "/nonexistent/linear.key" } });
+  assert.equal(unreadable.started, false);
+  assert.match(unreadable.stderr, /ticket:serve: the tracker plugin linear was refused: ticket mode: the Linear key file \/nonexistent\/linear\.key cannot be read/);
+  const relative = await serveFreshHost("serve-bad-key-", { providers: { tracker: { provider: "linear", key: "file" } }, linearKey: undefined });
+  assert.equal(relative.started, false);
+  assert.match(relative.stderr, /the tracker plugin linear was refused: tickets\.providers\.tracker\.key must be \{ "keychain": "<service>" \} or \{ "path": "\/abs\/file" \}/);
 });
 
 test("A11-94: ticket:serve starts on a ticket-only host that names tickets.writer, and no project is needed for the writer", async () => {
@@ -283,12 +297,7 @@ test("on a ticket-only host, a new-ticket request runs the writer, which files i
     tickets: { linearKey: { path: keyPath }, ...WRITER_HOST } }));
   const settings = readTicketSettings({ [HOST_FILE_ENV]: hostPath });
   assert.equal(settings.writer?.model, "opus", "the writer's defaults, on a host that names no more");
-  const source: TicketSource = {
-    assigned: async () => [],
-    read: async (key) => (key === "NBF-101" ? { key, title: "feat: show requests", description: "", url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog",
-      statusOrder: 0, team: "NBF", project: null, priority: 0, parent: null } as Ticket : null),
-    download: async () => [],
-  };
+  const source: TicketSource = createFakeTracker([fakeTicket("NBF-101", { title: "feat: show requests", url: "https://linear.app/x/NBF-101", branch: "nbf-101", status: "Backlog", team: "NBF" })]);
   const status = new Map<string, string>();
   const board = createBoard({ settings, source, key: "k".repeat(48), queuePath: join(root, "state", "tickets", "queue.json"), choicePath: join(root, "state", "tickets", "choice.json"),
     poolDeps: { herdr: herdrWith(status), wait: async () => {}, now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"),

@@ -14,7 +14,8 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { CI_BODY_REPORTS, type BodyReport, type DiffReading } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { outsideRegionDeclarations, regionPassLine, regionRefusalText, standingAgainstRegion } from "../pr-open-region.ts";
 import { declaredRegionFiles, splitRegionEntry } from "../region-paths.ts";
-import { linearSource, readLinearKey } from "./linear.ts";
+import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
+import { defaultCatalog } from "../plugins/registry.ts";
 import { pathsAsRegion } from "./overlap.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Keywords, type TicketSource } from "./source.ts";
@@ -59,7 +60,7 @@ export type TicketEnv = Readonly<Record<string, string | undefined>>;
 /** What `readTicketContext` reads, each a seam a test replaces. The defaults read the host file named by the run, and the Linear key it names. */
 export type TicketReadDeps = Readonly<{
   settings?: () => TicketSettings;
-  source?: (settings: TicketSettings) => TicketSource;
+  source?: (settings: TicketSettings) => TicketSource | Promise<TicketSource>;
   /** `git` in the tree `pr:open` runs in. */
   git: (args: string[]) => string;
   exists?: (path: string) => boolean;
@@ -68,15 +69,15 @@ export type TicketReadDeps = Readonly<{
 /**
  * THE TICKET, READ: the run's key and branch from the environment, the ticket and its files from the tracker, and the tree from `git`. Throws when
  * the ticket cannot be read or the run's branch is unset, and the caller refuses the create with the reason, as it does for an unreadable row.
- * The Linear key is read only to make the two reads; nothing is written to the tracker and the key is never printed.
+ * The tracker's key is read only to make the two reads; nothing is written to the tracker and the key is never printed.
  * @returns {Promise<TicketContext>}
  */
-export async function readTicketContext(env: TicketEnv, { settings = () => hostSettingsOf(env), source = linearTrackerOf, git, exists = existsSync }: TicketReadDeps): Promise<TicketContext> {
+export async function readTicketContext(env: TicketEnv, { settings = () => hostSettingsOf(env), source = trackerOf, git, exists = existsSync }: TicketReadDeps): Promise<TicketContext> {
   const key = env[TICKET_ENV.key] ?? "";
   const branch = env[TICKET_ENV.branch] ?? "";
   if (branch === "") throw new Error(`${TICKET_ENV.branch} is unset, so the branch the ticket's worktrees are made on is not known`);
   const host = settings();
-  const tracker = source(host);
+  const tracker = await source(host);
   const ticket = await tracker.read(key);
   if (ticket === null) throw new Error(`the tracker has no ticket ${key}`);
   const plan = host.plan;
@@ -111,8 +112,9 @@ export async function readTicketContext(env: TicketEnv, { settings = () => hostS
 /** The host file a run names: the pool gives it as `AGENT_ORG_TICKET_HOST`, else the host's own `AGENT_ORG_HOST`. */
 const hostSettingsOf = (env: TicketEnv): TicketSettings => readTicketSettings({ [HOST_FILE_ENV]: env[TICKET_ENV.host] ?? env[HOST_FILE_ENV] });
 
-/** The tracker the host file names, with the Linear key it names. */
-const linearTrackerOf = (host: TicketSettings): TicketSource => linearSource({ key: readLinearKey(host.linearKey) });
+/** The tracker the host file names: the enabled tracker plugin's source, built with the key its block names. */
+const trackerOf = async (host: TicketSettings): Promise<TicketSource> =>
+  (await activatePlugins(host.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: host.stateDir, pick: host.pick }))).tracker();
 
 /** A downloaded file's name without the `attachment-<n>-` the download puts before the title the file was uploaded under. */
 const titleOf = (file: string): string => basename(file).replace(/^attachment-\d+-/, "");

@@ -4,10 +4,32 @@
 // IT HOLDS TICKETS AND NOTHING ELSE. A test seeds them (`seed`), and reads what the board did to them (`ticketOf`, `comments`, `calls`) rather than what core believes it did.
 // It implements every optional operation, so a test of the board's planning, ordering or completion has a tracker that takes part; a test of a tracker that has none builds
 // its own object, which is a `TicketSource` too.
-import type { Assignee, Blocker, People, PullState, ScopePage, StateMove, Ticket, TicketSource } from "../contracts/tracker.ts";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { Assignee, Blocker, People, PullState, ScopePage, StateMove, Ticket, TicketSource, TrackerWriting } from "../contracts/tracker.ts";
+
+/**
+ * What the fake declares a new-ticket run files with (contract 1.1): tools of an `mcp__fake__` server, the numbers the contract names, and refusals worded like a real tracker's.
+ * A core test of the writer, the hook or the brief builds on this, so it names no real tracker.
+ */
+export const FAKE_TRACKER_WRITING: TrackerWriting = Object.freeze({
+  label: "Fake",
+  createTool: "mcp__fake__create_ticket",
+  attachTools: ["mcp__fake__prepare_upload", "mcp__fake__attach_upload"],
+  filingTools: "^mcp__fake__(?:create_ticket|prepare_upload|attach_upload|attach_file)$",
+  refusedInputs: [
+    { input: "id", refusal: "is called with an id, which updates an existing ticket: a new-ticket run creates tickets and never updates one" },
+    { input: "blocks", refusal: "is called with blocks, which writes a relation on another ticket: a new-ticket run sets parentId, blockedBy and relatedTo only" },
+  ],
+  attachTicketInput: "ticket",
+  createdKey: Object.freeze({ wrapper: "ticket", fields: ["key"] }),
+  priorities: Object.freeze({ urgent: 1, high: 2, medium: 3, low: 4, none: 0 }),
+  readTools: ["mcp__fake__get_ticket"],
+  briefNote: "Use the `mcp__fake__` tools.",
+});
 
 /** A ticket as the fake holds it: the board's ticket, with the state type the tracker would name and the relations the fake records. */
-type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: string[] };
+type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: { name: string; text: string }[] };
 type Tickets = Map<string, Held>;
 
 const ME: Assignee = { id: "fake-me", name: "Fake Person" };
@@ -52,7 +74,12 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
     },
     async download(ticket, dir) {
       calls.push(`download ${ticket.key}`);
-      return heldOf(held, ticket.key).files.map((file) => `${dir}/${file}`);
+      // A ticket the fake was never seeded with has no files, as a core test that downloads for any ticket it queued expects. A file it holds is written into `dir`, as a download is.
+      return (held.get(ticket.key)?.files ?? []).map(({ name, text }) => {
+        const path = join(dir, name);
+        writeFileSync(path, text);
+        return path;
+      });
     },
     stateTypes: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).statusType] as const] : []))),
     pullStates: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).pulls] as const] : []))),
@@ -69,7 +96,7 @@ function writesOf(held: Tickets, comments: { key: string; text: string }[]): Pic
   return {
     async attachPlan(key, files, state) {
       const entry = heldOf(held, key);
-      for (const file of files) if (!entry.files.includes(file)) entry.files.push(file);
+      for (const file of files) if (!entry.files.some(({ name }) => name === file)) entry.files.push({ name: file, text: "" });
       if (state !== null && entry.statusType === "unstarted") setStatus(entry, state, "started");
       return null;
     },
@@ -119,9 +146,9 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
     linkPull(key: string, url: string, state: PullState) {
       heldOf(held, key).pulls[url] = state;
     },
-    /** Name a file as uploaded to a ticket, for `download` to return. */
-    attach(key: string, file: string) {
-      heldOf(held, key).files.push(file);
+    /** Name a file as uploaded to a ticket, with its text, for `download` to write and return. */
+    attach(key: string, file: string, text = "") {
+      heldOf(held, key).files.push({ name: file, text });
     },
     comments,
     calls,

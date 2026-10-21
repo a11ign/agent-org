@@ -5,10 +5,11 @@ import { pathToFileURL } from "node:url";
 import { resolveProviders } from "../ticket-mode/providers.ts";
 import { loadEnabled, settingsOfBlock } from "./loader.ts";
 import type { PluginDeps, PluginModule } from "./manifest.ts";
+import { fakePluginDeps } from "./fakes/deps.ts";
 import { buildCatalog, type PackageFiles } from "./registry.ts";
 
 const ROOT = "/checkout";
-const DEPS: PluginDeps = { env: {}, stateDir: "/state", log: () => undefined };
+const DEPS: PluginDeps = fakePluginDeps();
 
 /** A checkout holding bundled plugins by directory name, each of the concern named, every entry present. */
 function checkout(concerns: Readonly<Record<string, string>>, contract = "1.0"): PackageFiles {
@@ -50,14 +51,14 @@ test("a disabled plugin's code is never imported, though its block names it and 
   const { urls, importModule } = recorder({});
   const result = await loadEnabled(providers, catalog, DEPS, importModule);
   assert.deepEqual(urls, []);
-  assert.deepEqual(result, { loaded: [], refusals: [] });
+  assert.deepEqual(result, { loaded: [], unbuilt: [], refusals: [] });
 });
 
 test("a built-in is skipped, since core runs it, and so is a fake", async () => {
   const catalog = buildCatalog({ root: ROOT, files: checkout({}), pins: {} });
-  const providers = resolveProviders(host({ tracker: { provider: "linear" }, publish: { provider: "fake-publisher" }, exposure: { provider: "tailscale" } }), catalog);
+  const providers = resolveProviders(host({ codeHost: { provider: "github" }, publish: { provider: "fake-publisher" }, exposure: { provider: "tailscale" } }), catalog);
   const { urls, importModule } = recorder({});
-  assert.deepEqual(await loadEnabled(providers, catalog, DEPS, importModule), { loaded: [], refusals: [] });
+  assert.deepEqual(await loadEnabled(providers, catalog, DEPS, importModule), { loaded: [], unbuilt: [], refusals: [] });
   assert.deepEqual(urls, []);
 });
 
@@ -91,4 +92,6 @@ test("a plugin whose create throws is one refusal naming it", async () => {
   const { importModule } = recorder({ [urlOf("my-tracker")]: moduleOf(() => { throw new Error("no key at /k/linear"); }) });
   const result = await loadEnabled(providers, catalog, DEPS, importModule);
   assert.deepEqual(result.refusals, [{ plugin: "my-tracker", concern: "tracker", why: "no key at /k/linear" }]);
+  assert.deepEqual(result.unbuilt.map(({ plugin }) => plugin.name), ["my-tracker"], "its module imported, so doctor can still run its checks, which say why create threw");
+  assert.deepEqual(result.loaded, []);
 });

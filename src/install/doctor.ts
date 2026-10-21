@@ -20,14 +20,13 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
-import { readLinearKey } from "../ticket-mode/linear.ts";
-import { parseTicketSettings, type KeySource, type TicketSettings } from "../ticket-mode/settings.ts";
+import { parseTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
 import { PROVIDER_BLOCKS, type ProviderBlock, type Providers } from "../ticket-mode/providers.ts";
 import { blockOf } from "../plugins/concerns.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { messagingStateOfFile } from "../plugins/messaging-state.ts";
 import type { Catalog, PluginDeps } from "../plugins/manifest.ts";
-import { defaultCatalog } from "../plugins/registry.ts";
+import { defaultCatalog, trackerWritingOf } from "../plugins/registry.ts";
 import { type MessagingState, sourceWords } from "../plugins/view.ts";
 import { readsConcernContract, unreadMajorRefusal } from "../plugins/version.ts";
 import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
@@ -48,6 +47,7 @@ import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type S
 import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
+import { realExec } from "../plugins/active.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -69,7 +69,6 @@ export type DoctorDeps = Readonly<{
   /** The first executable called `name` on PATH, or null. */
   which: (name: string) => string | null;
   readFile: (path: string) => string;
-  readKey: (source: KeySource) => string;
   /** A file's permission bits, or null when it cannot be read. */
   mode: (path: string) => number | null;
   serviceState: (name: ServiceName) => ServiceState;
@@ -79,8 +78,8 @@ export type DoctorDeps = Readonly<{
   healthy: (port: number) => Promise<boolean>;
   /** Why the service manager will not load `name`'s unit, or null when it loads. */
   unitProblem: (name: ServiceName) => string | null;
-  /** What `claude mcp list` printed, or null when it could not run. */
-  mcpList: () => string | null;
+  /** Runs a program for a plugin's checks (`security` for a key, `claude mcp list`): its exit status, and what it printed. */
+  exec: PluginDeps["exec"];
   /** What `--version` the pinned pnpm prints, run as install and update run it, or null when it cannot run. */
   pnpmVersion: () => string | null;
   /** `tailscale` with `args`: its status is null when it cannot start. Asked only when `tickets.serve` puts the board on the tailnet. */
@@ -173,39 +172,6 @@ function hostCheck(deps: DoctorDeps): { check: Check; settings: TicketSettings |
   }
 }
 
-function keyCheck(settings: TicketSettings | null, deps: DoctorDeps): Check {
-  if (settings === null) return failed("tracker key", "not checked: the host file did not parse", "fix the host file first");
-  const source = settings.linearKey;
-  const where = "keychain" in source ? `Keychain service ${source.keychain}` : source.path;
-  try {
-    deps.readKey(source);
-    const file = "keychain" in source ? null : source.path;
-    const mode = file === null ? null : deps.mode(file);
-    if (mode !== null && (mode & 0o077) !== 0) {
-      return failed("tracker key", `${file} can be read by other users (mode ${(mode & 0o777).toString(8)})`, `chmod 600 ${file}`);
-    }
-    return ok("tracker key", `readable from ${where}`);
-  } catch {
-    return failed("tracker key", `nothing readable at ${where}`, "keychain" in source
-      ? `security add-generic-password -a "$USER" -s ${source.keychain} -w`
-      : `write your Linear personal API key to ${source.path} with mode 600, or run \`agent-org onboard\``);
-  }
-}
-
-/** Linear's MCP, which workers and planners read their tickets through, connected for Claude Code. */
-function linearMcpCheck(deps: DoctorDeps): Check {
-  const listed = deps.mcpList();
-  const add = "run `agent-org onboard`, which registers it with the Linear key, or `claude mcp add --scope user --transport http linear https://mcp.linear.app/mcp --header \"Authorization: Bearer <key>\"`";
-  if (listed === null) return failed("linear mcp", "`claude mcp list` could not run", "install Claude Code and put `claude` on PATH, then run `agent-org onboard`");
-  const line = listed.split("\n").find((entry) => entry.startsWith("linear:"));
-  if (line === undefined) return failed("linear mcp", "Claude Code has no `linear` MCP, so workers cannot read their tickets", add);
-  return /Connected/.test(line) ? ok("linear mcp", line.trim())
-    : failed("linear mcp", line.trim(), "`claude mcp get linear` says why; a key that changed is fixed by `claude mcp remove linear --scope user`, then `agent-org onboard`");
-}
-
-/** The Linear tools a writer checks for duplicates with: either connector's read of a ticket, which a `tickets.connectors` entry must allow. */
-const LINEAR_READS = ["mcp__linear__get_issue", "mcp__claude_ai_Linear__get_issue"];
-
 /**
  * Each `plugin:skill` the writer's run names, of a plugin the session loads with a contract, with that contract (A11-139). Empty when the run names no such
  * skill, since a plugin that declares nothing is not checked.
@@ -216,19 +182,30 @@ function namedWriters(settings: TicketSettings, plugins: PluginProblems | null):
   return named.flatMap((ref) => contracts.filter(({ name }) => name === ref.plugin).map((contract) => ({ ...contract, ref })));
 }
 
+/** What the tracker plugin files a new-ticket run's tickets with, or the reason it declares none. */
+function writingOf(settings: TicketSettings): ReturnType<typeof trackerWritingOf> | string {
+  try {
+    return trackerWritingOf(settings.providers);
+  } catch (error) {
+    return (error as Error).message;
+  }
+}
+
 /**
  * The ticket writer (A11-94). Always informational when `tickets.writer` is absent, which hides New ticket on the board. When it is named, it fails
- * if no `tickets.connectors` entry lets a worker read a Linear ticket, since the writer checks for duplicates that way, and says whether Grill is on.
+ * if no `tickets.connectors` entry lets a worker read a ticket of the tracker plugin (its `readTools`), since the writer checks for duplicates that way, and says whether Grill is on.
  * Its skill is checked against the contract of the plugin that provides it (A11-139), never against the words of the instruction: a plugin's contract
  * that does not provide the skill fails it, and one that provides it says which plugin does.
  */
 function writerCheck(settings: TicketSettings | null, plugins: PluginProblems | null): Check {
   if (settings === null) return ok("ticket writer", "not checked: the host file did not parse");
   if (settings.writer === null) return ok("ticket writer", "no: New ticket is hidden, since tickets.writer is not named");
-  const reads = settings.connectors.some((pattern) => LINEAR_READS.some((tool) => new RegExp(pattern).test(tool)));
+  const writing = writingOf(settings);
+  if (typeof writing === "string") return failed("ticket writer", `yes, but ${writing}`, "name a tracker plugin that declares writer tooling in tickets.providers.tracker");
+  const reads = settings.connectors.some((pattern) => writing.readTools.some((tool) => new RegExp(pattern).test(tool)));
   if (!reads) {
-    return failed("ticket writer", "yes, but no tickets.connectors entry lets it read a Linear ticket, so it cannot check a new ticket for duplicates",
-      "run `agent-org onboard`, which names the Linear reads in tickets.connectors");
+    return failed("ticket writer", `yes, but no tickets.connectors entry lets it read a ${writing.label} ticket, so it cannot check a new ticket for duplicates`,
+      `run \`agent-org onboard\`, which names the ${writing.label} reads in tickets.connectors`);
   }
   const grill = settings.terminal === null ? "Grill is off until tickets.terminal is named" : "Grill is on";
   const writers = namedWriters(settings, plugins);
@@ -433,20 +410,25 @@ async function pluginRows(settings: TicketSettings | null, deps: DoctorDeps): Pr
   for (const plugin of catalog.plugins.filter(({ concern, contract, name }) => !readsConcernContract(concern, contract) && !enabledNames.has(name))) {
     rows.push(pluginFailed(plugin.name, unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract), "update agent-org, or update the plugin to a contract major agent-org reads"));
   }
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings.stateDir, log: () => undefined };
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings.stateDir, log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, pick: settings.pick };
   const loaded = await load(settings.providers, catalog, pluginDeps);
-  for (const { plugin, concern, why } of loaded.refusals) {
+  // A plugin whose module imported but whose `create` threw has checks of its own, which say why (a key that cannot be read) with the fix: its refusal is a row only when none of them fails.
+  const unbuilt = new Set(loaded.unbuilt.map(({ plugin }) => plugin.name));
+  const addRefusal = ({ plugin, concern, why }: LoadResult["refusals"][number]): void => {
     const block = blockOf(concern);
     const row = pluginFailed(plugin, why, "update agent-org, or the plugin");
     if (block !== null) byBlock[block].push(row);
     rows.push(row);
-  }
-  for (const { plugin, module } of loaded.loaded) {
+  };
+  loaded.refusals.filter(({ plugin }) => !unbuilt.has(plugin)).forEach(addRefusal);
+  for (const { plugin, module } of [...loaded.loaded, ...loaded.unbuilt]) {
     const block = blockOf(plugin.concern);
     if (block === null) continue;
     const checks = await module.doctorChecks(settingsOfBlock(settings.providers.blocks[block]), pluginDeps);
     byBlock[block].push(...checks);
     rows.push(...checks);
+    const refusal = loaded.refusals.find((candidate) => candidate.plugin === plugin.name);
+    if (unbuilt.has(plugin.name) && refusal !== undefined && checks.every((check) => check.ok)) addRefusal(refusal);
   }
   return { byBlock, rows };
 }
@@ -481,11 +463,9 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
   const stack = stackChecks(settings, deps);
   const terminal = await terminalChecks(settings, deps);
   const tailnet = await tailnetChecks(settings, deps);
-  const key = keyCheck(settings, deps);
-  const linear = linearMcpCheck(deps);
   const extra = await pluginRows(settings, deps);
   const codeHost = settings === null ? [] : [providerRow(settings, "codeHost", [...gh, ...stack, ...extra.byBlock.codeHost])];
-  const tracker = settings === null ? [] : [providerRow(settings, "tracker", [key, linear, ...extra.byBlock.tracker])];
+  const tracker = settings === null ? [] : [providerRow(settings, "tracker", extra.byBlock.tracker)];
   const exposure = settings === null ? [] : [providerRow(settings, "exposure", [...terminal, ...tailnet, ...extra.byBlock.exposure])];
   const publisher = settings === null ? [] : [providerRow(settings, "publish", extra.byBlock.publish)];
   const reviewer = settings === null ? [] : await reviewerChecks(settings, deps, extra.byBlock.reviewer);
@@ -501,8 +481,8 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...stack,
     ...codeHost,
     herdr === null ? failed("herdr", "`herdr` is not on PATH", "install herdr, which runs the workers' terminals, and put it on PATH") : ok("herdr", herdr),
-    key,
-    linear,
+    // The tracker plugin's own rows (for Linear: its key and its MCP), where they were when doctor owned them, then the tracker's row that summarises them.
+    ...extra.byBlock.tracker,
     ...tracker,
     writerCheck(settings, plugins),
     ...pluginChecks(settings, plugins),
@@ -515,7 +495,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...exposure,
     ...publisher,
     ...reviewer,
-    ...extra.rows,
+    ...extra.rows.filter((row) => !extra.byBlock.tracker.includes(row)),
     await messagingRow(deps),
     ok("pairing", PAIRING_STEPS),
     registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
@@ -786,15 +766,11 @@ export function defaultDoctorDeps(): DoctorDeps {
       const result = spawnSync("node", ["--version"], { encoding: "utf8" });
       return result.status === 0 ? result.stdout.trim() : null;
     },
-    which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), readKey: (source) => readLinearKey(source),
+    which: (name) => which(name), readFile: (path) => readFileSync(path, "utf8"), exec: realExec,
     mode: (path) => { try { return statSync(path).mode & 0o777; } catch { return null; } },
     serviceState: (name) => serviceState(name, services), answers: (port) => answers(port),
     healthy: (port) => answers(port, "/api/health", { healthy: true }),
     unitProblem: (name) => unitProblem(name, services),
-    mcpList: () => {
-      const result = spawnSync("claude", ["mcp", "list"], { encoding: "utf8", timeout: 60_000 });
-      return result.status === 0 ? result.stdout : null;
-    },
     pnpmVersion: () => {
       const { command, args } = pinnedPnpm(["--version"]);
       const result = spawnSync(command, args, { encoding: "utf8", timeout: 120_000, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" } });

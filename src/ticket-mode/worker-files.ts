@@ -14,7 +14,8 @@ import type { DenyRule } from "./settings.ts";
 import type { PullRequest, WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { PUBLISHED_FILE } from "../plugins/contracts/publisher.ts";
-import { DECISIONS_FILE, MAX_CREATED, PRIORITY_NUMBER, type Priority } from "./writer.ts";
+import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
+import { DECISIONS_FILE, MAX_CREATED, type Priority } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
@@ -73,14 +74,10 @@ export const PUBLISH_FILE = "publish-run";
 export const WRITER_FILE = "writer-run";
 /**
  * The tracker tools a new-ticket run may call to file its ticket and attach its plan, which the board grants by name in the writer's mark beside the
- * outcome file (A11-135). Creation only: `hook.ts` refuses any call with an `id`, a relation that writes on another ticket, and an attachment to a
- * ticket the run did not create. A build worker is granted none of them.
+ * outcome file (A11-135): the tracker plugin's create tool and attach tools (`TrackerWriting`). Creation only: `hook.ts` refuses any call with an input the plugin
+ * names (an `id`, a relation that writes on another ticket) and an attachment to a ticket the run did not create. A build worker is granted none of them.
  */
-export const WRITER_CREATE_TOOLS: readonly string[] = Object.freeze([
-  "mcp__linear__save_issue",
-  "mcp__linear__prepare_attachment_upload",
-  "mcp__linear__create_attachment_from_upload",
-]);
+export const writerTools = ({ createTool, attachTools }: Pick<TrackerWriting, "createTool" | "attachTools">): readonly string[] => Object.freeze([createTool, ...attachTools]);
 /**
  * Present beside the outcome file of a grill run that is waiting for the person (A11-129), written by the board: the question its agent asked, as
  * `{ "question": "...", "at": <ms> }`. The stop hook writes it when the agent ends its turn with no outcome, and the board shows it on the run's card.
@@ -776,10 +773,10 @@ export type HookCommand = Readonly<{ node: string; bin: string }>;
 /**
  * The ticket folder's `.claude/settings.local.json`. `readDirs` are the person's repositories, which the worker reads but never changes.
  * `plugins` are enabled here because a worker starts in the ticket's folder, where no project settings of the person's apply. A new-ticket run
- * (`writer`) also records each ticket it creates, as the creation returns (`ticket:hook post-tool-use`), so the board can check its outcome.
+ * (`writer`, the tracker's create tool) also records each ticket it creates, as the creation returns (`ticket:hook post-tool-use`), so the board can check its outcome.
  */
-export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [], writer = false }: {
-  model: string; ticketDir: string; readDirs: readonly string[]; hook: HookCommand; plugins?: readonly string[]; writer?: boolean;
+export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [], writer = null }: {
+  model: string; ticketDir: string; readDirs: readonly string[]; hook: HookCommand; plugins?: readonly string[]; writer?: Pick<TrackerWriting, "createTool"> | null;
 }): Record<string, unknown> {
   const command = (event: string) => ({ type: "command", command: hook.node, args: [hook.bin, "ticket:hook", event, ticketDir], timeout: 30 });
   return {
@@ -790,7 +787,7 @@ export function workerSettings({ model, ticketDir, readDirs, hook, plugins = [],
     hooks: {
       Stop: [{ hooks: [command("stop")] }],
       PreToolUse: [{ matcher: "*", hooks: [command("pre-tool-use")] }],
-      ...(writer ? { PostToolUse: [{ matcher: "mcp__linear__save_issue", hooks: [command("post-tool-use")] }] } : {}),
+      ...(writer === null ? {} : { PostToolUse: [{ matcher: writer.createTool, hooks: [command("post-tool-use")] }] }),
     },
   };
 }
@@ -856,12 +853,12 @@ const CHOICE_LANDS: Readonly<Record<keyof WriterForm, string>> = {
 };
 
 /** The form's choices as the brief's requirements: each one the person made, or none. PURE. */
-const formText = (form: WriterForm): string => {
+const formText = (form: WriterForm, priorities: TrackerWriting["priorities"]): string => {
   const lines = [
     form.project === undefined ? undefined : `- Project: ${form.project} (${CHOICE_LANDS.project})`,
     form.repo === undefined ? undefined : `- Repository: \`${form.repo}\` (${CHOICE_LANDS.repo})`,
     form.goal === undefined ? undefined : `- Goal: ${form.goal} (${CHOICE_LANDS.goal})`,
-    form.priority === undefined ? undefined : `- Priority: ${form.priority}, number ${PRIORITY_NUMBER[form.priority as Priority]} (${CHOICE_LANDS.priority})`,
+    form.priority === undefined ? undefined : `- Priority: ${form.priority}, number ${priorities[form.priority as Priority]} (${CHOICE_LANDS.priority})`,
     form.parent === undefined ? undefined : `- Parent: ${form.parent} (${CHOICE_LANDS.parent})`,
   ].filter((line): line is string => line !== undefined);
   return lines.length === 0 ? "None. The request decides each of these." : `${lines.join("\n")}\n\nThese are requirements. Use them as given: you set each one on the ticket you file.`;
@@ -926,11 +923,13 @@ Write \`decided\` once \`${DECISIONS_FILE}\` holds each section listed under "Wh
 /**
  * A new-ticket run's brief (A11-94, A11-124, A11-135): the instruction the machine configures, with the person's request, the folder and the board's mode
  * filled in, the choices the form made and where each lands, the team, the repositories it may read, and the outcome it writes last. The run runs the
- * create-ticket skill in full, in the mode the board chose, and files its own ticket and plan through the tracker's tools (`WRITER_CREATE_TOOLS`).
+ * create-ticket skill in full, in the mode the board chose, and files its own ticket and plan through the tracker's tools (`writerTools`).
  * Its one prohibition is an update to a ticket it did not create. PURE.
  */
-export function writerBriefText({ run, request, mode, form, clones, dir, pickTeam, ticket }: {
+export function writerBriefText({ run, request, mode, form, clones, dir, pickTeam, ticket, writing }: {
   run: string; request: string; mode: WriterMode; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
+  /** What the tracker plugin files a ticket with: its tools, its priority numbers and what to call it. */
+  writing: TrackerWriting;
   /** The team `tickets.pick` lists, or null: the team a new ticket goes in when its form names no parent. */
   pickTeam: string | null;
   /** The ticket a Grill run grills, read as it is now. A Grill run's brief is the grill of that ticket, and files nothing (A11-134). */
@@ -950,7 +949,7 @@ ${requestQuoted(request)}
 
 ## The person's choices
 
-${formText(form)}
+${formText(form, writing.priorities)}
 
 ## The mode
 
@@ -964,7 +963,7 @@ ${instruction}
 
 If the instruction above mentions draft files, ignore that: this run writes no draft, and it files its ticket as this brief says.
 
-Check the tracker before you file, with the read-only Linear tools (\`get\`, \`list\`, \`search\`, \`extract\`), for an open ticket that already asks for the same thing. Name each one under "Possible duplicates" in the description, with the reason. Read the repositories below to write the Done-when from what the code does today.
+Check the tracker before you file, with the read-only ${writing.label} tools (\`get\`, \`list\`, \`search\`, \`extract\`), for an open ticket that already asks for the same thing. Name each one under "Possible duplicates" in the description, with the reason. Read the repositories below to write the Done-when from what the code does today.
 
 Repositories on this machine (read only; never change them):
 
@@ -980,7 +979,7 @@ ${MISSING_SKILL}
 - **Relations:** \`parentId\`, \`blockedBy\` and \`relatedTo\` are set on the ticket you create. Never set \`blocks\`: it writes a relation on another ticket.
 - **Status:** make no status move. The skill's Planned move does not happen in this run: the ticket stays in the state it lands in, since a ticket is never updated after it is created here.
 - **Plan:** write the plan and its ADRs as the skill's unattended create form says, with "Decisions made without a person", and attach them to the ticket you created, as its Step 10 and \`plan-attachment.md\` say.
-- **Tracker tools:** create the ticket with \`mcp__linear__save_issue\`, with no \`id\`. Attach files with \`mcp__linear__prepare_attachment_upload\` and \`mcp__linear__create_attachment_from_upload\`, naming only a ticket this run created. Use the \`mcp__linear__\` tools, not the claude.ai Linear ones.
+- **Tracker tools:** create the ticket with \`${writing.createTool}\`, with no \`id\`. Attach files with ${writing.attachTools.map((tool) => `\`${tool}\``).join(" and ")}, naming only a ticket this run created. ${writing.briefNote}
 - **Several tickets:** an epic is its parent and one child per repository. This run creates at most ${MAX_CREATED} tickets.
 
 ## The outcome file

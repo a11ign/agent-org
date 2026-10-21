@@ -17,7 +17,8 @@
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, fsyncSync, openSync, closeSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { type Applies, SCHEMA, type SchemaEntry } from "./config-schema.ts";
+import { type Applies, type SchemaEntry } from "./config-schema.ts";
+import { defaultSchema } from "../plugins/schema.ts";
 import { type Edit as JsonEdit, spliceJson } from "./json-edit.ts";
 import { projectPathOf } from "./settings-read.ts";
 import { hostLevelRefusal, type Json, projectRefusal, ticketsRefusal } from "./settings-verdict.ts";
@@ -119,7 +120,7 @@ const pluginEntry = (key: string): SchemaEntry => ({ key, file: "host.json", gro
  * `options.plugins` is set.
  */
 function resolve(options: EditOptions, file: EditFile, key: string): Readonly<{ entry: Editable; path: readonly string[] }> {
-  const matched = SCHEMA.filter((entry) => entry.file === file).flatMap((entry) => {
+  const matched = defaultSchema().filter((entry) => entry.file === file).flatMap((entry) => {
     const { pattern, literal } = patternOf(entry.key);
     const match = pattern.exec(key);
     return match === null ? [] : [{ entry, literal, name: match[1] }];
@@ -292,7 +293,7 @@ export async function restoreBackup(options: EditOptions, file: EditFile): Promi
   const changes = changedPaths(before, after).map((path): ChangeShown => {
     const key = path.join(".");
     // A key this page does not describe is said to need the board restarted: the page cannot say when it is read.
-    const described = SCHEMA.filter((entry) => entry.file === file && patternOf(entry.key).pattern.test(key)).sort((a, b) => patternOf(b.key).literal - patternOf(a.key).literal)[0];
+    const described = defaultSchema().filter((entry) => entry.file === file && patternOf(entry.key).pattern.test(key)).sort((a, b) => patternOf(b.key).literal - patternOf(a.key).literal)[0];
     const editable = described?.edit.editable === true ? described.edit : undefined;
     const applies: Applies = editable?.applies ?? "board";
     const was = valueAt(before, path);

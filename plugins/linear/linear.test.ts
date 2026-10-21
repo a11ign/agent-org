@@ -3,9 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpDir } from "../lib/tmp-fixture.ts";
-import { LINEAR_API, downloadName, linearSource, pickQuery, scopedQuery, pullState, readLinearKey, uploadLinks } from "./linear.ts";
-import type { Ticket } from "./source.ts";
+import { tmpDir } from "../../src/lib/tmp-fixture.ts";
+import type { Ticket } from "../../src/plugins/contracts/tracker.ts";
+import { LINEAR_API, downloadName, linearSource, pickQuery, scopedQuery, pullState, uploadLinks } from "./linear.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
   identifier, title: `Title ${identifier}`, description: null, url: `https://linear.app/x/issue/${identifier}`, branchName: identifier.toLowerCase(),
@@ -208,17 +208,6 @@ test("blockers() reads each ticket's \"blocked by\" from Linear's inverse relati
 
 test("a pull request is merged or closed only on Linear's word, and open otherwise", () => {
   assert.deepEqual(["merged", "closed", "draft", "open", "inReview", undefined].map(pullState), ["merged", "closed", "open", "open", "open", "open"]);
-});
-
-test("the key comes from the Keychain service or the file the host file names, and an empty one is refused", () => {
-  const calls: string[][] = [];
-  assert.equal(readLinearKey({ keychain: "agent-org-linear" }, (args) => { calls.push(args); return "lin_api_x\n"; }), "lin_api_x");
-  assert.deepEqual(calls, [["find-generic-password", "-s", "agent-org-linear", "-w"]]);
-  assert.equal(readLinearKey({ path: "/k" }, () => { throw new Error("not used"); }, () => " lin_api_y \n"), "lin_api_y");
-  assert.throws(() => readLinearKey({ keychain: "s" }, () => "\n"), /is empty/);
-  assert.throws(() => readLinearKey({ keychain: "agent-org-linear" }, () => { throw new Error("SecKeychainSearchCopyNext"); }),
-    /no Linear key in the Keychain under agent-org-linear\. Store one with: security add-generic-password/, "a missing key names the one command that stores it");
-  assert.throws(() => readLinearKey({ path: "/nope" }, () => "", () => { throw new Error("ENOENT"); }), /cannot be read/);
 });
 
 test("stateTypes() reads every key's state type in one aliased request by team and number, and leaves out a key Linear has no ticket for", async () => {

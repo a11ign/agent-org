@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { SCHEMA } from "./config-schema.ts";
+import { defaultSchema } from "../plugins/schema.ts";
+
+/** The schema the page and the readers use: core's entries and the bundled plugins' settings (A11-159). */
+const SCHEMA = defaultSchema();
 
 /** A key cell links to the schema's file. GitHub cannot link to an entry by key, so the file is the link and the key is the search term. */
 const SCHEMA_LINK = /^\[`([^`]+)`\]\(src\/ticket-mode\/config-schema\.ts\)$/;
