@@ -4,9 +4,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/a11ign/agent-org/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/a11ign/agent-org/main/install.sh | bash -s -- --version v0.3.0
 #
-# It clones the newest release tag (or --version) into $AGENT_ORG_HOME/agent-org (default ~/.agent-org/agent-org), installs the
-# release's dependencies, and writes an `agent-org` launcher into ~/.local/bin. It changes nothing else: no sudo, no system
-# package, no shell rc file. Running it again fetches the tags and moves the same checkout.
+# It keeps a bare mirror of the repository in $AGENT_ORG_HOME/tool/repo.git (default ~/.agent-org/tool/repo.git), builds the newest release tag (or --version)
+# into its own folder, $AGENT_ORG_HOME/tool/versions/<tag>, with the release's dependencies, points $AGENT_ORG_HOME/tool/current at it, and writes an
+# `agent-org` launcher into ~/.local/bin that runs through `current`. Each release is a folder of its own, so a run that started on one keeps calling that
+# folder while a newer one is built beside it (A11-169). It changes nothing else: no sudo, no system package, no shell rc file. Running it again fetches the
+# tags and builds the newest into a new folder. An earlier install's checkout, $AGENT_ORG_HOME/agent-org, is left as it is.
 set -euo pipefail
 
 MIN_NODE_MAJOR=24
@@ -16,31 +18,40 @@ PNPM_VERSION=10.34.5
 REPO_URL="${AGENT_ORG_REPO:-https://github.com/a11ign/agent-org.git}"
 AGENT_ORG_HOME="${AGENT_ORG_HOME:-$HOME/.agent-org}"
 BIN_DIR="${AGENT_ORG_BIN_DIR:-$HOME/.local/bin}"
-CHECKOUT="$AGENT_ORG_HOME/agent-org"
+TOOL="$AGENT_ORG_HOME/tool"
+MIRROR="$TOOL/repo.git"
+VERSIONS="$TOOL/versions"
+CURRENT="$TOOL/current"
+LEGACY_CHECKOUT="$AGENT_ORG_HOME/agent-org"
 RELEASE_TAG='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
 say() { printf 'agent-org install: %s\n' "$*"; }
 fail() { printf 'agent-org install: %s\n' "$*" >&2; exit 1; }
 
-# Put the checkout back where it was before this run, when it was anywhere.
-restore() {
-  if [ -n "$1" ]; then
-    git -C "$CHECKOUT" -c advice.detachedHead=false checkout --quiet --detach "$1" || true
-  fi
-}
-
 usage() {
   cat <<'EOF'
 Usage: install.sh [--version vX.Y.Z]
 
-Installs the newest agent-org release, or the one --version names, into $AGENT_ORG_HOME/agent-org
-(default ~/.agent-org/agent-org), and the `agent-org` launcher into ~/.local/bin.
+Installs the newest agent-org release, or the one --version names, into its own folder under $AGENT_ORG_HOME/tool/versions
+(default ~/.agent-org/tool/versions), points $AGENT_ORG_HOME/tool/current at it, and writes the `agent-org` launcher into ~/.local/bin.
 EOF
+}
+
+# Point $CURRENT at versions/$1 with one rename, so a service starting at any moment finds a whole tool. `ln -sfn` would unlink first.
+swap_current() {
+  node -e '
+    const fs = require("node:fs");
+    const [target, link] = process.argv.slice(1);
+    const next = `${link}.${process.pid}.new`;
+    fs.rmSync(next, { force: true });
+    fs.symlinkSync(target, next, "dir");
+    fs.renameSync(next, link);
+  ' "versions/$1" "$CURRENT"
 }
 
 # Everything runs from main, called on the last line, so a download cut short by the network runs nothing.
 main() {
-  local version="" tag node_version node_major launcher temporary pnpm_cmd previous has_dependencies
+  local version="" tag node_version node_major launcher temporary pnpm_cmd has_dependencies folder partial
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --version) [ "$#" -ge 2 ] || fail "--version needs a tag, such as v0.3.0"; version="$2"; shift 2 ;;
@@ -61,6 +72,7 @@ main() {
   case "$BIN_DIR" in /*) ;; *) fail "AGENT_ORG_BIN_DIR must be an absolute path, and it is $BIN_DIR" ;; esac
 
   command -v git >/dev/null 2>&1 || fail "git is not installed. Install it (on macOS: xcode-select --install), then run this again."
+  command -v tar >/dev/null 2>&1 || fail "tar is not installed, and the release is unpacked with it."
 
   if ! command -v node >/dev/null 2>&1; then
     fail "Node.js $MIN_NODE_MAJOR or newer is needed, and there is no \`node\` on PATH. Install it from https://nodejs.org, or with a version manager (fnm install $MIN_NODE_MAJOR, or nvm install $MIN_NODE_MAJOR), then run this again."
@@ -76,53 +88,65 @@ main() {
   if [ ! -d "$AGENT_ORG_HOME" ]; then
     (umask 077 && mkdir -p "$AGENT_ORG_HOME")
   fi
-  if [ -d "$CHECKOUT/.git" ]; then
-    if [ -n "$(git -C "$CHECKOUT" status --porcelain --untracked-files=no)" ]; then
-      fail "$CHECKOUT has changes to tracked files, so it was not moved. Discard them (git -C $CHECKOUT checkout -- .), then run this again."
-    fi
-    say "updating $CHECKOUT"
-    git -C "$CHECKOUT" fetch --quiet --force --tags origin
-  elif [ -e "$CHECKOUT" ]; then
-    fail "$CHECKOUT exists and is not a git checkout. Move it away, then run this again."
+  mkdir -p "$TOOL" "$VERSIONS"
+  if [ -f "$MIRROR/HEAD" ]; then
+    say "updating $MIRROR"
+    git --git-dir "$MIRROR" fetch --quiet --force --tags origin
+  elif [ -e "$MIRROR" ]; then
+    fail "$MIRROR exists and is not a git repository. Move it away, then run this again."
   else
-    say "cloning $REPO_URL into $CHECKOUT"
-    git clone --quiet --no-checkout -- "$REPO_URL" "$CHECKOUT"
+    say "cloning $REPO_URL into $MIRROR"
+    git clone --bare --quiet -- "$REPO_URL" "$MIRROR"
   fi
 
   if [ -n "$version" ]; then
-    git -C "$CHECKOUT" rev-parse --quiet --verify "refs/tags/$version" >/dev/null || fail "there is no release $version"
+    git --git-dir "$MIRROR" rev-parse --quiet --verify "refs/tags/$version" >/dev/null || fail "there is no release $version"
     tag="$version"
   else
     # Numeric order, field by field: v0.10.0 is newer than v0.9.0, which a plain text sort gets backwards.
-    tag="$(git -C "$CHECKOUT" tag --list 'v*' | grep -E "$RELEASE_TAG" | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || true)"
+    tag="$(git --git-dir "$MIRROR" tag --list 'v*' | grep -E "$RELEASE_TAG" | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || true)"
     [ -n "$tag" ] || fail "$REPO_URL has no release tag yet"
     tag="v$tag"
   fi
-  # A checkout that was at a release before this run goes back to it when the dependency install fails, so the launcher keeps running that release.
-  previous="$(git -C "$CHECKOUT" rev-parse --quiet --verify HEAD 2>/dev/null || true)"
-  git -C "$CHECKOUT" -c advice.detachedHead=false checkout --quiet --detach "refs/tags/$tag"
 
-  # The release's runtime dependencies, when its package.json declares any. pnpm is the tool's package manager; Node 24 ships corepack, which runs it.
-  has_dependencies=0
-  (cd "$CHECKOUT" && node -e 'process.exit(Object.keys(require("./package.json").dependencies ?? {}).length > 0 ? 10 : 0)') || has_dependencies=$?
-  case "$has_dependencies" in
-    0) ;;
-    10)
-      say "installing the release's dependencies"
-      corepack_bin="${AGENT_ORG_COREPACK:-$(dirname "$(command -v node)")/corepack}"
-      if [ ! -x "$corepack_bin" ]; then
-        restore "$previous"
-        fail "the release's dependencies are installed with pnpm $PNPM_VERSION through the corepack Node $MIN_NODE_MAJOR ships beside node, and there is none at $corepack_bin. Reinstall Node $MIN_NODE_MAJOR, then run this again."
-      fi
-      pnpm_cmd=("$corepack_bin" "pnpm@$PNPM_VERSION")
-      if ! (cd "$CHECKOUT" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${pnpm_cmd[@]}" install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent); then
-        restore "$previous"
-        fail "installing the dependencies failed. Fix what pnpm printed above, then run this again."
-      fi
-      ;;
-    *) restore "$previous"; fail "could not read $CHECKOUT/package.json (node exited $has_dependencies)" ;;
-  esac
-  say "agent-org $tag is at $CHECKOUT"
+  folder="$VERSIONS/$tag"
+  partial="$folder.partial"
+  if [ -f "$folder/src/bin.ts" ]; then
+    say "$tag is built already"
+  else
+    # Built beside, renamed into place when whole: a failed or killed install leaves no folder that looks built, and `current` where it was.
+    rm -rf "$partial" "$folder"
+    mkdir -p "$partial"
+    if ! git --git-dir "$MIRROR" archive --format=tar "refs/tags/$tag" | tar -xf - -C "$partial"; then
+      rm -rf "$partial"
+      fail "could not unpack $tag from $MIRROR"
+    fi
+    [ -f "$partial/src/bin.ts" ] || { rm -rf "$partial"; fail "$tag holds no src/bin.ts, so it is not a release of agent-org"; }
+
+    # The release's runtime dependencies, when its package.json declares any. pnpm is the tool's package manager; Node 24 ships corepack, which runs it.
+    has_dependencies=0
+    (cd "$partial" && node -e 'process.exit(Object.keys(require("./package.json").dependencies ?? {}).length > 0 ? 10 : 0)') || has_dependencies=$?
+    case "$has_dependencies" in
+      0) ;;
+      10)
+        say "installing $tag's dependencies"
+        corepack_bin="${AGENT_ORG_COREPACK:-$(dirname "$(command -v node)")/corepack}"
+        if [ ! -x "$corepack_bin" ]; then
+          rm -rf "$partial"
+          fail "the release's dependencies are installed with pnpm $PNPM_VERSION through the corepack Node $MIN_NODE_MAJOR ships beside node, and there is none at $corepack_bin. Reinstall Node $MIN_NODE_MAJOR, then run this again."
+        fi
+        pnpm_cmd=("$corepack_bin" "pnpm@$PNPM_VERSION")
+        if ! (cd "$partial" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "${pnpm_cmd[@]}" install --prod --no-frozen-lockfile --ignore-scripts --ignore-workspace --silent); then
+          rm -rf "$partial"
+          fail "installing the dependencies failed, so current stays where it was. Fix what pnpm printed above, then run this again."
+        fi
+        ;;
+      *) rm -rf "$partial"; fail "could not read $partial/package.json (node exited $has_dependencies)" ;;
+    esac
+    mv "$partial" "$folder"
+  fi
+  swap_current "$tag"
+  say "agent-org $tag is at $folder, and $CURRENT names it"
 
   mkdir -p "$BIN_DIR"
   launcher="$BIN_DIR/agent-org"
@@ -137,12 +161,16 @@ if [ -z "\${AGENT_ORG_HOST:-}" ] && [ -f "\$AGENT_ORG_HOME/host.json" ]; then
   AGENT_ORG_HOST="\$AGENT_ORG_HOME/host.json"
   export AGENT_ORG_HOST
 fi
-exec node '$CHECKOUT/src/bin.ts' "\$@"
+exec node '$CURRENT/src/bin.ts' "\$@"
 EOF
   chmod 755 "$temporary"
   mv -f "$temporary" "$launcher"
   trap - EXIT
   say "wrote $launcher"
+
+  if [ -d "$LEGACY_CHECKOUT/.git" ]; then
+    say "an earlier install's checkout at $LEGACY_CHECKOUT is left as it is. Its services move onto $CURRENT when you run: agent-org update"
+  fi
 
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;

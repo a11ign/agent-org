@@ -32,6 +32,9 @@ import { publisherStateOf, reviewerStateOf } from "./concern-states.ts";
 import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
 import { claimantOf } from "./settings.ts";
 import { defaultHerdr } from "./pool-herdr.ts";
+import { defaultDrainStore, updateNoteOf } from "./pool-drain.ts";
+import { runningToolVersion } from "../install/tool-versions.ts";
+import type { UpdateNote } from "./board-view/update-banner.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
@@ -81,6 +84,8 @@ export type BoardDeps = Readonly<{
   exposure?: Exposure;
   /** The worker terminal's pairing code, minted for a paired browser following a worker link (A11-93). Default: herdr web ui's own, on loopback. */
   mintTerminal?: () => Promise<TerminalMint>;
+  /** The version this instance runs (A11-169): `TOOL_ROOT`'s own when absent, and null for a test that names none. */
+  version?: string | null;
   /** What the Settings page's Plugins section reads and runs through (A11-163): the real catalog, loader and programs unless a test replaces them. */
   plugins?: PluginsSeam;
 }>;
@@ -202,6 +207,8 @@ type Board = Readonly<{
   /** This instance's name as a claim names it (`claimantOf`), read once. */
   claimant: () => string;
   plans: boolean;
+  /** The version this instance runs, and the breaking update that drains, if one does (A11-169). */
+  update: () => Readonly<{ version: string | null; note: UpdateNote | null }>;
   wake: () => void;
   queueTickets: (tickets: readonly Ticket[], choice: RunChoice, options: { plan: boolean }) => void;
   whoAmI: () => Promise<Assignee | null>;
@@ -322,11 +329,12 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
 }
 
 /** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
-function queueView(board: Pick<Board, "store" | "pool">) {
+function queueView(board: Pick<Board, "store" | "pool" | "update">) {
   // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
   const queue = board.store.get();
-  return { ...queue, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {} };
+  // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading.
+  return { ...queue, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, update: board.update() };
 }
 
 /** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */
@@ -355,7 +363,7 @@ async function readRoute(board: Board, method: string, path: string, query: URLS
       publish: settings.publish !== null, publisher: publisherStateOf(settings), reviewer: board.pool.reviewerState?.() ?? reviewerStateOf(settings, null), pick: pickLabel(settings.pick), pickDefault: settings.pick === "assigned" ? "you" : "anyone", scopes: board.scopesOnDemand(),
       pickOpen: settings.pick === "assigned" ? "open" : pickLabel(settings.pick), viewer: await board.whoAmI(),
       writer: settings.writer !== null, writerDefault: settings.writer === null ? null : { model: settings.writer.model, effort: settings.writer.effort },
-      writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES }];
+      writerGrill: settings.terminal !== null, repos: Object.keys(settings.clones), priorities: PRIORITIES, version: board.update().version, updateNote: board.update().note }];
   }
   if (method === "GET" && path === "/api/settings") {
     // The read-only Settings page: each file read fresh, so a refusal names its field, and the instance's own queue and choice (A11-131).
@@ -629,6 +637,13 @@ async function routeApi(board: Board, method: string, path: string, body: Json, 
     ?? [404, { error: `no route ${method} ${path}` }];
 }
 
+/** What the board is told of the update: the version this instance runs, and the breaking update that drains, read from the drain record each time it is asked (A11-169). */
+function updateReader(deps: BoardDeps, store: Pick<Board["store"], "get">): Board["update"] {
+  const drainStore = deps.poolDeps?.drain ?? defaultDrainStore();
+  const version = deps.version === undefined ? runningToolVersion() : deps.version;
+  return () => ({ version, note: updateNoteOf(drainStore.read(), store.get()) });
+}
+
 /** The request handler, with every dependency named, so a test drives it without a socket. */
 export function createBoard(deps: BoardDeps) {
   const { settings, source, codeHost, key } = deps;
@@ -700,7 +715,8 @@ export function createBoard(deps: BoardDeps) {
   }
 
   const plugins = pluginsApi({ hostPath: deps.hostPath ?? hostFilePath(), settings, seam: deps.plugins });
-  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
+  const update = updateReader(deps, store);
+  const board: Board = { deps, settings, source, store, pool, now, known, claimant, plans, update, wake, queueTickets, whoAmI, terminalAddress, scopesOnDemand, whoHolds, plugins };
 
   async function api(method: string, path: string, body: Json, query = new URLSearchParams()): Promise<[number, unknown]> {
     return routeApi(board, method, path, body, query);

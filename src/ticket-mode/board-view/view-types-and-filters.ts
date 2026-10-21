@@ -23,6 +23,9 @@ export type ViewEntry = Readonly<{
   pane?: string; blockers?: readonly ViewBlocker[]; model?: string; effort?: string;
   /** Why the plan of a queued run could not be downloaded, which holds it back (A11-125). */
   pathsFailure?: string;
+  /** The version of agent-org the run was started on, and, when a breaking update stopped it and queued it again, when and for which release (A11-169). */
+  toolVersion?: string;
+  stoppedForUpdate?: Readonly<{ at: number; target: string }>;
   /** Set on a queued round or talk session held back by the working agent of an earlier session: what it waits for (A11-154). */
   sessionWait?: string;
   /** Set on a round or talk session started after the board closed the leftover of an earlier session beside it: what it closed (A11-154). */

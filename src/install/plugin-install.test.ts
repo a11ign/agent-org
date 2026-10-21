@@ -1,9 +1,12 @@
 // no-token: none -- every program is a stand-in that answers from a list; the install record is an in-memory file, and no `claude` or `gh` is run
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clearDeferral, installConventions, marketplacesOf, pluginVersion, readDeferral, type Run, updateConventions, writeDeferral } from "./plugin-install.ts";
+import { installConventions, marketplacesOf, pluginVersion, type Run, updateConventions } from "./plugin-install.ts";
+import { conventionsWiring, update } from "./update.ts";
+import { updateFixture } from "./update-fixture.ts";
+import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
 import { join } from "node:path";
-import { writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import type { PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
@@ -155,16 +158,46 @@ test("a plugin's version is read from its manifest, and is null when it cannot b
   assert.equal(pluginVersion(null, () => ""), null);
 });
 
-// A11-145: a refresh a live run held back is recorded once, keeping the first time it waited; an unreadable record is never taken for none.
-test("A11-145: a held-back refresh is recorded with the time it first waited, a record that cannot be read is said so, and clearing it leaves none", () => {
-  const dir = tmpDir("deferral-");
-  const path = join(dir, "plugins-deferred.json");
-  assert.deepEqual(readDeferral(path), { kind: "none" });
-  writeDeferral(path, 2, new Date("2026-10-20T10:00:00.000Z"));
-  writeDeferral(path, 1, new Date("2026-10-20T11:00:00.000Z"));
-  assert.deepEqual(readDeferral(path), { kind: "waiting", since: "2026-10-20T10:00:00.000Z", live: 1 });
-  writeFileSync(path, "{ not json");
-  assert.equal(readDeferral(path).kind, "unreadable");
-  clearDeferral(path);
-  assert.deepEqual(readDeferral(path), { kind: "none" });
+// A11-169: the refresh waits for no quiet moment. Claude Code keeps each version of a plugin in a folder of its own, so a new run or round gets the new copy and a running session keeps the one it started with.
+function claudeWithPlugin(home: string) {
+  const record = join(home, ".claude", "plugins", "installed_plugins.json");
+  const folder = (version: string) => join(home, ".claude", "plugins", "cache", "m", "conv", version);
+  const install = (version: string, sha: string) => {
+    mkdirSync(join(folder(version), ".claude-plugin"), { recursive: true });
+    writeFileSync(join(folder(version), ".claude-plugin", "plugin.json"), JSON.stringify({ name: "conv", version }));
+    mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+    writeFileSync(record, JSON.stringify({ version: 2, plugins: { "conv@m": [{ scope: "user", installPath: folder(version), version, gitCommitSha: sha }] } }));
+  };
+  install("0.1.0", "aaa");
+  const calls: string[] = [];
+  const run: Run = (file, args) => {
+    calls.push([file, ...args].join(" "));
+    const line = args.join(" ");
+    if (line === "plugin marketplace list --json") return { status: 0, stdout: JSON.stringify([{ name: "m", source: "github", repo: "org/conv" }]), stderr: "" };
+    // Claude Code's update: the new version in a folder of its own, the old folder left on disk and marked orphaned (measured on the agents host, 2026-10-21).
+    if (line === "plugin update conv@m") install("0.2.0", "bbb");
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  return { run, calls, folder, record };
+}
+
+test("A11-169: the conventions refresh runs at an update with runs live, writes no deferral record, and leaves the folder a live run's session started with", () => {
+  const f = updateFixture({ states: { instance: "running" }, live: 2 });
+  f.release("0.1.0");
+  const claude = claudeWithPlugin(f.home);
+  const liveCopy = pluginCopiesOf(["conv@m"], f.home, claude.record);
+  assert.deepEqual(liveCopy.map(({ path, commit }) => [path, commit]), [[claude.folder("0.1.0"), "aaa"]], "the run's session got the 0.1.0 folder");
+  const wiring = conventionsWiring({ plugins: ["conv@m"] }, f.home, claude.run);
+  assert.equal(update({ version: undefined, channel: "release" }, f.deps({ ...wiring })), true, "a non-breaking update applies with two runs live");
+  assert.ok(claude.calls.includes("claude plugin update conv@m"), "the refresh ran with runs live");
+  assert.ok(f.said.includes("agent-org update: updated conv@m from 0.1.0 to 0.2.0"));
+  assert.equal(existsSync(join(f.home, ".agent-org", "plugins-deferred.json")), false, "no deferral record is written");
+  assert.equal(existsSync(liveCopy[0].path), true, "the folder the live run's session started with is still there");
+  assert.deepEqual(pluginCopiesOf(["conv@m"], f.home, claude.record).map(({ path }) => path), [claude.folder("0.2.0")], "a new run or round gets the new copy");
+});
+
+test("A11-169: the conventions plugin's deferral is gone: the module holds no hold-back", async () => {
+  const module = await import("./plugin-install.ts");
+  assert.deepEqual(Object.keys(module).filter((name) => /deferral/i.test(name)), []);
+  assert.equal("deferralPath" in module, false);
 });

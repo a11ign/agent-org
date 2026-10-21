@@ -23,7 +23,7 @@ function machine(present: string[], proof: Replacements, platform: NodeJS.Platfo
   return { deps, removed, ran, asked: () => asked };
 }
 
-const PROVEN: Replacements = { ghWrapperDeclared: true, herdrOutsideInstance: true };
+const PROVEN: Replacements = { ghWrapperDeclared: true, herdrInOwnUnit: true };
 
 test("a host with neither guard, or a platform with no systemd user units, changes nothing and reads no replacement", async () => {
   const none = machine([], PROVEN);
@@ -45,7 +45,7 @@ test("with both replacements proven, the watchdog is disabled and its three file
   ]);
   assert.equal(lines.length, 2);
   assert.match(lines[0], /^retired the gh-wrapper watchdog: the start-time wrapper check holds/);
-  assert.match(lines[1], /^retired the KillMode drop-in: herdr's own scope holds/);
+  assert.match(lines[1], /^retired the KillMode drop-in: herdr has a service of its own/);
 });
 
 test("a watchdog whose wrapper is not the one host.json declares is kept, and said with what it waits for", async () => {
@@ -55,10 +55,10 @@ test("a watchdog whose wrapper is not the one host.json declares is kept, and sa
   assert.equal(lines[0], "kept the gh-wrapper watchdog: the installed gh wrapper is not the one host.json declares, so its check is not proven. Run `agent-org host:install`, then run onboard again");
 });
 
-test("a drop-in while a herdr server is still inside the instance's cgroup is kept, and the fix is named", async () => {
-  const { deps, removed, ran } = machine([dropIn], { ...PROVEN, herdrOutsideInstance: false });
+test("a drop-in while the herdr server does not run in its own service is kept, and the fix is named", async () => {
+  const { deps, removed, ran } = machine([dropIn], { ...PROVEN, herdrInOwnUnit: false });
   const lines = await retireGuards(deps);
   assert.deepEqual(removed, []);
   assert.deepEqual(ran, [], "systemd is not asked, since nothing changed");
-  assert.match(lines[0], /^kept the KillMode drop-in: a herdr server is still inside the instance's cgroup. Restart herdr when no run is working/);
+  assert.match(lines[0], /^kept the KillMode drop-in: the herdr server does not run in agent-org-herdr.service yet. Run `agent-org start herdr --move`/);
 });

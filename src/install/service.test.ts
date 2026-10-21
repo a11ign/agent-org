@@ -253,12 +253,13 @@ test("start, stop and status take the terminal by name", async () => {
   assert.match(lines[1], /^terminal: running \(systemd agent-org-terminal\.service\)$/);
 });
 
-// AUTO-UPDATE: `agent-org update` every hour, so a merged fix reaches the instance without a person.
-test("auto-update on systemd is a timer that fires every hour; start writes it and enables the timer", async () => {
+// AUTO-UPDATE: `agent-org update` every ten minutes (A11-169), so a merged fix reaches the instance without a person.
+test("auto-update on systemd is a timer that fires every ten minutes; start writes it and enables the timer", async () => {
   const { deps: d, calls } = deps("linux");
   const unit = await startService("auto-update", d);
   assert.equal(unit.id, "agent-org-auto-update.timer");
-  assert.match(unit.text, /^OnCalendar=\*-\*-\* \*:00:00$/m);
+  assert.match(unit.text, /^OnCalendar=\*:0\/10$/m);
+  assert.match(unit.text, /^RandomizedDelaySec=60$/m);
   assert.deepEqual(calls, ["systemctl --user daemon-reload", "systemctl --user enable agent-org-auto-update.timer", "systemctl --user restart agent-org-auto-update.timer"]);
 });
 
@@ -273,14 +274,14 @@ test("auto-update on systemd: the timer names its oneshot service, which runs th
   assert.match(service, /^Environment="AGENT_ORG_HOST=/m);
 });
 
-test("auto-update follows main when the update-channel file says so, and on launchd runs every hour, not at load", () => {
+test("auto-update follows main when the update-channel file says so, and on launchd runs every ten minutes, not at load", () => {
   const linux = deps("linux");
   linux.files.set(join(linux.home, ".agent-org", "update-channel"), "main\n");
   assert.match(unitFor("auto-update", linux.deps).companion?.text ?? "", /"update" "--channel" "main"$/m);
   const { deps: d, files, home } = deps("darwin", { "launchctl print": () => done("state = not running\n") });
   files.set(join(home, ".agent-org", "update-channel"), "nonsense");
   const plist = unitFor("auto-update", d);
-  assert.match(plist.text, /<key>StartInterval<\/key>\n {2}<integer>3600<\/integer>\n {2}<key>RunAtLoad<\/key>\n {2}<false\/>/);
+  assert.match(plist.text, /<key>StartInterval<\/key>\n {2}<integer>600<\/integer>\n {2}<key>RunAtLoad<\/key>\n {2}<false\/>/);
   assert.doesNotMatch(plist.text, /KeepAlive|--channel/);
   files.set(plist.path, plist.text);
   assert.equal(serviceState("auto-update", d), "running", "a loaded interval job is between runs, not stopped");

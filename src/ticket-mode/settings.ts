@@ -120,8 +120,8 @@ export type TicketSettings = Readonly<{
    */
   stallMinutes: number;
   /**
-   * How many whole hours the hourly auto-update may wait for a live run to finish before it updates anyway, counted from its first deferral for a release
-   * (A11-90). It waits at all only when a restart would interrupt a worker. 2 by default.
+   * How many whole hours a BREAKING release (a changeset whose first line starts `Breaking:`) drains for: no new run starts, the live runs finish, and those still live
+   * once it has passed are stopped and queued again, and the update applies (A11-90, A11-169). A release that is not breaking waits for nothing. 2 by default.
    */
   updateMaxDeferHours: number;
   /** Whether doctor requires the `gh stack` extension of the workers' account, the code host's `stack` setting. True by default. */

@@ -8,7 +8,7 @@ import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
 import { batchPlanBriefText, type BatchTicket, BRIEF_FILE, briefText, CONNECTORS_FILE, DENY_FILE, OUTCOME_FILE, type ParentTicket, PLAN_DIR, planBriefText, PLANNING_DENY, PR_REVIEW_FILE, PR_REVIEW_LOG_FILE, PROTECTED_FILE, protectedPaths, PUBLISH_FILE, READY_FILE, REVIEW_FILE, reviewBriefText, STOP_COUNT_FILE, workerSettings, WORKING_STOP_FILE } from "./worker-files.ts";
 import { join } from "node:path";
-import { isPlanning, runChoice, runPlace } from "./pool-state.ts";
+import { isPlanning, runChoice, runPlace, update } from "./pool-state.ts";
 import { repoOf, stackedOn } from "./board-view/pull-status-and-notes.ts";
 import { STACK_BASE_FILE } from "./stack-rebase.ts";
 import { pluginProblems } from "./plugins.ts";
@@ -16,6 +16,8 @@ import { hostFactsOf } from "./plugin-contract.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { type DenyRule } from "./settings.ts";
 import { type PoolContext } from "./pool-context.ts";
+import { pluginCopiesOf } from "./pool-pin.ts";
+import { recordPluginCopy } from "./queue/queue-pins.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
 
@@ -89,7 +91,8 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   const parent = await parentOf(ctx, ticket, dir);
   const notes = notesFile(settings.brief, "tickets.brief");
   const connectors = settings.connectors;
-  let resume: string | undefined;
+  // A run the board stopped for an update resumes its own Claude session on the new version (A11-169), whatever kind of run it was.
+  let resume: string | undefined = entry.stoppedForUpdate === undefined ? undefined : sessionToResume(ctx, entry);
   if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
@@ -106,6 +109,7 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
       notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS }));
   }
   writeRunFiles(ctx, entry, folder, dir);
+  recordPluginCopies(ctx, [entry.ticket.key], folder);
   return { folder, dir, ...(resume ? { resume } : {}) };
 }
 
@@ -137,8 +141,17 @@ function emptyPlanDir(dir: string): string {
   return planDir;
 }
 
-/** Beside a run's brief, its copy of this machine's refusals and its connectors, and in the folder its agent starts in, its settings file. */
-function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, dir: string): void {
+/** The conventions plugins' installs this start's session gets, noted on the run for `doctor` (A11-169). Best effort: the install record is read, and never refuses a start. */
+function recordPluginCopies(ctx: PoolContext, keys: readonly string[], folder: string): void {
+  const { deps, settings } = ctx;
+  update(ctx, (queue) => recordPluginCopy(queue, keys, pluginCopiesOf(settings.plugins, folder, deps.pluginRecord)));
+}
+
+/**
+ * Beside a run's brief, its copy of this machine's refusals and its connectors, and in the folder its agent starts in, its settings file. Exported for a talk session whose pinned version folder was
+ * pruned while the run was finished: its hooks must name a folder that exists (A11-169).
+ */
+export function writeRunFiles(ctx: PoolContext, entry: Entry, folder: string, dir: string): void {
   const { hook, settings } = ctx;
   writeFileSync(join(dir, DENY_FILE), `${JSON.stringify(isPlanning(ctx, entry) ? [...settings.deny, ...PLANNING_DENY] : settings.deny)}\n`);
   writeFileSync(join(dir, CONNECTORS_FILE), `${JSON.stringify(settings.connectors)}\n`);
@@ -174,6 +187,7 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
   writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir: emptyPlanDir(dir), clones: settings.clones, run: settings.planner.run,
     notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors }));
   writeRunFiles(ctx, lead, folder, dir);
+  recordPluginCopies(ctx, members.map((member) => member.ticket.key), folder);
   return { folder, dir };
 }
 

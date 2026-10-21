@@ -76,13 +76,13 @@
 // `tickets.publish`, in a folder of its own (`publishDir`), holding one slot. Only it may run the publisher plugin's skill and the connectors
 // `tickets.publish.connectors` names (`hook.ts`). When it writes `published`, each run it posted shows Published with a link to the message.
 //
-// A RESTART OF THE INSTANCE LEAVES THE WORKERS ALONE (A11-78). The workers run in herdr's server, which this process starts outside its own
-// service (`herdrServerCommand`), so stopping the instance stops only the instance. A pool that starts up re-adopts what herdr lists and the
+// A RESTART OF THE INSTANCE LEAVES THE WORKERS ALONE (A11-78, A11-169). The workers run in herdr's server, which runs in a service of its own (`agent-org-herdr.service`; this process only starts the unit,
+// `ensureSession`), so stopping or restarting the instance stops only the instance. A pool that starts up re-adopts what herdr lists and the
 // queue file holds (`reconcile`) and carries on watching it: it sends a running worker no key, no prompt and no second start. The only keys
 // the pool ever sends answer a start dialog, and only on a run this pool started itself, until its agent is first seen up (`startedHere`): a
 // pane it adopted is never one it is starting. A reviewer is recorded as started before it is started, so a restart in between never starts it
-// twice, and one herdr still lists for its head is adopted. `agent-org update` restarts the instance over a live run only when no agent is mid-tool-call
-// or herdr is outside the instance's cgroup (`update.ts`, A11-90).
+// twice, and one herdr still lists for its head is adopted. `agent-org update` restarts the instance over a live run whatever it is doing, and a breaking release
+// drains instead (`pool-drain.ts`, `update.ts`, A11-169).
 //
 // A REVIEWER IS CLOSED AFTER ITS VERDICT, AND RETIRED WITH ITS PULL REQUEST (A11-81). The port closes the reviewer for a head once the verdict on that head
 // is posted, and only once it is not working: its checkout stays, since a head that moves re-points it. `releaseReviewers`, on the server's own sweep, retires

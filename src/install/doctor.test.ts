@@ -16,9 +16,13 @@ import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
 import type { PluginContract, PluginState } from "../ticket-mode/plugins.ts";
 import type { StatusFile, UpdateStatus } from "./update-safety.ts";
+import type { HerdrPlace } from "./herdr-place.ts";
+import type { RunVersion } from "../ticket-mode/queue/queue-pins.ts";
 import { createTailscale, freshState, type TailscaleState } from "../../plugins/tailscale/stub.ts";
 
 const NOW = Date.parse("2026-10-18T10:00:00.000Z");
+/** Where a herdr server runs on a host that has moved it (A11-169): its own service. */
+const UNIT_PLACE: HerdrPlace = { kind: "unit", where: "/user.slice/agent-org-herdr.service" };
 const HOUR = 3600e3;
 const TERMINAL = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
 // The provider blocks (A11-144): the tracker and the exposure named, each with its own settings, so no alias is read.
@@ -64,7 +68,8 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     healthy: async (port) => port === 7318, unitProblem: () => null,
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
-    platform: "linux", isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
+    platform: "linux", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
+    runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
     ...over,
@@ -176,7 +181,7 @@ test("doctor passes every check on a working install, and never prints the key",
   const checks = await diagnose(deps());
   assert.deepEqual(checks.map(({ name, ok }) => [name, ok]), [
     ["node", true], ["pnpm", true], ["launcher", true], ["host file", true], ["herdr", true], ["ticket writer", true], ["instance service", true],
-    ["instance answering", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
+    ["instance answering", true], ["herdr service", true], ["herdr scope", true], ["ui service", true], ["ui answering", true], ["terminal address", true], ["terminal service", true],
     ["terminal answering", true], ["tracker key", true], ["linear mcp", true], ["tracker (linear)", true], ["gh wrapper", true], ["gh stack", true], ["code host (github)", true],
     ["publisher (none)", true], ["reviewer (none)", true], ["local ports", true], ["local terminal", true], ["exposure (local)", true], ["messaging (none)", true], ["pairing", true],
     ["auto-update service", true], ["update lag", true], ["chromium", true], ["chromium headless shell", true],
@@ -259,7 +264,7 @@ test("doctor asks each service's state by its own name, and a running instance a
   const checks = byName(await diagnose(deps({
     serviceState: (name) => { asked.push(name); return name === "instance" ? "running" : "not-registered"; },
   })));
-  assert.deepEqual(asked, ["instance", "ui", "terminal", "auto-update"]);
+  assert.deepEqual(asked, ["instance", "ui", "terminal", "herdr", "auto-update"]);
   assert.equal(checks["instance service"].ok, true);
   assert.equal(checks["instance answering"].ok, true);
 });
@@ -361,25 +366,25 @@ test("A11-90: doctor fails an update status file it cannot read or parse, rather
   assert.match(corrupt.detail, /it is not valid JSON$/);
 });
 
-test("A11-90: doctor says how many releases behind the install is, and since when, and what an update is deferred for", async () => {
-  // Two hours after the release was cut: behind, and inside the window the hourly update has to move it in.
+test("A11-90: doctor says how many releases behind the install is, and since when", async () => {
+  // Two hours after the release was cut: behind, and inside the window the update has to move it in.
   const now = () => Date.parse("2026-10-17T10:00:00.000Z");
   const behind = await lagOf({ updateStatus: () => present(), now });
   assert.equal(behind.ok, true);
   assert.equal(behind.detail, "installed v0.243.0, latest v0.248.0: 5 releases behind, since 2026-10-17T08:00:00.000Z");
-  const deferred = await lagOf({ updateStatus: () => present({ deferredSince: "2026-10-18T09:30:00.000Z", deferredReason: "herdr is inside the instance's cgroup" }), now: () => NOW });
-  assert.equal(deferred.detail, "installed v0.243.0, latest v0.248.0: 5 releases behind, since 2026-10-17T08:00:00.000Z; update deferred since 2026-10-18T09:30:00.000Z: herdr is inside the instance's cgroup");
 });
 
-test("A11-90: doctor fails an install behind for longer than tickets.updateMaxDeferHours and an hour's grace, and passes it inside that", async () => {
-  const within = await lagOf({ updateStatus: () => present({ deferredSince: new Date(NOW - 2.5 * HOUR).toISOString(), deferredReason: "x" }) });
+test("A11-169: doctor fails an install behind for longer than tickets.updateMaxDeferHours and an hour's grace, and passes it inside that or while a breaking update drains", async () => {
+  const within = await lagOf({ updateStatus: () => present({ latestSince: new Date(NOW - 2.5 * HOUR).toISOString() }) });
   assert.equal(within.ok, true);
-  const late = await lagOf({ updateStatus: () => present({ deferredSince: new Date(NOW - 3 * HOUR - 60e3).toISOString(), deferredReason: "x" }) });
+  const late = await lagOf({ updateStatus: () => present({ latestSince: new Date(NOW - 3 * HOUR - 60e3).toISOString() }) });
   assert.equal(late.ok, false);
-  assert.match(late.detail, /; the hourly update should have moved it by now$/);
-  assert.equal(late.fix, "run `agent-org update` (with `--force` to restart a live run too), then check `agent-org status auto-update`");
-  const neverDeferred = await lagOf({ updateStatus: () => present({ latestSince: new Date(NOW - 4 * HOUR).toISOString() }) });
-  assert.equal(neverDeferred.ok, false, "behind for hours with no deferral is a timer that is not moving it");
+  assert.match(late.detail, /; the update that runs every ten minutes should have moved it by now$/);
+  assert.equal(late.fix, "run `agent-org update`, then check `agent-org status auto-update`");
+  const draining = await lagOf({ updateStatus: () => present({ latestSince: new Date(NOW - 5 * HOUR).toISOString() }),
+    drain: () => ({ kind: "draining", record: { target: "v0.248.0", since: "2026-10-18T07:00:00.000Z", deadline: "2026-10-18T09:00:00.000Z", stopped: [] } }) });
+  assert.equal(draining.ok, true, "a breaking update waiting on live runs is not a timer that is not moving it");
+  assert.match(draining.detail, /; draining: a breaking update waits on live runs until 2026-10-18T09:00:00.000Z$/);
 });
 
 test("A11-90: doctor passes an install at the newest release, one no update has checked, and one that follows main, and fails one not at a release", async () => {
@@ -391,31 +396,56 @@ test("A11-90: doctor passes an install at the newest release, one no update has 
   assert.equal(detached.detail, "installed at 3846c6e, which is not a release");
 });
 
-test("A11-90: doctor names a herdr server still inside the instance's cgroup, with both fixes; a server in its own scope passes, and one it cannot read passes with a note", async () => {
-  const inside = byName(await diagnose(deps({ isolation: () => ({ kind: "inside", cgroup: "/user.slice/agent-org-instance.service", unit: "agent-org-instance.service" }) })))["herdr scope"];
+const MOVE = "run `agent-org start herdr --move` at a quiet moment: it stops the server that runs outside the unit and starts the unit (every pane restarts once), and retires the interim guards";
+const scopeOf = async (over: Partial<DoctorDeps>) => byName(await diagnose(deps(over)))["herdr scope"];
+
+test("A11-169: herdr scope passes for a server in agent-org-herdr.service, and fails inside the instance's cgroup and in the old transient scope, each with the --move command", async () => {
+  const unit = await scopeOf({});
+  // eslint-disable-next-line clean-code/no-duplication -- a test asserts one row's fields in turn, as the tests around it do
+  assert.equal(unit.ok, true);
+  assert.equal(unit.detail, "the herdr server for session tickets is in agent-org-herdr.service (/user.slice/agent-org-herdr.service), so a restart of the instance, the ui or the terminal never reaches it");
+  const inside = await scopeOf({ herdrPlace: () => ({ kind: "instance", where: "/user.slice/agent-org-instance.service" }) });
   assert.equal(inside.ok, false);
-  assert.equal(inside.detail, "the herdr server for session tickets is in /user.slice/agent-org-instance.service, the same place as the instance (agent-org-instance.service): a restart of the instance interrupts every worker");
-  // A11-145: the drop-in is retired, so the only fix left is to restart herdr when no run is working.
-  assert.equal(inside.fix, "restart herdr when no run is working (`herdr --session tickets server stop`; the next instance start launches it in its own scope)");
-  assert.ok(!inside.fix.includes("KillMode"), "no KillMode advice remains");
-  const scope = byName(await diagnose(deps({ isolation: () => ({ kind: "outside", scope: "/user.slice/agent-org-herdr-tickets.scope" }) })))["herdr scope"];
-  assert.equal(scope.ok, true);
-  assert.equal(scope.detail, "the herdr server for session tickets is in /user.slice/agent-org-herdr-tickets.scope, outside the instance's cgroup");
-  const unknown = byName(await diagnose(deps({ isolation: () => ({ kind: "unknown", why: "/proc/3655416/cgroup cannot be read" }) })))["herdr scope"];
+  assert.equal(inside.detail, "the herdr server for session tickets is in the instance's cgroup (/user.slice/agent-org-instance.service), the same place as the instance: a restart of the instance interrupts every worker");
+  assert.equal(inside.fix, MOVE);
+  const scope = await scopeOf({ herdrPlace: () => ({ kind: "elsewhere", where: "/user.slice/agent-org-herdr-tickets.scope" }) });
+  assert.equal(scope.ok, false, "the old transient scope survives a restart but is not the service");
+  assert.match(scope.detail, /is in \/user\.slice\/agent-org-herdr-tickets\.scope, a scope the instance started/);
+  assert.equal(scope.fix, MOVE);
+  const unknown = await scopeOf({ herdrPlace: () => ({ kind: "unknown", why: "/proc/3655416/cgroup cannot be read" }) });
   assert.equal(unknown.ok, true);
   assert.match(unknown.detail, /could not be checked.*\/proc\/3655416\/cgroup cannot be read/);
-  const mac = byName(await diagnose(deps({ platform: "darwin", isolation: () => ({ kind: "inside", cgroup: "process group 40", unit: "io.github.agent-org.instance" }) })))["herdr scope"];
-  assert.equal(mac.ok, false);
-  assert.equal(mac.fix, "restart herdr when no run is working (`herdr --session tickets server stop`; the next instance start launches it in its own scope)", "no KillMode on launchd");
+});
+
+test("A11-169: with no herdr server running, herdr scope passes while the herdr service is registered and fails, with its start command, when it is not", async () => {
+  const none = await scopeOf({ herdrPlace: () => ({ kind: "none" }) });
+  assert.equal(none.ok, true);
+  const unregistered = byName(await diagnose(deps({ herdrPlace: () => ({ kind: "none" }), serviceState: (name) => (name === "herdr" ? "not-registered" : "running") })));
+  assert.equal(unregistered["herdr scope"].ok, false);
+  assert.equal(unregistered["herdr scope"].fix, "run `agent-org start herdr`");
+  assert.equal(unregistered["herdr service"].ok, false);
+  assert.equal(unregistered["herdr service"].fix, "run `agent-org start herdr`");
+});
+
+test("A11-169: the keep-herdr.conf and watchdog rows fail while either guard stands on a host whose herdr runs in its unit, and are absent otherwise", async () => {
+  const clean = byName(await diagnose(deps()));
+  assert.equal(clean["keep-herdr.conf"], undefined);
+  assert.equal(clean["gh-wrapper watchdog"], undefined);
+  const guarded = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true }) })));
+  assert.equal(guarded["keep-herdr.conf"].ok, false);
+  assert.equal(guarded["gh-wrapper watchdog"].ok, false);
+  assert.match(guarded["keep-herdr.conf"].fix ?? "", /agent-org start herdr --move/);
+  const notYet = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true }), herdrPlace: () => ({ kind: "instance", where: "/i" }) })));
+  assert.equal(notYet["keep-herdr.conf"], undefined, "the drop-in is still what keeps herdr alive until the move: its row waits for the unit");
 });
 
 test("A11-90: the herdr scope check is asked only when the instance is registered", async () => {
-  const unregistered = byName(await diagnose(deps({ serviceState: (name) => (name === "instance" ? "not-registered" : "running"), isolation: () => { throw new Error("not asked"); } })));
+  const unregistered = byName(await diagnose(deps({ serviceState: (name) => (name === "instance" ? "not-registered" : "running"), herdrPlace: () => { throw new Error("not asked"); } })));
   assert.equal(unregistered["herdr scope"], undefined);
 });
 
 test("doctor reports the auto-update service as registered or not", async () => {
-  assert.match(byName(await diagnose(deps()))["auto-update service"].detail, /every hour/);
+  assert.match(byName(await diagnose(deps()))["auto-update service"].detail, /every ten minutes/);
   const off = byName(await diagnose(deps({ serviceState: (name) => (name === "auto-update" ? "not-registered" : "running") })))["auto-update service"];
   assert.equal(off.ok, false);
   assert.equal(off.fix, "run `agent-org start auto-update`");
@@ -451,6 +481,7 @@ test("with the exposure on the tailnet, doctor checks each served port's entry, 
 
 test("a served port with no entry, another entry, or Funnel on it fails with its fix, and the exposure's row fails with the first", async () => {
   const none = byName(await diagnose(tailnetDeps(freshState())));
+  // eslint-disable-next-line clean-code/no-duplication -- a test asserts one row's fields in turn, as the tests around it do
   assert.equal(none["ui tailnet entry"].ok, false);
   assert.equal(none["ui tailnet entry"].fix, "run `agent-org start ui`");
   assert.equal(none["exposure (tailscale)"].ok, false);
@@ -756,15 +787,45 @@ test("A11-140: a plugin that does not load, or does not match, makes the run fai
   assert.deepEqual([notLoading.every((check) => check.ok), mismatched.every((check) => check.ok), fine.every((check) => check.ok)], [false, false, true]);
 });
 
-// A11-145: a conventions plugin refresh a live run held back is said; a record that cannot be read fails its row, so a corrupt file cannot hide a wait.
-test("A11-145: doctor says a conventions plugin refresh that a live run held back, fails a record it cannot read, and shows no row when none waits", async () => {
-  const waiting = byName(await diagnose(deps({ pluginRefresh: () => ({ kind: "waiting", since: "2026-10-20T10:00:00.000Z", live: 2 }) })));
-  assert.equal(waiting["plugin refresh"].ok, true);
-  assert.equal(waiting["plugin refresh"].detail, "the conventions plugin refresh has waited since 2026-10-20T10:00:00.000Z, with 2 runs live, and runs at the next update with no run live");
-  const unreadable = byName(await diagnose(deps({ pluginRefresh: () => ({ kind: "unreadable", why: "/home/me/.agent-org/plugins-deferred.json cannot be read: Unexpected token" }) })));
-  assert.equal(unreadable["plugin refresh"].ok, false);
-  assert.equal(unreadable["plugin refresh"].fix, "run `agent-org update` once no run is live: a refresh that runs removes the record");
-  assert.equal(byName(await diagnose(deps()))["plugin refresh"], undefined);
+// A11-169: each live or parked run is listed with the version it started on, beside the instance's.
+const run = (key: string, toolVersion: string | null, pluginCopy: RunVersion["pluginCopy"] = []): RunVersion => ({ key, toolVersion, toolRoot: toolVersion === null ? null : `/t/versions/${toolVersion}`, pluginCopy });
+
+test("A11-169: doctor lists each live run's version beside the instance's, and one line when every run is on the instance's", async () => {
+  const mixed = byName(await diagnose(deps({ runs: () => [run("A11-170", "v0.273.0"), run("A11-171", "v0.280.0"), run("A11-172", null)] })));
+  assert.equal(mixed["run A11-170"].detail, "v0.273.0 (instance v0.280.0)");
+  assert.equal(mixed["run A11-171"].detail, "v0.280.0 (instance v0.280.0)");
+  assert.equal(mixed["run A11-172"].detail, "a version not recorded (instance v0.280.0)");
+  assert.equal(mixed["run versions"], undefined);
+  const same = byName(await diagnose(deps({ runs: () => [run("A11-170", "v0.280.0"), run("A11-171", "v0.280.0")] })));
+  assert.equal(same["run versions"].detail, "all 2 runs are on v0.280.0");
+  assert.equal(same["run A11-170"], undefined);
+  const none = byName(await diagnose(deps()));
+  assert.equal(none["run versions"], undefined, "no live or parked run: nothing to list");
+});
+
+test("A11-169: a refresh that rewrote a plugin folder in place under a live run fails the plugin copy row, and a refresh into a new folder does not", async () => {
+  const copy = (commit: string, path = "/p/cache/m/conv/0.1.0") => [{ plugin: "conv@m", path, commit }];
+  const started = [run("A11-170", "v0.280.0", copy("aaa"))];
+  const rewritten = byName(await diagnose(deps({ runs: () => started, pluginCopies: () => copy("bbb") })));
+  assert.equal(rewritten["plugin copy"].ok, false);
+  assert.match(rewritten["plugin copy"].detail, /\/p\/cache\/m\/conv\/0\.1\.0 under A11-170 in place/);
+  assert.equal(rewritten["plugin copy"].fix, "bump the plugin's version so a refresh lands in a new folder");
+  const newFolder = byName(await diagnose(deps({ runs: () => started, pluginCopies: () => copy("bbb", "/p/cache/m/conv/0.2.0") })));
+  assert.equal(newFolder["plugin copy"].ok, true, "the run keeps reading the folder it started with");
+  const same = byName(await diagnose(deps({ runs: () => started, pluginCopies: () => copy("aaa") })));
+  assert.equal(same["plugin copy"].ok, true);
+});
+
+test("A11-169: doctor says a breaking update that is draining, and fails a drain record it cannot read, since the instance starts no run while it stands", async () => {
+  const record = { target: "v0.280.0", since: "2026-10-18T08:00:00.000Z", deadline: "2026-10-18T10:00:00.000Z", stopped: [] as string[] };
+  const draining = byName(await diagnose(deps({ drain: () => ({ kind: "draining", record }) })))["update drain"];
+  assert.equal(draining.ok, true);
+  assert.equal(draining.detail, "draining to v0.280.0 since 2026-10-18T08:00:00.000Z: no new run starts, the live runs finish, and any still live at 2026-10-18T10:00:00.000Z are stopped and re-queued");
+  const forced = byName(await diagnose(deps({ drain: () => ({ kind: "draining", record: { ...record, forcedAt: "2026-10-18T10:00:00.000Z", stopped: ["A11-170"] } }) })))["update drain"];
+  assert.match(forced.detail, /the live runs were stopped and re-queued at 2026-10-18T10:00:00\.000Z, and the update applies next$/);
+  const unreadable = byName(await diagnose(deps({ drain: () => ({ kind: "unreadable", why: "/h/update-drain.json cannot be read: Unexpected token" }) })))["update drain"];
+  assert.equal(unreadable.ok, false);
+  assert.equal(byName(await diagnose(deps()))["update drain"], undefined);
 });
 
 // A11-158: agent-org plugins. The doctor names each plugin and whether it is disabled, says what the registry refused and which plugin implements a contract major agent-org does not read,

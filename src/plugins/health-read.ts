@@ -5,6 +5,8 @@
 // this is async and is its own call on the page: the rest of the page must not wait on it. ONE PLUGIN'S FAILURE NEVER STOPS THE OTHERS: a plugin whose checks throw is one failing
 // row of its own, and the rest are read as usual. What comes back is `pluginHealth`'s account, which doctor and the page both draw.
 import { liveToolVersion } from "../lib/tool-version.ts";
+import { TOOL_ROOT } from "../install/paths.ts";
+import { versionNameOf } from "../install/tool-versions.ts";
 import type { Providers } from "../ticket-mode/providers.ts";
 import { blockOf, type ProviderBlock } from "./concerns.ts";
 import { type Failure, pluginHealth, type PluginHealth } from "./health.ts";
@@ -28,9 +30,14 @@ const NOT_READ: MessagingState = { provider: null, why: "the host file is refuse
 const MESSAGING_FIX = "fix the messaging key of project.json: `agent-org messaging:check` says what is wrong with it";
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-/** agent-org's own release, `vX.Y.Z`, read off the checkout. A checkout at no release says so, and one whose version cannot be read says that: it never throws. */
+/**
+ * agent-org's own release, `vX.Y.Z`: the name of the version folder it runs from (A11-169), else read off the checkout's tags. A checkout at no release says so, and one whose version cannot be
+ * read says that: it never throws.
+ */
 export function toolVersionOf(): string {
   try {
+    const folder = versionNameOf(TOOL_ROOT);
+    if (folder !== null) return folder;
     return liveToolVersion() ?? "no release tag";
   } catch {
     return "version unreadable";

@@ -27,7 +27,8 @@
 //   - THE REVIEWER'S APP (A11-145): its private key is copied to `<AGENT_ORG_HOME>/apps/<slug>.pem`, mode 600, and named in the host file.
 //   - THE INTERIM GUARDS (A11-145) the hand-set gh-wrapper watchdog and herdr's KillMode drop-in are retired once their replacements are proven (`interim-guards.ts`).
 //   - THE HOST FILE'S PATH, in `<home>/host-file` (A11-68), so a shell with no `AGENT_ORG_HOST` finds it.
-//   - AUTO-UPDATE: the `auto-update` service runs `agent-org update` every hour. `--no-auto-update` leaves it unregistered, and `--update-channel main` makes it follow `main`.
+//   - HERDR'S OWN SERVICE (A11-169) is started first, as `agent-org start herdr` starts it; a herdr server that runs outside it is said, with the `--move` that moves it.
+//   - AUTO-UPDATE: the `auto-update` service runs `agent-org update` every ten minutes. `--no-auto-update` leaves it unregistered, and `--update-channel main` makes it follow `main`.
 //
 // IT NEVER ECHOES A KEY. A plugin's step stores one only when none is readable and a person is at the terminal (the Linear plugin: into the Keychain by `security`'s own prompt,
 // which does not echo, or into a mode-600 file from a prompt that does not echo), then reads it back to check it is there, and says WHERE it is, never what it is. The reviewer
@@ -64,9 +65,9 @@ import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { askProfile, parseProfile, profilePathOf, profileText, ProfileRefusal, providerBlocksOf, type Profile, type ProfileRepo } from "./onboard-profile.ts";
 import { installConventions, runProgram, stateOfRecord, type ConventionsStep } from "./plugin-install.ts";
 import { houseNotes } from "./house-notes.ts";
-import { retireGuards, type Replacements } from "./interim-guards.ts";
+import { replacementsNow, retireGuards, type Replacements } from "./interim-guards.ts";
 import { defaultDoctorDeps, diagnose, report, type Check } from "./doctor.ts";
-import { hostIsolation } from "./update-safety.ts";
+import { defaultMoveDeps, startHerdr } from "./herdr-move.ts";
 import { repoCloneArgs } from "../ticket-port/repo-args.ts";
 
 export type OnboardOptions = Readonly<{
@@ -237,9 +238,9 @@ async function askRepositories(deps: OnboardDeps): Promise<string[]> {
   return repos;
 }
 
-/** The services onboard starts: the instance and the ui always, then the terminal when it is set up and auto-update unless opted out. */
+/** The services onboard starts: herdr first, since the instance and the terminal start after it, then the instance and the ui always, the terminal when it is set up and auto-update unless opted out. */
 export function onboardServices({ terminal, autoUpdate }: { terminal: boolean; autoUpdate: boolean; }): ServiceName[] {
-  return ["instance", "ui", ...(terminal ? ["terminal" as const] : []), ...(autoUpdate ? ["auto-update" as const] : [])];
+  return ["herdr", "instance", "ui", ...(terminal ? ["terminal" as const] : []), ...(autoUpdate ? ["auto-update" as const] : [])];
 }
 
 /** The services onboard REQUIRES: one of these refusing to start fails onboard, and any other is said and passed over. */
@@ -543,36 +544,6 @@ async function ask(question: string): Promise<string> {
 const whichOn = (name: string, env: Env): string | null => (env.PATH ?? "").split(delimiter).filter((dir) => dir !== "")
   .map((dir) => join(dir, name)).find((path) => existsSync(path)) ?? null;
 
-/** Which replacements of the interim guards hold now: the installed gh wrapper is the one host.json declares, and herdr is outside the instance's cgroup. */
-/** The herdr session the host file names, or `tickets` when it names none or cannot be read. */
-function herdrSessionOf(env: Env, home: string): string {
-  try {
-    const named = (JSON.parse(readFileSync(hostFilePath(env, home), "utf8")) as { tickets?: { herdrSession?: unknown } }).tickets?.herdrSession;
-    return typeof named === "string" ? named : "tickets";
-  } catch {
-    return "tickets";
-  }
-}
-
-/** Whether the installed `gh` wrapper is the one the host file declares, asked of the code host plugin's wrapper; a host that cannot be asked (no declaration, a plugin the loader refuses) has not proven it. */
-async function wrapperDeclared(): Promise<boolean> {
-  try {
-    const { activateCodeHost } = await import("../plugins/activate-host.ts");
-    await activateCodeHost();
-    const { ghWrapperDivergence } = await import("../host-units/gh-wrapper-and-notes.ts");
-    return ghWrapperDivergence() === null;
-  } catch {
-    return false;
-  }
-}
-
-async function replacementsNow(env: Env, home: string): Promise<Replacements> {
-  return {
-    ghWrapperDeclared: await wrapperDeclared(),
-    herdrOutsideInstance: hostIsolation(defaultServiceDeps(), herdrSessionOf(env, home)).kind === "outside",
-  };
-}
-
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
   try {
     const { values } = parseArgs({
@@ -609,11 +580,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       run: runProgram,
       which: (name) => whichOn(name, process.env),
       ghAs: (account) => asAccount(defaultGh, account),
-      replacements: () => replacementsNow(process.env, home),
+      replacements: () => replacementsNow(process.env, home, services),
       diagnose: () => diagnose(defaultDoctorDeps()),
       chromium: () => chromiumReport(),
       isRoot: () => process.getuid?.() === 0,
-      startServices: (names) => startServices(names, (name) => startService(name, services)),
+      // herdr is started the way `agent-org start herdr` starts it: a server that runs outside its unit is refused, and said, never started beside (`--move` moves it, at a quiet moment).
+      startServices: (names) => startServices(names, async (name) => (name === "herdr" ? (await startHerdr({ move: false }, defaultMoveDeps(services))).started : startService(name, services))),
       out: console,
     });
   } catch (err) {

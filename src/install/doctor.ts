@@ -10,7 +10,9 @@
 // THE WEB TERMINAL (A11-66) is checked as the board uses it: `tickets.terminal` is set and on this machine's loopback, the terminal service is
 // registered, and herdr web ui answers `/api/health` on the port that address names. A `tickets.terminal` served by another machine is that
 // machine's to check. Linear's MCP (A11-71) is read from `claude mcp list`, which connects to each server, so "connected" is a real answer.
-// The auto-update service is checked for being registered: it runs once an hour, so it has no port.
+// The auto-update service is checked for being registered: it runs every ten minutes, so it has no port.
+// HERDR HAS A SERVICE OF ITS OWN (A11-169): "herdr scope" passes when the server of the tickets session runs in it, and fails when it is inside the instance's cgroup or the old transient scope, with `agent-org start herdr --move`.
+// Each live or parked run is listed with the version of agent-org it started on, beside the instance's.
 // EACH PLUGIN `tickets.plugins` NAMES (A11-140) is checked as a worker's session gets it: it loads, and its declared contract matches the host's keys.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -37,14 +39,24 @@ import { describeMoves, planHostFix, writeHostFix } from "./migrate-host.ts";
 import { runPreflights, shellPreflight, type PreflightExec } from "../ticket-mode/preflight.ts";
 import { hostFactsOf, type HostFacts, notProvidedWhy, providesSkill, type SkillRef, skillRefs } from "../ticket-mode/plugin-contract.ts";
 import { pluginProblems, type PluginContract, type PluginProblems } from "../ticket-mode/plugins.ts";
-import { deferralPath, readDeferral, type Deferral } from "./plugin-install.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostFilePath, readOrNull, TOOL_ROOT, type Env } from "./paths.ts";
+import { existsSync as pathExists } from "node:fs";
 import { ticketFolder } from "../ticket-mode/ticket-paths.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { compareReleaseTags, isReleaseTag } from "../lib/release-tag.ts";
 import { pinnedPnpm, TOOL_PNPM_VERSION } from "./pnpm.ts";
 import { defaultServiceDeps, serviceState, unitProblem, type ServiceName, type ServiceState } from "./service.ts";
-import { HOUR_MS, hostIsolation, readUpdateStatus, updateStatusPath, type Isolation, type StatusFile } from "./update-safety.ts";
+import { HOUR_MS, readUpdateStatus, updateStatusPath, type StatusFile } from "./update-safety.ts";
+import { hostHerdrPlace, type HerdrPlace } from "./herdr-place.ts";
+import { guardsPresent } from "./interim-guards.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { drainPath, readDrain, type Drain } from "./update-drain.ts";
+import { runningToolVersion, toolDir } from "./tool-versions.ts";
+import { mirrorGit, mirrorTags } from "./tool-install.ts";
+import { readQueue } from "./instance-queue.ts";
+import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
+import { runVersions, type PluginCopy, type RunVersion } from "../ticket-mode/queue/queue-pins.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { realExec, realPlace, realProbe } from "../plugins/active.ts";
@@ -86,13 +98,21 @@ export type DoctorDeps = Readonly<{
   /** Where the host file says the machine keeps what the code host's `gh` wrapper is rendered from, or why there is none (A11-160). Loaded by the caller, so this file stays import-light. */
   hostPlace: () => Promise<HostPlaceReading>;
   platform: NodeJS.Platform;
-  /** Whether a restart of the instance reaches herdr's server of `session` (A11-90). */
-  isolation: (session: string) => Isolation;
+  /** Where the herdr server of `session` runs: its own service, the instance's cgroup, or elsewhere (A11-169). */
+  herdrPlace: (session: string) => HerdrPlace;
+  /** Which interim guards are still on disk: the gh-wrapper watchdog and the `keep-herdr.conf` drop-in (A11-145, A11-169). */
+  guards: () => Readonly<{ watchdog: boolean; dropIn: boolean }>;
   /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
   updateStatus: () => StatusFile;
-  /** The record of a conventions plugin refresh that a live run held back: none, a wait, or a record that cannot be read (A11-145). */
-  pluginRefresh: () => Deferral;
-  /** The release tags this checkout holds, with no network (A11-90). */
+  /** The record of a breaking update that is draining: none, a drain, or a file that cannot be read (A11-169). */
+  drain: () => Drain;
+  /** Each live or parked run with the version of agent-org it started on, or null when the queue cannot be read (A11-169). */
+  runs: () => readonly RunVersion[] | null;
+  /** The version this instance runs: its version folder's name, else its package's. */
+  instanceVersion: () => string | null;
+  /** The conventions plugins' installs now, as a session started now gets them (A11-169). */
+  pluginCopies: (wanted: readonly string[]) => readonly PluginCopy[];
+  /** The release tags this install holds, with no network (A11-90). */
   releaseTags: () => string[];
   /**
    * What a reviewer plugin's checks ask of core (A11-161): the gate's loader, and its refusal when its modules do not load (A11-144). Asked only of an enabled reviewer, so a machine with none
@@ -439,9 +459,10 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     // One section per agent-org plugin, in concern order, each with the plugin's own rows and then the concern's row that summarises them (A11-163).
     ...sections,
     ok("pairing", PAIRING_STEPS),
-    registeredCheck("auto-update", deps, "it runs `agent-org update` every hour"),
+    registeredCheck("auto-update", deps, "it runs `agent-org update` every ten minutes"),
     updateLagCheck(settings?.updateMaxDeferHours ?? 2, deps),
-    ...pluginRefreshChecks(deps),
+    ...drainChecks(deps),
+    ...runVersionChecks(settings, deps),
     ...chromiumChecks(deps),
   ];
 }
@@ -476,38 +497,92 @@ async function preflightChecks(settings: TicketSettings | null, deps: DoctorDeps
   return checks;
 }
 
+/** The fix for a herdr server that runs outside its service, or a service that is not registered. */
+const MOVE_HERDR = "run `agent-org start herdr --move` at a quiet moment: it stops the server that runs outside the unit and starts the unit (every pane restarts once), and retires the interim guards";
+
+/** The "herdr scope" row for where the server of `session` runs. */
+function herdrScopeRow(place: HerdrPlace, { session, registered }: { session: string; registered: boolean }): Check {
+  const name = "herdr scope";
+  if (place.kind === "unknown") return ok(name, `could not be checked, so where herdr runs is not known: ${place.why}`);
+  if (place.kind === "none") {
+    return registered ? ok(name, `no herdr server runs for session ${session} yet; the herdr service is registered and starts it`)
+      : failed(name, `no herdr server runs for session ${session}, and the herdr service is not registered`, "run `agent-org start herdr`");
+  }
+  if (place.kind === "unit") return ok(name, `the herdr server for session ${session} is in agent-org-herdr.service (${place.where}), so a restart of the instance, the ui or the terminal never reaches it`);
+  const where = place.kind === "instance" ? `the instance's cgroup (${place.where}), the same place as the instance: a restart of the instance interrupts every worker`
+    : `${place.where}, a scope the instance started: it survives a restart but is not the service, and carries the instance's working directory`;
+  return failed(name, `the herdr server for session ${session} is in ${where}`, MOVE_HERDR);
+}
+
 /**
- * Whether a restart of the instance would interrupt the herdr server of its session (A11-90). A server still inside the instance's cgroup, started before
- * herdr got its own scope, is a failure with both fixes. Checked only when the instance is registered, and a host file names the session.
+ * Where the herdr server of the tickets session runs (A11-169). It passes in `agent-org-herdr.service`, where a restart of the instance, the ui or the terminal never reaches it. It fails inside
+ * the instance's cgroup (a restart of the instance ends every worker) and in the old transient scope, with the `--move` that fixes both. Checked only when the instance is registered and a host file
+ * names the session. The two interim guards are rows of their own, failing while either stands on a host whose herdr runs in its unit.
  */
 function herdrScopeChecks(settings: TicketSettings | null, instanceState: ServiceState, deps: DoctorDeps): Check[] {
   if (settings === null || instanceState === "not-registered") return [];
   const session = settings.herdrSession;
-  const name = "herdr scope";
-  const isolation = deps.isolation(session);
-  if (isolation.kind === "unknown") return [ok(name, `could not be checked, so a restart's reach into herdr is not known: ${isolation.why}`)];
-  if (isolation.kind === "outside") {
-    return [ok(name, isolation.scope === null ? `no herdr server runs for session ${session}, so a restart interrupts none`
-      : `the herdr server for session ${session} is in ${isolation.scope}, outside the instance's cgroup`)];
+  const place = deps.herdrPlace(session);
+  const service = registeredCheck("herdr", deps, "it holds every worker's pane");
+  const scope = herdrScopeRow(place, { session, registered: service.ok });
+  const present = deps.guards();
+  const retire = "run `agent-org start herdr --move`, or `agent-org onboard`, which retires it on its proof";
+  const guards = place.kind === "unit" ? [
+    ...(present.dropIn ? [failed("keep-herdr.conf", "the instance unit still has the KillMode drop-in, which herdr's own service replaced", retire)] : []),
+    ...(present.watchdog ? [failed("gh-wrapper watchdog", "the hand-set gh-wrapper watchdog is still installed, and the start-time wrapper check replaced it", retire)] : []),
+  ] : [];
+  return [service, scope, ...guards];
+}
+
+/** The versions of agent-org the live and parked runs started on, beside the instance's (A11-169): one row each, or one line when they all agree. Nothing when no run holds a workspace. */
+function runVersionChecks(settings: TicketSettings | null, deps: DoctorDeps): Check[] {
+  const runs = deps.runs();
+  if (runs === null || runs.length === 0) return [];
+  const instance = deps.instanceVersion();
+  const checks: Check[] = [];
+  const versionOf = (run: RunVersion) => run.toolVersion ?? "a version not recorded";
+  if (instance !== null && runs.every((run) => run.toolVersion === instance)) {
+    checks.push(ok("run versions", `all ${runs.length === 1 ? "1 run is" : `${runs.length} runs are`} on ${instance}`));
+  } else {
+    for (const run of runs) checks.push(ok(`run ${run.key}`, `${versionOf(run)} (instance ${instance ?? "unknown"})`));
   }
-  const fix = `restart herdr when no run is working (\`herdr --session ${session} server stop\`; the next instance start launches it in its own scope)`;
-  return [failed(name, `the herdr server for session ${session} is in ${isolation.cgroup}, the same place as the instance (${isolation.unit}): a restart of the instance interrupts every worker`, fix)];
+  const rewritten = rewrittenCopies(runs, deps.pluginCopies(settings?.plugins ?? []));
+  checks.push(rewritten.length === 0 ? ok("plugin copy", "no refresh rewrote the folder a live run's session uses")
+    : failed("plugin copy", `a refresh rewrote the plugin folder ${rewritten.map(({ key, path }) => `${path} under ${key}`).join(", ")} in place: those sessions now read the new copy`,
+      "bump the plugin's version so a refresh lands in a new folder"));
+  return checks;
 }
 
-/** The conventions plugin refresh a live run held back (A11-145): one row while it waits, said as it is, since a wait is not a failure. */
-function pluginRefreshChecks(deps: DoctorDeps): Check[] {
-  const state = deps.pluginRefresh();
-  if (state.kind === "none") return [];
-  if (state.kind === "unreadable") return [failed("plugin refresh", state.why, "run `agent-org update` once no run is live: a refresh that runs removes the record")];
-  return [ok("plugin refresh", `the conventions plugin refresh has waited since ${state.since}, with ${state.live} ${state.live === 1 ? "run" : "runs"} live, and runs at the next update with no run live`)];
+/** Whether `current` is the folder `copy` started with at another commit: the same install path, a new commit, both known. */
+const rewroteInPlace = (copy: PluginCopy, current: PluginCopy | undefined): boolean => {
+  if (current === undefined || copy.commit === null || current.commit === null) return false;
+  return current.commit !== copy.commit;
+};
+
+/** The runs whose plugin folder now holds another commit than the one they started with: the same install path, a new commit. */
+function rewrittenCopies(runs: readonly RunVersion[], now: readonly PluginCopy[]): { key: string; path: string }[] {
+  return runs.flatMap((run) => run.pluginCopy.flatMap((copy) => {
+    const current = now.find((entry) => entry.plugin === copy.plugin && entry.path === copy.path);
+    return rewroteInPlace(copy, current) ? [{ key: run.key, path: copy.path }] : [];
+  }));
 }
 
-/** The hour the hourly update has to move a deferred install in, beyond `tickets.updateMaxDeferHours`, before `doctor` calls it late (A11-90). */
+/** A breaking update waiting on live runs (A11-169): said as it is, since a wait is not a failure. A record that cannot be read fails, because the instance starts no run while it stands. */
+function drainChecks(deps: DoctorDeps): Check[] {
+  const drain = deps.drain();
+  if (drain.kind === "none") return [];
+  if (drain.kind === "unreadable") return [failed("update drain", drain.why, "run `agent-org update`, which writes or removes it: the instance starts no run while it stands")];
+  const { target, since, deadline, forcedAt } = drain.record;
+  return [ok("update drain", forcedAt === undefined ? `draining to ${target} since ${since}: no new run starts, the live runs finish, and any still live at ${deadline} are stopped and re-queued`
+    : `draining to ${target} since ${since}: the live runs were stopped and re-queued at ${forcedAt}, and the update applies next`)];
+}
+
+/** The hour beyond `tickets.updateMaxDeferHours` a breaking update has to apply in before `doctor` calls the install late (A11-90, A11-169). */
 const UPDATE_GRACE_HOURS = 1;
 
 /**
- * How far behind the newest release the install is, and since when (A11-90). It fails once the install has waited past `updateMaxDeferHours` plus an hour
- * of grace: the hourly update should have moved it by then. The status file is what the update last saw, and the local tags count the releases between.
+ * How far behind the newest release the install is, and since when (A11-90). An update applies within minutes (A11-169), so it fails once the install has been behind past `updateMaxDeferHours` plus an
+ * hour of grace while no breaking update is draining: the ten-minute update should have moved it by then. The status file is what the update last saw, and the local tags count the releases between.
  */
 function updateLagCheck(maxDeferHours: number, deps: DoctorDeps): Check {
   const name = "update lag";
@@ -522,15 +597,15 @@ function updateLagCheck(maxDeferHours: number, deps: DoctorDeps): Check {
   }
   if (!isReleaseTag(latest)) return failed(name, `latest is ${latest}, which is not a release`, "run `agent-org update` to check for the newest release again");
   if (compareReleaseTags(latest, installed) <= 0) return ok(name, `installed ${installed}, which is the latest release`);
-  // The newest release may not be among the tags this checkout holds yet, so it is counted in either way.
+  // The newest release may not be among the tags this install holds yet, so it is counted in either way.
   const releases = new Set([...deps.releaseTags(), latest]);
   const behind = [...releases].filter((tag) => compareReleaseTags(tag, installed) > 0 && compareReleaseTags(tag, latest) <= 0).length;
-  const deferred = status.deferredSince === undefined ? "" : `; update deferred since ${status.deferredSince}: ${status.deferredReason ?? "a run is live"}`;
-  const detail = `installed ${installed}, latest ${latest}: ${behind} ${behind === 1 ? "release" : "releases"} behind, since ${status.latestSince}${deferred}`;
-  const waitedSince = Date.parse(status.deferredSince ?? status.latestSince);
+  const detail = `installed ${installed}, latest ${latest}: ${behind} ${behind === 1 ? "release" : "releases"} behind, since ${status.latestSince}`;
+  const drain = deps.drain();
+  if (drain.kind === "draining") return ok(name, `${detail}; draining: a breaking update waits on live runs until ${drain.record.deadline}`);
   const limit = (maxDeferHours + UPDATE_GRACE_HOURS) * HOUR_MS;
-  return deps.now() - waitedSince > limit
-    ? failed(name, `${detail}; the hourly update should have moved it by now`, "run `agent-org update` (with `--force` to restart a live run too), then check `agent-org status auto-update`")
+  return deps.now() - Date.parse(status.latestSince) > limit
+    ? failed(name, `${detail}; the update that runs every ten minutes should have moved it by now`, "run `agent-org update`, then check `agent-org status auto-update`")
     : ok(name, detail);
 }
 
@@ -602,8 +677,11 @@ export function report(checks: readonly Check[]): string {
   return lines.join("\n");
 }
 
-/** The release tags this checkout holds, read with git and no network: none when git cannot be run. */
+/** The release tags this install holds, read with git and no network: the mirror's when the install is in version folders, else the checkout's. None when git cannot be run. */
 function localReleaseTags(): string[] {
+  const mirror = toolDir(process.env, homedir());
+  const tags = pathExists(join(mirror, "repo.git", "HEAD")) ? (() => { try { return mirrorTags(mirrorGit(mirror)); } catch { return null; } })() : null;
+  if (tags !== null) return tags.filter((name) => isReleaseTag(name));
   const result = spawnSync("git", ["-C", TOOL_ROOT, "tag", "--list"], { encoding: "utf8", env: sandboxGitEnv() });
   return result.status === 0 ? result.stdout.split("\n").filter((name) => isReleaseTag(name)) : [];
 }
@@ -678,9 +756,16 @@ export function defaultDoctorDeps(): DoctorDeps {
     probe: realProbe,
     hostPlace: realPlace,
     platform: process.platform,
-    isolation: (session) => hostIsolation(services, session),
+    herdrPlace: (session) => hostHerdrPlace(services, session),
+    guards: () => guardsPresent(process.env, homedir(), pathExists),
     updateStatus: () => readUpdateStatus(updateStatusPath(process.env, homedir())),
-    pluginRefresh: () => readDeferral(deferralPath(process.env, homedir())),
+    drain: () => readDrain(drainPath(process.env, homedir())),
+    runs: () => {
+      const queue = readQueue();
+      return queue === null ? null : runVersions(queue);
+    },
+    instanceVersion: () => runningToolVersion(),
+    pluginCopies: (wanted) => pluginCopiesOf(wanted, homedir()),
     releaseTags: localReleaseTags,
     plugins: (input) => pluginProblems(input),
     reviewing: gateHelpers(),

@@ -143,7 +143,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     },
     which: () => "/usr/local/bin/tool",
     ghAs: () => listedGh(),
-    replacements: async () => ({ ghWrapperDeclared: true, herdrOutsideInstance: true }),
+    replacements: async () => ({ ghWrapperDeclared: true, herdrInOwnUnit: true }),
     diagnose: async () => [],
     chromium: () => BROWSERS_READY,
     isRoot: () => false,
@@ -176,7 +176,7 @@ test("onboard writes clones and the key source from flags, keeps the host file's
       },
     },
   });
-  assert.deepEqual(started, ["instance", "ui", "terminal", "auto-update"]);
+  assert.deepEqual(started, ["herdr", "instance", "ui", "terminal", "auto-update"]);
   assert.ok(printed.some((line) => line === "the Linear key is readable from the Keychain service agent-org-linear"));
 });
 
@@ -292,8 +292,8 @@ test("onboard's start starts the instance and the ui service, in that order", as
 });
 
 test("onboard starts the terminal only once it is set up and auto-update unless opted out; a refused optional service is said, a refused instance fails", async () => {
-  assert.deepEqual(onboardServices({ terminal: true, autoUpdate: true }), ["instance", "ui", "terminal", "auto-update"]);
-  assert.deepEqual(onboardServices({ terminal: false, autoUpdate: false }), ["instance", "ui"]);
+  assert.deepEqual(onboardServices({ terminal: true, autoUpdate: true }), ["herdr", "instance", "ui", "terminal", "auto-update"], "herdr first: the instance and the terminal start after it");
+  assert.deepEqual(onboardServices({ terminal: false, autoUpdate: false }), ["herdr", "instance", "ui"]);
   const unit = (name: string) => ({ manager: "systemd" as const, id: name, path: name, text: "", log: null, companion: null, interval: false, address: null });
   const lines = await startServices(["instance", "terminal"], async (name) => {
     if (name === "terminal") throw new ServiceRefusal("no bun");
@@ -301,6 +301,12 @@ test("onboard starts the terminal only once it is set up and auto-update unless 
   });
   assert.equal(lines, "started the instance service (systemd instance)\ndid not start the terminal service: no bun");
   await assert.rejects(startServices(["instance"], async () => { throw new ServiceRefusal("port in use"); }), /port in use/);
+  const moved = await startServices(["herdr", "instance"], async (name) => {
+    if (name === "herdr") throw new ServiceRefusal("the herdr server for session tickets runs outside agent-org-herdr.service. Run `agent-org start herdr --move` at a quiet moment");
+    return unit(name);
+  });
+  assert.equal(moved, "did not start the herdr service: the herdr server for session tickets runs outside agent-org-herdr.service. Run `agent-org start herdr --move` at a quiet moment\nstarted the instance service (systemd instance)",
+    "a herdr server outside its unit is said, with the move, and onboard goes on: it never starts a second server beside it");
 });
 
 // A11-66: the web terminal, set up by onboard, written into the exposure block (A11-144).
@@ -333,11 +339,11 @@ test("a terminal that cannot be set up is said, writes no terminal address and s
   await onboard(options({ repos: [failing.repo] }), failing.deps);
   assert.ok(failing.printed.some((line) => line.startsWith("the web terminal is not set up: `herdr plugin install devswha/herdr-web-ui --yes` failed: herdr: no network.")));
   assert.equal(hostOf(failing.home).tickets.providers.exposure.terminal, undefined);
-  assert.deepEqual(failing.started, ["instance", "ui", "auto-update"]);
+  assert.deepEqual(failing.started, ["herdr", "instance", "ui", "auto-update"]);
   const off = deps({ ensureBun: async () => { throw new Error("must not be asked"); } });
   await onboard(options({ repos: [off.repo], terminal: false, autoUpdate: false }), off.deps);
   assert.ok(!off.ran.some((line) => line.startsWith("herdr")));
-  assert.deepEqual(off.started, ["instance", "ui"]);
+  assert.deepEqual(off.started, ["herdr", "instance", "ui"]);
 });
 
 // A11-71: Linear's MCP for the workers, authenticated by the key, which is never printed.
@@ -492,7 +498,8 @@ function greenDoctor(home: string): DoctorDeps {
     pnpmVersion: () => "10.34.5",
     probe: async () => 200,
     hostPlace: async () => ({ kind: "no-project" }), platform: "linux",
-    isolation: () => ({ kind: "outside", scope: null }), updateStatus: () => ({ kind: "absent" }), pluginRefresh: () => ({ kind: "none" }), releaseTags: () => [],
+    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false }), updateStatus: () => ({ kind: "absent" }),
+    drain: () => ({ kind: "none" }), runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),
   };
@@ -644,14 +651,14 @@ async function onboardWithGuards(replacements: Replacements) {
 }
 
 test("A11-145: the interim guards are retired on Linux once their replacements are proven, and kept with the fix named when they are not", async () => {
-  const proven = await onboardWithGuards({ ghWrapperDeclared: true, herdrOutsideInstance: true });
+  const proven = await onboardWithGuards({ ghWrapperDeclared: true, herdrInOwnUnit: true });
   assert.ok(proven.guards.every((path) => !existsSync(path)), "every guard file is removed");
   assert.ok(proven.ran.includes("systemctl --user disable --now gh-wrapper-watchdog.timer"));
   assert.ok(proven.printed.some((line) => line.startsWith("retired the gh-wrapper watchdog")));
 
-  const unproven = await onboardWithGuards({ ghWrapperDeclared: false, herdrOutsideInstance: false });
+  const unproven = await onboardWithGuards({ ghWrapperDeclared: false, herdrInOwnUnit: false });
   assert.ok(unproven.guards.every((path) => existsSync(path)), "no guard is removed without its replacement");
-  assert.ok(unproven.printed.some((line) => line.includes("Restart herdr when no run is working")));
+  assert.ok(unproven.printed.some((line) => line.includes("Run `agent-org start herdr --move`")));
 });
 
 test("--no-start: onboard writes the host file and starts no service", async () => {

@@ -8,14 +8,14 @@
 // declared contract is returned for the host file's keys.
 //
 // THE UPDATE IS `agent-org update`'s (A11-145): for each plugin `tickets.plugins` names whose marketplace is a repository, the marketplace is updated and
-// then the plugin. A failure is said and never fails the agent-org update, and the version the plugin moved from and to is said when it moved.
+// then the plugin. A failure is said and never fails the agent-org update, and the version the plugin moved from and to is said when it moved. It runs at EVERY update (A11-169) and
+// waits for no quiet moment: Claude Code keeps each version of a plugin in a folder of its own and a session resolves its folder when it starts, so a new run or round gets the new copy and a
+// running one keeps the copy it started with. A refresh that rewrote a folder in place (the same install path at a new commit) is `doctor`'s "plugin copy" row, with the fix of bumping the plugin's version.
 //
 // Every program runs through the `Run` seam, so a test sees each command and answers it; none is run here.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { agentOrgHome, type Env } from "./paths.ts";
-import { writeAtomic } from "./write-atomic.ts";
 import { pluginStates, type PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
 import type { ProgramRunner } from "./gh-account.ts";
@@ -169,35 +169,3 @@ export const runProgram: Run = (file, args) => {
   if (result.error) return { status: null, stdout: "", stderr: result.error.message };
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 };
-
-/** Where a held-back refresh is recorded, beside the update status file, for `doctor` to say so. */
-export const deferralPath = (env: Env, home: string): string => join(agentOrgHome(env, home), "plugins-deferred.json");
-
-/**
- * What the record says of a held-back refresh: none, a wait since a time with a number of live runs, or a record that cannot be read. An unreadable record is
- * never taken for none: `doctor` fails on it, so a corrupt file cannot hide a wait.
- */
-export type Deferral = Readonly<{ kind: "none" }> | Readonly<{ kind: "waiting"; since: string; live: number }> | Readonly<{ kind: "unreadable"; why: string }>;
-
-export function readDeferral(path: string): Deferral {
-  if (!existsSync(path)) return { kind: "none" };
-  let record: unknown;
-  try {
-    record = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    return { kind: "unreadable", why: `${path} cannot be read: ${(err as Error).message}` };
-  }
-  return isObject(record) && typeof record.since === "string" && typeof record.live === "number"
-    ? { kind: "waiting", since: record.since, live: record.live }
-    : { kind: "unreadable", why: `${path} does not hold a since time and a live count` };
-}
-
-/** Records the held-back refresh, keeping the time of the first deferral, so `doctor` can say how long it has waited. */
-export function writeDeferral(path: string, live: number, now: Date): void {
-  const prior = readDeferral(path);
-  const since = prior.kind === "waiting" ? prior.since : now.toISOString();
-  writeAtomic(path, `${JSON.stringify({ since, live })}\n`, 0o600);
-}
-
-/** Removes the record once the refresh has run, so `doctor` says nothing of a deferral that is over. */
-export const clearDeferral = (path: string): void => rmSync(path, { force: true });

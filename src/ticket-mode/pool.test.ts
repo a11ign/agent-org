@@ -471,17 +471,10 @@ test("a session whose herdr server does not answer is started once, and waited f
   assert.deepEqual(started, ["tickets"], "started in ticket mode's own session, and only when it did not answer");
 });
 
-// A11-78: `systemctl --user restart` of the instance ended every process in its cgroup, the herdr server it had started and every worker in it.
-test("under systemd the session's herdr server starts in a scope of its own, outside the instance's service; anywhere else herdr starts directly", () => {
-  const systemd = herdrServerCommand("tickets", { INVOCATION_ID: "515de870" }, "linux");
-  assert.equal(systemd.file, "systemd-run");
-  assert.deepEqual(systemd.args.slice(0, 2), ["--user", "--scope"], "a user scope: the server leaves the instance's cgroup and keeps its environment");
-  assert.ok(systemd.args.includes("--unit=agent-org-herdr-tickets"), "named for its session, so `systemctl --user status` finds it");
-  assert.deepEqual(systemd.args.slice(-4), ["herdr", "--session", "tickets", "server"]);
-  assert.ok(herdrServerCommand("a b/c", { INVOCATION_ID: "x" }, "linux").args.includes("--unit=agent-org-herdr-a-b-c"), "a unit name holds no character systemd refuses");
-  assert.deepEqual(herdrServerCommand("tickets", {}, "linux"), { file: "herdr", args: ["--session", "tickets", "server"] }, "started by hand: no unit to leave");
-  assert.deepEqual(herdrServerCommand("tickets", { INVOCATION_ID: "x" }, "darwin"), { file: "herdr", args: ["--session", "tickets", "server"] },
-    "launchd ends a job's process group, which a detached server has left");
+// A11-169: the instance no longer spawns the server in a scope of its own: herdr has a service, and a machine without one spawns the server directly.
+test("the session's herdr server is spawned directly, with no systemd-run: the unit is how a machine that runs services starts it", () => {
+  assert.deepEqual(herdrServerCommand("tickets"), { file: "herdr", args: ["--session", "tickets", "server"] });
+  assert.deepEqual(herdrServerCommand("a b/c"), { file: "herdr", args: ["--session", "a b/c", "server"] });
 });
 
 test("an instance that starts up sends a live worker's pane nothing: no key, no prompt and no second start, whatever its pane shows", async () => {

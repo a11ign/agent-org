@@ -7,7 +7,8 @@ import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, 
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
 import { type RunPlace } from "./pool-paths.ts";
 import { agentStartArgs, closedNote, openPane, readAgents } from "../herdr-agents.ts";
-import { defaultStartServer, herdrRefusal } from "./pool-herdr.ts";
+import { defaultStartServer, herdrRefusal, herdrServiceOf } from "./pool-herdr.ts";
+import { defaultServiceDeps } from "../install/service.ts";
 import { finish, markPublishRunning, markPublishStarting, markRunning, markStarting, pathsUnread, planDone, publishFailed, publishStarts, recordBlockers, recordHeads, recordPaths, recordPathsFailure, recordProjectRepos, recordStackBase, unreadBlockerKeys, unreadPaths } from "./queue/queue-transitions.ts";
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
@@ -22,9 +23,12 @@ import { markOutcomeStale, PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parsePaths } from "./overlap.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { talk, talkFailed } from "./queue/talk.ts";
-import { markWriterRunning, markWriterStarting, nextStarts, writerFailed, writerOf, writerToStart } from "./queue.ts";
+import { markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
+import { toolPinOf } from "./pool-pin.ts";
+import { recordPublishPin, recordToolPin } from "./queue/queue-pins.ts";
+import { isDraining } from "./pool-drain.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
-import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles } from "./pool-prepare.ts";
+import { clearRunDir, current, prepare, prepareBatch, talkSession, writeBoardRunFiles, writeRunFiles } from "./pool-prepare.ts";
 import { hasPlan, openPulls } from "./board-view/view-types-and-filters.ts";
 import { pickTeamOf } from "./pick-scope.ts";
 import { needsDecision } from "./open-decisions.ts";
@@ -344,6 +348,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
   if (!batches) updateEach(ctx, store.get().entries.filter((e) => e.phase === "queued" && e.batch !== undefined && !e.talk), leaveBatch);
   const { load, cores } = (deps.load ?? (() => ({ load: loadavg()[0], cores: availableParallelism() })))();
   // A run queued again while this pass read the blockers or the paths, such as a batch's ticket whose order was just recorded, waits for the next pass's read.
+  // A breaking update that is draining (A11-169) starts nothing: no run, no round, no talk session, no publish run and no new-ticket run, until the update has applied and the record is gone.
+  if (isDraining(ctx)) return;
   const starts = nextStarts(store.get(), load, cores).filter((entry) => entry.blockers !== undefined && !pathsUnread(entry));
   const begun = new Set<string>();
   // A host's own condition for starting work (`tickets.preflight`): while one fails, no ticket run starts and every queued one stays Queued, with the reason on the board.
@@ -401,6 +407,11 @@ async function startTalk(ctx: PoolContext, entry: Entry): Promise<void> {
     const place = runPlace(ctx, entry);
     const resume = talkSession(ctx, entry);
     if (resume === undefined) throw new Error(`${key} has no saved session to resume`);
+    // The session resumes the run's own settings, which name its pinned version folder. A finished run holds no folder (A11-169), so one pruned since has its hooks written again, naming this instance's.
+    if (entry.toolRoot !== undefined && !existsSync(entry.toolRoot)) {
+      writeRunFiles(ctx, entry, place.folder, place.dir);
+      update(ctx, (queue) => recordToolPin(queue, [key], toolPinOf(ctx)));
+    }
     const outcome = join(place.dir, OUTCOME_FILE);
     if (existsSync(outcome)) markOutcomeStale(place.dir, statSync(outcome).mtimeMs);
     rmSync(join(place.dir, STOP_COUNT_FILE), { force: true });
@@ -436,7 +447,8 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
   if (ctx.rebasing.has(queued.ticket.key)) return;
   if (queued.batch !== undefined) update(ctx, (queue) => leaveBatch(queue, queued.ticket.key));
   const { batch: _alone, ...entry } = queued;
-  update(ctx, (queue) => markStarting(queue, entry.ticket.key, now()));
+  // The copy of agent-org this start writes its hooks and commands for is recorded as the start is, before any file names it (A11-169).
+  update(ctx, (queue) => recordToolPin(markStarting(queue, entry.ticket.key, now()), [entry.ticket.key], toolPinOf(ctx)));
   try {
     if (isPlanning(ctx, entry) && await planReached(ctx, entry.ticket)) {
       // A plan reached the ticket since it was queued, such as one a person attached or an earlier attempt left: it is worked from that.
@@ -470,7 +482,7 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
  */
 async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<void> {
   const { now } = ctx;
-  updateEach(ctx, batch, (queue, key) => markStarting(queue, key, now()));
+  updateEach(ctx, batch, (queue, key) => recordToolPin(markStarting(queue, key, now()), [key], toolPinOf(ctx)));
   try {
     const members: Entry[] = [];
     for (const entry of batch) {
@@ -545,7 +557,7 @@ async function startWriter(ctx: PoolContext): Promise<void> {
   const queued = writerToStart(store.get());
   const writer = settings.writer;
   if (queued === undefined) return;
-  update(ctx, (queue) => markWriterStarting(queue, queued.id, now()));
+  update(ctx, (queue) => recordWriterPin(markWriterStarting(queue, queued.id, now()), queued.id, toolPinOf(ctx)));
   try {
     if (writer === null) throw new Error("this machine names no tickets.writer");
     const model = queued.model ?? writer.model;
@@ -588,7 +600,7 @@ async function startPublish(ctx: PoolContext): Promise<void> {
   const { now, publisher, settings, store } = ctx;
   const queued = store.get().publish;
   if (queued === undefined) return;
-  update(ctx, (queue) => markPublishStarting(queue, now()));
+  update(ctx, (queue) => recordPublishPin(markPublishStarting(queue, now()), toolPinOf(ctx)));
   try {
     if (publisher === undefined || settings.publish === null) throw new Error("this machine names no tickets.publish");
     const place = publishPlace(ctx, queued);
@@ -608,14 +620,16 @@ async function startPublish(ctx: PoolContext): Promise<void> {
 }
 
 /**
- * The session's herdr server answers, starting it when it does not. Ticket mode's session is its own, so no unit keeps it running the way the
- * org's is kept: the first pool to need it starts it, and it outlives the pool, so workers survive a restart of the board.
+ * The session's herdr server answers, starting it when it does not. herdr has a service of its own (A11-169), and when it is registered the unit is started, so the server is never the instance's child
+ * and survives every restart of it. Only a machine with no herdr service (a hand-run `ticket:serve`) spawns the server itself.
  */
 export async function ensureSession(ctx: PoolContext): Promise<void> {
   const { deps, herdr, session, settings, wait } = ctx;
   const run = (args: string[]) => herdr(args);
   if (readAgents(run, session) !== null) return;
-  (deps.startServer ?? defaultStartServer)(settings.herdrSession);
+  const service = deps.herdrService ?? (deps.startServer === undefined ? herdrServiceOf(defaultServiceDeps()) : undefined);
+  if (service?.registered()) service.start();
+  else (deps.startServer ?? defaultStartServer)(settings.herdrSession);
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await wait(250);
     if (readAgents(run, session) !== null) return;

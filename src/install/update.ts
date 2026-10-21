@@ -1,102 +1,112 @@
 #!/usr/bin/env node
 // @ts-check
-// command: update -- move this install to the newest release (or `--version vX.Y.Z`, or `--channel main`), and restart each service that was running; it waits while a run is live unless `--force`
+// command: update -- move this install to the newest release (or `--version vX.Y.Z`, or `--channel main`), and restart the instance and the ui; it applies within minutes, and a BREAKING release drains first unless `--force`
 //
-// THE MOVE IS `update-tool.ts`'s, not a second one. `updateTool` fetches the tags, refuses a dirty checkout, picks the newest release tag or the pinned
-// one, puts the release's dependencies in place first and detaches at the tag. `--channel main` follows `origin/main` instead, for a person testing what
-// has merged and not been released. Only this command moves the checkout `install.sh` made, so a running service holds the old modules until it restarts:
-// each service that was RUNNING before the move is restarted after it, and a stopped one is left stopped. Only the services that run this checkout's
-// code are (`TOOL_SERVICES`): the terminal runs herdr web ui's, and the auto-update timer is what runs this command.
+// EACH RELEASE IS ITS OWN FOLDER (A11-169, ADR 0001). `update` fetches the release tags into the bare mirror `<tool>/repo.git`, builds the target as `<tool>/versions/<tag>` (`git archive` and the pinned
+// pnpm install, renamed into place only when whole), points `<tool>/current` at it, and restarts the services that were RUNNING and run the tool's code (`TOOL_SERVICES`: the instance and the ui). The
+// terminal runs herdr web ui's code, herdr runs in its own service, and the auto-update timer is what runs this command, so none of them is restarted. Nothing under a live run changes: a run's hooks
+// and commands name the version folder it started on (`tool-versions.ts`), and the folder is pruned only once no run that still has a workspace names it.
 //
-// AN UPDATE WAITS ONLY WHEN A RESTART WOULD INTERRUPT A WORKER (A11-78, A11-90). While the instance service runs and its queue holds a live run (a worker
-// starting or mid-turn, or the publish run), update first asks whether anything is newer. When nothing is, it says nothing about deferring and records
-// that the install is current. Otherwise the move goes ahead when herdr's server is OUTSIDE the instance's cgroup (checked from /proc and systemd, since
-// #1731 starts herdr in its own scope), or when no agent is mid-tool-call (`update-safety.ts`). If neither holds, update moves nothing and restarts
-// nothing: it says `deferred: N runs live` and exits 0, and the next hourly run tries again. It defers BEFORE the move, not just the restart: a checkout
-// moved under a running instance would leave the next run with nothing to move, so it would never restart, and the instance would load the new
-// version's modules into the old one's process. A deferral lasts at most `tickets.updateMaxDeferHours` from its first deferral for that release, and then
-// the move goes ahead. `--force` updates and restarts anyway, past every check. Each run writes the status file `doctor` reads.
+// AN UPDATE APPLIES WHATEVER IS LIVE, because a restart of the instance reaches no worker: herdr holds every pane in a service of its own. The one exception is a BREAKING release, whose changeset's
+// first line starts `Breaking:` (`breaking-release.ts`): a run that started before it may not be resumable on it, so with runs live `update` builds the folder, writes the drain record
+// (`update-drain.ts`) and swaps nothing. The instance starts no run while the record exists, stops and re-queues the live runs once `tickets.updateMaxDeferHours` has passed, and runs this command
+// again; it applies when no run is live, and deletes the record. `--force` applies a breaking release at once, past the drain.
+//
+// THE FIRST UPDATE FROM A CHECKOUT INSTALL MIGRATES: the checkout `install.sh` made (or the agents host's clone) is not under `versions/`, so the mirror is seeded from its remote, the units, the
+// launcher and the host file's `tool` are rewritten once to run through `<tool>/current`, and the services restart on it. The checkout itself is left untouched: runs that started on it keep calling it.
+// Each run writes the status file `doctor` reads.
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { chooseReleaseTag, isReleaseTag, LATEST } from "../lib/release-tag.ts";
-import { installDependencies, updateTool, type DependencyInstall } from "../update-tool.ts";
+import { chooseReleaseTag, compareReleaseTags, isReleaseTag, isToolVersion, LATEST } from "../lib/release-tag.ts";
 import { defaultServiceDeps, restartService, serviceState, TOOL_SERVICES, type ServiceName, type ServiceState } from "./service.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { hostFilePath, readOrNull, TOOL_ROOT } from "./paths.ts";
-import { liveRunCount, type Queue } from "../ticket-mode/queue/queue-entries-and-outcomes.ts";
-import { loadQueue } from "../ticket-mode/queue.ts";
-import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "../ticket-mode/settings.ts";
-import { readAgents, herdrRun } from "../herdr-agents.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { hostSettings, readLiveRuns, readQueue } from "./instance-queue.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { toolRootsInUse } from "../ticket-mode/queue/queue-pins.ts";
+import type { TicketSettings } from "../ticket-mode/settings.ts";
 import { pinnedPnpm } from "./pnpm.ts";
-import { clearDeferral, deferralPath, runProgram, stateOfRecord, updateConventions, writeDeferral, type ConventionsUpdate, type Run } from "./plugin-install.ts";
-import { hostIsolation, midToolCall, readUpdateStatus, restartDecision, updateStatusPath, writeUpdateStatus, type Isolation, type MidToolCall, type UpdateStatus } from "./update-safety.ts";
+import { runProgram, stateOfRecord, updateConventions, type ConventionsUpdate, type Run } from "./plugin-install.ts";
+import { readUpdateStatus, updateStatusPath, writeUpdateStatus, type UpdateStatus } from "./update-safety.ts";
+import { clearDrain, drainPath, readDrain, writeDrain, type Drain, type DrainRecord } from "./update-drain.ts";
+import { breakingLines } from "./breaking-release.ts";
+import { toolDir, toolVersionAt } from "./tool-versions.ts";
+import { buildVersion, withUpdateLock, currentVersionName, fetchMirror, mainVersionName, mirrorGit, mirrorTags, pruneVersions, seedMirror, swapCurrent, type Build, type Exec, type Git } from "./tool-install.ts";
+import { migrateInstall } from "./tool-migrate.ts";
 import { pluginUpkeep } from "./plugin-upkeep.ts";
+import { HOUR_MS } from "./update-safety.ts";
 import type { StepResult } from "../plugins/manifest.ts";
 
 export type Channel = "release" | "main";
-export type Git = (args: string[]) => string;
+
+/** What the move is to: the version folder's name, and the ref in the mirror it is built from. */
+type Target = Readonly<{ name: string; ref: string }>;
 
 export type UpdateDeps = Readonly<{
+  /** The folder of the code running this: a version folder, or the checkout of an install that has not migrated. */
   root: string;
+  /** git in the bare mirror. */
   git: Git;
-  /** The release path's dependency install, before the checkout moves. */
-  installForTag: (tag: string) => DependencyInstall;
-  /** `--channel main`'s dependency install, in the checkout once it has moved. */
-  installInPlace: () => void;
+  /** Fetch the release tags (and `main`) into the mirror, making the mirror first from the checkout's remote when there is none. */
+  fetch: (channel: Channel) => void;
+  /** Build `versions/<name>` from `ref`, or find it built. */
+  build: (name: string, ref: string) => Build;
+  /** Point `current` at `versions/<name>`. */
+  swap: (name: string) => void;
+  /** The version `current` names, or null when there is none (an install that has not migrated). */
+  current: () => string | null;
+  /** `toolVersion` of the host file when it pins a release, else undefined. */
+  pinned: () => string | undefined;
   state: (name: ServiceName) => ServiceState;
   restart: (name: ServiceName) => void;
   /** How many runs the instance has live, or null when its queue cannot be read (no host file, or no ticket settings in it). */
   liveRuns: () => number | null;
-  /** Whether a restart of the instance reaches herdr's server. Read only while a run is live (A11-90). */
-  isolation: () => Isolation;
-  /** Whether a run is mid-tool-call, read only when the isolation check does not decide the move first (A11-90). */
-  busy: () => MidToolCall;
-  /** `tickets.updateMaxDeferHours`: how long a deferral may last, from its first. */
+  /** The version folders the queue still names (a run with a workspace, live or parked), or null when the queue cannot be read, in which case nothing is pruned. */
+  inUse: () => readonly string[] | null;
+  /** Remove the version folders nothing uses; returns the names removed. */
+  prune: (inUse: readonly string[]) => string[];
+  /** Point the units (and, from a checkout, the launcher and the host file's `tool`) at `current`; returns the lines to say, empty when everything already names it. */
+  migrate: () => string[];
+  /** The drain record: read, written whole, and removed. */
+  drain: Readonly<{ read: () => Drain; write: (record: DrainRecord) => void; clear: () => void }>;
+  /** `tickets.updateMaxDeferHours`: how long a breaking release may wait on live runs before they are stopped and re-queued. */
   maxDeferHours: number;
   now: () => number;
-  /** The status file `doctor` reads: read for the deferral's start, and written whole after each run. */
-  status: Readonly<{ read: () => UpdateStatus | null; write: (status: UpdateStatus) => void }>;
+  /** The status file `doctor` reads, written whole after each run. */
+  status: Readonly<{ write: (status: UpdateStatus) => void }>;
   /** What each enabled plugin keeps true on this machine, run at the end of every update: the code host keeps its stacking extension present (A11-106, A11-160). Never throws. */
   upkeep: () => readonly StepResult[];
-  /** The conventions plugins `tickets.plugins` names, updated from their repositories when no run is live (A11-145). Never throws. */
+  /** The conventions plugins `tickets.plugins` names, updated from their repositories (A11-145). Never throws. */
   conventions: () => ConventionsUpdate;
-  /** The refresh a live run holds back, recorded for `doctor` to say so, and cleared once the refresh has run (A11-145). */
-  conventionsDeferral: Readonly<{ defer: (live: number) => void; clear: () => void }>;
   out: Pick<Console, "log" | "error">;
 }>;
 
 export class UpdateRefusal extends Error {}
 
 /**
- * The production wiring of the conventions refresh (A11-145): the plugins of `settings` are refreshed through `claude`, and a wait is recorded under the
- * agent-org home of `home`. A host with no conventions plugin has nothing to wait for, so it records nothing for doctor to say. Exported so the wiring is
- * tested with a fake `claude`, not only the update around it.
+ * The production wiring of the conventions refresh (A11-145): the plugins of `settings` are refreshed through `claude`. It runs at every update (A11-169): a new run or round loads the new
+ * copy, and a running session keeps the one it started with, since Claude Code keeps each version of a plugin in a folder of its own. Exported so the wiring is tested with a fake `claude`.
  */
-export function conventionsWiring(settings: Pick<TicketSettings, "plugins"> | null, env: NodeJS.ProcessEnv, home: string, run: Run = runProgram): Pick<UpdateDeps, "conventions" | "conventionsDeferral"> {
-  const record = deferralPath(env, home);
+export function conventionsWiring(settings: Pick<TicketSettings, "plugins"> | null, home: string, run: Run = runProgram): Pick<UpdateDeps, "conventions"> {
   return {
     conventions: () => (settings === null ? { said: [], failed: [] } : updateConventions(settings.plugins, { run, stateOf: stateOfRecord(home, { record: join(home, ".claude", "plugins", "installed_plugins.json") }) })),
-    conventionsDeferral: {
-      defer: (live) => {
-        if (settings !== null && settings.plugins.length > 0) writeDeferral(record, live, new Date());
-      },
-      clear: () => clearDeferral(record),
-    },
   };
 }
 
 /**
- * Move the checkout and restart what ran, unless the running instance has a live run and `force` is not given: then nothing moves, and it says so.
- * What the plugins keep true is kept whatever the move did (the code host's stacking extension, A11-106): a deferred or unmoved update still runs it, and a failure to do so is said, never raised.
- * @returns whether the checkout moved
+ * Move to the newest release and restart what ran, unless the release is breaking and a run is live and `force` is not given: then the folder is built, the drain record written, and nothing
+ * else changes. What the plugins keep true is kept whatever the move did (the code host's stacking extension, A11-106), and the conventions plugins are refreshed: a failure to do either is said, never raised.
+ * @returns whether `current` moved
  */
 export function update(options: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
   try {
-    return moveCheckout(options, deps);
+    return moveTool(options, deps);
   } finally {
     keepPlugins(deps);
     keepConventions(deps);
@@ -111,244 +121,201 @@ function keepPlugins(deps: UpdateDeps): void {
   }
 }
 
-/**
- * The conventions plugins, refreshed from their repositories when no run is live (A11-145): a live run holds the refresh back, as it holds back a release, since
- * a skill is read when it is invoked and a refresh would change a running worker's instructions. A plugin that moved is said with its versions, and a step that
- * failed is said as an error. Neither fails the update, since the checkout has moved, or stays, either way.
- */
+/** The conventions plugins, refreshed from their repositories at every update: a plugin that moved is said with its versions, and a step that failed is said as an error. Neither fails the update. */
 function keepConventions(deps: UpdateDeps): void {
-  const live = deps.liveRuns();
-  if (live !== null && live > 0) {
-    deps.conventionsDeferral.defer(live);
-    deps.out.log(`agent-org update: the conventions plugin refresh waits while ${live} ${live === 1 ? "run is" : "runs are"} live, and runs at the next update with none live`);
-    return;
-  }
-  deps.conventionsDeferral.clear();
   const { said, failed } = deps.conventions();
   for (const line of said) deps.out.log(`agent-org update: ${line}`);
   for (const line of failed) deps.out.error(`agent-org update: ${line}`);
 }
 
-function moveCheckout({ version, channel, force = false }: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
+/** The release the move is to, or the main build. REFUSES when the mirror holds no such release: no fallback to `origin/main`, the host runs a release or the last one it ran. */
+function targetOf(deps: UpdateDeps, version: string | undefined, channel: Channel): Target {
+  if (channel === "main") return { name: mainVersionName(deps.git), ref: "refs/heads/main" };
+  const wanted = version ?? deps.pinned() ?? LATEST;
+  const tags = mirrorTags(deps.git);
+  const tag = chooseReleaseTag(tags, wanted);
+  if (tag === null) {
+    const why = wanted === LATEST ? `it holds no release tag after fetching them; the tags it has: ${tags.join(", ") || "none"}` : `${wanted} is not a release it holds; the release tags it has: ${tags.filter(isReleaseTag).join(", ") || "none"}`;
+    throw new UpdateRefusal(`agent-org was not moved: ${why}. It stays where it is and does not fall back to main.`);
+  }
+  return { name: tag, ref: `refs/tags/${tag}` };
+}
+
+/** The version this install is at: the folder `current` names, else the version of the code running this (an install that has not migrated). */
+const installedName = (deps: UpdateDeps): string | null => deps.current() ?? toolVersionAt(deps.root);
+
+/** The breaking lines between what is installed and `target`, read from the target tag's changelog; none on the main channel or when the changelog cannot be read. */
+function breakingTo(deps: UpdateDeps, target: Target, installed: string | null, channel: Channel): ReturnType<typeof breakingLines> {
+  if (channel === "main") return [];
+  try {
+    return breakingLines(deps.git(["show", `${target.ref}:CHANGELOG.md`]), installed, target.name);
+  } catch (err) {
+    // Not known not to be breaking, so it is treated as breaking: with runs live it waits, and a wait is bounded.
+    return [{ release: target.name, summary: `Breaking: its changelog could not be read (${String((err as Error).message).split("\n")[0]})` }];
+  }
+}
+
+function moveTool({ version, channel, force = false }: { version: string | undefined; channel: Channel; force?: boolean }, deps: UpdateDeps): boolean {
   if (version !== undefined && channel === "main") throw new UpdateRefusal("--version picks a release, and --channel main follows main: give one of them");
   if (version !== undefined && !isReleaseTag(version)) throw new UpdateRefusal(`--version ${version} is not a release tag such as v0.3.0`);
   // Read BEFORE the move: a restart is for a service that ran the old version, and nothing else.
   const running = TOOL_SERVICES.filter((name) => deps.state(name) === "running");
-  if (running.includes("instance") && !force) {
-    const live = deps.liveRuns();
-    if (live !== null && live > 0 && waitsForRuns(live, { version, channel }, deps)) return false;
-  }
-  const before = deps.git(["rev-parse", "HEAD"]).trim();
-  if (channel === "main") {
-    if (deps.git(["status", "--porcelain", "--untracked-files=no"]).trim() !== "") {
-      throw new UpdateRefusal(`${deps.root} has changes to tracked files, so it was not moved. Discard them, or run update where they belong.`);
-    }
-    deps.git(["fetch", "--quiet", "origin", "main"]);
-    deps.git(["checkout", "--detach", "--quiet", "FETCH_HEAD"]);
-    try {
-      deps.installInPlace();
-    } catch (err) {
-      // Back where it was, so the services and the launcher keep running a tree whose dependencies are in place.
-      deps.git(["checkout", "--detach", "--quiet", before]);
-      throw new UpdateRefusal(`installing main's dependencies failed, so the checkout stays at ${before}: ${(err as Error).message}`);
-    }
-    deps.out.log(`agent-org main (${deps.git(["rev-parse", "HEAD"]).trim()})`);
-  } else {
-    // A failed install is caught where it happens, not read back out of updateTool's message.
-    let failed: { tag: string; reason: string } | null = null;
-    const installForTag = (tag: string) => {
-      const install = deps.installForTag(tag);
-      if (install.state === "failed") failed = { tag, reason: install.reason };
-      return install;
-    };
-    const moved = updateTool(deps.root, deps.git, version ?? LATEST, () => [], installForTag);
-    if (failed !== null) throw installRefusal(failed, before, deps.git);
-    deps.out.log(moved);
-  }
-  const moved = deps.git(["rev-parse", "HEAD"]).trim() !== before;
-  // Restarts come before the status file: a status that cannot be written must not leave a moved install's services on the old modules.
-  if (moved) {
-    for (const name of running) {
-      deps.restart(name);
-      deps.out.log(`restarted the ${name} service so it runs the version above`);
-    }
-  }
-  recordStatus(deps, channel);
-  return moved;
-}
-
-/** The line a run that waits says, as it has since A11-78. */
-function deferredLine(live: number): string {
-  return `agent-org update deferred: ${live} ${live === 1 ? "run" : "runs"} live on the instance, which a restart would interrupt. `
-    + "The next hourly update tries again; `agent-org update --force` updates and restarts now.";
-}
-
-/**
- * With a run live on a running instance, whether the move waits (A11-90). It asks first whether anything is newer: an install at the newest release says
- * nothing about deferring. A move that is newer goes ahead when a restart cannot interrupt anyone (`restartDecision`), and otherwise waits and says until
- * when, for at most `tickets.updateMaxDeferHours` from its first deferral for that release.
- */
-function waitsForRuns(live: number, { version, channel }: { version: string | undefined; channel: Channel }, deps: UpdateDeps): boolean {
-  let commit: string | null;
-  try {
-    commit = fetchTarget(deps, version, channel);
-  } catch {
-    // Offline, so nothing is known to be newer: the run waits, as it did before this check existed.
-    deps.out.log(deferredLine(live));
-    return true;
-  }
-  // No release to move to: the run waits as it always has, and the move says why, if the remote later holds one it cannot take.
-  if (commit === null) {
-    deps.out.log(deferredLine(live));
-    return true;
-  }
-  if (commit === deps.git(["rev-parse", "HEAD"]).trim()) {
-    recordStatus(deps, channel);
-    return true;
-  }
-  const latest = newest(deps, channel);
-  const decision = restartDecision({
-    isolation: deps.isolation(), busy: deps.busy,
-    deferredSince: latest === null ? undefined : deferredSinceOf(deps.status.read(), latest.name, channel),
-    now: deps.now(), maxDeferHours: deps.maxDeferHours,
-  });
-  if (decision.go) {
-    deps.out.log(`agent-org update: ${decision.reason}`);
+  deps.fetch(channel);
+  const target = targetOf(deps, version, channel);
+  const installed = installedName(deps);
+  if (target.name === deps.current()) {
+    // Nothing newer. A drain record for a release already applied is over (an update that stopped between its swap and its cleanup), and a unit that still names an earlier install's
+    // checkout (install.sh ran over it, or the checkout's own timer ran the first update) is pointed at `current` now.
+    deps.drain.clear();
+    deps.out.log(`agent-org is at ${target.name}: nothing newer`);
+    const migrated = deps.migrate();
+    sayMigrated(deps, migrated);
+    if (migrated.length > 0) restartRunning(deps, running);
+    finish(deps, channel, target.name, installed);
     return false;
   }
-  deps.out.log(`agent-org update deferred: ${live} ${live === 1 ? "run" : "runs"} live on the instance, which a restart would interrupt: ${decision.reason}. `
-    + `It updates anyway at ${new Date(decision.giveUpAt).toISOString()}; the next hourly update tries again, and \`agent-org update --force\` updates and restarts now.`);
-  recordStatus(deps, channel, decision.reason);
+  const breaking = breakingTo(deps, target, installed, channel);
+  const built = deps.build(target.name, target.ref);
+  if (built.state === "failed") {
+    // A drain for a release that cannot be built would hold the queue for nothing.
+    deps.drain.clear();
+    throw new UpdateRefusal(`agent-org stays at ${installed ?? "its current version"}, not moved to ${target.name}, because building it failed: ${built.reason}. Run \`agent-org doctor\`, then update again.`);
+  }
+  // Read after the build, which can take minutes: a run that started meanwhile is live, and one that finished is not waited for.
+  const live = running.includes("instance") ? deps.liveRuns() : null;
+  if (mustDrain({ breaking: breaking.length > 0, force, live })) return drain(deps, { target, installed, channel, live: live ?? 0, lines: breaking.map((line) => `${line.release}: ${line.summary}`) });
+  return apply(deps, { target, installed, running, channel });
+}
+
+/** Whether a breaking release waits on live runs: it is breaking, `--force` is not given, and the instance has a live run (a queue that cannot be read has none to wait for). */
+function mustDrain({ breaking, force, live }: { breaking: boolean; force: boolean; live: number | null }): boolean {
+  return breaking && !force && (live ?? 0) > 0;
+}
+
+/** Write the drain record, keeping the start of an earlier one: a release that supersedes the one being waited for does not give the live runs a fresh wait. */
+function drain(deps: UpdateDeps, { target, installed, channel, live, lines }: { target: Target; installed: string | null; channel: Channel; live: number; lines: readonly string[] }): false {
+  const earlier = deps.drain.read();
+  const since = earlier.kind === "draining" ? earlier.record : null;
+  const startedAt = since === null ? deps.now() : Date.parse(since.since);
+  deps.drain.write({
+    target: target.name, since: new Date(startedAt).toISOString(), deadline: new Date(startedAt + deps.maxDeferHours * HOUR_MS).toISOString(),
+    stopped: since?.stopped ?? [], ...(since?.forcedAt === undefined ? {} : { forcedAt: since.forcedAt }),
+  });
+  deps.out.log(`agent-org update: ${target.name} is breaking (${lines.join("; ")}). ${live} ${live === 1 ? "run is" : "runs are"} live, so it is built and waits: no new run starts, the live runs finish, and any still live `
+    + `${deps.maxDeferHours} ${deps.maxDeferHours === 1 ? "hour" : "hours"} after ${new Date(startedAt).toISOString()} are stopped and re-queued. \`agent-org update --force\` applies it now.`);
+  recordStatus(deps, channel, target.name, installed ?? target.name);
+  return false;
+}
+
+/** Swap `current`, point the units at it (the first update from a checkout rewrites them once), restart what ran, and clean up. */
+function apply(deps: UpdateDeps, { target, installed, running, channel }: { target: Target; installed: string | null; running: readonly ServiceName[]; channel: Channel }): boolean {
+  deps.swap(target.name);
+  const migrated = deps.migrate();
+  deps.out.log(`agent-org ${target.name} is current${installed !== null && installed !== target.name ? ` (it was ${installed})` : ""}`);
+  sayMigrated(deps, migrated);
+  // Restarts come before the status file: a status that cannot be written must not leave a moved install's services on the old modules.
+  restartRunning(deps, running);
+  deps.drain.clear();
+  finish(deps, channel, target.name, target.name);
   return true;
 }
 
-/** The commit a move would reach, fetched the way `updateTool` fetches it. Null when the remote holds no release for `version`. */
-function fetchTarget(deps: UpdateDeps, version: string | undefined, channel: Channel): string | null {
-  if (channel === "main") {
-    deps.git(["fetch", "--quiet", "origin", "main"]);
-    return deps.git(["rev-parse", "FETCH_HEAD"]).trim();
-  }
-  // `--tags` NAMES them, as `updateTool` says: a release commit is reachable from no branch, so a plain fetch never brings its tag down.
-  deps.git(["fetch", "--force", "--tags", "--quiet", "origin"]);
-  const tag = chooseReleaseTag(tagNames(deps), version ?? LATEST);
-  return tag === null ? null : deps.git(["rev-parse", `refs/tags/${tag}^{commit}`]).trim();
+/** Says what the migration rewrote. */
+function sayMigrated(deps: UpdateDeps, migrated: readonly string[]): void {
+  for (const line of migrated) deps.out.log(`agent-org update: ${line}`);
 }
 
-function tagNames(deps: UpdateDeps): string[] {
-  return deps.git(["tag", "--list"]).split("\n").filter((name) => name !== "");
-}
-
-/** The newest release (`main` on the main channel), and the date its commit was made, as the checkout knows them now. */
-function newest(deps: UpdateDeps, channel: Channel): { name: string; since: string } | null {
-  if (channel === "main") return { name: "main", since: deps.git(["log", "-1", "--format=%cI", "FETCH_HEAD"]).trim() };
-  const tag = chooseReleaseTag(tagNames(deps), LATEST);
-  return tag === null ? null : { name: tag, since: deps.git(["log", "-1", "--format=%cI", `refs/tags/${tag}`]).trim() };
-}
-
-/** The release the checkout is at, or else its short commit: what `doctor` names as installed. */
-function installedName(deps: UpdateDeps, channel: Channel): string {
-  const tag = channel === "release" ? chooseReleaseTag(deps.git(["tag", "--points-at", "HEAD"]).split("\n"), LATEST) : null;
-  return tag ?? deps.git(["rev-parse", "--short", "HEAD"]).trim();
-}
-
-/** When the first deferral for `latest` began, as the status file holds it: kept while that release is still the newest, and absent otherwise. */
-function deferredSinceOf(previous: UpdateStatus | null, latest: string, channel: Channel): number | undefined {
-  const isDifferentDeferral = previous === null || previous.latest !== latest || previous.channel !== channel || previous.deferredSince === undefined;
-  if (isDifferentDeferral) return undefined;
-  return Date.parse(previous.deferredSince);
-}
-
-/** Writes what this run saw: the install, the newest release, and the deferral it waits on when given one (`doctor` reads it). */
-function recordStatus(deps: UpdateDeps, channel: Channel, deferredReason?: string): void {
-  const latest = newest(deps, channel);
-  if (latest === null) return;
-  deps.status.write({
-    checkedAt: new Date(deps.now()).toISOString(), channel, installed: installedName(deps, channel),
-    latest: latest.name, latestSince: latest.since,
-    ...(deferredReason === undefined ? {} : { deferredSince: new Date(deferredSinceOf(deps.status.read(), latest.name, channel) ?? deps.now()).toISOString(), deferredReason }),
-  });
-}
-
-/** Why the checkout did not reach `tag`. It may already be there, with the dependencies it needs missing, which is not the same as being held back. */
-function installRefusal({ tag, reason }: { tag: string; reason: string }, before: string, git: Git): UpdateRefusal {
-  const already = git(["rev-parse", `refs/tags/${tag}^{commit}`]).trim() === before;
-  const where = already ? `agent-org is already at ${tag}, but` : `agent-org stays at ${before}, not moved to ${tag}, because`;
-  return new UpdateRefusal(`${where} installing its dependencies failed: ${reason}. Run \`agent-org doctor\`, then update again.`);
-}
-
-/** The host file's ticket settings, or null when they cannot be read. */
-function hostSettings(env: NodeJS.ProcessEnv = process.env): TicketSettings | null {
-  try {
-    return readTicketSettings({ ...env, [HOST_FILE_ENV]: hostFilePath(env) });
-  } catch {
-    return null;
+/** Restart the services that ran, so they run the version `current` names. */
+function restartRunning(deps: UpdateDeps, running: readonly ServiceName[]): void {
+  for (const name of running) {
+    deps.restart(name);
+    deps.out.log(`restarted the ${name} service so it runs the version above`);
   }
 }
 
-/** The instance's queue, from the state directory the host file names, or null when that cannot be read. */
-function readQueue(env: NodeJS.ProcessEnv = process.env): Queue | null {
-  const settings = hostSettings(env);
-  if (settings === null) return null;
-  try {
-    return loadQueue(join(settings.stateDir, "tickets", "queue.json"), settings.max);
-  } catch {
-    return null;
+/** The status file, and the folders no run uses any more. A queue that cannot be read prunes nothing. */
+function finish(deps: UpdateDeps, channel: Channel, latest: string, installed: string | null): void {
+  const inUse = deps.inUse();
+  if (inUse !== null) {
+    const removed = deps.prune(inUse);
+    if (removed.length > 0) deps.out.log(`agent-org update: removed ${removed.join(", ")}, which no run uses`);
   }
+  recordStatus(deps, channel, latest, installed ?? latest);
 }
 
-/**
- * The instance's live runs, from its queue file in the state directory the host file names. Null when there is no host file or it holds no
- * ticket settings: that machine's update is not held back by a queue it cannot read.
- */
-export function readLiveRuns(env: NodeJS.ProcessEnv = process.env): number | null {
-  const queue = readQueue(env);
-  return queue === null ? null : liveRunCount(queue);
-}
-
-/** Runs a program, as `execFileSync` does; a test passes one that records what it was asked to run. */
-export type Exec = (file: string, args: string[], options: object) => unknown;
-
-/** How update installs a release's or main's dependencies: always with the pinned pnpm, never the pnpm on PATH. */
-export function dependencyInstalls(root: string, git: Git, exec: Exec = execFileSync): Pick<UpdateDeps, "installForTag" | "installInPlace"> {
-  return {
-    installForTag: (tag) => installDependencies({ root, tag, run: git, exec, pnpm: pinnedPnpm }),
-    installInPlace: () => {
-      const { command, args } = pinnedPnpm(["install", "--prod", "--no-frozen-lockfile", "--ignore-scripts", "--ignore-workspace"]);
-      exec(command, args, { cwd: root, env: { ...process.env, COREPACK_ENABLE_DOWNLOAD_PROMPT: "0" }, stdio: ["ignore", "inherit", "inherit"] });
-    },
+/** Writes what this run saw: the install, and the newest release. `doctor` reads it. */
+function recordStatus(deps: UpdateDeps, channel: Channel, latest: string, installed: string): void {
+  const date = (ref: string): string => {
+    try {
+      return deps.git(["log", "-1", "--format=%cI", ref]).trim();
+    } catch {
+      return new Date(deps.now()).toISOString();
+    }
   };
+  const newest = channel === "main" ? { name: "main", since: date("refs/heads/main") } : releaseNewest(deps);
+  deps.status.write({ checkedAt: new Date(deps.now()).toISOString(), channel, installed, latest: newest?.name ?? latest, latestSince: newest?.since ?? date(`refs/tags/${latest}`) });
+}
+
+/** The newest release the mirror holds, and the date its commit was made. */
+function releaseNewest(deps: UpdateDeps): { name: string; since: string } | null {
+  const tag = mirrorTags(deps.git).filter(isReleaseTag).toSorted(compareReleaseTags).at(-1);
+  if (tag === undefined) return null;
+  return { name: tag, since: deps.git(["log", "-1", "--format=%cI", `refs/tags/${tag}`]).trim() };
+}
+
+/** The `toolVersion` the host file pins, when it is a release tag (`latest` is no pin). */
+export function pinnedVersion(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const text = readOrNull(hostFilePath(env));
+  if (text === null) return undefined;
+  let value: unknown;
+  try {
+    value = (JSON.parse(text) as { toolVersion?: unknown }).toolVersion;
+  } catch {
+    return undefined;
+  }
+  if (value === undefined || value === LATEST) return undefined;
+  if (!isToolVersion(value)) throw new UpdateRefusal(`the host file's toolVersion is ${JSON.stringify(value)}, which is neither "latest" nor a release tag such as v0.3.0: fix it, and the update will not follow the newest release meanwhile`);
+  return String(value);
 }
 
 function defaultUpdateDeps(upkeep: UpdateDeps["upkeep"]): UpdateDeps {
   // Corepack fetches the pinned pnpm the first time; with no person at a prompt, it must not ask.
   process.env.COREPACK_ENABLE_DOWNLOAD_PROMPT = "0";
   const root = TOOL_ROOT;
-  const git: Git = (args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
+  const home = homedir();
+  const tool = toolDir(process.env, home);
+  const git = mirrorGit(tool);
+  const exec: Exec = execFileSync;
   const services = defaultServiceDeps();
   const settings = hostSettings();
-  // Without a host file no run is live (`liveRuns` is null), so the session below is asked for only where there is one.
-  const session = settings?.herdrSession ?? "tickets";
-  const statusPath = updateStatusPath(process.env, homedir());
+  const statusPath = updateStatusPath(process.env, home);
+  const drainFile = drainPath(process.env, home);
   return {
     root, git,
-    ...dependencyInstalls(root, git),
+    fetch: (channel) => {
+      // The first update from a checkout seeds the mirror from the checkout's own remote; an install made in version folders has its mirror already.
+      if (!existsSync(join(tool, "repo.git", "HEAD"))) seedMirror(tool, execFileSync("git", ["-C", root, "remote", "get-url", "origin"], { encoding: "utf8", env: sandboxGitEnv() }).trim(), exec);
+      fetchMirror(git, channel);
+    },
+    build: (name, ref) => buildVersion({ tool, name, ref, exec, pnpm: pinnedPnpm }),
+    swap: (name) => swapCurrent(tool, name),
+    current: () => currentVersionName(tool),
+    pinned: () => pinnedVersion(),
     state: (name) => serviceState(name, services),
     restart: (name) => restartService(name, services),
     liveRuns: () => readLiveRuns(),
-    isolation: () => hostIsolation(services, session),
-    busy: () => midToolCall({ agents: () => readAgents(herdrRun, { session }), queue: () => readQueue() }),
+    inUse: () => {
+      const queue = readQueue();
+      return queue === null ? null : toolRootsInUse(queue);
+    },
+    prune: (inUse) => pruneVersions({ tool, inUse, self: root }),
+    migrate: () => migrateInstall({ oldRoot: root, tool, home, env: process.env, services, hostPath: hostFilePath(process.env), binDir: settings?.binDir ?? join(home, ".local", "bin") }),
+    drain: { read: () => readDrain(drainFile), write: (record) => writeDrain(drainFile, record), clear: () => clearDrain(drainFile) },
     maxDeferHours: settings?.updateMaxDeferHours ?? 2,
     now: () => Date.now(),
-    // A status file that cannot be read is no status for the deferral clock: the run rewrites the file either way, and `doctor` is the one that fails on it.
-    status: {
-      read: () => {
-        const file = readUpdateStatus(statusPath);
-        return file.kind === "status" ? file.status : null;
-      },
-      write: (status) => writeUpdateStatus(statusPath, status),
-    },
+    status: { write: (status) => writeUpdateStatus(statusPath, status) },
     upkeep,
-    ...conventionsWiring(settings, process.env, homedir()),
+    ...conventionsWiring(settings, home),
     out: console,
   };
 }
@@ -357,7 +324,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   try {
     const { values } = parseArgs({ args: process.argv.slice(2), strict: true, options: { version: { type: "string" }, channel: { type: "string", default: "release" }, force: { type: "boolean", default: false } } });
     if (values.channel !== "release" && values.channel !== "main") throw new UpdateRefusal(`--channel ${values.channel} is not release or main`);
-    update({ version: values.version, channel: values.channel, force: values.force }, defaultUpdateDeps(await pluginUpkeep(hostSettings(), process.env, { hostText: readOrNull(hostFilePath(process.env)) })));
+    const { channel } = values;
+    const upkeep = await pluginUpkeep(hostSettings(), process.env, { hostText: readOrNull(hostFilePath(process.env)) });
+    withUpdateLock(toolDir(process.env, homedir()), () => update({ version: values.version, channel, force: values.force }, defaultUpdateDeps(upkeep)));
   } catch (err) {
     console.error(`agent-org update: ${(err as Error).message}`);
     process.exitCode = 2;
