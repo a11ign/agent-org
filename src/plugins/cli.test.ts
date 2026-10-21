@@ -172,10 +172,10 @@ test("uninstall removes the block, the concern falls back to its default, and th
 
 test("uninstalling the only tracker or code host is refused by name, since its default would put it back", async () => {
   const host = scratch();
-  const { status, err } = await host.run("uninstall", "linear");
-  assert.equal(status, 1);
-  assert.match(err, /linear is the only tracker, and exactly one tracker must be enabled: it cannot be uninstalled, since its default would put linear back/);
-  assert.match((await host.run("uninstall", "github")).err, /github is the only code host/);
+  const refusals = await Promise.all([host.run("uninstall", "linear"), host.run("uninstall", "github")]);
+  assert.deepEqual(refusals.map(({ status }) => status), [1, 1]);
+  assert.match(refusals[0].err, /linear is the only tracker, and exactly one tracker must be enabled: it cannot be uninstalled, since its default would put linear back/);
+  assert.match(refusals[1].err, /github is the only code host/);
   assert.equal(host.text(), HOST);
 });
 
