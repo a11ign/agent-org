@@ -181,6 +181,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // A11-144: Linear's state TYPE for work begun, which Pick reads off a ticket to mark it taken. It is the tracker's own word, not a board label, and the
   // board's `started` label of claim-labels.ts is a different fact that happens to spell the same.
   ...nonVocabulary("ticket-mode/pick-taken.ts", ['"started"'], "Linear's state type for work begun, read from the tracker, not a board label"),
+  // A11-158: the in-memory tracker (`plugins/fakes/tracker.ts`) answers the same state type a tracker names for a ticket a worker has begun.
+  ...nonVocabulary("plugins/fakes/tracker.ts", ['"started"'], "the fake tracker's state type for work begun, as Linear names it, not a board label"),
   // #910: `TicketState` values of the ticket port, which the class compares an item's state against and sets; they are states of the port's own union, not labels.
   ...nonVocabulary("decision-run/classes/ready-queue-empty.ts", ['"backlog"', '"ready"'], "TicketState values of the ticket port, not labels"),
   // #3942: the same leaf holds `STATE_LABELS`, whose `backlog` and `blocked` ARE vocabulary labels. It cannot import the vocabulary (no imports, same contract), so it keeps its
