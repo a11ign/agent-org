@@ -39,7 +39,11 @@ export function addedSections(diff: string): FindingsSection[] {
       file = header.endsWith(".md") && !NOT_WRITE_UP.test(header) ? header : null;
       continue;
     }
-    if (file === null || !line.startsWith("+") || line.startsWith("+++")) continue;
+    if (file === null) continue;
+    // A hunk starts with the fence state unknown, taken as closed. A context line is in the new file as well as the old, so it moves the fence state like an added one; a removed line is in neither.
+    if (line.startsWith("@@")) fenced = false;
+    if (line.startsWith(" ") && line.slice(1).trimStart().startsWith("```")) fenced = !fenced;
+    if (!line.startsWith("+") || line.startsWith("+++")) continue;
     const added = line.slice(1);
     if (added.trimStart().startsWith("```")) fenced = !fenced;
     const heading = fenced ? null : HEADING.exec(added);

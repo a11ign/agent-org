@@ -50,6 +50,12 @@ test("addedSections takes a heading inside a code fence for text, and cuts a sec
   assert.ok(only.text.endsWith(`(cut at ${SECTION_CHARS} characters)`));
 });
 
+test("addedSections takes a heading added inside a fence the diff only shows as context for text, and a removed fence line moves nothing", () => {
+  const diff = ["diff --git a/docs/a.md b/docs/a.md", "@@ -3,4 +3,5 @@", " ```md", "+### fake", "+text in the fence", " ```", "+## Real", "+found it",
+    "@@ -20,3 +21,4 @@", "-```sh", " plain", "+## Also real", "+more"].join("\n");
+  assert.deepEqual(addedSections(diff), [{ file: "docs/a.md", heading: "## Real", text: "found it" }, { file: "docs/a.md", heading: "## Also real", text: "more" }]);
+});
+
 /** A `run` that answers `gh pr view` with `view` and `gh pr diff` with `diff`, and records each call. */
 function answering(view: unknown, diff: string) {
   const calls: string[][] = [];
