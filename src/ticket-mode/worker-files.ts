@@ -488,7 +488,7 @@ Write \`${runDir}/${OUTCOME_FILE}\` as the last thing you do, after every plan, 
 ${outcomeExamples(["planned", "needs-human"])}
 \`\`\`
 
-Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may answer you here after a \`needs-human\` outcome. If one does, finish the plans with what they said, and write the outcome file again as the last thing you do.
+Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}\`. A \`needs-human\` outcome hands every ticket of the batch back to a person, so write it only when no ticket can be planned without one. A person may answer you here after a \`needs-human\` outcome, and after a \`planned\` one that leaves a \`${QUESTION_FILE}\`: the board keeps this terminal open for them. If one does, finish the plans with what they said: once a person answers a ticket's question, replace that ticket's \`${QUESTION_FILE}\` with its plan files, and write the outcome file again as the last thing you do.
 `;
 }
 

@@ -15,12 +15,13 @@ import { finish, markPublishRunning, markPublishStarting, markRunning, markStart
 import { type Blocker, type Ticket, type TicketSource } from "./source.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { afterMerge, conflictFeedback, mergeBaseIn, remoteHead, stackBaseIn } from "./stack-rebase.ts";
-import { repoOf } from "./board-view/pull-status-and-notes.ts";
+import { isParked, repoOf } from "./board-view/pull-status-and-notes.ts";
 import { worktreePath } from "./worktree.ts";
 import { claimantOf, type TicketSettings } from "./settings.ts";
 import { basename, join } from "node:path";
 import { ticketDir } from "./ticket-paths.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { markOutcomeStale, PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parsePaths } from "./overlap.ts";
 import { availableParallelism, loadavg } from "node:os";
@@ -349,8 +350,14 @@ export async function fill(ctx: PoolContext): Promise<void> {
   // Publishing and the new-ticket writer need none of it, so they go on.
   const mayStart = starts.length === 0 || ctx.settings.preflight.length === 0 || (await ctx.gate.check()).ok;
   for (const entry of mayStart ? starts : []) {
-    // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched.
-    if (entry.talk) { await startTalk(ctx, entry); continue; }
+    // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched. A batch's tickets share that session: one pane (A11-171).
+    if (entry.talk) {
+      if (begun.has(entry.ticket.key)) continue;
+      const together = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch && e.talk === true);
+      for (const member of together) begun.add(member.ticket.key);
+      await startTalk(ctx, together);
+      continue;
+    }
     if (begun.has(entry.ticket.key) || removing.has(entry.ticket.key) || rebasing.has(entry.ticket.key)) continue;
     const batch = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch && !e.talk);
     for (const member of batch) begun.add(member.ticket.key);
@@ -378,22 +385,28 @@ function stoppedWhileStarting(ctx: PoolContext, key: string, workspace: string):
  */
 const openDecisionHold = (fresh: Ticket): string | null => needsDecision(fresh)?.reason ?? null;
 
-/** Open the run's workspace and start its agent there, and record the run as running. False when a person stopped it while it started. */
-async function openRun(ctx: PoolContext, entry: Entry, folder: string, dir: string, resume?: string): Promise<boolean> {
+/**
+ * Open the run's workspace and start its agent there, and record the run as running: every one of `members`, the tickets that share the one pane (`entry` alone, unless it is
+ * a batch's talk session). False when a person stopped it while it started.
+ */
+async function openRun(ctx: PoolContext, entry: Entry, folder: string, dir: string, resume?: string, members: readonly Entry[] = [entry]): Promise<boolean> {
   const { workspace, pane } = await start(ctx, entry, folder, dir, resume);
   if (stoppedWhileStarting(ctx, entry.ticket.key, workspace)) return false;
-  update(ctx, (queue) => markRunning(queue, entry.ticket.key, workspace, pane));
+  updateEach(ctx, members, (queue, key) => markRunning(queue, key, workspace, pane));
   return true;
 }
 
 /**
  * Open a finished run's saved session in a new pane, for a person to talk to its agent. The outcome it ended on is marked stale, as when a person answers a
- * parked run, so the stop hook asks for a new one. A session that cannot start puts the finished run back on the board as it was, and says why in the log.
+ * parked run, so the stop hook asks for a new one. A batch's tickets share the one session, so their talk sessions start together, in one pane (A11-171): `members` are
+ * them, and the first leads. A session that cannot start puts the finished runs back on the board as they were, and says why in the log.
  */
-async function startTalk(ctx: PoolContext, entry: Entry): Promise<void> {
+async function startTalk(ctx: PoolContext, members: readonly Entry[]): Promise<void> {
   const { now } = ctx;
+  const [entry] = members;
   const { key } = entry.ticket;
-  update(ctx, (queue) => markStarting(queue, key, now()));
+  const keys = members.map(({ ticket }) => ticket.key);
+  updateEach(ctx, members, (queue, member) => markStarting(queue, member, now()));
   try {
     const place = runPlace(ctx, entry);
     const resume = talkSession(ctx, entry);
@@ -401,30 +414,33 @@ async function startTalk(ctx: PoolContext, entry: Entry): Promise<void> {
     // The session resumes the run's own settings, which name its pinned version folder. A finished run holds no folder (A11-169), so one pruned since has its hooks written again, naming this instance's.
     if (entry.toolRoot !== undefined && !existsSync(entry.toolRoot)) {
       writeRunFiles(ctx, entry, place.folder, place.dir);
-      update(ctx, (queue) => recordToolPin(queue, [key], toolPinOf(ctx)));
+      update(ctx, (queue) => recordToolPin(queue, keys, toolPinOf(ctx)));
     }
     const outcome = join(place.dir, OUTCOME_FILE);
     if (existsSync(outcome)) markOutcomeStale(place.dir, statSync(outcome).mtimeMs);
     rmSync(join(place.dir, STOP_COUNT_FILE), { force: true });
-    if (await openRun(ctx, entry, place.folder, place.dir, resume)) await settleStart(ctx, place);
+    if (await openRun(ctx, entry, place.folder, place.dir, resume, members)) await settleStart(ctx, place);
   } catch (err) {
     // A failure after the pane opened leaves a run that is live: only one still starting goes back, and its outcome mark is taken off with it.
     if (phaseOf(ctx, key) !== "starting") return log(`${key}: the talk session failed after it started (${messageOf(err)})`);
     const { dir } = runPlace(ctx, entry);
     rmSync(join(dir, STALE_OUTCOME_FILE), { force: true });
-    log(`${key}: the talk session could not start (${messageOf(err)}), so the run is back on the board as it was`);
-    update(ctx, (queue) => talkFailed(queue, key));
+    log(`${keys.join(", ")}: the talk session could not start (${messageOf(err)}), so the run is back on the board as it was`);
+    updateEach(ctx, members.filter(({ ticket }) => phaseOf(ctx, ticket.key) === "starting"), talkFailed);
   }
 }
 
 /**
- * A person asks to talk to a finished run's agent: refused, naming why, when there is no session to resume, and while a review round of the run is queued or running, since
- * the round and the talk session would share the run's Claude session (A11-154). Otherwise the session is queued, and starts on the next pass.
+ * A person asks to talk to a run's agent. Nothing changes, and nothing is refused, when the run already has a talk session that is queued, starting, running or parked,
+ * or another ticket of its batch has (a batch is one run, with one session and one pane): the second press finds the first (A11-171). Otherwise it is refused, naming why,
+ * when there is no session to resume, and while a review round of the run is queued or running, since the round and the talk session would share the run's Claude
+ * session (A11-154). Else the session is queued, and starts on the next pass.
  */
 export function talkTo(ctx: PoolContext, key: string): void {
   const { now, store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key);
-  if (entry?.talk && entry.phase === "queued") return;
+  const sharing = entry === undefined ? [] : entry.batch === undefined ? [entry] : store.get().entries.filter((e) => e.batch === entry.batch);
+  if (sharing.some((e) => e.talk === true && (e.phase !== "finished" || isParked(e)))) return;
   if (entry?.review !== undefined && entry.talk !== true && entry.phase !== "finished") throw new Error(`${key} has a review round ${entry.phase === "queued" ? "queued" : "running"}: talk to it once the round has ended, as the round and a talk session would share one session`);
   if (entry === undefined || entry.phase !== "finished") throw new Error(`${key} has no finished run to talk to`);
   if (talkSession(ctx, entry) === undefined) throw new Error(`${key} has no saved session to resume: its transcript is gone`);

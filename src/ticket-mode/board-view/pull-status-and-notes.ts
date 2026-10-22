@@ -274,6 +274,8 @@ export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): st
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
+  // A talk session is Talking whether its agent works or waits for the person, and never Planning, though it carries its planning run's `plan` (A11-171).
+  if (isTalking(entry)) return "talking";
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
@@ -382,6 +384,9 @@ export function runsShown<T extends ViewEntry>(entries: readonly T[], filter: Ru
 /** A parked run: a finished one that kept its herdr workspace, so a person can still answer its agent there. It holds no slot. */
 export const isParked = (entry: ViewEntry): boolean => entry.phase === "finished" && entry.workspace !== undefined;
 
+/** A talk session that holds its pane: its agent is starting or running in it, or waits there for the person (parked). A queued one holds none yet (A11-171). */
+const isTalking = (entry: ViewEntry): boolean => entry.talk === true && entry.phase !== "queued" && (entry.phase !== "finished" || isParked(entry));
+
 /** What a person can do to a run from the board. */
 type RunAction = "remove" | "stop" | "retry" | "close" | "approve" | "respond" | "talk" | "dismiss" | "apply-edit" | "discard-edit" | "start-anyway";
 
@@ -459,13 +464,14 @@ function respondOffered(entry: ViewEntry, status: string): boolean {
  */
 export function runActions(entry: ViewEntry, publish?: ViewPublish, entries: readonly ViewEntry[] = []): RunAction[] {
   if (entry.phase === "queued") return startAnywayOffered(entry, entries) ? ["start-anyway", "remove"] : ["remove"];
-  if (entry.phase !== "finished") return ["stop"];
+  // A talk session offers Talk while it holds its pane: the press finds that pane again rather than opening another (A11-171).
+  if (entry.phase !== "finished") return isTalking(entry) ? ["talk", "stop"] : ["stop"];
   const dismiss: RunAction[] = isBeingPublished(entry, publish) ? [] : ["dismiss"];
   const edit: RunAction[] = hasEdit(entry) ? ["apply-edit", "discard-edit"] : [];
   const status = runStatus(entry);
   const kind = entry.outcome?.kind;
   const respond: RunAction[] = respondOffered(entry, status) ? ["respond"] : [];
-  if (isParked(entry)) return ["close", ...respond, ...edit, ...dismiss];
+  if (isParked(entry)) return [...(isTalking(entry) ? ["talk" as const] : []), "close", ...respond, ...edit, ...dismiss];
   // A session is worth opening for any run that ended with something to say, and for none that concluded or whose pull requests all merged.
   const talk: RunAction[] = hasNothingToSay(kind, status) ? [] : ["talk"];
   if (status === "awaiting-review" && kind === "draft-pr") return ["approve", ...talk, ...edit, ...dismiss];

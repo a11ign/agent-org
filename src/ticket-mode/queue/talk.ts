@@ -7,13 +7,16 @@ function canTalk(entry: Entry | undefined): entry is Entry {
 }
 
 /**
- * A person opened a finished run's saved session to talk to its agent. The ticket goes back on the queue as a talk session, at the end. Nothing changes
- * for a run that is not finished, one parked (its terminal is open already), or one a session cannot help: it concluded with nothing more to do.
+ * A person opened a finished run's saved session to talk to its agent. The ticket goes back on the queue as a talk session, at the end. A batch planner's tickets share
+ * one session, so every ticket of the batch that offers Talk is queued with it, at the same time, and starts in one pane (A11-171). Nothing changes for a run that is not
+ * finished, one parked (its terminal is open already), or one a session cannot help: it concluded with nothing more to do.
  */
 export function talk(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   if (!canTalk(entry)) return queue;
-  return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), talkRound(entry, now)] };
+  const together = entry.batch === undefined ? [entry] : queue.entries.filter((other) => other.batch === entry.batch && canTalk(other));
+  const keys = new Set(together.map(({ ticket }) => ticket.key));
+  return { ...queue, entries: [...queue.entries.filter(({ ticket }) => !keys.has(ticket.key)), ...together.map((member) => talkRound(member, now))] };
 }
 
 /** A talk session that could not start: the run it replaced goes back on the board as it was. */

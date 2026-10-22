@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
-import { rebaseNote, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
+import { isParked, rebaseNote, runStatus, terminalLink, waitNote } from "./board-view/pull-status-and-notes.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
@@ -17,9 +17,9 @@ import {
   batchDir, batchFolder, countTokens, createPool, feedbackSince, findFolderSession, findTranscript, herdrName, herdrServerCommand, isStartDialog, parseOutcome, publishDir, publishResult,
   ticketDir, ticketFolder, worktreesIn,
 } from "./pool.ts";
-import { approve, completableRuns, finish, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
+import { approve, completableRuns, finish, markResumed, park, queuePublish, recordPullStates, recordStackBase, respond, pauseQueue, resumeQueue } from "./queue/queue-transitions.ts";
 import { talk } from "./queue/talk.ts";
-import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
+import { BACKGROUND_GONE_MS, enqueue, liveRunCount, retry, talkRound, writerStatus, type Outcome, type Queue } from "./queue/queue-entries-and-outcomes.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { emptyQueue, queueWriter, writerOf } from "./queue.ts";
 import { writerDir, writerFolder } from "./ticket-paths.ts";
@@ -1517,7 +1517,9 @@ test("a batch's planned outcome attaches each ticket's plan, hands back the one 
   await settled();
   assert.deepEqual(attached, ["NBF-1", "NBF-2"]);
   assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "NBF-1 blocks NBF-2, as the order said");
-  assert.ok(h.calls.some((args) => args.includes("close") && args.includes("w1")), "the run's workspace is closed");
+  assert.equal(h.calls.some((args) => args.includes("close") && args.includes("w1")), false, "the run's workspace stays open: it asked a person, who answers it there (A11-171)");
+  assert.deepEqual(["NBF-3", "NBF-4", "NBF-5"].map((key) => [entry(key).phase, entry(key).workspace, entry(key).pane, entry(key).batch, isParked(entry(key))]),
+    [3, 4, 5].map(() => ["finished", "w1", "w1:p1", BATCH, true]), "the tickets it handed back are parked on the run's one pane");
   const asked = entry("NBF-3").outcome;
   assert.equal(asked?.kind, "needs-human");
   const reason = asked?.kind === "needs-human" ? asked.reason : "";
@@ -5303,7 +5305,9 @@ test("A11-154: a Talk is refused while a round of the run is queued or running, 
   assert.equal(ctx.entry("NBF-1").talk, true, "once the round has ended it is allowed");
   await ctx.pool.tick();
   assert.equal(ctx.entry("NBF-1").phase, "running");
-  assert.throws(() => ctx.pool.talk("NBF-1"), /has no finished run to talk to/, "a running Talk is no round: the refusal does not call it one");
+  const before = ctx.store.get();
+  ctx.pool.talk("NBF-1");
+  assert.equal(ctx.store.get(), before, "a running Talk is no round, and a second press changes nothing and is not refused (A11-171)");
 });
 
 test("A11-154: a parked run whose agent drops out of herdr's listing has its workspace closed by its id as it is unparked, so no leftover keeps its name", async () => {
@@ -6076,4 +6080,205 @@ test("a plan the stamp would push past the size every reader skips beyond is att
   await settled();
   assert.equal(world.files.get("NBF-1")!.get(PLAN_NAME("NBF-1")), body);
   assert.equal(made.entry("NBF-1").plannedAgainst, undefined);
+});
+
+/*
+ * A11-171: a run that waits for a person keeps its pane, Talk opens one pane for a run, and a batch's tickets share the one.
+ */
+
+/** The terminal template a host names, as the board links a pane with it. */
+const TERMINAL_TEMPLATE = "http://127.0.0.1:7318/?ws={workspace}&pane={pane}&view=terminal";
+const linkOf = (run: Parameters<typeof terminalLink>[1]) => terminalLink(TERMINAL_TEMPLATE, run);
+const BATCH_KEYS = ["NBF-1", "NBF-2", "NBF-3", "NBF-4"];
+
+/**
+ * A batch of NBF-1..NBF-4 planned together whose run wrote `planned`: NBF-1 and NBF-2 have plans, and NBF-3 and NBF-4 each a QUESTION.md. The clock is real, so the pool
+ * can tell what a person writes after the run parks from what it parked on. Returns the setup, with the tracker's log of what it attached and the order it recorded.
+ */
+async function batchWithQuestions(max = 1) {
+  const tracker = batchTracker();
+  const made = setup(max, BATCH_KEYS, BATCH_PLANNER, { source: tracker.tracker, planFirst: BATCH_KEYS, batch: true, now: Date.now });
+  await made.pool.tick();
+  const dir = batchDir(made.settings, BATCH);
+  const plan = join(dir, "plan");
+  put(join(plan, "NBF-1", "NBF-1-0001-plan-libs.md"), "# Libs\n");
+  put(join(plan, "NBF-2", "NBF-2-0001-plan-netbox.md"), "# Netbox\n");
+  put(join(plan, "NBF-3", "QUESTION.md"), "Which layout does the design mean?");
+  put(join(plan, "NBF-4", "QUESTION.md"), "Which of the two repositories?");
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] }, "NBF-3": { repo: null, after: [] }, "NBF-4": { repo: null, after: [] } }));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  made.status.set(herdrName(BATCH), "idle");
+  await made.pool.tick();
+  await settled();
+  return { ...made, ...tracker, dir, plan };
+}
+
+/** Writes the transcript of the batch's session, where Claude Code files a session that ran in the batch's folder, so a talk session can resume it. */
+function saveBatchSession(made: { root: string; settings: ReturnType<typeof setup>["settings"] }, id = "session-batch") {
+  const folder = batchFolder(made.settings, BATCH);
+  const project = join(made.root, "transcripts", folder.replace(/[^A-Za-z0-9]/g, "-"));
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, `${id}.jsonl`), `{"cwd":${JSON.stringify(folder)}}\n`);
+}
+
+test("a single planner that ends needs-human keeps its pane, and its card links to it", async () => {
+  const made = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], BATCH_PLANNER, { planFirst: ["NBF-1"] });
+  assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").workspace, made.entry("NBF-1").pane, isParked(made.entry("NBF-1"))], ["finished", "w1", "w1:p1", true]);
+  assert.equal(closes(made.h, "w1"), 0, "its workspace is not closed");
+  assert.equal(linkOf(made.entry("NBF-1")), "http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal", "Open terminal goes to the pane that is still there");
+});
+
+test("a batch planner that leaves a QUESTION.md keeps its pane, parked for every ticket it handed back, and the planned tickets leave the batch", async () => {
+  const { entry, h, tracker: _tracker, attached } = await batchWithQuestions();
+  assert.deepEqual(attached, ["NBF-1", "NBF-2"], "the plans were attached");
+  assert.equal(closes(h, "w1"), 0, "the batch's workspace stays open for the person to answer in");
+  for (const key of ["NBF-3", "NBF-4"]) {
+    assert.deepEqual([entry(key).phase, entry(key).workspace, entry(key).pane, entry(key).batch, isParked(entry(key)), entry(key).outcome?.kind], ["finished", "w1", "w1:p1", BATCH, true, "needs-human"], key);
+  }
+  assert.equal(linkOf(entry("NBF-3")), linkOf(entry("NBF-4")), "the cards of the tickets handed back link to one pane");
+  assert.ok(linkOf(entry("NBF-3")) !== null);
+  for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).phase, entry(key).batch, entry(key).workspace, entry(key).planned], ["queued", undefined, undefined, true], `${key} left the batch with its plan`);
+});
+
+test("a batch planner that hands nothing back still closes its workspace", async () => {
+  const { entry, h } = await plannedBatch(batchTracker().tracker, ORDERED);
+  assert.ok(closes(h, "w1") > 0, "every ticket has its plan: nobody is left to answer");
+  assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).workspace), [undefined, undefined]);
+});
+
+test("a parked batch answered in its terminal settles its remaining tickets, reading the order against every ticket it planned", async () => {
+  const made = await batchWithQuestions();
+  const { entry, status, pool, plan, dir, relations, attached, store } = made;
+  assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "the first pass recorded NBF-2 after NBF-1");
+  // The person answers NBF-3's question in the terminal: the agent works, then replaces the QUESTION.md with a plan and writes its outcome again.
+  status.set(herdrName(BATCH), "working");
+  await pool.tick();
+  assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).workspace]), [["running", "w1"], ["running", "w1"]], "answering resumes the tickets together");
+  rmSync(join(plan, "NBF-3", "QUESTION.md"));
+  put(join(plan, "NBF-3", "NBF-3-0001-plan-layout.md"), "# Layout\n");
+  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] },
+    "NBF-3": { repo: "nbl-ui-netbox", after: ["NBF-2"] }, "NBF-4": { repo: null, after: [] } }));
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
+  status.set(herdrName(BATCH), "idle");
+  await pool.tick();
+  await settled();
+  assert.deepEqual(attached, ["NBF-1", "NBF-2", "NBF-3"], "NBF-3's plan is attached, and the plans planned before are not attached again");
+  assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]], ["NBF-3", ["NBF-2"]]], "the order was read against every ticket it planned, and recorded only for NBF-3");
+  assert.deepEqual([entry("NBF-3").phase, entry("NBF-3").planned, entry("NBF-3").plannedRepo, entry("NBF-3").batch], ["queued", true, "nbl-ui-netbox", undefined]);
+  assert.deepEqual([entry("NBF-4").phase, entry("NBF-4").workspace, entry("NBF-4").batch, entry("NBF-4").outcome?.kind], ["finished", "w1", BATCH, "needs-human"], "the ticket still asking stays parked on the pane");
+  assert.equal(store.get().entries.find((e) => e.ticket.key === "NBF-4")?.phase, "finished");
+});
+
+test("a queued talk session or round never closes a parked run's pane: it waits, saying so", async () => {
+  const made = await endedOn({ kind: "needs-human", reason: "which colour?" });
+  const { pool, h, entry, store, root } = made;
+  store.set(enqueue(store.get(), [ticket("NBF-2")], { model: "sonnet", effort: "high" }, 0, null));
+  assert.deepEqual([entry("NBF-1").workspace, entry("NBF-2").phase], ["w1", "queued"], "NBF-1 is parked on w1");
+  mkdirSync(join(root, "transcripts", "-Users-me-work"), { recursive: true });
+  writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
+  // NBF-2 is a finished run whose saved session is NBF-1's, and a person asks to talk to it.
+  const finishedNbf2 = { ...entry("NBF-2"), phase: "finished" as const, outcome: { kind: "needs-human", reason: "q" } as Outcome, session: "session-t-nbf-1", finishedAt: 5 };
+  store.set({ ...store.get(), max: 2, entries: store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? finishedNbf2 : e)) });
+  pool.talk("NBF-2");
+  h.calls.length = 0;
+  await pool.tick();
+  assert.equal(closes(h, "w1"), 0, "the parked run's pane is not a leftover to close");
+  assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").sessionWait], ["queued", "Waits for the person to answer in w1"]);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").workspace], ["finished", "w1"], "and NBF-1 is still parked on it");
+});
+
+test("Talk twice opens one pane", async () => {
+  const { pool, h, entry, status, dir } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  await pool.tick();
+  assert.equal(h.calls.filter((args) => args.includes("create")).length, 1, "the first press opens a pane");
+  pool.talk("NBF-1");
+  await pool.tick();
+  assert.equal(h.calls.filter((args) => args.includes("create")).length, 1, "a second press while it runs opens none, and is not refused");
+  await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "needs-human", reason: "waiting for the person in the terminal" });
+  assert.equal(isParked(entry("NBF-1")), true, "the agent waits for the person");
+  pool.talk("NBF-1");
+  await pool.tick();
+  assert.equal(h.calls.filter((args) => args.includes("create")).length, 1, "a press while it waits for the person opens none either");
+  assert.equal(h.calls.filter((args) => args.includes("start")).length, 1, "and the session was started once");
+});
+
+test("Talk on two tickets of one batch opens one pane for both", async () => {
+  const made = await batchWithQuestions(4);
+  const { pool, h, entry, status } = made;
+  saveBatchSession(made);
+  pool.close("NBF-3");
+  status.delete(herdrName(BATCH));
+  assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).workspace]), [["finished", undefined], ["finished", undefined]], "the person closed the pane, so both are finished");
+  h.calls.length = 0;
+  pool.talk("NBF-3");
+  assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).talk]), [["queued", true], ["queued", true]], "Talk on one is Talk on both");
+  await pool.tick();
+  const batchCalls = (verb: string) => h.calls.filter((args) => args.includes(verb) && args.includes(herdrName(BATCH)));
+  assert.equal(batchCalls("create").length, 1, "one pane");
+  const starts = batchCalls("start");
+  assert.deepEqual([starts.length, starts[0].includes("--resume"), starts[0].includes("session-batch")], [1, true, true], "resuming the batch's saved session");
+  assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).workspace, entry(key).pane]), [["running", "w3", "w3:p1"], ["running", "w3", "w3:p1"]], "both run on the one new pane (NBF-1 and NBF-2 took w1 and w2)");
+  pool.talk("NBF-4");
+  await pool.tick();
+  assert.equal(batchCalls("create").length, 1, "Talk on the other card opens no second pane");
+  assert.equal(linkOf(entry("NBF-3")), linkOf(entry("NBF-4")), "both cards link the one pane");
+});
+
+/** A planner whose question parked it, its pane then closed by the person, with its saved session on disk: a run Talk can open. */
+async function plannerToTalkTo() {
+  const made = await endedOn({ kind: "needs-human", reason: "which colour?" }, 1, ["NBF-1"], BATCH_PLANNER, { planFirst: ["NBF-1"] });
+  assert.equal(runStatus(made.entry("NBF-1")), "needs-you", "waiting for a person, before Talk");
+  made.pool.close("NBF-1");
+  made.status.delete(herdrName("NBF-1"));
+  mkdirSync(join(made.root, "transcripts", "-Users-me-work"), { recursive: true });
+  writeFileSync(join(made.root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
+  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((e) => ({ ...e, session: "session-t-nbf-1" })) });
+  return made;
+}
+
+/** Talk to the planner `plannerToTalkTo` made, run `whileRunning` once its session runs, then have its agent wait for the person in the terminal, as the Talk prompt tells it to. */
+async function talkUntilWaiting(made: Awaited<ReturnType<typeof plannerToTalkTo>>, whileRunning: () => void = () => {}) {
+  made.pool.talk("NBF-1");
+  await made.pool.tick();
+  whileRunning();
+  await endWith(made, ticketDir(made.settings, "NBF-1"), herdrName("NBF-1"), { kind: "needs-human", reason: "waiting for the person in the terminal" });
+}
+
+test("a talk session shows talking, never planning, while it runs and while it waits for the person", async () => {
+  const made = await plannerToTalkTo();
+  const { entry } = made;
+  await talkUntilWaiting(made, () => assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").plan !== undefined, runStatus(entry("NBF-1"))], ["running", true, "talking"], "it carries its planning run's plan, and still says Talking"));
+  assert.deepEqual([entry("NBF-1").phase, isParked(entry("NBF-1")), runStatus(entry("NBF-1"))], ["finished", true, "talking"], "waiting for the person in the terminal, it is still Talking");
+});
+
+test("closing the pane of a talk session that waits for the person ends the session: the run needs the person again, as before", async () => {
+  const made = await plannerToTalkTo();
+  const { pool, entry } = made;
+  await talkUntilWaiting(made);
+  pool.close("NBF-1");
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").talk, entry("NBF-1").workspace], ["finished", undefined, undefined], "closing the pane ends the talk session");
+  assert.equal(runStatus(entry("NBF-1")), "needs-you");
+});
+
+test("a talk session that waited for the person and then ends on a pull request is that run again, not a review round", async () => {
+  const { pool, status, entry, dir } = await draftOfNbf1();
+  pool.talk("NBF-1");
+  await pool.tick();
+  await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "needs-human", reason: "waiting for the person in the terminal" });
+  assert.deepEqual([entry("NBF-1").talk, isParked(entry("NBF-1"))], [true, true], "it waits, still a talk session");
+  await agentIs({ pool, status }, herdrName("NBF-1"), "working");
+  assert.equal(entry("NBF-1").phase, "running", "the person answered");
+  await endWith({ pool, status }, dir, herdrName("NBF-1"), { kind: "draft-pr", prs: [approvedPr] });
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").outcome?.kind, entry("NBF-1").talk, entry("NBF-1").review], ["finished", "draft-pr", undefined, undefined]);
+});
+
+test("a parked talk session keeps the run it replaced, so ending again on a pull request still tells a borrowed list from a review round's own", () => {
+  const first = enqueue(emptyQueue(1), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0, null).entries[0];
+  const round = { ...first, phase: "finished" as const, review: [approvedPr], outcome: { kind: "reviewed", prs: [approvedPr] } as Outcome };
+  const talking = { ...talkRound(round, 5), phase: "running" as const, workspace: "w1", pane: "w1:p1" };
+  const waiting = park({ ...emptyQueue(1), entries: [talking] }, "NBF-1", { kind: "needs-human", reason: "waiting for the person in the terminal" }, 9);
+  assert.deepEqual([waiting.entries[0].talk, waiting.entries[0].talkFrom?.review], [true, [approvedPr]], "it waits, still a talk session, with the run it replaced");
+  const ended = finish(markResumed(waiting, "NBF-1"), "NBF-1", { kind: "ready-pr", prs: [approvedPr] }, 10);
+  assert.deepEqual([ended.entries[0].talk, ended.entries[0].review], [undefined, [approvedPr]], "the round's own list is kept");
 });

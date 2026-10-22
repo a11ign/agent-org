@@ -10,6 +10,7 @@ import * as view_3 from "./board-view/run-reason.ts";
 import * as view_4 from "./board-view/pull-review-state.ts";
 import * as view_5 from "./board-view/update-banner.ts";
 import * as view_6 from "./board-view/ticket-change.ts";
+import * as view_7 from "./board-view/run-terminal.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -86,10 +87,15 @@ function browserStubs(blockTabs: boolean) {
   const tabs: { closed: boolean; location: { href: string }; close: () => void }[] = [];
   const timers: (() => void)[] = [];
   const polls: (() => void)[] = [];
-  const open = () => {
+  // A tab opened under a name is the one every later open of that name finds, as a browser's named windows are (A11-171).
+  const named = new Map<string, (typeof tabs)[number]>();
+  const open = (_url?: string, name?: string) => {
     if (blockTabs) return null;
+    const known = name === undefined || name === "_blank" ? undefined : named.get(name);
+    if (known !== undefined) return known;
     const tab = { closed: false, location: { href: "" }, close() { this.closed = true; } };
     tabs.push(tab);
+    if (name !== undefined && name !== "_blank") named.set(name, tab);
     return tab;
   };
   return { tabs, timers, polls, open, setInterval: (fn: () => void) => { polls.push(fn); return 0; }, setTimeout: (fn: () => void) => { timers.push(fn); return 0; } };
@@ -175,7 +181,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...view_7, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
     window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } }, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
@@ -2664,4 +2670,50 @@ test("A11-161: with the publisher installed and switched off the Publish buttons
     const p = await page(new Map(), { config, entries: PUBLISHABLE });
     assert.equal(p.$("runs").text().includes("publishing off"), false, JSON.stringify(config));
   }
+});
+
+/** A batch's tickets parked on its one pane, and NBF-1, which was planned together with them and has left it with its plan. */
+const BATCH_CARDS = [
+  entry("NBF-1", { phase: "queued", planned: true }),
+  ...["NBF-2", "NBF-3", "NBF-4"].map((key) => entry(key, { phase: "finished", startedAt: 2, finishedAt: 7, batch: "b0-0", workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human", reason: "the planner needs a person: which layout?" } })),
+];
+
+test("a batch's cards say they were planned together, name each other, and link to one pane", async () => {
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries: BATCH_CARDS });
+  const live = opens("http://127.0.0.1:7318/?ws=w1&pane=w1%3Ap1&view=terminal");
+  for (const key of ["NBF-2", "NBF-3", "NBF-4"]) {
+    const others = ["NBF-2", "NBF-3", "NBF-4"].filter((other) => other !== key).join(", ");
+    const card = runRows(p).find((r) => r.text().startsWith(`${key} title`))!;
+    const text = card.text();
+    assert.ok(text.includes(`Planned together with ${others}: answer in the batch's terminal`), `${key}: ${text}`);
+    const terminal = card.all().find((n) => n.className.split(" ").includes("terminal") && n.text() === "Open terminal") as (Node_ & { href?: string }) | undefined;
+    assert.equal(terminal?.href, live, `${key} links the batch's one pane`);
+  }
+  assert.equal(runRows(p).find((r) => r.text().startsWith("NBF-1 title"))!.text().includes("Planned together"), false, "a ticket that was planned and left the batch needs no answer, and says nothing of it");
+});
+
+test("Talk opens the run's named terminal tab, and a second press goes to the same pane", async () => {
+  const talking = entry("T-1", { phase: "running", startedAt: 3, talk: true, workspace: "w5", pane: "w5:p1" });
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries: [talking] });
+  const talkButton = () => runRows(p)[0].all().find((n) => n.tag === "button" && n.className.includes("action-talk"))!;
+  assert.ok(talkButton(), "a talk session that holds its pane offers Talk");
+  talkButton().fire("click");
+  await p.runTimers();
+  talkButton().fire("click");
+  await p.runTimers();
+  assert.equal(p.tabs.length, 1, "the second press finds the first tab: one pane");
+  assert.equal(p.tabs[0].location.href, opens("http://127.0.0.1:7318/?ws=w5&pane=w5%3Ap1&view=terminal"), "the tab is at the run's pane");
+  assert.equal(p.posts.filter(({ path }) => path.endsWith("/api/queue/T-1/talk")).length, 2, "both presses reach the board, which starts nothing twice");
+  assert.ok(runRows(p)[0].text().includes("Talking"), "and the card says Talking");
+});
+
+test("Talk on a card of a batch opens the tab named for the batch, which every card of it shares", async () => {
+  const talking = ["NBF-2", "NBF-3"].map((key) => entry(key, { phase: "running", startedAt: 3, talk: true, batch: "b0-0", plan: { model: "opus", effort: "max" }, workspace: "w5", pane: "w5:p1" }));
+  const p = await page(new Map(), { connections: WORK_ALONE, config: { terminal: TERMINAL }, entries: talking });
+  for (const row of runRows(p)) {
+    row.all().find((n) => n.tag === "button" && n.className.includes("action-talk"))!.fire("click");
+    await p.runTimers();
+  }
+  assert.equal(p.tabs.length, 1, "a press on each of the batch's cards finds the one tab");
+  assert.ok(runRows(p).every((row) => row.text().includes("Talking") && !row.text().includes("Planning")), "each card says Talking, never Planning");
 });

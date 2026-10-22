@@ -5,6 +5,7 @@ import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/pull-status-and-notes.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
 import { overrideNote, START_ANYWAY_TITLE, rebaseNote, settledByPulls, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
+import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { diffLines, learnsFrom, learnsLine, REPLANNING_LINE, STALE_PLAN_LINE, ticketChangeOf } from "./board-view/ticket-change.ts";
@@ -314,7 +315,7 @@ test("every status is counted, a status with no runs at zero, and the filters li
   assert.equal(counts.get("queued"), 2);
   assert.equal(counts.get("failed"), 1);
   assert.equal(counts.get("completed"), 0);
-  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "working", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "publishing", "published", "checked", "completed", "failed", "cancelled"]);
+  assert.deepEqual(RUN_STATUSES.map(({ status }) => status), ["needs-you", "talking", "working", "planning", "reviewing", "blocked", "queued", "awaiting-review", "ready-to-merge", "publishing", "published", "checked", "completed", "failed", "cancelled"]);
 });
 
 const blocker = (key: string, state: string, status = state) => ({ key, state, status });
@@ -1352,4 +1353,38 @@ test("A11-167: What changed shows the old description struck and the new added, 
   assert.deepEqual(diffLines("a\r\nb  ", "a\nb"), [{ kind: "same", text: "a" }, { kind: "same", text: "b" }], "line ends and trailing space are not edits");
   assert.deepEqual(diffLines("gone", "new"), [{ kind: "removed", text: "gone" }, { kind: "added", text: "new" }]);
   assert.deepEqual(diffLines("", ""), [{ kind: "same", text: "" }]);
+});
+
+test("A11-171: a talk session is Talking while it runs and while it waits parked, whatever plan it carries, and it offers Talk while it holds its pane", () => {
+  const plan = { model: "opus", effort: "max" };
+  const talk = (phase: string, fields: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key: "NBF-1" }, phase, talk: true, plan, ...fields });
+  assert.equal(runStatus(talk("running", { workspace: "w1", pane: "w1:p1" })), "talking", "not Planning");
+  assert.equal(runStatus(talk("running", { workspace: "w1", pane: "w1:p1", waiting: true })), "talking");
+  assert.equal(runStatus(talk("finished", { workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human" } })), "talking", "waiting for the person in the terminal, not Needs you");
+  assert.equal(runStatus(talk("finished", { outcome: { kind: "needs-human" } })), "needs-you", "its pane closed: the session is over");
+  assert.equal(runStatus(talk("queued")), "queued", "a queued one holds no pane yet");
+  assert.deepEqual(runActions(talk("running", { workspace: "w1", pane: "w1:p1" })), ["talk", "stop"]);
+  assert.deepEqual(runActions(talk("finished", { workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human" } })), ["talk", "close", "dismiss"]);
+  const parked: ViewEntry = { ticket: { key: "NBF-1" }, phase: "finished", workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human" } };
+  assert.deepEqual(runActions(parked), ["close", "dismiss"], "a parked run that is no talk session gains no Talk");
+});
+
+test("A11-171: a batch's tickets that wait for a person on its one pane say so, naming the others that share it, and nothing else says it", () => {
+  const parked = (key: string, fields: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key }, phase: "finished", batch: "b0-0", workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human" }, ...fields });
+  const entries = [parked("NBF-2"), parked("NBF-3"), parked("NBF-4"), { ticket: { key: "NBF-1" }, phase: "queued" }, parked("NBF-5", { batch: "b9-9", workspace: "w9" })];
+  assert.equal(sharedRunNote(entries[0], entries), "Planned together with NBF-3, NBF-4: answer in the batch's terminal");
+  assert.equal(sharedRunNote(entries[2], entries), "Planned together with NBF-2, NBF-3: answer in the batch's terminal");
+  assert.equal(sharedRunNote(entries[3], entries), null, "a ticket that left the batch with its plan");
+  assert.equal(sharedRunNote(entries[4], entries), null, "alone on its pane");
+  assert.equal(sharedRunNote(parked("NBF-2", { workspace: undefined, pane: undefined }), entries), null, "its pane is closed: nothing to answer in");
+  assert.equal(sharedRunNote({ ...entries[0], phase: "running" }, entries), null, "still planning: nobody is asked anything");
+  const talking = (key: string): ViewEntry => ({ ticket: { key }, phase: "running", talk: true, batch: "b0-0", workspace: "w5", pane: "w5:p1" });
+  assert.equal(sharedRunNote(talking("NBF-2"), [talking("NBF-2"), talking("NBF-3")]), "Planned together with NBF-3: answer in the batch's terminal", "a batch's talk session too");
+});
+
+test("A11-171: every card of a batch, and every press of Talk, names the same terminal tab", () => {
+  const card = (key: string, batch?: string): ViewEntry => ({ ticket: { key }, phase: "running", ...(batch ? { batch } : {}) });
+  assert.equal(terminalTab(card("NBF-2", "b0-0")), terminalTab(card("NBF-3", "b0-0")));
+  assert.notEqual(terminalTab(card("NBF-2")), terminalTab(card("NBF-3")));
+  assert.equal(terminalTab(card("NBF-2")), "terminal-NBF-2");
 });

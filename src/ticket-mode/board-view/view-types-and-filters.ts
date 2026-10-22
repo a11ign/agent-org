@@ -46,6 +46,10 @@ export type ViewEntry = Readonly<{
   learned?: Readonly<Record<string, Readonly<{ key: string; number: number; file: string }>>>;
   /** Set on a review run: the pull requests a person approved. */
   review?: readonly PullRef[];
+  /** The run of a batch planner's tickets that its tickets share: one session, one terminal (A11-171). */
+  batch?: string;
+  /** A person opened this run's saved session to talk to its agent: the run is Talking while that session is live or waiting for them (A11-171). */
+  talk?: boolean;
   /** What remains of the ticket, when the worker declared its pull requests partial: the run's merge does not finish the ticket (A11-92, A11-168). */
   partial?: string;
   /** The plan steps of this ticket whose pull requests merged, in order, with the pull requests that finished each: the run is the next step (A11-168). */
@@ -349,12 +353,13 @@ export function remember(storage: Storage | null, name: string, values: Readonly
 
 /** A run's status on the board, after GitHub's Actions runs: each has its own icon and filter. */
 export type RunStatus =
-  "needs-you" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "checked"
+  "needs-you" | "talking" | "working" | "planning" | "reviewing" | "blocked" | "queued" | "awaiting-review" | "ready-to-merge" | "publishing" | "published" | "checked"
   | "completed" | "failed" | "cancelled";
 
 /** Every status, in the order the filters list them: what needs a person first, what is settled last. */
 export const RUN_STATUSES: readonly Readonly<{ status: RunStatus; label: string }>[] = [
   { status: "needs-you", label: "Needs you" },
+  { status: "talking", label: "Talking" },
   { status: "working", label: "In progress" },
   { status: "planning", label: "Planning" },
   { status: "reviewing", label: "Reviewing" },
