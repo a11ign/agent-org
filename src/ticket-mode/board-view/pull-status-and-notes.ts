@@ -274,15 +274,16 @@ export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): st
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
-  // A talk session is Talking whether its agent works or waits for the person, and never Planning, though it carries its planning run's `plan` (A11-171).
-  if (isTalking(entry)) return "talking";
-  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
+  // A talk session is Talking, never Planning, though it carries its planning run's `plan` (A11-171). One whose agent is blocked on a person still needs them.
+  if (entry.phase !== "finished") return entry.waiting ? "needs-you" : isTalking(entry) ? "talking" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const settled = settledByPulls(entry);
   // A pull request declared partial that merged does not finish the run: the board queued the next step in its place, or, where it could not, a person is asked (A11-168).
   if (settled === "completed" && entry.partial !== undefined) return "needs-you";
   if (settled !== null) return settled;
+  // A parked talk session waiting for the person in its terminal: settled runs are not Talking, whatever pane they still hold (A11-171).
+  if (isTalking(entry)) return "talking";
   // The board stopped answering a run's red checks or feedback on its own and handed it to a person, whatever the run ended on (A11-154): Respond starts again.
   if (entry.handedBack !== undefined) return "needs-you";
   const kind = entry.outcome?.kind ?? "";

@@ -2717,3 +2717,12 @@ test("Talk on a card of a batch opens the tab named for the batch, which every c
   assert.equal(p.tabs.length, 1, "a press on each of the batch's cards finds the one tab");
   assert.ok(runRows(p).every((row) => row.text().includes("Talking") && !row.text().includes("Planning")), "each card says Talking, never Planning");
 });
+
+test("Talk on a machine with no terminal opens no tab, and only asks the board", async () => {
+  const talking = entry("T-1", { phase: "running", startedAt: 3, talk: true, workspace: "w5", pane: "w5:p1" });
+  const p = await page(new Map(), { connections: WORK_ALONE, entries: [talking] });
+  runRows(p)[0].all().find((n) => n.tag === "button" && n.className.includes("action-talk"))!.fire("click");
+  await p.runTimers();
+  assert.equal(p.tabs.length, 0, "there is no pane to point a tab at");
+  assert.equal(p.posts.filter(({ path }) => path.endsWith("/api/queue/T-1/talk")).length, 1);
+});

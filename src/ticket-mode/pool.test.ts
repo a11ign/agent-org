@@ -6146,22 +6146,30 @@ test("a batch planner that hands nothing back still closes its workspace", async
   assert.deepEqual(["NBF-1", "NBF-2"].map((key) => entry(key).workspace), [undefined, undefined]);
 });
 
-test("a parked batch answered in its terminal settles its remaining tickets, reading the order against every ticket it planned", async () => {
-  const made = await batchWithQuestions();
-  const { entry, status, pool, plan, dir, relations, attached, store } = made;
-  assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "the first pass recorded NBF-2 after NBF-1");
-  // The person answers NBF-3's question in the terminal: the agent works, then replaces the QUESTION.md with a plan and writes its outcome again.
+/**
+ * The person answers NBF-3's question in the batch's terminal: its agent works (the tickets it holds resume together, checked by `whileWorking`), then replaces the QUESTION.md with a plan,
+ * writes `order` and its outcome again, and goes idle.
+ */
+async function answerNbf3(made: Awaited<ReturnType<typeof batchWithQuestions>>, order: Record<string, unknown>, whileWorking: () => void = () => {}) {
+  const { status, pool, plan, dir } = made;
   status.set(herdrName(BATCH), "working");
   await pool.tick();
-  assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).workspace]), [["running", "w1"], ["running", "w1"]], "answering resumes the tickets together");
+  whileWorking();
   rmSync(join(plan, "NBF-3", "QUESTION.md"));
   put(join(plan, "NBF-3", "NBF-3-0001-plan-layout.md"), "# Layout\n");
-  put(join(plan, "order.json"), JSON.stringify({ "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] },
-    "NBF-3": { repo: "nbl-ui-netbox", after: ["NBF-2"] }, "NBF-4": { repo: null, after: [] } }));
+  put(join(plan, "order.json"), JSON.stringify(order));
   writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "planned" }));
   status.set(herdrName(BATCH), "idle");
   await pool.tick();
   await settled();
+}
+
+test("a parked batch answered in its terminal settles its remaining tickets, reading the order against every ticket it planned", async () => {
+  const made = await batchWithQuestions();
+  const { entry, relations, attached, store } = made;
+  assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "the first pass recorded NBF-2 after NBF-1");
+  await answerNbf3(made, { "NBF-1": { repo: "nbl-ui-platform-libs", after: [] }, "NBF-2": { repo: "nbl-ui-netbox", after: ["NBF-1"] }, "NBF-3": { repo: "nbl-ui-netbox", after: ["NBF-2"] }, "NBF-4": { repo: null, after: [] } },
+    () => assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).workspace]), [["running", "w1"], ["running", "w1"]], "answering resumes the tickets together"));
   assert.deepEqual(attached, ["NBF-1", "NBF-2", "NBF-3"], "NBF-3's plan is attached, and the plans planned before are not attached again");
   assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]], ["NBF-3", ["NBF-2"]]], "the order was read against every ticket it planned, and recorded only for NBF-3");
   assert.deepEqual([entry("NBF-3").phase, entry("NBF-3").planned, entry("NBF-3").plannedRepo, entry("NBF-3").batch], ["queued", true, "nbl-ui-netbox", undefined]);
@@ -6180,8 +6188,10 @@ test("a queued talk session or round never closes a parked run's pane: it waits,
   const finishedNbf2 = { ...entry("NBF-2"), phase: "finished" as const, outcome: { kind: "needs-human", reason: "q" } as Outcome, session: "session-t-nbf-1", finishedAt: 5 };
   store.set({ ...store.get(), max: 2, entries: store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? finishedNbf2 : e)) });
   pool.talk("NBF-2");
+  h.extra.push(talkLeftover("idle", { workspace_id: "w9", label: "claude", name: null }));
   h.calls.length = 0;
   await pool.tick();
+  assert.equal(closes(h, "w9"), 1, "an idle duplicate that is nobody's parked pane is still a leftover, and is closed");
   assert.equal(closes(h, "w1"), 0, "the parked run's pane is not a leftover to close");
   assert.deepEqual([entry("NBF-2").phase, entry("NBF-2").sessionWait], ["queued", "Waits for the person to answer in w1"]);
   assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").workspace], ["finished", "w1"], "and NBF-1 is still parked on it");
@@ -6203,12 +6213,18 @@ test("Talk twice opens one pane", async () => {
   assert.equal(h.calls.filter((args) => args.includes("start")).length, 1, "and the session was started once");
 });
 
-test("Talk on two tickets of one batch opens one pane for both", async () => {
+/** A batch with questions, room for every run, its saved session on disk, and its pane closed by the person: tickets NBF-3 and NBF-4 are finished and Talk is offered on them. */
+async function batchToTalkTo() {
   const made = await batchWithQuestions(4);
-  const { pool, h, entry, status } = made;
   saveBatchSession(made);
-  pool.close("NBF-3");
-  status.delete(herdrName(BATCH));
+  made.pool.close("NBF-3");
+  made.status.delete(herdrName(BATCH));
+  return made;
+}
+
+test("Talk on two tickets of one batch opens one pane for both", async () => {
+  const made = await batchToTalkTo();
+  const { pool, h, entry } = made;
   assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).workspace]), [["finished", undefined], ["finished", undefined]], "the person closed the pane, so both are finished");
   h.calls.length = 0;
   pool.talk("NBF-3");
@@ -6281,4 +6297,24 @@ test("a parked talk session keeps the run it replaced, so ending again on a pull
   assert.deepEqual([waiting.entries[0].talk, waiting.entries[0].talkFrom?.review], [true, [approvedPr]], "it waits, still a talk session, with the run it replaced");
   const ended = finish(markResumed(waiting, "NBF-1"), "NBF-1", { kind: "ready-pr", prs: [approvedPr] }, 10);
   assert.deepEqual([ended.entries[0].talk, ended.entries[0].review], [undefined, [approvedPr]], "the round's own list is kept");
+});
+
+test("Talk on a batch starts every ticket's session in the one pane even when a ticket of it waits on another", async () => {
+  const made = await batchToTalkTo();
+  const { pool, h, entry, relations } = made;
+  relations.set("NBF-4", ["NBF-3"]);
+  h.calls.length = 0;
+  pool.talk("NBF-3");
+  await pool.tick();
+  assert.equal(h.calls.filter((args) => args.includes("create") && args.includes(herdrName(BATCH))).length, 1, "one pane");
+  assert.deepEqual(["NBF-3", "NBF-4"].map((key) => [entry(key).phase, entry(key).workspace]), [["running", "w3"], ["running", "w3"]], "both on it, though NBF-4 waits on NBF-3");
+});
+
+test("a folder in the plan folder that is no ticket of the board is not part of the batch an order may name", async () => {
+  const made = await batchWithQuestions();
+  const { entry, relations, plan } = made;
+  put(join(plan, "notes", "scratch.md"), "# scratch\n");
+  await answerNbf3(made, { "NBF-3": { repo: "nbl-ui-netbox", after: ["notes"] }, notes: { repo: null, after: [] } });
+  assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "the order named a ticket the board does not have, so none of it was recorded");
+  assert.deepEqual([entry("NBF-3").phase, entry("NBF-3").plannedRepo], ["queued", null], "the plan itself still stands");
 });

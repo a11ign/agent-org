@@ -293,8 +293,12 @@ async function planOneOfBatch(ctx: PoolContext, key: string, dir: string): Promi
   return readdirSync(dir).length === 0 ? nothing : attachFiles(ctx, key, dir);
 }
 
-/** The tickets the batch's run has a folder for under `planDir`: those it was planned with, including the ones planned and gone from the batch since. */
-const plannedTickets = (planDir: string): string[] => (existsSync(planDir) ? readdirSync(planDir, { withFileTypes: true }).filter((item) => item.isDirectory()).map((item) => item.name) : []);
+/**
+ * The tickets the batch's run has a folder for under `planDir` that are on the board: those it was planned with, including the ones planned and gone from the batch since.
+ * A folder that is no ticket of the board's is nothing the order may name.
+ */
+const plannedTickets = (ctx: PoolContext, planDir: string): string[] => (existsSync(planDir)
+  ? readdirSync(planDir, { withFileTypes: true }).filter((item) => item.isDirectory() && entryOf(ctx, item.name) !== undefined).map((item) => item.name) : []);
 
 /**
  * Read a batch's order from its plan folder and record it in the tracker: each of `keys`, the tickets settled now, blocked by the tickets of the batch it waits on. The order
@@ -309,7 +313,7 @@ async function recordOrder(ctx: PoolContext, planDir: string, keys: readonly str
     log(`the planning run of ${keys.join(", ")} wrote no ${ORDER_FILE} as a plain file, so their order was not recorded`);
     return new Map();
   }
-  const read = parseOrder(readFileSync(path, "utf8"), [...new Set([...keys, ...plannedTickets(planDir)])]);
+  const read = parseOrder(readFileSync(path, "utf8"), [...new Set([...keys, ...plannedTickets(ctx, planDir)])]);
   if ("refusal" in read) {
     log(`${path} was not used, so no order was recorded: ${read.refusal}`);
     return new Map();

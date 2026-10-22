@@ -69,8 +69,8 @@ function settleSession(ctx: PoolContext, members: readonly Entry[], holders: rea
   const waitingForPerson = holders.find((o) => parked.has(o.workspace));
   const closed: string[] = [];
   let refused: { workspace: string; why: string } | null = null;
-  if (working === undefined && waitingForPerson === undefined) {
-    for (const occupant of holders) {
+  if (working === undefined) {
+    for (const occupant of holders.filter((o) => !parked.has(o.workspace))) {
       const why = closeLeftover(ctx, entry, occupant);
       if (why === null) closed.push(occupant.workspace);
       else refused = { workspace: occupant.workspace, why };

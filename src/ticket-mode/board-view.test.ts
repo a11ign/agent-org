@@ -1359,10 +1359,11 @@ test("A11-171: a talk session is Talking while it runs and while it waits parked
   const plan = { model: "opus", effort: "max" };
   const talk = (phase: string, fields: Partial<ViewEntry> = {}): ViewEntry => ({ ticket: { key: "NBF-1" }, phase, talk: true, plan, ...fields });
   assert.equal(runStatus(talk("running", { workspace: "w1", pane: "w1:p1" })), "talking", "not Planning");
-  assert.equal(runStatus(talk("running", { workspace: "w1", pane: "w1:p1", waiting: true })), "talking");
   assert.equal(runStatus(talk("finished", { workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human" } })), "talking", "waiting for the person in the terminal, not Needs you");
   assert.equal(runStatus(talk("finished", { outcome: { kind: "needs-human" } })), "needs-you", "its pane closed: the session is over");
   assert.equal(runStatus(talk("queued")), "queued", "a queued one holds no pane yet");
+  assert.equal(runStatus(talk("running", { workspace: "w1", pane: "w1:p1", waiting: true })), "needs-you", "an agent blocked on a person still needs them");
+  assert.equal(runStatus(talk("finished", { workspace: "w1", pane: "w1:p1", trackerState: "completed", outcome: { kind: "needs-human" } })), "completed", "a settled run is not Talking, whatever pane it holds");
   assert.deepEqual(runActions(talk("running", { workspace: "w1", pane: "w1:p1" })), ["talk", "stop"]);
   assert.deepEqual(runActions(talk("finished", { workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human" } })), ["talk", "close", "dismiss"]);
   const parked: ViewEntry = { ticket: { key: "NBF-1" }, phase: "finished", workspace: "w1", pane: "w1:p1", outcome: { kind: "needs-human" } };

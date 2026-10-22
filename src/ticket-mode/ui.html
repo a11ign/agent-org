@@ -1616,11 +1616,13 @@ function isBlank(tab) {
  * same batch, finds that tab, and the board starts nothing a second time, so there is one pane (A11-171). The tab goes to the run's terminal once the run has one.
  */
 async function talkTo(e) {
-  const tab = window.open("", terminalTab(e));
+  // A machine with no terminal or no connection has no pane to point a tab at: Talk then only asks the board.
+  const tab = state.terminal && state.connection ? window.open("", terminalTab(e)) : null;
   try {
     state.queue = await call("POST", `/api/queue/${e.ticket.key}/talk`);
     render();
-    if (tab) openTerminalWhenReady(tab, ticketTerminal(e.ticket.key));
+    // A tab that already shows the terminal (a second press) is left where it is.
+    if (tab && isBlank(tab)) openTerminalWhenReady(tab, ticketTerminal(e.ticket.key));
   } catch (err) {
     if (tab && isBlank(tab)) tab.close();
     report(err);

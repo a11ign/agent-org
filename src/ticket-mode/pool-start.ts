@@ -353,7 +353,8 @@ export async function fill(ctx: PoolContext): Promise<void> {
     // A talk session resumes a finished run's own session where it ran: no brief is written, and no plan or worktree is touched. A batch's tickets share that session: one pane (A11-171).
     if (entry.talk) {
       if (begun.has(entry.ticket.key)) continue;
-      const together = entry.batch === undefined ? [entry] : starts.filter((e) => e.batch === entry.batch && e.talk === true);
+      // Every queued talk session of the batch starts with the one that is let start: the run is one, in one slot, and a member left behind would open a second pane.
+      const together = entry.batch === undefined ? [entry] : store.get().entries.filter((e) => e.batch === entry.batch && e.talk === true && e.phase === "queued");
       for (const member of together) begun.add(member.ticket.key);
       await startTalk(ctx, together);
       continue;
@@ -430,6 +431,9 @@ async function startTalk(ctx: PoolContext, members: readonly Entry[]): Promise<v
   }
 }
 
+/** Whether a run has a talk session that is queued, starting or running, or parked: waiting for the person in its terminal. */
+const hasTalkSession = (entry: Entry): boolean => entry.talk === true && (entry.phase !== "finished" || isParked(entry));
+
 /**
  * A person asks to talk to a run's agent. Nothing changes, and nothing is refused, when the run already has a talk session that is queued, starting, running or parked,
  * or another ticket of its batch has (a batch is one run, with one session and one pane): the second press finds the first (A11-171). Otherwise it is refused, naming why,
@@ -440,7 +444,7 @@ export function talkTo(ctx: PoolContext, key: string): void {
   const { now, store } = ctx;
   const entry = store.get().entries.find((e) => e.ticket.key === key);
   const sharing = entry === undefined ? [] : entry.batch === undefined ? [entry] : store.get().entries.filter((e) => e.batch === entry.batch);
-  if (sharing.some((e) => e.talk === true && (e.phase !== "finished" || isParked(e)))) return;
+  if (sharing.some(hasTalkSession)) return;
   if (entry?.review !== undefined && entry.talk !== true && entry.phase !== "finished") throw new Error(`${key} has a review round ${entry.phase === "queued" ? "queued" : "running"}: talk to it once the round has ended, as the round and a talk session would share one session`);
   if (entry === undefined || entry.phase !== "finished") throw new Error(`${key} has no finished run to talk to`);
   if (talkSession(ctx, entry) === undefined) throw new Error(`${key} has no saved session to resume: its transcript is gone`);
