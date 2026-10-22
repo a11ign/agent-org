@@ -67,7 +67,10 @@ export const shortHead = (head: string): string => head.slice(0, 8);
  */
 export function pullReviewText(read: PullRead | null): string {
   if (read === null) return "review state not read";
-  if (read.rereview === true) return read.tookOver === undefined ? `re-review asked by reply at ${shortHead(read.head)}` : `re-review asked by reply at ${shortHead(read.head)} (${read.tookOver})`;
+  if (read.rereview === true) {
+    const note = read.unclaimed?.started === true ? `reviewing without a claim: ${read.unclaimed.reason}` : read.tookOver;
+    return note === undefined ? `re-review asked by reply at ${shortHead(read.head)}` : `re-review asked by reply at ${shortHead(read.head)} (${note})`;
+  }
   if (read.reviewing && read.unclaimed?.started === true) return `reviewing without a claim: ${read.unclaimed.reason}`;
   if (read.reviewing) return read.tookOver === undefined ? "reviewing" : `reviewing (${read.tookOver})`;
   if (read.unclaimed?.started === false) return `cannot claim for review: ${read.unclaimed.reason}`;

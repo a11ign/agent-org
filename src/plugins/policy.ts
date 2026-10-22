@@ -7,7 +7,7 @@
 // builds it over the gate, and a caller with no gate (doctor, onboard) gets one that refuses by name when asked.
 import { isAtLeastAsNew } from "../newest-check-run.ts";
 import { brokenChecks } from "../red-pr.ts";
-import { REVIEWER_GH_CONFIG_DIR } from "../review-trust.ts";
+import { REVIEWER_GH_CONFIG_DIR } from "../reviewer-gh-config-dir.ts";
 import { startsReviewers } from "../ticket-mode/concern-states.ts";
 import type { TicketSettings } from "../ticket-mode/settings.ts";
 import type { CodeHostPolicy } from "./manifest.ts";

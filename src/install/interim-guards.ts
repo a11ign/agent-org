@@ -6,7 +6,7 @@
 //
 // A GUARD IS REMOVED ONLY WHEN ITS REPLACEMENT HOLDS, and the check is read here, never assumed: the watchdog's replacement is the start-time wrapper check,
 // proven by the installed wrapper being the one the host file declares (`ghWrapperDivergence`, asked of the code host plugin's wrapper); the drop-in's is herdr's own service (A11-169), proven by the herdr
-// server of the instance's session running in `agent-org-herdr.service` (`hostHerdrPlace`); the read-cache drop-in's is the claim's own read, which is in the code that runs this retirement, so it needs no read.
+// server of the instance's session running in `agent-org-herdr.service` (`hostHerdrPlace`); the read-cache drop-in's is the claim's own read, which is in the code that runs this retirement, and the installed wrapper being the one the host file declares (the read stays out of the cache only through the wrapper's classing of `-H` as neutral).
 // A guard whose replacement is not proven is left, with a sentence saying what to do. Nothing here stops herdr or touches a running worker, and only Linux with systemd has any guard.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -94,8 +94,7 @@ export async function retireGuards(deps: GuardDeps): Promise<string[]> {
   const dropInPresent = deps.exists(paths.dropIn);
   const readCachePresent = deps.exists(paths.readCacheDropIn);
   if (!watchdogPresent && !dropInPresent && !readCachePresent) return lines;
-  // Only the first two guards wait on a proof: a host with only the read-cache drop-in reads none.
-  const proof = watchdogPresent || dropInPresent ? await deps.replacements() : { ghWrapperDeclared: false, herdrInOwnUnit: false };
+  const proof = await deps.replacements();
   if (watchdogPresent) {
     if (proof.ghWrapperDeclared) {
       deps.run("systemctl", ["--user", "disable", "--now", WATCHDOG_TIMER]);
@@ -116,9 +115,13 @@ export async function retireGuards(deps: GuardDeps): Promise<string[]> {
     }
   }
   if (readCachePresent) {
-    deps.remove(paths.readCacheDropIn);
-    daemonReload(deps);
-    lines.push("retired the read-cache drop-in: the review claim reads past the gh read cache (A11-172). The instance picks the change up at its next restart");
+    if (proof.ghWrapperDeclared) {
+      deps.remove(paths.readCacheDropIn);
+      daemonReload(deps);
+      lines.push("retired the read-cache drop-in: the review claim reads past the gh read cache (A11-172). The instance picks the change up at its next restart");
+    } else {
+      lines.push("kept the read-cache drop-in: the installed gh wrapper is not the one host.json declares, so the claim's read past its cache is not proven. Run `agent-org host:install`, then run onboard again");
+    }
   }
   return lines;
 }

@@ -1129,6 +1129,7 @@ test("A11-172: a pull request whose claim cannot be written reads `cannot claim 
   const alone = { reason: FORBIDDEN, started: true };
   assert.equal(pullReviewText(read({ unclaimed: alone, reviewing: true })), `reviewing without a claim: ${FORBIDDEN}`);
   assert.equal(pullReviewText(read({ unclaimed: alone, reviewing: false, verdict: "approved" })), "approved at 91bf0677", "once its verdict is posted the line is the verdict's");
+  assert.equal(pullReviewText(read({ unclaimed: alone, reviewing: true, verdict: "changes requested", rereview: true })), `re-review asked by reply at 91bf0677 (reviewing without a claim: ${FORBIDDEN})`, "a re-review started without a claim says so too");
   assert.equal(pullReviewText(read({ reviewing: true })), "reviewing", "a claim that was written says nothing");
 });
 

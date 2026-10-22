@@ -93,6 +93,9 @@ function claimsIn(entries: readonly ClaimEntry[]): Claim[] {
 
 const minutesOf = (ms: number): string => `${Math.floor(ms / MINUTE_MS)} min`;
 
+/** The most of GitHub's words a reason keeps: it is said on a pull request's line, in the board's one warning and in the log, and a long body would crowd all three. */
+const MAX_REASON_CHARACTERS = 200;
+
 const firstLineOf = (text: string): string => text.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
 
 /**
@@ -102,7 +105,8 @@ const firstLineOf = (text: string): string => text.split("\n").find((line) => li
 export function reasonOf(err: unknown): string {
   const stderr = (err as { stderr?: unknown } | null)?.stderr;
   const printed = firstLineOf(typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : "");
-  return printed !== "" ? printed : firstLineOf(String((err as Error)?.message ?? err));
+  const reason = printed !== "" ? printed : firstLineOf(String((err as Error)?.message ?? err));
+  return reason.length > MAX_REASON_CHARACTERS ? `${reason.slice(0, MAX_REASON_CHARACTERS)}...` : reason;
 }
 
 /** What `action` returns, or the unclaimed answer for an action that threw at `step`. */
@@ -150,6 +154,21 @@ function listingAfterVerdict(read: () => readonly ClaimEntry[], step: ClaimStep)
 }
 
 /**
+ * What a write GitHub refused comes to (A11-172): `alone` when nobody else can be reviewing the head, else the refusal as it was. The head is read AGAIN first, so a claim another instance wrote while this
+ * one was being refused is seen (`held`); a read that fails then says nothing of who holds the head, so the refusal stands. Only after that read is `otherSeen` asked, which the reads record into.
+ */
+function aloneOrRefused({ refused, instance, now, read, otherSeen }: {
+  refused: Extract<ClaimAnswer, { outcome: "unclaimed" }>; instance: string; now: number; read: () => Listing; otherSeen: () => number | null;
+}): ClaimAnswer {
+  const again = read();
+  if ("answer" in again) return again.answer.outcome === "finished" ? again.answer : refused;
+  const holder = claimsIn(again.entries).find((claim) => now - claim.created < REVIEW_LEASE_MS);
+  if (holder !== undefined && holder.instance !== instance) return { outcome: "held", instance: holder.instance, since: holder.created };
+  const seen = otherSeen();
+  return seen === null || now - seen >= REVIEW_LEASE_MS ? { outcome: "alone", reason: refused.reason } : refused;
+}
+
+/**
  * Claims a head for `instance` (A11-149), or says why it cannot. PURE: `read` returns the claim's entries, and `write` posts a claim with the description it
  * is given, and throws when GitHub refuses it. In order:
  *
@@ -164,9 +183,10 @@ function listingAfterVerdict(read: () => readonly ClaimEntry[], step: ClaimStep)
  * no instance needs a clock that agrees with another's. A read or write that fails is `unclaimed`, and says at which `step`: a reviewer that cannot claim does not
  * start, because the second review it risks is the cost this removes.
  *
- * ONE EXCEPTION (A11-172): a write GitHub refused, after a read that showed no live claim, is `alone` when `otherSeen` says no other instance has been seen within
- * the lease. `otherSeen` is when any other instance's status under the claim's context was last seen on any head, or null for none. A read that failed cannot show a
- * claim, and a write that landed but was not read back may hold the head, so neither is `alone`. With no `otherSeen` given, nothing is `alone`.
+ * ONE EXCEPTION (A11-172): a write GitHub refused, after a read that showed no live claim, is `alone` when the head read again still shows no live claim of another instance
+ * and `otherSeen` says no other instance has been seen within the lease. `otherSeen` is when any other instance's status under the claim's context was last seen on any head
+ * (asked after that second read, which the caller's `read` may record), or null for none. A read that failed cannot show a claim, and a write that landed but was not read back
+ * may hold the head, so neither is `alone`. With no `otherSeen` given, nothing is `alone`.
  */
 export function claimHead({ instance, now, read, write, rereview = false, otherSeen = () => now /* none given: another instance is taken to be seen, so nothing is `alone` */ }: {
   instance: string; now: number; read: () => readonly ClaimEntry[]; write: (description: string) => void; rereview?: boolean; otherSeen?: () => number | null;
@@ -181,10 +201,7 @@ export function claimHead({ instance, now, read, write, rereview = false, otherS
   // The expired claim this takes over: the most recent one of another instance, with no verdict after it (a verdict would have answered `finished` above).
   const expired = claims.filter((claim) => now - claim.created >= REVIEW_LEASE_MS && claim.instance !== instance).at(-1);
   const written = attempt("write", () => write(claimDescriptionOf({ instance, now })));
-  if ("unclaimed" in written) {
-    const seen = otherSeen();
-    return seen === null || now - seen >= REVIEW_LEASE_MS ? { outcome: "alone", reason: written.unclaimed.reason } : written.unclaimed;
-  }
+  if ("unclaimed" in written) return aloneOrRefused({ refused: written.unclaimed, instance, now, read: () => listingOfHead(read, "write"), otherSeen });
   const second = listingOfHead(read, "readback");
   if ("answer" in second) return second.answer;
   const after = second.entries;

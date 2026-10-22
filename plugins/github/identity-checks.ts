@@ -122,8 +122,8 @@ export async function wrapperChecks(settings: PluginSettings, deps: PluginDeps):
   if (reading.kind === "unreadable") return [failed("gh wrapper", `cannot be checked: ${reading.reason}`, FROM_THE_TOOLS_CHECKOUT)];
   if (reading.kind === "no-project") {
     return [ok("gh wrapper", "not applicable: host.json declares no project, so this machine installs no wrapper"),
-      ...appsOfSettings(settings).map(({ role, app }) => mintRow(role, probeMint(deps, MINTER, role, app))),
-      ...claimStatusChecks(settings, deps, () => MINTER)];
+      // No commit status row: a host with no project loads no gate, so it starts no reviewer and writes no review claim.
+      ...appsOfSettings(settings).map(({ role, app }) => mintRow(role, probeMint(deps, MINTER, role, app)))];
   }
   const wrapper = createWrapper(deps);
   const inputs = inputsOfSettings(settings, reading.place);

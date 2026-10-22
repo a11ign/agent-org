@@ -63,13 +63,25 @@ test("a drop-in while the herdr server does not run in its own service is kept, 
   assert.match(lines[0], /^kept the KillMode drop-in: the herdr server does not run in agent-org-herdr.service yet. Run `agent-org start herdr --move`/);
 });
 
-test("A11-172: the read-cache drop-in is removed, systemd reloads and the line says why, with no replacement to read: the claim's own read is in the code that runs this", async () => {
-  const { deps, removed, ran, asked } = machine([readCacheDropIn], { ghWrapperDeclared: false, herdrInOwnUnit: false });
+/** Retires the read-cache drop-in alone, with `proof` answered: what was removed, what systemd was asked, and what was said. */
+async function retiringReadCache(proof: Replacements) {
+  const { deps, removed, ran } = machine([readCacheDropIn], proof);
   const lines = await retireGuards(deps);
+  return { removed, ran, lines };
+}
+
+test("A11-172: the read-cache drop-in is removed, systemd reloads and the line says why, once the installed wrapper is the declared one: herdr's place does not matter", async () => {
+  const { removed, ran, lines } = await retiringReadCache({ ghWrapperDeclared: true, herdrInOwnUnit: false });
   assert.deepEqual(removed, [readCacheDropIn]);
   assert.deepEqual(ran, ["systemctl --user daemon-reload"]);
-  assert.equal(asked(), 0, "no proof is read for it, and none of the other guards waits on it");
   assert.deepEqual(lines, ["retired the read-cache drop-in: the review claim reads past the gh read cache (A11-172). The instance picks the change up at its next restart"]);
+});
+
+test("A11-172: the read-cache drop-in is kept, with what to run, while the installed gh wrapper is not the one the host file declares", async () => {
+  const { removed, ran, lines } = await retiringReadCache({ ghWrapperDeclared: false, herdrInOwnUnit: true });
+  assert.deepEqual(removed, []);
+  assert.deepEqual(ran, [], "systemd is not asked, since nothing changed");
+  assert.match(lines[0], /^kept the read-cache drop-in: the installed gh wrapper is not the one host\.json declares, so the claim's read past its cache is not proven\. Run `agent-org [a-z:-]+`, then run onboard again$/);
 });
 
 test("A11-172: the read-cache drop-in is retired beside the other guards, each by its own rule, and a host without it changes nothing for them", async () => {

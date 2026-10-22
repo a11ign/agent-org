@@ -13,6 +13,7 @@
 
 import { earlierReviewWord, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
+import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
@@ -124,6 +125,9 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const started = adopted ? null : reviewer.start({ pr: url, head }, kind.brief);
   if (started === null) return { refusal: null, tookOver: null };
   if (!("refusal" in started)) {
+    // Why this reviewer has no claim is kept with the start, so the board keeps saying so while it runs, across a restart (A11-172).
+    if (started.unclaimed === undefined) ctx.reviewerMemory.unclaimed.delete(key);
+    else ctx.reviewerMemory.unclaimed.set(key, started.unclaimed);
     // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
     rememberReviewers(ctx);
     log(`${url}: started ${started.label} ${kind.says} ${head.slice(0, 8)}`);
@@ -155,13 +159,12 @@ function tookOverOf(started: StartAnswer | null, kept: PullRead | undefined, hea
 }
 
 /**
- * What the board keeps of a head's claim that could not be written (A11-172): this start's, else the one an earlier sweep made on the same head while its reviewer still runs. A refused start is tried
- * again on the next sweep, so it is not kept; a reviewer started without a claim is, since the sweeps that follow find it running and start nothing.
+ * What the board keeps of a head's claim that could not be written (A11-172): this start's, else, while a reviewer runs that started without a claim, the reason the pool remembers for it (so a restart, and a start
+ * `ticket:review` made, are said too). A refused start is tried again on the next sweep, so it is not kept.
  */
-function unclaimedNoteOf(started: StartAnswer | null, kept: PullRead | undefined, { head, reviewing }: { head: string; reviewing: boolean }): PullRead["unclaimed"] {
+function unclaimedNoteOf(started: StartAnswer | null, rememberedWhileReviewing: string | undefined): PullRead["unclaimed"] {
   if (started?.unclaimed !== undefined) return { reason: started.unclaimed, started: started.refusal === null };
-  const keptAlone = kept?.head === head && kept.unclaimed?.started === true;
-  return started === null && reviewing && keptAlone ? kept.unclaimed : undefined;
+  return started === null && rememberedWhileReviewing !== undefined ? { reason: rememberedWhileReviewing, started: true } : undefined;
 }
 
 /**
@@ -278,7 +281,7 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const started = first ?? rereview;
   const tookOver = tookOverOf(started, pullReads.get(url), head);
   const reviewing = reviewer.live(ref);
-  const unclaimed = unclaimedNoteOf(started, pullReads.get(url), { head, reviewing });
+  const unclaimed = unclaimedNoteOf(started, reviewing ? ctx.reviewerMemory.unclaimed.get(key) : undefined);
   const read: PullRead = {
     head, settled: state.settled, reviewing, verdict: reviewWordAt(state.reviews, head),
     earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }), ...(unclaimed === undefined ? {} : { unclaimed }),
@@ -331,8 +334,12 @@ function adoptRememberedReviewers(ctx: PoolContext): void {
   for (const key of memory.started) if (!reviewerDropped.has(key)) reviewerStarted.add(key);
   for (const key of memory.rereviewed) if (!reviewerDropped.has(rereviewKey(key))) reviewerRereviewed.add(key);
   for (const [label, head] of memory.heads) reviewerMemory.heads.set(label, head);
-  // The latest sighting of each instance, from the pool's copy or the file's: `ticket:review` may have seen a second instance since this pool last wrote (A11-172).
+  // The latest sighting of each instance, from the pool's copy or the file's: `ticket:review` may have seen a second instance since this pool last wrote. One past the lease says nothing now, so it is
+  // neither taken in nor kept (A11-172).
   for (const [instance, at] of memory.seen) reviewerMemory.seen.set(instance, Math.max(at, reviewerMemory.seen.get(instance) ?? at));
+  for (const [instance, at] of reviewerMemory.seen) if (ctx.now() - at >= REVIEW_LEASE_MS) reviewerMemory.seen.delete(instance);
+  // Why a start `ticket:review` made has no claim, for the heads still started.
+  for (const [key, reason] of memory.unclaimed) if (reviewerStarted.has(key) && !reviewerMemory.unclaimed.has(key)) reviewerMemory.unclaimed.set(key, reason);
 }
 
 /**
@@ -438,6 +445,7 @@ function forgetPull(ctx: PoolContext, url: string): void {
       if (reviewerStarted.has(key)) reviewerDropped.add(key);
       if (reviewerRereviewed.has(key)) reviewerDropped.add(rereviewKey(key));
       reviewerStarted.delete(key);
+      ctx.reviewerMemory.unclaimed.delete(key);
       reviewerResumed.delete(key);
       reviewerReposts.delete(key);
       reviewerRereviewed.delete(key);

@@ -305,15 +305,21 @@ function claimWriterOf(context: Context, seat: Seat, { repo, sha, tree }: { repo
 type Claimed = Readonly<{ tookOver: string | null; unclaimed?: string }> | Readonly<{ refusal: string; unclaimed?: string }>;
 
 /**
- * The claim entries of a head, read as the claim reads them, and what they show of other instances written down (A11-172): every listing says which other instances have written a status under the
- * claim's context, whatever its head, and that is what lets an instance whose own claim cannot be written tell it is alone. Entries past the lease are dropped from the record, since they say nothing now.
+ * Writes down which other instances a listing of a head's claim entries shows (A11-172): any status under the claim's context by another instance, whatever its head, says it is there, and that is what lets
+ * an instance whose own claim cannot be written tell it is alone. Entries past the lease are dropped from the record, since they say nothing now.
  */
-function readSeeing(context: Context, { repo, sha }: { repo: string; sha: string }): readonly Readonly<{ id: number; description: string; created: number }>[] {
-  const { claims, gh, instance, seen } = boardOf(context);
-  const entries = claims.claimEntriesOf({ repo, sha, gh });
+function noteOthersSeen(context: Context, entries: readonly Readonly<{ id: number; description: string; created: number }>[]): void {
+  const { claims, instance, seen } = boardOf(context);
   for (const [other, at] of claims.othersSeenIn({ entries, instance })) seen.set(other, Math.max(at, seen.get(other) ?? at));
   const now = nowOf(context);
   for (const [other, at] of seen) if (now - at >= claims.REVIEW_LEASE_MS) seen.delete(other);
+}
+
+/** The claim entries of a head, read through the board's own `gh`, with the other instances they show noted. */
+function claimEntriesOf(context: Context, { repo, sha }: { repo: string; sha: string }): readonly Readonly<{ id: number; description: string; created: number }>[] {
+  const { claims, gh } = boardOf(context);
+  const entries = claims.claimEntriesOf({ repo, sha, gh });
+  noteOthersSeen(context, entries);
   return entries;
 }
 
@@ -340,7 +346,7 @@ function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { p
   const { claims } = board;
   const answer = claims.claimHead({
     instance: board.instance, now: nowOf(context),
-    read: () => readSeeing(context, { repo: repository, sha: head }),
+    read: () => claimEntriesOf(context, { repo: repository, sha: head }),
     write: claimWriterOf(context, seat, { repo: repository, sha: head, tree }),
     rereview,
     otherSeen: () => otherSeenOf(context),

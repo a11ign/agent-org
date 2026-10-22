@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tmpDir } from "../../src/lib/tmp-fixture.ts";
 import { REPO } from "../../src/project-identity.ts";
 import { REVIEW_LEASE_MINUTES, claimDescriptionOf } from "../../src/ticket-port/review-claim.ts";
-import { loadReviewerGate, readReviewerMemory, reviewerMemoryPath } from "../../src/ticket-mode/reviewer-port.ts";
+import { loadReviewerGate, readReviewerMemory, reviewerMemoryPath, writeReviewerMemory } from "../../src/ticket-mode/reviewer-port.ts";
 import { newPoolContext, type PoolContext } from "../../src/ticket-mode/pool-context.ts";
 import { claimWarningOf, reviewNewHeads } from "../../src/ticket-mode/pool-reviewers.ts";
 import { reviewOnDemand } from "../../src/ticket-mode/review-command.ts";
@@ -23,9 +23,9 @@ import { reviewingHelpers } from "../../src/plugins/reviewing-helpers.ts";
 import { atomicReviewerPort as portOver, type Seams } from "./port.ts";
 
 /** The port a board makes: over the real helpers of core, with the board's collaborators these options name. */
-function atomicReviewerPort({ session, run, gh, codeHost, clones, instance, seen = new Map<string, number>(), ...seams }: Seams & Readonly<{ session: string; run: (args: string[]) => string; gh: (args: string[]) => string; codeHost: ReturnType<typeof createFakeCodeHost>;
-  clones: Record<string, string>; instance: string; seen?: Map<string, number> }>) {
-  return portOver(reviewingHelpers({ session, run, gh, codeHost: () => codeHost, clones, instance, heads: new Map<string, string>(), seen }), seams);
+function atomicReviewerPort({ session, run, gh, codeHost, clones, instance, seen = new Map<string, number>(), heads = new Map<string, string>(), ...seams }: Seams & Readonly<{ session: string; run: (args: string[]) => string; gh: (args: string[]) => string; codeHost: ReturnType<typeof createFakeCodeHost>;
+  clones: Record<string, string>; instance: string; seen?: Map<string, number>; heads?: Map<string, string> }>) {
+  return portOver(reviewingHelpers({ session, run, gh, codeHost: () => codeHost, clones, instance, heads, seen }), seams);
 }
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -89,7 +89,8 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, instance), tickets: { drafts: false, reviewer: "atomic", instance } });
   // The instances seen are one record, shared by the port that records them and the pool that writes them, as the server wires them.
   const seen = new Map<string, number>();
-  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, seen, run: herdrOf(status), gh: github.gh, codeHost: github.host, claimGh: () => github.gh, mint: () => null,
+  const heads = new Map<string, string>();
+  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, seen, heads, run: herdrOf(status), gh: github.gh, codeHost: github.host, claimGh: () => github.gh, mint: () => null,
     clones: settings.clones, now: () => clock.now, checkout: () => ({ path: "/work/pr-7", head: HEAD }),
     spawn: (order) => {
       if (refuseSpawn !== undefined) return { refusal: refuseSpawn };
@@ -97,7 +98,7 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
       status.set(order.session, "working");
       return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } };
     } });
-  return newPoolContext(store, { settings, source, codeHost: github.host, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), gh: github.gh, now: () => clock.now, reviewer: reviewerOver(reviewerPort), reviewerSeen: seen });
+  return newPoolContext(store, { settings, source, codeHost: github.host, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), gh: github.gh, now: () => clock.now, reviewer: reviewerOver(reviewerPort), reviewerSeen: seen, reviewerHeads: heads });
 }
 
 /** Two instances' pools on one GitHub, one herdr, and one clock that starts at a fixed time, with the spawns each pool's reviewer makes. */
@@ -286,4 +287,50 @@ test("A11-172: an instance seen before a restart is still seen after it: the rec
   reviewNewHeads(restarted);
   assert.deepEqual(spawns, [], "the restarted instance remembers a second instance and starts no reviewer without a claim");
   assert.equal(pullReviewText(restarted.pullReads.get(PR_URL)!), "cannot claim for review: gh: Resource not accessible by integration (HTTP 403)");
+});
+
+test("A11-172: a reviewer started without a claim is still said to be, after a restart, because why it has none is kept on disk", async () => {
+  const first = await refusedPoolOf({ rival: false });
+  reviewNewHeads(first.pool);
+  const path = reviewerMemoryPath(join(first.root, "pool-a"));
+  assert.deepEqual([...readReviewerMemory(path).memory.unclaimed], [[`${PR_URL}@${HEAD}`, `gh: ${FORBIDDEN} (HTTP 403)`]]);
+  // The instance restarts: a new pool over the same state directory and the same herdr, whose reviewer is still running.
+  const github = githubOf(first.clock);
+  github.state.refuse = FORBIDDEN;
+  const restarted = poolOf({ instance: "pool-a", github, status: first.status, spawns: first.spawns, clock: first.clock, root: first.root });
+  reviewNewHeads(restarted);
+  assert.deepEqual(first.spawns, ["reviewer-7"], "nothing new is started");
+  assert.equal(pullReviewText(restarted.pullReads.get(PR_URL)!), `reviewing without a claim: gh: ${FORBIDDEN} (HTTP 403)`);
+  assert.match(claimWarningOf(restarted) ?? "", /^Reviews start without a claim on GitHub: /);
+});
+
+test("A11-172: a head ticket:review started without a claim is said so on the board by the pool that adopts it, and a claim that was written clears the note", async () => {
+  const { clock, github, status, spawns, pool, root } = await refusedPoolOf({ rival: false });
+  const path = reviewerMemoryPath(join(root, "pool-a"));
+  // `ticket:review` runs in its own process with its own port over the same state directory, and records its start in the file as the command does.
+  const other = poolOf({ instance: "pool-a", github, status, spawns, clock, root: tmpDir("review-claim-hand-") });
+  const started = reviewOnDemand({ url: PR_URL, port: other.reviewer!, readState: (url) => github.host.readReviewState(url), started: new Set(), record: (label, key, at, unclaimed) => {
+    const latest = readReviewerMemory(path).memory;
+    latest.started.add(key);
+    latest.heads.set(label, at);
+    if (unclaimed !== undefined) latest.unclaimed.set(key, unclaimed);
+    writeReviewerMemory(path, latest);
+  } });
+  assert.equal(started.code, 0, started.out);
+  reviewNewHeads(pool);
+  assert.deepEqual(spawns, ["reviewer-7"], "the pool adopts the start and starts no second reviewer");
+  assert.equal(pullReviewText(pool.pullReads.get(PR_URL)!), `reviewing without a claim: gh: ${FORBIDDEN} (HTTP 403)`);
+  assert.match(claimWarningOf(pool) ?? "", /^Reviews start without a claim on GitHub: /);
+});
+
+test("A11-172: a sighting of another instance older than the lease is neither adopted from the file nor written back", async () => {
+  const { clock, pool, root } = await refusedPoolOf({ rival: true });
+  reviewNewHeads(pool);
+  const path = reviewerMemoryPath(join(root, "pool-a"));
+  assert.deepEqual([...readReviewerMemory(path).memory.seen.keys()], [RIVAL]);
+  clock.now += LEASE;
+  reviewNewHeads(pool);
+  // The rival's status is on its head still, and read again: but its time is the lease old, so the record is gone from the file and from the pool.
+  assert.deepEqual([...readReviewerMemory(path).memory.seen], [], "the old sighting is not kept");
+  assert.equal(pool.reviewerMemory.seen.size, 0);
 });

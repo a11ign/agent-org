@@ -229,6 +229,37 @@ test("A11-172: another instance's live claim on this head is `held`, whatever th
   assert.deepEqual(answer, { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 });
 });
 
+test("A11-172: a claim another instance wrote while this one's write was refused is seen by the read that follows, and holds the head", () => {
+  const head = headOf();
+  let reads = 0;
+  const read = () => (reads++ === 0 ? [] : [claimOf("laptop", NOW - 1_000, 1)]);
+  const answer = claimHead({ ...claimAs("work", NOW), read, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  assert.deepEqual(answer, { outcome: "held", instance: "laptop", since: NOW - 1_000 });
+  assert.equal(head.store.length, 0);
+  // A verdict that landed meanwhile is the finished review, and a second read that fails leaves the refusal standing: nobody knows who holds the head.
+  const posted = { id: 2, description: finishedDescriptionOf({ verdict: "convinced", instance: "laptop", now: NOW }), created: NOW };
+  let again = 0;
+  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: () => (again++ === 0 ? [] : [posted]), otherSeen: () => null, write: () => { throw refusedByGithub(); } }), { outcome: "finished", description: posted.description });
+  let third = 0;
+  const unreadable = claimHead({ ...claimAs("work", NOW), read: () => { if (third++ > 0) throw new Error("gh: HTTP 502"); return []; }, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  assert.deepEqual(unreadable, { outcome: "unclaimed", reason: "gh: Resource not accessible by integration (HTTP 403)", step: "write" });
+});
+
+test("A11-172: whether another instance is seen is asked after the second read, so what that read shows counts", () => {
+  let seen: number | null = null;
+  let reads = 0;
+  // The caller's read records another instance's recent status on the second listing only, as the port's records what each listing shows.
+  const read = () => { if (reads++ > 0) seen = NOW - 5_000; return []; };
+  const answer = claimHead({ ...claimAs("work", NOW), read, otherSeen: () => seen, write: () => { throw refusedByGithub(); } });
+  assert.equal(answer.outcome, "unclaimed", "the instance the second read showed keeps the refusal");
+});
+
+test("A11-172: a reason is cut to 200 characters, so a long body does not crowd the board's line, warning and log", () => {
+  const long = Object.assign(new Error("Command failed"), { stderr: `gh: ${"x".repeat(500)}\n` });
+  assert.equal(reasonOf(long).length, 203);
+  assert.ok(reasonOf(long).endsWith("..."));
+});
+
 test("A11-172: a read that failed is never alone, and neither is a write that landed but was not read back: nobody knows who holds the head", () => {
   const unreadable = claimHead({ ...claimAs("work", NOW), read: () => { throw refusedByGithub(); }, write: () => {}, otherSeen: () => null });
   assert.deepEqual(unreadable, { outcome: "unclaimed", reason: "gh: Resource not accessible by integration (HTTP 403)", step: "read" });

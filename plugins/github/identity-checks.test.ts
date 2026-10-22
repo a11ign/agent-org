@@ -177,11 +177,11 @@ test("A11-172: an installation that cannot be read fails its row with the reason
   assert.equal(garbled["commit statuses reviewer"].detail, "the reviewer App's installation permissions could not be read: the minter printed something that is not JSON");
 });
 
-test("A11-172: a ticket-only host, which installs no wrapper, still asks the declared Apps for their commit status permission", async () => {
-  const rows = await byName(settingsOf("scheduler", "reviewer"), claimDeps({ kind: "no-project" }, null, (role) => grantOf(role === "reviewer" ? { statuses: "read" } : { statuses: "read" }, `a11ign-${role}`)).deps);
-  assert.equal(rows["commit statuses reviewer"].ok, false);
-  assert.equal(rows["commit statuses scheduler"].ok, true);
-  assert.equal(rows["gh wrapper"].detail, "not applicable: host.json declares no project, so this machine installs no wrapper");
+test("A11-172: a ticket-only host, which loads no gate and so starts no reviewer, has no claim and no commit status row, though its Apps are still asked to mint", async () => {
+  const { deps: d, ran } = claimDeps({ kind: "no-project" }, null, () => grantOf({ statuses: "read" }, "a11ign-x"));
+  const rows = await wrapperChecks(settingsOf("scheduler", "reviewer"), d);
+  assert.deepEqual(rows.map(({ name }) => name), ["gh wrapper", "app token scheduler", "app token reviewer"]);
+  assert.equal(ran.some((call) => call[2] === "permissions"), false, "and no installation is read");
 });
 
 test("A11-172: a role that is a user account is asked for its access to the first GitHub repository a clone names: push to write, pull to list", async () => {
