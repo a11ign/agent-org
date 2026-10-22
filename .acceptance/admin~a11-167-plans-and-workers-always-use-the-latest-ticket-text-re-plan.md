@@ -23,6 +23,10 @@ P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PR
 AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/ticket-read.test.ts src/ticket-mode/plan-stamp.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/ui.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/server.test.ts plugins/linear plugins/github src/plugins
 ```
 
+History: full
+
+`pool.test.ts` imports the pool, whose import closure reads `git log` (the host-drift notes), so this run needs the full history the checkout would otherwise lack.
+
 Mutation: fourteen changes were made in turn, and each time one or more of the new tests went red; all were restored and the suites passed again. They were: no re-plan of a stale plan; no stamp written; no stale mark; no message to a running worker; no learning from a blocker's merged pull request; no refusal of a plan that leaves a finding out; no re-plan for findings that reached a plan after it was written; no read line in a brief; a stale mark that never clears; no changed-since-last-round section; no description-hash comparison; a re-plan that detaches a file the stamp does not list; no "Worked against" line; and a stamp read back without the pull requests its plan names.
 
 Consumer-declaration: none -- the new entry fields (`briefedAgainst`, `plannedAgainst`, `plannedWith`, `previousPlan`, `ticketChange`, `ticketChanges`, `learned`, `findingsGiven`) are read only by the pool, the server and the page, and a queue file written before them has none and reads as before. The tracker (1.3) and code host (1.4) additions are optional.
