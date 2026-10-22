@@ -10,7 +10,7 @@ A ticket's text can change after it is queued or planned (A11-166 gained a repla
 - `board-view/ticket-change.ts`, `board-view/run-reason.ts`, `ui.html`, `server.ts`: the run lines, the "What changed" dialog and the "learns from" links.
 - `src/plugins/contracts/tracker.ts` (1.3: `updatedAt`, `texts`, `detachPlan`), `src/plugins/contracts/code-host.ts` (1.4: `readMergedFindings`), `plugins/linear/`, `plugins/github/merged-findings.ts`, the fakes and the conformance suites.
 
-## Acceptance
+## How it is proven
 
 Each acceptance line of the ticket is proven by a named test: the planning brief and the stamp (`the planning brief carries the ticket as the tracker has it at start`, `an attached plan is stamped with the updatedAt and description hash`), the re-plan (`a ticket edited after planning is re-planned before its worker starts`, `a re-plan detaches the stale plan`, `an unstamped plan is never marked stale`), the live worker (`a description change while a worker runs is prompted to it`), the blockers' lessons (`a blocker's merged findings appear in the dependent's planning brief`, `a dependent planned before its blocker merged is re-planned`, `a plan given blocker findings without a What the blockers found section`), and the brief (`the worker brief and the review-round brief carry the ticket text as read at start`).
 
