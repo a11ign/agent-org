@@ -16,7 +16,6 @@ Each acceptance line of the ticket is proven by a named test: the planning brief
 
 Acceptance:
 ```bash
-set -e
 npm run lint
 npm run typecheck
 A11Y_PRIVATE_TMP_BASE=/tmp/ao-private-tmp npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/ticket-read.test.ts src/ticket-mode/plan-stamp.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/ui.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/server.test.ts plugins/linear plugins/github src/plugins
