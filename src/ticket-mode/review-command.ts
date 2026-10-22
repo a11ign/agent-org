@@ -63,7 +63,9 @@ export function reviewOnDemand({ url, head, port, readState, started, record }: 
   if ("refusal" in launched) return { code: 1, out: `ticket:review: ${launched.refusal}` };
   record(launched.label, `${url}@${at}`, at);
   const takeover = launched.tookOver === undefined ? "" : `; ${launched.tookOver}`;
-  return { code: 0, out: `ticket:review: started ${launched.label} for ${url} at ${at.slice(0, 8)}${takeover}; its verdict posts as a review on the pull request` };
+  // A reviewer started without a claim (A11-172) says so here as the board does, since nothing on GitHub shows it.
+  const unclaimed = launched.unclaimed === undefined ? "" : `; started without a claim on GitHub, because no other instance is seen: ${launched.unclaimed}`;
+  return { code: 0, out: `ticket:review: started ${launched.label} for ${url} at ${at.slice(0, 8)}${takeover}${unclaimed}; its verdict posts as a review on the pull request` };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
@@ -77,7 +79,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   const { memory } = readReviewerMemory(path);
   // The code host is the enabled plugin's, as the board's: the pull request is read through it, and so is each read the reviewer makes. Only it and the reviewer are built: the tracker's key
   // is not read for a command that asks it nothing, which is run from a shell with no Keychain (it was run from ssh).
-  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: memory.heads });
+  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: memory.heads, seen: memory.seen });
   const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }), undefined, ["codeHost", "reviewer"]);
   activated(active);
   const chosen = await reviewerToStart(active, settings.providers, defaultCatalog());
@@ -91,6 +93,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
     const latest = readReviewerMemory(path).memory;
     latest.started.add(key);
     latest.heads.set(label, at);
+    // What this start saw of other instances (A11-172), beside what the pool wrote since this command read the file.
+    for (const [instance, seenAt] of memory.seen) latest.seen.set(instance, Math.max(seenAt, latest.seen.get(instance) ?? seenAt));
     writeReviewerMemory(path, latest);
   } });
   (code === 0 ? process.stdout : process.stderr).write(`${out}\n`);

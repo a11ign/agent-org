@@ -3590,7 +3590,7 @@ test("A11-119: a head with a posted review, or one ticket:review started, is not
   assert.deepEqual(starts, [], "a head with an approval is not started");
   assert.equal(ctx.pool.pullReviews()[sweptPr], "approved at h1");
   pulls[1] = feedbackPull({ head: "h2" });
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h2`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map() });
   ctx.pool.reviewNewHeads();
   assert.deepEqual(starts, [], "a head ticket:review started is not started again");
 });
@@ -3632,6 +3632,28 @@ test("A11-119: a refusal to start is said once for a head, and is asked again on
   const unsettled = await sweptPool(fakeReviewer().port, { 1: feedbackPull({ checks: [{ name: "ci", status: "IN_PROGRESS" }] }) });
   unsettled.pool.reviewNewHeads();
   assert.equal(unsettled.pool.pullReviews()[sweptPr], "waiting for checks at h1", "and it is not started");
+});
+
+test("A11-172: a start the claim refused is shown on each pull request's line and once as the board's warning, and is asked again; a start without a claim says so", async () => {
+  const forbidden = "gh: Resource not accessible by integration (HTTP 403)";
+  const starts: ReviewerRef[] = [];
+  let answer: ReturnType<ReviewerPort["start"]> = { refusal: `no reviewer: its claim could not be made (${forbidden}), so none is started`, unclaimed: forbidden };
+  const running = new Set<string>();
+  const port: ReviewerPort = { ...fakeReviewer().port, live: (ref) => running.has(`${ref.pr}@${ref.head}`),
+    start(ref) { starts.push(ref); if (!("refusal" in answer)) running.add(`${ref.pr}@${ref.head}`); return answer; } };
+  const ctx = await sweptPool(port, { 1: feedbackPull(), 2: feedbackPull() });
+  const logged = await captureStderr(async () => {
+    ctx.pool.reviewNewHeads();
+    ctx.pool.reviewNewHeads();
+  });
+  assert.equal(starts.length, 4, "both pull requests are asked again on the second sweep: a refused claim is not recorded as started");
+  assert.deepEqual(Object.values(ctx.pool.pullReviews()), [`cannot claim for review: ${forbidden}`, `cannot claim for review: ${forbidden}`]);
+  assert.equal(ctx.pool.claimWarning(), `Reviews cannot be claimed on GitHub: ${forbidden} (2 pull requests). Run agent-org doctor.`, "one line for both");
+  assert.equal(logged.filter((line) => line.includes(`reviews cannot be claimed on GitHub: ${forbidden}`)).length, 1, "and one log line for the cause");
+  answer = { label: "fake-reviewer", unclaimed: forbidden };
+  ctx.pool.reviewNewHeads();
+  assert.deepEqual(Object.values(ctx.pool.pullReviews()), [`reviewing without a claim: ${forbidden}`, `reviewing without a claim: ${forbidden}`]);
+  assert.equal(ctx.pool.claimWarning(), `Reviews start without a claim on GitHub: ${forbidden} (2 pull requests); no other instance is seen. Run agent-org doctor.`);
 });
 
 // ---- A11-156: a reply to a block gets one re-review of the same head, and the reviewer is told the ticket's Done-when ----
@@ -3747,7 +3769,7 @@ test("A11-156: an unconvinced re-review is not read as a lost verdict: no repost
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()], comments: [replyAt("worker-bot", 20)] }) };
   const ctx = await sweptWithTicket(port, pulls);
   // The first reviewer started this head in an earlier sweep, so the pool holds it as started.
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${sweptPr}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map() });
   const logged = await captureStderr(async () => {
     ctx.pool.reviewNewHeads();
     end();
@@ -3869,7 +3891,7 @@ test("A11-156: a reply to a watched run's block starts the re-review from the wa
   const { port, starts, end } = rereviewer();
   const pulls: Record<number, unknown> = { 1: feedbackPull({ reviews: [BLOCK()] }) };
   const ctx = await readyRun(ghFor(pulls), REVIEWING, port);
-  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${approvedPr.url}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
+  writeReviewerMemory(reviewerMemoryPath(ctx.settings.stateDir), { heads: new Map(), started: new Set([`${approvedPr.url}@h1`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map() });
   await watchRound(ctx.pool);
   assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds], ["running", 1], "the block asks the worker for one round");
   await finishRound(ctx);
@@ -5412,7 +5434,7 @@ test("A11-161: switched back on, the reviewer resumes on the next head: one revi
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: "h1" }), 2: feedbackPull({ head: "h2" }), 3: feedbackPull({ head: "h3" }) };
   await loadReviewerGate();
   const made = setup(1, [], REVIEWING, { gh: ghFor(pulls), reviewerPort: fake });
-  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
+  writeReviewerMemory(reviewerMemoryPath(made.settings.stateDir), { heads: new Map(), started: new Set([`${SWEPT_REPO_PULL_3}@h3`]), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map() });
   const restarted = made.restart();
   restarted.reviewNewHeads();
   assert.deepEqual(fake.started.map(({ pr, head }) => `${pr}@${head}`).sort(), [`${sweptPr}@h1`, `${SWEPT_REPO_PULL_2}@h2`], "one for each head, and none for the head the memory says was started");

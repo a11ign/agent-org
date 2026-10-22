@@ -301,11 +301,36 @@ function claimWriterOf(context: Context, seat: Seat, { repo, sha, tree }: { repo
   return (description) => boardOf(context).claims.writeClaimStatus({ repo, sha, description, gh });
 }
 
+/** What claiming a head came to: the reviewer may start (`tookOver` names an expired claim it took over, `unclaimed` that it starts WITHOUT a claim and why), or the refusal that starts none (`unclaimed` when the claim is why). */
+type Claimed = Readonly<{ tookOver: string | null; unclaimed?: string }> | Readonly<{ refusal: string; unclaimed?: string }>;
+
+/**
+ * The claim entries of a head, read as the claim reads them, and what they show of other instances written down (A11-172): every listing says which other instances have written a status under the
+ * claim's context, whatever its head, and that is what lets an instance whose own claim cannot be written tell it is alone. Entries past the lease are dropped from the record, since they say nothing now.
+ */
+function readSeeing(context: Context, { repo, sha }: { repo: string; sha: string }): readonly Readonly<{ id: number; description: string; created: number }>[] {
+  const { claims, gh, instance, seen } = boardOf(context);
+  const entries = claims.claimEntriesOf({ repo, sha, gh });
+  for (const [other, at] of claims.othersSeenIn({ entries, instance })) seen.set(other, Math.max(at, seen.get(other) ?? at));
+  const now = nowOf(context);
+  for (const [other, at] of seen) if (now - at >= claims.REVIEW_LEASE_MS) seen.delete(other);
+  return entries;
+}
+
+/** When any other instance was last seen under the claim's context on any head, or null for none (A11-172). */
+const otherSeenOf = (context: Context): number | null => {
+  const times = [...boardOf(context).seen.values()];
+  return times.length === 0 ? null : Math.max(...times);
+};
+
 /**
  * Claims the head for this instance before its reviewer starts (A11-149). A mint that fails is a refusal, as a claim that cannot be written is. Returns the takeover note when an expired claim
  * was taken over, or the refusal that starts nothing: another instance holds the head, the review is posted, or the claim could not be made.
+ *
+ * A WRITE GITHUB REFUSED (A11-172), when no other instance holds the head and none has been seen within the lease, is no refusal: this instance is the only one there is, so nobody can review the head
+ * twice, and the reviewer starts without a claim (`unclaimed` says why, for the board). Nothing was written, so nothing is released. With a second instance in sight it is a refusal, as it was.
  */
-function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { pr: string; head: string; tree: string; rereview: boolean }): Readonly<{ tookOver: string | null }> | Readonly<{ refusal: string }> {
+function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { pr: string; head: string; tree: string; rereview: boolean }): Claimed {
   const pull = pullOf(pr);
   if (pull === null) return { refusal: `no reviewer for ${pr}: it is not a pull request url` };
   const minted = mintOf(context, tree);
@@ -315,18 +340,20 @@ function claimOf(context: Context, seat: Seat, { pr, head, tree, rereview }: { p
   const { claims } = board;
   const answer = claims.claimHead({
     instance: board.instance, now: nowOf(context),
-    read: () => claims.claimEntriesOf({ repo: repository, sha: head, gh: board.gh }),
+    read: () => readSeeing(context, { repo: repository, sha: head }),
     write: claimWriterOf(context, seat, { repo: repository, sha: head, tree }),
     rereview,
+    otherSeen: () => otherSeenOf(context),
   });
   switch (answer.outcome) {
     case "won": return { tookOver: answer.tookOver };
+    case "alone": return { tookOver: null, unclaimed: answer.reason };
     case "held": return { refusal: `another instance (\`${answer.instance}\`) holds the review of ${pr} at ${head.slice(0, 8)} since ${new Date(answer.since).toISOString()}; its lease ends ${new Date(answer.since + claims.REVIEW_LEASE_MS).toISOString()}` };
     case "finished": return { refusal: `no reviewer for ${pr}: its review at ${head.slice(0, 8)} is already posted (${answer.description})` };
     case "unclaimed":
       // A claim whose read-back failed may be on GitHub already: released, so it does not hold the head for its whole lease.
       releaseClaim(context, seat, { pr, head, tree });
-      return { refusal: `no reviewer for ${pr}: its claim at ${head.slice(0, 8)} could not be made (${answer.reason}), so none is started` };
+      return { refusal: `no reviewer for ${pr}: its claim at ${head.slice(0, 8)} could not be made (${answer.reason}), so none is started`, unclaimed: answer.reason };
   }
 }
 
@@ -347,7 +374,7 @@ function releaseClaim(context: Context, seat: Seat, { pr, head, tree }: { pr: st
 /** The code host the board reads each pull request through: its head, its reviews, its trust and whether its checks settled. */
 const codeHostOf = (context: Context): CodeHost => boardOf(context).codeHost();
 
-function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }> {
+function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | undefined): ReturnType<ReviewerPort["start"]> {
   const { pr, head } = ref;
   const seat = seatOf(context, pr);
   if ("refusal" in seat) return seat;
@@ -368,19 +395,21 @@ function startReviewer(context: Context, ref: ReviewerRef, brief: ReviewBrief | 
   // The claim comes before the spawn: an instance that holds the head starts nothing, and a claim that cannot be made starts nothing either (A11-149).
   const claimed = claimOf(context, seat, { pr, head, tree: tree.path, rereview: brief?.rereview !== undefined });
   if ("refusal" in claimed) return claimed;
+  // A reviewer started without a claim wrote none, so it has none to give up.
+  const giveUpClaim = () => { if (claimed.unclaimed === undefined) releaseClaim(context, seat, { pr, head, tree: tree.path }); };
   const started = spawnOf(context)({ session: seat.label, cause: REVIEW_CAUSE, causeKey: `${pr}@${head}`, trust: trust.INSIDE },
     agents.filter((agent) => agent.label !== seat.label), { run: herdrOf(context), cwd: tree.path, env: reviewerEnvOf(context, seat) });
   if ("refusal" in started) {
-    releaseClaim(context, seat, { pr, head, tree: tree.path });
+    giveUpClaim();
     return started;
   }
   const prompted = sendPrompt(context, seat, state, ref, brief);
   if ("refusal" in prompted) {
-    releaseClaim(context, seat, { pr, head, tree: tree.path });
+    giveUpClaim();
     return { refusal: `no reviewer for ${pr}: ${prompted.refusal}` };
   }
   board.heads.set(seat.label, head);
-  return claimed.tookOver === null ? { label: seat.label } : { label: seat.label, tookOver: claimed.tookOver };
+  return { label: seat.label, ...(claimed.tookOver === null ? {} : { tookOver: claimed.tookOver }), ...(claimed.unclaimed === undefined ? {} : { unclaimed: claimed.unclaimed }) };
 }
 
 function settledReviewer(context: Context, { pr, head }: ReviewerRef): ReviewerSettled {

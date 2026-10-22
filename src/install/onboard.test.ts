@@ -498,7 +498,7 @@ function greenDoctor(home: string): DoctorDeps {
     pnpmVersion: () => "10.34.5",
     probe: async () => 200,
     hostPlace: async () => ({ kind: "no-project" }), platform: "linux",
-    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false }), updateStatus: () => ({ kind: "absent" }),
+    herdrPlace: () => ({ kind: "unit", where: "/user.slice/agent-org-herdr.service" }), guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }),
     drain: () => ({ kind: "none" }), runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: (input) => ({ states: { readable: true, plugins: input.wanted.map((plugin) => ({ plugin, installs: [], loads: true, why: null, installPath: null })) }, unreachable: [], rows: [], contracts: [] }),
     reviewing: { ...gateHelpers(), loadGate: async () => undefined, gateRefusal: () => null }, chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => Date.now(),

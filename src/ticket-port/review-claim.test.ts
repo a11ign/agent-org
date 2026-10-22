@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { REVIEW_CLAIM_CONTEXT, REVIEW_LEASE_MINUTES, claimDescriptionOf, claimEntriesOf, claimHead, describedClaimOf, finishedDescriptionOf, releasedDescriptionOf, writeClaimStatus, type ClaimEntry } from "./review-claim.ts";
+import { REVIEW_CLAIM_CONTEXT, REVIEW_LEASE_MINUTES, claimDescriptionOf, claimEntriesOf, claimHead, describedClaimOf, finishedDescriptionOf, othersSeenIn, reasonOf, releasedDescriptionOf, writeClaimStatus, type ClaimEntry } from "./review-claim.ts";
 import { ghWith } from "../lib/tool-version-agreement.ts";
 
 const LEASE = REVIEW_LEASE_MINUTES * 60_000;
@@ -114,18 +114,19 @@ test("two instances that both wrote agree on one winner: the earlier claim, and 
 
 test("a claim that cannot be read or written starts nothing, and says why in its first line", () => {
   const head = headOf();
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: () => { throw new Error("gh: HTTP 502\nmore"); }, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502" });
+  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: () => { throw new Error("gh: HTTP 502\nmore"); }, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502", step: "read" });
   assert.equal(head.store.length, 0, "nothing is written when nothing could be read");
-  const refused = claimHead({ ...claimAs("work", NOW), read: head.read, write: () => { throw new Error("gh: Resource not accessible (HTTP 403)"); } });
-  assert.deepEqual(refused, { outcome: "unclaimed", reason: "gh: Resource not accessible (HTTP 403)" });
+  // A second instance is in sight, so the refused write is no fallback (A11-172): it stays a claim that could not be made.
+  const refused = claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => NOW - 60_000, write: () => { throw new Error("gh: Resource not accessible (HTTP 403)"); } });
+  assert.deepEqual(refused, { outcome: "unclaimed", reason: "gh: Resource not accessible (HTTP 403)", step: "write" });
   let reads = 0;
   const readAgainFails = () => { if (reads++ > 0) throw new Error("gh: HTTP 502"); return []; };
-  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: readAgainFails, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502" });
+  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: readAgainFails, write: head.write }), { outcome: "unclaimed", reason: "gh: HTTP 502", step: "readback" });
 });
 
 test("a claim that is not on the head when read back is unclaimed, not held by this instance", () => {
   const none = claimHead({ ...claimAs("work", NOW), read: () => [], write: () => {} });
-  assert.deepEqual(none, { outcome: "unclaimed", reason: "the claim was not on the head after it was written" });
+  assert.deepEqual(none, { outcome: "unclaimed", reason: "the claim was not on the head after it was written", step: "readback" });
 });
 
 test("the descriptions read back as what they say, and a claim fits GitHub's 140 characters for the longest instance name", () => {
@@ -189,4 +190,74 @@ test("A11-149: two installs that share a host name are two claimants: one's live
 test("A11-149: a release is read back as a release, and is none of a claim, a verdict, or another context's", () => {
   assert.deepEqual(describedClaimOf(releasedDescriptionOf({ instance: "work", now: NOW })), { kind: "released", instance: "work" });
   assert.equal(describedClaimOf("released by work"), null);
+});
+
+/** What `execFileSync` throws for a `gh` that exited non-zero: the message names the command, and GitHub's reason is on stderr. */
+const refusedByGithub = (): Error => Object.assign(new Error("Command failed: gh api --method POST repos/a11ign/agent-org/statuses/abc --silent -f state=success"),
+  { stderr: "gh: Resource not accessible by integration (HTTP 403)\n{\"message\":\"Resource not accessible by integration\"}\n" });
+
+test("A11-172: a failed call's reason is GitHub's, the first line gh printed, and the command's own message only when gh printed none", () => {
+  assert.equal(reasonOf(refusedByGithub()), "gh: Resource not accessible by integration (HTTP 403)");
+  assert.equal(reasonOf(Object.assign(new Error("Command failed: gh api x"), { stderr: Buffer.from("\n gh: HTTP 502 \nmore") })), "gh: HTTP 502", "a Buffer is read, and a blank line is passed over");
+  assert.equal(reasonOf(Object.assign(new Error("Command failed: gh api x\nsecond"), { stderr: "" })), "Command failed: gh api x");
+  assert.equal(reasonOf("plain"), "plain");
+  const head = headOf();
+  const answer = claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => NOW, write: () => { throw refusedByGithub(); } });
+  assert.deepEqual(answer, { outcome: "unclaimed", reason: "gh: Resource not accessible by integration (HTTP 403)", step: "write" }, "the answer carries GitHub's words, not the command's");
+});
+
+test("A11-172: a refused write after a clean read is `alone` when no other instance has been seen, with GitHub's reason, and nothing was written", () => {
+  const head = headOf();
+  const refuse = () => { throw refusedByGithub(); };
+  assert.deepEqual(claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => null }),
+    { outcome: "alone", reason: "gh: Resource not accessible by integration (HTTP 403)" });
+  assert.equal(head.store.length, 0);
+});
+
+test("A11-172: another instance seen just within the lease keeps the refused write a refusal; one seen at the lease no longer counts", () => {
+  const refuse = () => { throw refusedByGithub(); };
+  const head = headOf();
+  const within = claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => NOW - LEASE + 1 });
+  assert.deepEqual([within.outcome, "step" in within ? within.step : null], ["unclaimed", "write"], "a millisecond short of the lease it is still there");
+  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse, otherSeen: () => NOW - LEASE }).outcome, "alone", "at the lease it is past");
+  assert.equal(claimHead({ ...claimAs("work", NOW), read: head.read, write: refuse }).outcome, "unclaimed", "a caller that says nothing of other instances never gets the fallback");
+});
+
+test("A11-172: another instance's live claim on this head is `held`, whatever the write would do, so the fallback never takes a head another holds", () => {
+  const head = headOf([claimOf("laptop", NOW - 5 * 60_000)]);
+  const answer = claimHead({ ...claimAs("work", NOW), read: head.read, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  assert.deepEqual(answer, { outcome: "held", instance: "laptop", since: NOW - 5 * 60_000 });
+});
+
+test("A11-172: a read that failed is never alone, and neither is a write that landed but was not read back: nobody knows who holds the head", () => {
+  const unreadable = claimHead({ ...claimAs("work", NOW), read: () => { throw refusedByGithub(); }, write: () => {}, otherSeen: () => null });
+  assert.deepEqual(unreadable, { outcome: "unclaimed", reason: "gh: Resource not accessible by integration (HTTP 403)", step: "read" });
+  const notReadBack = claimHead({ ...claimAs("work", NOW), read: () => [], write: () => {}, otherSeen: () => null });
+  assert.deepEqual(notReadBack, { outcome: "unclaimed", reason: "the claim was not on the head after it was written", step: "readback" });
+  let reads = 0;
+  const readBackFails = claimHead({ ...claimAs("work", NOW), read: () => { if (reads++ > 0) throw refusedByGithub(); return []; }, write: () => {}, otherSeen: () => null });
+  assert.equal("step" in readBackFails ? readBackFails.step : null, "readback", "a read-back that throws is the read-back step");
+});
+
+test("A11-172: a re-review whose claim cannot be written is alone under the same rule", () => {
+  const block = { id: 2, description: finishedDescriptionOf({ verdict: "not-convinced", instance: "work", now: NOW - 30 * 60_000 }), created: NOW - 30 * 60_000 };
+  const answer = claimHead({ ...claimAs("work", NOW), read: () => [claimOf("work", NOW - 40 * 60_000, 1), block], rereview: true, otherSeen: () => null, write: () => { throw refusedByGithub(); } });
+  assert.equal(answer.outcome, "alone");
+});
+
+test("A11-172: the other instances among the entries are found by their claim, verdict or release, each at its latest time; this instance and other statuses are none", () => {
+  const entries: ClaimEntry[] = [claimOf("laptop", NOW - 50_000, 1), { id: 2, description: releasedDescriptionOf({ instance: "laptop", now: NOW - 10_000 }), created: NOW - 10_000 },
+    { id: 3, description: finishedDescriptionOf({ verdict: "convinced", instance: "tablet", now: NOW - 90_000 }), created: NOW - 90_000 }, claimOf("work", NOW - 5_000, 4),
+    { id: 5, description: "success for review/reviewer-7", created: NOW }];
+  assert.deepEqual([...othersSeenIn({ entries, instance: "work" })], [["laptop", NOW - 10_000], ["tablet", NOW - 90_000]]);
+  assert.deepEqual([...othersSeenIn({ entries: [], instance: "work" })], []);
+});
+
+test("A11-172: the claim's read asks past the gh wrapper's read cache, on every listing", () => {
+  const calls: string[][] = [];
+  claimEntriesOf({ repo: "a11ign/agent-org", sha: "abc", gh: (args) => { calls.push(args); return ""; } });
+  const [args] = calls;
+  const header = args.indexOf("-H");
+  assert.ok(header !== -1 && args[header + 1] === "Cache-Control: no-cache", `the call carries -H "Cache-Control: no-cache": ${args.join(" ")}`);
+  assert.ok(args.includes("--paginate") && args.includes("repos/a11ign/agent-org/commits/abc/statuses?per_page=100"), "and is still the paginated listing");
 });

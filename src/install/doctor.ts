@@ -60,7 +60,7 @@ import { runVersions, type PluginCopy, type RunVersion } from "../ticket-mode/qu
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
 import { realExec, realPlace, realProbe } from "../plugins/active.ts";
-import { corePolicy } from "../plugins/policy.ts";
+import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
 
 export const MIN_NODE_MAJOR = 24;
 
@@ -100,8 +100,8 @@ export type DoctorDeps = Readonly<{
   platform: NodeJS.Platform;
   /** Where the herdr server of `session` runs: its own service, the instance's cgroup, or elsewhere (A11-169). */
   herdrPlace: (session: string) => HerdrPlace;
-  /** Which interim guards are still on disk: the gh-wrapper watchdog and the `keep-herdr.conf` drop-in (A11-145, A11-169). */
-  guards: () => Readonly<{ watchdog: boolean; dropIn: boolean }>;
+  /** Which interim guards are still on disk: the gh-wrapper watchdog and the `keep-herdr.conf` and `gh-read-cache-off.conf` drop-ins (A11-145, A11-169, A11-172). */
+  guards: () => Readonly<{ watchdog: boolean; dropIn: boolean; readCacheDropIn: boolean }>;
   /** What the auto-update last saw: nothing yet, a status, or a file that cannot be read (A11-90). */
   updateStatus: () => StatusFile;
   /** The record of a breaking update that is draining: none, a drain, or a file that cannot be read (A11-169). */
@@ -332,7 +332,7 @@ function hostText(deps: DoctorDeps): string | null {
 async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps, place: HostPlaceReading): Promise<PluginHealth> {
   const { catalog, load, messaging, messagingChecks } = deps.agentOrgPlugins;
   const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
-    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(), publishing: publishingHelpers(), reviewing: deps.reviewing, place: () => Promise.resolve(place) };
+    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(undefined, settings === null ? [] : reviewClaimIdentities(settings)), publishing: publishingHelpers(), reviewing: deps.reviewing, place: () => Promise.resolve(place) };
   return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
     version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });
 }
@@ -454,6 +454,7 @@ export async function diagnose(deps: DoctorDeps): Promise<Check[]> {
     ...await preflightChecks(settings, deps),
     ...instance,
     ...herdrScopeChecks(settings, instanceState, deps),
+    ...readCacheGuardChecks(deps),
     ...ui,
     ...terminal,
     // One section per agent-org plugin, in concern order, each with the plugin's own rows and then the concern's row that summarises them (A11-163).
@@ -532,6 +533,14 @@ function herdrScopeChecks(settings: TicketSettings | null, instanceState: Servic
     ...(present.watchdog ? [failed("gh-wrapper watchdog", "the hand-set gh-wrapper watchdog is still installed, and the start-time wrapper check replaced it", retire)] : []),
   ] : [];
   return [service, scope, ...guards];
+}
+
+/**
+ * The hand-set `gh-read-cache-off.conf` drop-in turns the gh read cache off for every call the instance makes (A11-172). It stood in for the review claim reading past the cache, which the claim's read now
+ * does, so it fails while it stands, with the command that retires it. Absent where the drop-in is.
+ */
+function readCacheGuardChecks(deps: DoctorDeps): Check[] {
+  return deps.guards().readCacheDropIn ? [failed("gh-read-cache-off.conf", "the instance unit still turns the gh read cache off, which the review claim no longer needs", "run `agent-org onboard`, which retires it")] : [];
 }
 
 /** The versions of agent-org the live and parked runs started on, beside the instance's (A11-169): one row each, or one line when they all agree. Nothing when no run holds a workspace. */

@@ -1,5 +1,8 @@
 // @ts-check
-// module: the reviewer contract, version 1.1 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+// module: the reviewer contract, version 1.2 -- `ReviewerPort`, moved as it was, with the two calls the pool makes before it starts one (A11-158)
+//
+// 1.2 (A11-172): `start`'s answer may carry `unclaimed`, the reason the head's claim could not be written: with a `refusal`, the claim is why nothing started; without one, the reviewer started anyway because
+// this instance is the only one there is.
 //
 // 1.1 (A11-156): `start` and `reprompt` take a `ReviewBrief`, what the pool knows of the ticket behind the pull request, and a re-review of a head that already has a block starts through `start` too.
 //
@@ -7,7 +10,7 @@
 // so no caller changed when the contract moved. A machine with no enabled reviewer plugin starts none: "none" is the absence of one.
 
 /** The reviewer contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const REVIEWER_CONTRACT_VERSION = "1.1";
+export const REVIEWER_CONTRACT_VERSION = "1.2";
 
 /** A pull request at one head: its url, and the commit the reviewer reads and the verdict is on. */
 export type ReviewerRef = Readonly<{ pr: string; head: string }>;
@@ -29,9 +32,10 @@ export type ReviewBrief = Readonly<{ doneWhen: string | null; rereview?: Readonl
 export type ReviewerPort = Readonly<{
   /**
    * Starts a reviewer, once the head is claimed for this instance. `tookOver` says which expired claim was taken over, when one was (A11-149). With `brief.rereview`, the head's standing review
-   * is not the end of its claim: the reviewer is started again for the same head (A11-156).
+   * is not the end of its claim: the reviewer is started again for the same head (A11-156). `unclaimed` is why the head's claim could not be written (A11-172): on a refusal, the claim is the reason
+   * nothing started and the next sweep tries again; on a start, the reviewer began WITHOUT a claim because no other instance is seen, and the board says so.
    */
-  start(ref: ReviewerRef, brief?: ReviewBrief): Readonly<{ label: string; tookOver?: string }> | Readonly<{ refusal: string }>;
+  start(ref: ReviewerRef, brief?: ReviewBrief): Readonly<{ label: string; tookOver?: string; unclaimed?: string }> | Readonly<{ refusal: string; unclaimed?: string }>;
   live(ref: ReviewerRef): boolean;
   close(ref: ReviewerRef): CloseAnswer;
   retire(pr: string): RetireAnswer;

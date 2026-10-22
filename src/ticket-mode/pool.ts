@@ -94,7 +94,7 @@ import { applyEdit, discardEdit, dismiss, remove, respond, stop, stopWriterRun }
 import { close } from "./pool-settle.ts";
 import { reconcile, tick, watchFeedback } from "./pool-watch.ts";
 import { rebaseStacked, refreshTracker, retargetStacked } from "./pool-tracker.ts";
-import { pullReviewsOf, releaseReviewers, reviewNewHeads } from "./pool-reviewers.ts";
+import { claimWarningOf, pullReviewsOf, releaseReviewers, reviewNewHeads } from "./pool-reviewers.ts";
 import { newPoolContext, type PoolDeps, type QueueStore } from "./pool-context.ts";
 
 export { MAX_REPOST_ATTEMPTS } from "./pool-reviewers.ts";
@@ -125,6 +125,8 @@ export function createPool(store: QueueStore, deps: PoolDeps) {
     reviewNewHeads: () => reviewNewHeads(ctx),
     /** The review state of each open pull request the pool has read, by url, as the board words it (A11-119). */
     pullReviews: () => pullReviewsOf(ctx),
+    /** The one line for pull requests whose review claim could not be written, or null (A11-172). */
+    claimWarning: () => claimWarningOf(ctx),
     reviewerState: () => ctx.reviewerState,
     retargetStacked: () => retargetStacked(ctx),
     rebaseStacked: () => rebaseStacked(ctx),

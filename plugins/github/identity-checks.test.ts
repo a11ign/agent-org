@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { HostPlaceReading, PluginDeps } from "../../src/plugins/manifest.ts";
+import type { CodeHostPolicy, HostPlaceReading, PluginDeps } from "../../src/plugins/manifest.ts";
 import type { WrapperInputs } from "../../src/plugins/contracts/code-host.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { wrapperChecks } from "./identity-checks.ts";
@@ -104,4 +104,103 @@ test("a template that cannot be rendered is said by its refusal, and is not thro
   const broken = fakePluginDeps({ place: async () => PLACED, readFile: (path) => { if (path === INSTALLED) throw new Error("ENOENT"); return "#!/bin/sh\n@@noSuchValue@@\n"; } });
   const rows = await wrapperChecks(settingsOf(), broken);
   assert.deepEqual([rows[0].name, rows[0].ok, rows[0].detail], ["gh wrapper", false, "cannot be checked: gh: `@@noSuchValue@@` is a placeholder no value fills"]);
+});
+
+// ---- A11-172: the identities the review claim uses, each asked whether it can write (or list) a commit status ----
+
+const REVIEW_CLAIM: CodeHostPolicy["claimIdentities"] = [
+  { role: "reviewer", access: "write", env: { AGENT_ORG_GH_ROLE: "reviewer", GH_CONFIG_DIR: "/home/agent/reviewer/gh" } },
+  { role: "scheduler", access: "read", env: { AGENT_ORG_GH_ROLE: "scheduler" } },
+];
+
+/** What an App's installation prints through the minter's `permissions` mode: the permissions it holds, its slug, and its page. */
+const grantOf = (permissions: Record<string, string>, slug: string) => ({ status: 0, stdout: JSON.stringify({ permissions, appSlug: slug, htmlUrl: `https://github.com/organizations/a11ign/settings/installations/${slug}` }), stderr: "" });
+
+/** Deps whose minter mints for every role and whose `permissions` mode answers `permissions(role)`; the policy names the review claim's identities unless `claim` says otherwise. */
+function claimDeps(place: HostPlaceReading, installed: string | null, permissions: (role: string) => { status: number | null; stdout: string; stderr: string }, claim: CodeHostPolicy["claimIdentities"] = REVIEW_CLAIM) {
+  const ran: string[][] = [];
+  const base = deps(place, installed, () => ({ status: 0, stdout: "ghs_token\n", stderr: "" }));
+  const fake = fakePluginDeps({ ...base, policy: { ...base.policy, claimIdentities: claim }, exec: (file, args) => {
+    ran.push([file, ...args]);
+    return args[1] === "permissions" ? permissions(args[2] ?? "") : { status: 0, stdout: "ghs_token\n", stderr: "" };
+  } });
+  return { deps: fake, ran };
+}
+
+test("A11-172: the reviewer App's installation without Commit statuses write fails `commit statuses reviewer`, naming the App and the exact permission to grant", async () => {
+  const { deps: d } = claimDeps(PLACED, renderedFor("scheduler", "reviewer"), (role) => grantOf(role === "reviewer" ? { contents: "read", statuses: "read" } : { statuses: "read" }, `a11ign-${role}`));
+  const rows = await byName(settingsOf("scheduler", "reviewer"), d);
+  assert.equal(rows["commit statuses reviewer"].ok, false);
+  assert.equal(rows["commit statuses reviewer"].detail, `the a11ign-reviewer App's installation has no "Commit statuses" write permission (it has: read)`);
+  assert.equal(rows["commit statuses reviewer"].fix, `grant the a11ign-reviewer App "Commit statuses: Read and write" (Repository permissions) and accept the change on its installation (https://github.com/organizations/a11ign/settings/installations/a11ign-reviewer), then run \`agent-org doctor\``);
+  const none = await byName(settingsOf("scheduler", "reviewer"), claimDeps(PLACED, renderedFor("scheduler", "reviewer"), (role) => grantOf({ contents: "read" }, `a11ign-${role}`)).deps);
+  assert.match(none["commit statuses reviewer"].detail, /\(it has: none\)$/, "an installation with no statuses permission at all has: none");
+});
+
+test("A11-172: the scheduler App, which only lists the claim, needs Commit statuses read: none fails with the read permission to grant, read passes, and write passes", async () => {
+  const outcome = async (granted: Record<string, string>) => (await byName(settingsOf("scheduler", "reviewer"), claimDeps(PLACED, renderedFor("scheduler", "reviewer"),
+    (role) => grantOf(role === "scheduler" ? granted : { statuses: "write" }, `a11ign-${role}`)).deps))["commit statuses scheduler"];
+  const missing = await outcome({ contents: "read" });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.detail, `the a11ign-scheduler App's installation has no "Commit statuses" read permission (it has: none)`);
+  assert.match(missing.fix ?? "", /^grant the a11ign-scheduler App "Commit statuses: Read-only" \(Repository permissions\) and accept the change on its installation/);
+  assert.equal((await outcome({ statuses: "read" })).ok, true);
+  assert.equal((await outcome({ statuses: "write" })).ok, true);
+});
+
+test("A11-172: each identity passes with the write permission, and the row says the App and the access it has", async () => {
+  const rows = await byName(settingsOf("scheduler", "reviewer"), claimDeps(PLACED, renderedFor("scheduler", "reviewer"), (role) => grantOf({ statuses: "write" }, `a11ign-${role}`)).deps);
+  assert.deepEqual([rows["commit statuses reviewer"].ok, rows["commit statuses scheduler"].ok], [true, true]);
+  assert.equal(rows["commit statuses reviewer"].detail, `the a11ign-reviewer App's installation has the "Commit statuses" write permission the review claim needs (write)`);
+  assert.equal(rows["commit statuses scheduler"].fix, null);
+});
+
+test("A11-172: the permission is read from the installation and never tried: no token is minted for it, and the minter is asked for `permissions` once per identity", async () => {
+  const { deps: d, ran } = claimDeps(PLACED, renderedFor("scheduler", "reviewer"), (role) => grantOf({ statuses: "write" }, `a11ign-${role}`));
+  await wrapperChecks(settingsOf("scheduler", "reviewer"), d);
+  const permissionCalls = ran.filter((call) => call[2] === "permissions");
+  assert.deepEqual(permissionCalls.map((call) => call[3]), ["reviewer", "scheduler"], "one dry read per identity the claim uses, in core's order");
+  assert.ok(ran.every((call) => call[0] !== "gh"), "and no gh call tries a write");
+});
+
+test("A11-172: a machine that starts no reviewer has no claim, so no commit status row is shown", async () => {
+  const rows = await wrapperChecks(settingsOf("scheduler", "reviewer"), claimDeps(PLACED, renderedFor("scheduler", "reviewer"), () => grantOf({}, "x"), []).deps);
+  assert.deepEqual(rows.map(({ name }) => name), ["gh wrapper", "wrapper roles", "app token scheduler", "app token reviewer"]);
+});
+
+test("A11-172: an installation that cannot be read fails its row with the reason, pointing at the mint row, and never passes", async () => {
+  const rows = await byName(settingsOf("scheduler", "reviewer"), claimDeps(PLACED, renderedFor("scheduler", "reviewer"), () => ({ status: 1, stdout: "", stderr: "app token: installation: GET /app/installations/42 answered 401: Bad credentials\nmore" })).deps);
+  assert.equal(rows["commit statuses reviewer"].ok, false);
+  assert.equal(rows["commit statuses reviewer"].detail, "the reviewer App's installation permissions could not be read: app token: installation: GET /app/installations/42 answered 401: Bad credentials");
+  assert.match(rows["commit statuses reviewer"].fix ?? "", /see the app token reviewer row/);
+  const garbled = await byName(settingsOf("scheduler", "reviewer"), claimDeps(PLACED, renderedFor("scheduler", "reviewer"), () => ({ status: 0, stdout: "not json", stderr: "" })).deps);
+  assert.equal(garbled["commit statuses reviewer"].detail, "the reviewer App's installation permissions could not be read: the minter printed something that is not JSON");
+});
+
+test("A11-172: a ticket-only host, which installs no wrapper, still asks the declared Apps for their commit status permission", async () => {
+  const rows = await byName(settingsOf("scheduler", "reviewer"), claimDeps({ kind: "no-project" }, null, (role) => grantOf(role === "reviewer" ? { statuses: "read" } : { statuses: "read" }, `a11ign-${role}`)).deps);
+  assert.equal(rows["commit statuses reviewer"].ok, false);
+  assert.equal(rows["commit statuses scheduler"].ok, true);
+  assert.equal(rows["gh wrapper"].detail, "not applicable: host.json declares no project, so this machine installs no wrapper");
+});
+
+test("A11-172: a role that is a user account is asked for its access to the first GitHub repository a clone names: push to write, pull to list", async () => {
+  const calls: { file: string; args: readonly string[]; env: Record<string, string> | undefined }[] = [];
+  const accountDeps = (permissions: Record<string, boolean>) => fakePluginDeps({ place: async () => PLACED, clones: { agent: "/repos/agent-org" }, policy: { ...fakePluginDeps().policy, claimIdentities: REVIEW_CLAIM },
+    readFile: (path) => { if (path === INSTALLED) return renderedFor(); return readFileSync(path, "utf8"); },
+    exec: (file, args, options) => {
+      calls.push({ file, args, env: options?.env as Record<string, string> | undefined });
+      if (file === "git") return { status: 0, stdout: "git@github.com:a11ign/agent-org.git\n", stderr: "" };
+      return { status: 0, stdout: JSON.stringify(permissions), stderr: "" };
+    } });
+  const passing = await byName(settingsOf(), accountDeps({ pull: true, push: true }));
+  assert.deepEqual([passing["commit statuses reviewer"].ok, passing["commit statuses scheduler"].ok], [true, true]);
+  const reviewerCall = calls.find((call) => call.file === "gh" && call.env?.AGENT_ORG_GH_ROLE === "reviewer");
+  assert.deepEqual(reviewerCall?.args, ["api", "repos/a11ign/agent-org", "--jq", ".permissions"]);
+  assert.equal(reviewerCall?.env?.GH_CONFIG_DIR, "/home/agent/reviewer/gh", "asked as the reviewer's own account");
+  const pullOnly = await byName(settingsOf(), accountDeps({ pull: true, push: false }));
+  assert.equal(pullOnly["commit statuses reviewer"].ok, false, "pull access cannot write a status");
+  assert.equal(pullOnly["commit statuses reviewer"].detail, "the reviewer account has no push access to a11ign/agent-org, which writing a commit status needs");
+  assert.match(pullOnly["commit statuses reviewer"].fix ?? "", /^give the reviewer account \(\/home\/agent\/reviewer\/gh\) push access to a11ign\/agent-org/);
+  assert.equal(pullOnly["commit statuses scheduler"].ok, true, "and pull access is all the reader needs");
 });

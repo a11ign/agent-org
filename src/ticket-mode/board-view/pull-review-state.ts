@@ -12,7 +12,8 @@ export type ReviewWord = "approved" | "changes requested" | "dismissed";
  * What the pool read about one open pull request at its current head: the head, whether its checks have settled green, whether a reviewer is live for
  * that head, the verdict the reviewer posted on that head, the newest verdict on an earlier head, why the last start was refused (null when it was not), and
  * the verdict that is not on the pull request, as the pool says it (null when none), and the expired claim this instance took over on this head, as the pool
- * says it (absent when it took none, A11-149). `rereview` is set while a re-review of the head is under way, asked by a reply to the reviewer's block with no new commit (A11-156).
+ * says it (absent when it took none, A11-149). `rereview` is set while a re-review of the head is under way, asked by a reply to the reviewer's block with no new commit (A11-156). `unclaimed` is set
+ * when the head's claim could not be written (A11-172): its `reason` is GitHub's, and `started` is whether the reviewer runs anyway (this instance is the only one seen) or none was started.
  */
 export type PullRead = Readonly<{
   head: string;
@@ -24,6 +25,7 @@ export type PullRead = Readonly<{
   unposted: string | null;
   tookOver?: string;
   rereview?: boolean;
+  unclaimed?: Readonly<{ reason: string; started: boolean }>;
 }>;
 
 /** What each open pull request's line says on a machine where reviews are required and the reviewer is off (A11-161). */
@@ -59,16 +61,41 @@ export const shortHead = (head: string): string => head.slice(0, 8);
 
 /**
  * The line a pull request's review state reads as. `null` read is a pull request whose state could not be read. In order: a re-review a reply asked for is
- * `re-review asked by reply` at the head, until it posts or ends (A11-156); a reviewer live for the head is `reviewing`, and says the claim it took over, if it took one; a verdict on the head is its word; a newest `changes requested` on an earlier head says the
+ * `re-review asked by reply` at the head, until it posts or ends (A11-156); a reviewer live for the head is `reviewing`, and says the claim it took over, if it took one, or that it runs without a claim (A11-172);
+ * a start refused because the claim could not be written says `cannot claim for review: <reason>`, ahead of a verdict, so a re-review that cannot be claimed is seen too; a verdict on the head is its word; a newest `changes requested` on an earlier head says the
  * new head is not reviewed yet; checks not settled say so; a refused start says why; otherwise the head is awaiting review.
  */
 export function pullReviewText(read: PullRead | null): string {
   if (read === null) return "review state not read";
   if (read.rereview === true) return read.tookOver === undefined ? `re-review asked by reply at ${shortHead(read.head)}` : `re-review asked by reply at ${shortHead(read.head)} (${read.tookOver})`;
+  if (read.reviewing && read.unclaimed?.started === true) return `reviewing without a claim: ${read.unclaimed.reason}`;
   if (read.reviewing) return read.tookOver === undefined ? "reviewing" : `reviewing (${read.tookOver})`;
+  if (read.unclaimed?.started === false) return `cannot claim for review: ${read.unclaimed.reason}`;
   if (read.verdict !== null) return read.verdict === "changes requested" ? `changes requested at ${shortHead(read.head)}` : `${read.verdict} at ${shortHead(read.head)}`;
   if (read.earlier?.word === "changes requested") return `changes requested at ${shortHead(read.earlier.head)}, new head ${shortHead(read.head)} not yet reviewed`;
   if (!read.settled) return `waiting for checks at ${shortHead(read.head)}`;
   if (read.refusal !== null) return `not reviewed: ${read.refusal}`;
   return `awaiting review at ${shortHead(read.head)}`;
 }
+
+/**
+ * The one line the board shows above its runs while some pull request cannot be claimed for review, or runs without a claim (A11-172), or null while none does. It is one line however many pull requests
+ * are affected: the reasons are named once each and the pull requests counted. It is derived from what the pool read, so it lasts exactly as long as some pull request is in that state.
+ */
+export function claimWarning(reads: Iterable<PullRead>): string | null {
+  const refused = new Map<string, number>();
+  const alone = new Map<string, number>();
+  for (const { unclaimed } of reads) {
+    if (unclaimed === undefined) continue;
+    const into = unclaimed.started ? alone : refused;
+    into.set(unclaimed.reason, (into.get(unclaimed.reason) ?? 0) + 1);
+  }
+  const said = (reasons: Map<string, number>) => `${[...reasons.keys()].join("; ")} (${plural([...reasons.values()].reduce((sum, n) => sum + n, 0), "pull request")})`;
+  const parts = [
+    ...(refused.size === 0 ? [] : [`Reviews cannot be claimed on GitHub: ${said(refused)}.`]),
+    ...(alone.size === 0 ? [] : [`Reviews start without a claim on GitHub: ${said(alone)}; no other instance is seen.`]),
+  ];
+  return parts.length === 0 ? null : `${parts.join(" ")} Run agent-org doctor.`;
+}
+
+const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
