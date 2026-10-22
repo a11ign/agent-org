@@ -74,7 +74,7 @@ export type BoardDeps = Readonly<{
   hostPath?: string;
   queuePath: string;
   choicePath: string;
-  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "talk" | "reviewerState">>;
+  pool?: Pick<ReturnType<typeof createPool>, "tick" | "stop" | "close" | "dismiss" | "remove" | "respond" | "reconcile" | "ensureSession" | "refreshTracker" | "watchFeedback" | "releaseReviewers" | "retargetStacked" | "rebaseStacked" | "applyEdit" | "discardEdit" | "stopWriterRun" | "reviewNewHeads"> & Partial<Pick<ReturnType<typeof createPool>, "held" | "pullReviews" | "claimWarning" | "talk" | "reviewerState">>;
   poolDeps?: Omit<PoolDeps, "settings" | "source" | "codeHost" | "hook">;
   now?: () => number;
   /**
@@ -330,11 +330,11 @@ async function queuedTicket({ known, source }: Pick<Board, "known" | "source">, 
 
 /** The queue as the page reads it: the stored queue, and why runs are held (`tickets.preflight`), or null while none is. The page's one picture of what the board is doing. */
 function queueView(board: Pick<Board, "store" | "pool" | "update">) {
-  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `writers`: each run as the page
+  // `pulls`: the review state of each open pull request the pool has read, by url, as the board words it (A11-119). `claimWarning`: the one line for review claims GitHub refuses, or null (A11-172). `writers`: each run as the page
   // is sent it, without a Grill run's ticket text (A11-134).
   const queue = board.store.get();
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading.
-  return { ...queue, entries: queue.entries.map(shownEntry), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, update: board.update() };
+  return { ...queue, entries: queue.entries.map(shownEntry), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, claimWarning: board.pool.claimWarning?.() ?? null, update: board.update() };
 }
 
 /**
@@ -818,7 +818,8 @@ async function serve(): Promise<void> {
   // The reviewer plugin is given the board's collaborators: its herdr session, the code host it reads every pull request through (activated beside it, so asked when used) and the heads the pool
   // remembers its reviewers by.
   const reviewerHeads = new Map<string, string>();
-  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads });
+  const reviewerSeen = new Map<string, number>();
+  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads, seen: reviewerSeen });
   const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }));
   activated(active);
   const source = active.tracker();
@@ -830,7 +831,7 @@ async function serve(): Promise<void> {
   const key = boardKey(boardKeyPath(settings.stateDir));
   const dir = join(settings.stateDir, "tickets");
   const board = createBoard({ settings, source, codeHost, key, queuePath: join(dir, "queue.json"), choicePath: join(dir, "choice.json"), exposure: active.exposure(),
-    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads } });
+    poolDeps: { ...(publisher === undefined ? {} : { publisher }), ...(reviewer === undefined ? {} : { reviewer }), reviewerHeads, reviewerSeen } });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => process.exit(128 + constants.signals[signal]));
   await board.pool.ensureSession();
   board.pool.reconcile();

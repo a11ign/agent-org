@@ -157,12 +157,14 @@ export type Repost = { attempts: number; reason?: string };
 /**
  * What a pool remembers of its reviewers across a restart: the head each seat's reviewer was started for (`heads`, by seat label), the reviewers
  * started (`started`, `url@head`), the verdicts a worker was asked to answer (`resumed`, `url@head`), the re-posts of a verdict not on its pull request
- * (`reposts`, `url@head`), and the heads a reply to a block earned one re-review of (`rereviewed`, `url@head`, A11-156). The pool holds it and the port reads `heads`.
+ * (`reposts`, `url@head`), the heads a reply to a block earned one re-review of (`rereviewed`, `url@head`, A11-156), and when each OTHER instance was last seen under the review claim's
+ * context on any head (`seen`, by instance name, epoch ms, A11-172), and why a reviewer started WITHOUT a claim has none (`unclaimed`, `url@head` to GitHub's reason, A11-172), which the board keeps saying
+ * while it runs, across a restart and for a `ticket:review` start too. The pool holds it and the port reads `heads` and writes `seen`.
  */
-export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string>; reposts: Map<string, Repost>; rereviewed: Set<string> };
+export type ReviewerMemory = { heads: Map<string, string>; started: Set<string>; resumed: Set<string>; reposts: Map<string, Repost>; rereviewed: Set<string>; seen: Map<string, number>; unclaimed: Map<string, string> };
 
 /** Nothing remembered: what a pool starts from when there is no file, and what a file it cannot read is read as. */
-export const noReviewerMemory = (): ReviewerMemory => ({ heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set() });
+export const noReviewerMemory = (): ReviewerMemory => ({ heads: new Map(), started: new Set(), resumed: new Set(), reposts: new Map(), rereviewed: new Set(), seen: new Map(), unclaimed: new Map() });
 
 /**
  * The memory on disk. A file that is not there is nothing remembered yet; one that is there and is not what `writeReviewerMemory` writes is
@@ -182,6 +184,10 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
     // `reposts` is absent in a file written before A11-83: nothing was re-posted then. `rereviewed` is absent in a file written before A11-156: no head was re-reviewed then.
     const reposts: Record<string, unknown> = data?.reposts ?? {};
     const rereviewed: unknown = data?.rereviewed ?? [];
+    // `seen` and `unclaimed` are absent in a file written before A11-172, and in one for a pool that saw no other instance and started nothing without a claim. An entry of either that is not the right
+    // type is left out, not a reason to forget every started head: neither is what keeps a head from being started twice.
+    const entriesOf = <T>(value: unknown, isT: (item: unknown) => item is T): [string, T][] =>
+      (typeof value === "object" && value !== null && !Array.isArray(value) ? Object.entries(value).filter((entry): entry is [string, T] => isT(entry[1])) : []);
     const repost = (value: any) => value !== null && typeof value === "object" && Number.isInteger(value.attempts) && value.attempts >= 0
       && (value.reason === undefined || typeof value.reason === "string");
     const isMalformedMemory = data === null || typeof data !== "object" || data.heads === null || typeof data.heads !== "object"
@@ -191,7 +197,8 @@ export function readReviewerMemory(path: string): { memory: ReviewerMemory; unre
       throw new Error("not a reviewer memory");
     }
     return { memory: { heads: new Map(Object.entries(data.heads) as [string, string][]), started: new Set(data.started), resumed: new Set(data.resumed),
-      reposts: new Map(Object.entries(reposts) as [string, Repost][]), rereviewed: new Set(rereviewed) }, unreadable: false };
+      reposts: new Map(Object.entries(reposts) as [string, Repost][]), rereviewed: new Set(rereviewed),
+      seen: new Map(entriesOf(data.seen, (at): at is number => typeof at === "number" && Number.isFinite(at))), unclaimed: new Map(entriesOf(data.unclaimed, (reason): reason is string => typeof reason === "string")) }, unreadable: false };
   } catch {
     return nothing({ unreadable: true });
   }
@@ -204,6 +211,10 @@ export function writeReviewerMemory(path: string, memory: ReviewerMemory): void 
     // Written only when there is one, so a file for a pool that re-posted nothing reads as it always did.
     ...(memory.reposts.size > 0 ? { reposts: Object.fromEntries(memory.reposts) } : {}),
     // Likewise: a file for a pool that re-reviewed nothing reads as it always did.
-    ...(memory.rereviewed.size > 0 ? { rereviewed: [...memory.rereviewed] } : {}) }));
+    ...(memory.rereviewed.size > 0 ? { rereviewed: [...memory.rereviewed] } : {}),
+    // Likewise: a file for a pool that saw no other instance reads as it always did.
+    ...(memory.seen.size > 0 ? { seen: Object.fromEntries(memory.seen) } : {}),
+    // Likewise: a file for a pool that started every reviewer with its claim reads as it always did.
+    ...(memory.unclaimed.size > 0 ? { unclaimed: Object.fromEntries(memory.unclaimed) } : {}) }));
   renameSync(`${path}.tmp`, path);
 }

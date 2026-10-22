@@ -143,6 +143,30 @@ export function probeMint(deps: Pick<PluginDeps, "exec" | "env">, script: string
   }
 }
 
+/** What an App's installation holds, as the minter prints it (A11-172): its permissions by name, the App's slug, and the page where the owner changes and accepts them. */
+export type InstallationPermissions = Readonly<{ permissions: Readonly<Record<string, string>>; appSlug: string | null; htmlUrl: string | null }>;
+
+/**
+ * What the role's App installation is granted, read by the minter's `permissions` mode with the same App `probeMint` mints for, or the reason it could not be read (the first line the minter printed). A dry
+ * read: nothing is minted and nothing is written. The minter runs as a program, so the key is read there and never in this process.
+ */
+export function probePermissions(deps: Pick<PluginDeps, "exec" | "env">, script: string, role: string, app: Extract<RoleIdentity, { mode: "github-apps" }>): InstallationPermissions | Readonly<{ failure: string }> {
+  const result = deps.exec(deps.env.A11Y_APP_NODE ?? "node", [script, "permissions", role], { timeoutMs: MINT_PROBE_MS,
+    env: { A11Y_APP_ID: app.appId, A11Y_APP_KEY_PATH: app.keyPath, A11Y_APP_INSTALLATION_ID: app.installationId ?? "" } });
+  const unreadable = (why: string) => ({ failure: why });
+  if (result.status !== 0) return unreadable(result.stderr.split("\n").find((line) => line.trim() !== "") ?? `the minter exited ${result.status}`);
+  try {
+    const read = JSON.parse(result.stdout) as { permissions?: unknown; appSlug?: unknown; htmlUrl?: unknown };
+    if (typeof read.permissions !== "object" || read.permissions === null) return unreadable("the minter printed no permissions");
+    return { permissions: read.permissions as Record<string, string>, appSlug: typeof read.appSlug === "string" ? read.appSlug : null, htmlUrl: typeof read.htmlUrl === "string" ? read.htmlUrl : null };
+  } catch {
+    return unreadable("the minter printed something that is not JSON");
+  }
+}
+
+/** The minter the installed wrapper would run for `inputs`, as it names it, or undefined when the wrapper names none. */
+export const mintScriptOf = (deps: Pick<PluginDeps, "exec" | "readFile" | "env">, inputs: WrapperInputs): string | undefined => WRAPPER_MINT_SCRIPT.exec(createWrapper(deps).file(inputs).expected ?? "")?.[1];
+
 /** The wrapper's text for `inputs`, read from this folder, for a caller that has no deps of its own (a test that runs the wrapper): null when the template cannot be read. THROWS what the render refuses. */
 export const renderWrapper = (inputs: WrapperInputs): string | null => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} }).file(inputs).expected;
 
@@ -253,6 +277,12 @@ export function inputsOfSettings(settings: PluginSettings, place: HostPlace): Wr
   const gh = typeof settings.gh === "object" && settings.gh !== null ? settings.gh as Record<string, unknown> : {};
   const folder = (name: string): string => (typeof gh[name] === "string" ? gh[name] as string : "");
   return { place, accounts: { workers: folder("workers"), leads: folder("leads") }, identity: Object.fromEntries(GITHUB_ROLES.map((role) => [role, roleIdentityOf(identity[role])])) };
+}
+
+/** One role's identity as the settings declare it: an App, or the person's account when the settings name none (A11-172). */
+export function identityOfRole(settings: PluginSettings, role: string): RoleIdentity {
+  const identity = typeof settings.identity === "object" && settings.identity !== null ? settings.identity as Record<string, unknown> : {};
+  return roleIdentityOf(identity[role]);
 }
 
 /** The Apps the settings declare, by role, in the wrapper's order: what a doctor row mints for even where no wrapper is installed (a ticket-only host). */

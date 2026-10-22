@@ -10,7 +10,7 @@ import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.ts";
 import { type TicketSource } from "./source.ts";
 import type { CodeHost } from "../plugins/contracts/code-host.ts";
-import { type ReviewerState, reviewerStateOf } from "./concern-states.ts";
+import { type ReviewerState, reviewerStateOf, startsReviewers } from "./concern-states.ts";
 import type { Publisher } from "../plugins/contracts/publisher.ts";
 import type { Reviewer } from "../plugins/contracts/reviewer.ts";
 import { defaultHerdr, defaultHerdrAsync, defaultWait, type Herdr, type HerdrAsync, type HerdrService } from "./pool-herdr.ts";
@@ -66,6 +66,8 @@ export type PoolDeps = Readonly<{
    * reviewer keeps it. Absent: the pool's own, which no reviewer shares.
    */
   reviewerHeads?: Map<string, string>;
+  /** When each other instance was last seen under the review claim's context, by instance name, which the reviewer plugin was given the same way as `reviewerHeads` (A11-172). Absent: the pool's own. */
+  reviewerSeen?: Map<string, number>;
   /** Runs one `tickets.preflight` command; a shell by default. A test injects one so no process runs. */
   preflight?: PreflightExec;
   /** Where a draining update's record is read and written (A11-169): the agent-org home's `update-drain.json` by default. */
@@ -77,8 +79,7 @@ export type PoolDeps = Readonly<{
 /** The pool holds the queue through these two, so the server stays its one writer. */
 export type QueueStore = Readonly<{ get: () => Queue; set: (queue: Queue) => void }>;
 
-/** Whether a machine with these settings starts reviewers: a reviewer plugin is active (`settings.reviewer`) and `drafts` is off. Only such an instance loads the gate (`reviewer-port.ts`). */
-export const startsReviewers = (settings: TicketSettings): boolean => settings.reviewer !== null && !settings.drafts;
+export { startsReviewers };
 
 /** What the pool's parts share: its store, deps and seams, and the state it keeps between passes. Built once by {@link newPoolContext}. */
 export type PoolContext = Readonly<{
@@ -185,6 +186,11 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   if (deps.reviewerHeads !== undefined) {
     for (const [label, head] of reviewerMemory.heads) deps.reviewerHeads.set(label, head);
     reviewerMemory.heads = deps.reviewerHeads;
+  }
+  // Likewise the instances seen: the reviewer records them as it reads a head's claim, and the pool writes them, so a restart within the lease still knows a second instance is there (A11-172).
+  if (deps.reviewerSeen !== undefined) {
+    for (const [instance, at] of reviewerMemory.seen) deps.reviewerSeen.set(instance, at);
+    reviewerMemory.seen = deps.reviewerSeen;
   }
   /** A reviewer that refuses to start here (the gate does not load on a host with no `primary`) starts none: said once here, and no reviewer is ever read. */
   const gateRefusal = reviewerOn ? deps.reviewer?.refusal() ?? null : null;

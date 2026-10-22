@@ -1,12 +1,13 @@
-// module: the two interim guards that were set by hand on the agents host, and that onboard and `start herdr --move` retire once their replacements are proven (A11-145, A11-169)
+// module: the three interim guards that were set by hand on the agents host, and that onboard and `start herdr --move` retire once their replacements are proven (A11-145, A11-169, A11-172)
 //
-// THE GUARDS: the `gh-wrapper-watchdog` timer and service and its script (a stop-gap until A11-84 checked the gh wrapper at start), and the instance unit's
-// `keep-herdr.conf` drop-in, `KillMode=process`, which kept herdr alive across an instance restart before herdr had a unit of its own (A11-90).
+// THE GUARDS: the `gh-wrapper-watchdog` timer and service and its script (a stop-gap until A11-84 checked the gh wrapper at start), the instance unit's
+// `keep-herdr.conf` drop-in, `KillMode=process`, which kept herdr alive across an instance restart before herdr had a unit of its own (A11-90), and the instance unit's `gh-read-cache-off.conf` drop-in,
+// `A11Y_GH_READ_CACHE=off`, which kept the review claim's read-back from being answered out of the gh wrapper's read cache until the claim's read asked past it (A11-172).
 //
 // A GUARD IS REMOVED ONLY WHEN ITS REPLACEMENT HOLDS, and the check is read here, never assumed: the watchdog's replacement is the start-time wrapper check,
 // proven by the installed wrapper being the one the host file declares (`ghWrapperDivergence`, asked of the code host plugin's wrapper); the drop-in's is herdr's own service (A11-169), proven by the herdr
-// server of the instance's session running in `agent-org-herdr.service` (`hostHerdrPlace`). A guard whose replacement is not proven is left, with a sentence saying what
-// to do. Nothing here stops herdr or touches a running worker, and only Linux with systemd has either guard.
+// server of the instance's session running in `agent-org-herdr.service` (`hostHerdrPlace`); the read-cache drop-in's is the claim's own read, which is in the code that runs this retirement, and the installed wrapper being the one the host file declares (the read stays out of the cache only through the wrapper's classing of `-H` as neutral).
+// A guard whose replacement is not proven is left, with a sentence saying what to do. Nothing here stops herdr or touches a running worker, and only Linux with systemd has any guard.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostHerdrPlace } from "./herdr-place.ts";
@@ -30,20 +31,22 @@ export type GuardDeps = Readonly<{
 const WATCHDOG_TIMER = "gh-wrapper-watchdog.timer";
 const WATCHDOG_SERVICE = "gh-wrapper-watchdog.service";
 const DROP_IN_NAME = "keep-herdr.conf";
+const READ_CACHE_DROP_IN_NAME = "gh-read-cache-off.conf";
 
-/** The watchdog's three files, and the drop-in, under the user's systemd directory and the agent-org home. */
-export function guardPaths(env: Env, home: string): Readonly<{ watchdog: readonly string[]; dropIn: string }> {
+/** The watchdog's three files, and the two drop-ins, under the user's systemd directory and the agent-org home. */
+export function guardPaths(env: Env, home: string): Readonly<{ watchdog: readonly string[]; dropIn: string; readCacheDropIn: string }> {
   const units = join(home, ".config", "systemd", "user");
   return {
     watchdog: [join(units, WATCHDOG_TIMER), join(units, WATCHDOG_SERVICE), join(agentOrgHome(env, home), "bin", "gh-wrapper-watchdog")],
     dropIn: join(units, "agent-org-instance.service.d", DROP_IN_NAME),
+    readCacheDropIn: join(units, "agent-org-instance.service.d", READ_CACHE_DROP_IN_NAME),
   };
 }
 
-/** The guards present, as `doctor` reads them: the watchdog's files that exist, and the drop-in when it does. */
-export function guardsPresent(env: Env, home: string, exists: (path: string) => boolean): Readonly<{ watchdog: boolean; dropIn: boolean }> {
+/** The guards present, as `doctor` reads them: the watchdog's files that exist, and each drop-in when it does. */
+export function guardsPresent(env: Env, home: string, exists: (path: string) => boolean): Readonly<{ watchdog: boolean; dropIn: boolean; readCacheDropIn: boolean }> {
   const paths = guardPaths(env, home);
-  return { watchdog: paths.watchdog.some((path) => exists(path)), dropIn: exists(paths.dropIn) };
+  return { watchdog: paths.watchdog.some((path) => exists(path)), dropIn: exists(paths.dropIn), readCacheDropIn: exists(paths.readCacheDropIn) };
 }
 
 /** The herdr session the host file names, or `tickets` when it names none or cannot be read. */
@@ -89,7 +92,8 @@ export async function retireGuards(deps: GuardDeps): Promise<string[]> {
   const lines: string[] = [];
   const watchdogPresent = paths.watchdog.some((path) => deps.exists(path));
   const dropInPresent = deps.exists(paths.dropIn);
-  if (!watchdogPresent && !dropInPresent) return lines;
+  const readCachePresent = deps.exists(paths.readCacheDropIn);
+  if (!watchdogPresent && !dropInPresent && !readCachePresent) return lines;
   const proof = await deps.replacements();
   if (watchdogPresent) {
     if (proof.ghWrapperDeclared) {
@@ -108,6 +112,15 @@ export async function retireGuards(deps: GuardDeps): Promise<string[]> {
       lines.push("retired the KillMode drop-in: herdr has a service of its own, since the herdr server runs in agent-org-herdr.service");
     } else {
       lines.push("kept the KillMode drop-in: the herdr server does not run in agent-org-herdr.service yet. Run `agent-org start herdr --move` at a quiet moment, which moves it and retires the drop-in");
+    }
+  }
+  if (readCachePresent) {
+    if (proof.ghWrapperDeclared) {
+      deps.remove(paths.readCacheDropIn);
+      daemonReload(deps);
+      lines.push("retired the read-cache drop-in: the review claim reads past the gh read cache (A11-172). The instance picks the change up at its next restart");
+    } else {
+      lines.push("kept the read-cache drop-in: the installed gh wrapper is not the one host.json declares, so the claim's read past its cache is not proven. Run `agent-org host:install`, then run onboard again");
     }
   }
   return lines;

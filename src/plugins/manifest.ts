@@ -80,6 +80,11 @@ export type CodeHostPolicy = Readonly<{
   /** Whether check run `a` is at least as new as `b`, which decides the newest run of a check name. */
   isAtLeastAsNew(a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): boolean;
   review(): ReviewJudge;
+  /**
+   * The identities core writes and reads the review claim's commit status as (A11-172), each with the code host role it acts as, the access it needs (`write` to post a claim and its release, `read` to
+   * list them) and the environment core runs it with. Empty on a machine that starts no reviewer, and then a code host checks nothing of it. A code host's doctor rows ask each identity whether it can.
+   */
+  claimIdentities: readonly Readonly<{ role: string; access: "read" | "write"; env: Readonly<Record<string, string>> }>[];
 }>;
 
 /**
@@ -136,9 +141,13 @@ export type ReviewerGate = Readonly<{
   host: Readonly<{ HOST_CONFIG_ENV: string; hostConfigPath(): string }>;
 }>;
 
-/** What the claim on a head answers (`claimHead`): this instance won it, another holds it, a review is finished on it, or the claim could not be made. */
+/**
+ * What the claim on a head answers (`claimHead`): this instance won it, another holds it, a review is finished on it, the claim could not be made (at `step`), or GitHub refused the write of it
+ * and this instance is the only one there is (`alone`, A11-172).
+ */
 export type ReviewerClaimAnswer = Readonly<{ outcome: "won"; tookOver: string | null }> | Readonly<{ outcome: "held"; instance: string; since: number }>
-  | Readonly<{ outcome: "finished"; description: string }> | Readonly<{ outcome: "unclaimed"; reason: string }>;
+  | Readonly<{ outcome: "finished"; description: string }> | Readonly<{ outcome: "unclaimed"; reason: string; step: "read" | "write" | "readback" }>
+  | Readonly<{ outcome: "alone"; reason: string }>;
 
 /**
  * What a reviewer needs of a BOARD: its herdr session and runner, the activated code host, the instance's name and the head each seat's reviewer was started for, and beside them the functions the atomic
@@ -159,6 +168,8 @@ export type ReviewerBoard = Readonly<{
   instance: string;
   /** The head each seat's reviewer was started for, by seat label, which the pool keeps across a restart. */
   heads: Map<string, string>;
+  /** When each OTHER instance was last seen under the claim's context on any head (epoch ms, by instance name), which the pool keeps across a restart (A11-172): a restart within the lease still knows a second instance is there. */
+  seen: Map<string, number>;
   attribution: Readonly<{
     /** The seat a reviewer's label names: the key of its repository (`""` for the primary's) and its pull request's number, or null for a label that is no reviewer's. */
     reviewerInstance(label: string): Readonly<{ key: string; number: number }> | null;
@@ -173,7 +184,9 @@ export type ReviewerBoard = Readonly<{
   claims: Readonly<{
     REVIEW_LEASE_MS: number;
     claimEntriesOf(head: Readonly<{ repo: string; sha: string; gh: (args: string[]) => string }>): readonly Readonly<{ id: number; description: string; created: number }>[];
-    claimHead(claim: Readonly<{ instance: string; now: number; read: () => readonly Readonly<{ id: number; description: string; created: number }>[]; write: (description: string) => void; rereview?: boolean }>): ReviewerClaimAnswer;
+    claimHead(claim: Readonly<{ instance: string; now: number; read: () => readonly Readonly<{ id: number; description: string; created: number }>[]; write: (description: string) => void; rereview?: boolean; otherSeen?: () => number | null }>): ReviewerClaimAnswer;
+    /** The other instances among a head's claim entries, each with when it was last seen (A11-172). */
+    othersSeenIn(seen: Readonly<{ entries: readonly Readonly<{ id: number; description: string; created: number }>[]; instance: string }>): Map<string, number>;
     releasedDescriptionOf(release: Readonly<{ instance: string; now: number }>): string;
     writeClaimStatus(write: Readonly<{ repo: string; sha: string; description: string; gh: (args: string[]) => string }>): void;
   }>;

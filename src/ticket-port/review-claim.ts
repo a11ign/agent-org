@@ -54,14 +54,19 @@ export function describedClaimOf(description: string): ClaimDescription | null {
   return released === null ? null : { kind: "released", instance: released[1] };
 }
 
+/** The step of a claim that failed: the `read` before it, the `write` of the claim itself, or the `readback` that checks it landed (A11-172). */
+export type ClaimStep = "read" | "write" | "readback";
+
 /**
  * What a claim attempt answers. `won`: this instance holds the head, and `tookOver` names the expired claim it took over, if one was. `held`: another
  * instance holds it, since `since`. `finished`: the review is already posted, so nothing is started. `unclaimed`: the claim could not be read or written,
- * so nothing is started either.
+ * so nothing is started either, and `step` says which step failed. `alone` (A11-172): GitHub refused the write of the claim after a clean read, no other
+ * instance holds the head, and none has been seen within the lease, so the reviewer may start without a claim; `reason` is GitHub's.
  */
 export type ClaimAnswer =
   Readonly<{ outcome: "won"; tookOver: string | null }> | Readonly<{ outcome: "held"; instance: string; since: number }>
-  | Readonly<{ outcome: "finished"; description: string }> | Readonly<{ outcome: "unclaimed"; reason: string }>;
+  | Readonly<{ outcome: "finished"; description: string }> | Readonly<{ outcome: "unclaimed"; reason: string; step: ClaimStep }>
+  | Readonly<{ outcome: "alone"; reason: string }>;
 
 /** The claim entries of a head in GitHub's order (oldest first, ties by id), which every instance reads the same way. */
 const inOrder = (entries: readonly ClaimEntry[]): ClaimEntry[] => [...entries].sort((a, b) => a.created - b.created || a.id - b.id);
@@ -88,14 +93,28 @@ function claimsIn(entries: readonly ClaimEntry[]): Claim[] {
 
 const minutesOf = (ms: number): string => `${Math.floor(ms / MINUTE_MS)} min`;
 
-const firstLine = (err: unknown): string => String((err as Error)?.message ?? err).split("\n")[0];
+/** The most of GitHub's words a reason keeps: it is said on a pull request's line, in the board's one warning and in the log, and a long body would crowd all three. */
+const MAX_REASON_CHARACTERS = 200;
 
-/** What `action` returns, or the unclaimed answer for an action that threw: a write GitHub refused. */
-function attempt<T>(action: () => T): Readonly<{ value: T }> | Readonly<{ unclaimed: ClaimAnswer }> {
+const firstLineOf = (text: string): string => text.split("\n").find((line) => line.trim() !== "")?.trim() ?? "";
+
+/**
+ * Why a `gh` call failed (A11-172): the first line `gh` printed on stderr, which is GitHub's own reason (`gh: Resource not accessible by integration (HTTP 403)`), and only
+ * when it printed none the first line of the error's message (`Command failed: gh api ...`, which names the command and tells a reader nothing of why).
+ */
+export function reasonOf(err: unknown): string {
+  const stderr = (err as { stderr?: unknown } | null)?.stderr;
+  const printed = firstLineOf(typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : "");
+  const reason = printed !== "" ? printed : firstLineOf(String((err as Error)?.message ?? err));
+  return reason.length > MAX_REASON_CHARACTERS ? `${reason.slice(0, MAX_REASON_CHARACTERS)}...` : reason;
+}
+
+/** What `action` returns, or the unclaimed answer for an action that threw at `step`. */
+function attempt<T>(step: ClaimStep, action: () => T): Readonly<{ value: T }> | Readonly<{ unclaimed: Extract<ClaimAnswer, { outcome: "unclaimed" }> }> {
   try {
     return { value: action() };
   } catch (err) {
-    return { unclaimed: { outcome: "unclaimed", reason: firstLine(err) } };
+    return { unclaimed: { outcome: "unclaimed", reason: reasonOf(err), step } };
   }
 }
 
@@ -118,8 +137,8 @@ type Listing = Readonly<{ entries: readonly ClaimEntry[] }> | Readonly<{ answer:
  * The statuses `read` lists, or the answer that ends the claim before anything is written: `finished` when a verdict is among them, `unclaimed` when the
  * read failed.
  */
-function listingOf(read: () => readonly ClaimEntry[]): Listing {
-  const listed = attempt(read);
+function listingOf(read: () => readonly ClaimEntry[], step: ClaimStep): Listing {
+  const listed = attempt(step, read);
   if ("unclaimed" in listed) return { answer: listed.unclaimed };
   const finished = listed.value.find((entry) => describedClaimOf(entry.description)?.kind === "finished");
   return finished === undefined ? { entries: listed.value } : { answer: { outcome: "finished", description: finished.description } };
@@ -129,9 +148,24 @@ function listingOf(read: () => readonly ClaimEntry[]): Listing {
  * The listing a re-review (A11-156) decides on: the one claim that starts after a verdict. The verdict it answers is not its end, and the claims before that verdict
  * are the first review's, so only the entries after the newest verdict are read.
  */
-function listingAfterVerdict(read: () => readonly ClaimEntry[]): Listing {
-  const listed = attempt(read);
+function listingAfterVerdict(read: () => readonly ClaimEntry[], step: ClaimStep): Listing {
+  const listed = attempt(step, read);
   return "unclaimed" in listed ? { answer: listed.unclaimed } : afterNewestVerdict(listed.value);
+}
+
+/**
+ * What a write GitHub refused comes to (A11-172): `alone` when nobody else can be reviewing the head, else the refusal as it was. The head is read AGAIN first, so a claim another instance wrote while this
+ * one was being refused is seen (`held`); a read that fails then says nothing of who holds the head, so the refusal stands. Only after that read is `otherSeen` asked, which the reads record into.
+ */
+function aloneOrRefused({ refused, instance, now, read, otherSeen }: {
+  refused: Extract<ClaimAnswer, { outcome: "unclaimed" }>; instance: string; now: number; read: () => Listing; otherSeen: () => number | null;
+}): ClaimAnswer {
+  const again = read();
+  if ("answer" in again) return again.answer.outcome === "finished" ? again.answer : refused;
+  const holder = claimsIn(again.entries).find((claim) => now - claim.created < REVIEW_LEASE_MS);
+  if (holder !== undefined && holder.instance !== instance) return { outcome: "held", instance: holder.instance, since: holder.created };
+  const seen = otherSeen();
+  return seen === null || now - seen >= REVIEW_LEASE_MS ? { outcome: "alone", reason: refused.reason } : refused;
 }
 
 /**
@@ -146,14 +180,19 @@ function listingAfterVerdict(read: () => readonly ClaimEntry[]): Listing {
  *    that expired with no verdict before this one is taken over, and `tookOver` says so.
  *
  * Two instances that both see no claim both write one; both then read the same ordered list and agree on one winner, because GitHub orders the entries and
- * no instance needs a clock that agrees with another's. A read or write that fails is `unclaimed`: a reviewer that cannot claim does not start, because the
- * second review it risks is the cost this removes.
+ * no instance needs a clock that agrees with another's. A read or write that fails is `unclaimed`, and says at which `step`: a reviewer that cannot claim does not
+ * start, because the second review it risks is the cost this removes.
+ *
+ * ONE EXCEPTION (A11-172): a write GitHub refused, after a read that showed no live claim, is `alone` when the head read again still shows no live claim of another instance
+ * and `otherSeen` says no other instance has been seen within the lease. `otherSeen` is when any other instance's status under the claim's context was last seen on any head
+ * (asked after that second read, which the caller's `read` may record), or null for none. A read that failed cannot show a claim, and a write that landed but was not read back
+ * may hold the head, so neither is `alone`. With no `otherSeen` given, nothing is `alone`.
  */
-export function claimHead({ instance, now, read, write, rereview = false }: {
-  instance: string; now: number; read: () => readonly ClaimEntry[]; write: (description: string) => void; rereview?: boolean;
+export function claimHead({ instance, now, read, write, rereview = false, otherSeen = () => now /* none given: another instance is taken to be seen, so nothing is `alone` */ }: {
+  instance: string; now: number; read: () => readonly ClaimEntry[]; write: (description: string) => void; rereview?: boolean; otherSeen?: () => number | null;
 }): ClaimAnswer {
   const listingOfHead = rereview ? listingAfterVerdict : listingOf;
-  const first = listingOfHead(read);
+  const first = listingOfHead(read, "read");
   if ("answer" in first) return first.answer;
   const claims = claimsIn(first.entries);
   const live = claims.filter((claim) => now - claim.created < REVIEW_LEASE_MS);
@@ -161,23 +200,42 @@ export function claimHead({ instance, now, read, write, rereview = false }: {
   if (live[0] !== undefined) return { outcome: "held", instance: live[0].instance, since: live[0].created };
   // The expired claim this takes over: the most recent one of another instance, with no verdict after it (a verdict would have answered `finished` above).
   const expired = claims.filter((claim) => now - claim.created >= REVIEW_LEASE_MS && claim.instance !== instance).at(-1);
-  const written = attempt(() => write(claimDescriptionOf({ instance, now })));
-  if ("unclaimed" in written) return written.unclaimed;
-  const second = listingOfHead(read);
+  const written = attempt("write", () => write(claimDescriptionOf({ instance, now })));
+  if ("unclaimed" in written) return aloneOrRefused({ refused: written.unclaimed, instance, now, read: () => listingOfHead(read, "write"), otherSeen });
+  const second = listingOfHead(read, "readback");
   if ("answer" in second) return second.answer;
   const after = second.entries;
   // Our own claim was written a moment ago, so it is on the list unless GitHub's clock says it is older than the lease: then nothing can be said.
   const winner = claimsIn(after).find((claim) => now - claim.created < REVIEW_LEASE_MS);
-  if (winner === undefined) return { outcome: "unclaimed", reason: "the claim was not on the head after it was written" };
+  if (winner === undefined) return { outcome: "unclaimed", reason: "the claim was not on the head after it was written", step: "readback" };
   if (winner.instance !== instance) return { outcome: "held", instance: winner.instance, since: winner.created };
   const tookOver = expired === undefined ? null : `took over the claim of ${expired.instance}, ${minutesOf(now - expired.created)} old with no verdict`;
   return { outcome: "won", tookOver };
 }
 
-/** The claim entries of `sha` in `repo` under the claim's context, read through `gh`. Throws when GitHub does not answer. */
+/**
+ * The other instances seen among `entries`, each with the latest `created` of a status it wrote under the claim's context: a claim, a verdict or a release (A11-172). Any of the three says
+ * the instance is there, and counting all three can only find more instances, so it can only make the lone-instance fallback happen less often.
+ */
+export function othersSeenIn({ entries, instance }: { entries: readonly ClaimEntry[]; instance: string }): Map<string, number> {
+  const seen = new Map<string, number>();
+  for (const { description, created } of entries) {
+    const described = describedClaimOf(description);
+    if (described !== null && described.instance !== instance) seen.set(described.instance, Math.max(seen.get(described.instance) ?? created, created));
+  }
+  return seen;
+}
+
+/**
+ * The claim entries of `sha` in `repo` under the claim's context, read through `gh`. Throws when GitHub does not answer.
+ *
+ * THE READ IS NEVER CACHED (A11-172). The claim is written by another account than the one that reads it (the reviewer App writes, the scheduler App reads), and the `gh` wrapper's read
+ * cache is one store per account, which a write by another account does not drop: a cached read straight after the write lists the head as it was before the claim. `-H` makes the wrapper
+ * class the call `neutral`, which it neither serves from its store nor stores, and GitHub takes `Cache-Control: no-cache` as an ordinary request header.
+ */
 export function claimEntriesOf({ repo, sha, gh }: { repo: string; sha: string; gh: Gh }): ClaimEntry[] {
   // Read as one tab-separated line per status, so a page of statuses reads as lines and no page is joined to the next.
-  const lines = gh(["api", "--paginate", `repos/${repo}/commits/${sha}/statuses?per_page=100`, "--jq", `.[] | select(.context == "${REVIEW_CLAIM_CONTEXT}") | [.id, .created_at, .description] | @tsv`])
+  const lines = gh(["api", "--paginate", "-H", "Cache-Control: no-cache", `repos/${repo}/commits/${sha}/statuses?per_page=100`, "--jq", `.[] | select(.context == "${REVIEW_CLAIM_CONTEXT}") | [.id, .created_at, .description] | @tsv`])
     .split("\n").filter((line) => line !== "");
   return lines.map((line) => {
     const [id, created, ...description] = line.split("\t");

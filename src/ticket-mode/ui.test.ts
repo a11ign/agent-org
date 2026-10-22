@@ -104,6 +104,8 @@ function browserStubs(blockTabs: boolean) {
 type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tickets?: unknown[]; parents?: unknown[]; refused?: string[]; publish?: unknown;
   /** The review state the pool read of each open pull request, by url, as the queue carries it (A11-119). */
   pulls?: Record<string, string>;
+  /** The one line for review claims GitHub refuses, as the queue carries it (A11-172). */
+  claimWarning?: string | null;
   connections?: unknown; errors?: Record<string, string>; hold?: Record<string, unknown>; pick?: unknown; children?: unknown;
   /** The new-ticket requests the board reads, and what a writer route answers for a path and body (default: the requests, as they are). */
   writers?: { runs: unknown[] }; writerReply?: (path: string, body: any) => unknown;
@@ -124,7 +126,7 @@ type PageOptions = { config?: Record<string, unknown>; entries?: unknown[]; tick
   /** What the instance answers a Settings edit with (`/api/settings/preview`, `save` and `restore`), by its path and body. */
   edits?: (path: string, body: any) => unknown };
 const NOTHING_TO_DESCRIBE = { refusals: [], notes: [], groups: [], plugins: [], words: [], contract: [] };
-async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children, pulls,
+async function page(storage: Map<string, string>, { config = {}, entries = [], tickets = TICKETS, parents = [], refused = [], publish, connections, errors = {}, hold = {}, pick, children, pulls, claimWarning,
   writers = { runs: [] }, writerReply, held, scoped, queueHeld, blockTabs = false, search = "", hash = "", settings = NOTHING_TO_DESCRIBE, edits, plugins, pluginActions, clipboard = [], update }: PageOptions = {}) {
   const byId = new Map<string, Node_>();
   const posts: { path: string; body: any }[] = [], requested: string[] = [];
@@ -173,7 +175,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
       ...(plugins === undefined ? {} : { "/api/plugins": () => plugins }), ...(pluginActions === undefined ? {} : { "/api/plugins/action": () => pluginActions(body) }),
       ...(edits === undefined ? {} : { "/api/settings/preview": () => edits("/api/settings/preview", body), "/api/settings/save": () => edits("/api/settings/save", body), "/api/settings/restore": () => edits("/api/settings/restore", body) }),
     };
-    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), ...(update === undefined ? {} : { update }), pulls: pulls ?? {} };
+    const value = (answers[path] ?? answers[path.replace(/^\/c\/[^/]+(?=\/api\/)/, "")])?.() ?? { entries, max, paused: true, ...(publish ? { publish } : {}), ...(queueHeld ? { held: queueHeld } : {}), ...(update === undefined ? {} : { update }), pulls: pulls ?? {}, ...(claimWarning === undefined ? {} : { claimWarning }) };
     return { ok: true, json: async () => value, statusText: "" };
   };
   const localStorage = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => { storage.set(k, v); } };
@@ -2642,6 +2644,18 @@ test("A11-161: the banner \"Reviews are required and the reviewer is off\" is dr
     const p = await page(new Map(), { config: reviewer === undefined ? {} : { reviewer } });
     assert.equal(p.$("reviewer-off-note").hidden, !shown, String(reviewer));
     assert.equal(p.$("reviewer-off-note").textContent, shown ? "Reviews are required and the reviewer is off" : "", String(reviewer));
+  }
+});
+
+test("A11-172: the board warning for review claims GitHub refuses is drawn once, whatever the number of pull requests, and gone when the queue carries none", async () => {
+  const warning = "Reviews cannot be claimed on GitHub: gh: Resource not accessible by integration (HTTP 403) (3 pull requests). Run agent-org doctor.";
+  const shown = await page(new Map(), { config: { reviewer: "on" }, claimWarning: warning });
+  assert.equal(shown.$("claim-note").hidden, false);
+  assert.equal(shown.$("claim-note").textContent, warning);
+  for (const claimWarning of [null, undefined]) {
+    const none = await page(new Map(), { config: { reviewer: "on" }, claimWarning });
+    assert.equal(none.$("claim-note").hidden, true, String(claimWarning));
+    assert.equal(none.$("claim-note").textContent, "");
   }
 });
 

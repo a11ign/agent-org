@@ -11,6 +11,7 @@ import { defaultCatalog } from "../plugins/registry.ts";
 import { diagnose, report, type Check, type DoctorDeps } from "./doctor.ts";
 import type { ChromiumReport } from "./chromium.ts";
 import { fakeAgentOrgPlugins } from "../plugins/fakes/doctor-seam.ts";
+import { loadEnabled } from "../plugins/loader.ts";
 import type { Catalog, CatalogPlugin, ReviewerHelpers } from "../plugins/manifest.ts";
 import { gateHelpers } from "../plugins/reviewing-gate.ts";
 import type { ContractRow } from "../ticket-mode/plugin-contract.ts";
@@ -68,7 +69,7 @@ function deps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     healthy: async (port) => port === 7318, unitProblem: () => null,
     probe: async ({ port }) => (port === 4800 || port === 4801 ? 200 : null),
     hostPlace: async () => ({ kind: "unreadable", reason: "this test reads no host place" }),
-    platform: "linux", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
+    platform: "linux", herdrPlace: () => UNIT_PLACE, guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: false }), updateStatus: () => ({ kind: "absent" }), drain: () => ({ kind: "none" }),
     runs: () => [], instanceVersion: () => "v0.280.0", pluginCopies: () => [], releaseTags: () => [],
     plugins: () => ({ states: { readable: true, plugins: [] }, unreachable: [], rows: [], contracts: [] }), reviewing: gateLoads(),
     chromium: () => BROWSERS_READY, agentOrgPlugins: fakeAgentOrgPlugins(), now: () => NOW,
@@ -431,12 +432,23 @@ test("A11-169: the keep-herdr.conf and watchdog rows fail while either guard sta
   const clean = byName(await diagnose(deps()));
   assert.equal(clean["keep-herdr.conf"], undefined);
   assert.equal(clean["gh-wrapper watchdog"], undefined);
-  const guarded = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true }) })));
+  const guarded = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true, readCacheDropIn: false }) })));
   assert.equal(guarded["keep-herdr.conf"].ok, false);
   assert.equal(guarded["gh-wrapper watchdog"].ok, false);
   assert.match(guarded["keep-herdr.conf"].fix ?? "", /agent-org start herdr --move/);
-  const notYet = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true }), herdrPlace: () => ({ kind: "instance", where: "/i" }) })));
+  const notYet = byName(await diagnose(deps({ guards: () => ({ watchdog: true, dropIn: true, readCacheDropIn: false }), herdrPlace: () => ({ kind: "instance", where: "/i" }) })));
   assert.equal(notYet["keep-herdr.conf"], undefined, "the drop-in is still what keeps herdr alive until the move: its row waits for the unit");
+});
+
+test("A11-172: the gh-read-cache-off.conf row fails while the drop-in stands, with the command that retires it, and is absent once it is gone, whatever herdr's place", async () => {
+  const gone = byName(await diagnose(deps()));
+  assert.equal(gone["gh-read-cache-off.conf"], undefined);
+  for (const herdrPlace of [() => UNIT_PLACE, () => ({ kind: "instance" as const, where: "/i" })]) {
+    const standing = byName(await diagnose(deps({ guards: () => ({ watchdog: false, dropIn: false, readCacheDropIn: true }), herdrPlace })));
+    assert.equal(standing["gh-read-cache-off.conf"].ok, false);
+    assert.equal(standing["gh-read-cache-off.conf"].detail, "the instance unit still turns the gh read cache off, which the review claim no longer needs");
+    assert.equal(standing["gh-read-cache-off.conf"].fix, "run `agent-org onboard`, which retires it");
+  }
 });
 
 test("A11-90: the herdr scope check is asked only when the instance is registered", async () => {
@@ -1122,4 +1134,17 @@ test("A11-161: reviews required with a reviewer that is on is not the failure: i
   const refusing = byName(await diagnose(deps({ readFile: () => hostWithProviders({ reviewer: { provider: "atomic", required: true } }), reviewing: gateLoads("the gate's modules do not load") })));
   assertRow(refusing, "reviewer (atomic)", { ok: false, detail: /the gate's modules do not load/ });
   assert.equal(refusing["reviewer (atomic)"].fix, "fix what it names: no reviewer starts while the gate does not load", "the fix is the gate's, not the enable command: the reviewer is enabled");
+});
+
+test("A11-172: doctor hands the code host the review claim's identities (reviewer writes, scheduler reads) only on a machine that starts a reviewer", async () => {
+  const claimed = async (host: string) => {
+    let seen: unknown = "never asked";
+    const plugins = fakeAgentOrgPlugins({ load: (providers, catalog, pluginDeps, blocks) => { seen = pluginDeps.policy.claimIdentities.map(({ role, access }) => `${role}:${access}`); return loadEnabled(providers, catalog, pluginDeps, undefined, blocks); } });
+    await diagnose(deps({ readFile: () => host, agentOrgPlugins: plugins }));
+    return seen;
+  };
+  const withReviewer = (tickets: Record<string, unknown>) => JSON.stringify({ clones: { netbox: "/src/netbox" }, tickets: { ...tickets, providers: { ...JSON.parse(HOST).tickets.providers, reviewer: { provider: "atomic" } } } });
+  assert.deepEqual(await claimed(withReviewer({ drafts: false })), ["reviewer:write", "scheduler:read"]);
+  assert.deepEqual(await claimed(withReviewer({ drafts: true })), [], "drafts are not reviewed, so nothing is claimed");
+  assert.deepEqual(await claimed(HOST), [], "a machine with no reviewer has no claim to check");
 });

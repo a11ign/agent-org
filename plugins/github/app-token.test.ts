@@ -21,7 +21,7 @@ import type { WrapperInputs } from "../../src/plugins/contracts/code-host.ts";
 import { parseLine } from "../../src/gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "../../src/lib/tmp-fixture.ts";
 import {
-  AppTokenFailure, REFRESH_MARGIN_SECONDS, appJwt, appToken, formatTokenFile, mintInstallationToken, parseTokenFile, tokenPath,
+  AppTokenFailure, REFRESH_MARGIN_SECONDS, appJwt, appToken, formatTokenFile, installationGrant, mintInstallationToken, parseTokenFile, permissionsMain, tokenPath,
   type AppIdentity, type Fetch,
 } from "./app-token.ts";
 import { createWrapper, wrapperRoles } from "./wrapper.ts";
@@ -384,4 +384,70 @@ test("#4900: the REAL minter, run by the wrapper from a directory in no project:
   assert.deepEqual([r.status, tokenOf(r.stdout)], [0, "none"]);
   const incident = h.lines().map((l) => parseLine(l)).find((e) => e?.resource === "incident");
   assert.match(incident?.caller ?? "", /app token: key: \/nonexistent-4900\/workers\.pem cannot be read/, "the minter ran, read the app the wrapper handed it and named the stage");
+});
+
+// ---- A11-172: the App's installation permissions, read with its JWT and nothing minted ----
+
+/** A GitHub that answers `GET /app/installations` (the list) and `GET /app/installations/{id}` (the installation), and records every call, so a test can see that no token was asked for. */
+function githubWithInstallation(opts: { installations?: number[], permissions?: Record<string, string>, status?: number } = {}) {
+  const calls: Call[] = [];
+  const fetch: Fetch = async (url, init) => {
+    calls.push({ url, method: init.method, authorization: init.headers.authorization });
+    const reply = (status: number, body: unknown) => ({ status, text: async () => JSON.stringify(body) });
+    const path = new URL(url).pathname;
+    if (path === "/app/installations") return reply(200, (opts.installations ?? [42]).map((id) => ({ id })));
+    if (path.startsWith("/app/installations/") && !path.endsWith("/access_tokens")) {
+      return reply(opts.status ?? 200, { id: 42, app_slug: "a11ign-reviewer", html_url: "https://github.com/organizations/a11ign/settings/installations/42", permissions: opts.permissions ?? { contents: "read", statuses: "write" } });
+    }
+    throw new Error(`unexpected ${init.method} ${url}`);
+  };
+  return { fetch, calls };
+}
+
+test("A11-172: the installation's permissions are read with the App's JWT, by a GET that mints no token, and the declared installation is read without listing", async () => {
+  const { fetch, calls } = githubWithInstallation();
+  const grant = await installationGrant({ app: { ...APP, installationId: "42" }, privateKey, fetch, now: NOW });
+  assert.deepEqual(grant, { permissions: { contents: "read", statuses: "write" }, appSlug: "a11ign-reviewer", htmlUrl: "https://github.com/organizations/a11ign/settings/installations/42" });
+  assert.deepEqual(calls.map((call) => `${call.method} ${new URL(call.url).pathname}`), ["GET /app/installations/42"], "one read, with no list and no access_tokens call");
+  const [jwtHeader, payload, signature] = calls[0].authorization.replace("Bearer ", "").split(".");
+  assert.equal(JSON.parse(Buffer.from(payload, "base64url").toString()).iss, APP.appId);
+  assert.ok(createVerify("RSA-SHA256").update(`${jwtHeader}.${payload}`).verify(publicKey, Buffer.from(signature, "base64url")), "the JWT verifies against the App's public key");
+});
+
+test("A11-172: an App with one installation, declared nowhere, is found and read; one that answers an error names the stage that failed", async () => {
+  const { fetch, calls } = githubWithInstallation({ installations: [7] });
+  await installationGrant({ app: APP, privateKey, fetch, now: NOW });
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/app/installations", "/app/installations/7"]);
+  const refused = githubWithInstallation({ status: 401 });
+  await assert.rejects(() => installationGrant({ app: { ...APP, installationId: "42" }, privateKey, fetch: refused.fetch, now: NOW }), (error: unknown) => error instanceof AppTokenFailure && error.stage === "installation" && /answered 401/.test(error.message));
+  await assert.rejects(() => installationGrant({ app: APP, privateKey: "not a key", fetch, now: NOW }), (error: unknown) => error instanceof AppTokenFailure && error.stage === "key");
+});
+
+test("A11-172: `app-token.ts permissions <role>` prints the grant as JSON for the doctor row, and says why on stderr when it cannot", async () => {
+  const dir = tmpDir("app-token-permissions-");
+  const keyPath = join(dir, "reviewer.pem");
+  writeFileSync(keyPath, privateKey);
+  const env = { A11Y_APP_ID: "123456", A11Y_APP_KEY_PATH: keyPath, A11Y_APP_INSTALLATION_ID: "42" };
+  const written: string[] = [];
+  const write = process.stdout.write;
+  process.stdout.write = ((chunk: string) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  let code: number;
+  try {
+    code = await permissionsMain(["reviewer"], env, { fetch: githubWithInstallation().fetch, now: () => NOW });
+  } finally {
+    process.stdout.write = write;
+  }
+  assert.equal(code, 0);
+  assert.deepEqual(JSON.parse(written.join("")), { permissions: { contents: "read", statuses: "write" }, appSlug: "a11ign-reviewer", htmlUrl: "https://github.com/organizations/a11ign/settings/installations/42" });
+  const errors: string[] = [];
+  const error = console.error;
+  console.error = (line: string) => { errors.push(String(line)); };
+  try {
+    assert.equal(await permissionsMain(["reviewer"], { ...env, A11Y_APP_KEY_PATH: join(dir, "missing.pem") }, { fetch: githubWithInstallation().fetch }), 1);
+    assert.equal(await permissionsMain(["nobody"], env, {}), 2);
+    assert.equal(await permissionsMain(["reviewer"], { A11Y_APP_ID: "1" }, {}), 2);
+  } finally {
+    console.error = error;
+  }
+  assert.match(errors[0], /app token: key: .*missing\.pem cannot be read/);
 });

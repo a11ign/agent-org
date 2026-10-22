@@ -260,6 +260,7 @@
     </div>
     <div id="update-note" class="notice" role="status" hidden></div>
     <div id="reviewer-off-note" class="notice" role="status" hidden></div>
+    <div id="claim-note" class="notice" role="status" hidden></div>
     <div class="runs">
       <nav class="filters" id="filters" aria-label="Filter runs by status"></nav>
       <div class="run-list" id="runs"></div>
@@ -877,6 +878,10 @@ function renderBoard() {
   const banner = reviewerBanner(state.reviewer);
   $("reviewer-off-note").hidden = banner === null;
   $("reviewer-off-note").textContent = banner ?? "";
+  // The review claims GitHub refuses (A11-172): one line however many pull requests, and gone the moment the pool reads none.
+  const claimNote = state.queue.claimWarning ?? null;
+  $("claim-note").hidden = claimNote === null;
+  $("claim-note").textContent = claimNote ?? "";
   $("publish").hidden = !state.publishing;
   $("publish").textContent = publishLabel(state.toPublish.size);
   $("publish").disabled = state.toPublish.size === 0;

@@ -13,10 +13,11 @@
 
 import { earlierReviewWord, readReviewerMemory, replyAuthorsOf, type Repost, REVIEWER_LOGIN, reviewedRepositoriesOf, type ReviewerPort, type ReviewState, reviewPostedAt, reviewVerdict, reviewWordAt, standingBlock, writeReviewerMemory } from "./reviewer-port.ts";
 import { log, messageOf, update } from "./pool-state.ts";
+import { REVIEW_LEASE_MS } from "../ticket-port/review-claim.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { recordVerdictNotPosted } from "./queue/queue-transitions.ts";
 import { type PoolContext } from "./pool-context.ts";
-import { AWAITING_PERSON_LINE, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
+import { AWAITING_PERSON_LINE, claimWarning, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { doneWhenOf } from "./done-when.ts";
 import type { Reply } from "../plugins/contracts/code-host.ts";
@@ -87,8 +88,11 @@ const MAX_REPLIES_QUOTED = 10;
 /** The key under which a dropped re-review is kept in `reviewerDropped`, which keys a first start by `url@head` alone: the two are dropped apart. */
 const rereviewKey = (key: string): string => `${key}#rereview`;
 
-/** What a start of a reviewer answered: the refusal that started none (null when there is none), and the expired claim it took over (null when it took none). */
-type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null }>;
+/**
+ * What a start of a reviewer answered: the refusal that started none (null when there is none), the expired claim it took over (null when it took none), and why the head's claim could not be written
+ * (A11-172; absent when it could): with a refusal the claim is why nothing started, and without one the reviewer started with no claim, because no other instance is seen.
+ */
+type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null; unclaimed?: string }>;
 
 /**
  * What the pool tells a reviewer of the ticket behind `url` (A11-156): the Done-when of the run that holds the pull request, since the reviewer cannot read the tracker. Null when no run holds
@@ -101,6 +105,8 @@ function briefOf(ctx: PoolContext, url: string): ReviewBrief {
 
 /** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, and what it is called in a log line. */
 type StartKind = Readonly<{ recorded: Set<string>; droppedKey: (key: string) => string; says: string; brief: ReviewBrief; adopts: boolean }>;
+
+const withUnclaimed = (reason: string | undefined): { unclaimed?: string } => (reason === undefined ? {} : { unclaimed: reason });
 
 /**
  * Starts the reviewer for `url` at `head` (A11-119's one start path, and A11-156's re-review by the same path). Recorded BEFORE the start, so an instance stopped while the reviewer starts never
@@ -119,11 +125,14 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
   const started = adopted ? null : reviewer.start({ pr: url, head }, kind.brief);
   if (started === null) return { refusal: null, tookOver: null };
   if (!("refusal" in started)) {
+    // Why this reviewer has no claim is kept with the start, so the board keeps saying so while it runs, across a restart (A11-172).
+    if (started.unclaimed === undefined) ctx.reviewerMemory.unclaimed.delete(key);
+    else ctx.reviewerMemory.unclaimed.set(key, started.unclaimed);
     // The port recorded the head its seat's reviewer was started for: written now, so a restart reads that reviewer as live.
     rememberReviewers(ctx);
     log(`${url}: started ${started.label} ${kind.says} ${head.slice(0, 8)}`);
     if (started.tookOver !== undefined) log(`${url}: ${started.tookOver}`);
-    return { refusal: null, tookOver: started.tookOver ?? null };
+    return { refusal: null, tookOver: started.tookOver ?? null, ...withUnclaimed(started.unclaimed) };
   }
   kind.recorded.delete(key);
   reviewerDropped.add(dropped);
@@ -132,7 +141,7 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
     refusedHeads.add(dropped);
     log(started.refusal);
   }
-  return { refusal: started.refusal, tookOver: null };
+  return { refusal: started.refusal, tookOver: null, ...withUnclaimed(started.unclaimed) };
 }
 
 /** The first review of a head (A11-119): recorded in `reviewerStarted`, under the key `reviewerDropped` has always held it by. */
@@ -147,6 +156,15 @@ function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: s
 function tookOverOf(started: StartAnswer | null, kept: PullRead | undefined, head: string): string | undefined {
   if (started?.tookOver) return started.tookOver;
   return kept?.head === head ? kept.tookOver : undefined;
+}
+
+/**
+ * What the board keeps of a head's claim that could not be written (A11-172): this start's, else, while a reviewer runs that started without a claim, the reason the pool remembers for it (so a restart, and a start
+ * `ticket:review` made, are said too). A refused start is tried again on the next sweep, so it is not kept.
+ */
+function unclaimedNoteOf(started: StartAnswer | null, rememberedWhileReviewing: string | undefined): PullRead["unclaimed"] {
+  if (started?.unclaimed !== undefined) return { reason: started.unclaimed, started: started.refusal === null };
+  return started === null && rememberedWhileReviewing !== undefined ? { reason: rememberedWhileReviewing, started: true } : undefined;
 }
 
 /**
@@ -216,6 +234,23 @@ function closeAnsweredReviewer(ctx: PoolContext, reviewer: ReviewerPort, url: st
   else closing.delete(key);
 }
 
+/** The prefix of the `refusedHeads` key under which a claim problem is said, by its reason (A11-172). A reason is not a `url@head`, so no head's key can clash with it. */
+const CLAIM_PROBLEM = "claim:";
+
+/** Says a claim that could not be written once per distinct reason, not once per pull request (A11-172): the pull request's own refusal line is its own, and this is the one line for the cause. */
+function sayClaimProblem(ctx: PoolContext, { reason, started }: NonNullable<PullRead["unclaimed"]>): void {
+  const said = `${CLAIM_PROBLEM}${reason}`;
+  if (ctx.refusedHeads.has(said)) return;
+  ctx.refusedHeads.add(said);
+  log(started ? `reviews start without a claim on GitHub, because no other instance is seen: ${reason}` : `reviews cannot be claimed on GitHub: ${reason}`);
+}
+
+/** Forgets the claim problems no pull request has any more, so one that comes back is said again (A11-172). */
+function forgetMendedClaimProblems(ctx: PoolContext): void {
+  const standing = new Set([...ctx.pullReads.values()].flatMap(({ unclaimed }) => (unclaimed === undefined ? [] : [`${CLAIM_PROBLEM}${unclaimed.reason}`])));
+  for (const key of [...ctx.refusedHeads]) if (key.startsWith(CLAIM_PROBLEM) && !standing.has(key)) ctx.refusedHeads.delete(key);
+}
+
 /**
  * One open pull request at its current head, as the pool looks at it (A11-119): a posted verdict is remembered, a reviewer that ended without one is looked
  * at (`unpostedVerdict`), a head whose checks have settled green gets its reviewer once (`startFor`), and a posted verdict closes its reviewer. What it
@@ -246,12 +281,14 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const started = first ?? rereview;
   const tookOver = tookOverOf(started, pullReads.get(url), head);
   const reviewing = reviewer.live(ref);
+  const unclaimed = unclaimedNoteOf(started, reviewing ? ctx.reviewerMemory.unclaimed.get(key) : undefined);
   const read: PullRead = {
     head, settled: state.settled, reviewing, verdict: reviewWordAt(state.reviews, head),
-    earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }),
+    earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }), ...(unclaimed === undefined ? {} : { unclaimed }),
     ...(reviewing && reviewerRereviewed.has(key) && reviewVerdict(state.reviews, head) === "not-convinced" ? { rereview: true } : {}),
   };
   pullReads.set(url, read);
+  if (unclaimed !== undefined) sayClaimProblem(ctx, unclaimed);
   return { state, unposted };
 }
 
@@ -297,6 +334,12 @@ function adoptRememberedReviewers(ctx: PoolContext): void {
   for (const key of memory.started) if (!reviewerDropped.has(key)) reviewerStarted.add(key);
   for (const key of memory.rereviewed) if (!reviewerDropped.has(rereviewKey(key))) reviewerRereviewed.add(key);
   for (const [label, head] of memory.heads) reviewerMemory.heads.set(label, head);
+  // The latest sighting of each instance, from the pool's copy or the file's: `ticket:review` may have seen a second instance since this pool last wrote. One past the lease says nothing now, so it is
+  // neither taken in nor kept (A11-172).
+  for (const [instance, at] of memory.seen) reviewerMemory.seen.set(instance, Math.max(at, reviewerMemory.seen.get(instance) ?? at));
+  for (const [instance, at] of reviewerMemory.seen) if (ctx.now() - at >= REVIEW_LEASE_MS) reviewerMemory.seen.delete(instance);
+  // Why a start `ticket:review` made has no claim, for the heads still started.
+  for (const [key, reason] of memory.unclaimed) if (reviewerStarted.has(key) && !reviewerMemory.unclaimed.has(key)) reviewerMemory.unclaimed.set(key, reason);
 }
 
 /**
@@ -333,7 +376,11 @@ export function reviewNewHeads(ctx: PoolContext): void {
   }
   // A pull request no longer open is no longer shown, unless a repository could not be listed: then what it showed stays until the next sweep reads it.
   if (!unlisted) for (const url of [...pullReads.keys()]) if (!listed.has(url)) pullReads.delete(url);
+  forgetMendedClaimProblems(ctx);
 }
+
+/** The one line the board shows while some pull request cannot be claimed for review, or runs without a claim (A11-172), or null: only a machine with a reviewer on has one. */
+export const claimWarningOf = (ctx: PoolContext): string | null => (ctx.reviewerState === "on" ? claimWarning(ctx.pullReads.values()) : null);
 
 /** The key under which a sweep remembers it said the open pull requests cannot be listed (it shares `refusedHeads`, whose keys are `url@head`, so it can name no head). */
 const UNLISTABLE = "unlistable";
@@ -398,6 +445,7 @@ function forgetPull(ctx: PoolContext, url: string): void {
       if (reviewerStarted.has(key)) reviewerDropped.add(key);
       if (reviewerRereviewed.has(key)) reviewerDropped.add(rereviewKey(key));
       reviewerStarted.delete(key);
+      ctx.reviewerMemory.unclaimed.delete(key);
       reviewerResumed.delete(key);
       reviewerReposts.delete(key);
       reviewerRereviewed.delete(key);

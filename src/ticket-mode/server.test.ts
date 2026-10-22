@@ -1226,7 +1226,7 @@ test("A11-161: the Settings page lists slack and atomic with their folders and s
   const b = pluginsBoard({ ...FRESH_BLOCKS, publish, reviewer: { provider: "atomic" } });
   const view = await readPlugins(b);
   assert.deepEqual(["slack", "atomic"].map((name) => { const e = entryOf(view, name); return [name, e.where, e.contract, e.state]; }),
-    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.1", "enabled"]]);
+    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.2", "enabled"]]);
   const hostBlock = (block: string) => JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers[block];
   const off = await saidBy(b, { action: "disable", name: "slack", base: view.bases["host.json"] });
   assert.match(off, /^disabled slack: the board publishes nothing, and its settings are kept for `enable`$/);

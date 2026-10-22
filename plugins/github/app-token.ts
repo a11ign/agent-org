@@ -134,6 +134,28 @@ export async function mintInstallationToken({ app, privateKey, fetch, now, apiBa
   return { token: granted.token, expiresAt };
 }
 
+/** What an App's installation grants (A11-172): the permissions it holds by name (`statuses: "write"`), the App's slug, and the page where its owner changes and accepts them. */
+export type InstallationGrant = { permissions: Record<string, string>, appSlug: string | null, htmlUrl: string | null };
+
+/**
+ * The permissions the App's installation holds, read with the App's JWT: `GET /app/installations/{id}` writes nothing and mints no token, so a doctor row can ask it as often as it likes. A permission
+ * the owner changed but the organisation has not accepted is not in the answer, which is what a caller must act on.
+ */
+export async function installationGrant({ app, privateKey, fetch, now, apiBase = GITHUB_API }: {
+  app: AppIdentity, privateKey: string, fetch: Fetch, now: number, apiBase?: string,
+}): Promise<InstallationGrant> {
+  let jwt: string;
+  try {
+    jwt = appJwt({ appId: app.appId, privateKey, now });
+  } catch (cause) {
+    throw new AppTokenFailure("key", `${app.keyPath} is not a private key that can sign`, { cause });
+  }
+  const installation = await installationFor(app, { fetch, jwt, apiBase });
+  const body = await callGithub(fetch, { url: `${apiBase}/app/installations/${installation}`, method: "GET", jwt, expect: HTTP_OK, stage: "installation" }) as { permissions?: unknown, app_slug?: unknown, html_url?: unknown };
+  const held = typeof body.permissions === "object" && body.permissions !== null ? Object.entries(body.permissions).filter((entry): entry is [string, string] => typeof entry[1] === "string") : [];
+  return { permissions: Object.fromEntries(held), appSlug: typeof body.app_slug === "string" ? body.app_slug : null, htmlUrl: typeof body.html_url === "string" ? body.html_url : null };
+}
+
 /** Atomic (rename), so a call reading while another writes sees the old file or the new one and never half of either. */
 function writeSecret(path: string, text: string) {
   mkdirSync(dirname(path), { recursive: true, mode: SECRET_DIR_MODE });
@@ -199,7 +221,8 @@ export function tokenNeedsRefresh({ cacheDir, role, now, marginSeconds = REFRESH
  * `host.json` declares `github-apps`, handing the app in `A11Y_APP_ID`, `A11Y_APP_KEY_PATH` and `A11Y_APP_INSTALLATION_ID` (optional) and the
  * cache directory in `A11Y_APP_TOKEN_DIR`; any of the first two or the directory missing is exit 2, never a mint for something nobody configured.
  */
-export async function main(argv: string[], env: Record<string, string | undefined>): Promise<number> {
+export async function main(argv: string[], env: Record<string, string | undefined>, deps: AppTokenDeps = {}): Promise<number> {
+  if (argv[0] === "permissions") return permissionsMain(argv.slice(1), env, deps);
   const role = argv[0] as GithubRole;
   if (!(GITHUB_ROLES as readonly string[]).includes(role)) {
     console.error(`app token: usage: app-token.ts <${GITHUB_ROLES.join("|")}>`);
@@ -212,7 +235,41 @@ export async function main(argv: string[], env: Record<string, string | undefine
   }
   try {
     const app = { appId, keyPath, ...(installationId ? { installationId } : {}) };
-    process.stdout.write((await appToken({ role, app, cacheDir })).token);
+    process.stdout.write((await appToken({ role, app, cacheDir, deps })).token);
+    return 0;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
+/**
+ * `node app-token.ts permissions <role>`: print the permissions of the role's App installation as JSON (`{ "permissions": {...}, "appSlug": ..., "htmlUrl": ... }`) and exit 0, or say why not on stderr and exit 1 (A11-172).
+ * It takes the same environment as a mint and needs no cache directory, since it mints no token. Run as a program so the key is read here and never in doctor's process.
+ */
+export async function permissionsMain(argv: string[], env: Record<string, string | undefined>, deps: AppTokenDeps): Promise<number> {
+  const role = argv[0];
+  if (!(GITHUB_ROLES as readonly string[]).includes(role)) {
+    console.error(`app token: usage: app-token.ts permissions <${GITHUB_ROLES.join("|")}>`);
+    return 2;
+  }
+  const { A11Y_APP_ID: appId, A11Y_APP_KEY_PATH: keyPath, A11Y_APP_INSTALLATION_ID: installationId } = env;
+  if (!appId || !keyPath) {
+    console.error("app token: A11Y_APP_ID and A11Y_APP_KEY_PATH must both be set; doctor sets them from the host's declaration");
+    return 2;
+  }
+  try {
+    const app = { appId, keyPath, ...(installationId ? { installationId } : {}) };
+    const readKey = deps.readKey ?? ((path: string) => readFileSync(path, "utf8"));
+    let privateKey: string;
+    try {
+      privateKey = readKey(keyPath);
+    } catch (cause) {
+      throw new AppTokenFailure("key", `${keyPath} cannot be read`, { cause });
+    }
+    const fetch = deps.fetch ?? ((url, init) => globalThis.fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }));
+    const now = (deps.now ?? (() => Math.floor(Date.now() / 1000)))();
+    process.stdout.write(JSON.stringify(await installationGrant({ app, privateKey, fetch, now, apiBase: deps.apiBase })));
     return 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

@@ -5,7 +5,7 @@ import { guardPaths, retireGuards, type GuardDeps, type Replacements } from "./i
 import type { RunResult } from "./service.ts";
 
 const HOME = "/home/me";
-const { watchdog, dropIn } = guardPaths({}, HOME);
+const { watchdog, dropIn, readCacheDropIn } = guardPaths({}, HOME);
 const OK: RunResult = { status: 0, stdout: "", stderr: "" };
 
 /** A machine whose files are `present`, with each replacement answered by `proof`; every removal and every systemctl call is recorded. */
@@ -61,4 +61,38 @@ test("a drop-in while the herdr server does not run in its own service is kept, 
   assert.deepEqual(removed, []);
   assert.deepEqual(ran, [], "systemd is not asked, since nothing changed");
   assert.match(lines[0], /^kept the KillMode drop-in: the herdr server does not run in agent-org-herdr.service yet. Run `agent-org start herdr --move`/);
+});
+
+/** Retires the read-cache drop-in alone, with `proof` answered: what was removed, what systemd was asked, and what was said. */
+async function retiringReadCache(proof: Replacements) {
+  const { deps, removed, ran } = machine([readCacheDropIn], proof);
+  const lines = await retireGuards(deps);
+  return { removed, ran, lines };
+}
+
+test("A11-172: the read-cache drop-in is removed, systemd reloads and the line says why, once the installed wrapper is the declared one: herdr's place does not matter", async () => {
+  const { removed, ran, lines } = await retiringReadCache({ ghWrapperDeclared: true, herdrInOwnUnit: false });
+  assert.deepEqual(removed, [readCacheDropIn]);
+  assert.deepEqual(ran, ["systemctl --user daemon-reload"]);
+  assert.deepEqual(lines, ["retired the read-cache drop-in: the review claim reads past the gh read cache (A11-172). The instance picks the change up at its next restart"]);
+});
+
+test("A11-172: the read-cache drop-in is kept, with what to run, while the installed gh wrapper is not the one the host file declares", async () => {
+  const { removed, ran, lines } = await retiringReadCache({ ghWrapperDeclared: false, herdrInOwnUnit: true });
+  assert.deepEqual(removed, []);
+  assert.deepEqual(ran, [], "systemd is not asked, since nothing changed");
+  assert.match(lines[0], /^kept the read-cache drop-in: the installed gh wrapper is not the one host\.json declares, so the claim's read past its cache is not proven\. Run `agent-org [a-z:-]+`, then run onboard again$/);
+});
+
+test("A11-172: the read-cache drop-in is retired beside the other guards, each by its own rule, and a host without it changes nothing for them", async () => {
+  const both = machine([dropIn, readCacheDropIn], { ghWrapperDeclared: true, herdrInOwnUnit: false });
+  const lines = await retireGuards(both.deps);
+  assert.deepEqual(both.removed, [readCacheDropIn], "the KillMode drop-in waits for herdr's unit, the read-cache one does not");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^kept the KillMode drop-in/);
+  assert.match(lines[1], /^retired the read-cache drop-in/);
+  const without = machine([dropIn, ...watchdog], PROVEN);
+  const withoutLines = await retireGuards(without.deps);
+  assert.deepEqual(without.removed, [...watchdog, dropIn], "a host without the read-cache drop-in retires the others as it did");
+  assert.equal(withoutLines.some((line) => line.includes("read-cache")), false, "and says nothing of it");
 });

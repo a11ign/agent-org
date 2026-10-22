@@ -10,7 +10,7 @@ import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { diffLines, learnsFrom, learnsLine, REPLANNING_LINE, STALE_PLAN_LINE, ticketChangeOf } from "./board-view/ticket-change.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls } from "./board-view.ts";
-import { AWAITING_PERSON_LINE, publishingOffLine, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
+import { AWAITING_PERSON_LINE, claimWarning, publishingOffLine, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
 import { CHANGESET_SCAFFOLD, SCAFFOLD_DIRS } from "../scaffold-dirs.ts";
@@ -1118,6 +1118,31 @@ test("A11-156: a re-review a reply asked for is worded before the reviewer being
   assert.equal(pullReviewText(read({ reviewing: true, verdict: "changes requested", rereview: true, tookOver: "took over the claim of pool-a" })), "re-review asked by reply at 91bf0677 (took over the claim of pool-a)");
   assert.equal(pullReviewText(read({ verdict: "changes requested", rereview: false })), "changes requested at 91bf0677", "a re-review that has ended reads as the block that stands");
   assert.equal(pullReviewText(read({ reviewing: true, verdict: "approved" })), "reviewing", "an approval's reviewer still being open reads as it always did");
+});
+
+const FORBIDDEN = "gh: Resource not accessible by integration (HTTP 403)";
+
+test("A11-172: a pull request whose claim cannot be written reads `cannot claim for review: <reason>`, ahead of a re-review's standing block, and a reviewer started without a claim says so", () => {
+  const refused = { reason: FORBIDDEN, started: false };
+  assert.equal(pullReviewText(read({ unclaimed: refused, refusal: "no reviewer for x: its claim could not be made" })), `cannot claim for review: ${FORBIDDEN}`);
+  assert.equal(pullReviewText(read({ unclaimed: refused, verdict: "changes requested" })), `cannot claim for review: ${FORBIDDEN}`, "a re-review that cannot be claimed is seen under the block it answers");
+  const alone = { reason: FORBIDDEN, started: true };
+  assert.equal(pullReviewText(read({ unclaimed: alone, reviewing: true })), `reviewing without a claim: ${FORBIDDEN}`);
+  assert.equal(pullReviewText(read({ unclaimed: alone, reviewing: false, verdict: "approved" })), "approved at 91bf0677", "once its verdict is posted the line is the verdict's");
+  assert.equal(pullReviewText(read({ unclaimed: alone, reviewing: true, verdict: "changes requested", rereview: true })), `re-review asked by reply at 91bf0677 (reviewing without a claim: ${FORBIDDEN})`, "a re-review started without a claim says so too");
+  assert.equal(pullReviewText(read({ reviewing: true })), "reviewing", "a claim that was written says nothing");
+});
+
+test("A11-172: one board warning covers every pull request that cannot be claimed, naming each reason once and counting the pull requests", () => {
+  assert.equal(claimWarning([]), null);
+  assert.equal(claimWarning([read(), read({ reviewing: true })]), null, "no claim problem, no warning");
+  const refused = (reason: string) => read({ unclaimed: { reason, started: false } });
+  assert.equal(claimWarning([refused(FORBIDDEN), refused(FORBIDDEN), refused(FORBIDDEN), read()]), `Reviews cannot be claimed on GitHub: ${FORBIDDEN} (3 pull requests). Run agent-org doctor.`);
+  assert.equal(claimWarning([refused(FORBIDDEN)]), `Reviews cannot be claimed on GitHub: ${FORBIDDEN} (1 pull request). Run agent-org doctor.`);
+  assert.equal(claimWarning([refused(FORBIDDEN), refused("gh: HTTP 502")]), `Reviews cannot be claimed on GitHub: ${FORBIDDEN}; gh: HTTP 502 (2 pull requests). Run agent-org doctor.`);
+  const alone = read({ reviewing: true, unclaimed: { reason: FORBIDDEN, started: true } });
+  assert.equal(claimWarning([alone, alone]), `Reviews start without a claim on GitHub: ${FORBIDDEN} (2 pull requests); no other instance is seen. Run agent-org doctor.`);
+  assert.equal(claimWarning([alone, refused(FORBIDDEN)]), `Reviews cannot be claimed on GitHub: ${FORBIDDEN} (1 pull request). Reviews start without a claim on GitHub: ${FORBIDDEN} (1 pull request); no other instance is seen. Run agent-org doctor.`, "still one line when a second instance appears while one reviewer runs without a claim");
 });
 
 test("A11-119: a verdict on the current head says so before a verdict on an earlier one, and a reviewer live beats both", () => {

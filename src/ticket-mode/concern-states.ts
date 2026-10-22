@@ -25,6 +25,9 @@ export function reviewerStateOf(settings: Pick<TicketSettings, "reviewer" | "rev
   return refusal === null ? "on" : off;
 }
 
+/** Whether a machine with these settings starts reviewers: a reviewer plugin is active (`settings.reviewer`) and `drafts` is off. Only such an instance loads the gate (`reviewer-port.ts`), and has a review claim to write (A11-172). */
+export const startsReviewers = (settings: Pick<TicketSettings, "reviewer" | "drafts">): boolean => settings.reviewer !== null && !settings.drafts;
+
 /** Whether this machine publishes: `on`, `off` when a publisher plugin is installed and disabled, or `none` when it names none. */
 export type PublisherState = "on" | "off" | "none";
 
