@@ -7,6 +7,7 @@ import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatu
 import { overrideNote, START_ANYWAY_TITLE, rebaseNote, settledByPulls, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
+import { diffLines, learnsFrom, learnsLine, REPLANNING_LINE, STALE_PLAN_LINE, ticketChangeOf } from "./board-view/ticket-change.ts";
 import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls } from "./board-view.ts";
 import { AWAITING_PERSON_LINE, publishingOffLine, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
@@ -1299,4 +1300,56 @@ test("A11-168: a merged partial run is dismissed, not retried, and a closed unme
   const stalled = run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, partial: "the docs" });
   assert.ok(runActions(stalled).includes("dismiss") && !runActions(stalled).includes("retry"));
   assert.equal(runStatus({ ...stalled, pullStates: { [STEP_PR]: "closed" } }), "cancelled");
+});
+
+const FROM_TEXT = "# Problem\n\nThe replay drops pages.\n\n## Done-when\n\n* it replays";
+const TO_TEXT = "# Problem\n\nThe replay drops pages.\n\n## Done-when\n\n* it replays\n* it handles the cookie dialog";
+const CHANGE = { at: Date.UTC(2026, 9, 21, 14, 5), from: FROM_TEXT, to: TO_TEXT };
+/** The time of day the board words, in the viewer's zone, as the line says it. */
+const clock = (ms: number): string => `${String(new Date(ms).getHours()).padStart(2, "0")}:${String(new Date(ms).getMinutes()).padStart(2, "0")}`;
+
+test("A11-167: a queued run whose plan is stale says the ticket changed since the plan and that it re-plans first, with the change its What changed link opens", () => {
+  const stale = run({ phase: "queued", ticketChange: CHANGE });
+  assert.equal(reasonOf(stale).line, "ticket changed since plan, re-planning first");
+  assert.equal(STALE_PLAN_LINE, "ticket changed since plan, re-planning first");
+  assert.deepEqual(ticketChangeOf(stale), { line: STALE_PLAN_LINE, change: CHANGE });
+});
+
+test("A11-167: the run that plans again says it is planning because the ticket changed", () => {
+  const replanning = run({ phase: "running", plan: { model: "opus", effort: "max" }, ticketChange: CHANGE });
+  assert.equal(reasonOf(replanning).line, "planning (ticket changed)");
+  assert.equal(REPLANNING_LINE, "planning (ticket changed)");
+});
+
+test("A11-167: a live run its ticket's change was sent to says when, at the time of day the change was sent, with the same change to open", () => {
+  const sent = run({ phase: "running", ticketChanges: [{ ...CHANGE, at: CHANGE.at - 60_000 }, CHANGE] });
+  assert.equal(reasonOf(sent).line, `ticket changed: sent to the worker at ${clock(CHANGE.at)}`);
+  assert.deepEqual(ticketChangeOf(sent)?.change, CHANGE, "the latest change");
+  assert.equal(reasonOf(run({ phase: "starting", ticketChanges: [CHANGE] })).line, `ticket changed: sent to the worker at ${clock(CHANGE.at)}`);
+});
+
+test("A11-167: a finished run, and a run its ticket never changed under, say nothing of a change", () => {
+  assert.equal(ticketChangeOf(run({ phase: "finished", ticketChange: CHANGE, ticketChanges: [CHANGE] })), null, "its next round's brief carries the new text");
+  assert.equal(ticketChangeOf(run({ phase: "running" })), null);
+  assert.equal(ticketChangeOf(run({ phase: "queued" })), null);
+});
+
+test("A11-167: a queued dependent shows one line for the pull requests its planner learns from, in the order it learned them, each named by its blocker and number", () => {
+  const learned = { "https://github.com/a11ign/announcement-emulator/pull/3": { key: "A11-165", number: 3, file: "/t/blockers/a.md" }, "https://github.com/a11ign/x/pull/9": { key: "A11-164", number: 9, file: "/t/blockers/b.md" } };
+  const waiting = run({ phase: "queued", learned });
+  assert.equal(learnsLine(waiting), "learns from A11-165 (#3 merged), A11-164 (#9 merged)");
+  assert.deepEqual(learnsFrom(waiting), [{ text: "A11-165 (#3 merged)", url: "https://github.com/a11ign/announcement-emulator/pull/3" }, { text: "A11-164 (#9 merged)", url: "https://github.com/a11ign/x/pull/9" }]);
+  assert.equal(learnsLine(run({ phase: "queued" })), null);
+  assert.equal(learnsLine(run({ phase: "running", learned })), null, "a run that has started has been briefed");
+});
+
+test("A11-167: What changed shows the old description struck and the new added, and the lines both share as they are", () => {
+  assert.deepEqual(diffLines(FROM_TEXT, TO_TEXT), [
+    ...FROM_TEXT.split("\n").map((text) => ({ kind: "same", text })),
+    { kind: "added", text: "* it handles the cookie dialog" },
+  ]);
+  assert.deepEqual(diffLines("a\nb\nc", "a\nB\nc"), [{ kind: "same", text: "a" }, { kind: "removed", text: "b" }, { kind: "added", text: "B" }, { kind: "same", text: "c" }]);
+  assert.deepEqual(diffLines("a\r\nb  ", "a\nb"), [{ kind: "same", text: "a" }, { kind: "same", text: "b" }], "line ends and trailing space are not edits");
+  assert.deepEqual(diffLines("gone", "new"), [{ kind: "removed", text: "gone" }, { kind: "added", text: "new" }]);
+  assert.deepEqual(diffLines("", ""), [{ kind: "same", text: "" }]);
 });

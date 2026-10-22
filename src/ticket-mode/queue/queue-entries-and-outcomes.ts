@@ -5,6 +5,10 @@ import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
 import { needsDecision } from "../open-decisions.ts";
 import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
+import type { TicketRead } from "../ticket-read.ts";
+import type { Learned, PlannedAgainst, TicketChange } from "./queue-ticket-text.ts";
+
+
 
 /**
  * What a worker's `partial` declaration says remains of its ticket: its words, trimmed, or null for none, which is a blank declaration or the brief's
@@ -105,6 +109,31 @@ export type Entry = Readonly<{
   plan?: RunChoice;
   /** Its plan was written by a planning run, which decided for the person: the pull request says what it decided. */
   planned?: boolean;
+  /**
+   * The model and effort its plan was written with, kept when the plan was attached, so a plan that goes stale is written again on the choice the ticket was first planned with (A11-167). A run
+   * without it, queued before this was kept, uses the planner's default.
+   */
+  plannedWith?: RunChoice;
+  /**
+   * The text of its ticket the run was last briefed with (A11-167): set as a brief is written, and moved to the new text when a change is sent to the live worker. A change in a ticket's
+   * description is told from it. Carried through a review round, whose brief says what changed since the last one.
+   */
+  briefedAgainst?: TicketRead;
+  /**
+   * What its attached plan says of the text it was planned against, as read from the plan's stamp while the run is queued (A11-167): the board marks the plan stale when the ticket's description no
+   * longer has this hash. Unset for a plan with no stamp, which is never read as stale, and until the plan has been read.
+   */
+  plannedAgainst?: PlannedAgainst;
+  /** Set on a queued or planning run whose plan is stale (A11-167): the description it was planned against and the one the ticket has now. The run plans again before it is worked. */
+  ticketChange?: TicketChange;
+  /** The changes to its ticket's description sent to the live worker as a message, in order (A11-167). */
+  ticketChanges?: readonly TicketChange[];
+  /** What the planner of this queued run was given from its blockers' merged pull requests, by pull request address (A11-167). */
+  learned?: Readonly<Record<string, Learned>>;
+  /** Set on a planning run that replaces a stale plan: the files of that plan, as the board copied them before it detached the plan (A11-167). Dropped once the new plan is attached. */
+  previousPlan?: readonly string[];
+  /** The addresses of the merged pull requests whose findings the last planning brief of this run gave its planner, so its plan can be held to naming each (A11-167). */
+  findingsGiven?: readonly string[];
   /**
    * The batch it is planned in: the tickets one press of Queue planned first, {@link PLAN_BATCH_MAX} at most, which one planning run plans
    * together. While a batch's run is live or parked, every ticket in it holds the run's workspace and pane. Dropped once its plan is attached,
@@ -537,15 +566,15 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, overlapOverride, checkHeads } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, overlapOverride, checkHeads, briefedAgainst, plannedWith } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, checkHeads }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, checkHeads, briefedAgainst }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
-  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
+  const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
     ...(review ? { review, ...round } : {}), phase: "queued", queuedAt: now };
   return { ...queue, entries: [...queue.entries.filter((e) => e.ticket.key !== key), retried] };
 }
@@ -584,10 +613,10 @@ export function talkRound(entry: Entry, now: number): Entry {
 }
 
 /**
- * The fields a review round carries from the run it continues, its paths, pull request files, partial declaration, merged plan steps and the heads its red checks were answered at: only those the run has set. PURE.
+ * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration, merged plan steps and the heads its red checks were answered at: only those the run has set. PURE.
  */
-const carriedFields = ({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, checkHeads }: Pick<Entry, "paths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "steps" | "stackBase" | "checkHeads">) => ({
-  ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
+const carriedFields = ({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, stackBase, checkHeads, briefedAgainst }: Pick<Entry, "paths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "steps" | "stackBase" | "checkHeads" | "briefedAgainst">) => ({
+  ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
   ...(partial !== undefined ? { partial } : {}), ...(steps ? { steps } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}),
 });
 

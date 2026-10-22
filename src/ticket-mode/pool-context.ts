@@ -106,6 +106,8 @@ export type PoolContext = Readonly<{
   answered: Map<string, number>;
   startedHere: Set<string>;
   attaching: Set<string>;
+  /** The live runs whose ticket's change is being sent to their worker now, by ticket key, so a second refresh does not send it twice (A11-167). */
+  telling: Set<string>;
   /** The runs whose worktree agent-org is rebasing onto a stacked branch now: no run of theirs starts until it is done (A11-116). */
   rebasing: Set<string>;
   pendingMoves: Map<string, Promise<void>>;
@@ -207,7 +209,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const finishing = new Set<string>();
   return {
     store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
-    startedHere, attaching, pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
+    startedHere, attaching, telling: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };
 }

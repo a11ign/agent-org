@@ -5,6 +5,8 @@ import { outcomeExamples } from "./outcome.ts";
 import type { WriterMode } from "./queue/queue-entries-and-outcomes.ts";
 import { CONFLICT_LINE, batchPlanBriefText, briefText, conflictLine, conflictsIn, firstPrompt, planBriefText, publishBriefText, reviewBriefText, reviewPrompt, workerFlags, workerSettings, writerBriefText, writerPrompt } from "./worker-files.ts";
 import type { Blocker, Ticket } from "./source.ts";
+import { ticketReadOf } from "./ticket-read.ts";
+import { diffText } from "./brief-ticket-text.ts";
 import { FAKE_TRACKER_WRITING } from "../plugins/fakes/tracker.ts";
 
 const ticket = { key: "NBF-1270", title: "Refresh Data gives no feedback", description: "Clicking does nothing visible.", url: "https://linear.app/x/issue/NBF-1270",
@@ -755,4 +757,88 @@ test("A11-168: every brief tells the worker to begin a numbered plan's Partial l
   const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
   assert.ok(brief.includes("When the plan has numbered steps, the `Partial:` line begins `step <N> of <M>`, and the last step's pull request names the ticket `Closes NBF-1270` and has no `Partial:` line."));
   assert.ok(brief.includes("When the plan has numbered steps, `partial` begins `step <N> of <M>`: the board queues step N + 1 when that pull request merges."));
+});
+
+// A11-167: every brief carries the ticket text as read at start, with its updatedAt.
+const READ = ticketReadOf({ description: ticket.description, updatedAt: "2026-10-21T09:30:00.000Z" }, Date.UTC(2026, 9, 21, 12, 0, 0));
+const READ_LINE = "Read from the tracker at 2026-10-21T12:00:00.000Z; the ticket was last updated 2026-10-21T09:30:00.000Z.";
+const REVIEWED_PR = [{ repo: "nbl-ui-netbox", url: "https://github.com/netboxlabs/nbl-ui-netbox/pull/806" }];
+
+test("the worker brief and the review-round brief carry the ticket text as read at start, with its updatedAt", () => {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", read: READ });
+  assert.ok(work.includes(`## The ticket\n\n${ticket.url}\n\n${READ_LINE}\n\n${ticket.description}`), "the work brief says when the text was read and last updated, above the text");
+  const round = reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs: REVIEWED_PR, resumed: true, read: READ });
+  assert.ok(round.includes(`## The ticket\n\n${ticket.url}\n\n${READ_LINE}\n\n> ${ticket.description}`), "the review round carries the description, quoted, and not only the address");
+});
+
+test("the planning brief, single and batch, carries the ticket as read at start, with its updatedAt", () => {
+  const single = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", read: READ });
+  assert.ok(single.includes(`## The ticket\n\n${ticket.url}\n\n${READ_LINE}\n\n${ticket.description}`));
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null, read: READ }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
+  assert.ok(batch.includes(`${ticket.url}\n\n${READ_LINE}\n\n> ${ticket.description}`));
+});
+
+test("a tracker that does not say when the ticket changed is said so, and a brief written with no read has no such line", () => {
+  const unknown = ticketReadOf({ description: ticket.description }, Date.UTC(2026, 9, 21, 12, 0, 0));
+  const brief = (read?: typeof unknown) => planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", read });
+  assert.ok(brief(unknown).includes("the tracker does not say when the ticket was last updated."));
+  assert.equal(brief().includes("Read from the tracker"), false);
+});
+
+test("the worker brief asks for the pull request body to say which version of the ticket the work was done against, so a reviewer who reads only the pull request can tell", () => {
+  const work = (read?: typeof READ) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open", read });
+  assert.ok(work(READ).includes("`Worked against the ticket as updated 2026-10-21T09:30:00.000Z`"));
+  assert.equal(work().includes("Worked against the ticket"), false, "no updatedAt, no line to copy");
+  assert.equal(work(ticketReadOf({ description: "x" }, 1)).includes("Worked against the ticket"), false);
+});
+
+test("a review round whose ticket changed since the last round says what changed: the lines that differ, and the text the last round read", () => {
+  const before = ticketReadOf({ description: "Clicking does nothing visible.\n\nDone-when: a toast shows.", updatedAt: "2026-10-21T08:00:00.000Z" }, Date.UTC(2026, 9, 21, 9, 0, 0));
+  const now = ticketReadOf({ description: "Clicking does nothing visible.\n\nDone-when: a toast shows, and the button is disabled.", updatedAt: "2026-10-21T11:00:00.000Z" }, Date.UTC(2026, 9, 21, 12, 0, 0));
+  const round = reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs: REVIEWED_PR, resumed: true, read: now, previous: before });
+  for (const part of ["### The ticket changed since your last round", "last updated 2026-10-21T11:00:00.000Z", "last updated 2026-10-21T08:00:00.000Z", "- Done-when: a toast shows.", "+ Done-when: a toast shows, and the button is disabled.",
+    "The description your last round read:", "> Done-when: a toast shows."]) {
+    assert.ok(round.includes(part), `the round names ${part}`);
+  }
+  const unchanged = reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs: REVIEWED_PR, resumed: true, read: now, previous: { ...now, readAt: 1 } });
+  assert.equal(unchanged.includes("The ticket changed since your last round"), false, "an unchanged description has no such section");
+  assert.equal(reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs: REVIEWED_PR, resumed: true, read: now }).includes("The ticket changed since your last round"), false, "a round with no earlier read has none");
+});
+
+const FINDING = { key: "A11-165", number: 3, url: "https://github.com/a11ign/announcement-emulator/pull/3", title: "feat: scripted replay", file: "/state/tickets/A11-166/blockers/A11-165-a11ign-announcement-emulator-3.md" };
+
+test("the planning brief names each findings file of a blocker's merged pull request, and holds the plan to a What the blockers found section naming each", () => {
+  const single = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", findings: [FINDING] });
+  for (const part of ["## What its blockers found", `- \`${FINDING.file}\`: A11-165, ${FINDING.url} (#3, "feat: scripted replay")`, "`## What the blockers found` section, before `## Paths`", "Name each by its address", "is refused"]) {
+    assert.ok(single.includes(part), `the planning brief says ${part}`);
+  }
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null, findings: [FINDING] }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
+  assert.ok(batch.includes(`### What its blockers found`) && batch.includes(FINDING.file), "a batch's brief gives each ticket its own, under the ticket's heading");
+  assert.equal(planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" }).includes("What its blockers found"), false, "no findings, no section");
+});
+
+test("the worker brief names the findings files too, in its section on the tickets that blocked it, for a ticket queued with no planning", () => {
+  const blocker: Blocker = { key: "A11-165", state: "completed", status: "Done", pulls: { [FINDING.url]: "merged" } };
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], blockers: [blocker], clones, worktreeCommand: "w", prOpenCommand: "p", findings: [FINDING] });
+  assert.ok(brief.includes(`What their merged pull requests found is saved in these files. Read each: it may change how this ticket is worked.\n\n- \`${FINDING.file}\` (A11-165, #3)`));
+  assert.equal(briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], blockers: [blocker], clones, worktreeCommand: "w", prOpenCommand: "p" }).includes("What their merged pull requests found"), false);
+});
+
+test("a re-plan brief says the earlier plan is detached and copied, shows the lines of the description that changed, and asks for the plan to be written from the new text", () => {
+  const replan = { files: ["/d/previous-plan/NBF-1270-0001-plan-x.md"], change: { from: "Clicking does nothing.\n\nDone-when: a toast.", to: "Clicking does nothing.\n\nDone-when: a toast, replayed." }, findings: false };
+  const brief = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", replan });
+  for (const part of ["## This is a re-plan", "the board has detached it", "- `/d/previous-plan/NBF-1270-0001-plan-x.md`", "```diff", "- Done-when: a toast.", "+ Done-when: a toast, replayed.",
+    "Plan from the ticket's text above, which is the latest", "do not write one"]) {
+    assert.ok(brief.includes(part), `the re-plan brief says ${part}`);
+  }
+  assert.equal(brief.includes("see \"What its blockers found\""), false);
+  assert.ok(planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}", replan: { files: [], findings: true } }).includes("A pull request of a blocker merged after that plan was written"));
+  assert.equal(planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" }).includes("This is a re-plan"), false, "a first plan is not a re-plan");
+});
+
+test("diffText shows the lines that differ with two lines of what stays around them, and a gap where more stays", () => {
+  const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`);
+  const before = lines(12).join("\n");
+  const after = lines(12).map((line) => (line === "line 6" ? "line six" : line)).join("\n");
+  assert.equal(diffText(before, after), "```diff\n...\n  line 4\n  line 5\n- line 6\n+ line six\n  line 7\n  line 8\n...\n```");
 });

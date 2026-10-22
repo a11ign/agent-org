@@ -9,6 +9,7 @@ import * as view_2 from "./board-view/view-types-and-filters.ts";
 import * as view_3 from "./board-view/run-reason.ts";
 import * as view_4 from "./board-view/pull-review-state.ts";
 import * as view_5 from "./board-view/update-banner.ts";
+import * as view_6 from "./board-view/ticket-change.ts";
 import * as labelFilters from "./label-filters.ts";
 import * as assigneeFilter from "./assignee-filter.ts";
 import * as settingsSearch from "./settings-search.ts";
@@ -174,7 +175,7 @@ async function page(storage: Map<string, string>, { config = {}, entries = [], t
   // The page's address, which its links and buttons change, and the `hashchange` listeners a browser calls when it does.
   const location = { search, hash };
   const hashListeners: (() => void)[] = [];
-  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
+  runInNewContext(SCRIPT, { ...view_0, ...view_1, ...view_2, ...view_3, ...view_4, ...view_5, ...view_6, ...labelFilters, ...assigneeFilter, ...settingsSearch, ...pluginsSection, document, fetch,
     window: { localStorage, open: browser.open, navigator: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } }, addEventListener: (type: string, fn: () => void) => { if (type === "hashchange") hashListeners.push(fn); } },
     location, URLSearchParams, setInterval: browser.setInterval, setTimeout: browser.setTimeout, Date, JSON, Object, Array, Set, Map, String, Number,
     Boolean, Math });
@@ -2604,6 +2605,29 @@ test("A11-169: the Board shows the draining update's banner and each run's line,
   const calm = await page(new Map(), { entries, update: { version: "v0.273.0", note: null } });
   assert.equal(calm.$("update-note").hidden, true, "the banner is gone when the record is");
   assert.ok(!calm.$("runs").text().includes("finishing before the update") && !calm.$("runs").text().includes("instance v0"), "a run on the instance's version says nothing extra");
+});
+
+test("A11-167: a run whose ticket changed shows its line and a What changed link that opens the description with the old lines struck and the new added; a dependent shows what it learns from, linked", async () => {
+  const sentAt = new Date(2026, 9, 21, 14, 5).getTime();
+  const change = { at: sentAt, from: "Keep this.\nDrop this.", to: "Keep this.\nAdd this." };
+  const pull = "https://github.com/a11ign/announcement-emulator/pull/3";
+  const entries = [entry("N-1", { phase: "queued", ticketChange: change }), entry("N-2", { phase: "running", startedAt: 5, workspace: "w2", plan: { model: "opus", effort: "max" }, ticketChange: change }),
+    entry("N-3", { phase: "running", startedAt: 5, workspace: "w3", ticketChanges: [change] }), entry("N-4", { phase: "queued", learned: { [pull]: { key: "A11-165", number: 3, file: "/t/b.md" } } }), entry("N-5", { phase: "queued" })];
+  const p = await page(new Map(), { entries });
+  const card = (key: string) => p.$("runs").all().find((node) => (node as unknown as { id?: string }).id === `run-${key}`)!;
+  assert.ok(card("N-1").text().includes("ticket changed since plan, re-planning first"));
+  assert.ok(card("N-2").text().includes("planning (ticket changed)"));
+  assert.ok(card("N-3").text().includes("ticket changed: sent to the worker at 14:05"));
+  assert.ok(card("N-4").text().includes("learns from A11-165 (#3 merged)"));
+  assert.equal((card("N-4").all().find((node) => node.tag === "a" && node.text() === "A11-165 (#3 merged)") as unknown as { href?: string } | undefined)?.href, pull, "linked to the pull request");
+  for (const key of ["N-5"]) assert.ok(!card(key).text().includes("What changed") && !card(key).text().includes("learns from"), "a run nothing changed under says nothing");
+  const links = (key: string) => card(key).all().filter((node) => node.tag === "button" && node.className === "link-btn");
+  assert.deepEqual([links("N-1"), links("N-2"), links("N-3"), links("N-4")].map((found) => found.map((node) => node.text())), [["What changed"], ["What changed"], ["What changed"], []]);
+  assert.equal(p.$("ticket-diff-dialog").open, false);
+  links("N-3")[0].fire("click");
+  assert.equal(p.$("ticket-diff-dialog").open, true);
+  assert.equal(p.$("ticket-diff-title").textContent, "What changed in N-3");
+  assert.deepEqual(p.$("ticket-diff").children.map((line) => [line.tag, line.text()]), [["span", "Keep this."], ["del", "Drop this."], ["ins", "Add this."]], "the old line struck, the new one added, the shared one as it is");
 });
 
 // A11-161: what the board says when the reviewer is off and when the publisher is. The words are the ticket's, exactly.

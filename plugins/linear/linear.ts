@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { PickScope } from "../../src/ticket-mode/settings.ts";
-import type { Assignee, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource } from "../../src/plugins/contracts/tracker.ts";
+import type { Assignee, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText } from "../../src/plugins/contracts/tracker.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
 /** The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. */
@@ -41,7 +41,7 @@ const OPEN_CHILDREN = 'children(first: 50, filter: { state: { type: { nin: ["com
  * first page of 50, which no ticket comes near. Read with the list, in the same request. Only a group's name is read, as only its name is shown.
  */
 const LABELS = "labels(first: 50) { nodes { name parent { name } } }";
-const ISSUE_FIELDS = `identifier title description url branchName priority state { name position type } team { key } project { name summary: description } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
+const ISSUE_FIELDS = `identifier title description updatedAt url branchName priority state { name position type } team { key } project { name summary: description } assignee { id name } parent { identifier } ${OPEN_CHILDREN} ${ATTACHMENTS} ${LABELS}`;
 /** The words a claim comment starts with: `agent-org: claimed by <claimant>` (A11-168). The tracker is asked only for comments that start with them. */
 const CLAIM_PREFIX = "agent-org: claimed by ";
 /** A ticket's claim comments with their times: Linear's first page of 50, which a ticket comes nowhere near, since a claim is written only when the claimant changes. */
@@ -52,7 +52,7 @@ const FILE_NAME = /^[\w.-]+\.\w{1,8}$/;
 type Fetch = typeof fetch;
 
 type IssueNode = {
-  identifier: string; title: string; description: string | null; url: string; branchName: string; priority: number;
+  identifier: string; title: string; description: string | null; updatedAt: string; url: string; branchName: string; priority: number;
   state: { name: string; position: number; type: string }; team: { key: string }; project: { name: string; summary: string | null } | null; assignee: Assignee | null; parent: { identifier: string } | null;
   /** Absent from an answer to a query that did not ask for it: such a ticket is read as having none. */
   children?: { nodes: { identifier: string }[] };
@@ -70,7 +70,7 @@ const uploadsIn = (node: Attachments): { url: string; title: string }[] => (node
 
 function toTicket(node: IssueNode): Ticket {
   return Object.freeze({
-    key: node.identifier, title: node.title, description: node.description ?? "", url: node.url, branch: node.branchName,
+    key: node.identifier, title: node.title, description: node.description ?? "", updatedAt: node.updatedAt, url: node.url, branch: node.branchName,
     status: node.state.name, statusType: node.state.type, statusOrder: node.state.position, team: node.team.key, project: node.project?.name ?? null, projectSummary: node.project?.summary ?? null, priority: node.priority,
     assignee: node.assignee ?? null, parent: node.parent?.identifier ?? null,
     children: (node.children?.nodes ?? []).map(({ identifier }) => identifier),
@@ -331,6 +331,27 @@ async function attachPlanTo(client: Client, identifier: string, files: readonly 
   return state === null ? null : (await moveTo(client, identifier, found, state, BEFORE_PLANNING)).note;
 }
 
+/** Each key's description and `updatedAt`, in the batched requests `stateTypes` uses (A11-167). */
+async function textsOf(client: Client, keys: readonly string[]): Promise<ReadonlyMap<string, TicketText>> {
+  const found = await eachIssue<{ description: string | null; updatedAt: string }>(client, keys, "description updatedAt");
+  return new Map([...found].map(([key, node]): [string, TicketText] => [key, { description: node.description ?? "", updatedAt: node.updatedAt }]));
+}
+
+/**
+ * Delete the ticket's uploads titled `titles` (A11-167). Only an upload is touched, as a plan's file is one, and a pull request link or a person's own upload under another title is left alone.
+ * A title the ticket does not have is skipped, so an attempt that was cut off can be repeated.
+ */
+async function detachPlanOf(client: Client, identifier: string, titles: readonly string[]): Promise<void> {
+  const found = await issue<{ attachments: { nodes: { id: string; url: string; title: string }[] } }>(client, identifier, "attachments(first: 50) { nodes { id url title } }");
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  const named = new Set(titles);
+  for (const { id, url, title } of found.attachments.nodes) {
+    if (!url.startsWith(UPLOAD_ORIGIN) || !named.has(title)) continue;
+    const { attachmentDelete }: { attachmentDelete: { success: boolean } } = await query(client, "mutation($id: String!) { attachmentDelete(id: $id) { success } }", { id });
+    if (!attachmentDelete.success) throw new Error(`Linear did not remove ${title} from ${identifier}`);
+  }
+}
+
 async function moveWorking(client: Client, identifier: string, state: string): Promise<Readonly<{ moved: StateMove | null; note: string | null }>> {
   const found = await issue<Stateful>(client, identifier, STATEFUL);
   if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
@@ -473,6 +494,12 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
     async stateTypes(keys) {
       const found = await eachIssue<{ state: { type: string } }>(client, keys, "state { type }");
       return new Map([...found].map(([key, node]) => [key, node.state.type]));
+    },
+
+    texts: (keys) => textsOf(client, keys),
+
+    async detachPlan(identifier, titles) {
+      return detachPlanOf(client, identifier, titles);
     },
 
     async pullStates(keys) {

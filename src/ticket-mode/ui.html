@@ -116,6 +116,13 @@
   dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 20px; width: min(420px, calc(100vw - 32px)); }
   dialog::backdrop { background: rgb(0 0 0 / .4); }
   dialog h2 { font-size: 16px; margin: 0 0 16px; }
+  /* What changed in a ticket's description (A11-167): the old lines struck and the new added, one line each. */
+  #ticket-diff-dialog { width: min(720px, calc(100vw - 32px)); }
+  #ticket-diff-dialog pre { white-space: pre-wrap; margin: 0 0 12px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 60vh; overflow: auto; }
+  #ticket-diff-dialog del { display: block; background: color-mix(in srgb, var(--bad) 14%, transparent); text-decoration: line-through; }
+  #ticket-diff-dialog ins { display: block; background: color-mix(in srgb, var(--ok) 16%, transparent); text-decoration: none; }
+  #ticket-diff-dialog .same { display: block; color: var(--muted); }
+  .link-btn { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
   .settings fieldset { border: 0; padding: 0; margin: 0 0 18px; display: grid; gap: 10px; }
   .settings fieldset[hidden], footer [hidden] { display: none; }
   .settings legend { font-weight: 600; padding: 0; margin-bottom: 8px; }
@@ -204,6 +211,13 @@
       <button value="cancel" formnovalidate>Cancel</button>
       <button class="primary" id="writer-start" type="button">Start</button>
     </div>
+  </form>
+</dialog>
+<dialog id="ticket-diff-dialog" aria-labelledby="ticket-diff-title">
+  <form method="dialog">
+    <h2 id="ticket-diff-title">What changed</h2>
+    <pre id="ticket-diff" tabindex="0"></pre>
+    <div class="actions"><button value="close">Close</button></div>
   </form>
 </dialog>
 <main>
@@ -324,7 +338,7 @@
 import {
   NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
-  reviewLinesOf, unlistedPulls, reviewerBanner, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  reviewLinesOf, unlistedPulls, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -744,6 +758,21 @@ function iconSpan(svg) {
   return icon;
 }
 
+// What changed in a ticket's description, as a dialog of its lines: the old ones struck, the new ones added (A11-167). The text is drawn as text, never as markup.
+function showTicketChange(key, change) {
+  $("ticket-diff-title").textContent = `What changed in ${key}`;
+  $("ticket-diff").replaceChildren(...diffLines(change.from, change.to).map(({ kind, text }) =>
+    el(kind === "removed" ? "del" : kind === "added" ? "ins" : "span", { className: kind === "same" ? "same" : "" }, text === "" ? " " : text)));
+  $("ticket-diff-dialog").showModal();
+}
+
+/** The link beside a run's line about its ticket's text: it opens the diff of the description. */
+function changeLink(key, change) {
+  const link = el("button", { className: "link-btn", type: "button" }, "What changed");
+  link.addEventListener("click", () => showTicketChange(key, change));
+  return link;
+}
+
 function row(e) {
   const status = shownStatus(e, state.queue.publish, state.queue.entries);
   const waits = waitsOn(e, state.queue.entries);
@@ -767,6 +796,8 @@ function row(e) {
   const prs = pulls.length > 0 ? el("div", { className: "meta" }, ...pulls.flatMap((pr, i) => [i ? " · " : "", el("a", { className: "pr-link", href: safeHref(pr.url), title: `Open ${pr.repo} #${pr.url.split("/").pop()} on GitHub`, target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.pull), `#${pr.url.split("/").pop()}`, el("span", { className: "sr-only" }, ` ${pr.repo}`))])) : null;
   const note = workingNote(e);
   const { line: reason, question } = reasonOf(e);
+  const changed = ticketChangeOf(e);
+  const learns = learnsFrom(e);
   // A done run lists what the worker checked, one line per Done-when item, as the ticket's comment does (A11-91).
   const evidence = o && o.kind === "done" ? el("ul", { className: "evidence" }, ...o.evidence.map((line) => el("li", {}, line))) : null;
   const message = e.published && e.published.link ? el("a", { className: "terminal icon-btn", href: safeHref(e.published.link), title: "Open the Slack message", target: "_blank", rel: "noreferrer" }, iconSpan(LINK_ICON.slack), el("span", { className: "sr-only" }, "Slack message")) : null;
@@ -795,7 +826,9 @@ function row(e) {
       e.sessionNote ? el("div", { className: "meta" }, e.sessionNote) : null,
       startedAnyway ? el("div", { className: "meta" }, startedAnyway) : null,
       cutNote ? el("div", { className: "meta" }, cutNote) : null,
-      reason ? el("div", { className: "meta" }, reason) : null,
+      reason ? el("div", { className: "meta" }, reason, ...(changed && reason === changed.line ? [" · ", changeLink(e.ticket.key, changed.change)] : [])) : null,
+      // The merged pull requests of its blockers that its planner learns from, each linked (A11-167).
+      ...(learns.length > 0 ? [el("div", { className: "meta" }, "learns from ", ...learns.flatMap(({ text, url }, i) => [i ? ", " : "", el("a", { className: "pr-link", href: safeHref(url), target: "_blank", rel: "noreferrer" }, text)]))] : []),
       // What a breaking update does to the run, and the version it is on when that is not the instance's (A11-169).
       ...updateLines(e, state.queue.update ? { note: state.queue.update.note, instanceVersion: state.queue.update.version } : undefined).map((line) => el("div", { className: "meta" }, line)),
       // A needs-human run its pull request answered keeps what it asked one click away (A11-153).

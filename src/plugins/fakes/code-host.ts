@@ -4,11 +4,13 @@
 // IT HOLDS PULL REQUESTS AND NOTHING ELSE, and answers `null` for one it was never given, as a host does that cannot read it. A test seeds a pull request (`seedPull`),
 // moves its head or its checks, and reads what the board asked of it (`calls`) and did to it (`armed`, `reviewRequests`, `retargets`). Every read is synchronous, as the contract's are.
 import { join } from "node:path";
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, PullFeedback, Reply, RetargetRequest, ReviewState, WrapperInputs } from "../contracts/code-host.ts";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, MergedFindings, PullFeedback, Reply, RetargetRequest, ReviewState, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
   repository: string; number: number; state: "open" | "merged" | "closed"; base: string; head: string; files: string[];
+  /** What the pull request found, once it has merged (A11-167). */
+  findings?: MergedFindings;
   feedback: Partial<PullFeedback>; replies: readonly Reply[]; reviews: ReviewState["reviews"]; settled: boolean; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
 };
 
@@ -21,7 +23,7 @@ type Pulls = Map<string, FakePull>;
 type Subscriber = { filter: Readonly<{ kinds?: readonly CodeHostEventKind[]; ref?: ChangeRef }>; handler: (event: CodeHostEvent) => void };
 
 /** The reads of pull requests: `null` for one the fake was never given, as a host does that cannot read it. */
-function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, calls: string[]): Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readReplies" | "readReviewState" | "readPullState" | "openPullUrlsOf" | "readChange"> {
+function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, calls: string[]): Pick<CodeHost, "readOwnLogin" | "readPullFeedback" | "readReplies" | "readReviewState" | "readPullState" | "readMergedFindings" | "openPullUrlsOf" | "readChange"> {
   return {
     readOwnLogin() {
       calls.push("readOwnLogin");
@@ -52,6 +54,11 @@ function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, 
     readPullState(url) {
       calls.push(`readPullState ${url}`);
       return pulls.get(url)?.state.toUpperCase() ?? null;
+    },
+    readMergedFindings(url) {
+      calls.push(`readMergedFindings ${url}`);
+      const pull = pulls.get(url);
+      return pull?.state === "merged" ? pull.findings ?? { title: `Pull request ${pull.number}`, number: pull.number, body: "", sections: [] } : null;
     },
     openPullUrlsOf(repository) {
       calls.push(`openPullUrlsOf ${repository}`);

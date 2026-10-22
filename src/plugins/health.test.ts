@@ -35,7 +35,7 @@ test("A11-163: the health lists every concern in the order tracker, code host, p
 test("A11-163: a row shows the name, agent-org's own version, the contract version and the state, and where its code lives", () => {
   const health = healthOf(FRESH);
   const linear = pluginOf(health, "linear");
-  assert.deepEqual([linear.name, linear.version, linear.contract, linear.state, linear.where], ["linear", VERSION, "1.2", "enabled", "plugins/linear"]);
+  assert.deepEqual([linear.name, linear.version, linear.contract, linear.state, linear.where], ["linear", VERSION, "1.3", "enabled", "plugins/linear"]);
   assert.deepEqual([pluginOf(health, "github").state, pluginOf(health, "github").version], ["enabled", VERSION], "the bundled package.json's 0.0.0 is not shown");
   assert.equal(pluginOf(health, "slack").where, "plugins/slack", "the publisher is a bundled package");
   assert.equal(pluginOf(health, "atomic").where, "plugins/atomic-reviewer", "the reviewer's folder is not its name: it is `atomic`, which live host files name");
@@ -183,7 +183,7 @@ test("A11-163: doctor's sections are the plugins a block names and any that fail
   const health = healthOf({ tickets: { providers: { ...FRESH.tickets.providers, exposure: { provider: "tailscale", enabled: false } } } });
   const tracker = concernOf(health, "tracker");
   assert.deepEqual(sectionPlugins(tracker).map(({ name }) => name), ["linear"]);
-  assert.equal(sectionHeader(tracker.label, sectionPlugins(tracker)[0]), "tracker: linear (enabled, contract 1.2, plugins/linear)");
+  assert.equal(sectionHeader(tracker.label, sectionPlugins(tracker)[0]), "tracker: linear (enabled, contract 1.3, plugins/linear)");
   assert.deepEqual(sectionPlugins(concernOf(health, "exposure")).map(({ name }) => name), ["tailscale"], "a disabled plugin still has its section");
   assert.deepEqual(sectionPlugins(concernOf(health, "publisher")), [], "an optional concern with none has no plugin section");
 });

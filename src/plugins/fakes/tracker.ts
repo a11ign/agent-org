@@ -5,7 +5,7 @@
 // It implements every optional operation, so a test of the board's planning, ordering or completion has a tracker that takes part; a test of a tracker that has none builds
 // its own object, which is a `TicketSource` too.
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Assignee, Blocker, People, PullState, ScopePage, StateMove, Ticket, TicketSource, TrackerWriting } from "../contracts/tracker.ts";
 
 /**
@@ -34,6 +34,8 @@ type Tickets = Map<string, Held>;
 
 const ME: Assignee = { id: "fake-me", name: "Fake Person" };
 const FINISHED = ["completed", "canceled"];
+/** The time the fake gives a ticket nobody has edited. */
+const EPOCH = "2026-01-01T00:00:00.000Z";
 
 /** A ticket with every required field, for a test to seed: only what it names differs. */
 export function fakeTicket(key: string, over: Partial<Ticket> = {}): Ticket {
@@ -55,7 +57,7 @@ function setStatus(entry: Held, status: string, statusType: string): void {
 }
 
 /** The reads: what the board lists, looks up and asks of the tracker. */
-function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "pullStates" | "blockers" | "projectSummaries" | "claims"> {
+function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" | "viewer" | "me" | "people" | "scoped" | "read" | "download" | "stateTypes" | "texts" | "pullStates" | "blockers" | "projectSummaries" | "claims"> {
   return {
     async assigned() {
       calls.push("assigned");
@@ -82,6 +84,7 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
       });
     },
     stateTypes: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).statusType] as const] : []))),
+    texts: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, { description: heldOf(held, key).ticket.description, updatedAt: heldOf(held, key).ticket.updatedAt ?? EPOCH }] as const] : []))),
     pullStates: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).pulls] as const] : []))),
     async blockers(keys) {
       const blockerOf = (blocker: string): Blocker => ({ key: blocker, state: heldOf(held, blocker).statusType, status: heldOf(held, blocker).ticket.status, pulls: heldOf(held, blocker).pulls });
@@ -93,13 +96,17 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
 }
 
 /** The writes: what the board does to a ticket. Each is idempotent where the contract says so. */
-function writesOf(held: Tickets, comments: { key: string; text: string }[], claimed: { key: string; claimant: string }[]): Pick<TicketSource, "attachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "updateTicketText" | "claim"> {
+function writesOf(held: Tickets, comments: { key: string; text: string }[], claimed: { key: string; claimant: string }[]): Pick<TicketSource, "attachPlan" | "detachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "updateTicketText" | "claim"> {
   return {
     async attachPlan(key, files, state) {
       const entry = heldOf(held, key);
       for (const file of files) if (!entry.files.some(({ name }) => name === file)) entry.files.push({ name: file, text: "" });
       if (state !== null && entry.statusType === "unstarted") setStatus(entry, state, "started");
       return null;
+    },
+    async detachPlan(key, titles) {
+      const entry = heldOf(held, key);
+      entry.files = entry.files.filter(({ name }) => !titles.includes(name) && !titles.includes(basename(name)));
     },
     async moveToWorkingState(key, state) {
       const entry = heldOf(held, key);
@@ -133,7 +140,7 @@ function writesOf(held: Tickets, comments: { key: string; text: string }[], clai
     },
     async updateTicketText(key, text) {
       const entry = heldOf(held, key);
-      entry.ticket = { ...entry.ticket, ...(text.title === undefined ? {} : { title: text.title }), ...(text.description === undefined ? {} : { description: text.description }) };
+      entry.ticket = { ...entry.ticket, ...(text.title === undefined ? {} : { title: text.title }), ...(text.description === undefined ? {} : { description: text.description }), updatedAt: new Date(Date.parse(entry.ticket.updatedAt ?? EPOCH) + 1000).toISOString() };
     },
   };
 }

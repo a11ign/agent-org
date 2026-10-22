@@ -252,6 +252,23 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   When it writes `planned`, the board attaches the files it left to the ticket and moves an unstarted ticket to the planner's state. The
   ticket then goes back on the queue where it was, and its run is told the plan was not agreed with a person, so its pull request lists
   each decision the plan made for you. A plan the tracker will not take ends the run for you, with its files kept.
+- **A plan follows the ticket's text, and a worker is told when it changes.** Every brief says when the board read the ticket and when the tracker
+  last changed it, above the text, and a worker's pull request body says which version it worked against (`Worked against the ticket as updated
+  <time>`). When the board attaches a plan it writes a `## Planned against` section into it, before `## Paths`: the ticket's `updatedAt`, the
+  sha256 of its description, the files attached with the plan and the description as planned. If the description no longer has that hash when the
+  run is queued (the tracker moves `updatedAt` on every state move, so the hash is compared, not the time), the run says "ticket changed since
+  plan, re-planning first" with a "What changed" link that opens the description with the old lines struck and the new added, and, as it starts,
+  the board copies the stale plan and the files its stamp lists for the planner, detaches them from the ticket (a person's own attachments stay),
+  and plans again on the model and effort the ticket was first planned with ("planning (ticket changed)"). A plan with no stamp, such as one a
+  person attached, is never re-planned. A change while a worker runs is sent to it as a message naming a file with the new text and the lines that
+  differ ("ticket changed: sent to the worker at 14:05"), and the next round's brief carries the new text and what changed since the last. A
+  planning run is not sent a message: its stamp holds the text it started on, so it plans again once its plan is attached.
+- **A dependent learns from its blockers' merged pull requests.** When a blocker's pull request merges, the code host reads its title, its body and
+  the markdown sections its diff added (`readMergedFindings`), the board saves them under the dependent's folder (`blockers/`), and the dependent's
+  queued run says "learns from A11-165 (#3 merged)", linked to the pull request. A planner is given the files and must write a `## What the
+  blockers found` section naming each pull request by its address and saying how its findings apply or why they do not; a plan that leaves one
+  out is refused. A dependent planned before the merge is planned again with the findings before it starts, and a worker queued with no planning
+  has the files named in its brief.
 - **Queued together, planned together.** When `tickets.planner.run` names `{keys}`, the tickets one press of Queue plans first are one
   batch, and one planning run plans them, at most 8 to a run: a larger batch splits into runs of 8, in queue order. Tickets queued at
   different times are never batched. Every ticket of the batch shows as Planning, all linking to the run's one terminal, and the batch holds

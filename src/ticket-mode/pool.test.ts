@@ -3,7 +3,7 @@ import type { PreflightExec } from "./preflight.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
@@ -26,7 +26,12 @@ import { writerDir, writerFolder } from "./ticket-paths.ts";
 import { claimantOf, parseTicketSettings } from "./settings.ts";
 import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
 import { REVIEWER_LOGIN, loadReviewerGate, readReviewerMemory, reviewerMemoryPath, type RepostAnswer, type ReviewerPort, type ReviewerRef, type ReviewerSettled, writeReviewerMemory } from "./reviewer-port.ts";
-import type { PullState, Ticket, TicketSource } from "./source.ts";
+import type { Blocker, PullState, Ticket, TicketSource } from "./source.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { descriptionHash, ticketReadOf } from "./ticket-read.ts";
+import { parseStamp, stampedPlan } from "./plan-stamp.ts";
+import { parsePaths } from "./overlap.ts";
+import { learnsFrom, learnsLine } from "./board-view/ticket-change.ts";
 import { createFakeTracker } from "../plugins/fakes/tracker.ts";
 import type { CodeHost, PullFeedback } from "../plugins/contracts/code-host.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
@@ -5621,4 +5626,454 @@ test("A11-168: a run claims its ticket in the tracker as it starts, a planning r
   const plain = setup(1, ["NBF-1"]);
   await plain.pool.tick();
   assert.equal(plain.entry("NBF-1").phase, "running", "a source with no claim starts the run as before");
+});
+
+// A11-167: plans and workers follow the latest ticket text, and a dependent learns from its blockers' merged pull requests.
+
+/** The time of day the board words, in the viewer's zone, as a run's line says it. */
+const clock = (ms: number): string => `${String(new Date(ms).getHours()).padStart(2, "0")}:${String(new Date(ms).getMinutes()).padStart(2, "0")}`;
+
+const FIT = "Fit the view.\n\nDone-when: it fits.";
+const FIT_AND_REPLAY = "Fit the view.\n\nDone-when: it fits, and it replays.";
+const T09 = "2026-10-21T09:00:00.000Z";
+const T11 = "2026-10-21T11:00:00.000Z";
+const PLAN_NAME = (key: string) => `${key}-0001-plan-fit.md`;
+const PLAN_BODY = "# Fit\n\n## Approach\n\nFit it.\n\n## Paths\n\n- `nbl-ui-netbox:src/a.ts`\n";
+
+/**
+ * A tracker that holds each ticket's text, its updatedAt and its attached files as Linear does: `read` gives them, `texts` gives the text of many keys in one call, `attachPlan` and
+ * `detachPlan` keep the files, and `download` writes them out. `blocked` gives the blockers of a key. A test changes a ticket with `edit`.
+ */
+function followed(keys: string[], description = FIT) {
+  const text = new Map<string, { description: string; updatedAt: string }>(keys.map((key) => [key, { description, updatedAt: T09 }]));
+  const files = new Map<string, Map<string, string>>(keys.map((key) => [key, new Map()]));
+  const detached: { key: string; titles: string[] }[] = [];
+  const asked: string[][] = [];
+  const blocked = new Map<string, Blocker[]>();
+  const tracker: TicketSource = { ...source,
+    read: async (key) => (text.has(key) ? { ...ticket(key), ...text.get(key)!, uploads: [...files.get(key)!.keys()] } : null),
+    texts: async (ks) => { asked.push([...ks]); return new Map(ks.filter((key) => text.has(key)).map((key) => [key, text.get(key)!])); },
+    download: async (t, dir) => [...(files.get(t.key) ?? [])].map(([name, body], index) => {
+      const path = join(dir, `attachment-${index + 1}-${name}`);
+      writeFileSync(path, body);
+      return path;
+    }),
+    attachPlan: async (key, paths) => { for (const path of paths) files.get(key)!.set(basename(path), readFileSync(path, "utf8")); return null; },
+    detachPlan: async (key, titles) => { detached.push({ key, titles: [...titles] }); for (const title of titles) files.get(key)!.delete(title); },
+    blockers: async (ks) => new Map(ks.map((key) => [key, blocked.get(key) ?? []])),
+  };
+  return { tracker, files, detached, asked, blocked, text,
+    edit(key: string, next: string, updatedAt = T11) { text.set(key, { description: next, updatedAt }); } };
+}
+
+/** A queued ticket's plan, attached by the board as a planning run's would be: stamped with `description` as it was when the plan was written. */
+function attachStamped(world: ReturnType<typeof followed>, key: string, description: string, extra: Record<string, string> = {}) {
+  const adr = `${key}-adr-0001-zoom.md`;
+  world.files.get(key)!.set(PLAN_NAME(key), stampedPlan(PLAN_BODY, { updatedAt: T09, hash: descriptionHash(description), files: [PLAN_NAME(key), adr], description }));
+  world.files.get(key)!.set(adr, "# ADR\n");
+  for (const [name, body] of Object.entries(extra)) world.files.get(key)!.set(name, body);
+}
+
+/** NBF-1 holds the one slot; NBF-2, behind it, is queued with `plan` attached, its plan paths and stamp read. */
+async function queuedBehind(world: ReturnType<typeof followed>, options: NonNullable<Parameters<typeof setup>[3]> = {}) {
+  const made = setup(1, ["NBF-1", "NBF-2"], PLANNER, { source: world.tracker, ...options });
+  await made.pool.tick();
+  assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-2").phase], ["running", "queued"]);
+  return made;
+}
+
+/** NBF-2 queued behind NBF-1 with a plan stamped for `FIT`, whose ticket is then edited to `FIT_AND_REPLAY`; the tracker is not asked about it yet. */
+async function editedBehind() {
+  const world = followed(["NBF-1", "NBF-2"]);
+  attachStamped(world, "NBF-2", FIT);
+  const made = await queuedBehind(world);
+  world.edit("NBF-2", FIT_AND_REPLAY);
+  return { world, made };
+}
+
+/** NBF-1, the run that holds the slot, ends, so the queued run behind it starts on the next tick. */
+async function freeTheSlot(made: Awaited<ReturnType<typeof queuedBehind>>) {
+  await endWith(made, ticketDir(made.settings, "NBF-1"), herdrName("NBF-1"), { kind: "needs-human", reason: "done with the slot" });
+  await made.pool.tick();
+  await settled();
+}
+
+test("the planning brief carries the ticket as the tracker has it at start, with its updatedAt", async () => {
+  const world = followed(["NBF-1"]);
+  world.edit("NBF-1", FIT_AND_REPLAY, T11);
+  const { dir } = await startedRun(PLANNER, { source: world.tracker, planFirst: ["NBF-1"], now: () => Date.UTC(2026, 9, 21, 12, 0, 0) });
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.ok(brief.includes(`Read from the tracker at 2026-10-21T12:00:00.000Z; the ticket was last updated ${T11}.\n\n${FIT_AND_REPLAY}`), "the text the tracker has now, not the empty one the ticket was queued with");
+});
+
+test("the worker brief carries the ticket text as read at start, with its updatedAt, and the run is recorded as briefed against it", async () => {
+  const world = followed(["NBF-1"]);
+  world.edit("NBF-1", FIT_AND_REPLAY, T11);
+  const { dir, entry } = await startedRun({}, { source: world.tracker, now: () => Date.UTC(2026, 9, 21, 12, 0, 0) });
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.ok(brief.includes(`Read from the tracker at 2026-10-21T12:00:00.000Z; the ticket was last updated ${T11}.\n\n${FIT_AND_REPLAY}`));
+  assert.ok(brief.includes(`Worked against the ticket as updated ${T11}`));
+  assert.deepEqual(entry("NBF-1").briefedAgainst, ticketReadOf({ description: FIT_AND_REPLAY, updatedAt: T11 }, Date.UTC(2026, 9, 21, 12, 0, 0)));
+});
+
+test("an attached plan is stamped with the updatedAt and description hash its planning run was briefed with, before its Paths, and its other files are attached as they were written", async () => {
+  const world = followed(["NBF-1"]);
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"] });
+  await made.pool.tick();
+  made.store.set(pauseQueue(made.store.get()));
+  // The ticket changes while the planner works: the stamp holds the text the planner was briefed with.
+  world.edit("NBF-1", FIT_AND_REPLAY);
+  const dir = ticketDir(made.settings, "NBF-1");
+  writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), PLAN_BODY);
+  writeFileSync(join(dir, "plan", "NBF-1-adr-0001-zoom.md"), "# ADR\n");
+  await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
+  await settled();
+  const plan = world.files.get("NBF-1")!.get(PLAN_NAME("NBF-1"))!;
+  const stamp = parseStamp(plan)!;
+  assert.deepEqual([stamp.updatedAt, stamp.hash, stamp.description, stamp.files], [T09, descriptionHash(FIT), FIT, [PLAN_NAME("NBF-1"), "NBF-1-adr-0001-zoom.md"]]);
+  assert.ok(plan.indexOf("## Planned against") > plan.indexOf("## Approach") && plan.indexOf("## Planned against") < plan.indexOf("## Paths"));
+  assert.deepEqual(parsePaths(plan), ["nbl-ui-netbox:src/a.ts"], "the stamp changes no path");
+  assert.equal(world.files.get("NBF-1")!.get("NBF-1-adr-0001-zoom.md"), "# ADR\n");
+  assert.equal(made.entry("NBF-1").plannedAgainst?.hash, descriptionHash(FIT), "the run keeps the stamp it wrote");
+  assert.deepEqual(made.entry("NBF-1").plannedWith, { model: "opus", effort: "max" }, "and the choice it was planned with");
+});
+
+test("a ticket edited after planning is re-planned before its worker starts, and the run says ticket changed since plan, re-planning first", async () => {
+  const world = followed(["NBF-1"]);
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], now: () => Date.UTC(2026, 9, 21, 12, 0, 0) });
+  const { pool, store, entry, settings, h } = made;
+  await pool.tick();
+  store.set(pauseQueue(store.get()));
+  const dir = ticketDir(settings, "NBF-1");
+  writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), PLAN_BODY);
+  await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
+  await settled();
+  assert.equal(entry("NBF-1").phase, "queued");
+  assert.equal(entry("NBF-1").ticketChange, undefined, "the ticket has not changed since its plan");
+  // The description changes, and the board's next look at the tracker marks the plan stale, without starting anything.
+  world.edit("NBF-1", FIT_AND_REPLAY);
+  await pool.refreshTracker();
+  assert.deepEqual(world.asked.at(-1), ["NBF-1"], "the queued ticket's text is asked for in one call");
+  assert.deepEqual(entry("NBF-1").ticketChange, { at: Date.UTC(2026, 9, 21, 12, 0, 0), from: FIT, to: FIT_AND_REPLAY });
+  assert.equal(reasonOf(entry("NBF-1")).line, "ticket changed since plan, re-planning first");
+  assert.equal(entry("NBF-1").phase, "queued");
+  assert.deepEqual(world.detached, [], "nothing is detached until the re-plan starts");
+  // Started, it plans again first, on the choice it was first planned with, from the new text.
+  h.calls.length = 0;
+  store.set(resumeQueue(store.get()));
+  await pool.tick();
+  await settled();
+  assert.equal(entry("NBF-1").phase, "running");
+  assert.deepEqual(entry("NBF-1").plan, { model: "opus", effort: "max" }, "a planning run, on the model it was first planned with");
+  const start = h.calls.find((args) => args.includes("start"))!;
+  assert.deepEqual([start[start.indexOf("--model") + 1], start[start.indexOf("--effort") + 1]], ["opus", "max"]);
+  assert.equal(reasonOf(entry("NBF-1")).line, "planning (ticket changed)");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.match(brief, /^# Plan NBF-1: NBF-1\n/);
+  assert.ok(brief.includes("## This is a re-plan") && brief.includes("- Done-when: it fits.\n+ Done-when: it fits, and it replays."), "the planner is shown what changed");
+  assert.ok(brief.includes(`the ticket was last updated ${T11}.\n\n${FIT_AND_REPLAY}`), "and the latest text");
+  // It writes the new plan: attached with a stamp of the new text, and the ticket is worked from it.
+  writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), PLAN_BODY);
+  await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
+  await settled();
+  const stamp = parseStamp(world.files.get("NBF-1")!.get(PLAN_NAME("NBF-1"))!)!;
+  assert.deepEqual([stamp.hash, stamp.updatedAt], [descriptionHash(FIT_AND_REPLAY), T11]);
+  assert.deepEqual([entry("NBF-1").phase, entry("NBF-1").plan, entry("NBF-1").ticketChange], ["running", undefined, undefined], "the worker runs on the new plan, the mark gone");
+  assert.ok(readFileSync(join(dir, "brief.md"), "utf8").includes(FIT_AND_REPLAY), "and is briefed with the new text");
+});
+
+test("a re-plan detaches the stale plan and the files its stamp lists, and no other, and gives the planner a copy and the diff", async () => {
+  const world = followed(["NBF-1", "NBF-2"]);
+  attachStamped(world, "NBF-2", FIT, { "notes.md": "a person's own file" });
+  const made = await queuedBehind(world);
+  assert.equal(made.entry("NBF-2").plannedAgainst?.hash, descriptionHash(FIT), "the stamp is read from the plan files with their paths");
+  world.edit("NBF-2", FIT_AND_REPLAY);
+  await made.pool.refreshTracker();
+  assert.equal(reasonOf(made.entry("NBF-2")).line, "ticket changed since plan, re-planning first");
+  await freeTheSlot(made);
+  assert.deepEqual(world.detached, [{ key: "NBF-2", titles: ["NBF-2-adr-0001-zoom.md", PLAN_NAME("NBF-2")] }], "the two files its stamp lists, the stamped plan last");
+  assert.deepEqual([...world.files.get("NBF-2")!.keys()], ["notes.md"], "a person's own attachment is left alone");
+  const dir = ticketDir(made.settings, "NBF-2");
+  assert.equal(readFileSync(join(dir, "previous-plan", PLAN_NAME("NBF-2")), "utf8"), stampedPlan(PLAN_BODY, { updatedAt: T09, hash: descriptionHash(FIT), files: [PLAN_NAME("NBF-2"), "NBF-2-adr-0001-zoom.md"], description: FIT }), "the planner is given a copy");
+  assert.equal(readFileSync(join(dir, "previous-plan", "NBF-2-adr-0001-zoom.md"), "utf8"), "# ADR\n");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.ok(brief.includes(`- \`${join(dir, "previous-plan", PLAN_NAME("NBF-2"))}\``) && brief.includes("+ Done-when: it fits, and it replays."));
+  assert.equal(made.entry("NBF-2").plan !== undefined && made.entry("NBF-2").phase === "running", true);
+});
+
+test("an unstamped plan is never marked stale or re-planned: nothing records the text it was written against", async () => {
+  const world = followed(["NBF-1", "NBF-2"]);
+  world.files.get("NBF-2")!.set(PLAN_NAME("NBF-2"), PLAN_BODY);
+  const made = await queuedBehind(world);
+  assert.equal(made.entry("NBF-2").plannedAgainst, undefined);
+  world.edit("NBF-2", FIT_AND_REPLAY);
+  await made.pool.refreshTracker();
+  assert.equal(made.entry("NBF-2").ticketChange, undefined);
+  await freeTheSlot(made);
+  assert.deepEqual([made.entry("NBF-2").phase, made.entry("NBF-2").plan], ["running", undefined], "worked from the plan it has, on the new text");
+  assert.deepEqual(world.detached, []);
+  assert.ok(readFileSync(join(ticketDir(made.settings, "NBF-2"), "brief.md"), "utf8").includes(FIT_AND_REPLAY));
+});
+
+test("the mark of a stale plan goes when the ticket holds the text the plan was written against again, and a tracker that cannot give texts or detach a plan marks nothing", async () => {
+  const { world, made } = await editedBehind();
+  await made.pool.refreshTracker();
+  assert.notEqual(made.entry("NBF-2").ticketChange, undefined);
+  world.edit("NBF-2", `${FIT_AND_REPLAY}\nAnd it is quick.`);
+  await made.pool.refreshTracker();
+  assert.equal(made.entry("NBF-2").ticketChange?.to, `${FIT_AND_REPLAY}\nAnd it is quick.`, "a second edit moves the mark on, so What changed shows the ticket as it is now");
+  assert.equal(made.entry("NBF-2").ticketChange?.from, FIT);
+  world.edit("NBF-2", `${FIT}\n\n`, T11);
+  await made.pool.refreshTracker();
+  assert.equal(made.entry("NBF-2").ticketChange, undefined, "a trailing newline is the same text");
+  const plain = followed(["NBF-1", "NBF-2"]);
+  attachStamped(plain, "NBF-2", FIT);
+  for (const tracker of [{ ...plain.tracker, texts: undefined }, { ...plain.tracker, detachPlan: undefined }] as TicketSource[]) {
+    const other = await queuedBehind(plain, { source: tracker });
+    plain.edit("NBF-2", FIT_AND_REPLAY);
+    await other.pool.refreshTracker();
+    assert.equal(other.entry("NBF-2").ticketChange, undefined, "a plan that cannot be written again is kept");
+    plain.edit("NBF-2", FIT);
+  }
+});
+
+test("a description change while a worker runs is prompted to it, and its next round's brief carries the new text", async () => {
+  const world = followed(["NBF-1"]);
+  const made = setup(1, ["NBF-1"], {}, { source: world.tracker, now: () => Date.UTC(2026, 9, 21, 14, 5, 0) });
+  const { pool, h, entry, status, settings, root, store } = made;
+  await pool.tick();
+  const dir = ticketDir(settings, "NBF-1");
+  h.calls.length = 0;
+  await pool.refreshTracker();
+  assert.equal(h.calls.some((args) => args.includes("prompt")), false, "an unchanged ticket sends nothing");
+  world.edit("NBF-1", FIT_AND_REPLAY);
+  await pool.refreshTracker();
+  const prompts = h.calls.filter((args) => args.includes("prompt"));
+  assert.equal(prompts.length, 1);
+  assert.deepEqual(prompts[0].slice(0, 5), ["--session", "tickets", "agent", "prompt", herdrName("NBF-1")]);
+  assert.ok(prompts[0][5].includes(join(dir, "ticket-changed-1.md")), "the message names the file");
+  const file = readFileSync(join(dir, "ticket-changed-1.md"), "utf8");
+  assert.ok(file.includes("- Done-when: it fits.\n+ Done-when: it fits, and it replays.") && file.includes(`last updated ${T11}`) && file.includes(`## The description now\n\n${FIT_AND_REPLAY}`));
+  assert.deepEqual(entry("NBF-1").ticketChanges, [{ at: Date.UTC(2026, 9, 21, 14, 5, 0), from: FIT, to: FIT_AND_REPLAY }]);
+  assert.equal(reasonOf(entry("NBF-1")).line, `ticket changed: sent to the worker at ${clock(Date.UTC(2026, 9, 21, 14, 5, 0))}`);
+  await pool.refreshTracker();
+  assert.equal(h.calls.filter((args) => args.includes("prompt")).length, 1, "the same change is sent once");
+  // The worker's pull request is approved: the review round's brief carries the new text, and says nothing changed since the text the worker was sent.
+  status.set(herdrName("NBF-1"), "idle");
+  mkdirSync(join(root, "transcripts", "-Users-me-work"), { recursive: true });
+  writeFileSync(join(root, "transcripts", "-Users-me-work", "session-t-nbf-1.jsonl"), "{}\n");
+  writeFileSync(join(dir, "outcome.json"), JSON.stringify({ kind: "draft-pr", prs: [approvedPr] }));
+  await pool.tick();
+  status.delete(herdrName("NBF-1"));
+  world.edit("NBF-1", `${FIT_AND_REPLAY}\nAnd it is quick.`, "2026-10-21T15:00:00.000Z");
+  store.set(approve(store.get(), "NBF-1", 200));
+  await pool.tick();
+  const round = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.ok(round.includes(`the ticket was last updated 2026-10-21T15:00:00.000Z.\n\n> ${FIT_AND_REPLAY.split("\n").join("\n> ").replace(/\n> \n/g, "\n>\n")}\n> And it is quick.`), "the round carries the latest text, with its updatedAt");
+  assert.ok(round.includes("### The ticket changed since your last round") && round.includes("+ And it is quick."), "and what changed since the text the last round was sent");
+});
+
+test("a change that herdr refuses to deliver is said, not recorded, and sent again on the next look", async () => {
+  const world = followed(["NBF-1"]);
+  const made = setup(1, ["NBF-1"], {}, { source: world.tracker });
+  await made.pool.tick();
+  world.edit("NBF-1", FIT_AND_REPLAY);
+  made.h.refused.add("prompt");
+  const written = await captureStderr(() => made.pool.refreshTracker());
+  assert.ok(written.some((line) => line.includes("NBF-1 could not be told its ticket changed")));
+  assert.equal(made.entry("NBF-1").ticketChanges, undefined);
+  made.h.refused.delete("prompt");
+  await made.pool.refreshTracker();
+  assert.equal(made.entry("NBF-1").ticketChanges?.length, 1);
+});
+
+test("a planning run is not prompted when its ticket changes: its plan is stamped with the text it started on, and the next start plans it again", async () => {
+  const world = followed(["NBF-1"]);
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"] });
+  await made.pool.tick();
+  made.h.calls.length = 0;
+  world.edit("NBF-1", FIT_AND_REPLAY);
+  await made.pool.refreshTracker();
+  assert.equal(made.h.calls.some((args) => args.includes("prompt")), false);
+  assert.equal(made.entry("NBF-1").ticketChanges, undefined);
+});
+
+const ANNOUNCEMENT_PULL = "https://github.com/a11ign/announcement-emulator/pull/3";
+const FINDINGS = { title: "feat: scripted replay", number: 3, body: "## What it found\n\nCookie dialogs drop pages.", sections: [{ file: "docs/announcement-emulator-spike.md", heading: "### Scripted replay", text: "Handle the cookie dialog before the replay." }] };
+
+/** The reason a run that needs a person gave, or "" for any other outcome. */
+const reasonOfOutcome = (outcome: Outcome | undefined): string => (outcome?.kind === "needs-human" ? outcome.reason : "");
+
+/** The tracker of a ticket whose blocker A11-165 is done, with the pull request it merged, and a code host that holds that pull request's findings. */
+function blockedByMerged(keys: string[], blockerPulls: Record<string, "open" | "merged"> = { [ANNOUNCEMENT_PULL]: "merged" }) {
+  const world = followed(keys);
+  for (const key of keys) world.blocked.set(key, [blocks("A11-165", "completed", "Done", blockerPulls)]);
+  const host = createFakeCodeHost();
+  host.seedPull("a11ign/announcement-emulator", 3, { state: "merged", findings: FINDINGS });
+  return { world, gh: { run: () => "", calls: [], codeHost: host, host } as World };
+}
+
+test("a blocker's merged findings appear in the dependent's planning brief, and its queued run says what it learns from", async () => {
+  const { world, gh } = blockedByMerged(["NBF-1"]);
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
+  await made.pool.refreshTracker();
+  assert.equal(learnsLine(made.entry("NBF-1")), "learns from A11-165 (#3 merged)");
+  assert.deepEqual(learnsFrom(made.entry("NBF-1")).map(({ url }) => url), [ANNOUNCEMENT_PULL], "linked to the pull request");
+  const file = join(ticketDir(made.settings, "NBF-1"), "blockers", "A11-165-a11ign-announcement-emulator-3.md");
+  assert.deepEqual(made.entry("NBF-1").learned, { [ANNOUNCEMENT_PULL]: { key: "A11-165", number: 3, title: "feat: scripted replay", file } });
+  await made.pool.refreshTracker();
+  assert.equal(gh.host.calls.filter((call) => call === `readMergedFindings ${ANNOUNCEMENT_PULL}`).length, 1, "read once");
+  await made.pool.tick();
+  const dir = ticketDir(made.settings, "NBF-1");
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.ok(brief.includes(`## What its blockers found`) && brief.includes(`- \`${file}\`: A11-165, ${ANNOUNCEMENT_PULL} (#3, "feat: scripted replay")`));
+  assert.ok(brief.includes("`## What the blockers found` section, before `## Paths`"));
+  const saved = readFileSync(file, "utf8");
+  for (const part of ["feat: scripted replay (#3)", ANNOUNCEMENT_PULL, "Cookie dialogs drop pages.", "### `docs/announcement-emulator-spike.md`: Scripted replay", "Handle the cookie dialog before the replay."]) {
+    assert.ok(saved.includes(part), `the findings file holds ${part}`);
+  }
+  assert.deepEqual(made.entry("NBF-1").findingsGiven, [ANNOUNCEMENT_PULL]);
+});
+
+test("a blocker pull request that is not merged, or that the host cannot read, gives nothing, and is asked again when it merges", async () => {
+  const { world, gh } = blockedByMerged(["NBF-1"], { [ANNOUNCEMENT_PULL]: "open", "https://github.com/a11ign/x/pull/9": "merged" });
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
+  await made.pool.refreshTracker();
+  assert.equal(made.entry("NBF-1").learned, undefined, "an open pull request is not learned from, and an unreadable merged one is asked again");
+  world.blocked.set("NBF-1", [blocks("A11-165", "completed", "Done", { [ANNOUNCEMENT_PULL]: "merged", "https://github.com/a11ign/x/pull/9": "merged" })]);
+  await made.pool.refreshTracker();
+  assert.deepEqual(Object.keys(made.entry("NBF-1").learned ?? {}), [ANNOUNCEMENT_PULL]);
+});
+
+test("a plan given blocker findings without a What the blockers found section naming each is refused, and one that names each is attached", async () => {
+  const { world, gh } = blockedByMerged(["NBF-1"]);
+  /** A planning run of NBF-1 given the findings, whose plan is `PLAN_BODY` with `section` before its Paths, and the made run once it wrote `planned`. */
+  const planWith = async (section: string) => {
+    const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
+    await made.pool.refreshTracker();
+    await made.pool.tick();
+    made.store.set(pauseQueue(made.store.get()));
+    const dir = ticketDir(made.settings, "NBF-1");
+    writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), PLAN_BODY.replace("## Paths", `${section}## Paths`));
+    await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
+    await settled();
+    return made;
+  };
+  const without = await planWith("");
+  assert.equal(without.entry("NBF-1").outcome?.kind, "needs-human");
+  assert.match(reasonOfOutcome(without.entry("NBF-1").outcome), /has no "## What the blockers found" section.*pull\/3/);
+  assert.equal(world.files.get("NBF-1")!.size, 0, "nothing is attached");
+  const other = await planWith("## What the blockers found\n\n- https://github.com/a11ign/announcement-emulator/pull/33: not it.\n\n");
+  assert.match(reasonOfOutcome(other.entry("NBF-1").outcome), /does not name https:\/\/github\.com\/a11ign\/announcement-emulator\/pull\/3:/, "pull/33 is not pull/3");
+  const named = await planWith(`## What the blockers found\n\n- ${ANNOUNCEMENT_PULL}: cookie dialogs drop pages, so the replay clears them first.\n\n`);
+  assert.equal(named.entry("NBF-1").phase, "queued");
+  assert.deepEqual(named.entry("NBF-1").plannedAgainst?.named, [ANNOUNCEMENT_PULL], "the stamp records the pull requests the plan names");
+});
+
+test("a dependent planned before its blocker merged is re-planned with the findings, and its run says learns from the blocker", async () => {
+  const world = followed(["NBF-1"]);
+  world.blocked.set("NBF-1", [blocks("A11-165", "completed", "Done", { [ANNOUNCEMENT_PULL]: "open" })]);
+  const host = createFakeCodeHost();
+  const gh = { run: () => "", calls: [], codeHost: host, host } as World;
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"], gh });
+  await made.pool.tick();
+  made.store.set(pauseQueue(made.store.get()));
+  const dir = ticketDir(made.settings, "NBF-1");
+  writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), PLAN_BODY);
+  await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
+  await settled();
+  assert.equal(made.entry("NBF-1").phase, "queued");
+  assert.equal(made.entry("NBF-1").learned, undefined);
+  // The blocker's pull request merges.
+  host.seedPull("a11ign/announcement-emulator", 3, { state: "merged", findings: FINDINGS });
+  world.blocked.set("NBF-1", [blocks("A11-165", "completed", "Done", { [ANNOUNCEMENT_PULL]: "merged" })]);
+  await made.pool.refreshTracker();
+  assert.equal(learnsLine(made.entry("NBF-1")), "learns from A11-165 (#3 merged)");
+  assert.equal(made.entry("NBF-1").ticketChange, undefined, "the description did not change");
+  made.h.calls.length = 0;
+  made.store.set(resumeQueue(made.store.get()));
+  await made.pool.tick();
+  await settled();
+  assert.deepEqual(world.detached.map(({ key }) => key), ["NBF-1"], "the plan written before the merge is detached");
+  assert.deepEqual([made.entry("NBF-1").phase, made.entry("NBF-1").plan !== undefined], ["running", true]);
+  const brief = readFileSync(join(dir, "brief.md"), "utf8");
+  assert.ok(brief.includes("## This is a re-plan") && brief.includes("A pull request of a blocker merged after that plan was written") && brief.includes("## What its blockers found"));
+  assert.equal(brief.includes("These lines differ"), false, "no description change is claimed");
+});
+
+test("a plan stamped and attached by another instance, that names the pull request a blocker merged, is not re-planned for it, and its worker's brief names the findings file", async () => {
+  const { world, gh } = blockedByMerged(["NBF-2"]);
+  world.text.set("NBF-1", { description: FIT, updatedAt: T09 });
+  world.files.set("NBF-1", new Map());
+  const section = `## What the blockers found\n\n- ${ANNOUNCEMENT_PULL}: cookie dialogs drop pages, so the replay clears them first.\n\n`;
+  world.files.get("NBF-2")!.set(PLAN_NAME("NBF-2"), stampedPlan(PLAN_BODY.replace("## Paths", `${section}## Paths`), { updatedAt: T09, hash: descriptionHash(FIT), files: [PLAN_NAME("NBF-2")], description: FIT }));
+  const made = await queuedBehind(world, { gh });
+  assert.deepEqual(made.entry("NBF-2").plannedAgainst?.named, [ANNOUNCEMENT_PULL], "the stamp is read with the pull requests the plan's section names");
+  await made.pool.refreshTracker();
+  assert.equal(learnsLine(made.entry("NBF-2")), "learns from A11-165 (#3 merged)");
+  await freeTheSlot(made);
+  assert.deepEqual([made.entry("NBF-2").phase, made.entry("NBF-2").plan], ["running", undefined], "the plan already says how each finding applies");
+  assert.deepEqual(world.detached, []);
+  const brief = readFileSync(join(ticketDir(made.settings, "NBF-2"), "brief.md"), "utf8");
+  assert.ok(brief.includes(`What their merged pull requests found is saved in these files.`) && brief.includes("A11-165-a11ign-announcement-emulator-3.md"));
+});
+
+test("a re-plan that cannot detach the stale plan ends the run crashed, saying so, and leaves the plan attached", async () => {
+  const world = followed(["NBF-1", "NBF-2"]);
+  attachStamped(world, "NBF-2", FIT);
+  const failing: TicketSource = { ...world.tracker, detachPlan: async () => { throw new Error("Linear answered 500"); } };
+  const made = await queuedBehind(world, { source: failing });
+  world.edit("NBF-2", FIT_AND_REPLAY);
+  await freeTheSlot(made);
+  const outcome = made.entry("NBF-2").outcome;
+  assert.deepEqual([made.entry("NBF-2").phase, outcome?.kind], ["finished", "crashed"]);
+  assert.equal(outcome?.kind === "crashed" ? outcome.reason : "", "its stale plan could not be written again: Linear answered 500");
+  assert.ok(world.files.get("NBF-2")!.has(PLAN_NAME("NBF-2")), "the plan is still attached");
+});
+
+test("a run an update stopped while it worked is not planned again for a change its worker was told of, and a live worker that is waiting on a dialog is not prompted", async () => {
+  const { made } = await editedBehind();
+  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? { ...e, stoppedForUpdate: { at: 5, target: "v0.280.0" } } : e)) });
+  await made.pool.refreshTracker();
+  assert.equal(made.entry("NBF-2").ticketChange, undefined, "no stale mark");
+  await freeTheSlot(made);
+  assert.equal(made.entry("NBF-2").plan, undefined, "it resumes on the plan it has");
+  made.store.set({ ...made.store.get(), entries: made.store.get().entries.map((e) => (e.ticket.key === "NBF-2" ? { ...e, waiting: true } : e)) });
+  made.h.calls.length = 0;
+  await made.pool.refreshTracker();
+  assert.equal(made.h.calls.some((args) => args.includes("prompt")), false, "a worker waiting on a dialog is not typed into");
+});
+
+test("a re-plan detaches the file that carries the stamp last, so an attempt cut off part way leaves the stamp", async () => {
+  const { world, made } = await editedBehind();
+  await freeTheSlot(made);
+  assert.deepEqual(world.detached[0].titles, ["NBF-2-adr-0001-zoom.md", PLAN_NAME("NBF-2")]);
+});
+
+test("what a blocker's pull request found is read once for the dependents that wait on it, and a read that throws is said and does not fail the refresh", async () => {
+  const { world, gh } = blockedByMerged(["NBF-1", "NBF-2"]);
+  const made = setup(1, ["NBF-1", "NBF-2"], PLANNER, { source: world.tracker, planFirst: ["NBF-1", "NBF-2"], gh });
+  await made.pool.refreshTracker();
+  assert.equal(gh.host.calls.filter((call) => call === `readMergedFindings ${ANNOUNCEMENT_PULL}`).length, 1, "one read for both");
+  assert.deepEqual([made.entry("NBF-1").learned?.[ANNOUNCEMENT_PULL]?.number, made.entry("NBF-2").learned?.[ANNOUNCEMENT_PULL]?.number], [3, 3]);
+  const failing = blockedByMerged(["NBF-1"]);
+  failing.gh.codeHost.readMergedFindings = () => { throw new Error("gh exploded"); };
+  const other = setup(1, ["NBF-1"], PLANNER, { source: failing.world.tracker, planFirst: ["NBF-1"], gh: failing.gh });
+  const written = await captureStderr(() => other.pool.refreshTracker());
+  assert.ok(written.some((line) => line.includes("what A11-165's pull request found could not be read: gh exploded")));
+  assert.equal(other.entry("NBF-1").learned, undefined);
+});
+
+test("a plan the stamp would push past the size every reader skips beyond is attached as it is, unstamped, and so is never read as stale", async () => {
+  const world = followed(["NBF-1"], "x".repeat(10));
+  const made = setup(1, ["NBF-1"], PLANNER, { source: world.tracker, planFirst: ["NBF-1"] });
+  await made.pool.tick();
+  made.store.set(pauseQueue(made.store.get()));
+  const dir = ticketDir(made.settings, "NBF-1");
+  const body = `${PLAN_BODY}\n${"y".repeat(999_950 - PLAN_BODY.length)}\n`;
+  writeFileSync(join(dir, "plan", PLAN_NAME("NBF-1")), body);
+  await endWith(made, dir, herdrName("NBF-1"), { kind: "planned" });
+  await settled();
+  assert.equal(world.files.get("NBF-1")!.get(PLAN_NAME("NBF-1")), body);
+  assert.equal(made.entry("NBF-1").plannedAgainst, undefined);
 });

@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's suite (A11-158) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
+// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
 //
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
@@ -8,10 +8,10 @@ import type { ChangeRef, CodeHost, WrapperInputs } from "../contracts/code-host.
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 
 /**
- * What the caller has seeded: an open pull request, its repository, one the host has none of, the account the host acts as, and optionally a change for the port's reads and the inputs a wrapper is asked about
- * (a host that installs no wrapper is not asked).
+ * What the caller has seeded: an open pull request, its repository, one the host has none of, the account the host acts as, and optionally a change for the port's reads, the inputs a wrapper is asked about
+ * (a host that installs no wrapper is not asked) and a merged pull request that has findings (`merged`, A11-167).
  */
-export type CodeHostProbe = Readonly<{ pull: string; repository: string; missing: string; self: string; change?: ChangeRef; wrapper?: WrapperInputs }>;
+export type CodeHostProbe = Readonly<{ pull: string; repository: string; missing: string; self: string; change?: ChangeRef; wrapper?: WrapperInputs; merged?: string }>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
 const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readChange", "requestReview", "armMerge", "subscribe"] as const;
@@ -81,6 +81,18 @@ const withWrapper = (reason: string, run: (subject: Subject & { inputs: WrapperI
 });
 
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
+  "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged": {
+    applies: ({ host }) => typeof host.readMergedFindings === "function",
+    reason: "the code host has no readMergedFindings, which is optional (contract 1.4)",
+    run: ({ host, probe }) => {
+      expect(host.readMergedFindings!(probe.missing) === null, "readMergedFindings must answer null for what it cannot read: null is never 'it found nothing'");
+      expect(host.readMergedFindings!(probe.pull) === null, "readMergedFindings must answer null for a pull request that has not merged, whose findings are not final");
+      if (probe.merged === undefined) return;
+      const found = host.readMergedFindings!(probe.merged);
+      expect(isObject(found) && isString(found.title) && Number.isInteger(found.number) && isString(found.body) && Array.isArray(found.sections), `readMergedFindings(${probe.merged}) must read { title, number, body, sections }`);
+      expect(found.sections.every((section) => isString(section.file) && isString(section.heading) && isString(section.text)), "each section must be { file, heading, text }");
+    },
+  },
   "readChange reads a change, and answers null for one it cannot": withChange("the port's reads are not asked", ({ host, change }) => {
     const facts = host.readChange(change);
     expect(isObject(facts) && isString(facts.head) && Array.isArray(facts.checks) && Array.isArray(facts.reviews) && isObject(facts.merge), "readChange must read { ref, head, checks, reviews, merge }");

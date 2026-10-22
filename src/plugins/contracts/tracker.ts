@@ -1,5 +1,5 @@
 // @ts-check
-// module: the tracker contract, version 1.2 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
+// module: the tracker contract, version 1.3 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
 // A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
 // implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
@@ -9,11 +9,15 @@
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
 //
+// 1.3 (A11-167) ADDS the optional `updatedAt` of a `Ticket`, and the optional `texts` and `detachPlan`: the board checks the description of every queued and running ticket in one request, and detaches a plan whose
+// description has changed before the ticket is planned again (ADR 0005). All three are optional, so a 1.2 tracker still passes: a source without `texts` never marks a plan stale, and one without
+// `detachPlan` cannot re-plan.
+//
 // 1.2 (A11-168) ADDS the optional `claim` and `claims`: an instance records in the tracker that it started a ticket, and reads whose claim a ticket carries, so "another instance holds this ticket"
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.2";
+export const TRACKER_CONTRACT_VERSION = "1.3";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -32,6 +36,11 @@ export type Ticket = Readonly<{
   url: string;
   /** The branch the tracker links a pull request by. */
   branch: string;
+  /**
+   * When the tracker last changed the ticket, as an ISO time (A11-167). A brief says which version of the ticket it carries by it. The tracker moves it on every state move and attachment, so it
+   * is shown and never compared: a changed description is told by its hash (`ticket-read.ts`). Absent from a ticket stored on the queue before it was read, and from a source that does not read it.
+   */
+  updatedAt?: string;
   /** The status's name and its position in the team's workflow, for grouping the board the way the tracker does. */
   status: string;
   /** The state's type as the tracker names it, such as `started` for In Progress: absent from a source that does not read it (A11-144). */
@@ -75,6 +84,9 @@ export type Ticket = Readonly<{
 
 /** A person in the tracker, as a ticket names them: the id that tells two people with one name apart, and the name shown. */
 export type Assignee = Readonly<{ id: string; name: string }>;
+
+/** A ticket's description and when the tracker last changed the ticket, as `texts` gives them (A11-167). */
+export type TicketText = Readonly<{ description: string; updatedAt: string }>;
 
 /** A pull request's state as the tracker last saw it. A draft, or one in review, is `open`. */
 export type PullState = "open" | "merged" | "closed";
@@ -200,6 +212,18 @@ export interface TicketSource {
    * that was cut off can be repeated. A source without it takes no plans, so the board offers no planning. Throws when the tracker refuses.
    */
   attachPlan?(key: string, files: readonly string[], state: string | null): Promise<string | null>;
+  /**
+   * The description and `updatedAt` of each key's ticket as the tracker holds them now, for the keys it has a ticket for, in one request however many keys: the board checks every queued and
+   * running ticket on each refresh. A key the tracker has no ticket for is left out. A source without it never marks a plan stale and never tells a running worker of a change (A11-167).
+   * Throws when the tracker cannot be asked.
+   */
+  texts?(keys: readonly string[]): Promise<ReadonlyMap<string, TicketText>>;
+  /**
+   * Remove the ticket's attachments titled `titles`, which a re-plan does before the planner is asked to plan the ticket again: the planning skill refuses a ticket that already has a plan
+   * (A11-167). A title the ticket does not have is not an error, so an attempt that was cut off can be repeated, and an attachment under any other title is left alone. A source without it
+   * cannot re-plan, and the board then keeps the plan it has. Throws when the tracker refuses.
+   */
+  detachPlan?(key: string, titles: readonly string[]): Promise<void>;
   /**
    * Move the ticket to the state named `state` as a worker starts implementing it, when it has not started yet. A ticket already started, or
    * finished, is left where it is, and `moved` is null. When it moves, `moved` is the state it was in and the one it is in now, so the board can

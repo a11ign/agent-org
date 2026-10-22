@@ -20,6 +20,8 @@ import { DECISIONS_FILE, MAX_CREATED, type Priority } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { openDecisionOf, sectionsNeeded } from "./open-decisions.ts";
+import { diffText, type Finding, findingsText, readLine, type Replan, replanText } from "./brief-ticket-text.ts";
+import type { TicketRead } from "./ticket-read.ts";
 
 /** The file a worker writes last, and the one thing the pool and the stop hook read to know a run has ended. */
 export const OUTCOME_FILE = "outcome.json";
@@ -232,7 +234,7 @@ This machine lets you call the connector tools whose names match ${connectors.ma
  * The section naming the tickets this one waited on, or nothing for a ticket that waited on none. A blocker's merge can come minutes before the
  * release it feeds, such as a package version, so the worker checks the release is out rather than finding it missing.
  */
-function blockersText(blockers: readonly Blocker[]): string {
+function blockersText(blockers: readonly Blocker[], findings: readonly Finding[] = []): string {
   if (blockers.length === 0) return "";
   const pulls = (blocker: Blocker) => Object.entries(blocker.pulls).map(([url, state]) => `${url} (${state})`).join(", ") || "no pull request linked";
   return `
@@ -243,7 +245,7 @@ This ticket waited until each of these was done:
 ${blockers.map((blocker) => `- ${blocker.key}, ${blocker.status}: ${pulls(blocker)}`).join("\n")}
 
 If your work depends on something one of them releases, such as a new package version, check that the release is out before you rely on it, for example with \`gh release list --repo <owner>/<repo>\` or the package registry. A release can follow its merge by some minutes: wait for it rather than fail.
-`;
+${findings.length === 0 ? "" : `\nWhat their merged pull requests found is saved in these files. Read each: it may change how this ticket is worked.\n\n${findings.map(({ key, number, file }) => `- \`${file}\` (${key}, #${number})`).join("\n")}\n`}`;
 }
 
 /** How a stacked run opens its pull request, on a machine that keeps drafts and on one that does not (A11-116). */
@@ -350,9 +352,9 @@ const quoted = (description: string): string => (description.trim() || "(no desc
  * The planning run's brief, as markdown: plan the ticket with this machine's planner, change no code, and leave the plan's files in `planDir`
  * for the board to attach. `run` is the host file's `tickets.planner.run`, with the ticket and the folder filled in.
  */
-export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [] }: {
+export function planBriefText({ ticket, ticketDir, planDir, attachments, parent = null, clones, run, notes, connectors = [], read, findings = [], replan }: {
   ticket: Ticket; ticketDir: string; planDir: string; attachments: readonly string[]; parent?: ParentTicket | null;
-  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[];
+  clones: Readonly<Record<string, string>>; run: string; notes?: string; connectors?: readonly string[]; read?: TicketRead; findings?: readonly Finding[]; replan?: Replan;
 }): string {
   const repos = reposText(clones);
   const instruction = plannerInstruction(run, [ticket.key], planDir);
@@ -364,14 +366,14 @@ You are an unattended planner. Nobody will answer a question. Plan this ticket, 
 
 ${ticket.url}
 
-${ticket.description.trim() || "(no description)"}
+${readLine(read)}${ticket.description.trim() || "(no description)"}
 
 ${projectRepoLine(ticket, clones)}
 
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}
+${parentText(parent)}${findingsText(findings, "planner")}${replanText(replan)}
 ## The repositories on this machine
 
 Read them to plan, but never change them, commit in them or change their branches:
@@ -405,10 +407,10 @@ Write \`planned\` only when the plan's files are in \`${planDir}\`. A person may
 }
 
 /** One ticket of a batch, as its planning brief names it: the ticket, its downloaded files, and the ticket it is part of. */
-export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null }>;
+export type BatchTicket = Readonly<{ ticket: Ticket; attachments: readonly string[]; parent: ParentTicket | null; read?: TicketRead; findings?: readonly Finding[] }>;
 
 /** One ticket's section of a batch's brief. Its description is quoted, as a parent's is, so its headings cannot read as the brief's. */
-function batchTicketText({ ticket, attachments, parent }: BatchTicket, clones: Readonly<Record<string, string>>): string {
+function batchTicketText({ ticket, attachments, parent, read, findings = [] }: BatchTicket, clones: Readonly<Record<string, string>>): string {
   const parentPart = parent === null ? "" : `
 ### ${ticket.key} is part of ${parent.ticket.key}: ${parent.ticket.title}
 
@@ -425,14 +427,14 @@ ${filesText(parent.attachments)}
 
 ${ticket.url}
 
-${quoted(ticket.description)}
+${readLine(read)}${quoted(ticket.description)}
 
 ${projectRepoLine(ticket, clones)}
 
 ### Files from ${ticket.key}
 
 ${filesText(attachments)}
-${parentPart}`;
+${parentPart}${findingsText(findings, "planner").replace(/^\n## /, "\n### ")}`;
 }
 
 /**
@@ -522,13 +524,13 @@ function captureStep(ticketDir: string): string {
 }
 
 /** Step 6 of the brief for a worker that opens its pull requests as drafts, the default. */
-function draftPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords): string {
-  return openPullRequestStep(`ONE DRAFT pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords);
+function draftPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords, read: TicketRead | undefined): string {
+  return openPullRequestStep(`ONE DRAFT pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --draft --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords, read);
 }
 
 /** Step 6 of the brief for a worker that opens its pull requests ready for review (`tickets.drafts: false`). */
-function readyPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords): string {
-  return openPullRequestStep(`ONE READY pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords);
+function readyPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: string | null, keywords: Keywords, read: TicketRead | undefined): string {
+  return openPullRequestStep(`ONE READY pull request per repository you changed: write its body to a file, then run \`${prOpenCommand} create --title "<type>(<scope>): <what changed>" --body-file <file>\`.`, ticket, prReview, keywords, read);
 }
 
 /**
@@ -537,9 +539,11 @@ function readyPullRequestStep(ticket: Ticket, prOpenCommand: string, prReview: s
  * ticket with the tracker's closing keyword when the pull request completes it, and with its non-closing one, plus a `Partial:` line, when it is partial
  * (A11-92): the tracker closes a ticket on a merge only for the first.
  */
-function openPullRequestStep(opening: string, ticket: Ticket, prReview: string | null, { closing, nonClosing }: Keywords): string {
+function openPullRequestStep(opening: string, ticket: Ticket, prReview: string | null, { closing, nonClosing }: Keywords, read: TicketRead | undefined): string {
+  // A reviewer reads the pull request and not this brief, so the body says which version of the ticket the work was done against (A11-167).
+  const workedAgainst = read?.updatedAt == null ? "" : ` It carries the line \`Worked against the ticket as updated ${read.updatedAt}\`, so a reviewer can tell which text the work was done against.`;
   const reviewLine = prReview === null ? "" : `carries the line \`Pre-PR review: ${prReview} ran on the whole diff; it changed: <what, or nothing>\`, `;
-  return `6. Push the branch and open ${opening} The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. When the plan has numbered steps, the \`Partial:\` line begins \`step <N> of <M>\`, and the last step's pull request names the ticket \`${closing} ${ticket.key}\` and has no \`Partial:\` line. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Paths\` (or its \`## Region\`, in a plan written before \`## Paths\`), and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.`;
+  return `6. Push the branch and open ${opening} The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. When the plan has numbered steps, the \`Partial:\` line begins \`step <N> of <M>\`, and the last step's pull request names the ticket \`${closing} ${ticket.key}\` and has no \`Partial:\` line. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Paths\` (or its \`## Region\`, in a plan written before \`## Paths\`), and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.${workedAgainst}`;
 }
 
 /**
@@ -551,10 +555,11 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
  * `keywords` are the two words the tracker reads a pull request's body by (`source.ts`), which the brief names; a source without its own gets the defaults.
  */
 export function briefText({ ticket, folder, ticketDir, attachments, parent = null, blockers = [], stackedOn = [], steps = [], clones, worktreeCommand, prOpenCommand, notes,
-  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null }: {
+  connectors = [], planned = false, drafts = true, designTools = false, capture = false, prReview = null, keywords = DEFAULT_KEYWORDS, repo = null, read, findings = [] }: {
   ticket: Ticket; folder: string; ticketDir: string; attachments: readonly string[]; parent?: ParentTicket | null; blockers?: readonly Blocker[];
   stackedOn?: readonly StackBase[]; steps?: readonly MergedStep[]; clones: Readonly<Record<string, string>>; worktreeCommand: string; prOpenCommand: string; notes?: string;
   connectors?: readonly string[]; planned?: boolean; drafts?: boolean; designTools?: boolean; capture?: boolean; prReview?: string | null; keywords?: Keywords; repo?: string | null;
+  read?: TicketRead; findings?: readonly Finding[];
 }): string {
   const stacked = new Set(stackedOn.map(({ key }) => key));
   const repos = Object.entries(clones).map(([name, path]) => `- \`${name}\` at \`${path}\``).join("\n");
@@ -568,12 +573,12 @@ ${PRODUCT_DECISIONS}
 
 ${ticket.url}
 
-${ticket.description.trim() || "(no description)"}
+${readLine(read)}${ticket.description.trim() || "(no description)"}
 
 ## Files from the ticket
 
 ${filesText(attachments)}
-${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)))}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}${stepsText(steps)}
+${parentText(parent)}${blockersText(blockers.filter(({ key }) => !stacked.has(key)), findings)}${stackText(stackedOn, worktreeCommand, drafts ? STACK_OPENED_AS_DRAFT : STACK_OPENED_READY)}${stepsText(steps)}
 ## Where the work lands: you decide
 
 You are in this ticket's own folder, \`${folder}\`. These are the repositories on this machine, checked out by the person you work for. Read them, but never commit or change branches in them:
@@ -591,7 +596,7 @@ ${plannedText({ planned })}1. Find the cause in the code. Fix it, with a test th
 3. Check your diff against what was asked. List each acceptance criterion in the ticket. Add each decision in its files, its parent's description and its parent's files that applies to this ticket. Find where your diff meets each one, and finish any it misses. If you leave one unmet on purpose, say which and why in the pull request body.
 4. Check what your pull request body will claim. For each behaviour it says you fixed, kept or changed, name the test assertion that checks exactly that behaviour, not a neighbouring value. Run it on the base: a fix must fail there, and a kept behaviour must pass there too. Claim nothing you have no such assertion for, or say it is unchecked.
 ${commitStep(prReview)}
-${capture ? `${captureStep(ticketDir)}\n` : ""}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords)}
+${capture ? `${captureStep(ticketDir)}\n` : ""}${drafts ? draftPullRequestStep(ticket, prOpenCommand, prReview, keywords, read) : readyPullRequestStep(ticket, prOpenCommand, prReview, keywords, read)}
 ${designTools ? DESIGN_CHECK_DONE : DESIGN_CHECK_DECLINED}
 
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
@@ -631,9 +636,9 @@ A person may answer you here after a \`needs-human\` or \`wrong-repo\` outcome. 
  * handed the run back for at its round cap, when it was (`conflictsIn`). `prReview` is the skill `tickets.prReview`
  * names, which each round runs on its whole diff before it pushes, or null for none.
  */
-export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, conflict, prReview = null }: {
+export function reviewBriefText({ ticket, folder, ticketDir, prs, notes, reviewNotes, connectors = [], resumed, feedback, asked = false, conflict, prReview = null, read, previous }: {
   ticket: Ticket; folder: string; ticketDir: string; prs: readonly PullRequest[]; notes?: string; reviewNotes?: string;
-  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; conflict?: string; prReview?: string | null;
+  connectors?: readonly string[]; resumed: boolean; feedback?: string; asked?: boolean; conflict?: string; prReview?: string | null; read?: TicketRead; previous?: TicketRead;
 }): string {
   const list = prs.map(({ repo, url }) => `- ${url}, worked in \`${folder}/${repo}\``).join("\n");
   const who = resumed
@@ -651,6 +656,8 @@ ${round.opening}
 
 ${ticket.url}
 
+${readLine(read)}${quoted(ticket.description)}
+${changedText(previous, read)}
 ## The pull requests
 
 ${list}
@@ -678,6 +685,28 @@ ${outcomeExamples(["reviewed", "needs-human"])}
 \`\`\`
 
 ${round.reviewed} A person may answer you here after a \`needs-human\` outcome. If one does, carry on with what they said, and write the outcome file again as the last thing you do.
+`;
+}
+
+/**
+ * The review round's section on a ticket that changed since the round before it read it: when each text was read and last updated, the lines that differ, and the text the round read before (A11-167). Nothing
+ * when the description is the same, or when the round before it is not known.
+ */
+function changedText(previous: TicketRead | undefined, read: TicketRead | undefined): string {
+  if (previous === undefined || read === undefined || previous.hash === read.hash) return "";
+  const when = (text: TicketRead): string => (text.updatedAt === null ? `read at ${new Date(text.readAt).toISOString()}` : `last updated ${text.updatedAt}`);
+  return `
+### The ticket changed since your last round
+
+The description above is the latest (${when(read)}). Your last round read it when it was ${when(previous)}. These lines differ:
+
+${diffText(previous.description, read.description)}
+
+The description your last round read:
+
+${quoted(previous.description)}
+
+Check your pull requests against the new text, and say in your reply what the change meant for them.
 `;
 }
 

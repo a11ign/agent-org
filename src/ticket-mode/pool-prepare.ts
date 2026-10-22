@@ -3,6 +3,8 @@
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
+import { findingsOf } from "./pool-ticket-text.ts";
+import { ticketReadOf } from "./ticket-read.ts";
 import { findFolderSession, findTranscript } from "./pool-transcripts.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
 import { DEFAULT_KEYWORDS, type Ticket, type TrackerWriting } from "./source.ts";
@@ -18,6 +20,7 @@ import { type DenyRule } from "./settings.ts";
 import { type PoolContext } from "./pool-context.ts";
 import { pluginCopiesOf } from "./pool-pin.ts";
 import { recordPluginCopy } from "./queue/queue-pins.ts";
+import { recordBriefed, recordFindingsGiven } from "./queue/queue-ticket-text.ts";
 
 const SETTINGS_FILE = ".claude/settings.local.json";
 
@@ -84,6 +87,9 @@ async function parentOf(ctx: PoolContext, ticket: Ticket, dir: string): Promise<
 export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder: string; dir: string; resume?: string }> {
   const { hook, settings, source, store } = ctx;
   const ticket = await current(ctx, entry.ticket);
+  // The text this brief is written from, and the findings of the blockers' merged pull requests the run has learned from (A11-167).
+  const read = ticketReadOf(ticket, ctx.now());
+  const findings = findingsOf(entry);
   const dir = ticketDir(settings, ticket.key);
   const folder = ticketFolder(settings, ticket.key);
   clearRunDir(ctx, folder, dir);
@@ -96,18 +102,22 @@ export async function prepare(ctx: PoolContext, entry: Entry): Promise<{ folder:
   if (entry.review !== undefined) {
     resume = sessionToResume(ctx, entry);
     writeFileSync(join(dir, BRIEF_FILE), reviewBriefText({ ticket, folder, ticketDir: dir, prs: entry.review, notes, reviewNotes: notesFile(settings.review, "tickets.review"),
-      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, conflict: entry.conflict, prReview: settings.prReview }));
+      connectors, resumed: resume !== undefined, feedback: entry.feedback, asked: entry.asked === true, conflict: entry.conflict, prReview: settings.prReview, read, previous: entry.briefedAgainst }));
     writeFileSync(join(dir, REVIEW_FILE), `${JSON.stringify(entry.review)}\n`);
   } else if (isPlanning(ctx, entry) && settings.planner) {
+    const replan = entry.previousPlan === undefined ? undefined : { files: entry.previousPlan, ...(entry.ticketChange ? { change: entry.ticketChange } : {}), findings: findings.length > 0 };
     writeFileSync(join(dir, BRIEF_FILE), planBriefText({ ticket, ticketDir: dir, planDir: emptyPlanDir(dir), attachments, parent, clones: settings.clones, run: settings.planner.run,
-      notes, connectors }));
+      notes, connectors, read, findings, ...(replan ? { replan } : {}) }));
+    update(ctx, (queue) => recordFindingsGiven(queue, ticket.key, findings.map(({ url }) => url)));
   } else {
     const worktreeCommand = `${hook.node} ${hook.bin} ticket:worktree`;
     const prOpenCommand = `${hook.node} ${hook.bin} pr:open`;
     writeFileSync(join(dir, BRIEF_FILE), briefText({ ticket, folder, ticketDir: dir, attachments, parent, blockers: entry.blockers,
       stackedOn: stackedOn(entry, store.get().entries), steps: entry.steps, clones: settings.clones, worktreeCommand, prOpenCommand, repo: repoOf(entry),
-      notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS }));
+      notes, connectors, planned: entry.planned === true, drafts: settings.drafts, designTools: settings.designTools, capture: settings.capture, prReview: settings.prReview, keywords: source.keywords ?? DEFAULT_KEYWORDS,
+      read, findings }));
   }
+  update(ctx, (queue) => recordBriefed(queue, [ticket.key], read));
   writeRunFiles(ctx, entry, folder, dir);
   recordPluginCopies(ctx, [entry.ticket.key], folder);
   return { folder, dir, ...(resume ? { resume } : {}) };
@@ -182,10 +192,13 @@ export async function prepareBatch(ctx: PoolContext, members: readonly Entry[]):
     const ticket = await current(ctx, member.ticket);
     const own = ticketDir(settings, ticket.key);
     mkdirSync(own, { recursive: true });
-    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own) });
+    tickets.push({ ticket, attachments: await source.download(ticket, own), parent: await parentOf(ctx, ticket, own), read: ticketReadOf(ticket, ctx.now()), findings: findingsOf(member) });
   }
   writeFileSync(join(dir, BRIEF_FILE), batchPlanBriefText({ tickets, runDir: dir, planDir: emptyPlanDir(dir), clones: settings.clones, run: settings.planner.run,
     notes: notesFile(settings.brief, "tickets.brief"), connectors: settings.connectors }));
+  for (const { ticket, read, findings } of tickets) {
+    update(ctx, (queue) => recordFindingsGiven(recordBriefed(queue, [ticket.key], read!), ticket.key, (findings ?? []).map(({ url }) => url)));
+  }
   writeRunFiles(ctx, lead, folder, dir);
   recordPluginCopies(ctx, members.map((member) => member.ticket.key), folder);
   return { folder, dir };

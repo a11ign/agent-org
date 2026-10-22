@@ -5,6 +5,7 @@ import { afterPartialMerge, stepQueuedLine, stepRunningLine } from "./plan-steps
 import { rebaseNote, retargetNote, settledByPulls, verdictNote, workingNote } from "./pull-status-and-notes.ts";
 import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
 import { clockOf, shortVersion, versionLine, type UpdateView } from "./update-banner.ts";
+import { ticketChangeLine } from "./ticket-change.ts";
 
 /** The words a card's reason line says for an answered run, in place of its question. */
 const ANSWER_LINE: Readonly<Record<PullAnswer, string>> = { approved: "Approved", answered: "Answered: awaiting review" };
@@ -57,7 +58,8 @@ export function reasonOf(entry: ViewEntry): Readonly<{ line: string | null; ques
   if (answer !== null) return { line: ANSWER_LINE[answer], question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).
   const asking = entry.handedBack !== undefined && entry.outcome?.kind === "needs-human" ? once(entry.outcome.reason ?? null) : null;
-  return { line: asked ?? stepNote(entry), question: asking };
+  // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167).
+  return { line: ticketChangeLine(entry) ?? asked ?? stepNote(entry), question: asking };
 }
 
 

@@ -1117,3 +1117,23 @@ test("A11-168: a merged partial run is not Completed: it needs a person while no
   const queued = queueNextStep(queuedA(), "A", { step: 1, of: 2, prs: [PR_1] }, 5);
   assert.deepEqual(queued.entries.map((e) => e.steps), [undefined]);
 });
+
+test("A11-167: a stale plan written again leaves the run what it had: the record of its move, its merged steps and the overlap it was started past, and the choice it was planned with", () => {
+  const move = { from: "Todo", to: "In Progress" };
+  const steps = [{ step: 1, of: 2, prs: [] }];
+  const overlap = { holder: "B", pull: null, path: "src/a.ts", at: 5 };
+  let queue = markStarting(enqueue(emptyQueue(1), [ticket("A")], choice, 0), "A", 1);
+  queue = { ...queue, entries: queue.entries.map((e) => ({ ...e, movedFrom: move, steps, overlapOverride: overlap, plan: { model: "opus", effort: "max" } })) };
+  const [planned] = planDone(queue, "A").entries;
+  assert.deepEqual([planned.movedFrom, planned.steps, planned.overlapOverride, planned.plannedWith], [move, steps, overlap, { model: "opus", effort: "max" }]);
+  const { movedFrom: _m, steps: _s, overlapOverride: _o, plan: _p, ...bare } = queue.entries[0];
+  assert.equal("movedFrom" in planDone({ ...queue, entries: [bare] }, "A").entries[0], false, "a run with none has none");
+});
+
+test("A11-167: a retried review round keeps the text it was briefed with, so it can say what changed, and a retried planned run keeps the choice it was planned with", () => {
+  const read = { updatedAt: null, hash: "a".repeat(64), description: "old", readAt: 1 };
+  const pr = { repo: "r", url: "https://github.com/x/r/pull/1" };
+  const failed = finish({ ...queuedA(), entries: queuedA().entries.map((e) => ({ ...e, review: [pr], briefedAgainst: read, plannedWith: { model: "opus", effort: "max" } })) }, "A", { kind: "crashed", reason: "x" }, 5);
+  const [retried] = retry(failed, "A", 9).entries;
+  assert.deepEqual([retried.briefedAgainst, retried.plannedWith], [read, { model: "opus", effort: "max" }]);
+});

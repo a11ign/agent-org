@@ -5,6 +5,7 @@
 // offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
 // write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
 //
+// CONTRACT 1.3 (A11-167) adds the optional `texts` and `detachPlan`, and `updatedAt` of a ticket: `texts` answers the description a `read` gives with a time, and `detachPlan` of a title the ticket has no attachment under is no error.
 // CONTRACT 1.2 (A11-168) adds the optional `claim` and `claims`, checked together: a claim is read back as the latest, and a repeated one changes nothing.
 // CONTRACT 1.1 (A11-159): a tracker also declares what a new-ticket run files with (`TrackerWriting`, the plugin's manifest data). The caller passes it, and the suite checks that it
 // hangs together the way the hook and the brief use it: the tools it grants are covered by its filing pattern, a creation with an `id` is refused, a created key is read back by
@@ -129,6 +130,20 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     const types = await expectMap(source.stateTypes!([probe.known, probe.missing]), "stateTypes()");
     expect(isString(types.get(probe.known)), `stateTypes() must name the state type of ${probe.known}`);
     expect(!types.has(probe.missing), `stateTypes() must leave out ${probe.missing}, which the tracker has none of`);
+  }),
+  "texts answers each key's description and updatedAt, as read gives the description, and leaves out a key with no ticket": optional("texts", async ({ source, probe }) => {
+    const texts = await expectMap(source.texts!([probe.known, probe.missing]), "texts()");
+    const text = texts.get(probe.known) as { description?: unknown; updatedAt?: unknown } | undefined;
+    expect(isObject(text) && isString(text.description) && isString(text.updatedAt) && !Number.isNaN(Date.parse(text.updatedAt)), `texts() must give ${probe.known} as { description, updatedAt }, the time an ISO time`);
+    expect(text.description === (await source.read(probe.known))?.description, `texts() must give the description read(${probe.known}) gives`);
+    expect(!texts.has(probe.missing), `texts() must leave out ${probe.missing}, which the tracker has none of`);
+  }),
+  "detachPlan of a title the ticket has no attachment under changes nothing and is no error": optional("detachPlan", async ({ source, probe }) => {
+    const before = await source.read(probe.known);
+    await source.detachPlan!(probe.known, ["conformance-no-such-plan.md"]);
+    await source.detachPlan!(probe.known, ["conformance-no-such-plan.md"]);
+    const after = await source.read(probe.known);
+    expect(JSON.stringify(before?.uploads ?? []) === JSON.stringify(after?.uploads ?? []), "detachPlan must leave the attachments it was not asked to remove as they were");
   }),
   "pullStates answers a Map by key": optional("pullStates", async ({ source, probe }) => {
     await expectMap(source.pullStates!([probe.known]), "pullStates()");
