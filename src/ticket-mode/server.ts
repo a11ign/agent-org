@@ -37,7 +37,7 @@ import { runningToolVersion } from "../install/tool-versions.ts";
 import type { UpdateNote } from "./board-view/update-banner.ts";
 import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
-import { amend, childOrder, enqueue, retry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
+import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
 import { dismissWriter, loadQueue, queueWriter, saveQueue, writerOf } from "./queue.ts";
 import { hostFilePath, plansInBatches, readTicketSettings, type TicketSettings } from "./settings.ts";
@@ -334,7 +334,17 @@ function queueView(board: Pick<Board, "store" | "pool" | "update">) {
   // is sent it, without a Grill run's ticket text (A11-134).
   const queue = board.store.get();
   // `update`: the version this instance runs and the breaking update that drains, if one does (A11-169), so the page words the banner and each run's line from one reading.
-  return { ...queue, writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, update: board.update() };
+  return { ...queue, entries: queue.entries.map(shownEntry), writers: (queue.writers ?? []).map(shownWriter), held: board.pool.held?.() ?? null, pulls: board.pool.pullReviews?.() ?? {}, update: board.update() };
+}
+
+/**
+ * A run as the page is sent it, without the copies of its ticket's text the board keeps to tell a change by (`briefedAgainst`, `plannedAgainst`; A11-167): the page draws a change from `ticketChange` and
+ * `ticketChanges`, which hold the two texts of a change, and each run already carries its ticket.
+ */
+function shownEntry(entry: Entry): Entry {
+  const { briefedAgainst: _briefed, plannedAgainst: _planned, ticketChanges, talkFrom, ...shown } = entry;
+  // Only the latest change is drawn; and a talk session's copy of the run it replaced is shown as that run is.
+  return { ...shown, ...(ticketChanges ? { ticketChanges: ticketChanges.slice(-1) } : {}), ...(talkFrom ? { talkFrom: shownEntry(talkFrom as Entry) } : {}) };
 }
 
 /** A new-ticket request as the page shows it: its status, and the tickets it filed, each with its key and address (A11-135). */

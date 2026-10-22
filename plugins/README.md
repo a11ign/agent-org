@@ -9,7 +9,7 @@ the only place the repository runs `tailscale`), and `telegram` (messaging: the 
 | Plugin | Concern | What it is |
 | --- | --- | --- |
 | `linear` | tracker | Linear: where tickets are kept and read |
-| `github` | code host | GitHub: pull requests, reviews and checks, and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up; contract 1.3) |
+| `github` | code host | GitHub: pull requests, reviews and checks, and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up; contract 1.4) |
 | `local` | exposure | serves nothing: the board listens on `127.0.0.1`; refuses `serve` by name |
 | `tailscale` | exposure | `tailscale serve` for the page and the terminal, never Funnel; a path open to the internet for the event receiver (contract 1.1) |
 | `telegram` | messaging | Telegram: asks and announcements for the chairman, configured in `project.json`'s `messaging` key |

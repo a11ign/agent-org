@@ -38,6 +38,12 @@ export type ViewEntry = Readonly<{
   plan?: Readonly<{ model: string; effort: string }>;
   /** Its plan was written by a planning run, not agreed with a person. */
   planned?: boolean;
+  /** Set on a queued or planning run whose plan is stale: the description it was planned against and the one the ticket has now (A11-167). */
+  ticketChange?: Readonly<{ at: number; from: string; to: string }>;
+  /** The changes to its ticket's description sent to the live worker, in order (A11-167). */
+  ticketChanges?: readonly Readonly<{ at: number; from: string; to: string }>[];
+  /** What the planner of this queued run was given from its blockers' merged pull requests, by the pull request's address (A11-167). */
+  learned?: Readonly<Record<string, Readonly<{ key: string; number: number; file: string }>>>;
   /** Set on a review run: the pull requests a person approved. */
   review?: readonly PullRef[];
   /** What remains of the ticket, when the worker declared its pull requests partial: the run's merge does not finish the ticket (A11-92, A11-168). */

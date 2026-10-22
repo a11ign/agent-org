@@ -2,10 +2,14 @@
 // module: ending a run -- how it ended and what that does to its ticket, its plan, its proposed edit, and its ticket's state
 
 import { clearMove, type Entry, type Outcome, type ProposedEdit, type WrittenOutcome } from "./queue/queue-entries-and-outcomes.ts";
+import { type PlannedAgainst, recordStampedPlan } from "./queue/queue-ticket-text.ts";
 import { join } from "node:path";
 import { forgetRun, isPlanning, log, messageOf, runMembers, runPlace, sameRun, update, updateEach } from "./pool-state.ts";
 import { ORDER_FILE, OUTCOME_FILE, PLAN_DIR, QUESTION_FILE } from "./worker-files.ts";
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename } from "node:path";
+import { FINDINGS_HEADING, findingsSection, type PlanStamp, stampedPlan, unnamedIn, urlsNamedIn } from "./plan-stamp.ts";
+import { type TicketRead } from "./ticket-read.ts";
 import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, unpark } from "./queue/queue-transitions.ts";
 import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
@@ -126,7 +130,7 @@ const settleFailed = (entry: Entry) => (err: unknown): void => log(`${entry.batc
  * The files a planning run left in `planDir` to attach, or why they cannot be. Only plain markdown files are taken: a planning run is
  * unattended, so a link in its folder could point the board at a secret it would then upload.
  */
-function planFiles(planDir: string): { files: string[] } | { refusal: string } {
+function planFiles(planDir: string, given: readonly string[] = []): { files: string[] } | { refusal: string } {
   const names = existsSync(planDir) ? readdirSync(planDir).sort() : [];
   if (names.length === 0) return { refusal: `the planning run wrote no plan in ${planDir}` };
   const odd = names.find((name) => {
@@ -139,7 +143,42 @@ function planFiles(planDir: string): { files: string[] } | { refusal: string } {
     const bullet = productDecisionIn(readFileSync(join(planDir, name), "utf8"));
     if (bullet !== null) return { refusal: `the plan records a product decision made without asking: ${bullet}` };
   }
+  const unsaid = findingsRefusal(names.map((name) => readFileSync(join(planDir, name), "utf8")), given);
+  if (unsaid !== null) return { refusal: unsaid };
   return { files: names.map((name) => join(planDir, name)) };
+}
+
+/**
+ * Why a plan given the findings of its blockers' merged pull requests is refused, or null (A11-167): it must carry a `## What the blockers found` section that names each pull request it was given, saying
+ * how each finding applies or why it does not. A plan given none is not asked for the section. PURE.
+ */
+function findingsRefusal(plans: readonly string[], given: readonly string[]): string | null {
+  if (given.length === 0) return null;
+  if (!plans.some((plan) => findingsSection(plan) !== null)) return `the plan has no "${FINDINGS_HEADING}" section, though it was given what its blockers' pull requests found (${given.join(", ")}): it must say how each applies or why it does not`;
+  const missing = given.filter((url) => plans.every((plan) => unnamedIn(plan, [url]).length > 0));
+  return missing.length === 0 ? null : `the plan's "${FINDINGS_HEADING}" section does not name ${missing.join(", ")}: it must say how each pull request's findings apply or why they do not`;
+}
+
+/** The entry of the ticket `key`, as the queue has it now: the planning run's own, which holds the text it was briefed with. */
+const entryOf = (ctx: PoolContext, key: string): Entry | undefined => ctx.store.get().entries.find((e) => e.ticket.key === key);
+
+/**
+ * Stamp the plan a planning run wrote with the text of the ticket it was briefed with (A11-167, ADR 0005): the file that matches the host file's `tickets.plan` gets a `## Planned against` section before its
+ * `## Paths`. The board writes it, so the hash is the planning run's own read and not an agent's copy. Returns the stamp, for the run to keep. A run with no recorded read (one started before this) or a
+ * machine with no plan pattern stamps nothing, and such a plan is never read as stale.
+ */
+function stampPlan(ctx: PoolContext, files: readonly string[], read: TicketRead | undefined): PlannedAgainst | null {
+  const { settings } = ctx;
+  if (settings.plan === null || read === undefined) return null;
+  const pattern = new RegExp(settings.plan);
+  const plan = files.find((file) => pattern.test(basename(file)));
+  if (plan === undefined) return null;
+  const stamp: PlanStamp = { updatedAt: read.updatedAt, hash: read.hash, files: files.map((file) => basename(file)), description: read.description };
+  const text = stampedPlan(readFileSync(plan, "utf8"), stamp);
+  // A plan the stamp would push past the size every reader skips beyond stays as it is, unstamped: it is never read as stale, rather than unreadable for its paths.
+  if (Buffer.byteLength(text) > PLAN_FILE_BYTES) return null;
+  writeFileSync(plan, text);
+  return { ...stamp, named: urlsNamedIn(text) };
 }
 
 /**
@@ -155,16 +194,17 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
   const planDir = join(ticketDir(settings, key), PLAN_DIR);
   try {
     // Not through `attachFiles`: its extra step would queue the ticket again only after this pass has filled its slots.
-    const found = planFiles(planDir);
+    const found = planFiles(planDir, entry.findingsGiven);
     if ("refusal" in found) return end(ctx, entry, { kind: "needs-human", reason: found.refusal });
     if (source.attachPlan === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${planDir} by hand` });
+    const stamp = stampPlan(ctx, found.files, entry.briefedAgainst);
     const note = await source.attachPlan(key, found.files, settings.planner?.state ?? null);
     if (note !== null) log(note);
     // Stopped, or stopped and started again, while its plan was attached: the person's last word stands, and a newer run is not touched.
     if (!sameRun(ctx, entry)) return;
     if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
     forgetRun(ctx, name);
-    update(ctx, (queue) => planDone(queue, key));
+    update(ctx, (queue) => planDone(stamp === null ? queue : recordStampedPlan(queue, key, stamp), key));
   } catch (err) {
     if (sameRun(ctx, entry)) end(ctx, entry, { kind: "needs-human", reason: `the plan could not be attached (${messageOf(err)}): its files are in ${planDir}` });
   } finally {
@@ -175,12 +215,15 @@ async function attachPlan(ctx: PoolContext, entry: Entry): Promise<void> {
 /** Attach the plan files in `dir` to the ticket `key`. Null once they are attached, or else the outcome that hands the ticket to a person. */
 async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<Outcome | null> {
   const { settings, source } = ctx;
-  const found = planFiles(dir);
+  const member = entryOf(ctx, key);
+  const found = planFiles(dir, member?.findingsGiven);
   if ("refusal" in found) return { kind: "needs-human", reason: found.refusal };
   if (source.attachPlan === undefined) return { kind: "needs-human", reason: `this tracker takes no plans: attach the files in ${dir} by hand` };
   try {
+    const stamp = stampPlan(ctx, found.files, member?.briefedAgainst);
     const note = await source.attachPlan(key, found.files, settings.planner?.state ?? null);
     if (note !== null) log(note);
+    if (stamp !== null) update(ctx, (queue) => recordStampedPlan(queue, key, stamp));
     return null;
   } catch (err) {
     return { kind: "needs-human", reason: `the plan could not be attached (${messageOf(err)}): its files are in ${dir}` };

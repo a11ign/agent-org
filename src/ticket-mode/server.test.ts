@@ -1181,7 +1181,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.2", "enabled"], ["github", "v1.2.3", "1.3", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.3", "enabled"], ["github", "v1.2.3", "1.4", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1298,4 +1298,22 @@ test("A11-163: a host file the reader refuses is said in the plugins' answer, wh
   const pasted = board(4747, {}, { hostPath: b.hostPath, plugins: { ...b.plugins, messaging: { state: async () => ({ provider: "telegram", enabled: true, settings: { pasted: "123:SECRET-TOKEN" } }), checks: async () => [] } } });
   const [, answer] = await pasted.api("GET", "/api/plugins", {}) as [number, PluginsView];
   assert.doesNotMatch(JSON.stringify(answer), /SECRET-TOKEN/, "a key pasted into the messaging key is never sent to the page");
+});
+
+test("A11-167: the queue is sent to the page without the copies of the ticket's text the board keeps to tell a change by, and with the change it shows", async () => {
+  const b = board();
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  const read = { updatedAt: "2026-10-21T09:00:00.000Z", hash: "0".repeat(64), description: "The ticket as it was.", readAt: 1 };
+  const change = { at: 5, from: "The ticket as it was.", to: "The ticket now." };
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, briefedAgainst: read, plannedAgainst: { ...read, files: [], named: [] }, ticketChange: change })) });
+  const [, queue] = await b.api("GET", "/api/queue", {}) as [number, { entries: Record<string, unknown>[] }];
+  assert.deepEqual([queue.entries[0].briefedAgainst, queue.entries[0].plannedAgainst], [undefined, undefined]);
+  assert.deepEqual(queue.entries[0].ticketChange, change, "the page draws What changed from the change");
+  assert.ok(b.store.get().entries[0].briefedAgainst !== undefined, "the board's own copy is kept");
+  const more = [change, { ...change, at: 6, to: "The ticket later." }];
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, ticketChanges: more, talkFrom: { ...e, briefedAgainst: read } })) });
+  const [, again] = await b.api("GET", "/api/queue", {}) as [number, { entries: { ticketChanges: unknown[]; talkFrom: Record<string, unknown> }[] }];
+  assert.deepEqual(again.entries[0].ticketChanges, [more[1]], "only the latest change is drawn");
+  assert.equal(again.entries[0].talkFrom.briefedAgainst, undefined, "and a talk session's copy of the run it replaced is sent as that run is");
 });

@@ -224,6 +224,36 @@ test("stateTypes() reads every key's state type in one aliased request by team a
   assert.equal(sent.query.includes("NBF-1270"), false);
 });
 
+test("the Linear source reads updatedAt with a ticket and texts in one request", async () => {
+  const read = linear([{ data: { issues: { nodes: [node("NBF-1", { updatedAt: "2026-10-21T09:30:00.000Z", description: "Plan this." })] } } }]);
+  const ticket = await linearSource({ key: "k", fetch: read.fetch }).read("NBF-1");
+  assert.equal(ticket?.updatedAt, "2026-10-21T09:30:00.000Z");
+  assert.ok(queried(read.requests).query.includes("description updatedAt"), "updatedAt is asked for in the ticket's own read");
+  const { fetch, requests } = linear([{ data: {
+    k0: { nodes: [{ description: "Plan this.", updatedAt: "2026-10-21T09:30:00.000Z" }] },
+    k1: { nodes: [] },
+    k2: { nodes: [{ description: null, updatedAt: "2026-10-21T10:00:00.000Z" }] },
+  } }]);
+  const texts = await linearSource({ key: "k", fetch }).texts!(["NBF-1", "NBF-9999", "VE-2"]);
+  assert.deepEqual([...texts], [["NBF-1", { description: "Plan this.", updatedAt: "2026-10-21T09:30:00.000Z" }], ["VE-2", { description: "", updatedAt: "2026-10-21T10:00:00.000Z" }]]);
+  assert.equal(requests.length, 1, "one request for every key");
+  assert.match(JSON.parse(String(requests[0].init.body)).query, /description updatedAt/);
+});
+
+test("detachPlan() deletes the uploads titled as asked, leaves every other attachment, and repeats without error", async () => {
+  const links = { url: "https://github.com/a11ign/x/pull/3", title: "a pull request" };
+  const upload = (id: string, title: string) => ({ id, url: `https://uploads.linear.app/org/${id}`, title });
+  const listing = () => ({ data: { issues: { nodes: [{ attachments: { nodes: [upload("a1", "NBF-1-0001-plan-fit.md"), upload("a2", "notes.md"), { id: "a3", ...links }, upload("a4", "NBF-1-adr-0001-zoom.md")] } }] } } });
+  const { fetch, requests } = linear([listing(), { data: { attachmentDelete: { success: true } } }, { data: { attachmentDelete: { success: true } } }, { data: { issues: { nodes: [{ attachments: { nodes: [upload("a2", "notes.md"), { id: "a3", ...links }] } }] } } }]);
+  const source = linearSource({ key: "k", fetch });
+  await source.detachPlan!("NBF-1", ["NBF-1-0001-plan-fit.md", "NBF-1-adr-0001-zoom.md", "NBF-1-not-there.md"]);
+  const deleted = requests.slice(1).map(({ init }) => JSON.parse(String(init.body)));
+  assert.deepEqual(deleted.map(({ variables }) => variables.id), ["a1", "a4"], "only the plan's two uploads are deleted: not notes.md, and not the pull request link");
+  assert.match(deleted[0].query, /attachmentDelete/);
+  await source.detachPlan!("NBF-1", ["NBF-1-0001-plan-fit.md"]);
+  assert.equal(requests.length, 4, "a repeat finds nothing under the title, so it deletes nothing");
+});
+
 /** Linear's answer to the read attachPlan starts with: the ticket's id, its state's type, its team's states and its uploads. */
 const planning = (type: string, ...uploads: { url: string; title: string }[]) => ({ data: { issues: { nodes: [{
   id: "uuid-1", state: { type, name: type === "backlog" ? "Backlog" : "In Progress" }, team: { states: { nodes: [{ id: "s-backlog", name: "Backlog" }, { id: "s-planned", name: "Planned" }] } }, attachments: { nodes: uploads },
@@ -416,7 +446,7 @@ test("addBlockers() is refused when Linear answers success false, and when it ha
  * since the Pick view filters by label group. Each addition is a field of the same request, never a request of its own, and is changed here on
  * purpose: this pin is what notices a field list that grew or shrank by accident.
  */
-const FIELDS = "identifier title description url branchName priority state { name position type } team { key } project { name summary: description } assignee { id name } parent { identifier } "
+const FIELDS = "identifier title description updatedAt url branchName priority state { name position type } team { key } project { name summary: description } assignee { id name } parent { identifier } "
   + 'children(first: 50, filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { identifier } } attachments(first: 50) { nodes { url title } } '
   + "labels(first: 50) { nodes { name parent { name } } }";
 

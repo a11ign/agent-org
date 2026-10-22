@@ -15,6 +15,7 @@ import { resumesOnConflict, settledByPulls } from "./board-view/pull-status-and-
 import { recordClosedByBoard } from "./queue.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
+import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
@@ -46,6 +47,13 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
   }
   queueNextSteps(ctx);
   await completeMerged(ctx);
+  // What each queued run's blockers' merged pull requests found reaches its planner, and a change in a ticket's description reaches its stamped plan or its live worker (A11-167).
+  learnFromBlockers(ctx);
+  try {
+    await followTicketTexts(ctx);
+  } catch {
+    // the tracker could not be asked: the next refresh asks again
+  }
   // Last, so a restore the tracker is slow to answer delays none of the reads above.
   await restoreStranded(ctx);
   // The heads of the queued runs' stacked blockers come last of all: a git read per branch must not delay the tracker's own reads.

@@ -11,6 +11,7 @@ import type { PluginDeps } from "../../src/plugins/manifest.ts";
 import { ghRunner } from "./gh.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
+import { readMergedFindings } from "./merged-findings.ts";
 import { readReplies } from "./replies.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
@@ -29,6 +30,7 @@ export function createCodeHost(deps: PluginDeps): CodeHost {
     readReplies: (url, request) => readReplies(url, request, gh),
     readReviewState: (url) => readReviewState(url, gh, deps.policy),
     readPullState: (url) => readPullState(url, gh),
+    readMergedFindings: (url) => readMergedFindings(url, gh),
     openPullUrlsOf: (repository) => openPullUrlsOf(repository, gh),
     sweepRetargets: (sweep) => sweepRetargets({ ...sweep, gh }),
     readChange: () => null,

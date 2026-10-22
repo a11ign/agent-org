@@ -19,7 +19,7 @@ function workspace(...identifiers: string[]) {
   const held = new Map<string, Held>(identifiers.map((identifier, index) => [identifier, { id: `uuid-${index + 1}`, identifier, title: `Title ${identifier}`, description: `About ${identifier}`, state: "Todo", blockedBy: [], comments: [] }]));
   const byId = (id: string) => [...held.values()].find((entry) => entry.id === id);
   const node = (entry: Held) => ({
-    id: entry.id, identifier: entry.identifier, title: entry.title, description: entry.description, url: `https://linear.app/x/issue/${entry.identifier}`, branchName: entry.identifier.toLowerCase(), priority: 2,
+    id: entry.id, identifier: entry.identifier, title: entry.title, description: entry.description, updatedAt: "2026-10-21T12:00:00.000Z", url: `https://linear.app/x/issue/${entry.identifier}`, branchName: entry.identifier.toLowerCase(), priority: 2,
     state: { name: entry.state, position: entry.state === "Done" ? 5 : 1, type: TYPE_OF[entry.state] }, team: { key: entry.identifier.split("-")[0], states: { nodes: STATES } },
     project: null, assignee: { id: "u-1", name: "Dan Beck" }, parent: null, children: { nodes: [] }, labels: { nodes: [] }, attachments: { nodes: [] },
     comments: { nodes: entry.comments },
@@ -61,6 +61,7 @@ function workspace(...identifiers: string[]) {
       byId(String(variables.relatedIssueId))!.blockedBy.push(byId(String(variables.issueId))!.identifier);
       return { issueRelationCreate: { success: true } };
     }
+    if (text.includes("attachmentDelete")) return { attachmentDelete: { success: true } };
     throw new Error(`the workspace does not answer: ${text}`);
   };
   let comments = 0;
@@ -85,6 +86,8 @@ test("the Linear plugin passes the tracker contract suite, every check of it tha
   assert.deepEqual(result.skipped, [], "Linear implements every optional operation and declares its writing, so the suite skips none");
   assert.ok(result.passed.includes("writing reads a created ticket's key back by the shape it declares"));
   assert.ok(result.passed.includes("complete finishes a ticket once and leaves a finished one alone"));
+  assert.ok(result.passed.includes("texts answers each key's description and updatedAt, as read gives the description, and leaves out a key with no ticket"));
+  assert.ok(result.passed.includes("detachPlan of a title the ticket has no attachment under changes nothing and is no error"));
   assert.ok(result.passed.includes("addBlockers records a relation once, and again without error"));
   assert.ok(result.passed.includes("claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing"));
   assert.deepEqual(world.held.get("TST-1")?.comments.map(({ body }) => body).filter((body) => body.startsWith("agent-org: claimed")), ["agent-org: claimed by conformance.a", "agent-org: claimed by conformance.b"], "the repeated claim wrote no comment");

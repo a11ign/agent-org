@@ -15,7 +15,8 @@ const INPUTS: WrapperInputs = {
 function seeded() {
   const host = createFakeCodeHost("fake-worker");
   const { url, ref } = host.seedPull("owner/repo", 7, { feedback: { authors: ["a-person", "fake-worker"] } });
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS } };
+  const merged = host.seedPull("owner/repo", 8, { state: "merged", findings: { title: "feat: replay", number: 8, body: "What it found", sections: [{ file: "docs/spike.md", heading: "### Scripted replay", text: "Cookie dialogs drop pages." }] } });
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url } };
 }
 
 test("the fake code host passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
@@ -25,6 +26,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     "shape", "readOwnLogin names the account or answers null", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read", "readReplies answers a list of replies, and null for a pull request it cannot read",
     "readPullState names the state or answers null", "readReviewState reads the head, the reviews and whether the checks settled", "openPullUrlsOf lists a repository's open pull requests",
     "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes", "subscribe returns the function that cancels it",
+    "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
     "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);

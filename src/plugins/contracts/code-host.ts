@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.3 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.4 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,8 @@
 //
 // ROW MODE'S GITHUB OPERATIONS will join as an optional `rows` group of this contract, not as a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
 //
+// 1.4 (A11-167): `readMergedFindings`, OPTIONAL: what a merged pull request found (its title, its body and the markdown sections its diff added), which the planner of a ticket that waited on it is given. A plugin of 1.3 is read as one
+// that has none, and a dependent is then planned without its blockers' findings.
 // 1.3 (A11-160, step 2): `wrapper`, an OPTIONAL group: the routing wrapper every `gh` process of an org host runs through (which account or App a role acts as), as an owned file of the host. Core asks the plugin
 // for the wrapper's text and its install target and for the rules about writing it, and the plugin's own `doctorChecks` and `onboardSteps` say the rest (wrapper roles, App tokens, the App's key). A code host
 // with no `wrapper` installs none. A plugin of 1.2 is read as one that has none.
@@ -20,7 +22,7 @@ import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHost
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.3";
+export const CODE_HOST_CONTRACT_VERSION = "1.4";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -56,6 +58,12 @@ export type PullFeedback = Readonly<{
   /** Whether `files` is all of them. Read a page of 100 at a time, up to {@link MAX_FILE_PAGES}: a list cut off there is not complete. */
   filesComplete: boolean;
 }>;
+
+/** One markdown section a pull request added: the file it is in, its heading line as written (`### Scripted replay`), and the lines the pull request added under it. */
+export type FindingsSection = Readonly<{ file: string; heading: string; text: string }>;
+
+/** What a merged pull request found (A11-167): its title and number, its body, and the markdown sections it added outside `.acceptance/`, `.changeset/` and `CHANGELOG.md`. */
+export type MergedFindings = Readonly<{ title: string; number: number; body: string; sections: readonly FindingsSection[] }>;
 
 /** A reply on a pull request: a conversation comment, a review in the commented state, or a comment in a review thread. `at` is epoch milliseconds, and `url` is where it can be read. */
 export type Reply = Readonly<{ author: string; at: number; url: string; text: string }>;
@@ -161,6 +169,11 @@ export interface CodeHost extends CodeHostPort {
    * base whose branch is gone is said. A pull request that cannot be read keeps the note it had, and its head is never touched.
    */
   sweepRetargets(sweep: RetargetRequest): Record<string, string>;
+  /**
+   * What the merged pull request at `url` found (contract 1.4), or null for "could not ask": a pull request that has not merged is null too, since its findings are not final. Null is never "it
+   * found nothing". A host without it passes no findings on.
+   */
+  readMergedFindings?(url: string): MergedFindings | null;
   /** The routing wrapper of an org host (contract 1.3), or absent for a code host that installs none. */
   readonly wrapper?: CodeHostWrapper;
 }

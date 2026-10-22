@@ -2,6 +2,8 @@
 // module: starting a run -- its workspace and agent, the start dialogs it may answer, and the fill of the free slots
 
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
+import { type PlannedAgainst, recordPlannedAgainst } from "./queue/queue-ticket-text.ts";
+import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
 import { BRIEF_FILE, firstPrompt, OUTCOME_FILE, PLANNING_DENY, STALE_OUTCOME_FILE, STOP_COUNT_FILE, PUBLISH_FILE, PUBLISHED_FILE, reviewPrompt, talkPrompt, workerFlags, WRITER_FILE, writerBriefText, writerPrompt, writerTools } from "./worker-files.ts";
@@ -277,18 +279,6 @@ const withConflict = (entry: Entry, feedback: string): Entry => {
   return { ...entry, feedback: `${entry.feedback}\n${feedback}` };
 };
 
-/**
- * The plan files the tracker holds for a ticket, downloaded to a folder of their own so a plan's name never reaches the ticket's brief. None when this
- * machine names no plan. Throws when the tracker refuses the download, which is the failure a run's plan reports as its own (A11-125).
- */
-async function planFiles(ctx: PoolContext, ticket: Ticket): Promise<readonly string[]> {
-  const { settings, source } = ctx;
-  if (settings.plan === null) return [];
-  const dir = join(ticketDir(settings, ticket.key), "paths");
-  mkdirSync(dir, { recursive: true });
-  return source.download(ticket, dir);
-}
-
 /** The repository-prefixed paths a ticket's plan files declare in their `## Paths` sections, each once. A file that is not a plan, or is too large, declares none. */
 function pathsIn(files: readonly string[], plan: string | null): string[] {
   if (plan === null) return [];
@@ -311,6 +301,7 @@ function pathsIn(files: readonly string[], plan: string | null): string[] {
 async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<void> {
   if (entries.length === 0) return;
   const found = new Map<string, readonly string[]>();
+  const stamps = new Map<string, PlannedAgainst | null>();
   const failed = new Map<string, string>();
   for (const { ticket } of entries) {
     let files: readonly string[];
@@ -321,8 +312,10 @@ async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<v
       continue;
     }
     found.set(ticket.key, pathsIn(files, ctx.settings.plan));
+    // The plan's stamp is read with its paths, from the same download: it says which text of the ticket the plan was written against (A11-167).
+    stamps.set(ticket.key, plannedAgainstIn(files, ctx.settings.plan));
   }
-  update(ctx, (queue) => recordPathsFailure(recordPaths(queue, found), failed));
+  update(ctx, (queue) => recordPlannedAgainst(recordPathsFailure(recordPaths(queue, found), failed), stamps));
 }
 
 /**
@@ -383,9 +376,7 @@ function stoppedWhileStarting(ctx: PoolContext, key: string, workspace: string):
  * one, but the tracker may have changed since the ticket was queued, and no worker chooses the answer. So the ticket is read as the tracker has it now, the
  * same read `prepare` briefs the worker with, and not the copy taken when it was queued.
  */
-async function openDecisionHold(ctx: PoolContext, entry: Entry): Promise<string | null> {
-  return needsDecision(await current(ctx, entry.ticket))?.reason ?? null;
-}
+const openDecisionHold = (fresh: Ticket): string | null => needsDecision(fresh)?.reason ?? null;
 
 /** Open the run's workspace and start its agent there, and record the run as running. False when a person stopped it while it started. */
 async function openRun(ctx: PoolContext, entry: Entry, folder: string, dir: string, resume?: string): Promise<boolean> {
@@ -457,19 +448,23 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     }
     // A work run held by an open decision ends needs-human with its reason (A11-134); a review round may wait on its stacked base instead. Only a work run
     // reads the tracker here, so a planning run or a review round starts as it did before.
-    const held = isPlanning(ctx, entry) || entry.review !== undefined ? null : await openDecisionHold(ctx, entry);
-    const merge = entry.review !== undefined && entry.stackBase !== undefined ? await mergeBeforeRound(ctx, entry) : NO_MERGE;
+    const isWork = !isPlanning(ctx, entry) && entry.review === undefined;
+    const fresh = isWork ? await current(ctx, entry.ticket) : undefined;
+    const held = fresh === undefined ? null : openDecisionHold(fresh);
+    // A work run whose plan was stamped with a description the ticket no longer has, or that a blocker's findings reached after the plan was written, plans again before it starts (A11-167).
+    const queuedRun = held === null && fresh !== undefined ? await replanStale(ctx, entry, fresh) : entry;
+    const merge = queuedRun.review !== undefined && queuedRun.stackBase !== undefined ? await mergeBeforeRound(ctx, queuedRun) : NO_MERGE;
     const blocked = held ?? merge.held;
     if (blocked !== null) {
       update(ctx, (queue) => finish(queue, entry.ticket.key, { kind: "needs-human", reason: blocked }, now()));
       return;
     }
-    const round = merge.feedback === null ? entry : withConflict(entry, merge.feedback);
+    const round = merge.feedback === null ? queuedRun : withConflict(queuedRun, merge.feedback);
     const { folder, dir, resume } = await prepare(ctx, round);
     if (!(await openRun(ctx, round, folder, dir, resume))) return;
-    if (!isPlanning(ctx, entry)) moveTicketToWorkingState(ctx, entry.ticket.key);
+    if (!isPlanning(ctx, queuedRun)) moveTicketToWorkingState(ctx, entry.ticket.key);
     if (entry.review === undefined && entry.talk !== true) claimTicket(ctx, entry.ticket.key);
-    await settleStart(ctx, runPlace(ctx, entry));
+    await settleStart(ctx, runPlace(ctx, queuedRun));
   } catch (err) {
     update(ctx, (queue) => finish(queue, entry.ticket.key, crashed(err), now()));
   }
