@@ -1,10 +1,11 @@
 // @ts-check
-// module: a round and a Talk never share a session -- before a queued review round or talk session starts, whatever else in herdr holds its Claude session or its name is waited for or closed (A11-154)
+// module: a round and a Talk never share a session -- before a queued review round or talk session starts, whatever else in herdr holds its Claude session or its name is waited for or closed (A11-154); a parked run's pane is waited for, never closed (A11-171)
 
 import { herdrRefusal } from "./pool-herdr.ts";
 import { forgetRun, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { talkSession, sessionToResume } from "./pool-prepare.ts";
-import { holdForSession } from "./queue/queue-transitions.ts";
+import { holdForSession, runOf } from "./queue/queue-transitions.ts";
+import { isParked } from "./board-view/pull-status-and-notes.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type PoolContext } from "./pool-context.ts";
 
@@ -57,29 +58,41 @@ function closeLeftover(ctx: PoolContext, entry: Entry, occupant: Occupant): stri
 }
 
 /**
- * Settle one queued round or talk session against what holds its session: a working agent holds it back, with the wait recorded on the run; an agent that is idle, done or
- * has no pane is the run's own leftover, and its workspace is closed first, said in the log and on the run. A workspace herdr will not close holds it back too.
+ * Settle one run's queued round or talk sessions against what holds its session (`members` are its tickets: a batch's talk sessions are one run, with one session): a working agent
+ * holds it back, with the wait recorded on each; so does a parked run's pane, which is the person's to answer or close and is never a leftover (A11-171). An agent that is idle,
+ * done or has no pane is the run's own leftover, and its workspace is closed first, once, said in the log and on each. A workspace herdr will not close holds it back too.
  */
-function settleSession(ctx: PoolContext, entry: Entry, holders: readonly Occupant[]): void {
-  const key = entry.ticket.key;
+function settleSession(ctx: PoolContext, members: readonly Entry[], holders: readonly Occupant[], parked: ReadonlySet<string>): void {
+  const [entry] = members;
   const what = entry.talk === true ? "this talk session" : "this round";
   const working = holders.find((o) => !LEFTOVER.has(o.status));
+  const waitingForPerson = holders.find((o) => parked.has(o.workspace));
   const closed: string[] = [];
   let refused: { workspace: string; why: string } | null = null;
   if (working === undefined) {
-    for (const occupant of holders) {
+    for (const occupant of holders.filter((o) => !parked.has(o.workspace))) {
       const why = closeLeftover(ctx, entry, occupant);
       if (why === null) closed.push(occupant.workspace);
       else refused = { workspace: occupant.workspace, why };
     }
   }
   const wait = working !== undefined ? `Waits for the Talk session in ${working.workspace} to end`
-    : refused !== null ? `Waits for the Talk session in ${refused.workspace}: herdr would not close it (${refused.why})` : undefined;
+    : waitingForPerson !== undefined ? `Waits for the person to answer in ${waitingForPerson.workspace}`
+      : refused !== null ? `Waits for the Talk session in ${refused.workspace}: herdr would not close it (${refused.why})` : undefined;
   const note = closed.length > 0 ? `Closed the Talk session in ${closed.join(", ")} before ${what}` : undefined;
-  if (note !== undefined) log(`${key}: ${note}`);
-  const recorded = ctx.store.get().entries.find((e) => e.ticket.key === key)?.sessionWait;
-  // Written only when the wait changed or something was closed, so a pass that finds the same hold does not rewrite the queue.
-  if (wait !== recorded || note !== undefined) update(ctx, (queue) => holdForSession(queue, key, wait, note));
+  if (note !== undefined) log(`${members.map(({ ticket }) => ticket.key).join(", ")}: ${note}`);
+  for (const { ticket: { key } } of members) {
+    const recorded = ctx.store.get().entries.find((e) => e.ticket.key === key)?.sessionWait;
+    // Written only when the wait changed or something was closed, so a pass that finds the same hold does not rewrite the queue.
+    if (wait !== recorded || note !== undefined) update(ctx, (queue) => holdForSession(queue, key, wait, note));
+  }
+}
+
+/** The queued entries grouped by the run they start: a batch's tickets are one, every other entry is its own. */
+function byRun(entries: readonly Entry[]): Entry[][] {
+  const runs = new Map<string, Entry[]>();
+  for (const entry of entries) runs.set(runOf(entry), [...(runs.get(runOf(entry)) ?? []), entry]);
+  return [...runs.values()];
 }
 
 /**
@@ -93,11 +106,12 @@ export function settleSessions(ctx: PoolContext): void {
   if (waiting.length === 0 || queue.paused) return;
   const occupants = readOccupants(ctx);
   if (occupants === null) return;
-  for (const entry of waiting) {
+  const parked = new Set(queue.entries.filter(isParked).flatMap(({ workspace }) => (workspace === undefined ? [] : [workspace])));
+  for (const members of byRun(waiting)) {
     try {
-      settleSession(ctx, entry, holdersOf(ctx, entry, occupants));
+      settleSession(ctx, members, holdersOf(ctx, members[0], occupants), parked);
     } catch (err) {
-      log(`${entry.ticket.key}: what holds its session could not be settled: ${messageOf(err)}`);
+      log(`${members[0].ticket.key}: what holds its session could not be settled: ${messageOf(err)}`);
     }
   }
 }

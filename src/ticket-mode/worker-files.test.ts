@@ -147,6 +147,12 @@ test("both briefs tell a worker to stop for a person when a skill they name is m
   }
 });
 
+test("A11-171: a batch's brief tells its planner that a person may answer in the terminal, and to swap an answered ticket's QUESTION.md for its plan files", () => {
+  const brief = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  assert.ok(brief.includes("A person may answer you here after a `needs-human` outcome, and after a `planned` one that leaves a `QUESTION.md`: the board keeps this terminal open for them."));
+  assert.ok(brief.includes("once a person answers a ticket's question, replace that ticket's `QUESTION.md` with its plan files, and write the outcome file again as the last thing you do."));
+});
+
 test("A11-77: a batch's brief teaches the wait field: stacking for code that builds on the blocker's diff, merged for work that needs its change live", () => {
   const brief = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
   for (const part of ["\"wait\": \"stacked\" or \"merged\"", "With no `wait`, or `\"stacked\"`, the ticket is stacked", "Choose this when the code builds on the blocker's diff.",

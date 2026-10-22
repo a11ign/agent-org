@@ -320,9 +320,13 @@ export function finish(queue: Queue, key: string, outcome: Outcome, now: number,
   return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), ...lastTerminalOf(entry), workspace: undefined, pane: undefined }));
 }
 
-/** The run has ended and keeps its workspace and pane, where a person can answer its agent. */
+/**
+ * The run has ended and keeps its workspace and pane, where a person can answer its agent. A talk session stays one while it waits there for the person, so the board
+ * says Talking and not that the run needs them (A11-171), and the run it replaced stays with it, so a session that ends again is judged as before: the mark goes when the run
+ * ends for good, or its workspace is closed ({@link unpark}).
+ */
 export function park(queue: Queue, key: string, outcome: Outcome, now: number, record: RunRecord = {}): Queue {
-  return replace(queue, key, (entry) => ended(entry, outcome, now, record));
+  return replace(queue, key, (entry) => ({ ...ended(entry, outcome, now, record), ...(entry.talk === true ? { talk: true, ...(entry.talkFrom ? { talkFrom: entry.talkFrom } : {}) } : {}) }));
 }
 
 /**
@@ -354,9 +358,13 @@ export function markResumed(queue: Queue, key: string): Queue {
     : entry));
 }
 
-/** A parked run's workspace is closed: the run keeps its outcome and holds no workspace. */
+/** A parked run's workspace is closed: the run keeps its outcome and holds no workspace, and a talk session it was is over (A11-171). */
 export function unpark(queue: Queue, key: string): Queue {
-  return replace(queue, key, (entry) => (isParked(entry) ? { ...entry, ...lastTerminalOf(entry), workspace: undefined, pane: undefined } : entry));
+  return replace(queue, key, (entry) => {
+    if (!isParked(entry)) return entry;
+    const { talk: _over, talkFrom: _replaced, ...rest } = entry;
+    return { ...rest, ...lastTerminalOf(entry), workspace: undefined, pane: undefined };
+  });
 }
 
 /**

@@ -232,8 +232,9 @@ async function attachFiles(ctx: PoolContext, key: string, dir: string): Promise<
 
 /**
  * Attach each plan a batch's run left to its own ticket, and queue that ticket again to be worked. A ticket the run asked a question about, or
- * wrote nothing for, ends for a person, and the others carry on. The batch's order is recorded in the tracker first, so no ticket of the batch
- * starts before its blockers are there to be read.
+ * wrote nothing for, is handed back to a person and parked (A11-171): the run keeps its workspace and pane, which the person answers it in, and the tickets that were
+ * planned leave the batch. The workspace is closed only when no ticket was handed back. The batch's order is recorded in the tracker first, so no ticket of the batch
+ * starts before its blockers are there to be read. A person's answer settles the tickets still in the batch the same way, when the run writes `planned` again.
  */
 async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
   const { attaching, herdr, now, session, settings } = ctx;
@@ -254,14 +255,18 @@ async function attachBatch(ctx: PoolContext, entry: Entry): Promise<void> {
     // Stopped, or stopped and started again, while its plans were attached: the person's last word stands, and a newer run is not touched.
     const still = members.filter((member) => sameRun(ctx, member));
     if (still.length === 0) return;
-    if (entry.workspace) closedNote((args) => herdr(args), entry.workspace, session);
+    // A run that asked a person something stays open for the answer: its agent was told a person may answer it there.
+    const parks = entry.workspace !== undefined && still.some(({ ticket: { key } }) => handedBack.has(key));
+    if (entry.workspace && !parks) closedNote((args) => herdr(args), entry.workspace, session);
     forgetRun(ctx, name);
+    const id = entry.workspace === undefined ? undefined : ctx.claudeSessions.get(entry.workspace);
     updateEach(ctx, still, (queue, key) => {
       const outcome = handedBack.get(key);
       const refused = misplaced.get(key);
-      if (outcome === undefined && refused !== undefined) return finish(batchPlanDone(queue, key, null), key, { kind: "needs-human", reason: refused }, now());
+      if (outcome !== undefined) return (parks ? park : finish)(queue, key, outcome, now(), id === undefined ? {} : { session: id });
+      if (refused !== undefined) return finish(batchPlanDone(queue, key, null), key, { kind: "needs-human", reason: refused }, now());
       const place = order.get(key);
-      return outcome === undefined ? batchPlanDone(queue, key, place?.repo ?? null, mergeWaits(place)) : finish(queue, key, outcome, now());
+      return batchPlanDone(queue, key, place?.repo ?? null, mergeWaits(place));
     });
   } catch (err) {
     const [still] = members.filter((member) => sameRun(ctx, member));
@@ -289,9 +294,17 @@ async function planOneOfBatch(ctx: PoolContext, key: string, dir: string): Promi
 }
 
 /**
- * Read a batch's order from its plan folder and record it in the tracker: each ticket blocked by the tickets of the batch it waits on. An order
- * that fails its checks records nothing and is logged, and so is a relation the tracker refuses: the plans stand without them. Returns the
- * order, empty when there is none to use.
+ * The tickets the batch's run has a folder for under `planDir` that are on the board: those it was planned with, including the ones planned and gone from the batch since.
+ * A folder that is no ticket of the board's is nothing the order may name.
+ */
+const plannedTickets = (ctx: PoolContext, planDir: string): string[] => (existsSync(planDir)
+  ? readdirSync(planDir, { withFileTypes: true }).filter((item) => item.isDirectory() && entryOf(ctx, item.name) !== undefined).map((item) => item.name) : []);
+
+/**
+ * Read a batch's order from its plan folder and record it in the tracker: each of `keys`, the tickets settled now, blocked by the tickets of the batch it waits on. The order
+ * names every ticket the batch was planned with, so it is read against those folders as well as `keys`: a run answered by a person settles only the tickets still in
+ * the batch, and the tickets planned before it are not given their relations again (A11-171). An order that fails its checks records nothing and is logged, and so is a
+ * relation the tracker refuses: the plans stand without them. Returns the order, empty when there is none to use.
  */
 async function recordOrder(ctx: PoolContext, planDir: string, keys: readonly string[]): Promise<Order> {
   const { source } = ctx;
@@ -300,14 +313,14 @@ async function recordOrder(ctx: PoolContext, planDir: string, keys: readonly str
     log(`the planning run of ${keys.join(", ")} wrote no ${ORDER_FILE} as a plain file, so their order was not recorded`);
     return new Map();
   }
-  const read = parseOrder(readFileSync(path, "utf8"), keys);
+  const read = parseOrder(readFileSync(path, "utf8"), [...new Set([...keys, ...plannedTickets(ctx, planDir)])]);
   if ("refusal" in read) {
     log(`${path} was not used, so no order was recorded: ${read.refusal}`);
     return new Map();
   }
   const add = source.addBlockers?.bind(source);
   for (const [key, { after }] of read.order) {
-    if (add === undefined || after.length === 0) continue;
+    if (add === undefined || after.length === 0 || !keys.includes(key)) continue;
     try {
       await add(key, after);
     } catch (err) {

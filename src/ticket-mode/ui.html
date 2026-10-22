@@ -87,7 +87,7 @@
   .empty { padding: 32px 16px; color: var(--muted); text-align: center; }
   .icon { width: 16px; height: 16px; margin-top: 2px; display: block; }
   .icon svg { width: 16px; height: 16px; display: block; }
-  .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); } .st-waiting { color: var(--st-needs); }
+  .st-queued, .st-blocked { color: var(--st-queued); } .st-working { color: var(--st-progress); } .st-needs-you { color: var(--st-needs); } .st-talking { color: var(--st-review); } .st-waiting { color: var(--st-needs); }
   .st-publishing { color: var(--st-progress); } .st-published { color: var(--st-done); }
   .action-respond { display: inline-flex; align-items: center; gap: 4px; } .action-respond .action-icon { color: var(--st-review); display: inline-flex; }
   .action-respond svg { width: 12px; height: 12px; }
@@ -336,7 +336,7 @@
 // The decisions (what shows, how it groups, what can be selected, what status a run has and what it offers) are board-view.ts's, tested there.
 // This page only draws what they return and wires the clicks.
 import {
-  NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
+  NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, sharedRunNote, terminalTab, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
   reviewLinesOf, unlistedPulls, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
@@ -562,7 +562,7 @@ async function grillTicket(t) {
     const next = await call("POST", "/api/grill-ticket", { key: t.key });
     setWriters(next);
     report(null);
-    if (tab) openTerminalWhenReady(tab, next.runs.at(-1).id);
+    if (tab) openTerminalWhenReady(tab, writerTerminal(next.runs.at(-1).id));
   } catch (err) {
     tab?.close();
     report(err);
@@ -688,6 +688,7 @@ const ICONS = {
   "blocked": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 8h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   "working": RING,
   "planning": RING,
+  "talking": '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v7.5h-6l-3 2.5V11h-2z" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   "needs-you": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M8 4.5v4.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="11.6" r="1" fill="#fff"/></svg>',
   "awaiting-review": '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="4.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="11.5" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4.5 5.3v5.4M11.5 10.7V6.5a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   "reviewing": RING,
@@ -787,7 +788,7 @@ function row(e) {
     const title = verb === "dismiss" && hasEdit(e) ? DISMISS_EDIT_TITLE : ACTION_TITLE[verb];
     const b = el("button", { className: `icon-btn action-${verb}`, title: title ?? ACTION_LABEL[verb] });
     b.append(iconSpan(ACTION_ICON[verb]), el("span", { className: "sr-only" }, ACTION_LABEL[verb]));
-    b.addEventListener("click", () => call("POST", `/api/queue/${e.ticket.key}/${verb}`).then((q) => { state.queue = q; render(); }, report));
+    b.addEventListener("click", () => (verb === "talk" ? talkTo(e) : call("POST", `/api/queue/${e.ticket.key}/${verb}`).then((q) => { state.queue = q; render(); }, report)));
     actions.append(b);
   }
   const link = terminalLink(state.terminal, e) ?? publishTerminalLink(state.terminal, e, state.queue.publish);
@@ -818,6 +819,8 @@ function row(e) {
       el("div", { className: "title" }, el("a", { href: safeHref(e.ticket.url), target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
       el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${runChoiceLabel(e)} · ${when}${tokens}`),
       e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
+      // A batch planner's tickets share one session and one terminal: each card says so, and names the tickets it is shared with (A11-171).
+      sharedRunNote(e, state.queue.entries) ? el("div", { className: "waiting" }, sharedRunNote(e, state.queue.entries)) : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,
       stacked.length > 0 ? el("div", { className: "meta" }, stackNote(stacked)) : null,
       rebaseNote(e) ? el("div", { className: "meta" }, rebaseNote(e)) : null,
@@ -1562,7 +1565,7 @@ $("writer-start").addEventListener("click", async () => {
     setWriters(next);
     $("new-ticket-dialog").close();
     report(null);
-    if (tab) openTerminalWhenReady(tab, next.runs.at(-1).id);
+    if (tab) openTerminalWhenReady(tab, writerTerminal(next.runs.at(-1).id));
   } catch (err) {
     tab?.close();
     $("writer-note").textContent = String(err.message || err);
@@ -1573,22 +1576,57 @@ function runTerminalHref(run) {
   if (run.phase !== "running" || run.workspace === undefined) return null;
   return terminalLink(state.terminal, { ticket: { key: run.id }, phase: run.phase, workspace: run.workspace, pane: run.pane });
 }
-/** Point a grill run's blank tab at its terminal once the run has a workspace; close it when the run ends or the wait is over. */
-function openTerminalWhenReady(tab, id) {
+/**
+ * Point a blank tab at a run's terminal once the run has a pane; close it when the run ends or the wait is over. `find` answers the run's terminal link, or null while
+ * it has none, and whether the run is over (it will never have one).
+ */
+function openTerminalWhenReady(tab, find) {
   const started = Date.now();
   const look = async () => {
     if (tab.closed) return;
-    const next = await call("GET", "/api/writer").catch(() => null);
-    const run = next?.runs.find((r) => r.id === id);
-    const link = run === undefined ? null : runTerminalHref(run);
+    const { link, over } = await find();
     if (link && state.connection && safeHref(link)) {
       tab.location.href = terminalOpenHref(state.connection, link);
       return;
     }
-    if (run === undefined || run.phase === "finished" || Date.now() - started > TERMINAL_WAIT_MS) return tab.close();
+    if (over || Date.now() - started > TERMINAL_WAIT_MS) return tab.close();
     setTimeout(look, 1000);
   };
   look();
+}
+/** A new-ticket run's terminal link, read again from the board, for {@link openTerminalWhenReady}. */
+const writerTerminal = (id) => async () => {
+  const next = await call("GET", "/api/writer").catch(() => null);
+  const run = next?.runs.find((r) => r.id === id);
+  return { link: run === undefined ? null : runTerminalHref(run), over: run === undefined || run.phase === "finished" };
+};
+/** A ticket run's terminal link, read again from the queue: its pane while it is live or parked, and over once it has ended with none (A11-171). */
+const ticketTerminal = (key) => async () => {
+  const queue = await call("GET", "/api/queue").catch(() => null);
+  const run = queue?.entries.find((r) => r.ticket.key === key);
+  const live = run !== undefined && (run.phase !== "finished" || isParked(run));
+  return { link: live ? terminalLink(state.terminal, run) : null, over: run === undefined || (run.phase === "finished" && !isParked(run)) };
+};
+/** Whether a tab is still the blank one this page opened, so one that already shows a terminal is never closed by a press that failed. */
+function isBlank(tab) {
+  try { return tab.location.href === "about:blank" || tab.location.href === ""; } catch { return false; }
+}
+/**
+ * Talk to a run: its terminal opens in a tab named for the run, in the click, the only moment a browser allows it. A second press, on this card or on another card of the
+ * same batch, finds that tab, and the board starts nothing a second time, so there is one pane (A11-171). The tab goes to the run's terminal once the run has one.
+ */
+async function talkTo(e) {
+  // A machine with no terminal or no connection has no pane to point a tab at: Talk then only asks the board.
+  const tab = state.terminal && state.connection ? window.open("", terminalTab(e)) : null;
+  try {
+    state.queue = await call("POST", `/api/queue/${e.ticket.key}/talk`);
+    render();
+    // A tab that already shows the terminal (a second press) is left where it is.
+    if (tab && isBlank(tab)) openTerminalWhenReady(tab, ticketTerminal(e.ticket.key));
+  } catch (err) {
+    if (tab && isBlank(tab)) tab.close();
+    report(err);
+  }
 }
 
 /** The new-ticket requests as the board holds them, read again when they changed. */

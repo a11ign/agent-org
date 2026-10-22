@@ -275,12 +275,14 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   one worker slot. The run writes a folder per ticket in its plan folder, holding that ticket's plan files or a `QUESTION.md`, and an
   `order.json` giving each ticket's repository and the tickets of the batch it waits on. When it writes `planned`, each ticket with plan
   files has them attached and is queued again to be worked. A ticket with a question, or with nothing, ends as Needs you, and the others
-  carry on. The board records the order in the tracker as "blocks" relations, so a ticket that waits on another shows as Blocked until it
+  carry on: the run keeps its terminal open for the tickets it handed back (parked), and each of their cards says "Planned together with A, B, C: answer in the batch's terminal"
+  and links to that one terminal. The person answers there, and when the run writes `planned` again the tickets it still holds are settled the same way, the order read against
+  every ticket the batch was planned with. The board records the order in the tracker as "blocks" relations, so a ticket that waits on another shows as Blocked until it
   is done. An order that names a ticket outside the batch, a ticket waiting on itself or a cycle records no relation, and the board's log
   says why. A run that ends any other way ends every ticket of the batch that way. Stop on any ticket stops the whole run, and Retry plans
   a ticket again on its own.
 - **Board.** Every run in one list, newest activity first, each with a status icon after GitHub's Actions runs, and a filter per status
-  with its count: Needs you, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Publishing, Published, Completed, Failed and Cancelled. A run is Completed once the tracker
+  with its count: Needs you, Talking, In progress, Planning, Reviewing, Blocked, Queued, Awaiting review, Ready to merge, Publishing, Published, Completed, Failed and Cancelled. A run is Completed once the tracker
   completes its ticket, or once its pull requests have merged, as Linear's GitHub integration reports them. Linear completes a ticket on a
   merge only where its team's workflow says so. A run whose pull requests all closed unmerged is Cancelled. The board asks every two minutes. A run can be removed
   while queued, stopped while running, and retried once it has failed. The number of workers at once is set in Settings, and a change takes effect straight away. On a machine
@@ -338,7 +340,10 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   Approve. A press that cannot act says why on the board: the run has no pull request open, its ticket is completed or canceled, it is still running, or a round is queued already (A11-154).
   A run the board handed back at its cap because its pull request conflicts with its base merges that base in first, keeping both
   changes, and never rebases or force-pushes (A11-125).
-- **A round and a Talk never share a session.** A Talk is refused while a round of the run is queued or running. A queued round or Talk waits, saying "Waits for the Talk session in
+- **A round and a Talk never share a session.** A Talk is refused while a round of the run is queued or running. Talk on a run that has a Talk session already (queued, running or
+  waiting for you in its terminal) changes nothing, and the page opens the browser tab named for that run, so a second press finds the same pane. A batch is one run: Talk on any of its
+  tickets opens one pane for all of them, and every card shows Talking, never Planning. A parked run's pane is never closed as a leftover, whatever else is queued: a queued round or Talk
+  waits, saying "Waits for the person to answer in <workspace>", until the person answers or closes it. A queued round or Talk waits, saying "Waits for the Talk session in
   <workspace> to end", while an agent that is working holds the run's Claude session or its herdr name; an agent that is idle, done or has no pane is the run's leftover, and its workspace is
   closed first, said in the log and on the run. A parked run herdr no longer lists has its workspace closed as it is unparked (A11-154).
 - **Publish, once a run is Ready to merge.** On a machine that sets `tickets.publish`, each run Ready to merge has a Publish tick, and
