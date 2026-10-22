@@ -19,8 +19,7 @@ Acceptance:
 set -e
 npm run lint
 npm run typecheck
-P=$(mktemp -d); cp -r src/packaging/fixtures/project-tree/. "$P"; sed -i "s|@@PROJECT@@|$P|" "$P/.agent-org/host.json"; git -C "$P" init -q; git -C "$P" add -A; git -C "$P" -c user.name=ci -c user.email=ci@localhost commit -q -m fixture
-AGENT_ORG_HOST="$P/.agent-org/host.json" npm exec -- rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/ticket-read.test.ts src/ticket-mode/plan-stamp.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/ui.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/server.test.ts plugins/linear plugins/github src/plugins
+A11Y_PRIVATE_TMP_BASE=/tmp/ao-private-tmp npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/ticket-read.test.ts src/ticket-mode/plan-stamp.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/ui.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/server.test.ts plugins/linear plugins/github src/plugins
 ```
 
 History: full
