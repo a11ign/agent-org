@@ -3,6 +3,7 @@
 
 import { type Entry, leaveBatch, recordMove, SETTLED } from "./queue/queue-entries-and-outcomes.ts";
 import { type PlannedAgainst, recordPlannedAgainst } from "./queue/queue-ticket-text.ts";
+import { earlyCompletionComment, recordCompletedByPerson, recordReopenFailure, recordReopened } from "./queue/queue-next-step.ts";
 import { plannedAgainstIn, planFiles, replanStale } from "./pool-ticket-text.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 import { crashed, isPlanning, log, messageOf, phaseOf, publishPlace, runChoice, runPlace, update, updateEach, writerPlace } from "./pool-state.ts";
@@ -491,7 +492,11 @@ async function startOne(ctx: PoolContext, queued: Entry): Promise<void> {
     const round = merge.feedback === null ? queuedRun : withConflict(queuedRun, merge.feedback);
     const { folder, dir, resume } = await prepare(ctx, round);
     if (!(await openRun(ctx, round, folder, dir, resume))) return;
-    if (!isPlanning(ctx, queuedRun)) moveTicketToWorkingState(ctx, entry.ticket.key);
+    if (!isPlanning(ctx, queuedRun)) {
+      // A later step may be queued before the tracker's integration completes the ticket on the merge of the step before it (A11-178): put back first, so the move below finds it started.
+      if (isWork && (queuedRun.steps ?? []).length > 0) await undoEarlyCompletion(ctx, queuedRun);
+      moveTicketToWorkingState(ctx, entry.ticket.key);
+    }
     if (entry.review === undefined && entry.talk !== true) claimTicket(ctx, entry.ticket.key);
     await settleStart(ctx, runPlace(ctx, queuedRun));
   } catch (err) {
@@ -527,6 +532,31 @@ async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<vo
     await settleStart(ctx, runPlace(ctx, lead));
   } catch (err) {
     updateEach(ctx, batch.filter(({ ticket }) => phaseOf(ctx, ticket.key) === "starting"), (queue, key) => finish(queue, key, crashed(err), now()));
+  }
+}
+
+/**
+ * Ask the tracker to put back a ticket its own integration completed while the run's work was partial (A11-178), and record what it said. The integration completes a ticket on the merge of a pull request whose
+ * body carries a closing word beside the ticket's key, whatever the rest of the body declares. The tracker moves such a ticket back and posts the comment ({@link earlyCompletionComment}) naming the merged pull
+ * requests and what remains, and the run reads the tracker's state again on the next sweep, so its next step is queued like that of any partial run. A ticket a person completed is left alone, and the run reads
+ * Completed. A refusal, a tracker that cannot undo a completion, and a completion it cannot attribute are recorded on the run, which the card flags, and the next sweep asks again. Never throws.
+ */
+export async function undoEarlyCompletion(ctx: PoolContext, entry: Entry): Promise<void> {
+  const { source } = ctx;
+  const key = entry.ticket.key;
+  const undo = source.undoAutomaticCompletion?.bind(source);
+  if (undo === undefined) {
+    update(ctx, (queue) => recordReopenFailure(queue, key, "the tracker cannot put a ticket back"));
+    return;
+  }
+  try {
+    const { reopened, by, note } = await undo(key, earlyCompletionComment(entry));
+    if (reopened !== null) log(`${key}: the tracker's integration completed it while its work was partial; moved it back to ${reopened.from}`);
+    if (by === "person") update(ctx, (queue) => recordCompletedByPerson(queue, key));
+    else if (reopened !== null || by === "none") update(ctx, (queue) => recordReopened(queue, key));
+    else update(ctx, (queue) => recordReopenFailure(queue, key, note ?? "the tracker did not say why"));
+  } catch (err) {
+    update(ctx, (queue) => recordReopenFailure(queue, key, messageOf(err)));
   }
 }
 

@@ -6,7 +6,7 @@
 // its own object, which is a `TicketSource` too.
 import { writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Assignee, Blocker, People, PullState, ScopePage, StateMove, Ticket, TicketSource, TrackerWriting } from "../contracts/tracker.ts";
+import { DEFAULT_KEYWORDS, type Assignee, type AutomaticCompletionUndo, type Blocker, type People, type PullState, type ScopePage, type StateMove, type Ticket, type TicketSource, type TrackerWriting } from "../contracts/tracker.ts";
 
 /**
  * What the fake declares a new-ticket run files with (contract 1.1): tools of an `mcp__fake__` server, the numbers the contract names, and refusals worded like a real tracker's.
@@ -28,8 +28,11 @@ export const FAKE_TRACKER_WRITING: TrackerWriting = Object.freeze({
   briefNote: "Use the `mcp__fake__` tools.",
 });
 
+/** Who moved a ticket into its completed state, and the state it left (A11-178): what the fake's `undoAutomaticCompletion` reads, as the tracker's history is read. */
+type Completion = { by: "integration" | "person"; from: string; fromType: string };
+
 /** A ticket as the fake holds it: the board's ticket, with the state type the tracker would name and the relations the fake records. */
-type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: { name: string; text: string }[]; claimant?: string };
+type Held = { ticket: Ticket; statusType: string; blockedBy: string[]; pulls: Record<string, PullState>; files: { name: string; text: string }[]; claimant?: string; completion?: Completion };
 type Tickets = Map<string, Held>;
 
 const ME: Assignee = { id: "fake-me", name: "Fake Person" };
@@ -54,6 +57,12 @@ const isOpen = ({ statusType }: Held): boolean => !FINISHED.includes(statusType)
 function setStatus(entry: Held, status: string, statusType: string): void {
   entry.ticket = { ...entry.ticket, status, statusType };
   entry.statusType = statusType;
+}
+
+/** Complete the ticket as `by`, remembering the state it left, as the tracker's history does. */
+function completeBy(entry: Held, by: Completion["by"]): void {
+  entry.completion = { by, from: entry.ticket.status, fromType: entry.statusType };
+  setStatus(entry, "Done", "completed");
 }
 
 /** The reads: what the board lists, looks up and asks of the tracker. */
@@ -96,7 +105,7 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
 }
 
 /** The writes: what the board does to a ticket. Each is idempotent where the contract says so. */
-function writesOf(held: Tickets, comments: { key: string; text: string }[], claimed: { key: string; claimant: string }[]): Pick<TicketSource, "attachPlan" | "detachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "comment" | "updateTicketText" | "claim"> {
+function writesOf(held: Tickets, comments: { key: string; text: string }[], claimed: { key: string; claimant: string }[]): Pick<TicketSource, "attachPlan" | "detachPlan" | "moveToWorkingState" | "restoreState" | "undoAutomaticCompletion" | "addBlockers" | "complete" | "comment" | "updateTicketText" | "claim"> {
   return {
     async attachPlan(key, files, state) {
       const entry = heldOf(held, key);
@@ -120,6 +129,18 @@ function writesOf(held: Tickets, comments: { key: string; text: string }[], clai
       if (entry.ticket.status === move.to) setStatus(entry, move.from, "unstarted");
       return null;
     },
+    async undoAutomaticCompletion(key, comment): Promise<AutomaticCompletionUndo> {
+      const entry = heldOf(held, key);
+      if (entry.statusType !== "completed") return { reopened: null, by: "none", note: null };
+      const { completion } = entry;
+      if (completion === undefined) return { reopened: null, by: "unknown", note: `the fake has no record of who completed ${key}` };
+      if (completion.by === "person") return { reopened: null, by: "person", note: null };
+      const reopened: StateMove = { from: completion.from, to: entry.ticket.status };
+      setStatus(entry, completion.from, completion.fromType);
+      delete entry.completion;
+      comments.push({ key, text: comment });
+      return { reopened, by: "integration", note: null };
+    },
     async addBlockers(key, blockerKeys) {
       const entry = heldOf(held, key);
       for (const blocker of blockerKeys) if (!entry.blockedBy.includes(blocker)) entry.blockedBy.push(blocker);
@@ -128,7 +149,7 @@ function writesOf(held: Tickets, comments: { key: string; text: string }[], clai
       const entry = heldOf(held, key);
       if (!isOpen(entry)) return null;
       comments.push({ key, text: comment });
-      setStatus(entry, "Done", "completed");
+      completeBy(entry, "person");
       return null;
     },
     async comment(key, body) {
@@ -156,7 +177,7 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
   const claimed: { key: string; claimant: string }[] = [];
   const hold = (ticket: Ticket) => held.set(ticket.key, { ticket, statusType: ticket.statusType ?? "unstarted", blockedBy: [], pulls: {}, files: [] });
   seed.forEach(hold);
-  const source: TicketSource = { ...readsOf(held, calls), ...writesOf(held, comments, claimed), keywords: { closing: "Closes", nonClosing: "Refs" } };
+  const source: TicketSource = { ...readsOf(held, calls), ...writesOf(held, comments, claimed), keywords: DEFAULT_KEYWORDS };
   return Object.assign(source, {
     /** Add a ticket, or replace the one with its key. */
     seed: hold,
@@ -169,6 +190,10 @@ export function createFakeTracker(seed: readonly Ticket[] = []) {
     /** Name a file as uploaded to a ticket, with its text, for `download` to write and return. */
     attach(key: string, file: string, text = "") {
       heldOf(held, key).files.push({ name: file, text });
+    },
+    /** Complete a ticket as the tracker's own integration or as a person would, remembering the state it left, which `undoAutomaticCompletion` reads (A11-178). */
+    completeAs(key: string, by: Completion["by"]) {
+      completeBy(heldOf(held, key), by);
     },
     /** Set the claimant of a ticket's latest claim, as another instance's `claim` would have left it, or clear it with `undefined`. Records no write. */
     setClaimant(key: string, claimant: string | undefined) {

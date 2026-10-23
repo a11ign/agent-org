@@ -27,7 +27,7 @@ const depsWith = ({ key = KEY as string | null, mcp = MCP as string | null, file
 test("the registry finds the plugin as the bundled tracker linear, from its manifest alone, and the manifest brings its settings, tooling and writer", () => {
   const plugin = pluginNamed(defaultCatalog(), "linear");
   assert.ok(plugin !== undefined);
-  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry], ["tracker", "bundled", "1.4", "index.ts"]);
+  assert.deepEqual([plugin.concern, plugin.where, plugin.contract, plugin.entry], ["tracker", "bundled", "1.5", "index.ts"]);
   assert.deepEqual(Object.keys(plugin.settings), ["key", "key.path", "key.keychain", "connectors", "workingState", "plannedState", "takenStates"],
     "the entries the Settings page drew for the tracker, in the order it drew them");
   for (const [name, entry] of Object.entries(plugin.settings)) assert.equal(entry.key, `tickets.providers.tracker.${name}`);

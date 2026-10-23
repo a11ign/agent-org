@@ -180,6 +180,45 @@ test("A11-74: a worker's markdown around its ticket's key, or a note after it, s
   assert.equal(ticketClosesReport(`Closes ${KEY} and A11-31\n`, KEY, DEFAULT_KEYWORDS).ok, false, "a Closes that names a second ticket is refused");
 });
 
+/** The body of a11ign/agent-org#1827 in its relevant part: a partial pull request whose tests are about the grammar, so its prose quotes a closing word beside its own ticket's key. */
+const QUOTING_BODY = (example: string): string => `Refs ${KEY}\n\nPartial: step 1 of 3\n\nThe tests read the grammar, for example ${example}.\n`;
+
+test("A11-178: a partial body that carries a closing word next to its own key anywhere is refused, whatever the word, case, markdown or quoting, because the tracker completes the ticket on merge", () => {
+  for (const example of ["`Closes A11-74`", "closes A11-74", "CLOSES A11-74", "Closes: A11-74", "**Fixes** A11-74", "implements `A11-74`", "resolved (A11-74)", "completing A11-74", "close \"A11-74\"", "Fixes A11-74, A11-74"]) {
+    const report = ticketClosesReport(QUOTING_BODY(example), KEY, DEFAULT_KEYWORDS);
+    assert.equal(report.ok, false, example);
+    assert.match(report.lines.join("\n"), /the body has a `Partial:` line, but line `The tests read the grammar.*` reads as a closing word followed by A11-74/, example);
+  }
+  const fenced = ticketClosesReport(`Refs ${KEY}\nPartial: step 1 of 3\n\n\`\`\`\ngit commit -m "fixes ${KEY}"\n\`\`\`\n`, KEY, DEFAULT_KEYWORDS);
+  assert.equal(fenced.ok, false, "a fence is read as the tracker reads it");
+  assert.match(fenced.lines.join("\n"), /line `git commit -m "fixes A11-74"` reads as a closing word followed by A11-74/);
+  const refusal = ticketClosesReport(QUOTING_BODY("`Closes A11-74`"), KEY, DEFAULT_KEYWORDS).lines.join("\n");
+  assert.match(refusal, /describe it in words, such as "the closing keyword followed by the key"; spelling the word another way is not the fix/, "the refusal says what to do instead");
+});
+
+test("A11-178: a body that names another ticket after a closing word anywhere is refused, partial or not, and the line it found is in the refusal", () => {
+  for (const body of [`Closes ${KEY}\n\nThis also fixes A11-31 on the way.\n`, `Refs ${KEY}\nPartial: later\n\nSee \`resolves A11-31\`.\n`, `Closes ${KEY}\n\nFixes A11-31, ${KEY}\n`]) {
+    const report = ticketClosesReport(body, KEY, DEFAULT_KEYWORDS);
+    assert.equal(report.ok, false, body);
+    assert.match(report.lines.join("\n"), /reads as a closing word followed by .*A11-31, which is not A11-74\. The tracker completes the ticket a closing word names when the pull request merges, wherever in the body it is/, body);
+  }
+});
+
+test("A11-178: bodies that carry no closing word beside a key are as they were: a partial Refs body, a complete Closes body, and the closing keyword described in words", () => {
+  assert.equal(ticketClosesReport(`Refs ${KEY}\nPartial: step 1 of 3\n`, KEY, DEFAULT_KEYWORDS).ok, true);
+  assert.equal(ticketClosesReport(`Closes ${KEY}\n`, KEY, DEFAULT_KEYWORDS).ok, true);
+  assert.equal(ticketClosesReport(`Closes ${KEY}\n\nIt fixes the report, closes the loop and completes the grammar of ${KEY}'s body.\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a closing word that is not followed by a key reads nothing");
+  assert.equal(ticketClosesReport(QUOTING_BODY("the closing keyword followed by the key"), KEY, DEFAULT_KEYWORDS).ok, true);
+  assert.equal(ticketClosesReport(`Refs ${KEY}\nPartial: step 1 of 3\n\nIt fixes the UTF-8 handling, which Refs ${KEY} links.\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a closing word with other words before the key reads nothing");
+});
+
+test("A11-178: a tracker that declares no closing words is read by its closing keyword alone, and one that declares them is read by all of them", () => {
+  const body = QUOTING_BODY("`fixes A11-74`");
+  assert.equal(ticketClosesReport(body.replace("Refs", "Relates"), KEY, { closing: "Resolves", nonClosing: "Relates" }).ok, true, "`fixes` is not this tracker's word");
+  assert.equal(ticketClosesReport(QUOTING_BODY("`resolves A11-74`").replace("Refs", "Relates"), KEY, { closing: "Resolves", nonClosing: "Relates" }).ok, false, "`resolves` is");
+  assert.equal(ticketClosesReport(body.replace("Refs", "Relates"), KEY, { closing: "Resolves", nonClosing: "Relates", closingWords: ["fixes"] }).ok, false, "and a word it declares is read too");
+});
+
 test("A11-92: a create that links its ticket with Refs alone is refused and nothing is sent, and one that says it is partial is sent and reported as partial", () => {
   const alone = open(["--body", `Refs ${KEY}\n\nMutation: none -- x\n`, "--title", "t"]);
   assert.equal(alone.code, EXIT_NOTHING_SENT);

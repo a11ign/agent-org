@@ -214,6 +214,16 @@ export type Entry = Readonly<{
    * already finished, or its team has no completed state to move it to, which the log says once.
    */
   closedByBoard?: boolean;
+  /**
+   * Set to `person` once the tracker said a person moved the ticket to its completed state while the run's work was partial (A11-178): the person's move wins, so the board does not undo it,
+   * does not ask the tracker again, and reads the run as Completed. Dropped with the run's other state when the run is queued again.
+   */
+  completedBy?: "person";
+  /**
+   * Why the board could not put back a ticket the tracker's integration completed while the run's work was partial (A11-178): the card says it and flags the run, and the next sweep tries again.
+   * Cleared once the ticket is put back, or a person is found to have completed it.
+   */
+  reopenFailure?: string;
   /** The tickets that block this one, as last read while it is queued; unset until the tracker has been asked. */
   blockers?: readonly Blocker[];
   /**

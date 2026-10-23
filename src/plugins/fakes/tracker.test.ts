@@ -21,6 +21,7 @@ test("the fake tracker passes the tracker contract suite, and the checks that ra
     "texts answers each key's description and updatedAt, as read gives the description, and leaves out a key with no ticket",
     "detachPlan of a title the ticket has no attachment under changes nothing and is no error", "pullStates answers a Map by key", "blockers answers a Map, leaving out a key with no ticket",
     "projectSummaries answers a Map, leaving out a key with no project", "keywords name the words a pull request body is read by",
+    "undoAutomaticCompletion answers who completed the ticket, moves back only the integration's completion, and is refused for a key the tracker has none of",
     "updateTicketText writes the fields it is given and no others", "addBlockers records a relation once, and again without error",
     "claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing",
     "comment posts on a ticket in any state, and is refused for a key the tracker has none of", "complete finishes a ticket once and leaves a finished one alone",
@@ -92,4 +93,17 @@ test("A11-173: comment posts one comment on a ticket in any state, moves nothing
   assert.deepEqual(fake.comments, [{ key: "FAKE-1", text: "completed" }, { key: "FAKE-1", text: "After-merge checks for FAKE-1" }], "one call, one comment, on a ticket already completed");
   assert.equal(fake.ticketOf("FAKE-1")?.statusType, "completed", "and the ticket is where it was");
   await assert.rejects(fake.comment!("FAKE-404", "text"), /no ticket/);
+});
+
+test("A11-178: undoAutomaticCompletion moves back a completion by the integration with a comment, leaves a person's alone, and says nothing was completed otherwise", async () => {
+  const fake = createFakeTracker([fakeTicket("FAKE-1", { status: "In Progress", statusType: "started" }), fakeTicket("FAKE-2", { status: "In Progress", statusType: "started" }), fakeTicket("FAKE-3")]);
+  fake.completeAs("FAKE-1", "integration");
+  fake.completeAs("FAKE-2", "person");
+  assert.deepEqual(await fake.undoAutomaticCompletion!("FAKE-1", "put back"), { reopened: { from: "In Progress", to: "Done" }, by: "integration", note: null });
+  assert.deepEqual([fake.ticketOf("FAKE-1")?.status, fake.ticketOf("FAKE-1")?.statusType, fake.comments], ["In Progress", "started", [{ key: "FAKE-1", text: "put back" }]], "moved back to the state it left, once, with the comment");
+  assert.deepEqual(await fake.undoAutomaticCompletion!("FAKE-1", "again"), { reopened: null, by: "none", note: null }, "a ticket no longer completed is left alone, and gets no second comment");
+  assert.deepEqual(await fake.undoAutomaticCompletion!("FAKE-2", "put back"), { reopened: null, by: "person", note: null });
+  assert.deepEqual([fake.ticketOf("FAKE-2")?.status, fake.comments.length], ["Done", 1], "a person's completion stays, with no comment");
+  assert.equal((await fake.undoAutomaticCompletion!("FAKE-3", "put back")).by, "none");
+  await assert.rejects(fake.undoAutomaticCompletion!("FAKE-404", "put back"), /no ticket/);
 });

@@ -1,0 +1,17 @@
+The board no longer lets the tracker's own integration end a partial plan step (A11-178). When a pull request that declared `Partial:` merges and the tracker's integration completes its ticket anyway (agent-org#1827 quoted a closing word beside its own ticket's key in the prose of a partial body, and Linear completed the ticket two seconds after the merge), the board asks the tracker to put the ticket back (`undoAutomaticCompletion`, tracker contract 1.5, implemented by `plugins/linear` and by the fake tracker) with a comment naming the merged pull requests, the step and what remains, and the same sweep queues the next step. A completion by a person is left alone and reads Completed; a `Closes` merge completes as it did. A run the board could not put back reads Needs you with the declaration and why (`completedEarly`), and the board asks again on every sweep. Prevention: the `closes` report, which `pr:open` and CI's `acceptance` job share, reads the tracker's closing words (`closingWords`) anywhere in a body and refuses a partial body with one next to its own key, and any body with one next to another ticket's key. The worker's brief says so.
+
+Acceptance:
+```bash
+scratch=$(mktemp -d)
+mkdir "$scratch/project"
+cp -r src/packaging/fixtures/project-tree/. "$scratch/project"
+sed -i "s|@@PROJECT@@|$scratch/project|" "$scratch/project/.agent-org/host.json"
+git -C "$scratch/project" init -q
+git -C "$scratch/project" add -A
+git -C "$scratch/project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m fixture
+AGENT_ORG_HOST="$scratch/project/.agent-org/host.json" npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/partial-merge-reopen.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/pr-open-ticket.test.ts src/ticket-mode/worker-files.test.ts src/packaging/ci-closes-report-reads-a-ticket.test.ts src/plugins plugins/linear
+node --input-type=module -e 'import { ticketClosesReport } from "./src/ticket-mode/ticket-references.ts"; import { DEFAULT_KEYWORDS } from "./src/plugins/contracts/tracker.ts"; const incident = "Refs A11-127\n\nPartial: step 1 of 3\n\nThe tests read the grammar, for example `" + "Closes A11-127" + "`.\n"; const refused = ticketClosesReport(incident, "A11-127", DEFAULT_KEYWORDS); if (refused.ok) { console.error("the incident body passed"); process.exit(1); } const described = ticketClosesReport("Refs A11-127\n\nPartial: step 1 of 3\n\nThe closing keyword followed by the key is read.\n", "A11-127", DEFAULT_KEYWORDS); if (!described.ok) { console.error(described.lines.join("\n")); process.exit(1); }'
+rm -rf "${scratch:?}"
+```
+
+Consumer-declaration: none -- the tracker contract grows two OPTIONAL members (1.5: `undoAutomaticCompletion`, and `closingWords` of `Keywords`), so a 1.4 tracker plugin still passes and no host file changes meaning. `plugins/linear` declares contract 1.5. No other repository reads these modules as a library.

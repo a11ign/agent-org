@@ -2,10 +2,10 @@
 // module: the tracker's view of the queue -- refreshing what it says, completing merged tickets, and retargeting stacked pull requests
 
 import { existsSync } from "node:fs";
-import { headsToRead, readBlockers, readHeads } from "./pool-start.ts";
+import { headsToRead, readBlockers, readHeads, undoEarlyCompletion } from "./pool-start.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
-import { nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
+import { earlyCompletions, nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
 import { afterMergeDue, afterMergeUnposted, markAfterMergePosted, markAfterMergeUnposted, recordAfterMerge } from "./queue/queue-after-merge.ts";
 import { moveOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { log, messageOf, update } from "./pool-state.ts";
@@ -13,7 +13,8 @@ import { restoreStranded } from "./pool-settle.ts";
 import { startStackConflictRound } from "./pool-watch.ts";
 import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
 import { pullLabel } from "./board-view/pull-label.ts";
-import { resumesOnConflict, settledByPulls } from "./board-view/pull-status-and-notes.ts";
+import { resumesOnConflict } from "./board-view/pull-status-and-notes.ts";
+import { settledByPulls } from "./board-view/pull-settled.ts";
 import { recordClosedByBoard } from "./queue.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
@@ -22,7 +23,7 @@ import { readPlanSteps } from "./pool-plan-steps.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
- * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed, and which
+ * Ask the tracker where each finished run's ticket and pull requests stand, so a run whose pull requests merged reads as completed, except a partial run whose ticket the tracker's integration completed, which is put back (A11-178), and which
  * tickets block each queued run, so a relation changed in the tracker and a blocker finished outside the queue both count. A refused read
  * changes nothing.
  */
@@ -48,6 +49,8 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       // the tracker could not be asked: the next refresh asks again
     }
   }
+  // A ticket the tracker's integration completed on a partial merge is put back first, so the same sweep queues the next step (A11-178).
+  for (const entry of earlyCompletions(store.get())) await undoEarlyCompletion(ctx, entry);
   await readPlanSteps(ctx);
   queueNextSteps(ctx);
   await completeMerged(ctx);

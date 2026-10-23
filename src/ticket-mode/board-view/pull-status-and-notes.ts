@@ -1,18 +1,8 @@
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, pullsOf, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-types-and-filters.ts";
 import { SCAFFOLD_DIRS } from "../../scaffold-dirs.ts";
 import { pullAnswer } from "./pull-answer.ts";
+import { completedEarly, settledByPulls } from "./pull-settled.ts";
 import { currentStepOf, currentStepPaths } from "./plan-steps.ts";
-
-/**
- * A finished run's status from its pull requests alone, once each has merged or closed: completed when any merged, cancelled when every one
- * closed unmerged. `null` while one is still open, and for a run with none. The pull requests are the run's own ({@link pullsOf}), whatever its outcome
- * was: its result's, or the round's it answered. Never every pull request the ticket links, since an earlier run's merged one is not this run's work (A11-153).
- */
-export function settledByPulls(entry: ViewEntry): RunStatus | null {
-  const states = pullsOf(entry).map(({ url }) => entry.pullStates?.[url]);
-  if (states.length === 0 || !states.every((state) => state === "merged" || state === "closed")) return null;
-  return states.includes("merged") ? "completed" : "cancelled";
-}
 
 /**
  * The blockers still holding a queued run back, given every run on the queue. A blocker lets go once the tracker completes it, or, when it is on
@@ -284,13 +274,16 @@ export function cutListNote(entry: ViewEntry, entries: readonly ViewEntry[]): st
  * tracker's word wins once the run has finished: a ticket it completed is done and one it canceled is cancelled, whatever the run ended in. Then
  * its pull requests, whatever the outcome was: Linear completes a ticket on a merge only where its team's workflow says so, so a run whose pull requests
  * merged is done even while its ticket is still in progress (A11-153), unless its worker declared them partial: then the ticket is not done, and the run needs a person where
- * the board did not queue the next step (A11-168). Before either, the outcome decides, except that a `needs-human` run whose pull request
+ * the board did not queue the next step (A11-168). A ticket the tracker completed while the run's work was partial needs a person too, ahead of the tracker's word, unless a person completed it
+ * ({@link completedEarly}, A11-178). Before either, the outcome decides, except that a `needs-human` run whose pull request
  * was answered or approved is awaiting its review, not asking ({@link pullAnswer}). It never answers Publishing: that is {@link shownStatus}'s.
  */
 export function runStatus(entry: ViewEntry, entries: readonly ViewEntry[] = []): RunStatus {
   if (entry.phase === "queued") return queuedHeld(entry, entries) ? "blocked" : "queued";
   // A talk session is Talking, never Planning, though it carries its planning run's `plan` (A11-171). One whose agent is blocked on a person still needs them.
   if (entry.phase !== "finished") return entry.waiting ? "needs-you" : isTalking(entry) ? "talking" : entry.plan ? "planning" : entry.review ? "reviewing" : "working";
+  // The tracker's integration completed a ticket whose work is partial, and the board could not put it back: a person is asked, ahead of the tracker's word (A11-178).
+  if (completedEarly(entry)) return "needs-you";
   if (entry.trackerState === "completed") return "completed";
   if (entry.trackerState === "canceled" || entry.trackerState === "duplicate") return "cancelled";
   const settled = settledByPulls(entry);

@@ -1,6 +1,7 @@
 // @ts-check
 // module: the After-merge lines of a merged run's ticket, and when the board lists them (A11-173) -- PURE
-import { runStatus, settledByPulls } from "../board-view/pull-status-and-notes.ts";
+import { runStatus } from "../board-view/pull-status-and-notes.ts";
+import { settledByPulls } from "../board-view/pull-settled.ts";
 import type { AfterMergeLine } from "../board-view/view-types-and-filters.ts";
 import { afterMergeLines } from "../done-when.ts";
 import { replace, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
