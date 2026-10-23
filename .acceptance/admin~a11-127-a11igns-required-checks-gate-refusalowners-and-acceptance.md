@@ -2,7 +2,7 @@ CI's `closes` report passes a ticket-mode pull request's declaration (`Closes A1
 
 Acceptance:
 ```bash
-npx rstest run --config scripts/rstest/rstest.config.ts src/packaging/ci-closes-report-reads-a-ticket.test.ts src/packaging/closes-declaration.test.ts src/packaging/cross-repo-red-refusal.test.ts src/packaging/cross-repo-red-disarms.test.ts src/ticket-mode/pr-open-ticket.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/packaging/ci-closes-report-reads-a-ticket.test.ts src/packaging/closes-declaration.test.ts src/packaging/cross-repo-red-refusal.test.ts src/packaging/cross-repo-red-disarms.test.ts
 ```
 
 Mutation: `ciClosesReport` was made to return the row report alone, and 7 of the 12 tests in the new file went red; `cross-repo-red.ts` was put back to its base and 10 of 28 in the two cross-repo files went red. Both were restored and the suites passed again.

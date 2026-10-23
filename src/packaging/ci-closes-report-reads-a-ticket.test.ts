@@ -10,8 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { CI_BODY_REPORTS, ciClosesReport, closesDeclarationReport, extractClosesDeclaration } from "../acceptance-commands/acceptance-report-and-closure.ts";
-import { ticketClosesReport } from "../ticket-mode/pr-open-ticket.ts";
-import { DEFAULT_KEYWORDS } from "../ticket-mode/source.ts";
+import { DEFAULT_KEYWORDS } from "../plugins/contracts/tracker.ts";
+import { ticketClosesReport } from "../ticket-mode/ticket-references.ts";
 
 test("A11-127: `Closes A11-127` passes, and the line says the closing keyword completes the ticket", () => {
   assert.deepEqual(ciClosesReport("Closes A11-127\n"), { ok: true, line: "CLOSES: A11-127 -- `Closes` completes it when the pull request merges" });
