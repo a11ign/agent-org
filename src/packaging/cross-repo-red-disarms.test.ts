@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { runArmPr, EXIT } from "../arm-pr.ts";
 import { crossRepoRedMarker } from "../cross-repo-red.ts";
 import { forgetActivation } from "../plugins/active.ts";
-import { BODY, DECLARED_BODY, FILES, LAB, labWorld } from "./cross-repo-red-world.test.support.ts";
+import { BODY, DECLARED_BODY, FILES, LAB, labWorld } from "./fixtures/cross-repo-red-world.ts";
 
 afterEach(() => forgetActivation());
 

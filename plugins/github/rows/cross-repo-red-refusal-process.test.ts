@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crossRepoRedMarker } from "../../../src/cross-repo-red.ts";
-import { BODY, FILES, LAB, LAB81_LEG_LOG, LEG, PR_HEAD, PR_RUN, TRUNK_RUN } from "../../../src/packaging/cross-repo-red-world.test.support.ts";
+import { BODY, FILES, LAB, LAB81_LEG_LOG, LEG, PR_HEAD, PR_RUN, TRUNK_RUN } from "../../../src/packaging/fixtures/cross-repo-red-world.ts";
 
 const SWEEP = fileURLToPath(new URL("../../../src/auto-arm-sweep.ts", import.meta.url));
 
@@ -38,7 +38,6 @@ function driveSweep({ body = BODY, existingComment = "" }: { body?: string; exis
 echo "$*" >> "${dir}/calls"
 case "$*" in
   *"issue view 5078 "*) echo '{"blockedBy":{"nodes":[],"totalCount":0}}' ;;
-  *"issue view 5080 "*) echo '{"state":"OPEN"}' ;;
   *"issue view"*) echo 'HTTP 404' >&2; exit 1 ;;
   *timelineItems*) echo '{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}' ;;
   *"api graphql"*) echo '[{"number":81,"isDraft":false,"merged":false,"autoMergeRequest":null,"mergeQueueEntry":null}]' ;;

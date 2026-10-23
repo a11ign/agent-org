@@ -5,7 +5,7 @@
 // (`plugins/github/rows/cross-repo-red-refusal-process.test.ts`).
 /**
  * agent-org#992: A LAB PULL REQUEST WHOSE CROSS-REPO LEG FAILS ON A TEST FILE THE NEWEST TRUNK RUN PASSED IS NOT ARMED unless its body
- * declares `Cross-repo-red: <row>` naming an OPEN row.
+ * declares `Cross-repo-red: <ticket>` naming the ticket that greens it (A11-127: a ticket key, read by shape, since rows live in the tracker and the GitHub issues are closed).
  *
  * THE INSTANCE, MEASURED 2026-10-11. lab#81 (a11ign#5078, ADR 0045 cut 1) merged at 15:48:19Z. On its head `e929f712` the check run
  * `checks (cross-repo)` (id 114504845032) read `failure` and `gate` read `success`; the leg failed on two files under
@@ -30,9 +30,9 @@ import { homeProjectDeclaration } from "../project-config.ts";
 import { readTrunkRed, trunkOfCodeRepository } from "../trunk-red.ts";
 import { runArmPr, EXIT } from "../arm-pr.ts";
 import { refusalBeforeArming } from "../auto-arm-sweep.ts";
-import { CROSS_REPO_LEG, crossRepoRedMarker, crossRepoRedVerdict, declaredRows, failingFilesFromRstestLog } from "../cross-repo-red.ts";
+import { CROSS_REPO_LEG, crossRepoRedMarker, crossRepoRedVerdict, declaredTickets, failingFilesFromRstestLog } from "../cross-repo-red.ts";
 import { forgetActivation } from "../plugins/active.ts";
-import { BODY, DECLARED_BODY, FILES, LAB, LAB81_LEG_LOG, LAB81_LEG_LOG_LINES, LEG, PRIMARY, PR_HEAD, PR_RUN, STEP, TRUNK_RUN, failLine, labWorld, logOf, type LabOptions } from "./cross-repo-red-world.test.support.ts";
+import { BODY, DECLARED_BODY, FILES, LAB, LAB81_LEG_LOG, LAB81_LEG_LOG_LINES, LEG, PRIMARY, PR_HEAD, PR_RUN, STEP, TRUNK_RUN, failLine, labWorld, logOf, type LabOptions } from "./fixtures/cross-repo-red-world.ts";
 
 afterEach(() => forgetActivation());
 
@@ -45,7 +45,6 @@ type World = {
   prLog?: string;
   trunkLeg?: string | null;          // the newest trunk run's leg conclusion; `null` = that run has no cross-repo job
   trunkLog?: string;
-  rows?: Record<string, string>;     // `owner/repo#n` -> state; a row not listed does not exist
   throwOn?: RegExp;                  // any call whose arguments match throws `HTTP 502`
   comments?: { body: string }[];
   body?: string;
@@ -55,7 +54,6 @@ type World = {
 /** A fake `gh` for one lab pull request, recording every call. Unknown calls answer `""`, as the doors' own fixtures do. */
 function world(w: World = {}) {
   const { prLeg = "failure", prLog = LAB81_LEG_LOG, trunkLeg = "success", trunkLog = "", comments = [], body = BODY } = w;
-  const rows = w.rows ?? { "a11ign/a11ign#5080": "OPEN", "a11ign/a11ign#5079": "CLOSED", "a11ign/lab#7": "OPEN" };
   const calls: string[][] = [];
   const run = (args: string[]): string => {
     calls.push(args);
@@ -80,11 +78,6 @@ function world(w: World = {}) {
     if (line.startsWith(`run view ${TRUNK_RUN} `)) return trunkLog;
     if (args[0] === "issue" && args[1] === "view") {
       const wanted = args[args.indexOf("--json") + 1];
-      if (wanted === "state") {
-        const key = `${args[args.indexOf("--repo") + 1]}#${args[2]}`;
-        if (!(key in rows)) throw new Error("GraphQL: Could not resolve to an issue or pull request with the number of " + args[2] + ". (repository.issue)");
-        return JSON.stringify({ state: rows[key] });
-      }
       return JSON.stringify(wanted === "labels" ? { labels: [] } : { blockedBy: { nodes: [], totalCount: 0 } });
     }
     if (args[0] === "pr" && args[1] === "view" && line.includes("comments")) return JSON.stringify({ comments });
@@ -161,42 +154,36 @@ test("#992 (1) POSITIVE CONTROL: the lab#81 reading -- two files failing on the 
   assert.deepEqual(filesOf(verdict), FILES);
   for (const file of FILES) assert.ok(why(verdict).includes(file), file);
   assert.match(why(verdict), new RegExp(`newest trunk run \\(https://github\\.com/${LAB}/actions/runs/${TRUNK_RUN}, success\\)`));
-  assert.match(why(verdict), /Add a line `Cross-repo-red: <row>`/);
+  assert.match(why(verdict), /Add a line `Cross-repo-red: <ticket>`/);
   assert.match(why(verdict), /its body carries no `Cross-repo-red:` line/);
 });
 
-test("#992 (1) the declaration: an OPEN row is `clear` (`owner/repo#n` and a bare `#n` of the PR's own repository), and the row is read where it lives", () => {
-  const full = ask({}, DECLARED_BODY);
-  assert.deepEqual(full.verdict, { kind: "clear" });
-  const issueReads = full.calls.filter((args) => args[0] === "issue");
-  assert.deepEqual(issueReads, [["issue", "view", "5080", "--repo", PRIMARY, "--json", "state"]], "the core-side row's own tracker, not the PR's repository");
-  const bare = ask({}, `${BODY}\nCross-repo-red: #7\n`);
-  assert.deepEqual(bare.verdict, { kind: "clear" });
-  assert.deepEqual(bare.calls.filter((args) => args[0] === "issue").map((args) => args[4]), [LAB], "a bare `#n` is the PR's own repository");
+test("A11-127 the declaration: a ticket key is `clear`, read by its shape, with no call to any tracker", () => {
+  for (const key of ["A11-123", "NBF-7", "a11-1"]) {
+    const declared = ask({}, `${BODY}\nCross-repo-red: ${key}\n`);
+    assert.deepEqual(declared.verdict, { kind: "clear" }, key);
+    assert.deepEqual(declared.calls.filter((args) => args[0] === "issue"), [], `${key} is not looked up: CI holds no tracker credential`);
+  }
 });
 
-test("#992 (1) each way a declaration can fail is refused with a `why` that says WHICH: a CLOSED row, a row that does not exist, `soon`, a missing line", () => {
-  const closed = ask({}, `${BODY}\nCross-repo-red: ${PRIMARY}#5079\n`).verdict;
-  assert.equal(closed.kind, "cross-repo-red");
-  assert.match(why(closed), /its `Cross-repo-red:` row does not stand: a11ign\/a11ign#5079 is CLOSED/);
-  assert.deepEqual(filesOf(closed), FILES);
-
-  const absent = ask({}, `${BODY}\nCross-repo-red: ${PRIMARY}#99999\n`).verdict;
-  assert.equal(absent.kind, "cross-repo-red", why(absent));
-  assert.match(why(absent), /a11ign\/a11ign#99999 does not exist/);
-
+test("A11-127 each way a declaration can fail is refused with a `why` that says WHICH: a GitHub row's form, `soon`, a missing line", () => {
+  for (const row of ["#5080", "a11ign/a11ign#5080", "#7"]) {
+    const verdict = ask({}, `${BODY}\nCross-repo-red: ${row}\n`).verdict;
+    assert.equal(verdict.kind, "cross-repo-red", `${row} is a GitHub row, and the old gate's rows are closed`);
+    assert.match(why(verdict), /is not a ticket key such as `A11-123`/);
+    assert.deepEqual(filesOf(verdict), FILES);
+  }
   const soon = ask({}, `${BODY}\nCross-repo-red: soon\n`);
   assert.equal(soon.verdict.kind, "cross-repo-red");
-  assert.match(why(soon.verdict), /its `Cross-repo-red:` line is malformed \(`soon` is not `#n` or `owner\/repo#n`\)/);
-  assert.deepEqual(soon.calls.filter((args) => args[0] === "issue"), [], "a malformed line names no row, so no row is read");
+  assert.match(why(soon.verdict), /its `Cross-repo-red:` line is malformed \(`soon` is not a ticket key such as `A11-123`\)/);
 
   const none = ask({}, BODY).verdict;
   assert.match(why(none), /its body carries no `Cross-repo-red:` line/);
-  for (const bad of ["#", "a11ign#7", "a/b/c#7", "#7 and more", "owner/repo#"]) {
-    assert.equal(ask({}, `${BODY}\nCross-repo-red: ${bad}\n`).verdict.kind, "cross-repo-red", `\`${bad}\` is not a row`);
+  for (const bad of ["", "A11", "-1", "A11-", "A11-1 and more", "A11-1,A11-2", "A 11-1"]) {
+    assert.equal(ask({}, `${BODY}\nCross-repo-red: ${bad}\n`).verdict.kind, "cross-repo-red", `\`${bad}\` is not a ticket key`);
   }
-  assert.deepEqual(declaredRows("Cross-repo-red: #7\nCross-repo-red: a/b#8\n  cross-repo-red:   #9  ", LAB).rows,
-    [{ repo: LAB, number: 7 }, { repo: "a/b", number: 8 }, { repo: LAB, number: 9 }], "the line is read as `Closes` is: bare is the PR's repository, any case, any indent");
+  assert.deepEqual(declaredTickets("Cross-repo-red: A11-7\nCross-repo-red: #8\n  cross-repo-red:   NBF-9  "),
+    { tickets: ["A11-7", "NBF-9"], malformed: ["#8"] }, "the line is read in any case and any indent; a row's form is malformed");
 });
 
 test("#992 (2) NEGATIVE CONTROL: a leg that PASSED, a PR with no leg at all, and a leg that was cancelled are `clear` (and the trunk is not even asked)", () => {
@@ -256,7 +243,7 @@ test("#992 (3) every read that cannot be made is `cannot-ask` -- a run that THRO
   assert.equal(crossRepoRedVerdict({ number: 81, repo: LAB, prBody: BODY, codeRepositories: DECLARED, run: () => { throw new Error("HTTP 502"); } }).kind, "cannot-ask");
   assert.equal(ask({}, null).verdict.kind, "cannot-ask", "a body that was not read, over a red leg");
   assert.equal(ask({ prLeg: "success" }, null).verdict.kind, "clear", "and over a green one nothing was needed of it");
-  assert.equal(ask({ throwOn: /issue view/ }, DECLARED_BODY).verdict.kind, "cannot-ask", "a declared row that could not be read is not a closed one");
+  assert.equal(ask({ throwOn: /issue view/ }, DECLARED_BODY).verdict.kind, "clear", "a declared ticket is read by its shape, so an unwell tracker cannot make it unreadable");
 });
 
 test("#992 the project declares the lab as a code repository with a cross-repo leg, and the primary as the one with none (the doors below read it)", () => {
@@ -282,18 +269,18 @@ test("#992 (5) arm-pr: lab#81's reading is NOT armed -- no arm, exit DONE, the l
   assert.equal(out.code, EXIT.DONE, "waiting on a declaration is not a failure, as a hold is not");
   assert.match(out.said, new RegExp(`NOT arming #81 -- the cross-repo leg of #81 fails on 2 test files`));
   for (const file of FILES) assert.ok(out.said.includes(file), file);
-  assert.match(out.said, /Cross-repo-red: <row>/);
+  assert.match(out.said, /Cross-repo-red: <ticket>/);
 });
 
-test("#992 (5) arm-pr CONTROLS: the same PR declaring an OPEN row ARMS, and so does one whose red the trunk already has", () => {
+test("#992 (5) arm-pr CONTROLS: the same PR declaring a ticket ARMS, and so does one whose red the trunk already has", () => {
   const declared = driveArm({ body: DECLARED_BODY });
   assert.equal(declared.merged, true, declared.said);
   assert.equal(declared.commented.length, 0, "an armed PR gets no refusal comment");
   const inherited = driveArm({ trunkLeg: "failure", trunkLog: logOf(...FILES) });
   assert.equal(inherited.merged, true, inherited.said);
-  const closed = driveArm({ body: `${BODY}\nCross-repo-red: ${PRIMARY}#5079\n` });
-  assert.equal(closed.merged, false, "a CLOSED row is not a declaration");
-  assert.match(closed.said, /a11ign\/a11ign#5079 is CLOSED/);
+  const row = driveArm({ body: `${BODY}\nCross-repo-red: ${PRIMARY}#5079\n` });
+  assert.equal(row.merged, false, "a GitHub row is not a declaration");
+  assert.match(row.said, /is not a ticket key such as `A11-123`/);
 });
 
 test("#992 (3) arm-pr: a leg whose log cannot be read arms nothing and exits CANNOT_ASK, the code an unreadable label list gets", () => {
@@ -323,7 +310,7 @@ test("#992 (5) arm-pr: the refusal is COMMENTED once -- its marker holds the fil
   assert.equal(changed.commented.length, 1, "a comment about a different file set does not stand in for this one");
 });
 
-test("#992 (5) the sweep's `refusalBeforeArming` refuses the SAME pull request, and clears it when the row is declared", () => {
+test("#992 (5) the sweep's `refusalBeforeArming` refuses the SAME pull request, and clears it when the ticket is declared", () => {
   const ask2 = (w: LabOptions, refuseChecks = false) => {
     const { world } = labWorld({ prLog: LAB81_LEG_LOG, ...w });
     if (refuseChecks) world.ci.checks.set(PR_HEAD, new Error("HTTP 502"));

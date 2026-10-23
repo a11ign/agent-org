@@ -6,10 +6,10 @@
  * lab#81 (a11ign#5078, ADR 0045 cut 1): on its head `e929f712` the check run `checks (cross-repo)` reads `failure` and `gate` reads `success`; the newest `push` run on lab's `main`, 38151939490 at `77283f6e`, has the leg `success`.
  * A read that cannot be made is an `Error` in the map that holds it (`world.ci`), or an operation named in `world.failures`.
  */
-import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
-import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
-import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
-import { substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
+import { fakeRow } from "../../plugins/fakes/code-host-rows.ts";
+import { fakePull } from "../../plugins/fakes/code-host-pulls.ts";
+import { substituteCodeHost } from "../../plugins/active.ts";
 
 export const LAB = "a11ign/lab";
 export const PRIMARY = "a11ign/a11ign";
@@ -20,7 +20,7 @@ export const PR_RUN = "38150000001";
 export const TRUNK_RUN = 38151939490;
 export const FILES = ["packages/lab/src/packaging/every-test-file-is-run.test.ts", "packages/lab/src/packaging/layer-edges.test.ts"];
 export const BODY = "Closes a11ign/a11ign#5078\n\nADR 0045 cut 1.";
-export const DECLARED_BODY = `${BODY}\nCross-repo-red: a11ign/a11ign#5080\n`;
+export const DECLARED_BODY = `${BODY}\nCross-repo-red: A11-123\n`;
 
 /** One `FAIL` line in rstest's form (directory, file name and `>` painted apart), for the leg of a synthetic run. */
 export const failLine = (file: string, job = LEG) => {
@@ -54,7 +54,6 @@ export type LabOptions = {
   prLog?: string | Error;
   trunkLeg?: string | null;          // the newest trunk run's leg conclusion; `null` = that run has no cross-repo job
   trunkLog?: string | Error;
-  rows?: Record<string, string>;     // `owner/repo#n` -> state; a row not listed does not exist
   comments?: string[];               // comments already on the pull request
   body?: string;
   totalCount?: number;               // how many check runs exist, when a page was not read
@@ -66,7 +65,6 @@ export type LabOptions = {
 /** The fake code host (substituted as the process's) holding lab#81 and what the cross-repo-red verdict reads about it. */
 export function labWorld(w: LabOptions = {}) {
   const { prLeg = "failure", prLog = logOf(...FILES), trunkLeg = "success", trunkLog = "", comments = [], body = BODY, seat = { armed: false, queued: false, merged: false } } = w;
-  const rows = w.rows ?? { "a11ign/a11ign#5080": "OPEN", "a11ign/a11ign#5079": "CLOSED", "a11ign/lab#7": "OPEN" };
   const host = createFakeCodeHost();
   const { rowsWorld: world } = host;
   world.repo = LAB;
@@ -83,7 +81,6 @@ export function labWorld(w: LabOptions = {}) {
   world.ci.jobs.set(String(TRUNK_RUN), [{ name: "gate", conclusion: "success" }, ...(trunkLeg === null ? [] : [{ name: LEG, conclusion: trunkLeg }])]);
   world.ci.logs.set(PR_RUN, prLog);
   world.ci.logs.set(String(TRUNK_RUN), trunkLog);
-  for (const [key, state] of Object.entries(rows)) world.ci.rowStates.set(key, state);
   for (const operation of w.refuse ?? []) world.failures.set(operation, new Error("HTTP 502"));
   substituteCodeHost(host);
   return { host, world, pull };
