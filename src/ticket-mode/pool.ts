@@ -9,7 +9,9 @@
 //   - outcome file, and idle or done: finished, with the worker's outcome;
 //   - no outcome file, and done, or idle after it was seen working: finished, `no-outcome`;
 //   - its workspace missing from two complete listings in a row, or `unknown` twice: `crashed`;
-//   - any other status (a dialog, a prompt waiting on a person) is shown on the board as waiting, and the run continues.
+//   - any other status (a dialog, a prompt waiting on a person) is shown on the board as waiting, with the first line of the dialog when its pane can be read, and the run continues;
+//     except a Claude Code safety prompt (A11-174, `pool-decline.ts`): it is answered No with Esc, up to three times a run, and the agent is told in one message which command was refused and
+//     why; the board says "A safety prompt was declined automatically" and the run is not waiting on a person. A talk session is never declined: a person is at its terminal.
 //
 // A TICKET WITH NO PLAN CAN BE PLANNED FIRST. Its first run is a planning run, on the planning model and effort, told to plan and change no code,
 // and refused anything that would (`PLANNING_DENY`). When it writes `planned`, the board attaches the files it left in the ticket's `plan` folder
@@ -78,9 +80,10 @@
 //
 // A RESTART OF THE INSTANCE LEAVES THE WORKERS ALONE (A11-78, A11-169). The workers run in herdr's server, which runs in a service of its own (`agent-org-herdr.service`; this process only starts the unit,
 // `ensureSession`), so stopping or restarting the instance stops only the instance. A pool that starts up re-adopts what herdr lists and the
-// queue file holds (`reconcile`) and carries on watching it: it sends a running worker no key, no prompt and no second start. The only keys
+// queue file holds (`reconcile`) and carries on watching it: it sends a running worker no key, no prompt and no second start of its own accord. The only keys
 // the pool ever sends answer a start dialog, and only on a run this pool started itself, until its agent is first seen up (`startedHere`): a
-// pane it adopted is never one it is starting. A reviewer is recorded as started before it is started, so a restart in between never starts it
+// pane it adopted is never one it is starting. The one other thing it sends is its answer to a Claude Code safety prompt (A11-174): Esc, and one message saying why. That is safe on an
+// adopted run too, and a run that is not on such a prompt is sent nothing. A reviewer is recorded as started before it is started, so a restart in between never starts it
 // twice, and one herdr still lists for its head is adopted. `agent-org update` restarts the instance over a live run whatever it is doing, and a breaking release
 // drains instead (`pool-drain.ts`, `update.ts`, A11-169).
 //

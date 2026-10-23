@@ -20,6 +20,12 @@ export function checkNote(entry: ViewEntry): string | null {
   return notes.length > 0 ? notes.join("; ") : null;
 }
 
+/** What a card says of a run's agent sitting on a dialog (A11-174): the safety prompt the board declined for it, or the dialog a person must answer, with its first line when one could be read. PURE. */
+export function promptNote(entry: ViewEntry): string | null {
+  if (entry.waiting === true) return entry.prompt === undefined ? "Waiting on a person" : `Waiting on a person: ${entry.prompt}`;
+  return entry.phase === "running" && entry.declined !== undefined ? `A safety prompt was declined automatically: ${entry.declined.command}` : null;
+}
+
 /** What the worker says of a run: its handed-back reason, the background work it is waiting on, the question it asked, why it stopped, or where its work belongs. PURE. */
 function askedReason(entry: ViewEntry): string | null {
   const outcome = entry.outcome;

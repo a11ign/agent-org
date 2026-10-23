@@ -147,6 +147,17 @@ test("both briefs tell a worker to stop for a person when a skill they name is m
   }
 });
 
+test("A11-174: every unattended brief says to guard variable paths with ${VAR:?}", () => {
+  const work = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones: { a: "/a" }, worktreeCommand: "wt", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones: { a: "/a" }, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
+  const review = reviewBriefText({ ticket, folder: "/f", ticketDir: "/d", prs: [], resumed: true });
+  const publish = publishBriefText({ dir: "/d", prs: [], run: "r" });
+  const writer = writerBriefText({ run: "write {request}", request: "a ticket", mode: "quick", form: {}, clones: { a: "/a" }, dir: "/d", pickTeam: null, writing: FAKE_TRACKER_WRITING });
+  const rule = "Claude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`.";
+  for (const [name, brief] of Object.entries({ work, plan, batch, review, publish, writer })) assert.ok(brief.includes(`## Commands that stall an unattended run\n\n${rule}`), `${name} carries the rule, with no host notes passed`);
+});
+
 test("A11-171: a batch's brief tells its planner that a person may answer in the terminal, and to swap an answered ticket's QUESTION.md for its plan files", () => {
   const brief = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones: { a: "/a" }, run: "plan {keys} into {dir}" });
   assert.ok(brief.includes("A person may answer you here after a `needs-human` outcome, and after a `planned` one that leaves a `QUESTION.md`: the board keeps this terminal open for them."));

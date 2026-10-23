@@ -96,6 +96,9 @@ export type Background = "live" | "none" | null;
 
 export type Phase = "queued" | "starting" | "running" | "finished";
 
+/** A Claude Code safety prompt the pool declined on a run: see {@link Entry.declined}. */
+type Declined = Readonly<{ command: string; warning: string; at: number; count: number; told: boolean }>;
+
 export type Entry = Readonly<{
   ticket: Ticket;
   /** The repositories the worker has made worktrees in, as the pool last saw; empty until it chooses. */
@@ -166,6 +169,13 @@ export type Entry = Readonly<{
   seenWorking?: boolean;
   /** The agent is in a state that needs a person (a dialog, a prompt), as herdr reported it. */
   waiting?: boolean;
+  /** The first line of the dialog a waiting agent sits on, when the pool could read one from its pane. Cleared when the run stops waiting (A11-174). */
+  prompt?: string;
+  /**
+   * The Claude Code safety prompt the pool last answered No to on this run (A11-174): the command it asked about, its warning, when, how many the run has had
+   * answered (bounded), and whether the agent has been told yet (herdr refuses a message to an agent that still reads blocked). Dropped when the run ends.
+   */
+  declined?: Declined;
   outcome?: Outcome;
   tokens?: Readonly<{ input: number; output: number }>;
   /**
