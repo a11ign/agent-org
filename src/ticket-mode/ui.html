@@ -339,7 +339,7 @@
 import {
   NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, sharedRunNote, terminalTab, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
-  reviewLinesOf, unlistedPulls, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  reviewLinesOf, unlistedPulls, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, promptNote, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -819,7 +819,7 @@ function row(e) {
     el("div", {},
       el("div", { className: "title" }, el("a", { href: safeHref(e.ticket.url), target: "_blank", rel: "noreferrer" }, e.ticket.key), ` ${e.ticket.title}`),
       el("div", { className: "meta" }, `${LABEL[status]} · ${repos} · ${runChoiceLabel(e)} · ${when}${tokens}`),
-      e.waiting ? el("div", { className: "waiting" }, "Waiting on a person") : null,
+      promptNote(e) ? el("div", { className: "waiting" }, promptNote(e)) : null,
       // A batch planner's tickets share one session and one terminal: each card says so, and names the tickets it is shared with (A11-171).
       sharedRunNote(e, state.queue.entries) ? el("div", { className: "waiting" }, sharedRunNote(e, state.queue.entries)) : null,
       waits.length > 0 ? el("div", { className: "meta" }, `Waits on ${waits.map((b) => `${b.key} (${b.status})`).join(", ")}`) : null,

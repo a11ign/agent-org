@@ -126,6 +126,9 @@ const CHECKS_NOT_STARTED = `When no check has started on your head commit, run \
 /** What a worker does when a skill its brief names is missing: a copy of the skill's files, read by hand, is not the skill and its helpers. */
 const MISSING_SKILL = "If a skill this brief names is not available in this session, write a `needs-human` outcome naming it, rather than following a copy of its files.";
 
+/** What an unattended run does with a command Claude Code would stop to ask a person about (A11-174): the pool answers that prompt No, so the command is written to raise none. */
+const STALLING_COMMANDS = "## Commands that stall an unattended run\n\nClaude Code still asks a person before some commands even with permissions bypassed, for example an `rm` on a path built from a variable that could be empty. Nobody answers on an unattended run. Always guard variable paths: `rm -rf \"${DIR:?}/x\"`, never `rm -rf $DIR/x`.";
+
 /**
  * What a planner does with a ticket that is only a parent: an epic whose work is all in the tickets under it is not work for one run, so its plan
  * says so and points the person at the children, rather than planning a run of its own (A11-24, an epic, was handed to a person on 2026-10-17).
@@ -390,6 +393,8 @@ ${PLANNER_DECISIONS}
 
 ${MISSING_SKILL}
 
+${STALLING_COMMANDS}
+
 The plan's files go in \`${planDir}\`, and nowhere else. The board attaches each one to the ticket under its file name. Write only markdown files there, each 1 MB or less: anything else stops the board attaching any of them.
 
 ${PATHS_RULE}
@@ -465,6 +470,8 @@ ${PARENT_ONLY_PLAN}
 ${PLANNER_DECISIONS}
 
 ${MISSING_SKILL}
+
+${STALLING_COMMANDS}
 
 ## Where the plans go
 
@@ -602,6 +609,8 @@ ${designTools ? DESIGN_CHECK_DONE : DESIGN_CHECK_DECLINED}
 Never mark a pull request ready, request a review, merge, force-push, run a workflow, or post to Slack. Those are the person's.
 
 ${MISSING_SKILL}
+
+${STALLING_COMMANDS}
 ${connectorsText(connectors)}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -675,6 +684,8 @@ ${CHECKS_NOT_STARTED}
 Never merge, approve, request a review, force-push, run a workflow, or post to Slack. Those are the person's.
 
 ${MISSING_SKILL}
+
+${STALLING_COMMANDS}
 ${connectorsText(connectors)}${reviewNotes?.trim() ? `\n## How this machine reviews\n\n${reviewNotes.trim()}\n` : ""}${notes?.trim() ? `\n## On this machine\n\n${notes.trim()}\n` : ""}
 ## The outcome file
 
@@ -799,6 +810,8 @@ ${run.replaceAll("{prs}", urls.join("\n")).replaceAll("{dir}", dir)}
 Post each pull request once. Change no code, and open, edit or merge no pull request.
 
 ${MISSING_SKILL}
+
+${STALLING_COMMANDS}
 
 ## The files you write
 
@@ -1019,6 +1032,8 @@ Repositories on this machine (read only; never change them):
 ${reposText(clones)}
 
 ${MISSING_SKILL}
+
+${STALLING_COMMANDS}
 
 ## The ticket
 

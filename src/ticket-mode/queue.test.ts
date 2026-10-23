@@ -9,6 +9,8 @@ import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLiv
 import { approve, checkRound, conflictRound, holdForSession, recordCheckHeads, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
 import { nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
 import { talk } from "./queue/talk.ts";
+import { requeueForUpdate } from "./queue/queue-pins.ts";
+import { declinedPrompt, toldDeclined } from "./queue/queue-declined.ts";
 import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
 import type { Blocker, Ticket } from "./source.ts";
@@ -1136,4 +1138,22 @@ test("A11-167: a retried review round keeps the text it was briefed with, so it 
   const failed = finish({ ...queuedA(), entries: queuedA().entries.map((e) => ({ ...e, review: [pr], briefedAgainst: read, plannedWith: { model: "opus", effort: "max" } })) }, "A", { kind: "crashed", reason: "x" }, 5);
   const [retried] = retry(failed, "A", 9).entries;
   assert.deepEqual([retried.briefedAgainst, retried.plannedWith], [read, { model: "opus", effort: "max" }]);
+});
+
+test("A11-174: a waiting run keeps the first line of its dialog, a run that stops waiting drops it, and a first line is ignored for a status that is not waiting", () => {
+  const waiting = observe(runningA(), "A", "blocked", "Which database should the migration use?");
+  assert.deepEqual([waiting.entries[0].waiting, waiting.entries[0].prompt], [true, "Which database should the migration use?"]);
+  assert.equal(observe(waiting, "A", "blocked").entries[0].prompt, undefined, "a pane with no readable dialog leaves no stale first line");
+  assert.equal(observe(waiting, "A", "working", "stale").entries[0].prompt, undefined);
+});
+
+test("A11-174: a declined safety prompt is counted, is not waiting, and is told once; the run's end and a requeue for an update drop it", () => {
+  const prompt = { command: "rm -f $SC/*.done", warning: "Dangerous rm operation on possibly-empty variable path" };
+  const waiting = observe(runningA(), "A", "blocked", "Do you want to proceed?");
+  const declined = declinedPrompt(declinedPrompt(waiting, "A", prompt, 10), "A", prompt, 20);
+  assert.deepEqual(declined.entries[0].declined, { ...prompt, at: 20, count: 2, told: false });
+  assert.deepEqual([declined.entries[0].waiting, declined.entries[0].prompt], [false, undefined]);
+  assert.equal(toldDeclined(declined, "A").entries[0].declined?.told, true);
+  assert.equal(finish(toldDeclined(declined, "A"), "A", { kind: "no-outcome" }, 30).entries[0].declined, undefined);
+  assert.equal(requeueForUpdate(declined, "A", "v1", 40).entries[0].declined, undefined);
 });

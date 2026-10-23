@@ -9,7 +9,9 @@ import { sandboxGitEnv } from "../lib/git-env.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { stopVerdict } from "./hook.ts";
 import { isParked, rebaseNote, runStatus, terminalLink, waitNote } from "./board-view/pull-status-and-notes.ts";
-import { checkNote, reasonOf } from "./board-view/run-reason.ts";
+import { checkNote, promptNote, reasonOf } from "./board-view/run-reason.ts";
+import { declineMessage } from "./safety-prompt.ts";
+import { ASK_USER, DANGEROUS_RM } from "./safety-prompt-fixture.ts";
 import { stackBaseFile, writeStackBase } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { TICKET_ENV, main as worktreeMain } from "./worktree-command.ts";
@@ -534,9 +536,127 @@ test("a run showing a start dialog for its worktree is answered with down-enter 
   const answers = () => h.calls.filter((args) => args.includes("send-keys"));
   assert.deepEqual(answers()[0], ["--session", "tickets", "agent", "send-keys", "t-nbf-1", "down", "enter"]);
   assert.notEqual(entry("NBF-1").waiting, true, "an answered dialog is not a person's to clear");
+  assert.deepEqual([promptsSent(h.calls), entry("NBF-1").declined], [[], undefined], "A11-174: a start dialog is answered Yes, and is not read as a safety prompt: no esc, no message");
   for (let i = 0; i < 6; i += 1) await pool.tick();
   assert.equal(answers().length, 4, "a dialog that keeps coming back is answered four times, then left");
   assert.equal(entry("NBF-1").waiting, true);
+});
+
+/** NBF-1 started, with its agent blocked on a screen showing `pane`: the next pass reads it (A11-174). */
+async function blockedOn(pane: string) {
+  const made = setup(1, ["NBF-1"]);
+  await made.pool.tick();
+  made.status.set(herdrName("NBF-1"), "blocked");
+  made.screen.text = pane;
+  return made;
+}
+
+/** NBF-1 worked, then blocked on the dangerous-rm prompt, which one pass declined: herdr refused the message as the agent read blocked, so it is untold (A11-174). */
+async function declinedButUntold() {
+  const made = await startedRun();
+  await agentIs(made, herdrName("NBF-1"), "working");
+  made.status.set(herdrName("NBF-1"), "blocked");
+  made.screen.text = DANGEROUS_RM;
+  made.h.refused.add("prompt");
+  made.h.reasons.set("prompt", "agent_blocked");
+  await made.pool.tick();
+  return made;
+}
+
+const SEND_KEYS = (name: string, ...keys: string[]) => ["--session", "tickets", "agent", "send-keys", name, ...keys];
+const keysSent = (calls: string[][]) => calls.filter((args) => args.includes("send-keys"));
+const promptsSent = (calls: string[][]) => calls.filter((args) => args.includes("agent") && args.includes("prompt"));
+
+test("A11-174: a run on the dangerous-rm prompt is answered esc, never enter or a digit, told once which command and to guard it with ${VAR:?}, and recorded as declined, not waiting", async () => {
+  const { pool, status, entry, h, screen } = await blockedOn(DANGEROUS_RM);
+  await pool.tick();
+  assert.deepEqual(keysSent(h.calls), [SEND_KEYS("t-nbf-1", "esc")], "the one key is esc: never enter, never a digit, so a reordered menu cannot be answered Yes");
+  const told = promptsSent(h.calls);
+  assert.equal(told.length, 1, "one message");
+  assert.deepEqual(told[0].slice(0, 5), ["--session", "tickets", "agent", "prompt", "t-nbf-1"]);
+  assert.equal(told[0][5], declineMessage({ command: "rm -f $SC/*.done Remove the done markers", warning: "Dangerous rm operation on possibly-empty variable path" }));
+  for (const part of ["rm -f $SC/*.done", "Dangerous rm operation on possibly-empty variable path", "${VAR:?}"]) assert.ok(told[0][5].includes(part), part);
+  assert.deepEqual(entry("NBF-1").declined, { command: "rm -f $SC/*.done Remove the done markers", warning: "Dangerous rm operation on possibly-empty variable path", at: 100, count: 1, told: true });
+  assert.notEqual(entry("NBF-1").waiting, true);
+  assert.equal(promptNote(entry("NBF-1")), "A safety prompt was declined automatically: rm -f $SC/*.done Remove the done markers", "the board line");
+  status.set(herdrName("NBF-1"), "working");
+  screen.text = "";
+  await pool.tick();
+  assert.deepEqual([keysSent(h.calls).length, promptsSent(h.calls).length], [1, 1], "a pane that has moved on is sent nothing more");
+});
+
+test("A11-174: an unrecognised dialog is not answered: no key and no message are sent, the run is waiting, and its first line is recorded", async () => {
+  const { pool, status, entry, h, screen } = await blockedOn(ASK_USER);
+  await pool.tick();
+  assert.deepEqual([keysSent(h.calls), promptsSent(h.calls)], [[], []]);
+  assert.deepEqual([entry("NBF-1").waiting, entry("NBF-1").prompt, entry("NBF-1").declined], [true, "Which database should the migration use?", undefined]);
+  assert.equal(promptNote(entry("NBF-1")), "Waiting on a person: Which database should the migration use?");
+  screen.text = "";
+  await pool.tick();
+  assert.equal(promptNote(entry("NBF-1")), "Waiting on a person", "a pane with no readable dialog is waiting with no first line");
+  status.set(herdrName("NBF-1"), "working");
+  await pool.tick();
+  assert.deepEqual([entry("NBF-1").waiting, entry("NBF-1").prompt], [false, undefined], "the first line clears when the run stops waiting");
+});
+
+test("A11-174: a message herdr refuses while the agent is blocked is sent on the next pass that finds it not blocked, and the idle run is not ended as no-outcome meanwhile", async () => {
+  const { pool, status, entry, h, screen } = await declinedButUntold();
+  assert.deepEqual([keysSent(h.calls).length, entry("NBF-1").declined?.told], [1, false]);
+  status.set(herdrName("NBF-1"), "idle");
+  screen.text = "";
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "an agent idle with no outcome is not over while its decline is untold");
+  assert.equal(entry("NBF-1").declined?.told, false);
+  h.refused.delete("prompt");
+  await pool.tick();
+  assert.equal(entry("NBF-1").declined?.told, true);
+  assert.equal(promptsSent(h.calls).length, 3, "refused twice, then sent once");
+  assert.equal(entry("NBF-1").phase, "running", "the status read before the message is not the agent's answer to it");
+  await agentIs({ pool, status }, herdrName("NBF-1"), "working");
+  await agentIs({ pool, status }, herdrName("NBF-1"), "idle");
+  assert.deepEqual(entry("NBF-1").outcome, { kind: "no-outcome" }, "told, an idle run with no outcome ends as it always has");
+  assert.equal(promptsSent(h.calls).length, 3, "told once");
+});
+
+test("A11-174: an idle run that has written its outcome is settled as it was: the message its decline still owes is not sent to a run that is ending", async () => {
+  const { pool, status, entry, h, screen, settings } = await declinedButUntold();
+  h.refused.delete("prompt");
+  screen.text = "";
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "asked" }));
+  await agentIs({ pool, status }, herdrName("NBF-1"), "idle");
+  assert.equal(entry("NBF-1").outcome?.kind, "needs-human");
+  assert.equal(promptsSent(h.calls).length, 1, "only the refused attempt: nothing was sent to the run that ended");
+});
+
+test("A11-174: the fourth safety prompt on a run is left waiting for a person, with its first line", async () => {
+  const { pool, status, entry, h, screen } = await blockedOn(DANGEROUS_RM);
+  for (let i = 0; i < 4; i += 1) await pool.tick();
+  assert.equal(keysSent(h.calls).length, 3, "three declines, then the bound");
+  assert.deepEqual([entry("NBF-1").declined?.count, entry("NBF-1").waiting, entry("NBF-1").prompt], [3, true, "Do you want to proceed?"]);
+  assert.equal(promptNote(entry("NBF-1")), "Waiting on a person: Do you want to proceed?");
+});
+
+test("A11-174: a talk session is never declined: a person is at its terminal, so the prompt is theirs", async () => {
+  const { pool, status, entry, h, screen, store } = setup(1, ["NBF-1"]);
+  await pool.tick();
+  store.set({ ...store.get(), entries: store.get().entries.map((e) => ({ ...e, talk: true })) });
+  status.set(herdrName("NBF-1"), "blocked");
+  screen.text = DANGEROUS_RM;
+  await pool.tick();
+  assert.deepEqual([keysSent(h.calls), promptsSent(h.calls)], [[], []]);
+  assert.deepEqual([entry("NBF-1").waiting, entry("NBF-1").declined], [true, undefined]);
+});
+
+test("A11-174: a batch run's decline is recorded on every ticket of the batch, and the agent is told once", async () => {
+  const { tracker } = batchTracker();
+  const { pool, status, entry, h, screen } = setup(1, ["NBF-1", "NBF-2"], BATCH_PLANNER, { source: tracker, planFirst: ["NBF-1", "NBF-2"], batch: true });
+  await pool.tick();
+  status.set(herdrName(BATCH), "blocked");
+  screen.text = DANGEROUS_RM;
+  await pool.tick();
+  assert.deepEqual(keysSent(h.calls), [SEND_KEYS(herdrName(BATCH), "esc")]);
+  assert.equal(promptsSent(h.calls).length, 1);
+  for (const key of ["NBF-1", "NBF-2"]) assert.deepEqual([entry(key).declined?.count, entry(key).declined?.told, entry(key).waiting], [1, true, false], key);
 });
 
 test("a retry's earlier outcome does not end it before it starts", async () => {

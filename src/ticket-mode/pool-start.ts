@@ -56,7 +56,7 @@ export function paneShellNotReady(err: unknown): boolean {
  * THE TWO DIALOGS CLAUDE CODE RAISES ON A FOLDER IT HAS NOT SEEN, and the only screens the pool answers. `--dangerously-skip-permissions` does not
  * skip them (measured 2026-10-13): a new git worktree asks whether its folder is trusted, and one under a directory whose `CLAUDE.md` imports a
  * file above it (`@AGENTS.md`) asks whether to allow that import. The pool made the worktree and the person declared where worktrees go, so it
- * answers yes to these two, for its own worktree only, a bounded number of times. Any other screen is left for the person, as waiting.
+ * answers yes to these two, for its own worktree only, a bounded number of times. Any other screen is left for the person, as waiting, except a Claude Code safety prompt, which the pool answers No (`pool-decline.ts`).
  */
 const START_DIALOGS: readonly Readonly<{ heading: string; ownFolder: boolean }>[] = [
   { heading: "Is this a project you created or one you trust?", ownFolder: true },
