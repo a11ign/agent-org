@@ -1,9 +1,6 @@
 // module: the review claim -- a commit status on a pull request's head that says which instance is reviewing it (A11-149). Every instance reads it on GitHub,
-// so two instances that sweep the same pull request start one reviewer between them. THE PROTOCOL IS PURE over an injected `read` and `write`; the `gh`
-// calls that back them are below it, in this port, where the gh-call ratchet allows them.
-
-/** Runs the GitHub CLI with `args` and answers what it printed; it throws when the call fails. */
-export type Gh = (args: string[]) => string;
+// so two instances that sweep the same pull request start one reviewer between them. THE PROTOCOL IS PURE over an injected `read` and `write`; the calls that back
+// them are the code host's (`readReviewClaims`, `writeReviewClaim`, contract 1.5), which the GitHub plugin makes.
 
 /** The commit status context a claim is written under, and the one the door writes the verdict to. ONE SPELLING WITH `pr-review-verdict.sh`. */
 export const REVIEW_CLAIM_CONTEXT = "agent-org/review";
@@ -225,26 +222,3 @@ export function othersSeenIn({ entries, instance }: { entries: readonly ClaimEnt
   }
   return seen;
 }
-
-/**
- * The claim entries of `sha` in `repo` under the claim's context, read through `gh`. Throws when GitHub does not answer.
- *
- * THE READ IS NEVER CACHED (A11-172). The claim is written by another account than the one that reads it (the reviewer App writes, the scheduler App reads), and the `gh` wrapper's read
- * cache is one store per account, which a write by another account does not drop: a cached read straight after the write lists the head as it was before the claim. `-H` makes the wrapper
- * class the call `neutral`, which it neither serves from its store nor stores, and GitHub takes `Cache-Control: no-cache` as an ordinary request header.
- */
-export function claimEntriesOf({ repo, sha, gh }: { repo: string; sha: string; gh: Gh }): ClaimEntry[] {
-  // Read as one tab-separated line per status, so a page of statuses reads as lines and no page is joined to the next.
-  const lines = gh(["api", "--paginate", "-H", "Cache-Control: no-cache", `repos/${repo}/commits/${sha}/statuses?per_page=100`, "--jq", `.[] | select(.context == "${REVIEW_CLAIM_CONTEXT}") | [.id, .created_at, .description] | @tsv`])
-    .split("\n").filter((line) => line !== "");
-  return lines.map((line) => {
-    const [id, created, ...description] = line.split("\t");
-    return { id: Number(id), description: description.join("\t"), created: Date.parse(created) };
-  });
-}
-
-/** Writes a status under the claim's context on `sha` in `repo`, state `success`: the state says nothing, the description says whose and when. Throws on refusal. */
-export function writeClaimStatus({ repo, sha, description, gh }: { repo: string; sha: string; description: string; gh: Gh }): void {
-  gh(["api", "--method", "POST", `repos/${repo}/statuses/${sha}`, "--silent", "-f", "state=success", "-f", `context=${REVIEW_CLAIM_CONTEXT}`, "-f", `description=${description}`]);
-}
-

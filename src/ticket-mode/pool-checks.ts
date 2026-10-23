@@ -3,11 +3,11 @@
 
 import { CI_CLASS, errorLinesOfLog, LOG_TIMESTAMP, rateLimitOrLostRunner, READS_OUTSIDE, withoutColour } from "../ci-log-lines.ts";
 import { rerunOn5xx } from "../ci-rerun-on-5xx.ts";
-import { isRollUpCheck, jobLogOf, jobOfDetails, rerunFailedJobsOf } from "../ticket-port/ci-reads.ts";
+import { isRollUpCheck } from "../ticket-port/ci-reads.ts";
 import type { FailingCheck, PullFeedback } from "../plugins/contracts/code-host.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
-import { log, messageOf } from "./pool-state.ts";
+import { log } from "./pool-state.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** The most error lines a round's brief quotes from the logs of all the checks that failed at a head, and the most characters of each: a brief names the failure, it is not the log. */
@@ -21,7 +21,7 @@ const CAUSE_WINDOW = 5;
 const HEAD_CHARS = 8;
 
 /** A failing check with what its job's log says of it: the lines to quote, and why it is the infrastructure's and not the code's, when it is. */
-type ReadCheck = Readonly<{ name: string; lines: readonly string[]; infrastructure: string | null; readable: boolean; runId: number | null; repo: string | null }>;
+type ReadCheck = Readonly<{ name: string; lines: readonly string[]; infrastructure: string | null; readable: boolean; detailsUrl: string | null }>;
 
 /** What a pass over a run's red checks found: the feedback a round answers, or null, and the heads the checks were answered at. */
 export type CheckAnswer = Readonly<{
@@ -59,16 +59,10 @@ function checksToAnswer(read: PullFeedback): readonly FailingCheck[] {
 
 /** One failing check, with its job's log read. A check with no Actions job, or whose log cannot be read, is `readable: false` and is the code's to answer. */
 function readCheck(ctx: PoolContext, check: FailingCheck): ReadCheck {
-  const job = check.detailsUrl === null ? null : jobOfDetails(check.detailsUrl);
-  const unread = { name: check.name, lines: [], infrastructure: null, readable: false, runId: job?.runId ?? null, repo: job?.repo ?? null } as const;
-  if (job === null) return unread;
-  try {
-    const text = jobLogOf(job.repo, job.jobId, ctx.gh);
-    return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), infrastructure: infrastructureCause(text), readable: true };
-  } catch (err) {
-    log(`the log of ${check.name} on ${check.detailsUrl} could not be read: ${messageOf(err)}`);
-    return unread;
-  }
+  const unread = { name: check.name, lines: [], infrastructure: null, readable: false, detailsUrl: check.detailsUrl } as const;
+  const text = check.detailsUrl === null ? null : ctx.codeHost.readCheckLog(check.detailsUrl);
+  if (text === null) return unread;
+  return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), infrastructure: infrastructureCause(text), readable: true };
 }
 
 /** The lines of the feedback that name one check the code failed, with the error lines of its log: at most {@link QUOTED_LINES} for all of them. PURE. */
@@ -90,21 +84,9 @@ const short = (head: string): string => head.slice(0, HEAD_CHARS);
 const names = (checks: readonly ReadCheck[]): string => checks.map((check) => check.name).join(", ");
 const reasons = (checks: readonly ReadCheck[]): string => [...new Set(checks.map((check) => check.infrastructure))].join(" and ");
 
-/** The workflow runs of `checks`, each once, as (repository, run id) pairs: a run's failed jobs are rerun together. PURE. */
-function runsOf(checks: readonly ReadCheck[]): { repo: string; runId: number }[] {
-  const seen = new Map<string, { repo: string; runId: number }>();
-  for (const { repo, runId } of checks) if (repo !== null && runId !== null) seen.set(`${repo}#${runId}`, { repo, runId });
-  return [...seen.values()];
-}
-
-/** Rerun the failed jobs of the workflow runs of `checks`. Returns why GitHub refused, or null once they are rerun. */
+/** Rerun the failed jobs of the runs behind `checks`. Returns why the code host refused, or null once they are rerun. */
 function rerun(ctx: PoolContext, checks: readonly ReadCheck[]): string | null {
-  try {
-    for (const { repo, runId } of runsOf(checks)) rerunFailedJobsOf(repo, runId, ctx.gh);
-    return null;
-  } catch (err) {
-    return messageOf(err).split("\n")[0];
-  }
+  return ctx.codeHost.rerunFailedChecks(checks.flatMap(({ detailsUrl }) => (detailsUrl === null ? [] : [detailsUrl])));
 }
 
 /**

@@ -14,14 +14,17 @@ import { fileURLToPath } from "node:url";
 import "./host-units-project.ts"; // FIRST of the tool imports: it makes a fixture project the tool's before `host-units.ts` resolves one (#3233)
 import { moduleSource } from "../lib/source-text-reads.ts";
 
-const { REVIEWER_DOOR_SOURCE, reviewerDoorDrift, reviewerDoorInstall, reviewerDoorState } = await import("../host-units/gh-wrapper-and-notes.ts");
+const { reviewerDoorDrift, reviewerDoorInstall, reviewerDoorState } = await import("../host-units/gh-wrapper-and-notes.ts");
+const { activeCodeHost } = await import("../plugins/active.ts");
 const { driftReport, hostUnitDrift } = await import("../host-units.ts");
 const { reviewerDoorPath } = await import("../reviewer-door-path.ts");
 
 const here = (relative: string) => fileURLToPath(new URL(relative, import.meta.url));
-const INSTALLER = here("../reviewer/install-reviewer-bin.sh");
+const INSTALLER = here("../../plugins/github/reviewer/install-reviewer-bin.sh");
 const WAKE = here("../wake.ts");
 const PR_ORDERS = here("../work-gate/pr-orders.ts");
+/** The door the active code host ships (A11-160: the door is the code host's, and core's tests run on the fake's, which posts nothing; the GitHub plugin's own door is `plugins/github/verdict-door.test.ts`'s). */
+const REVIEWER_DOOR_SOURCE = activeCodeHost().verdictDoor!.source;
 /** The door as it stood before #3030, 7,227 bytes: the very file the reviewers were running on 2026-10-03. */
 const PRE_3030 = readFileSync(here("./fixtures/reviewer-door/pr-review-verdict.pre-3030.sh"), "utf8");
 const INCIDENT_BYTES = 7227;
@@ -56,7 +59,7 @@ function plant(reviewerBin: string, text: string): string {
 
 test("the positive control IS the incident: the pre-#3030 door is 7,227 bytes and the shipped one is not", () => {
   assert.equal(Buffer.byteLength(PRE_3030), INCIDENT_BYTES);
-  assert.notEqual(PRE_3030, readFileSync(REVIEWER_DOOR_SOURCE, "utf8"));
+  assert.notEqual(PRE_3030, readFileSync(REVIEWER_DOOR_SOURCE, "utf8"), "the code host's door is not the incident's (the GitHub plugin's own is held to it by its verdict-door test)");
 });
 
 test("1. a drifted door is DRIFTED in the report; an identical copy is CURRENT and the report says so", () => {

@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refusalLifted, verdictAmong } from "../review-verdict.ts";
 
-const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
+const DOOR = fileURLToPath(new URL("../../plugins/github/reviewer/pr-review-verdict.sh", import.meta.url));
 
 const EXIT_MALFORMED = 2;
 const EXIT_SECOND_REVIEW = 3;

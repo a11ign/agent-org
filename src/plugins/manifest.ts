@@ -151,15 +151,13 @@ export type ReviewerClaimAnswer = Readonly<{ outcome: "won"; tookOver: string | 
 
 /**
  * What a reviewer needs of a BOARD: its herdr session and runner, the activated code host, the instance's name and the head each seat's reviewer was started for, and beside them the functions the atomic
- * reviewer calls (seat names, the herdr listing, the claim on a head, the verdict reader, `ghWith`), each as the function and its signature (structural, as {@link ReviewerGate} is). Only a board has them.
+ * reviewer calls (seat names, the herdr listing, the claim protocol, the verdict reader), each as the function and its signature (structural, as {@link ReviewerGate} is). Only a board has them.
  */
 export type ReviewerBoard = Readonly<{
   /** The herdr session the tickets' reviewers run in. */
   session: string;
   /** Runs `herdr` with the arguments, and answers what it printed (throws when it fails). */
   run: (args: string[]) => string;
-  /** Runs `gh`, for the reads of a claim. */
-  gh: (args: string[]) => string;
   /** The code host every read of a pull request goes through, asked when it is used (the code host is activated beside the reviewer). */
   codeHost: () => CodeHost;
   /** The host's checkouts by repository name (`host.json`'s `clones`). */
@@ -183,20 +181,16 @@ export type ReviewerBoard = Readonly<{
   }>;
   claims: Readonly<{
     REVIEW_LEASE_MS: number;
-    claimEntriesOf(head: Readonly<{ repo: string; sha: string; gh: (args: string[]) => string }>): readonly Readonly<{ id: number; description: string; created: number }>[];
     claimHead(claim: Readonly<{ instance: string; now: number; read: () => readonly Readonly<{ id: number; description: string; created: number }>[]; write: (description: string) => void; rereview?: boolean; otherSeen?: () => number | null }>): ReviewerClaimAnswer;
     /** The other instances among a head's claim entries, each with when it was last seen (A11-172). */
     othersSeenIn(seen: Readonly<{ entries: readonly Readonly<{ id: number; description: string; created: number }>[]; instance: string }>): Map<string, number>;
     releasedDescriptionOf(release: Readonly<{ instance: string; now: number }>): string;
-    writeClaimStatus(write: Readonly<{ repo: string; sha: string; description: string; gh: (args: string[]) => string }>): void;
   }>;
   verdict: Readonly<{
     headMatches(stated: string | null | undefined, head: string): boolean;
     /** The verdict a line of text carries: its word (`convinced`, `not-convinced`, or another reading) and the head it names. */
     reviewVerdict(text: string): Readonly<{ verdict: string; head?: string | null }>;
   }>;
-  /** The `gh` a claim is written with, as the reviewer role: given the reviewer's environment, a `gh` that runs with it. */
-  ghWith(env?: Readonly<Record<string, string>>): (args: string[]) => string;
 }>;
 
 /**

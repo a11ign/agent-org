@@ -44,7 +44,7 @@ import {
 import { tmpDir } from "../lib/tmp-fixture.ts";
 
 // The tool's OWN script (this file sits in src/packaging), not the project's copy of it.
-const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
+const DOOR = fileURLToPath(new URL("../../plugins/github/reviewer/pr-review-verdict.sh", import.meta.url));
 
 /** A review on #2105, whose owner is `reviewer-2105` (#2401); `reviewer-2` posted it under the old odd/even rule. */
 const REVIEW_2105_APPROVAL = {

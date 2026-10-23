@@ -102,7 +102,7 @@ function setup(max = 2, keys = ["NBF-1", "NBF-2", "NBF-3"], tickets: Record<stri
   const screen = { text: "" };
   const h = herdr(status, screen);
   const deps = { settings, source: tracker, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? createFakeCodeHost(), ...(gh ? { gh: gh.run } : {}), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
+    pluginRecord: pluginRecord ?? join(root, "no-plugin-record.json"), codeHost: gh?.codeHost ?? createFakeCodeHost(), ...(reviewerPort ? { reviewer: reviewerOver(reviewerPort) } : {}),
     // The publisher plugin, as the fake: what the host file names as its connectors, model and effort (A11-161).
     ...(settings.publish === null ? {} : { publisher: createFakePublisher(settings.publish.connectors, { model: settings.publish.model, effort: settings.publish.effort }) }), ...(preflight ? { preflight } : {}), ...(wait ? { wait } : {}) };
   const pool = createPool(store, deps);
@@ -2205,11 +2205,11 @@ test("a parked run seen working after it wrote a new outcome keeps that outcome,
 
 /**
  * GitHub as the pool's tests see it (A11-160): the pull requests `pulls` describes, by number, in GitHub's own shapes, held by the code host (the fake) for every read of one, and a
- * `gh` for the calls the code host does not make yet, which only `withCi` answers (a failed check's job log, and its re-run). `pulls` is read as each read is made, so a test moves a pull
+ * and the logs and reruns of its failing checks, which `withCi` seeds. `pulls` is read as each read is made, so a test moves a pull
  * request by changing it; a number it has no answer for is one the code host cannot read, as `gh` refusing it was. The fake holds what the plugin would have made of the answer: the
  * feedback is worked out here from the description, as the plugin works it out from GitHub's (that is `plugins/github`'s own tests, not this file's).
  */
-type World = { run: (args: string[]) => string; calls: string[][]; codeHost: CodeHost; host: ReturnType<typeof createFakeCodeHost> };
+type World = { codeHost: CodeHost; host: ReturnType<typeof createFakeCodeHost> };
 
 type Node = { author?: { login?: string } | null; state?: string; submittedAt?: string; createdAt?: string; commit?: { oid?: string }; body?: string; url?: string };
 type Described = { state: string; headRefOid: string; mergeable: string; mergeStateStatus: string; baseRefName: string;
@@ -2244,11 +2244,6 @@ function feedbackOfDescribed(pull: Described, self: string, ignored: readonly st
 }
 
 function ghFor(pulls: Record<number, unknown>): World {
-  const calls: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    throw new Error("gh exited 1");
-  };
   const host = createFakeCodeHost("worker-bot");
   const described = (url: string) => pulls[Number(/\/pull\/(\d+)/.exec(url)?.[1])] as Described | undefined;
   /** The fake holds the pull request at `url` as it is described now, or says there is none. */
@@ -2283,7 +2278,7 @@ function ghFor(pulls: Record<number, unknown>): World {
       return repository !== SWEPT_REPO ? [] : Object.keys(pulls).filter((number) => (pulls[Number(number)] as Described).state === "OPEN").map((number) => `https://github.com/${SWEPT_REPO}/pull/${number}`);
     },
   };
-  return { run, calls, codeHost, host };
+  return { codeHost, host };
 }
 const at = (ms: number) => new Date(ms).toISOString();
 const feedbackPull = ({ state = "OPEN", head = "h1", reviews = [] as unknown[], comments = [] as unknown[], checks = [] as unknown[], mergeable = "MERGEABLE",
@@ -2354,7 +2349,7 @@ test("a check that is red at the head commit starts a round naming it, and a run
   const unwatched = ghFor({});
   const { pool: other } = setup(1, ["NBF-1"], {}, { gh: unwatched });
   other.watchFeedback();
-  assert.deepEqual([unwatched.calls, unwatched.host.calls], [[], []], "nothing Ready to merge: GitHub is not asked, not even who the workers are");
+  assert.deepEqual(unwatched.host.calls, [], "nothing Ready to merge: GitHub is not asked, not even who the workers are");
 });
 
 test("what triggers a round names each pull request's new feedback and nothing older than the round, and leaves failed checks to the check rule", () => {
@@ -2865,14 +2860,13 @@ test("with no tickets.publish, Publish starts no run and posts nothing: the requ
   const ctx = await readyRun(gh);
   ctx.store.set(pauseQueue(queuePublish(ctx.store.get(), ["NBF-1"], 300)));
   ctx.h.calls.length = 0;
-  gh.calls.length = 0;
   gh.host.calls.length = 0;
   await ctx.pool.tick();
   const publish = ctx.store.get().publish!;
   assert.match(publish.failure ?? "", /tickets\.publish/, "the failure names the setting");
   assert.equal(ctx.h.calls.some((args) => args.includes("start")), false, "no publish agent starts");
   assert.equal(existsSync(join(publishDir(ctx.settings, publish.id), "brief.md")), false, "no publish run folder is written");
-  assert.deepEqual([gh.calls, gh.host.reviewRequests, gh.host.armed, gh.host.retargets], [[], [], [], []], "GitHub is not written to: no gh call, no review requested, no merge armed, no base moved");
+  assert.deepEqual([gh.host.calls, gh.host.reviewRequests, gh.host.armed, gh.host.retargets, gh.host.checksAndClaims.reruns], [[], [], [], [], []], "GitHub is not asked or written to: no call, no review requested, no merge armed, no base moved, no check rerun");
   assert.equal(runStatus(ctx.entry("NBF-1")), "ready-to-merge", "the run stays Ready to merge, unpublished");
 });
 
@@ -4973,24 +4967,16 @@ const RUNNER_LOST = stamped(["Run npm test", "##[error]The hosted runner lost co
 const BAD_GATEWAY = stamped(["Run gh api repos/x/y", "gh: HTTP 502: Server Error", "##[error]Process completed with exit code 1."]);
 const NETWORK_DOWN = stamped(["Run npm ci", "npm error code ECONNRESET", "npm error network aborted", "##[error]Process completed with exit code 1."]);
 
-/** A world whose gh answers the log of an Actions job from `logs` (by job id, refused for any other), records each read and each rerun of a workflow run, and leaves every other call to `base`. */
-function withCi(base: World, logs: Record<number, string>): World & { reruns: string[][]; logReads: number[] } {
-  const reruns: string[][] = [];
-  const logReads: number[] = [];
-  const run = (args: string[]) => {
-    const job = args[0] === "api" ? /\/actions\/jobs\/(\d+)\/logs$/.exec(args[1] ?? "") : null;
-    if (job !== null) {
-      logReads.push(Number(job[1]));
-      if (!(Number(job[1]) in logs)) throw new Error("gh exited 1");
-      return logs[Number(job[1])];
-    }
-    if (args[0] === "run" && args[1] === "rerun") {
-      reruns.push(args);
-      return "";
-    }
-    return base.run(args);
+/** A world whose code host holds the log of an Actions job from `logs` (by job id; any other job's log cannot be read), and records each read of a log (`logReads`, by job id) and each rerun it was asked for (`reruns`, the pages of the checks), which `rerunRefusal` makes the code host refuse. */
+function withCi(base: World, logs: Record<number, string>, rerunRefusal: string | null = null): World & { reruns: string[][]; logReads: number[] } {
+  for (const [id, text] of Object.entries(logs)) base.host.checksAndClaims.logs.set(jobPage(Number(id)), text);
+  base.host.checksAndClaims.rerunRefusal = rerunRefusal;
+  const { checksAndClaims, calls } = base.host;
+  return {
+    ...base,
+    get reruns() { return checksAndClaims.reruns; },
+    get logReads() { return calls.flatMap((call) => { const job = /^readCheckLog .*\/job\/(\d+)$/.exec(call); return job === null ? [] : [Number(job[1])]; }); },
   };
-  return { ...base, run, reruns, logReads };
 }
 
 /** A run made by `make` over a gh that serves one pull request at `head` with `checks` failing and the logs of `logs` by job id; `pulls` is changed to change what it serves later. */
@@ -5038,7 +5024,7 @@ test("A11-154: a required roll-up that failed is replaced in the round by the jo
     "the gate names no cause: the jobs behind it are named, each by what its own log says");
   const infra = await redRun([roll, redCheck("suite", 41)], { 40: stamped(["a job reported 'failure', not success"]), 41: RUNNER_LOST });
   await watchRound(infra.ctx.pool);
-  assert.deepEqual([infra.ctx.entry("NBF-1").phase, infra.ci.reruns], ["finished", [["run", "rerun", "410", "--failed", "-R", "x/nbl-ui-netbox"]]], "a roll-up over a lost runner is a rerun of the job, not a round");
+  assert.deepEqual([infra.ctx.entry("NBF-1").phase, infra.ci.reruns], ["finished", [[jobPage(41)]]], "a roll-up over a lost runner is a rerun of the job, not a round");
   assert.deepEqual(infra.ci.logReads, [41], "and the roll-up's own log, which names no cause, is not read");
 });
 
@@ -5123,7 +5109,7 @@ test("A11-154: a check that failed for an infrastructure reason is rerun once fo
     const { ci, ctx } = await redRun([redCheck("test", 11)], { 11: log }, needsHumanRun);
     await watchRound(ctx.pool);
     assert.deepEqual([ctx.entry("NBF-1").phase, ctx.entry("NBF-1").rounds, ctx.entry("NBF-1").feedback], ["finished", undefined, undefined], `${reason}: no round`);
-    assert.deepEqual(ci.reruns, [["run", "rerun", "110", "--failed", "-R", "x/nbl-ui-netbox"]], `${reason}: the failed jobs of its workflow run are rerun`);
+    assert.deepEqual(ci.reruns, [[jobPage(11)]], `${reason}: the failed jobs of its workflow run are rerun, asked for by the page of the check`);
     const note = `Reran test on 1a2b3c4d: ${reason}`;
     assert.deepEqual(ctx.entry("NBF-1").checkHeads, { [approvedPr.url]: { head: HEAD_1, step: "rerun", note } }, `${reason}: recorded for the head`);
     assert.equal(checkNote(ctx.entry("NBF-1")), note, `${reason}: said on the run's card`);
@@ -5161,12 +5147,8 @@ test("A11-154: a head with a check the code failed and a check the infrastructur
 
 test("A11-154: a rerun GitHub refuses names the check for a person and is not asked again, and a parked run's workspace is not touched by a rerun", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
-  const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST });
-  const gh = { ...ci, run: (args: string[]) => {
-    if (args[0] === "run") throw new Error("gh: Resource not accessible by integration (HTTP 403)");
-    return ci.run(args);
-  } };
-  const ctx = await parkedOnQuestion(gh);
+  const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST }, "gh: Resource not accessible by integration (HTTP 403)");
+  const ctx = await parkedOnQuestion(ci);
   ctx.h.calls.length = 0;
   const logged = await captureStderr(async () => { await watchRound(ctx.pool); });
   const note = "test failed on 1a2b3c4d for an infrastructure reason (a runner was lost or a rate limit was hit) and could not be rerun (gh: Resource not accessible by integration (HTTP 403)): a person decides";
@@ -5180,9 +5162,8 @@ test("A11-154: a rerun GitHub refuses names the check for a person and is not as
 
 test("A11-154: a name for a person is dropped once nothing fails on the head any more, and the head stays answered", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
-  const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST });
-  const gh = { ...ci, run: (args: string[]) => (args[0] === "run" ? (() => { throw new Error("gh: HTTP 403"); })() : ci.run(args)) };
-  const ctx = await readyRun(gh);
+  const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST }, "gh: HTTP 403");
+  const ctx = await readyRun(ci);
   await captureStderr(async () => { await watchRound(ctx.pool); });
   assert.match(checkNote(ctx.entry("NBF-1")) ?? "", /a person decides$/);
   pulls[1] = feedbackPull({ head: HEAD_1 });

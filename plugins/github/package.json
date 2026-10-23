@@ -6,7 +6,7 @@
   "type": "module",
   "agentOrg": {
     "concern": "codeHost",
-    "contract": "1.4",
+    "contract": "1.5",
     "description": "GitHub: pull requests, reviews and checks.",
     "entry": "index.ts",
     "settings": {

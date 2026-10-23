@@ -35,7 +35,6 @@ import { defaultHerdr } from "./pool-herdr.ts";
 import { defaultDrainStore, updateNoteOf } from "./pool-drain.ts";
 import { runningToolVersion } from "../install/tool-versions.ts";
 import type { UpdateNote } from "./board-view/update-banner.ts";
-import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { inWork, takenRefusal, takenState } from "./pick-taken.ts";
 import { amend, childOrder, enqueue, retry, type Entry, type PlanFirst, type Queue, type RunChoice, type WriterRun, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, queuePublish, setMax, pauseQueue, resumeQueue, startAnyway } from "./queue/queue-transitions.ts";
@@ -819,7 +818,7 @@ async function serve(): Promise<void> {
   // remembers its reviewers by.
   const reviewerHeads = new Map<string, string>();
   const reviewerSeen = new Map<string, number>();
-  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads, seen: reviewerSeen });
+  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: defaultHerdr, clones: settings.clones, instance: claimantOf(settings), heads: reviewerHeads, seen: reviewerSeen });
   const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }));
   activated(active);
   const source = active.tracker();

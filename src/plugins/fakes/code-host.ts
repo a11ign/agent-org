@@ -4,7 +4,8 @@
 // IT HOLDS PULL REQUESTS AND NOTHING ELSE, and answers `null` for one it was never given, as a host does that cannot read it. A test seeds a pull request (`seedPull`),
 // moves its head or its checks, and reads what the board asked of it (`calls`) and did to it (`armed`, `reviewRequests`, `retargets`). Every read is synchronous, as the contract's are.
 import { join } from "node:path";
-import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, MergedFindings, PullFeedback, Reply, RetargetRequest, ReviewState, WrapperInputs } from "../contracts/code-host.ts";
+import { fileURLToPath } from "node:url";
+import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, MergedFindings, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
 export type FakePull = {
@@ -15,6 +16,12 @@ export type FakePull = {
 };
 
 const HOST = "fake";
+
+/** The fake's verdict door and its installer: files that post nothing, beside this one. */
+const FAKE_DOOR: VerdictDoor = {
+  source: fileURLToPath(new URL("./verdict-door/pr-review-verdict.sh", import.meta.url)),
+  installer: fileURLToPath(new URL("./verdict-door/install-reviewer-bin.sh", import.meta.url)),
+};
 
 /** The address of a pull request the fake holds. */
 export const fakePullUrl = (repository: string, number: number): string => `https://github.com/${repository}/pull/${number}`;
@@ -70,6 +77,51 @@ function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, 
       const pull = pulls.get(ref.id);
       if (ref.host !== HOST || pull === undefined) return null;
       return { ref, head: pull.head, checks: [], reviews: [], merge: { state: pull.state, armed: pull.merge.armed, mergeable: pull.merge.mergeable } };
+    },
+  };
+}
+
+/**
+ * What the fake holds of checks and claims (contract 1.5), and what a test sets: the log behind a check's address (`logs`; an address with none is one the host cannot read), the runs `rerunFailedChecks`
+ * was asked to rerun, why it refuses (`rerunRefusal`), the claim entries by `repository@head` (`claims`), the clock a claim is written at, why a claim cannot be read or written, and the claims written.
+ */
+export type FakeChecksAndClaims = {
+  logs: Map<string, string>;
+  reruns: string[][];
+  rerunRefusal: string | null;
+  claims: Map<string, ReviewClaimEntry[]>;
+  now: () => number;
+  claimReadRefusal: string | null;
+  claimWriteRefusal: string | null;
+  claimWrites: { repository: string; head: string; description: string; environment: Readonly<Record<string, string>> }[];
+};
+
+/** The reads and writes of checks and review claims over what a test seeded. */
+function checksAndClaimsOf(state: FakeChecksAndClaims, calls: string[]): Pick<CodeHost, "readCheckLog" | "rerunFailedChecks" | "readReviewClaims" | "writeReviewClaim"> {
+  const keyOf = (repository: string, head: string): string => `${repository}@${head}`;
+  return {
+    readCheckLog(detailsUrl) {
+      calls.push(`readCheckLog ${detailsUrl}`);
+      return state.logs.get(detailsUrl) ?? null;
+    },
+    rerunFailedChecks(detailsUrls) {
+      calls.push("rerunFailedChecks");
+      if (state.rerunRefusal !== null) return state.rerunRefusal;
+      state.reruns.push([...detailsUrls]);
+      return null;
+    },
+    readReviewClaims(repository, head) {
+      calls.push(`readReviewClaims ${repository} ${head}`);
+      return state.claimReadRefusal === null ? { entries: [...(state.claims.get(keyOf(repository, head)) ?? [])] } : { unreadable: state.claimReadRefusal };
+    },
+    writeReviewClaim({ repository, head, description, environment }) {
+      calls.push(`writeReviewClaim ${repository} ${head}`);
+      if (state.claimWriteRefusal !== null) return state.claimWriteRefusal;
+      state.claimWrites.push({ repository, head, description, environment });
+      const entries = state.claims.get(keyOf(repository, head)) ?? [];
+      entries.push({ id: entries.length + 1, description, created: state.now() });
+      state.claims.set(keyOf(repository, head), entries);
+      return null;
     },
   };
 }
@@ -160,8 +212,14 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const reviewRequests: { ref: ChangeRef; reviewer: string }[] = [];
   const retargets: { url: string; base: string }[] = [];
   const wrapperState: FakeWrapperState = { refusal: null, mintFailures: {} };
-  const host: CodeHost = { ...readsOf(pulls, repositories, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState) };
+  const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
+  const host: CodeHost = {
+    ...readsOf(pulls, repositories, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls),
+    sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR,
+  };
   return Object.assign(host, {
+    /** The checks' logs and reruns and the review claims the fake holds, for a test to seed and read (see {@link FakeChecksAndClaims}). */
+    checksAndClaims,
     /** What the fake's wrapper refuses to write (null: nothing) and the reason a role's App cannot mint, by role. */
     wrapperState,
     /** Hold a pull request, open at head `head-<number>` on `main` unless a test says otherwise. Returns its address and its change ref. */

@@ -48,7 +48,7 @@ const OPENER = /\b(?:Review|Re-read)\s+(?:of|at)\b/i;
 /**
  * agent-org#1381: THE OPENER IN THE REVIEWER'S OWN FORM, AT THE START OF THE LINE -- `**Review of #1352 at \`c84ce2fc\`, by ...`.
  * `OPENER` matches anywhere, so `Reply to the NOT CONVINCED review at \`c84ce2fc\`` opens like a verdict and was read as one. The
- * door writes its verdict under this opener (`reviewer/pr-review-verdict.sh` checks the first line it posts), so a comment that
+ * door writes its verdict under this opener (`plugins/github/reviewer/pr-review-verdict.sh` checks the first line it posts), so a comment that
  * opens in prose is not a verdict a reviewer wrote.
  */
 const CONVENTION_OPENER = /^\s*\**\s*(?:Review|Re-read)\s+(?:of|at)\b/i;
@@ -163,7 +163,7 @@ function verdictHereAt(comment: any, head: string, prAuthor: string | null) {
 /**
  * #3030: THE PLACES A VERDICT LIVES, as ONE list oldest first -- the PR's comments AND its review bodies.
  *
- * The door (`reviewer/pr-review-verdict.sh`) now posts the verdict file's whole text as the review body and
+ * The door (`plugins/github/reviewer/pr-review-verdict.sh`) now posts the verdict file's whole text as the review body and
  * no comment, so a gate reading `comments` alone would call every such PR verdictless and re-summon a
  * reviewer who had answered. Comments stay in the list: every PR already open carries its verdict there,
  * and a PR carrying it in both places still reads as ONE verdict, because `verdictAtHead` returns the
@@ -268,7 +268,7 @@ export function headMatches(stated: string | null, actual: string) {
 }
 
 /**
- * a11ign#3199: DOES A REFUSAL STILL APPLY -- the one decider the door (`reviewer/pr-review-verdict.sh`) and the gate (`verdictAmong`,
+ * a11ign#3199: DOES A REFUSAL STILL APPLY -- the one decider the door (`plugins/github/reviewer/pr-review-verdict.sh`) and the gate (`verdictAmong`,
  * `refusedPrompt`) both ask, so they cannot disagree about whether a refusal stands.
  *
  * A VERDICT IS VALID FOR A PATCH ON A BASE, NOT FOR A PATCH ALONE. `patchIdOfDiff` hashes only what a pull request adds and removes, so

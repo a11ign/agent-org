@@ -255,10 +255,6 @@
       "spawns": 0,
       "calls": 3
     },
-    "src/reviewer/pr-review-verdict.sh": {
-      "spawns": 10,
-      "calls": 0
-    },
     "src/route-guard.ts": {
       "spawns": 1,
       "calls": 2

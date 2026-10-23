@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { REVIEW_CLAIM_CONTEXT, REVIEW_LEASE_MINUTES, claimDescriptionOf, claimEntriesOf, claimHead, describedClaimOf, finishedDescriptionOf, othersSeenIn, reasonOf, releasedDescriptionOf, writeClaimStatus, type ClaimEntry } from "./review-claim.ts";
+import { REVIEW_CLAIM_CONTEXT, REVIEW_LEASE_MINUTES, claimDescriptionOf, claimHead, describedClaimOf, finishedDescriptionOf, othersSeenIn, reasonOf, releasedDescriptionOf, type ClaimEntry } from "./review-claim.ts";
 import { ghWith } from "../lib/tool-version-agreement.ts";
 
 const LEASE = REVIEW_LEASE_MINUTES * 60_000;
@@ -138,22 +138,6 @@ test("the descriptions read back as what they say, and a claim fits GitHub's 140
   assert.equal(describedClaimOf("success for review/reviewer-7"), null, "another status is none of the claim's");
 });
 
-test("the entries are read as one line per status, and a status is written with the claim's state, context and description", () => {
-  const calls: string[][] = [];
-  const gh = (args: string[]) => {
-    calls.push(args);
-    if (args.includes("--method")) return "";
-    return `7\t2026-10-20T12:00:00Z\tclaimed by work at 2026-10-20T12:00:00.000Z, lease 60 min\n8\t2026-10-20T12:05:00Z\tconvinced by laptop at 2026-10-20T12:05:00Z\n`;
-  };
-  assert.deepEqual(claimEntriesOf({ repo: "a11ign/agent-org", sha: "abc", gh }), [
-    { id: 7, description: "claimed by work at 2026-10-20T12:00:00.000Z, lease 60 min", created: Date.parse("2026-10-20T12:00:00Z") },
-    { id: 8, description: "convinced by laptop at 2026-10-20T12:05:00Z", created: Date.parse("2026-10-20T12:05:00Z") },
-  ]);
-  assert.ok(calls[0].includes("--paginate") && calls[0].includes("repos/a11ign/agent-org/commits/abc/statuses?per_page=100"));
-  writeClaimStatus({ repo: "a11ign/agent-org", sha: "abc", description: "claimed by work at x, lease 60 min", gh });
-  assert.deepEqual(calls[1], ["api", "--method", "POST", "repos/a11ign/agent-org/statuses/abc", "--silent", "-f", "state=success", "-f", `context=${REVIEW_CLAIM_CONTEXT}`, "-f", "description=claimed by work at x, lease 60 min"]);
-});
-
 test("a gh run with the reviewer's environment sees it laid over this process's own", () => {
   const dir = tmpDir("review-claim-gh-");
   writeFileSync(join(dir, "gh"), "#!/bin/sh\necho \"$AGENT_ORG_GH_ROLE $*\"\n");
@@ -282,13 +266,4 @@ test("A11-172: the other instances among the entries are found by their claim, v
     { id: 5, description: "success for review/reviewer-7", created: NOW }];
   assert.deepEqual([...othersSeenIn({ entries, instance: "work" })], [["laptop", NOW - 10_000], ["tablet", NOW - 90_000]]);
   assert.deepEqual([...othersSeenIn({ entries: [], instance: "work" })], []);
-});
-
-test("A11-172: the claim's read asks past the gh wrapper's read cache, on every listing", () => {
-  const calls: string[][] = [];
-  claimEntriesOf({ repo: "a11ign/agent-org", sha: "abc", gh: (args) => { calls.push(args); return ""; } });
-  const [args] = calls;
-  const header = args.indexOf("-H");
-  assert.ok(header !== -1 && args[header + 1] === "Cache-Control: no-cache", `the call carries -H "Cache-Control: no-cache": ${args.join(" ")}`);
-  assert.ok(args.includes("--paginate") && args.includes("repos/a11ign/agent-org/commits/abc/statuses?per_page=100"), "and is still the paginated listing");
 });

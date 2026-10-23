@@ -52,18 +52,12 @@ function fakeGate(listed: Map<string, string>): ReviewerGate {
 /** `deps.reviewing` over the fakes: core's own helpers for what a plugin only calls (seat names, the herdr listing, claims), the fake gate, and the board's collaborators as fakes. */
 function helpersOver({ refusal = null }: { refusal?: string | null } = {}): { reviewing: ReviewerHelpers; listed: Map<string, string> } {
   const listed = new Map<string, string>();
-  const statuses: string[] = [];
-  const gh = (args: string[]): string => {
-    if (!args.includes("POST")) return statuses.join("");
-    statuses.push(`${statuses.length + 1}\t${new Date().toISOString()}\t${args.find((arg) => arg.startsWith("description="))!.slice("description=".length)}\n`);
-    return "";
-  };
   const host = createFakeCodeHost();
   host.seedPull(REPO, 7, { head: HEAD, settled: true, trust: "inside" });
-  const real = reviewingHelpers({ session: "tickets", run: herdr(listed), gh, codeHost: () => host, clones: {}, instance: "work", heads: new Map<string, string>() });
+  const real = reviewingHelpers({ session: "tickets", run: herdr(listed), codeHost: () => host, clones: {}, instance: "work", heads: new Map<string, string>() });
   const loaded = { current: false };
   return { listed, reviewing: { loadGate: async () => { loaded.current = true; }, gateRefusal: () => { if (!loaded.current) throw new Error("the gate is not loaded"); return refusal; }, gate: () => fakeGate(listed),
-    board: () => ({ ...real.board(), ghWith: () => gh }) } };
+    board: () => real.board() } };
 }
 
 const depsOver = (reviewing: ReviewerHelpers): PluginDeps => fakePluginDeps({ reviewing });
