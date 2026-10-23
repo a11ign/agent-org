@@ -16,6 +16,7 @@
 // `run` IS HANDED IN and nothing here spawns `gh`. The page builder and the page parser are
 // exported on their own for a caller whose `run` is asynchronous (`messaging/watch.ts`): it pages by the same two functions and the same `foldPage`.
 import type { Page, RowsHelpers, RowsRun as Run, SinceRead } from "../../../src/plugins/contracts/code-host-rows.ts";
+import type { AsyncRowsRun as AsyncRun } from "../../../src/plugins/contracts/code-host-rows-facts.ts";
 import { type Pool, readUnlessRefused } from "./rows-by-label.ts";
 
 /** The error a window longer than its pages throws: core's class (`RowsHelpers.WindowCutShort`), so a caller's `instanceof` finds it. */
@@ -59,7 +60,11 @@ export function parsePage(raw: string, ask: SinceRead): Page {
   if (!Array.isArray(connection?.nodes)) {
     throw new Error(`the ${ask.kind} of ${ask.repo} did not come back as a connection: ${String(parsed?.errors?.[0]?.message ?? "no `data`")}`);
   }
-  return { nodes: connection.nodes, hasNextPage: connection.pageInfo?.hasNextPage === true, endCursor: typeof connection.pageInfo?.endCursor === "string" ? connection.pageInfo.endCursor : null };
+  const hasNextPage = connection.pageInfo?.hasNextPage === true;
+  const endCursor = typeof connection.pageInfo?.endCursor === "string" && connection.pageInfo.endCursor !== "" ? connection.pageInfo.endCursor : null;
+  // A page that says another follows and names no cursor to ask it with is not a page: `foldPage` reads a null cursor as "the read is whole", which would end the read short and call it complete.
+  if (hasNextPage && endCursor === null) throw new Error(`the ${ask.kind} of ${ask.repo} came back with pageInfo.hasNextPage and no endCursor: another page follows that cannot be asked for`);
+  return { nodes: connection.nodes, hasNextPage, endCursor };
 }
 
 /**
@@ -84,6 +89,24 @@ export function foldPage({ ask, rows, page, pagesRead }: { ask: SinceRead; rows:
 }
 
 /**
+ * THE WINDOW'S PAGE LOOP, ONCE: the argument list of the page to ask now, and what to do with the raw answer. `fold` answers the rows when the read is whole, or the argument list of the page still to ask. The sync reader and
+ * the async one differ only in how they run a page, so the order of pages, the cut-short refusal and the cursor rule cannot drift between them.
+ */
+function pageWalk(ask: SinceRead, WindowCutShort: CutShort): { first: string[]; fold(raw: string): { rows: any[] } | { args: string[] } } {
+  let rows: any[] = [];
+  let pagesRead = 0;
+  return {
+    first: sincePageArgs(ask, null),
+    fold(raw) {
+      pagesRead += 1;
+      const folded = foldPage({ ask, rows, page: parsePage(raw, ask), pagesRead }, WindowCutShort);
+      rows = folded.rows;
+      return folded.next === null ? { rows } : { args: sincePageArgs(ask, folded.next) };
+    },
+  };
+}
+
+/**
  * The rows of `ask`, each as the `select` asked, in the connection's own shape, or a THROW when they could not be read whole.
  * @param ask `since` bounds the window by time and refuses one that does not fit; `newest` bounds it by count and truncates
  */
@@ -92,15 +115,26 @@ export function readRowsSince({ ask, run, log }: { ask: SinceRead; run: Run; log
   if (ask.since !== undefined && !Number.isFinite(Date.parse(ask.since))) throw new Error(`readRowsSince: \`since\` is not a time: ${ask.since}`);
   const what = `the ${ask.kind} of ${ask.repo} (${ask.states.join("/")}), ${ask.since === undefined ? `${ask.newest} newest` : `since ${ask.since}`}`;
   return readUnlessRefused({ what, run, pool, ...(log === undefined ? {} : { log }), read: () => {
-    let rows: any[] = [];
-    let after: string | null = null;
-    for (let pagesRead = 1; ; pagesRead += 1) {
-      const folded = foldPage({ ask, rows, page: parsePage(run(sincePageArgs(ask, after)), ask), pagesRead }, WindowCutShort);
-      rows = folded.rows;
-      if (folded.next === null) return rows;
-      after = folded.next;
+    const walk = pageWalk(ask, WindowCutShort);
+    for (let args = walk.first; ; ) {
+      const step = walk.fold(run(args));
+      if ("rows" in step) return step.rows;
+      args = step.args;
     }
   } });
+}
+
+/**
+ * {@link readRowsSince} for a caller that holds an ASYNC `run` (the chairman's watch, A11-160 step 8): every page through that run, the rows in the shape `gh <kind> list --json` gave. It keeps no memory of refusals (the watch
+ * reads once a tick, in a process of its own) and a caller's `guard` on the run applies to each page's argument list.
+ */
+export async function readRowsSinceAsync({ ask, run }: { ask: SinceRead; run: AsyncRun }, { WindowCutShort }: { WindowCutShort: CutShort }): Promise<any[]> {
+  const walk = pageWalk(ask, WindowCutShort);
+  for (let args = walk.first; ; ) {
+    const step = walk.fold(await run(args));
+    if ("rows" in step) return step.rows.map(asListJson);
+    args = step.args;
+  }
 }
 
 /**

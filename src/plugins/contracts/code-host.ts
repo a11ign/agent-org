@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.10 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.11 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,9 @@
 //
 // ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.11 (A11-160, step 8): `rows` gains the operations of the board's reads and posts (`src/board-*`), the health and retro readings (`src/org-health/sweep-readings.ts`, `src/org-retro/`), the DORA reader (`src/dora.ts`), the trace (`src/trace/`) and the
+// chairman's watch and answers (`src/messaging/`), and the runners a caller that keeps its own policy asks for (`runnerWith`, `asyncRunnerWith`): see `code-host-rows.ts`. A plugin of 1.10 is read as one whose `rows` lack them,
+// which a 1.10 plugin would have to be updated for; while plugins are in-repo that is the same pull request.
 // 1.10 (A11-160, step 7): `rows` gains the operations of wake, the claim and the filing of rows (`src/wake*`, `src/row-claim*`, `src/row-file/`, `src/claim-stall/` and the claim and row files at the top of `src/`): see `code-host-rows.ts`. A plugin of 1.9
 // is read as one whose `rows` lack them, which a 1.9 plugin would have to be updated for; while plugins are in-repo that is the same pull request.
 // 1.9 (A11-160, step 6): `rows` gains the operations of the work gate (`src/work-gate/`): a row's label events, comments and timeline, the pull requests, commits, checks and runs it reads, the writes it makes to rows and the board, and the executor's
@@ -36,7 +39,7 @@ import type { CodeHostRows } from "./code-host-rows.ts";
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.10";
+export const CODE_HOST_CONTRACT_VERSION = "1.11";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;

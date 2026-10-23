@@ -3,9 +3,10 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { rows } from "../plugins/rows.ts";
 import { openIncidentsOf } from "../ticket-port/open-incidents.ts";
 import { closeIncident, closedIncidentsOf, createIncident, jobLogOf } from "../ticket-port/release-incidents.ts";
-import { COPY_COMPARED_IN, TEAM_LEVELS, TEAM_LISTING_JQ, TEAM_PAGE_SIZE, isInstalledOriginal, type CopyPair, type SweepRead, type TeamAccessFact, type TeamRepository } from "./board-truth-and-access-readings.ts";
+import { COPY_COMPARED_IN, TEAM_LEVELS, isInstalledOriginal, type CopyPair, type SweepRead, type TeamAccessFact, type TeamRepository } from "./board-truth-and-access-readings.ts";
 import { COPIES_DIR, COPY_HEADER_CHANGES, COPY_HEADER_END, COPY_HEADER_START, DEFAULT_ROOT, MAX_NAMED, MAX_REASON_CHARS, MERGED_WINDOW, MINUTES_PER_TICK, MS_PER_MINUTE, SIGNALS, TOOL_ROOT, ageText, clear, type Reading, unknown } from "./thresholds.ts";
 import { openFor, readOrNull } from "./overdue-readings.ts";
 
@@ -117,7 +118,7 @@ export function readTeamAccess(run: (args: string[]) => string, { root = HOME_CH
 
 function readTeamRepositories(run: (args: string[]) => string, org: string, team: string): { reached: TeamRepository[] | null; why: string; } {
   try {
-    const reached = parseTeamListing(run(["api", `orgs/${org}/teams/${team}/repos?per_page=${TEAM_PAGE_SIZE}`, "--paginate", "--jq", TEAM_LISTING_JQ]));
+    const reached = parseTeamListing(rows().teamRepositoriesTextOf({ org, team, run }));
     return reached === null ? { reached, why: "GitHub answered a line that is not a repository's permissions" } : { reached, why: "" };
   } catch (err) {
     return { reached: null, why: String((err as any)?.message ?? err).split("\n")[0].slice(0, MAX_REASON_CHARS) };
@@ -287,8 +288,7 @@ export function primaryStandingSince(drift: { behind: number; dirty: string[]; }
  */
 function askLastMerge(run: (args: string[]) => string, repo: string): { at: number | null; } | null {
   try {
-    const out = run(["api", `repos/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${MERGED_WINDOW}`,
-      "--jq", "[.[] | select(.merged_at != null) | .merged_at] | max"]);
+    const out = rows().lastMergeTextOf({ repo, window: MERGED_WINDOW, run });
     // `gh --jq` prints a string RAW (no quotes) and the word `null` for an empty list, both of which `Date.parse` reads as NaN or a time.
     if (out.trim() === "null") return { at: null };
     const at = Date.parse(out.trim());
@@ -385,14 +385,13 @@ function pendingText(pending: string[] | null | undefined): string {
  * (that run's jobs, and `.changeset/` on `main`). `null` is a refused or unparseable list, a stated unknown and never "no failure". NEVER THROWS.
  */
 export function readReleaseRuns(run: (args: string[]) => string, repo: string): ReleaseRuns | null {
-  const runs: ReleaseRun[] | null = tryJson(() => run(["api", "--method", "GET", `repos/${repo}/actions/workflows/release.yml/runs`, "-f", "branch=main", "-f", `per_page=${RELEASE_RUN_WINDOW}`,
-    "--jq", "[.workflow_runs[] | {id, event, status, conclusion, sha: .head_sha, createdAt: .created_at, updatedAt: .updated_at, url: .html_url}]"]));
+  const runs: ReleaseRun[] | null = tryJson(() => rows().releaseRunsOf({ repo, window: RELEASE_RUN_WINDOW, run }));
   if (!Array.isArray(runs)) return null;
   for (const r of runs) if (r.event === "workflow_dispatch" && r.conclusion === "success") r.published = releaseJobPublished(run, repo, r.id);
   const verdict = newestReleaseVerdict(runs);
   if (verdict?.conclusion !== "failure") return { runs };
-  const jobs = releaseJobsOf(run, repo, verdict.id, "[.jobs[] | select(.conclusion == \"failure\") | {id, name, steps: [.steps[] | select(.conclusion == \"failure\") | .name]}]");
-  const files = tryJson(() => run(["api", `repos/${repo}/contents/.changeset?ref=main`, "--jq", "[.[].name]"]));
+  const jobs = releaseJobsOf(run, repo, verdict.id, "failed");
+  const files = tryJson(() => rows().changesetNamesOf({ repo, run }));
   return { runs, jobs: Array.isArray(jobs) ? jobs : null,
     pending: Array.isArray(files) ? files.filter((name) => name.endsWith(".md") && name !== "README.md") : null };
 }
@@ -403,19 +402,19 @@ export function readReleaseRuns(run: (args: string[]) => string, repo: string): 
  * (a11ign/agent-org#1298: that name matched nothing, so every dispatch read as promote-only and a release that shipped still read as failing).
  */
 function releaseJobPublished(run: (args: string[]) => string, repo: string, id: number): boolean {
-  const jobs = releaseJobsOf(run, repo, id, "[.jobs[] | {name, conclusion}]");
+  const jobs = releaseJobsOf(run, repo, id, "named");
   return Array.isArray(jobs) && jobs.some((job) => job.name === RELEASE_PUBLISH_JOB && job.conclusion === "success");
 }
 
 /** @returns the jobs of one run as `jq` shapes them: the one read of a run's jobs, so the `gh` call site is counted once (agent-org#1273, gh-call-baseline). `null` for a refusal or text that is not JSON. */
-function releaseJobsOf(run: (args: string[]) => string, repo: string, id: number, jq: string): any {
-  return tryJson(() => run(["api", `repos/${repo}/actions/runs/${id}/jobs?per_page=${RELEASE_JOBS_WINDOW}`, "--jq", jq]));
+function releaseJobsOf(run: (args: string[]) => string, repo: string, id: number, shape: "named" | "failed"): any {
+  return tryJson(() => rows().releaseJobsOf({ repo, runId: id, window: RELEASE_JOBS_WINDOW, shape, run }));
 }
 
-/** @returns the parsed output, or `null` for a refusal or text that is not JSON: a stated gap for the caller, never an empty answer */
-function tryJson(read: () => string): any {
+/** @returns what the read answers, or `null` for a refusal or an answer that is not JSON: a stated gap for the caller, never an empty answer */
+function tryJson(read: () => unknown): any {
   try {
-    return JSON.parse(read());
+    return read();
   } catch {
     return null;
   }

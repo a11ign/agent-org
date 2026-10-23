@@ -2,12 +2,12 @@
 /**
  * #1290: the board edition publishes as a GitHub Discussion, not a PDF on a draft release.
  *
- * The carrier's behaviour is asserted against a fake `gh`, on the argv it was handed rather than on what it
- * returned. The other half -- that `board-report.yml` carries no `--release` and no `contents: write`, so the
+ * A11-160, STEP 8: THE CARRIER'S BEHAVIOUR IS ASSERTED AGAINST THE FAKE CODE HOST'S DISCUSSIONS, on the operations it was asked to do (and with what) and on the Discussions the world holds after, rather than on the `gh`
+ * argument lists it built (those, the GraphQL documents and their variables, are the plugin's: `plugins/github/rows/board-rows.test.ts`). The other half -- that `board-report.yml` carries no `--release` and no `contents: write`, so the
  * release path has STOPPED -- is an invariant of the project's workflow, not of the tool, and left this file
  * with #3233.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +15,13 @@ import { fileURLToPath } from "node:url";
 import {
   categoryIdFor, editionDay, editionFor, editionTitle, publishEdition, todaysEditionExists, EDITION_CATEGORY_SLUG,
 } from "../board-discussion.ts";
+import { REPO } from "../board-data.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { FakeDiscussion } from "../plugins/fakes/code-host-board.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 /** The TOOL's own `src`, one up from here: the edition scripts are the tool's, and the project's `packages/agent-org` is the frozen old copy. */
 const TOOL_SRC = fileURLToPath(new URL("..", import.meta.url));
@@ -27,38 +34,21 @@ const CATEGORIES = [
   { id: "DIC_board", slug: EDITION_CATEGORY_SLUG },
 ];
 
-/** The operation an argv performs, read from the query it carries. Create/update are checked first. */
-function operation(args: string[]): string {
-  const query = args.find((a) => a.startsWith("query=")) ?? "";
-  const found = ["createDiscussion", "updateDiscussion", "discussionCategories", "discussions("]
-    .find((name) => query.includes(name));
-  return found ?? `unknown: ${query}`;
-}
-
-/** The `-f key=value` variables an argv carries, excluding the query itself. */
-function variables(args: string[]): Record<string, string> {
-  const pairs = args.filter((a, i) => args[i - 1] === "-f" && !a.startsWith("query="))
-    .map((a) => [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]);
-  return Object.fromEntries(pairs);
-}
-
-/** A fake `gh` that answers by operation and records every argv; `refuse` names an operation that throws. */
+/**
+ * The fake code host holding the repository's Discussions: its `categories` and the `editions` already in the edition category (newest first). `refuse` names an operation of the code host that is refused (`discussionCategoriesOf`
+ * or `discussionEditionsOf`: a GraphQL error exits non-zero as well as a refused request). `ops()` is the operations the carrier asked for, in order; `world` the Discussions the code host holds after.
+ */
 function fakeGh({ categories = CATEGORIES, editions = [] as Node[], refuse = "" } = {}) {
-  const calls: string[][] = [];
-  const answers: Record<string, unknown> = {
-    createDiscussion: { createDiscussion: { discussion: { url: "https://example.invalid/discussions/new" } } },
-    updateDiscussion: { updateDiscussion: { discussion: { url: "https://example.invalid/ignored" } } },
-    discussionCategories: { repository: { id: "R_repo", discussionCategories: { nodes: categories } } },
-    "discussions(": { repository: { discussions: { nodes: editions } } },
-  };
-  const run = (args: string[]) => {
-    calls.push(args);
-    const op = operation(args);
-    if (op === refuse) throw new Error("Command failed: gh api graphql (exit 1)");
-    if (!(op in answers)) throw new Error(`fake gh was asked something it does not know: ${op}`);
-    return JSON.stringify({ data: answers[op] });
-  };
-  return { run, calls, ops: () => calls.map(operation) };
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  const held = { repositoryId: "R_repo", categories, editions: editions.map((edition): FakeDiscussion => ({ ...edition, body: "the body it had" })) };
+  host.rowsWorld.reports.board.discussions.set(REPO, held);
+  if (refuse !== "") host.rowsWorld.failures.set(refuse, new Error("Command failed: gh api graphql (exit 1)"));
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  const discussionOps = ["discussionCategoriesOf", "discussionEditionsOf", "createDiscussion", "updateDiscussion"];
+  const requests = (op: string) => watched.calls.filter((call) => call.op === op).map((call) => call.request);
+  return { held, ops: () => watched.calls.map((call) => call.op).filter((op) => discussionOps.includes(op)), requests };
 }
 
 const today = (id: string): Node => ({ id, title: editionTitle(DAY), url: `https://example.invalid/discussions/${id}` });
@@ -75,30 +65,34 @@ test("the category resolves by SLUG, and an absent one REFUSES rather than falli
 
 test("with the category absent, publishing posts NOTHING -- it stops after the one read that found it absent", () => {
   const gh = fakeGh({ categories: [{ id: "DIC_general", slug: "general" }] });
-  assert.throws(() => publishEdition({ day: DAY, body: BODY, run: gh.run }), /REFUSING to publish/);
-  assert.deepEqual(gh.ops(), ["discussionCategories"]);
+  assert.throws(() => publishEdition({ day: DAY, body: BODY }), /REFUSING to publish/);
+  assert.deepEqual(gh.ops(), ["discussionCategoriesOf"]);
 });
 
 // --- one post per date ---
 
 test("no edition for the date: ONE createDiscussion, in board-editions, titled by the date, body verbatim", () => {
   const gh = fakeGh({ editions: [yesterday] });
-  const result = publishEdition({ day: DAY, body: BODY, run: gh.run });
+  const result = publishEdition({ day: DAY, body: BODY });
 
-  assert.deepEqual(gh.ops(), ["discussionCategories", "discussions(", "createDiscussion"]);
-  assert.equal(variables(gh.calls[1]).categoryId, "DIC_board", "the edition lookup is scoped to the category");
-  assert.deepEqual(variables(gh.calls[2]),
-    { repositoryId: "R_repo", categoryId: "DIC_board", title: "Board report — 2026-09-14", body: BODY });
-  assert.deepEqual(result, { url: "https://example.invalid/discussions/new", action: "created" });
+  assert.deepEqual(gh.ops(), ["discussionCategoriesOf", "discussionEditionsOf", "createDiscussion"]);
+  assert.equal(gh.requests("discussionEditionsOf")[0].categoryId, "DIC_board", "the edition lookup is scoped to the category");
+  const { repositoryId, categoryId, title, body } = gh.requests("createDiscussion")[0];
+  assert.deepEqual({ repositoryId, categoryId, title, body }, { repositoryId: "R_repo", categoryId: "DIC_board", title: "Board report — 2026-09-14", body: BODY });
+  assert.equal(result.action, "created");
+  assert.deepEqual(gh.held.editions.map((e) => [e.title, e.body, e.categoryId]), [["Board report — 2026-09-14", BODY, "DIC_board"], [yesterday.title, "the body it had", undefined]], "the world holds the new edition beside yesterday's, which is untouched");
+  assert.equal(result.url, gh.held.editions[0].url, "the url is the new Discussion's");
 });
 
 test("an edition exists for the date: it is UPDATED in place and nothing is created", () => {
   const gh = fakeGh({ editions: [today("D_today"), yesterday] });
-  const result = publishEdition({ day: DAY, body: BODY, run: gh.run });
+  const result = publishEdition({ day: DAY, body: BODY });
 
-  assert.deepEqual(gh.ops(), ["discussionCategories", "discussions(", "updateDiscussion"]);
-  assert.deepEqual(variables(gh.calls[2]), { discussionId: "D_today", body: BODY });
+  assert.deepEqual(gh.ops(), ["discussionCategoriesOf", "discussionEditionsOf", "updateDiscussion"]);
+  const { discussionId, body } = gh.requests("updateDiscussion")[0];
+  assert.deepEqual({ discussionId, body }, { discussionId: "D_today", body: BODY });
   assert.deepEqual(result, { url: "https://example.invalid/discussions/D_today", action: "updated" });
+  assert.deepEqual(gh.held.editions.map((e) => [e.id, e.body]), [["D_today", BODY], ["D_old", "the body it had"]], "today's body is replaced and yesterday's is not touched");
 });
 
 test("two Discussions titled by one date refuse, and neither is touched", () => {
@@ -106,14 +100,15 @@ test("two Discussions titled by one date refuse, and neither is touched", () => 
   assert.throws(() => editionFor([today("D_a"), today("D_b")], editionTitle(DAY)), /2 Discussions are titled/);
 
   const gh = fakeGh({ editions: [today("D_a"), today("D_b")] });
-  assert.throws(() => publishEdition({ day: DAY, body: BODY, run: gh.run }), /2 Discussions are titled/);
-  assert.deepEqual(gh.ops(), ["discussionCategories", "discussions("]);
+  assert.throws(() => publishEdition({ day: DAY, body: BODY }), /2 Discussions are titled/);
+  assert.deepEqual(gh.ops(), ["discussionCategoriesOf", "discussionEditionsOf"]);
+  assert.deepEqual(gh.held.editions.map((e) => e.body), ["the body it had", "the body it had"], "neither is touched");
 });
 
 test("a REFUSED edition read propagates -- it never reads as 'no edition yet' and creates a second one", () => {
-  const gh = fakeGh({ editions: [today("D_today")], refuse: "discussions(" });
-  assert.throws(() => publishEdition({ day: DAY, body: BODY, run: gh.run }), /exit 1/);
-  assert.deepEqual(gh.ops(), ["discussionCategories", "discussions("]);
+  const gh = fakeGh({ editions: [today("D_today")], refuse: "discussionEditionsOf" });
+  assert.throws(() => publishEdition({ day: DAY, body: BODY }), /exit 1/);
+  assert.deepEqual(gh.ops(), ["discussionCategoriesOf", "discussionEditionsOf"]);
 });
 
 // --- the late path's question fails CLOSED ---
@@ -122,13 +117,17 @@ test("todaysEditionExists: a lookup that cannot be asked answers YES, and says w
   const warnings: string[] = [];
   const warn = (line: string) => warnings.push(line);
 
-  assert.equal(todaysEditionExists({ day: DAY, run: fakeGh({ refuse: "discussionCategories" }).run, warn }), true);
-  assert.equal(todaysEditionExists({ day: DAY, run: fakeGh({ categories: [] }).run, warn }), true);
+  fakeGh({ refuse: "discussionCategoriesOf" });
+  assert.equal(todaysEditionExists({ day: DAY, warn }), true);
+  fakeGh({ categories: [] });
+  assert.equal(todaysEditionExists({ day: DAY, warn }), true);
   assert.equal(warnings.length, 2, "each refusing answer names its reason");
   assert.match(warnings[1], /no Discussion category/);
 
-  assert.equal(todaysEditionExists({ day: DAY, run: fakeGh({ editions: [yesterday] }).run, warn }), false);
-  assert.equal(todaysEditionExists({ day: DAY, run: fakeGh({ editions: [today("D_today")] }).run, warn }), true);
+  fakeGh({ editions: [yesterday] });
+  assert.equal(todaysEditionExists({ day: DAY, warn }), false);
+  fakeGh({ editions: [today("D_today")] });
+  assert.equal(todaysEditionExists({ day: DAY, warn }), true);
   assert.equal(warnings.length, 2, "a real answer warns about nothing");
 });
 

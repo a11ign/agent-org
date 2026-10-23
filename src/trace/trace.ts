@@ -21,6 +21,7 @@ import { pathToFileURL } from "node:url";
 import { DEFERRAL_LOG_FILE, parseDeferralLog } from "../deferral-log.ts";
 import { parseLedger as parseGhLedger, parseRollup, rollupPathOf } from "../gh-ledger.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { rows } from "../plugins/rows.ts";
 import { measure, mergedRows, parseLedger, readInstances, readTranscripts, rowsClosedBy } from "../wakes-per-row.ts";
 import { aggregate, claimsOf, MOVES, renderAggregate, weekStart, type TrackerClass } from "./aggregate.ts";
 import { ORG_TRACKER_REPO, rowTracker } from "../row-tracker.ts";
@@ -694,7 +695,7 @@ function pullsClosing({ row, rowRepo, gh }: { row: number; rowRepo: string; gh: 
 }
 
 function runGhApi(args: string[]) {
-  return execFileSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
+  return rows().apiTextOf({ args, run: rows().runnerWith({ maxBuffer: GH_MAX_BUFFER, echo: false }) });
 }
 
 function ghApi(args: string[]) {

@@ -17,6 +17,7 @@ import { newestPerName } from "../newest-check-run.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { readDora, READ_TIMEOUT_MS } from "../dora.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
+import { rows } from "../plugins/rows.ts";
 import { underspecifiedReading, underspecifiedStops, type UnderspecifiedReading } from "../spec-lint.ts";
 import { commentsSince } from "../ticket-port/comments-since.ts";
 import { readRowsByLabel } from "../ticket-port/rows-by-label.ts";
@@ -217,7 +218,7 @@ function tallied<T>(kind: ReadClass, read: () => T): T {
 export function ghJson(args: string[]): any[] | null {
   return tallied(args[0] === "api" && args[1] === "graphql" ? "pages" : "lists", () => {
     try {
-      return JSON.parse(execFileSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"], timeout: READ_TIMEOUT_MS }));
+      return JSON.parse(rows().runnerWith({ maxBuffer: 64 * 1024 * 1024, timeoutMs: READ_TIMEOUT_MS, echo: false })(args));
     } catch {
       return null; // a refused read is `unknown` in the report, which says so; the cause is not narrated per read, and a hung one is refused at the bound (#3736)
     }
@@ -377,10 +378,14 @@ export const MERGED_ROW_OPEN_LOOKBACK_MS = 7 * WINDOW_MS;
 const LIST_LIMIT = 1000;
 const CLAIMED_BRANCH = /^Claimed-branch:\s*(.+)$/m;
 
-/** @param {(args: string[]) => any[] | null} read @param {string[]} args @returns {any[] | null} `null` for a refused list, a list at its ceiling included */
-const listRead = (read: (args: string[]) => any[] | null, args: string[]): any[] | null => {
-  const list = read(args);
-  return list === null || list.length >= LIST_LIMIT ? null : list;
+/** @param {() => any[]} ask a list read of the code host's rows @returns {any[] | null} `null` for a refused list, a list at its ceiling included */
+const listRead = (ask: () => any[]): any[] | null => {
+  try {
+    const list = ask();
+    return list.length >= LIST_LIMIT ? null : list;
+  } catch {
+    return null;
+  }
 };
 
 /** The branch the NEWEST claim-record comment names, or `null`: a row's record is re-written by a re-claim and the last one is who holds it. */
@@ -407,7 +412,7 @@ function readClaimedWithComments({ repo, read }: { repo: string; read: (args: st
 
 /** One tracker's open rows, each with its claim record's branch (and, for a claimed one, its claim's time). `null` when either list was refused. */
 function readOpenRows({ repo, read }: { repo: string; read: (args: string[]) => any[] | null; }): TrackerRow[] | null {
-  const open = listRead(read, ["issue", "list", "-R", repo, "--state", "open", "--limit", String(LIST_LIMIT), "--json", "number,labels"]);
+  const open = listRead(() => rows().openRowLabelsOf({ repo, limit: LIST_LIMIT, run: runThrough(read) }));
   const claimed = readClaimedWithComments({ repo, read });
   if (open === null || claimed === null) return null;
   const claims = new Map<number, any[]>(claimed.map((row) => [row.number, row.comments ?? []]));
@@ -506,7 +511,7 @@ const INERT_SELECT = "number body mergeCommit{oid} files(first:100){nodes{path}}
 function readNamingPrs({ repo, since, read, memory }: { repo: string; since: number; read: (args: string[]) => any[] | null; memory: RetroReads; }): { merged: NamingPr[]; open: (NamingPr & { labels?: any[]; })[]; } | null {
   if (!admitItem(memory)) return null;
   const merged = readMergedPrs({ repo, since, read, select: NAMING_SELECT, memory });
-  const open = listRead(read, ["pr", "list", "-R", repo, "--state", "open", "--limit", String(LIST_LIMIT), "--json", "number,body,headRefName,labels"]);
+  const open = listRead(() => rows().openPullsNamingRowsOf({ repo, limit: LIST_LIMIT, run: runThrough(read) }));
   if (merged === null || open === null) return null;
   return { merged: merged.map((pr) => ({ ...pr, repo })), open: open.map((pr) => ({ ...pr, repo })) };
 }

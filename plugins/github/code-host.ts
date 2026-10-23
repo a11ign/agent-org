@@ -22,6 +22,7 @@ import { sweepRetargets } from "./stack-retarget.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
 import { createRows, type RowsRunners } from "./rows/index.ts";
 import { gateRunner, runGhTogether } from "./rows/gate-runner.ts";
+import { answeringRunnerWith, asyncRunnerWith, runnerWith } from "./rows/runners.ts";
 import { createWrapper } from "./wrapper.ts";
 
 /** The verdict door and the program that installs it, shipped beside this file. */
@@ -53,6 +54,9 @@ function rowsRunners(deps: PluginDeps): RowsRunners {
     within: (timeoutMs, options) => ghRunner(deps, {}, { echo, timeoutMs, ...(options?.withoutGitEnv ? { withoutEnv: () => Object.keys(deps.env).filter((name) => name.startsWith("GIT_")) } : {}) }),
     gate: (options) => gateRunner(deps, options),
     together: (request) => runGhTogether(deps, request),
+    with: (request) => runnerWith(deps, request),
+    withAsync: (request) => asyncRunnerWith(deps, request),
+    withAnswer: (request) => answeringRunnerWith(deps, request),
   };
 }
 

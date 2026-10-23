@@ -21,12 +21,12 @@ export type CodeHostProbe = Readonly<{
 }>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
-/** The operations of the optional `rows` group (contract 1.10), as a function each; the other members are values. */
+/** The operations of the optional `rows` group (contract 1.11), as a function each; the other members are values. */
 const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
   "boardFiledRow", "briefChairmanOnPull", "headOfChange", "checkRunsOfHead", "workflowRunsOf", "jobsOfRun", "failedLogOfRun", "stateOfRow", "redRunOfHead", "rerunFailedJobsOf", "closeRowWithComment", "commentsSince", "conditionalGetArgs",
   "pullViewArgs", "pullTextOf", "branchRefTextOf", "addedFilesTextOf", "fileAtTextOf", "defaultBranchFileTextOf", "commentOnIssue", "openIncidentsOf", "readOpenPullHeads", "openPullBodiesOf", "outsideArmListArgs", "readyPullRequest",
   "ensureTriageLabel", "isIssueOnBoard", "boardItemOf", "pullRequestFieldsOf", "queueEntriesOf", "mergeGroupRunCountOf", "dequeuePullRequestOf", "jobLogOf", "closedIncidentsOf", "createIncident", "closeIncident",
-  "forgetRefusedReads", "isRowsByLabelRead", "readUnlessRefused", "readRowsByLabel", "readClaimedRows", "sincePageArgs", "isSinceRead", "parsePage", "foldPage", "readRowsSince", "asListJson", "readMergedPullRequests",
+  "forgetRefusedReads", "isRowsByLabelRead", "readUnlessRefused", "readRowsByLabel", "readClaimedRows", "sincePageArgs", "isSinceRead", "parsePage", "foldPage", "readRowsSince", "readRowsSinceAsync", "asListJson", "readMergedPullRequests",
   "testsFirstReadsOf", "ownRun", "armedQueryArgs", "armedFromApi", "armedReason", "armedNodeOf", "armedReasonOf", "ejectionQueryArgs", "queueEjectionOf", "readQueueEjection", "openBlockersOf", "openBlockersOfRow",
   "labelsOfRow", "readPullComments", "commentOnPull", "addLabelsToPull", "readPullForArming", "pullStateOf", "armPullAuto", "settledReason", "armMergeOf", "trunkRunsPage", "readQueueSeat", "jumpToFront",
   "dequeueByHandCommand", "graphqlPoolOf", "openPullRequestsQueryArgs", "readOpenPullNodes", "isMergedPull", "isArmedPull", "readSweepFacts", "isCrossRepositoryPull", "readOutsideArmListed", "requiredContextsOf",
@@ -44,6 +44,13 @@ const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", 
   "blockedByOf", "bodyAndLabelsOf", "rowShapeFactsOf", "rowCarriesLabel", "openPullReviewsOf", "commitsOfPull", "closingPullsOf", "crossReferencingPullsOf", "changedPathsOfPull", "openPullsWithFilesOf", "pullFilePathsOf",
   "ensureLabelIn", "addLabelToRowIn", "compareShaWithMain",
   "labelEventsOf", "removeLabelsFromRow", "closingTimelineTextOf", "closedRowListingTextOf", "labelEventLogTextOf", "pullStatesOf", "pullStatesOfBranchIn", "rowFactsIn", "openRestListingOf", "rowBodyIn",
+  "runnerWith", "asyncRunnerWith", "commentOnRowByInput", "rowSnapshotOf", "apiTextOf", "conditionalGetOf",
+  "readRowAsync", "commentOnRowAsync", "removeLabelAsync", "addLabelAsync", "issueCommentsAsync", "openPullChecksAsync", "restGetAsync", "pullReviewDecisionAsync",
+  "teamRepositoriesTextOf", "lastMergeTextOf", "releaseRunsOf", "releaseJobsOf", "changesetNamesOf", "openRowLabelsOf", "openPullsNamingRowsOf",
+  "commitAndParentsTextOf", "releasesOf", "hasIssuesEnabled", "compareRangeOf", "pullMergeOf",
+  "issuePageOf", "allMilestonesOf", "discussionCategoriesOf", "discussionEditionsOf", "createDiscussion", "updateDiscussion", "draftReleaseOf", "createDraftRelease", "uploadReleaseAsset", "rowsListedIn", "pullsListedIn",
+  "windowRowsTextOf", "editionCommentCountOf", "commentBodiesOfIssue", "workflowRunListOf", "workflowCreatedAtOf", "boardItemsPageOf", "touchedItemTextOf", "roadmapFactsOf", "commentAuthorOf", "headedCommentIdsText",
+  "orgCommentsSinceOf", "issuesSinceOf", "labeledEventsOfRow",
 ] as const satisfies readonly (keyof CodeHostRows)[];
 
 const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
@@ -172,6 +179,7 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     expect(isString(rows.tracker) && rows.tracker !== "" && isString(rows.openItemsQuery) && rows.openItemsQuery !== "", "rows.tracker and rows.openItemsQuery must be text");
     expect(Number.isInteger(rows.sincePageSize) && rows.sincePageSize > 0 && Number.isInteger(rows.projectItemsPage) && rows.projectItemsPage > 0, "rows.sincePageSize and rows.projectItemsPage must be whole numbers above 0");
     expect(Array.isArray(rows.corePoolProbe) && rows.corePoolProbe.every(isString), "rows.corePoolProbe must be a list of arguments");
+    expect(isString(rows.command) && rows.command !== "", "rows.command must be the name of the program the code host starts");
   }),
   "a read the rows could not make answers null or throws, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
     const { repository } = probe;
@@ -358,6 +366,53 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       removeLabelsFromRow: () => rows.removeLabelsFromRow({ repo, number: 1, labels: ["x"], run: refused }),
     };
     for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
+  }),
+  "a read the rows could not make for the board, the health and retro readings, the DORA reader and the trace throws, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const reads: Record<string, () => unknown> = {
+      teamRepositoriesTextOf: () => rows.teamRepositoriesTextOf({ org: "o", team: "t", run: refused }), lastMergeTextOf: () => rows.lastMergeTextOf({ repo, window: 10, run: refused }),
+      releaseRunsOf: () => rows.releaseRunsOf({ repo, window: 10, run: refused }), releaseJobsOf: () => rows.releaseJobsOf({ repo, runId: 1, window: 10, shape: "named", run: refused }),
+      changesetNamesOf: () => rows.changesetNamesOf({ repo, run: refused }), openRowLabelsOf: () => rows.openRowLabelsOf({ repo, limit: 10, run: refused }), openPullsNamingRowsOf: () => rows.openPullsNamingRowsOf({ repo, limit: 10, run: refused }),
+      commitAndParentsTextOf: () => rows.commitAndParentsTextOf({ repo, ref: "v1", run: refused }), releasesOf: () => rows.releasesOf({ repo, run: refused }), hasIssuesEnabled: () => rows.hasIssuesEnabled({ repo, run: refused }),
+      compareRangeOf: () => rows.compareRangeOf({ repo, base: "a", head: "b", run: refused }), pullMergeOf: () => rows.pullMergeOf({ repo, number: 1, run: refused }),
+      issuePageOf: () => rows.issuePageOf({ repo, after: null, run: refused }), allMilestonesOf: () => rows.allMilestonesOf({ repo, run: refused }), discussionCategoriesOf: () => rows.discussionCategoriesOf({ owner: "o", name: "n", run: refused }),
+      discussionEditionsOf: () => rows.discussionEditionsOf({ owner: "o", name: "n", categoryId: "c", run: refused }), rowsListedIn: () => rows.rowsListedIn({ repo, state: "open", limit: 10, fields: "number", run: refused }),
+      pullsListedIn: () => rows.pullsListedIn({ repo, state: "open", limit: 10, fields: "number", run: refused }), windowRowsTextOf: () => rows.windowRowsTextOf({ repo, since: "2026-01-01T00:00:00Z", run: refused }),
+      editionCommentCountOf: () => rows.editionCommentCountOf({ repo, issue: "1", since: "2026-01-01T00:00:00Z", title: "t", run: refused }), commentBodiesOfIssue: () => rows.commentBodiesOfIssue({ repo, number: 1, run: refused }),
+      workflowRunListOf: () => rows.workflowRunListOf({ repo, workflow: "w.yml", fields: "event", limit: 10, run: refused }), workflowCreatedAtOf: () => rows.workflowCreatedAtOf({ repo, workflow: "w.yml", run: refused }),
+      boardItemsPageOf: () => rows.boardItemsPageOf({ owner: "o", number: 1, cursor: null, run: refused }), touchedItemTextOf: () => rows.touchedItemTextOf({ owner: "o", repo, project: 1, issue: 1, run: refused }),
+      roadmapFactsOf: () => rows.roadmapFactsOf({ repo, numbers: [1], run: refused }), commentAuthorOf: () => rows.commentAuthorOf({ repo, id: "1", run: refused }),
+      headedCommentIdsText: () => rows.headedCommentIdsText({ repo, row: "1", since: "2026-01-01T00:00:00Z", heading: "h", run: refused }), orgCommentsSinceOf: () => rows.orgCommentsSinceOf({ repo, since: "2026-01-01T00:00:00Z", loginPrefix: "x-", run: refused }),
+      issuesSinceOf: () => rows.issuesSinceOf({ repo, since: "2026-01-01T00:00:00Z", run: refused }), labeledEventsOfRow: () => rows.labeledEventsOfRow({ repo, number: 1, run: refused }),
+      rowSnapshotOf: () => rows.rowSnapshotOf({ repo, number: 1, run: refused }), apiTextOf: () => rows.apiTextOf({ args: ["x"], run: refused }),
+    };
+    for (const [name, read] of Object.entries(reads)) expect(throws(read), `${name} must throw when the read is refused: a read that could not be made is never an empty answer`);
+    expect(rows.draftReleaseOf({ repo, tag: "t", run: refused }) === null, "a release that could not be read is null: null is never 'a draft'");
+  }),
+  "a write the rows could not make for the board throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const writes: Record<string, () => unknown> = {
+      createDiscussion: () => rows.createDiscussion({ repositoryId: "r", categoryId: "c", title: "t", body: "b", run: refused }), updateDiscussion: () => rows.updateDiscussion({ discussionId: "d", body: "b", run: refused }),
+      createDraftRelease: () => rows.createDraftRelease({ repo, tag: "t", file: "f.pdf", title: "t", notes: "n", run: refused }), uploadReleaseAsset: () => rows.uploadReleaseAsset({ repo, tag: "t", file: "f.pdf", run: refused }),
+    };
+    for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
+  }),
+  "an async read or write the rows could not make rejects, so no caller reads it as done": withRunRows("no refused run is asked", async ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const refusedAsync = (): Promise<string> => Promise.reject(new Error("refused"));
+    const asks: Record<string, () => Promise<unknown>> = {
+      readRowAsync: () => rows.readRowAsync({ repo, number: 1, run: refusedAsync }), commentOnRowAsync: () => rows.commentOnRowAsync({ repo, number: 1, body: "b", run: refusedAsync }),
+      removeLabelAsync: () => rows.removeLabelAsync({ repo, number: 1, label: "x", run: refusedAsync }), addLabelAsync: () => rows.addLabelAsync({ repo, number: 1, label: "x", run: refusedAsync }),
+      issueCommentsAsync: () => rows.issueCommentsAsync({ repo, number: 1, run: refusedAsync }), openPullChecksAsync: () => rows.openPullChecksAsync({ repo, limit: 10, run: refusedAsync }),
+      restGetAsync: () => rows.restGetAsync({ path: `repos/${repo}/issues/1`, run: refusedAsync }), pullReviewDecisionAsync: () => rows.pullReviewDecisionAsync({ repo, number: 1, run: refusedAsync }),
+      readRowsSinceAsync: () => rows.readRowsSinceAsync({ ask: { kind: "issues", states: ["OPEN"], orderBy: "CREATED_AT", repo, select: "number", newest: 1 }, run: refusedAsync }),
+    };
+    for (const [name, ask] of Object.entries(asks)) {
+      const rejected = await ask().then(() => false, () => true);
+      expect(rejected, `${name} must reject when the run is refused: a call that could not be made is never done`);
+    }
+    const ruined = await rows.removeLabelAsync({ repo, number: 1, label: "x", run: () => Promise.reject(Object.assign(new Error("Command failed"), { stderr: "gh: Label does not exist (HTTP 404)" })) }).then(() => true, () => false);
+    expect(ruined, "removeLabelAsync must resolve when the label is already absent, and only then");
   }),
   "the rows' rules for arming answer as the callers that arm and guard expect": withRows("no rule is asked", ({ rows }) => {
     expect(!rows.armedFromApi(null) && !rows.armedFromApi({}) && rows.armedFromApi({ merged: true }) && rows.armedFromApi({ autoMergeRequest: { enabledAt: "t" } }) && rows.armedFromApi({ mergeQueueEntry: { state: "QUEUED" } }),

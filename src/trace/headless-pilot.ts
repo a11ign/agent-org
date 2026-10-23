@@ -38,6 +38,7 @@ import { extractAcceptanceSection } from "../acceptance-commands/suite-and-check
 import { declaredFleetAnswer } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { extractLabeledSection } from "../region-paths.ts";
 import { REPO } from "../project-identity.ts";
+import { rows } from "../plugins/rows.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { eventsOfTranscript, repriceEvents } from "./store.ts";
 
@@ -187,7 +188,7 @@ type Deps = { gh?: (args: string[]) => string; git?: (args: string[]) => string;
 function resolved(deps: Deps) {
   const checkout = deps.checkout ?? PRIMARY_CHECKOUT;
   return {
-    gh: deps.gh ?? ((args) => execFileSync("gh", args, { encoding: "utf8" })),
+    gh: deps.gh ?? ((args) => rows().runnerWith({})(args)),
     // named checkout (#3363) and a scrubbed environment (#1185): a leaked GIT_DIR must not send these calls to another repository
     git: deps.git ?? ((args) => execFileSync("git", args, { cwd: checkout, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })),
     claudeBin: deps.claudeBin ?? "claude",
@@ -200,9 +201,7 @@ function resolved(deps: Deps) {
 }
 
 function readIssue(gh: (args: string[]) => string, number: number): Issue {
-  const args = ["issue", "view", String(number), "--repo", REPO, "--json", "number,state,title,body,labels"];
-  assertGhRead(args);
-  return JSON.parse(gh(args));
+  return rows().rowSnapshotOf({ repo: REPO, number, run: (args) => { assertGhRead(args); return gh(args); } });
 }
 
 /**

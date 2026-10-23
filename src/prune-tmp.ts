@@ -65,12 +65,13 @@
 // than that: a scratchpad is minted on every clear. So `prune-tmp.test.ts` reads this back by calling
 // `classifyEntry` on a NAMED path and quoting its reason, never by watching a total, and the CLI prints
 // the reason beside every path for the same reason.
-import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, lstatSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
 // RELATIVE rather than `@a11ign/screenreader-fleet/cli-flags` for the reason `prune-worktrees.ts` records:
 // files in this package run before `pnpm install`, where a package specifier dies.
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 import { worktreeOwner } from "./worktree-owner.ts";
 import { claimRefusal, nestedWorktrees, recordRemoval, worktreeBranch } from "./worktree-removal.ts";
 
@@ -219,7 +220,8 @@ function reviewPullRequest(name: string): number | null {
   return null;
 }
 
-const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8" });
+/** The code host's own runner (A11-160, step 8): the one read of this file that reaches it is the list of open pull requests below. */
+const defaultRun: RowsRun = (args) => rows().runnerWith({})(args);
 
 /**
  * How many pull requests `openPullRequests` will ask for. A listing that comes back AT the limit has been
@@ -246,8 +248,7 @@ const OPEN_PR_LIMIT = 300;
 export function openPullRequests({ run = defaultRun }: { run?: typeof defaultRun; } = {}): Set<number> | "unknown" {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(run("gh", ["pr", "list", "--state", "open", "--json", "number",
-      "--limit", String(OPEN_PR_LIMIT)]));
+    parsed = JSON.parse(run(rows().openPullListArgs(OPEN_PR_LIMIT, "number")));
   } catch {
     return "unknown";
   }

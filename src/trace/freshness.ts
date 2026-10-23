@@ -58,6 +58,8 @@ const TRACE = join(dirname(fileURLToPath(import.meta.url)), "trace.ts");
 /** The standing row the incident is posted on (`fleet-watch`'s record, as `fleet-gated-nightly.ts` posts on its own), and the seat that owns the store. */
 export const INCIDENT_ROW = "928";
 export const OWNER_SEAT = "orchestrator";
+/** How long the comment may take: a hung GitHub must not hold the unit past its next firing. */
+const COMMENT_TIMEOUT_MS = 60_000;
 /** `prompt:session` records an order under the `Class:` line it carries; this is the chairman's class for the outage. */
 export const INCIDENT_CLASS = "metrics-outage";
 /** The name the order is attributed to: a host unit is not a session, and an order with no sender is counted as an unidentified caller (the proxy for a chairman correction). */
@@ -388,16 +390,20 @@ export async function checkAndRaise({ storePath, now, roots, effects }: { storeP
 
 /**
  * The two effects against the real host: a comment through the routed `gh` (the account the unit declares), and `prompt:session`'s own delivery or queue. Everything they need is
- * imported when one runs, inside `landed`, so a declaration that cannot be read is a refused effect and the check itself has already been made and printed.
+ * imported when one runs, inside `landed`, so a declaration that cannot be read is a refused effect and the check itself has already been made and printed. Exported for its own test.
  */
-function hostEffects(log: (line: string) => void): Effects {
+export function hostEffects(log: (line: string) => void): Effects {
   return {
     log,
     comment: async (body) => {
       const { homeProjectDeclaration } = await import("../project-config.ts");
+      const { rows } = await import("../plugins/rows.ts");
       const repo = homeProjectDeclaration().tracker[0].repo;
-      const ran = spawnSync("gh", ["issue", "comment", INCIDENT_ROW, "--repo", repo, "--body-file", "-"], { input: body, encoding: "utf8", timeout: 60_000 });
-      if (ran.error || ran.status !== 0) throw new Error(`gh issue comment ${INCIDENT_ROW} --repo ${repo}: ${ran.error?.message ?? (ran.stderr || `exit ${ran.status}`).trim()}`);
+      try {
+        rows().commentOnRowByInput({ repo, number: INCIDENT_ROW, body, timeoutMs: COMMENT_TIMEOUT_MS });
+      } catch (cause) {
+        throw new Error(`comment on ${repo}#${INCIDENT_ROW}: ${String((cause as Error).message).trim()}`, { cause });
+      }
     },
     order: async (text) => {
       const { EXIT, STANCE, defaultRun, promptOrQueue } = await import("../prompt-session.ts");

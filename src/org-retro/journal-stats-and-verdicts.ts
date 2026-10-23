@@ -9,6 +9,7 @@ import { safetyCheckDenialSummary, type SafetyCheckDenialReading } from "../safe
 import { CLOSED_ON_MERGE_NOT_OUTCOME, inertOptionSummary, type InertOptionReading } from "../inert-option-incident.ts";
 import { mergedRowOpenSummary, type MergedRowOpenIncident } from "../merged-row-open-incident.ts";
 import { readAgents } from "../herdr-agents.ts";
+import { rows } from "../plugins/rows.ts";
 import { correctionsPerDay } from "../found-by-chairman.ts";
 import { BLOCKING_FILE, deadlockSummary, type DeadlockSummary, parseRecord as parseBlockingRecord, topBlocker, type TopBlocker } from "../blocking-impact.ts";
 import { readDora, doraNumbers } from "../dora.ts";
@@ -529,7 +530,7 @@ export function retroClasses({ now, stateDir, unit = "a11ign-work-tick.service",
   readDenials = (at) => readSafetyCheckDenials({ since: at - WINDOW_MS }),
   readUnderspecifiedStops = (at) => attemptDora(() => readUnderspecified({ now: at })),
   readSharedRows = readClosedSharedRows,
-  readOpenPrs = () => ghJson(["pr", "list", "--state", "open", "--limit", "100", "--json", "number,labels,statusCheckRollup,reviewDecision"]) }: {
+  readOpenPrs = () => ghJson(rows().openPullListArgs(100, "number,labels,statusCheckRollup,reviewDecision")) }: {
         now: number; stateDir: string; unit?: string; memory?: RetroReads; readHandFixes?: (now: number) => ReturnType<typeof readHandFixLedger>;
         readDoraReport?: (now: number) => ReturnType<typeof readDora> | null; readUnwaited?: (now: number) => ReturnType<typeof unwaitedStockRows>; readUntiered?: () => ReturnType<typeof untieredReadyRows>; readMergedRepositories?: (now: number) => ReturnType<typeof readMerged>;
         readAgentListing?: () => Agent[] | null; readIdleHours?: (now: number) => IdleClaimedHours | null; readOpenRowIncidents?: (now: number) => MergedRowOpenIncident[] | null;

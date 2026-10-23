@@ -71,6 +71,8 @@ const WITH_HISTORY = { history: true, token: false, fleet: false };
 // only through a local import) and survives that row. Values below re-derived directly from
 // `deriveClosureRequirements`/`closureRequirementMessage` against this fixture, not carried over from the
 // old one.
+// A11-160 (step 8): `board-document.ts` no longer spawns `gh` (the code host does), so the module this fixture reaches is a
+// stand-in the test writes (`syntheticBoardDocument`, below), and what is proved is the closure walk, not that file.
 const BOARD_STYLE_FIXTURE = "packages/lab/src/packaging/board-document-chrome-resolver.test.ts";
 const NO_TOKEN = { history: true, token: false, fleet: true, corpus: true };
 const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
@@ -83,7 +85,40 @@ const WITH_TOKEN = { history: true, token: true, fleet: true, corpus: true };
  * rather than guessing a line.
  */
 const BOARD_DOCUMENT = "packages/agent-org/src/board-document.ts";
-const TOOL_BOARD_DOCUMENT = join(TOOL_SRC, "board-document.ts");
+/**
+ * THE MODULE THE #621 AND #1458 CASES WALK TO, WRITTEN HERE (A11-160, step 8). It was the tool's own `board-document.ts`, copied into the fixture project, because that file spawned `gh` inside `publishToDraftRelease`. The
+ * ticket moved every `gh` spawn out of core into the GitHub plugin (draft releases are the code host's `createDraftRelease`), so core's `board-document.ts` spawns no `gh` and cannot stand for a closure that reaches one.
+ * What these cases prove is the WALK: that a test with no header which imports a function of a module that spawns `gh` is charged `token`, naming the hop and the line, and that the line is located by shape. That needs a
+ * module of that shape, not that one, so it is written here: an exported `resolveChromeBinary` beside a `publishToDraftRelease` that is the file's first `gh` spawn, under a header of the length the real one had so the
+ * line is not 1. `gh` is spelled through `spell()`, as everywhere in this file: it is itself walked.
+ */
+function syntheticBoardDocument(): string {
+  return [
+    "// A stand-in for a module of the board that renders an edition and publishes it as a draft release (the shape #621 and #1458 are about).",
+    "// It is not the board's: it spawns what the board's module used to, so the walk has a closure that reaches `gh`.",
+    "//",
+    "// The summary, the document and the chrome it renders with.",
+    "import { execFileSync } from \"node:child_process\";",
+    "import { existsSync } from \"node:fs\";",
+    "",
+    "export function resolveChromeBinary(deps = {}) {",
+    "  const exists = deps.exists ?? existsSync;",
+    "  return [\"/usr/bin/chromium\", \"/usr/bin/google-chrome\"].find((candidate) => exists(candidate)) ?? null;",
+    "}",
+    "",
+    "function renderPdfWithChrome(html, pdf) {",
+    "  return execFileSync(resolveChromeBinary(), [\"--headless\", pdf, html]);",
+    "}",
+    "",
+    "function publishToDraftRelease(pdf) {",
+    `  const existing = execFileSync("${spell("g", "h")}", ["release", "view", "board-edition", "--json", "isDraft"]);`,
+    `  return existing ? execFileSync("${spell("g", "h")}", ["release", "upload", "board-edition", pdf]) : renderPdfWithChrome("", pdf);`,
+    "}",
+    "",
+    "function laterHelper() { return 1; }",
+    "",
+  ].join("\n");
+}
 function spawnLineOf(source: string): number | null {
   const lines = source.split("\n");
   const start = lines.findIndex((line) => /^function publishToDraftRelease\(/.test(line));
@@ -95,7 +130,7 @@ function spawnLineOf(source: string): number | null {
   return inFunction >= 0 && inFunction === inFile ? inFunction + 1 : null;
 }
 const boardDocumentSpawnLine = (): number => {
-  const line = spawnLineOf(readFileSync(TOOL_BOARD_DOCUMENT, "utf8"));
+  const line = spawnLineOf(syntheticBoardDocument());
   assert.ok(line !== null, "board-document.ts's first gh spawn is no longer inside publishToDraftRelease -- "
     + "re-locate the #621 fixture rather than pin a line");
   return line;
@@ -154,10 +189,10 @@ function labFixtureFiles(): Record<string, string> {
   };
 }
 
-/** The board: a script that spawns `gh`, and a test that reaches `resolveChromeBinary` in a copy of the tool's own `board-document.ts`. */
+/** The board: a script that spawns `gh`, and a test that reaches `resolveChromeBinary` in a stand-in for the board's document module that spawns `gh` (`syntheticBoardDocument`). */
 function boardFixtureFiles(): Record<string, string> {
   return {
-    [BOARD_DOCUMENT]: readFileSync(TOOL_BOARD_DOCUMENT, "utf8"),
+    [BOARD_DOCUMENT]: syntheticBoardDocument(),
     [SETTLE_SCRIPT]: `import { execFileSync } from "node:child_process";\nexecFileSync("${spell("g", "h")}", ["issue", "list"]);\n`,
     // The import line is spelled in two halves: this file is itself walked (the self-reference test below), and an import written whole
     // inside a string is a real edge to the scanner.
@@ -2593,11 +2628,11 @@ function withBoardDocumentTree<T>(boardDocument: string, body: (entry: string) =
 
 test("#1458 CONTROL: lines inserted above publishToDraftRelease move the shape lookup, the derived hit and the "
   + "message together", () => {
-  const real = readFileSync(TOOL_BOARD_DOCUMENT, "utf8");
+  const real = syntheticBoardDocument();
   const moved = real.replace(/^function publishToDraftRelease\(/m, "// #1458 padding\n".repeat(PADDING_LINES) + "function publishToDraftRelease(");
   assert.notEqual(moved, real, "the insertion must land");
   const realLine = spawnLineOf(real);
-  assert.ok(realLine !== null, "the real file must have the shape before a moved copy can");
+  assert.ok(realLine !== null, "the stand-in must have the shape before a moved copy can");
   const expected = spawnLineOf(moved);
   assert.equal(expected, realLine + PADDING_LINES, "the shape lookup moves by exactly the inserted lines");
   withBoardDocumentTree(moved, (entry) => {
@@ -2613,7 +2648,7 @@ test("#1458 CONTROL: lines inserted above publishToDraftRelease move the shape l
 
 test("#1458 CONTROL: the shape lookup finds nothing when the function's spawns are gone, or when an earlier spawn "
   + "precedes the function -- a location that cannot be followed refuses rather than guesses", () => {
-  const real = readFileSync(TOOL_BOARD_DOCUMENT, "utf8");
+  const real = syntheticBoardDocument();
   const gh = spell("g", "h");
   const spawnsGone = real.replace(new RegExp(SPAWNS_GH.source, "g"), `execFileSync("${spell("tr", "ue")}"`)
     + `\nfunction laterSpawn() { return execFileSync("${gh}", []); }\n`;

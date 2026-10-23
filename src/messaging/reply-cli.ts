@@ -34,6 +34,8 @@ import { completionPath } from "../lib/tick-completion.ts";
 import { MessagingConfigRefusal, readMessagingConfig } from "./config.ts";
 import { createLedger, describeError, readLedgerLines } from "./ledger.ts";
 import { createGhReaders } from "./placeholders.ts";
+import type { AsyncRowsRun } from "../plugins/contracts/code-host-rows-facts.ts";
+import { rows } from "../plugins/rows.ts";
 import { pluginProviders } from "./plugin.ts";
 import { createReply, prepareReply } from "./reply.ts";
 import { SecretFileRefusal } from "./secret.ts";
@@ -63,6 +65,9 @@ export function assertReadOnlyGh(argv: readonly string[]) {
 export function assertReadOnlySystemctl(argv: readonly string[]) {
   if (argv[0] !== "--user" || argv[1] !== "show") throw new Error(`chairman:reply reads only: \`systemctl ${argv.join(" ")}\` is not a read it makes`);
 }
+
+/** `gh`, as the code host starts it, behind the read-only check: asked when the first call is made, not when the runner is. */
+const guardedGh: AsyncRowsRun = (argv) => rows().asyncRunnerWith({ timeoutMs: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, echo: false, guard: assertReadOnlyGh })(argv);
 
 function guardedRunner(file: string, assertRead: (argv: readonly string[]) => void): (argv: string[]) => Promise<string> {
   return async (argv) => {
@@ -178,7 +183,7 @@ async function hostFiles({ root, wakeLedger, err }: { root: string; wakeLedger: 
 /** What a caller may leave out. A spread and not parameter defaults, as `watch.ts` does. */
 const DEFAULT_DEPS = () => ({
   root: process.cwd(), env: process.env as Record<string, string | undefined>, home: homedir(), now: Date.now, fetch: globalThis.fetch,
-  providers: PROVIDERS, readStdin, wakeLedgerPath: hostWakeLedgerPath, gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl),
+  providers: PROVIDERS, readStdin, wakeLedgerPath: hostWakeLedgerPath, gh: guardedGh, systemctl: guardedRunner("systemctl", assertReadOnlySystemctl),
   out: (line: string) => console.log(line), err: (line: string) => console.error(line),
 });
 

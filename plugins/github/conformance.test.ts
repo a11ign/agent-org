@@ -93,6 +93,8 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
     "a read the rows could not make for the filing of rows throws or answers null, never an empty answer", "a write the rows could not make for the filing of rows throws, so no caller reads it as done",
     "a read the rows could not make for the claim's rules throws or answers null, never an empty answer", "a write the rows could not make for the claim's rules throws, so no caller reads it as done",
     "a read the rows could not make for the other claim and row files throws or answers null, never an empty answer", "a write the rows could not make for the other claim and row files throws, so no caller reads it as done",
+    "a read the rows could not make for the board, the health and retro readings, the DORA reader and the trace throws, never an empty answer", "a write the rows could not make for the board throws, so no caller reads it as done",
+    "an async read or write the rows could not make rejects, so no caller reads it as done",
     "the rows' rules for arming answer as the callers that arm and guard expect",
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",

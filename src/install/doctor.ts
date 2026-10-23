@@ -331,7 +331,7 @@ function hostText(deps: DoctorDeps): string | null {
  */
 async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps, place: HostPlaceReading): Promise<PluginHealth> {
   const { catalog, load, messaging, messagingChecks } = deps.agentOrgPlugins;
-  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
+  const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, execAsync: (file, args, options) => Promise.resolve(deps.exec(file, args, options)), readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
     pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(undefined, settings === null ? [] : reviewClaimIdentities(settings)), publishing: publishingHelpers(), reviewing: deps.reviewing, rows: coreRowsHelpers, place: () => Promise.resolve(place) };
   return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
     version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });

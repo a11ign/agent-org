@@ -15,7 +15,6 @@
 //   effort             MEASURED: the `effort` the transcript names on each turn (`store.ts` `effortOf`), per row: the one value its turns ran at, `mixed` where they differ, `unknown`
 //                      where none names one. A turn that names none is left out of the comparison and an unknown row is NEVER counted as `low`. It splits an arm; it is no stop condition.
 // A rate over fewer than MIN_RATE_ROWS rows is printed "n=<k>, not a rate" and decides nothing.
-import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { TraceEvent } from "./store.ts";
@@ -25,6 +24,7 @@ import { HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
 import { REPO } from "../project-identity.ts";
 import { asListJson, readRowsSince, sincePageSize, type SinceRead } from "../ticket-port/rows-since.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
+import { rows } from "../plugins/rows.ts";
 
 export const MIN_RATE_ROWS = 8;
 export const WINDOW_HOURS = 72;
@@ -265,7 +265,7 @@ export function windowStartOf(events: TraceEvent[]): number | null {
 
 /** Runs `gh` and returns its stdout; injected so a test can stand in for it. */
 export type GhRunner = (args: string[]) => string;
-const ghOutput: GhRunner = (args) => execFileSync("gh", args, { encoding: "utf8" });
+const ghOutput: GhRunner = (args) => rows().runnerWith({})(args);
 
 /** The selection of one closed row, as `closedRowOrUnresolved` reads it: the labels, and the closing pull request with the repository's owner and name. */
 const CLOSED_ROW_SELECT = "number closedAt labels(first:50){nodes{name}} closedByPullRequestsReferences(first:10){nodes{number repository{name owner{login}}}}";

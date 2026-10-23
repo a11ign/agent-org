@@ -23,22 +23,40 @@
  */
 // no-token: gh
 //
-// #827. Every test here is driven with FIXTURES or an INJECTED `run` -- `livenessVerdict`,
+// #827. Every test here is driven with FIXTURES or the fake code host -- `livenessVerdict`,
 // `missedTodaysWindow`, `daysSince`, `scheduleNeverFired`, `watchdogSilenceLine` all take their inputs as
-// arguments, and `hoursSincePreviousRun` takes the runner as its first parameter, which these tests
-// supply as a closure over a fixture string. The closure walk reaches `board-data.ts`'s `gh` through
-// `EXIT -> REPO`, a constant, rather than through anything these tests execute.
+// arguments, and `hoursSincePreviousRun` asks the code host's rows for the workflow's runs, which these tests
+// seed in the fake code host's world (A11-160, step 8: they handed it a runner answering `gh` argument lists).
+// The closure walk reaches `board-data.ts`'s `gh` through `EXIT -> REPO`, a constant, rather than through
+// anything these tests execute.
 //
 // The declaration is verified against the entry's own code, so if one of these functions ever starts
 // doing its own lookups this refuses rather than trusting the comment.
 import { declareWalkScope } from "../lib/walk-scope.ts";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 
+import { REPO } from "../board-data.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 import { EXIT, daysSince, livenessVerdict, newestEditionDay }
   from "../board-schedule-liveness.ts";
 
 const NOW = new Date("2026-09-20T09:00:00Z");
+
+afterEach(() => forgetActivation());
+
+/** The fake code host holding the runs of each workflow of the project's repository (`runs`: `workflow` to its runs, newest first; a workflow it does not hold is a refused read); `calls` is what its rows were asked. */
+function runsHeld(runs: Record<string, { createdAt: string }[]>) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  for (const [workflow, held] of Object.entries(runs)) host.rowsWorld.reports.board.workflowRuns.set(`${REPO}@${workflow}`, held);
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { world: host.rowsWorld, calls: watched.calls };
+}
+const noRunner = () => assert.fail("the code host's rows are asked, not a runner");
 
 /** No summary was ever written — the gate would refuse every day. */
 const NO_SUMMARIES = () => false;
@@ -174,17 +192,19 @@ const IN_TRUNK = { GITHUB_WORKFLOW_REF: "a11ign/a11ign/.github/workflows/trunk.y
 
 test("#272 the previous run is read at INDEX 1, because index 0 is this run reporting on itself", () => {
   const now = new Date("2026-09-09T18:00:00Z");
-  const runs = [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }];
-  const hours = hoursSincePreviousRun(() => JSON.stringify(runs), now, IN_TRUNK);
+  runsHeld({ "trunk.yml": [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }] });
+  const hours = hoursSincePreviousRun(noRunner, now, IN_TRUNK);
   assert.equal(Math.round(hours ?? -1), 6,
     "index 0 would answer ~0h — true, useless, and indistinguishable from a healthy answer");
 });
 
 test("#272 UNREADABLE SAYS SO -- a failed lookup is not `it ran recently`", () => {
-  assert.equal(hoursSincePreviousRun(() => { throw new Error("gh: not authenticated"); }, new Date(), IN_TRUNK),
-    null);
+  const refusing = runsHeld({ "trunk.yml": [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }] });
+  refusing.world.failures.set("workflowRunListOf", new Error("gh: not authenticated"));
+  assert.equal(hoursSincePreviousRun(noRunner, new Date(), IN_TRUNK), null);
+  runsHeld({ "trunk.yml": [{ createdAt: "2026-09-09T17:59:00Z" }] });
   assert.equal(
-    hoursSincePreviousRun(() => JSON.stringify([{ createdAt: "2026-09-09T17:59:00Z" }]), new Date(), IN_TRUNK),
+    hoursSincePreviousRun(noRunner, new Date(), IN_TRUNK),
     null, "one run means there is no PREVIOUS run to measure -- the answer is unknown, not zero");
   assert.match(String(watchdogSilenceLine(null)), /UNKNOWN/);
   assert.match(String(watchdogSilenceLine(null)), /Unknown is not recent/);
@@ -196,32 +216,29 @@ test("#272 UNREADABLE SAYS SO -- a failed lookup is not `it ran recently`", () =
 // deleted it. GitHub answered 200 with the deleted entity's frozen history, so the check reported
 // "it last ran 42h ago ... a quiet spell here means nobody pushed" across 538 pushes to main.
 //
-// **ASSERTED ON THE ARGV, NOT ON THE PARSED ANSWER.** A test that feeds a run list and checks the hours
+// **ASSERTED ON THE REQUEST, NOT ON THE PARSED ANSWER.** A test that feeds a run list and checks the hours
 // passes whatever workflow was asked for -- which is exactly how the old literal survived its own
-// deletion. The request is the thing that was wrong, so the request is the thing pinned.
+// deletion. The request is the thing that was wrong, so the request is the thing pinned (the operation's
+// `workflow`; the `--workflow` argument it becomes is the plugin's, held in `plugins/github/rows/board-rows.test.ts`).
 
 test("#1154: the workflow asked for is the one this run is executing, not a name in the source", () => {
-  const asked: string[][] = [];
-  const run = (args: string[]) => {
-    asked.push(args);
-    return JSON.stringify([{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }]);
-  };
-  hoursSincePreviousRun(run, new Date("2026-09-09T18:00:00Z"), IN_TRUNK);
-  const argv = asked[0] ?? [];
-  const named = argv[argv.indexOf("--workflow") + 1];
-  assert.equal(named, "trunk.yml",
+  // The world holds the runs of BOTH: the deleted one with frozen runs (GitHub still answers for it) and the one the run executes with a different history, so the hours say which was asked.
+  const held = runsHeld({
+    "trunk.yml": [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }],
+    "board-liveness.yml": [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-08T18:00:00Z" }],
+  });
+  const hours = hoursSincePreviousRun(noRunner, new Date("2026-09-09T18:00:00Z"), IN_TRUNK);
+  assert.deepEqual(held.calls.filter((c) => c.op === "workflowRunListOf").map((c) => c.request.workflow), ["trunk.yml"],
     "the file comes from GITHUB_WORKFLOW_REF; a literal here is a name that outlives the workflow");
-  assert.equal(argv.includes("board-liveness.yml"), false,
-    "board-liveness.yml was deleted by #901 and its endpoint still answers with frozen runs");
+  assert.equal(Math.round(hours ?? -1), 6, "board-liveness.yml was deleted by #901 and its endpoint still answers with frozen runs: 30 hours, were it asked");
 });
 
 test("#1154: OUTSIDE ACTIONS THE ANSWER IS UNKNOWN, and no call is made at all", () => {
-  let called = 0;
-  const run = () => { called += 1; return "[]"; };
-  assert.equal(hoursSincePreviousRun(run, new Date(), {}), null,
+  const held = runsHeld({ "trunk.yml": [{ createdAt: "2026-09-09T17:59:00Z" }, { createdAt: "2026-09-09T12:00:00Z" }] });
+  assert.equal(hoursSincePreviousRun(noRunner, new Date(), {}), null,
     "a guessed workflow name is worse than no answer here -- watchdogSilenceLine EXPLAINS the number it "
     + "is given, so a wrong number arrives with a confident and untrue cause attached to it");
-  assert.equal(called, 0, "nothing to ask about means nothing is asked");
+  assert.deepEqual(held.calls, [], "nothing to ask about means nothing is asked");
 });
 
 test("#1154: the ref is split at the `@` first, because the git ref half contains slashes too", () => {

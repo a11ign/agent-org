@@ -45,7 +45,6 @@
 //
 // The scoped half lives in `board-snapshot-scope.ts`, pure of `gh`, so the row's acceptance can run in a job with no
 // token. The one `gh` call it needs is made here, in `withBoardSnapshot`.
-import { execFileSync } from "node:child_process";
 // #1219: PURE, and deliberately in its own module -- see that file's header. Importing it here costs
 // nothing; importing THIS file from a test costs a `token` requirement the acceptance job cannot meet.
 import { statusContradictions, statusCensus, vocabularyDrift } from "./board-status-health.ts";
@@ -54,6 +53,8 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
+import { rows } from "./plugins/rows.ts";
 import { READY_LABEL } from "./claim-labels.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5076: the ready list is a connection, never a search
 // #1275: the scoped half, PURE OF `gh` -- see that file's header. The constants live there and are re-exported above,
@@ -96,46 +97,9 @@ export const SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1000;
 /** @type {{ path: string, takenAt: Date } | null} The snapshot this process has already taken. */
 let processSnapshot: { path: string; takenAt: Date; } | null = null;
 
-const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => execFileSync(cmd, args, { encoding: "utf8" });
+const defaultRun: RowsRun = (args) => rows().runnerWith({})(args);
 
-const ITEMS_QUERY = `
-  query($owner: String!, $number: Int!, $cursor: String) {
-    organization(login: $owner) {
-      projectV2(number: $number) {
-        # #1996: THE LIVE VOCABULARY, IN THE QUERY THAT WAS ALREADY BEING SENT -- so the drift check
-        # below costs no extra call and cannot be skipped for budget. Nothing read the option list until
-        # this row, which is how the board came to offer no "Done" at all while the code wrote it on
-        # every close.
-        #
-        # CHECKED AGAINST #747's WARNING rather than assumed past it: that header is about a CONNECTION
-        # nested inside items(first: 100) being narrowed to a shared budget without saying so. This is a
-        # single node with a plain list, not a connection, and it sits beside items rather than inside
-        # it -- but the empirical check is the one that counts, and it is free: readyRowsMissingStatus
-        # refuses the whole snapshot if any open ready row comes back without a Status, and a full run
-        # against the live board after this landed did not refuse.
-        field(name: "Status") {
-          ... on ProjectV2SingleSelectField { options { name } }
-        }
-        items(first: 100, after: $cursor) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            id
-            content { ... on Issue { number title state } }
-            fieldValues(first: 20) {
-              nodes {
-                ... on ProjectV2ItemFieldSingleSelectValue {
-                  name
-                  field { ... on ProjectV2FieldCommon { name } }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
+// The query that reads one page of the board is the code host's (`boardItemsPageOf` of its `rows`, in `plugins/github/rows/board-rows.ts`, with the reasons for its shape).
 export type BoardItem = import("./board-snapshot-scope.ts").BoardItem;
 
 /**
@@ -245,7 +209,7 @@ export function fetchReadyIssueNumbers({ run = defaultRun, limit = 500 }: { run?
   let parsed: unknown[];
   try {
     // #5076: `repository.issues(labels:)`, a connection -- `gh issue list --label` was sent as a GitHub SEARCH, whose allowance the installation spent.
-    parsed = readRowsByLabel({ label: READY_LABEL, state: "OPEN", select: "number", repo: REPO, run: (args) => run("gh", args) });
+    parsed = readRowsByLabel({ label: READY_LABEL, state: "OPEN", select: "number", repo: REPO, run });
   } catch (cause) {
     throw new Error(`board-snapshot: could not list open ${READY_LABEL} issues from ${REPO} -- refusing `
       + `to guess whether the snapshot's Status coverage is complete. `
@@ -467,7 +431,7 @@ function refuseUnaccountedReadyRows(items: BoardItem[], readyNumbers: number[], 
   const { absentFromItems, boardedWithoutStatus } =
     readyRowsMissingStatus(items, readyNumbers, excludeIssueNumber);
   const refusal = missingStatusRefusal({
-    ...classifyAbsentReadyRows(absentFromItems, { request: (args) => run("gh", args), readTouched }),
+    ...classifyAbsentReadyRows(absentFromItems, { request: run, readTouched }),
     boardedWithoutStatus,
   });
   if (refusal !== null) throw new Error(refusal);
@@ -511,12 +475,9 @@ export function fetchBoardItems({ run = defaultRun, fetchReady = fetchReadyIssue
   let statusOptions: string[] | null = null;
   let cursor: string | null = null;
   for (;;) {
-    const args = ["api", "graphql", "-f", `query=${ITEMS_QUERY}`, "-f", `owner=${PROJECT_OWNER}`,
-      "-F", `number=${PROJECT_NUMBER}`];
-    if (cursor) args.push("-f", `cursor=${cursor}`);
     let raw;
     try {
-      raw = run("gh", args);
+      raw = rows().boardItemsPageOf({ owner: PROJECT_OWNER, number: PROJECT_NUMBER, cursor, run });
     } catch (cause) {
       // #555: THE GRAPHQL ERROR, WHEN ONE EXISTS, NOT JUST THE COMMAND'S EXIT MESSAGE -- "could not read
       // Project 2 items" is compatible with no permission, a wrong project number, a user-vs-org shape
@@ -627,7 +588,7 @@ export function scopedStatus(issueNumber: number, deps: {
   const { run = defaultRun, log = (line) => process.stderr.write(`${line}\n`), exists = existsSync, writeFile, mkdir,
     now = () => new Date() } = deps;
   const at = now();
-  return scopedStatusOf(issueNumber, { request: (args) => run("gh", args), log, at, now,
+  return scopedStatusOf(issueNumber, { request: run, log, at, now,
     maxAgeMs: SNAPSHOT_MAX_AGE_MS, stillValid: snapshotStillValid(at, exists), writeFile, mkdir });
 }
 
@@ -687,7 +648,7 @@ export function withBoardSnapshot<T>(mutate: () => T, deps: {
     const { run = defaultRun, writeFile, mkdir } = snapshotDeps;
     // #1275: THE ONE `gh` CALL THE SCOPED HALF NEEDS, made here so `board-snapshot-scope.ts` never names `gh` and
     // its test can run in a job with no token.
-    return withScopedSnapshot(mutate, (issues as number[]), { request: (args) => run("gh", args), log, at,
+    return withScopedSnapshot(mutate, (issues as number[]), { request: run, log, at,
       now, maxAgeMs: SNAPSHOT_MAX_AGE_MS, stillValid, writeFile, mkdir });
   }
   const path = readUnlessProjectUnreadable(() => writeBoardSnapshot({ ...snapshotDeps, now }), "the board");

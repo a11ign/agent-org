@@ -1,6 +1,6 @@
 // no-token: gh
-// This file imports board-summary-check.ts and board-document.ts, whose closures spawn `gh`; every test here drives a
-// pure function or injects the instant and stubs the exit, and nothing here calls or spawns it.
+// This file imports board-summary-check.ts and board-document.ts, whose `gh` is the code host's runner (A11-160, step 8); every test here drives a
+// pure function or injects the instant and stubs the exit, and nothing here reads GitHub or spawns `gh`, so step 8 left its cases as they were.
 /**
  * #1345: A SUMMARY'S AGE IS THE MINUTES THAT PASSED, NOT ITS DISTANCE FROM NOW WITHIN ONE DAY.
  *

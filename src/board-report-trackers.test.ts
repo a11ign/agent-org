@@ -1,17 +1,24 @@
 // no-token: REPO
-// This file imports board-report.ts, whose closure reads REPO from board-data.ts, which spawns `gh`. Every test here hands the readers a recorded
-// `run` and renders from an injected fact set; nothing here calls or spawns it.
+// This file imports board-report.ts, whose closure reads REPO from board-data.ts. Every test here reads the trackers through the fake code host's rows and renders from an injected fact set; nothing here calls or spawns `gh`.
 /**
  * #4080 (row 2 of #4056): THE EDITION READS EVERY DECLARED TRACKER, not the first one's board. A row filed in a second tracker was in no edition,
  * because `facts()` asked `issues()` of the one `REPO` and `render` printed one queue.
  *
  * POSITIVE CONTROL for the three tests that look for an absence or a name: `render` of the one-tracker facts is pinned to a recorded snapshot
  * (the last test), so the others cannot be passing because the renderer prints nothing at all.
+ *
+ * A11-160, STEP 8: THE TRACKERS' ISSUES ARE THE CODE HOST'S ROWS (`issuePageOf`), so the readers run on the fake code host: the other tracker's rows are held in its repository, and a tracker the code host refuses
+ * is one `refusals` names. The GraphQL page and its `after` variable are the plugin's (`plugins/github/rows/board-rows.test.ts`).
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import * as report from "./board-report.ts";
 import { REPO } from "./board-data.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
 const SINCE = "2026-10-07T12:00:00.000Z";
@@ -21,22 +28,19 @@ const TRACKERS = [
   { key: "agent-org", repo: OTHER, board: { owner: "a11ign", number: 2 } },
 ];
 
-/** @param {number} number @param {string} title @param {Record<string, unknown>} [over] */
-const node = (number: number, title: string, over: Record<string, unknown> = {}) => ({
-  number, title, state: "OPEN", closedAt: null, url: `https://github.com/x/y/issues/${number}`,
-  labels: { totalCount: 1, nodes: [{ name: "ready" }] }, milestone: null, ...over,
-});
-
-/** A GraphQL answer per repository: `rows[repo]` is the node list, a missing repository throws like a refused read. @param {Record<string, any[]>} rows */
-function runOf(rows: Record<string, any[]>) {
-  return (args: string[]) => {
-    const owner = args.find((a) => a.startsWith("owner="))?.slice("owner=".length);
-    const name = args.find((a) => a.startsWith("name="))?.slice("name=".length);
-    const nodes = rows[`${owner}/${name}`];
-    if (nodes === undefined) throw new Error(`HTTP 502 reading ${owner}/${name}`);
-    return JSON.stringify({ data: { repository: { issues: { totalCount: nodes.length, pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } });
-  };
+/**
+ * The fake code host holding the other tracker's rows (`rows` are `[number, title, over]`, held in `OTHER`); a repository the code host refuses is named in `refuse`, and the cause it gives is `HTTP 502 reading <repo>`.
+ * The home tracker is the world's own, which holds nothing.
+ */
+function trackers(rows: [number, string, Record<string, unknown>?][], refuse: string[] = []) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  for (const [number, title, over] of rows) host.rowsWorld.foreignRows.set(`${OTHER}#${number}`, fakeRow(host.rowsWorld, number, { title, labels: ["ready"], ...over }));
+  for (const repo of refuse) host.rowsWorld.reports.board.refusals.set(repo, new Error(`HTTP 502 reading ${repo}`));
+  substituteCodeHost(host);
+  return host;
 }
+const readOthers = () => report.readOtherTrackers({ trackers: TRACKERS, since: SINCE });
 
 const MINIMAL_FACTS = {
   since: SINCE, sinceLabel: `commits and closures since ${SINCE}`, ms: null, merges: [], unpushed: null, strays: [], latestGate: null, gateIsFresh: true,
@@ -54,16 +58,16 @@ const render = (d: any) => report.render(d, new Date(NOW), () => "agent-org vTES
 const edition = (otherTrackers: any[], ready: any[] = []) => render({ ...MINIMAL_FACTS, open: ready, ready, blockers: ready, otherTrackers });
 
 test("a row that exists only in the SECOND tracker appears in the edition", () => {
-  const others = report.readOtherTrackers({ trackers: TRACKERS, since: SINCE, run: runOf({ [OTHER]: [node(12, "only in the org tracker")] }) });
-  const out = edition(others);
+  trackers([[12, "only in the org tracker"]]);
+  const out = edition(readOthers());
   assert.match(out, /agent-org#12/);
   assert.match(out, /only in the org tracker/);
   assert.match(out, new RegExp(OTHER));
 });
 
 test("the same row number in both trackers stays TWO rows, `agent-org#7` and `#7`", () => {
-  const others = report.readOtherTrackers({ trackers: TRACKERS, since: SINCE, run: runOf({ [OTHER]: [node(7, "org seven")] }) });
-  const out = edition(others, [homeSeven]);
+  trackers([[7, "org seven"]]);
+  const out = edition(readOthers(), [homeSeven]);
   assert.match(out, /\[agent-org#7\]\([^)]*\) org seven/);
   assert.match(out, /home seven/, "the home tracker's #7 is still reported");
   assert.match(out, /\| \[#7\]/, "as #7, not as the org tracker's row");
@@ -72,8 +76,8 @@ test("the same row number in both trackers stays TWO rows, `agent-org#7` and `#7
 });
 
 test("a read that fails on the second tracker NAMES that tracker, and the first tracker's rows are still reported", () => {
-  const others = report.readOtherTrackers({ trackers: TRACKERS, since: SINCE, run: runOf({}) });
-  const out = edition(others, [homeSeven]);
+  trackers([[7, "org seven"]], [OTHER]);
+  const out = edition(readOthers(), [homeSeven]);
   assert.match(out, /NOT READ/);
   assert.match(out, new RegExp(`${OTHER}[^\\n]*502|502[^\\n]*${OTHER}`), "the refusal names the repository and the cause");
   assert.match(out, /home seven/);
@@ -81,18 +85,20 @@ test("a read that fails on the second tracker NAMES that tracker, and the first 
 });
 
 test("a closed row in the window is listed, one outside it is not, and a meta row is not counted", () => {
-  const rows = [
-    node(20, "closed inside", { state: "CLOSED", closedAt: "2026-10-08T01:00:00Z", labels: { totalCount: 0, nodes: [] } }),
-    node(21, "closed before", { state: "CLOSED", closedAt: "2026-09-01T01:00:00Z", labels: { totalCount: 0, nodes: [] } }),
-    node(22, "a container", { labels: { totalCount: 1, nodes: [{ name: "meta" }] } }),
-  ];
-  const out = edition(report.readOtherTrackers({ trackers: TRACKERS, since: SINCE, run: runOf({ [OTHER]: rows }) }));
+  trackers([
+    [20, "closed inside", { state: "CLOSED", closedAt: "2026-10-08T01:00:00Z", labels: [] }],
+    [21, "closed before", { state: "CLOSED", closedAt: "2026-09-01T01:00:00Z", labels: [] }],
+    [22, "a container", { labels: ["meta"] }],
+  ]);
+  const out = edition(readOthers());
   assert.match(out, /agent-org#20/);
   assert.doesNotMatch(out, /closed before|a container/);
 });
 
 test("with ONE declared tracker the edition equals today's: nothing is read for a second and nothing is printed", () => {
-  assert.deepEqual(report.readOtherTrackers({ trackers: TRACKERS.slice(0, 1), since: SINCE, run: () => { throw new Error("no second read may be made"); } }), []);
+  trackers([[7, "org seven"]], [REPO, OTHER]);
+  assert.deepEqual(report.readOtherTrackers({ trackers: TRACKERS.slice(0, 1), since: SINCE }), [], "no second read is made: both repositories refuse every read, and nothing was refused");
+  assert.equal(report.readOtherTrackers({ trackers: TRACKERS, since: SINCE })[0].unread?.includes("502"), true, "CONTROL: asked for the second tracker, the same world refuses");
   assert.equal(edition([]), render(MINIMAL_FACTS), "an empty list prints what a fact set without the field prints");
   const out = render(MINIMAL_FACTS);
   const headings = out.split("\n").filter((l) => l.startsWith("## "));

@@ -191,7 +191,6 @@ const GIT_IS_INJECTED_SEAM: Record<string, string> = {
  */
 const COMMAND_IS_NOT_GIT: Record<string, string> = {
   "src/agent-tool-update.ts": "`run(program)` is called only with \"codex\", a file under the home's .local/bin, \"claude\", \"curl\" or \"herdr\" (hostSeams, and the tests that inject runProgram); none is git",
-  "src/board-snapshot.ts": "`defaultRun`'s command is always \"gh\": every seam call is run(\"gh\", args), and no production caller injects run",
   "src/host-kernel.ts": "the privileged command is REBOOT_ARGV (sudo systemctl reboot), compared by value before the spawn; the other argv literals are systemctl",
   "src/host-pnpm.ts": "the command is a PATH entry joined with \"pnpm\", so its basename is always pnpm",
   "src/plugins/real-seams.ts": "`realExec` (moved out of `active.ts` in A11-160) runs the program a bundled plugin asks for through its deps: the Linear plugin's `security` (the Keychain) and `claude` (its MCP); never git",
@@ -199,7 +198,6 @@ const COMMAND_IS_NOT_GIT: Record<string, string> = {
   "src/install/service.ts": "the seam's default is only called with the literals launchctl, systemctl, systemd-analyze or tailscale",
   "src/messaging/ask-ceo.ts": "pnpmCliInvocation returns process.execPath, a PATH file named pnpm, or corepack, and throws otherwise; never git",
   "src/node-strips-types.ts": "every binary is a PATH entry or an Exec program whose basename is node",
-  "src/prune-tmp.ts": "the command is the literal \"gh\": openPullRequests runs run(\"gh\", ...) and its one production caller injects nothing else",
   "src/review-trust.ts": "the command is the pr-review-verdict file under the reviewer bin directory; the env var sets only the directory, not the basename",
   "src/ticket-mode/capture-command.ts": "`spawn`'s command is always process.execPath (node), running this checkout's own src/bin.ts with ticket:serve or ticket:ui; never git",
   "src/ticket-mode/pair-command.ts":"the command is the bun binary findBun returns: bunHomePath, or a PATH entry joined with bun",

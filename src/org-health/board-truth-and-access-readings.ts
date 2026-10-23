@@ -254,9 +254,7 @@ export function nodeCannotStripReading({ fact }: { fact: NodeStripFact | null; }
 
 /** GitHub's `permissions` booleans on a team's repository, highest first: the team's level there is the first one that is true. */
 export const TEAM_LEVELS = Object.freeze(["admin", "maintain", "push", "triage", "pull"]);
-/** One `full_name<TAB>admin<TAB>maintain<TAB>push<TAB>triage<TAB>pull` line per repository the team reaches. */
-export const TEAM_LISTING_JQ = ".[]|[.full_name,.permissions.admin,.permissions.maintain,.permissions.push,.permissions.triage,.permissions.pull]|@tsv";
-export const TEAM_PAGE_SIZE = 100;
+// The code host's listing of what a team reaches (`teamRepositoriesTextOf`) is one `full_name<TAB>admin<TAB>maintain<TAB>push<TAB>triage<TAB>pull` line per repository.
 
 export type TeamRepository = { repo: string, level: string };
 /** `reached` is `null` for a read that could not run, and `why` then says what GitHub answered */

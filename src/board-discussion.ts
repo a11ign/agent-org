@@ -22,6 +22,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { gh, REPO, ROOT } from "./board-data.ts";
+import { rows } from "./plugins/rows.ts";
 import { decisionSwitchesPath, readSwitches } from "./decision-provider.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";
 
@@ -52,31 +53,6 @@ export const editionTitle = (day: string) => `Board report — ${day}`;
 export type Run = (args: string[]) => string;
 
 const [OWNER, NAME] = REPO.split("/");
-
-// `first:50` bounds CATEGORIES, of which the repository has seven. `first:100` bounds EDITIONS, newest first,
-// and one arrives per date -- so today's is among them unless a hundred were created after it.
-const CATEGORIES = "query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){ id "
-  + "discussionCategories(first:50){ nodes{ id slug } } } }";
-const EDITIONS = "query($owner:String!,$name:String!,$categoryId:ID!){ repository(owner:$owner,name:$name){ "
-  + "discussions(first:100,categoryId:$categoryId,orderBy:{field:CREATED_AT,direction:DESC}){ "
-  + "nodes{ id title url } } } }";
-const CREATE = "mutation($repositoryId:ID!,$categoryId:ID!,$title:String!,$body:String!){ createDiscussion("
-  + "input:{repositoryId:$repositoryId,categoryId:$categoryId,title:$title,body:$body}){ discussion{ url } } }";
-const UPDATE = "mutation($discussionId:ID!,$body:String!){ "
-  + "updateDiscussion(input:{discussionId:$discussionId,body:$body}){ discussion{ url } } }";
-
-/**
- * `gh api graphql` exits non-zero on a GraphQL error as well as on a refused request, and `execFileSync`
- * keeps that status by throwing -- so a failed read reaches the caller as an exception, never as an empty
- * `nodes` list that would read as "no edition yet" and create a second one.
- * @param {Run} run @param {string} query @param {Record<string, string>} vars
- * @returns {any} the response's `data`
- */
-function graphql(run: Run, query: string, vars: Record<string, string>): any {
-  const args = ["api", "graphql", "-f", `query=${query}`];
-  for (const [key, value] of Object.entries(vars)) args.push("-f", `${key}=${value}`);
-  return JSON.parse(run(args)).data;
-}
 
 /**
  * PURE. The category's id, or a refusal saying what to do -- never another category's id.
@@ -112,9 +88,9 @@ export function editionFor(nodes: { id: string; title: string; url: string; }[],
  * @param {{ day: string, run?: Run }} opts
  */
 export function lookUpEdition({ day, run = gh }: { day: string; run?: Run; }) {
-  const repository = graphql(run, CATEGORIES, { owner: OWNER, name: NAME }).repository;
+  const repository = rows().discussionCategoriesOf({ owner: OWNER, name: NAME, run }).repository;
   const categoryId = categoryIdFor(repository.discussionCategories.nodes);
-  const nodes = graphql(run, EDITIONS, { owner: OWNER, name: NAME, categoryId }).repository.discussions.nodes;
+  const nodes = rows().discussionEditionsOf({ owner: OWNER, name: NAME, categoryId, run }).repository.discussions.nodes;
   return { repositoryId: repository.id, categoryId, edition: editionFor(nodes, editionTitle(day)) };
 }
 
@@ -127,10 +103,10 @@ export function lookUpEdition({ day, run = gh }: { day: string; run?: Run; }) {
 export function publishEdition({ day, body, run = gh }: { day: string; body: string; run?: Run; }): { url: string; action: "created" | "updated"; } {
   const { repositoryId, categoryId, edition } = lookUpEdition({ day, run });
   if (edition) {
-    graphql(run, UPDATE, { discussionId: edition.id, body });
+    rows().updateDiscussion({ discussionId: edition.id, body, run });
     return { url: edition.url, action: "updated" };
   }
-  const created = graphql(run, CREATE, { repositoryId, categoryId, title: editionTitle(day), body });
+  const created = rows().createDiscussion({ repositoryId, categoryId, title: editionTitle(day), body, run });
   return { url: created.createDiscussion.discussion.url, action: "created" };
 }
 

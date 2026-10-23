@@ -445,7 +445,7 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
   const providers = plannedProviders({ host, tickets, planned, catalog: deps.catalog() });
   const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
   const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
-    exec: deps.exec, readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy(),
+    exec: deps.exec, execAsync: (file, args, options) => Promise.resolve(deps.exec(file, args, options)), readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy(),
     publishing: publishingHelpers(), reviewing: gateHelpers(), rows: coreRowsHelpers, place: realPlace };
   const result = await deps.loadPlugins(providers, pluginDeps);
   const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));

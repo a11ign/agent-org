@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh` or file outside a temp directory is touched; the rows, pull requests, lists and clock are fixtures (a11ign/a11ign#4769)
+// no-token: none -- no `gh` or file outside a temp directory is touched; the rows and pull requests are the fake code host's, and the clock is a fixture (a11ign/a11ign#4769; A11-160, step 8)
 // #4769: an open row (claimed or not) whose deliverable pull request merged more than 30 minutes ago is a `row-not-finishable` ledger incident.
 //
 // EVERY "NO INCIDENT" ASSERTION HAS A TWIN: the SAME fixture with ONE thing changed that DOES produce one (`row` and `merged` below), so a detector that never fires turns the
@@ -14,7 +14,14 @@ import { MERGED_ROW_OPEN_MINUTES, mergedRowOpenEvents, mergedRowOpenIncidents, m
 import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
 import { readMergedRowOpen } from "./org-retro/retro-window-and-journal-patterns.ts";
 import { renderReport, retrospectiveTick } from "./org-retro.ts";
-import { connectionOf, readsRowsByLabel, readsRowsSince, sinceAnswer } from "./packaging/rows-by-label-fixtures.ts";
+import { afterEach } from "node:test";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { holdRepository, withRepositoryReads } from "./plugins/fakes/code-host-health.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-10T12:00:00Z");
@@ -182,70 +189,78 @@ test("the summary is the count and the first three refs; an unread population is
 const DECLARATION: any = { tracker: [{ key: "", repo: TRACKER }], code: [{ key: "", repo: CODE }, { key: "other", repo: "o/other" }] };
 const CLAIM_RECORD = "<!-- row-claim: claim record -->\n**Claim record** -- claimed by `worker-1`.\n\nClaimed-branch: agent/the-thing-4001\nClaimed-worktree: ../wt-1";
 
-/** A `gh` that answers each list from the fixture, keyed by what was asked; `refuse` names a list that comes back null. */
-function fakeGh({ refuse = "", mergedIn = CODE, over = {} }: { refuse?: string, mergedIn?: string, over?: Record<string, any[]> } = {}) {
-  const lists: Record<string, any[]> = {
-    "issue open": [{ number: 4001, labels: [{ name: "in-progress" }] }, { number: 4002, labels: [{ name: "ready" }] }],
-    "issue claimed": [{ number: 4001, comments: [{ body: "hello" }, { body: CLAIM_RECORD }] }],
-    [`pr merged ${mergedIn}`]: [{ number: 7, body: "Closes: none -- built the thing", headRefName: "agent/the-thing-4001", mergedAt: ago(60) }],
-    ...over,
-  };
-  const asked: string[][] = [];
-  const read = (args: string[]): any[] | null => {
-    asked.push(args);
-    // #5076: the claimed rows are `issues(labels:)` and the merged list `pullRequests(states: MERGED)`, both connections the fake answers as `gh` would; the open lists are plain.
-    const since = readsRowsSince(args);
-    const kind = readsRowsByLabel(args) !== null ? "issue claimed" : since !== null ? `pr merged ${since.repo}`
-      : args[0] === "issue" ? "issue open" : `pr open ${args[args.indexOf("-R") + 1]}`;
-    if (kind === refuse) return null;
-    if (kind === "issue claimed") return JSON.parse(connectionOf(lists[kind] ?? []));
-    if (since !== null) return JSON.parse(sinceAnswer(args, (lists[kind] ?? []).map((row) => ({ updatedAt: row.mergedAt, ...row }))));
-    return lists[kind] ?? [];
-  };
-  return { read, asked };
+type TrackerRow = { number: number; labels: string[]; comments?: string[] };
+type CodePull = { number: number; body: string; headRefName: string; mergedAt?: string };
+
+/**
+ * The fake code host holding the lists a pass reads, per repository (A11-160, step 8): the tracker's rows (an open row, claimed when it carries the claim label and its claim record is among its comments) and each code
+ * repository's merged and open pull requests. `refuse` is the operation (and repository) the host refuses, as `world.failures` names it; `mergedIn` is the code repository the merged pull request is in.
+ */
+function codeHost({ refuse = "", mergedIn = CODE, trackerRows, mergedPrs, openPrs = {} }: { refuse?: string; mergedIn?: string; trackerRows?: TrackerRow[]; mergedPrs?: CodePull[]; openPrs?: Record<string, CodePull[]> } = {}) {
+  const watched = watchedRows(withRepositoryReads(createFakeCodeHost()));
+  substituteCodeHost(watched.host);
+  const world = (watched.host as unknown as { rowsWorld: ReturnType<typeof createFakeCodeHost>["rowsWorld"] }).rowsWorld;
+  const tracker = trackerRows ?? [{ number: 4001, labels: ["in-progress"], comments: ["hello", CLAIM_RECORD] }, { number: 4002, labels: ["ready"] }];
+  holdRepository(world, TRACKER, { rows: tracker.map(({ number, labels, comments = [] }) => fakeRow(world, number, { labels, comments: comments.map((body, id) => ({ id: id + 1, body, createdAt: ago(600) })) })) });
+  const pullOf = (pull: CodePull, merged: boolean) => ({ number: pull.number, body: pull.body, headRefName: pull.headRefName, labels: [], isDraft: false, armed: false, merged, mergedAt: pull.mergedAt ?? null, createdAt: ago(2000), comments: [] });
+  const merges = mergedPrs ?? [{ number: 7, body: "Closes: none -- built the thing", headRefName: "agent/the-thing-4001", mergedAt: ago(60) }];
+  for (const { repo } of DECLARATION.code) {
+    holdRepository(world, repo, { pulls: [...(repo === mergedIn ? merges.map((pull) => pullOf(pull, true)) : []), ...(openPrs[repo] ?? []).map((pull) => pullOf(pull, false))] });
+  }
+  if (refuse !== "") world.failures.set(refuse, new Error(`HTTP 502: ${refuse}`));
+  return { calls: watched.calls };
 }
 
 test("readMergedRowOpen: the claim record's branch finds the deliverable; the twin is a record that names another branch", () => {
-  const found = readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh().read });
+  codeHost();
+  const found = readMergedRowOpen({ now: NOW, declaration: DECLARATION });
   assert.deepEqual(found?.map((i) => i.ref), ["o/tracker#4001@o/code#7"]);
-  const other = fakeGh({ over: { "issue claimed": [{ number: 4001, comments: [{ body: CLAIM_RECORD.replace("the-thing-4001", "another-4001") }] }] } });
-  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: other.read }), []);
+  codeHost({ trackerRows: [{ number: 4001, labels: ["in-progress"], comments: [CLAIM_RECORD.replace("the-thing-4001", "another-4001")] }, { number: 4002, labels: ["ready"] }] });
+  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION }), []);
 });
 
 test("readMergedRowOpen: a merge in a DECLARED code repository other than the first counts (twin: the same list in none)", () => {
-  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh({ mergedIn: "o/other" }).read })?.map((i) => i.ref), ["o/tracker#4001@o/other#7"]);
-  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh({ mergedIn: "o/undeclared" }).read }), []);
+  codeHost({ mergedIn: "o/other" });
+  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION })?.map((i) => i.ref), ["o/tracker#4001@o/other#7"]);
+  codeHost({ mergedIn: "o/undeclared" });
+  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION }), []);
 });
 
 test("readMergedRowOpen: an open pull request that names the row holds it (twin: no open one)", () => {
-  const open = fakeGh({ over: { "pr open o/other": [{ number: 9, body: `Closes ${TRACKER}#4001`, headRefName: "agent/more-4001" }] } });
-  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: open.read }), []);
+  codeHost({ openPrs: { "o/other": [{ number: 9, body: `Closes ${TRACKER}#4001`, headRefName: "agent/more-4001" }] } });
+  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION }), []);
 });
 
 test("readMergedRowOpen: ANY refused list is null (unknown), never an empty population", () => {
-  for (const refuse of ["issue open", "issue claimed", `pr merged ${CODE}`, "pr open o/other", "pr merged o/other"]) {
-    assert.equal(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh({ refuse }).read }), null, refuse);
+  for (const refuse of ["openRowLabelsOf", "readRowsByLabel", `readRowsSince ${CODE}`, "openPullsNamingRowsOf o/other", "readRowsSince o/other"]) {
+    codeHost({ refuse });
+    assert.equal(readMergedRowOpen({ now: NOW, declaration: DECLARATION }), null, refuse);
   }
-  assert.equal(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh().read })?.length, 1);
+  codeHost();
+  assert.equal(readMergedRowOpen({ now: NOW, declaration: DECLARATION })?.length, 1, "CONTROL: the same world, nothing refused");
 });
 
 test("readMergedRowOpen: a list at its ceiling may have stopped short, so it is null (twin: one under)", () => {
-  const filler = (n: number) => Array.from({ length: n }, (_, i) => ({ number: 9000 + i, labels: [] }));
-  assert.equal(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh({ over: { "issue open": filler(1000) } }).read }), null);
-  assert.notEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh({ over: { "issue open": filler(999) } }).read }), null);
+  const filler = (n: number): TrackerRow[] => Array.from({ length: n }, (_, i) => ({ number: 9000 + i, labels: [] }));
+  codeHost({ trackerRows: filler(1000) });
+  assert.equal(readMergedRowOpen({ now: NOW, declaration: DECLARATION }), null);
+  codeHost({ trackerRows: filler(999) });
+  assert.notEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION }), null);
 });
 
-test("readMergedRowOpen: the merged read looks back past the report's 24 hours, to the day the row was merged -- and no further, and never as a search", () => {
-  const mergedOn = (minutesAgo: number) => ({ [`pr merged ${CODE}`]: [{ number: 7, body: "Closes: none -- built the thing", headRefName: "agent/the-thing-4001", mergedAt: ago(minutesAgo) }] });
+test("readMergedRowOpen: the merged read looks back past the report's 24 hours, to the day the row was merged -- and no further", () => {
+  const mergedOn = (minutesAgo: number): CodePull[] => [{ number: 7, body: "Closes: none -- built the thing", headRefName: "agent/the-thing-4001", mergedAt: ago(minutesAgo) }];
   const days = (n: number) => n * 24 * 60;
-  const threeDays = readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh({ over: mergedOn(days(3)) }).read });
+  codeHost({ mergedPrs: mergedOn(days(3)) });
+  const threeDays = readMergedRowOpen({ now: NOW, declaration: DECLARATION });
   assert.deepEqual(threeDays?.map((i) => i.ref), ["o/tracker#4001@o/code#7"], "a merge three days ago, past the report's 24 hours, is read");
-  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: fakeGh({ over: mergedOn(days(8)) }).read }), [], "twin: one eight days ago is outside the look-back");
-  const { read, asked } = fakeGh();
-  readMergedRowOpen({ now: NOW, declaration: DECLARATION, read });
-  const merged = asked.map((args) => readsRowsSince(args)).filter((ask) => ask !== null);
-  assert.deepEqual(merged.map((ask) => [ask.kind, ask.states.join(), ask.repo]).sort(), [["pullRequests", "MERGED", CODE], ["pullRequests", "MERGED", "o/other"]].sort());
-  assert.ok(asked.every((args) => !args.includes("--search") && !args.includes("--label")), "no read is a search");
+  codeHost({ mergedPrs: mergedOn(days(8)) });
+  assert.deepEqual(readMergedRowOpen({ now: NOW, declaration: DECLARATION }), [], "twin: one eight days ago is outside the look-back");
+  const { calls } = codeHost();
+  readMergedRowOpen({ now: NOW, declaration: DECLARATION });
+  const asked = calls.filter((call) => call.op === "readRowsSince").map((call) => call.request.ask);
+  assert.deepEqual(asked.map((ask) => [ask.kind, ask.states.join(), ask.repo]).sort(), [["pullRequests", "MERGED", CODE], ["pullRequests", "MERGED", "o/other"]].sort());
+  assert.ok(asked.every((ask) => Date.parse(ask.since) === NOW - 7 * 24 * 60 * MIN), "each from seven days before the pass");
 });
 
 const emptyReads = { merged: null, openPrs: null, journal: null, ledger: null, turns: null, handFixes: null };

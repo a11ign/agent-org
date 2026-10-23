@@ -5,6 +5,6 @@
 import type { RowsRun as Run } from "../../../src/plugins/contracts/code-host-rows.ts";
 
 /** `repo` is `owner/name`, `issue` the number in it, and `body` the comment. */
-export function commentOnIssue({ repo, issue, body, run }: { repo: string; issue: number; body: string; run: Run }): void {
+export function commentOnIssue({ repo, issue, body, run }: { repo: string; issue: number | string; body: string; run: Run }): void {
   run(["issue", "comment", String(issue), "--repo", repo, "--body", body]);
 }

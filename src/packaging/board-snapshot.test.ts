@@ -1,4 +1,4 @@
-// no-token: gh -- every board read and write here goes through an injected run, fetchReady, writeFile and exists; this file's own code never calls or spawns gh (#1352, route (a))
+// no-token: none -- the fake code host's rows answer the board from a world held in memory (A11-160, step 8); the few cases that hand the snapshot a malformed answer do it through a `run` that returns a string, and nothing here calls or spawns gh (#1352, route (a))
 /**
  * Every board mutation must snapshot before it writes -- issue #399. 2026-09-08: adding one Status option
  * with `updateProjectV2Field` and a full `singleSelectOptions` list REPLACED the whole option set and
@@ -6,8 +6,14 @@
  * happened to exist from minutes earlier for an unrelated reason. `withBoardSnapshot` makes that
  * deliberate: the mutation runs ONLY after a real snapshot has been written, never on the strength of one
  * that "would have existed anyway".
+ *
+ * A11-160, step 8: the board's items and the ready list are the CODE HOST's reads now (`boardItemsPageOf`, `touchedItemTextOf` and `readRowsByLabel` of its rows), so what the snapshot DECIDES (the coverage floor, which
+ * cause a missing row has, the Status refusal, the scoped and the reused route, the memory of a Project the token cannot read) runs on the fake code host: a case seeds rows (on the board, at a Status, `ready`) and the
+ * world's facts (`world.reports.snapshot`), and counts the operations the snapshot asked. The query's shape, its variables and the error body a failed process carries are the plugin's
+ * (`plugins/github/rows/board-snapshot-rows.test.ts`). THE CASES THAT STAY AT THE SEAM hand the snapshot an answer no row renders -- a page that is not JSON, that lacks the items, or that carries `errors` beside its
+ * data -- through an injected `run` on the real operation, which returns GitHub's text untouched: they hold how the snapshot READS a malformed answer.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import {
@@ -25,7 +31,7 @@ import {
   PROJECT_NUMBER,
   SNAPSHOT_DIR,
 } from "../board-snapshot.ts";
-import { touchedItemRequest, commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY,
+import { commonGitDirOf, snapshotDirFor, launchCheckoutOf, primaryLaunchRefusal, PRIMARY_MARK_KEY,
   primaryLaunchDecision, POLICY_LAUNCH_REASON_ENV, launchGate }
   from "../board-snapshot-scope.ts";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -35,89 +41,91 @@ import { dirname as dirOf, join as joinPath } from "node:path";
 import { fileURLToPath as pathOf } from "node:url";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
-import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
+import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRow, type FakeRowsWorld } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 
-/** One page of a real `gh api graphql` response, shaped exactly like the live schema returns it. */
-function page({ nodes, hasNextPage = false, endCursor = null, statusOptions }: {
-  nodes: Array<{ id: string; number?: number; title?: string; status?: string; state?: string }>;
-  hasNextPage?: boolean;
-  endCursor?: string | null;
-  statusOptions?: string[];
-}) {
-  return JSON.stringify({
-    data: {
-      organization: {
-        projectV2: {
-          // #1996/#2010: THE FIELD THE DRIFT CHECK READS. Omitted by default, which preserves every
-          // existing case's meaning -- and which is exactly why a fixture set without it could never
-          // witness the call: `statusOptions` stays null and the implementation reports a SHORT READ
-          // rather than a drift. A case that cares passes `statusOptions` explicitly.
-          ...(statusOptions === undefined
-            ? {}
-            : { field: { options: statusOptions.map((name) => ({ name })) } }),
-          items: {
-            pageInfo: { hasNextPage, endCursor },
-            nodes: nodes.map((n) => ({
-              id: n.id,
-              // #1219: `state` is part of what the query asks for now, so the fixture emits it --
-              // a fixture that models a narrower shape than the producer tests a response that
-              // cannot occur. Defaults to OPEN so existing cases keep their meaning; a case that
-              // cares passes `state` explicitly.
-              content: n.number !== undefined
-                ? { number: n.number, title: n.title ?? "", state: n.state ?? "OPEN" } : null,
-              fieldValues: {
-                nodes: n.status !== undefined
-                  ? [{ name: n.status, field: { name: "Status" } }]
-                  : [],
-              },
-            })),
-          },
-        },
-      },
-    },
-  });
+afterEach(() => forgetActivation());
+
+/** The fake code host in place, its operations WATCHED, and its world. A case seeds the world and counts what the snapshot asked of the rows (`asked("boardItemsPageOf")`). */
+function board() {
+  const host = createFakeCodeHost();
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  const asked = (op: string) => watched.calls.filter((call) => call.op === op);
+  return { world: host.rowsWorld, calls: watched.calls, asked };
+}
+
+/** A row on the board at `status` (`null`: boarded with no Status), open unless it says otherwise; `ready` also labels it so. */
+function onBoard(world: FakeRowsWorld, number: number, { status = null, ready = false, ...over }: { status?: string | null; ready?: boolean } & Partial<FakeRow> = {}) {
+  world.rows.set(number, fakeRow(world, number, { onBoard: true, boardStatus: status, labels: ready ? ["ready"] : [], ...over }));
+}
+
+/** A row that is ready and open but is NOT an item of the project. */
+function readyOffBoard(world: FakeRowsWorld, number: number) {
+  world.rows.set(number, fakeRow(world, number, { labels: ["ready"] }));
+}
+
+/** A board of `pages` pages of items (a page holds 100), every item at Ready. */
+function boardOfPages(world: FakeRowsWorld, pages: number) {
+  for (let number = 1; number <= (pages - 1) * 100 + 1; number += 1) onBoard(world, number, { status: "Ready" });
+}
+
+/** A process that failed as `gh` does: its message, its exit status, and the response body it printed before exiting on `.stdout`. */
+const failedProcess = (message: string, stdout?: string) => Object.assign(new Error(message), { status: 1, ...(stdout === undefined ? {} : { stdout }) });
+
+/** One page of a GraphQL response of the items query at the seam: the items node only, for a case that hands the snapshot a text no row renders. */
+const seamPage = (extra: Record<string, unknown> = {}, items: unknown = { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] }) =>
+  JSON.stringify({ data: { organization: { projectV2: { items } } }, ...extra });
+
+/** The items read off a board of the one row `number`, at `status`, with the ready list left out. */
+function itemsOfOneRow(number: number, title: string, status: string) {
+  const { world } = board();
+  onBoard(world, number, { title, status });
+  return fetchBoardItems({ fetchReady: () => [] });
 }
 
 test("fetchBoardItems reads number, title and Status off a single page", () => {
-  const run = () => page({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
-  const items = fetchBoardItems({ run, fetchReady: () => [] });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 42, title: "the row", status: "Ready", state: "OPEN" }]);
+  assert.deepEqual(itemsOfOneRow(42, "the row", "Ready"), [{ itemId: "PVTI_42", number: 42, title: "the row", status: "Ready", state: "OPEN" }]);
 });
 
 test("a draft item (no linked issue) is recorded with number/title null, never dropped", () => {
-  const run = () => page({ nodes: [{ id: "PVTI_draft" }] });
-  const items = fetchBoardItems({ run, fetchReady: () => [] });
+  const { world } = board();
+  world.reports.snapshot.drafts = ["PVTI_draft"];
+  const items = fetchBoardItems({ fetchReady: () => [] });
   // #1219: `state` is null for a draft too -- a draft has no issue, so it has no state, and defaulting
   // it to OPEN would make every draft an open row the contradiction check then reasons about.
   assert.deepEqual(items, [{ itemId: "PVTI_draft", number: null, title: null, status: null, state: null }]);
 });
 
 test("fetchBoardItems follows pagination across multiple pages", () => {
-  let call = 0;
-  const run = (_cmd: string, args: string[]) => {
-    call += 1;
-    if (call === 1) {
-      assert.ok(!args.some((a) => a.startsWith("cursor=")), "the first page must not pass a cursor");
-      return page({ nodes: [{ id: "PVTI_1", number: 1, title: "a" }], hasNextPage: true, endCursor: "CUR" });
-    }
-    assert.ok(args.includes("cursor=CUR"), "the second page must pass back the first page's endCursor");
-    return page({ nodes: [{ id: "PVTI_2", number: 2, title: "b" }], hasNextPage: false });
-  };
-  const items = fetchBoardItems({ run, fetchReady: () => [] });
-  assert.equal(items.length, 2);
-  assert.deepEqual(items.map((i) => i.number), [1, 2]);
+  const { world, asked } = board();
+  boardOfPages(world, 2);
+  const items = fetchBoardItems({ fetchReady: () => [] });
+  assert.equal(items.length, 101);
+  assert.deepEqual(items.map((i) => i.number), Array.from({ length: 101 }, (_, i) => i + 1));
+  const cursors = asked("boardItemsPageOf").map((call) => call.request.cursor);
+  assert.equal(cursors[0], null, "the first page must not pass a cursor");
+  assert.equal(typeof cursors[1], "string", "the second page must pass back the first page's endCursor");
+  assert.equal(cursors.length, 2);
 });
 
 test("fetchBoardItems throws rather than returning a partial list when gh fails", () => {
-  const run = () => {
-    throw new Error("gh: not authenticated");
-  };
-  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /could not read Project/);
+  const { world } = board();
+  onBoard(world, 1, { status: "Ready" });
+  world.failures.set("boardItemsPageOf", new Error("gh: not authenticated"));
+  assert.throws(() => fetchBoardItems({ fetchReady: () => [] }), /could not read Project/);
 });
 
 test("fetchBoardItems throws on a response missing the expected shape, rather than guessing", () => {
   const run = () => JSON.stringify({ data: { organization: { projectV2: null } } });
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /did not have the shape/);
+});
+
+test("fetchBoardItems throws on a response that is not JSON, quoting what it was, rather than guessing", () => {
+  assert.throws(() => fetchBoardItems({ run: () => "<html>502 Bad Gateway</html>", fetchReady: () => [] }), /was not JSON -- refusing to guess\. First 200 chars: <html>502 Bad Gateway/);
 });
 
 // --- #555: the refusal must name the GraphQL error, not just "could not read Project N items" ---
@@ -129,20 +137,17 @@ test("#555: a non-zero exit whose stdout carries a GraphQL error quotes its type
     errors: [{ type: "FORBIDDEN", path: ["organization", "projectV2"],
       message: "Resource not accessible by personal access token" }],
   });
-  const run = () => {
-    const err = new Error("Command failed: gh api graphql ...") as Error & { stdout: string; stderr: string };
-    err.stdout = stdout;
-    err.stderr = "gh: Resource not accessible by personal access token\n";
-    throw err;
-  };
-  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }),
+  const { world } = board();
+  world.failures.set("boardItemsPageOf", Object.assign(failedProcess("Command failed: gh api graphql ...", stdout), { stderr: "gh: Resource not accessible by personal access token\n" }));
+  assert.throws(() => fetchBoardItems({ fetchReady: () => [] }),
     /FORBIDDEN \(organization\.projectV2\): Resource not accessible by personal access token/);
 });
 
 test("#555: a non-zero exit with no parseable GraphQL error falls back to the plain exit message, "
   + "rather than inventing a cause", () => {
-  const run = () => { throw new Error("gh: not authenticated"); };
-  assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /could not read Project.*not authenticated/s);
+  const { world } = board();
+  world.failures.set("boardItemsPageOf", new Error("gh: not authenticated"));
+  assert.throws(() => fetchBoardItems({ fetchReady: () => [] }), /could not read Project.*not authenticated/s);
 });
 
 test("#555 MUTATION TARGET: a 200 response carrying `data` AND `errors` together is REFUSED, never read "
@@ -150,33 +155,24 @@ test("#555 MUTATION TARGET: a 200 response carrying `data` AND `errors` together
   // GraphQL's own answer when the token can COUNT an item but not READ it: the request otherwise
   // succeeds (exit 0, `data` present, `pageInfo` well-formed), but the `nodes` list is null exactly
   // where an item should be, and the `errors` array is the only place that says why.
-  const run = () => JSON.stringify({
-    data: { organization: { projectV2: { items: {
-      pageInfo: { hasNextPage: false, endCursor: null },
-      nodes: [null, null, null],
-    } } } },
+  const run = () => seamPage({
     errors: [
       { type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 0], message: "Resource not accessible by personal access token" },
       { type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 1], message: "Resource not accessible by personal access token" },
       { type: "FORBIDDEN", path: ["organization", "projectV2", "items", "nodes", 2], message: "Resource not accessible by personal access token" },
     ],
-  });
+  }, { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [null, null, null] });
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /FORBIDDEN/);
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /Resource not accessible by personal access token/);
 });
 
 test("#555 CONTROL: an ordinary clean response (no errors array at all) is unaffected", () => {
-  const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "fine", status: "Ready" }] });
-  const items = fetchBoardItems({ run, fetchReady: () => [] });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 1, title: "fine", status: "Ready", state: "OPEN" }]);
+  assert.deepEqual(itemsOfOneRow(1, "fine", "Ready"), [{ itemId: "PVTI_1", number: 1, title: "fine", status: "Ready", state: "OPEN" }]);
 });
 
 test("#555: an `errors` array with data still present is refused BEFORE the shape check would even run "
   + "-- so a caller never sees \"did not have the shape\" for a response that actually named its own cause", () => {
-  const run = () => JSON.stringify({
-    data: { organization: { projectV2: { items: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } },
-    errors: [{ type: "SOME_OTHER_TYPE", message: "a different failure entirely" }],
-  });
+  const run = () => seamPage({ errors: [{ type: "SOME_OTHER_TYPE", message: "a different failure entirely" }] });
   assert.throws(() => fetchBoardItems({ run, fetchReady: () => [] }), /SOME_OTHER_TYPE: a different failure entirely/);
 });
 
@@ -193,11 +189,11 @@ test("snapshotStamp is filesystem-safe -- no colons, and two calls a second apar
 });
 
 test("writeBoardSnapshot fetches, then writes JSON to runs/board-snapshots/<stamp>.json, and returns the path", () => {
-  const run = () => page({ nodes: [{ id: "PVTI_1", number: 42, title: "row", status: "Ready" }] });
+  const { world } = board();
+  onBoard(world, 42, { title: "row", status: "Ready" });
   const written: Array<{ path: string; data: string }> = [];
   const mkdirs: string[] = [];
   const path = writeBoardSnapshot({
-    run,
     fetchReady: () => [],
     mkdir: (p) => mkdirs.push(p),
     writeFile: (p, data) => written.push({ path: p, data }),
@@ -210,14 +206,13 @@ test("writeBoardSnapshot fetches, then writes JSON to runs/board-snapshots/<stam
   const parsed = JSON.parse(written[0].data);
   assert.equal(parsed.project.owner, PROJECT_OWNER);
   assert.equal(parsed.project.number, PROJECT_NUMBER);
-  assert.deepEqual(parsed.items, [{ itemId: "PVTI_1", number: 42, title: "row", status: "Ready", state: "OPEN" }]);
+  assert.deepEqual(parsed.items, [{ itemId: "PVTI_42", number: 42, title: "row", status: "Ready", state: "OPEN" }]);
 });
 
 test("writeBoardSnapshot throws, never swallows, when the fetch fails", () => {
-  const run = () => {
-    throw new Error("network unreachable");
-  };
-  assert.throws(() => writeBoardSnapshot({ run, fetchReady: () => [], mkdir: () => {}, writeFile: () => {} }),
+  const { world } = board();
+  world.failures.set("boardItemsPageOf", new Error("network unreachable"));
+  assert.throws(() => writeBoardSnapshot({ fetchReady: () => [], mkdir: () => {}, writeFile: () => {} }),
     /could not read Project/);
 });
 
@@ -226,10 +221,10 @@ test("writeBoardSnapshot throws, never swallows, when the fetch fails", () => {
  * refuse the mutation outright. This is the whole guarantee `withBoardSnapshot` exists to give.
  */
 test("MUTATION: a failing snapshot write means the mutation never runs", () => {
-  const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "row" }] });
+  const { world } = board();
+  onBoard(world, 1, { title: "row" });
   let mutateCalled = false;
   assert.throws(() => withBoardSnapshot(() => { mutateCalled = true; return "ok"; }, {
-    run,
     fetchReady: () => [],
     mkdir: () => {},
     writeFile: () => { throw new Error("disk full"); },
@@ -238,14 +233,14 @@ test("MUTATION: a failing snapshot write means the mutation never runs", () => {
 });
 
 test("withBoardSnapshot calls the mutation, and only after logging the snapshot path, when the snapshot succeeds", () => {
-  const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "row" }] });
+  const { world } = board();
+  onBoard(world, 1, { title: "row" });
   const log: string[] = [];
   let mutateCalled = false;
   const result = withBoardSnapshot(() => {
     mutateCalled = true;
     return "mutation result";
   }, {
-    run,
     fetchReady: () => [],
     mkdir: () => {},
     writeFile: () => {},
@@ -260,6 +255,7 @@ test("withBoardSnapshot calls the mutation, and only after logging the snapshot 
   const escaped = SNAPSHOT_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   assert.match(log[0], new RegExp(`wrote ${escaped}/2026-09-08T00-00-00-000Z\\.json before mutating`));
 });
+
 
 // --- #747: fieldValues is nested inside items, the one shape with no totalCount to check itself. An
 // independently-derived floor -- every open `ready` issue must show up in the snapshot WITH a Status --
@@ -405,23 +401,25 @@ test("#2157: the CANNOT TELL arm carries the refusal that caused it, so a reader
   assert.match(refusal, /FORBIDDEN: Resource not accessible by personal access token/);
 });
 
-test("fetchReadyIssueNumbers: reads the OPEN rows labelled ready as a CONNECTION, never a `--label` search (#5076)", () => {
-  let seenArgs: string[] = [];
-  const run = (_cmd: string, args: string[]) => {
-    seenArgs = args;
-    return connectionOf([{ number: 717 }, { number: 725 }]);
-  };
-  assert.deepEqual(fetchReadyIssueNumbers({ run }), [717, 725]);
-  assert.deepEqual(readsRowsByLabel(seenArgs), { label: "ready", state: "OPEN" });
-  assert.ok(!seenArgs.includes("--label") && !seenArgs.includes("--search"), "a connection read: no argv is a GitHub search");
-  assert.ok(seenArgs.some((arg) => arg.startsWith("query=") && arg.includes("nodes{number}")), "and the one field read is the number");
+test("fetchReadyIssueNumbers: asks for the OPEN rows labelled ready, the number only, and answers theirs -- not the closed ones, not the unlabelled (#5076)", () => {
+  const { world, asked } = board();
+  onBoard(world, 717, { ready: true });
+  onBoard(world, 725, { ready: true });
+  world.rows.set(700, fakeRow(world, 700, { state: "CLOSED", labels: ["ready"] }));
+  world.rows.set(701, fakeRow(world, 701, { labels: ["backlog"] }));
+  assert.deepEqual(fetchReadyIssueNumbers().sort((a, b) => a - b), [717, 725]);
+  assert.equal(asked("readRowsByLabel").length, 1, "one read of the by-label connection");
+  const { request } = asked("readRowsByLabel")[0];
+  assert.deepEqual({ label: request.label, state: request.state, select: request.select, repo: request.repo }, { label: "ready", state: "OPEN", select: "number", repo: REPO },
+    "the connection's own query is the plugin's (board-snapshot-rows.test.ts): never a `--label` search, and the one field read is the number");
 });
 
 test("fetchReadyIssueNumbers: exactly `limit` rows back is refused as indistinguishable from truncated, "
   + "same discipline as ready-label-audit.ts's fetchIssues", () => {
-  const run = () => connectionOf(Array.from({ length: 3 }, (_, i) => ({ number: i })));
-  assert.throws(() => fetchReadyIssueNumbers({ run, limit: 3 }), /exactly the requested limit/);
-  assert.deepEqual(fetchReadyIssueNumbers({ run, limit: 4 }), [0, 1, 2], "control: one under the limit is a complete read");
+  const { world } = board();
+  for (const number of [1, 2, 3]) readyOffBoard(world, number);
+  assert.throws(() => fetchReadyIssueNumbers({ limit: 3 }), /exactly the requested limit/);
+  assert.deepEqual(fetchReadyIssueNumbers({ limit: 4 }).sort(), [1, 2, 3], "control: one under the limit is a complete read");
 });
 
 test("fetchReadyIssueNumbers: a response that is not a connection is refused rather than guessed at", () => {
@@ -431,22 +429,17 @@ test("fetchReadyIssueNumbers: a response that is not a connection is refused rat
 
 test("fetchReadyIssueNumbers: gh failing throws, never falls back to an empty (falsely clean) "
   + "population", () => {
-  const run = () => { throw new Error("gh: not authenticated"); };
-  assert.throws(() => fetchReadyIssueNumbers({ run }), /could not list open ready issues/);
+  const { world } = board();
+  readyOffBoard(world, 1);
+  world.failures.set("readRowsByLabel", new Error("gh: not authenticated"));
+  assert.throws(() => fetchReadyIssueNumbers(), /could not list open ready issues[\s\S]*not authenticated/);
 });
-
-/** A `run` that answers BOTH calls `fetchBoardItems` now makes: the items page, and the ready-issue connection. */
-function dualRun(itemsPageJson: string, readyNumbers: number[]) {
-  return (_cmd: string, args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return connectionOf(readyNumbers.map((number) => ({ number })));
-    return itemsPageJson;
-  };
-}
 
 /**
  * #2157: a `readTouched` that answers the per-issue read from a list of issue numbers GitHub reports as
- * items on this Project. Injected everywhere below, so no case here reaches `gh` -- and so the two arms
- * can be driven independently of the items page, which is the whole point: they disagree in the live
+ * items on this Project. It stands in for the per-issue read in the CLASSIFIER's own cases above, which are pure of
+ * the code host; the cases below run the real read over the fake's world, where the two arms are driven by the world's
+ * facts (a row off the board; a row on it that the items connection has not enumerated yet) -- they disagree in the live
  * defect, and a fixture where they agree would pin neither.
  */
 function touchedOnBoard(onBoard: number[]) {
@@ -459,37 +452,42 @@ function touchedOnBoard(onBoard: number[]) {
 }
 
 test("fetchBoardItems: every ready row carries a Status -- passes unchanged, same as today's 203 items", () => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row", status: "Ready" }] }), [725]);
-  const items = fetchBoardItems({ run });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 725, title: "row", status: "Ready", state: "OPEN" }]);
+  const { world } = board();
+  onBoard(world, 725, { title: "row", status: "Ready", ready: true });
+  const items = fetchBoardItems();
+  assert.deepEqual(items, [{ itemId: "PVTI_725", number: 725, title: "row", status: "Ready", state: "OPEN" }]);
 });
 
 test("#2157: a clean board makes NO discriminating per-issue read -- the extra call is on the refusal "
   + "path only, so a snapshot that accounts for every ready row costs exactly the calls it always did", () => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row", status: "Ready" }] }), [725]);
-  let touchedCalls = 0;
-  fetchBoardItems({ run, readTouched: (ns) => { touchedCalls += 1; return touchedOnBoard([])(ns); } });
-  assert.equal(touchedCalls, 0);
+  const { world, asked } = board();
+  onBoard(world, 725, { title: "row", status: "Ready", ready: true });
+  fetchBoardItems();
+  assert.equal(asked("touchedItemTextOf").length, 0);
+  assert.equal(asked("boardItemsPageOf").length, 1);
+  assert.equal(asked("readRowsByLabel").length, 1);
 });
 
 test("#747 ACCEPTANCE, MUTATION TARGET: a ready row's fieldValues dropped (the narrowed-connection "
   + "shape) makes fetchBoardItems REFUSE and NAME it, rather than returning it with no Status", () => {
   // #725 is `ready` and on the board, but its fieldValues came back empty -- exactly what a shared-budget
   // narrowing produces, and what today's response with no totalCount on fieldValues cannot itself catch.
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 725, title: "row" }] }), [725]);
-  const readTouched = touchedOnBoard([]);
-  assert.throws(() => fetchBoardItems({ run, readTouched }), /1 open ready row\(s\) are not accounted for/);
-  assert.throws(() => fetchBoardItems({ run, readTouched }), /IN THIS READ WITH NO STATUS[\s\S]*#725/);
+  const { world } = board();
+  onBoard(world, 725, { title: "row", status: null, ready: true });
+  assert.throws(() => fetchBoardItems(), /1 open ready row\(s\) are not accounted for/);
+  assert.throws(() => fetchBoardItems(), /IN THIS READ WITH NO STATUS[\s\S]*#725/);
   // #2157: and it is NOT reported as off the board -- the item WAS in the page, only its Status was not.
-  assert.throws(() => fetchBoardItems({ run, readTouched }), (error: Error) => {
+  assert.throws(() => fetchBoardItems(), (error: Error) => {
     assert.doesNotMatch(error.message, /OFF THE BOARD/);
     return true;
   });
 });
 
 test("fetchBoardItems: a ready row missing from the board entirely is also refused and named", () => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [725]);
-  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]) }), /#725/);
+  const { world } = board();
+  onBoard(world, 1, { title: "unrelated", status: "Ready" });
+  readyOffBoard(world, 725);
+  assert.throws(() => fetchBoardItems(), /#725/);
 });
 
 // --- #2157, measured 2026-09-23: a row absent from the items connection is one of TWO unrelated things,
@@ -499,8 +497,10 @@ test("fetchBoardItems: a ready row missing from the board entirely is also refus
 
 test("#2157 ACCEPTANCE, MUTATION TARGET: a ready row with NO item on the Project is refused as OFF THE "
   + "BOARD, and the refusal does NOT tell the reader the board is fine", () => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [2093]);
-  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]) }), (error: Error) => {
+  const { world } = board();
+  onBoard(world, 1, { title: "unrelated", status: "Ready" });
+  readyOffBoard(world, 2093);
+  assert.throws(() => fetchBoardItems(), (error: Error) => {
     assert.match(error.message, /OFF THE BOARD -- THE BOARD IS WRONG, NOT THIS READ: #2093/);
     // The sentence the live refusal printed over exactly this row. It must not survive on this arm.
     assert.doesNotMatch(error.message, /not the board being wrong/);
@@ -510,27 +510,28 @@ test("#2157 ACCEPTANCE, MUTATION TARGET: a ready row with NO item on the Project
 });
 
 test("#2157: a ready row the per-issue read DOES find on the Project is refused as a SHORT READ of the "
-  + "pagination -- same input to this function, opposite verdict, decided by the injected read", () => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [2093]);
-  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([2093]) }), (error: Error) => {
+  + "pagination -- same input to this function, opposite verdict, decided by the world's facts", () => {
+  const { world } = board();
+  onBoard(world, 1, { title: "unrelated", status: "Ready" });
+  onBoard(world, 2093, { status: "Ready", ready: true });
+  world.reports.snapshot.notEnumerated = [2093];
+  assert.throws(() => fetchBoardItems(), (error: Error) => {
     assert.match(error.message, /NOT YET IN THIS QUERY'S PAGES -- THE READ IS SHORT: #2093/);
     assert.doesNotMatch(error.message, /OFF THE BOARD/);
     return true;
   });
+  world.reports.snapshot.notEnumerated = [];
+  assert.equal(fetchBoardItems().length, 2, "CONTROL: once the connection enumerates it, the same world is a complete snapshot");
 });
 
 test("#2157: the discriminating read is asked ONLY about the rows absent from the items connection -- "
   + "not about the ready rows the page already accounted for", () => {
-  const run = dualRun(page({ nodes: [
-    { id: "PVTI_1", number: 717, title: "boarded, no Status" },
-    { id: "PVTI_2", number: 718, title: "boarded, with Status", status: "Ready" },
-  ] }), [717, 718, 2093]);
-  const asked: number[][] = [];
-  assert.throws(() => fetchBoardItems({
-    run,
-    readTouched: (ns) => { asked.push([...ns]); return touchedOnBoard([])(ns); },
-  }), /#2093/);
-  assert.deepEqual(asked, [[2093]]);
+  const { world, asked } = board();
+  onBoard(world, 717, { title: "boarded, no Status", ready: true });
+  onBoard(world, 718, { title: "boarded, with Status", status: "Ready", ready: true });
+  readyOffBoard(world, 2093);
+  assert.throws(() => fetchBoardItems(), /#2093/);
+  assert.deepEqual(asked("touchedItemTextOf").map((call) => call.request.issue), [2093]);
 });
 
 testEach("#2157: a refused discriminating read is CANNOT TELL, loudly -- the floor still refuses, the rows are still named, and neither arm is asserted on the strength of a read that did not happen", [
@@ -539,31 +540,36 @@ testEach("#2157: a refused discriminating read is CANNOT TELL, loudly -- the flo
   { name: "no off-the-board arm", expect: "doesNotMatch", pattern: /OFF THE BOARD/ },
   { name: "no short-read arm", expect: "doesNotMatch", pattern: /NOT YET IN THIS QUERY'S PAGES/ },
 ] as const, (c) => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 1, title: "unrelated", status: "Ready" }] }), [2093]);
-  assert.throws(() => fetchBoardItems({
-    run,
-    readTouched: () => { throw new Error("board-snapshot: could not read Project 1's item for #2093 -- FORBIDDEN"); },
-  }), (error: Error) => {
+  const { world } = board();
+  onBoard(world, 1, { title: "unrelated", status: "Ready" });
+  readyOffBoard(world, 2093);
+  world.failures.set("touchedItemTextOf", failedProcess("Command failed: gh api graphql",
+    JSON.stringify({ errors: [{ type: "FORBIDDEN", path: ["organization", "projectV2"], message: "Resource not accessible by personal access token" }] })));
+  assert.throws(() => fetchBoardItems(), (error: Error) => {
     assert[c.expect](error.message, c.pattern);
     return true;
   });
 });
 
 test("fetchBoardItems: two ready rows both missing Status are both named", () => {
-  const run = dualRun(page({ nodes: [
-    { id: "PVTI_1", number: 717, title: "a" },
-    { id: "PVTI_2", number: 718, title: "b" },
-  ] }), [717, 718]);
-  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]) }), /#717, #718/);
+  const { world } = board();
+  for (const number of [717, 718]) onBoard(world, number, { title: `row ${number}`, ready: true });
+  assert.throws(() => fetchBoardItems(), (error: Error) => {
+    assert.match(error.message, /2 open ready row\(s\) are not accounted for/);
+    for (const number of [717, 718]) assert.match(error.message, new RegExp(`#${number}\\b`));
+    return true;
+  });
 });
 
 test("fetchBoardItems: an empty ready population (fetchReady: () => []) skips the check entirely -- "
   + "every pre-#747 test in this file uses exactly this to isolate the pagination/error-handling behaviour "
   + "they actually test", () => {
-  const run = () => page({ nodes: [{ id: "PVTI_1", number: 1, title: "row" }] });
-  const items = fetchBoardItems({ run, fetchReady: () => [] });
+  const { world } = board();
+  onBoard(world, 1, { title: "row" });
+  const items = fetchBoardItems({ fetchReady: () => [] });
   assert.equal(items.length, 1);
 });
+
 
 // --- #891, live 2026-09-09: a row freshly `gh project item-add`-ed, ready-labelled (a real `gh issue
 // create -l ready`, not row-file's own later `--ready` sentinel), with no Status yet, tripped the #747
@@ -590,22 +596,24 @@ test("readyRowsMissingStatus: excludeIssueNumber defaults to null, excluding not
 
 test("fetchBoardItems: excludeIssueNumber threaded through end-to-end reproduces the #891 fix -- a "
   + "freshly boarded, ready-labelled, Status-less row does NOT refuse when it is the excluded row", () => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 891, title: "row" }] }), [891]);
-  const items = fetchBoardItems({ run, excludeIssueNumber: 891 });
-  assert.deepEqual(items, [{ itemId: "PVTI_1", number: 891, title: "row", status: null, state: "OPEN" }]);
+  const { world } = board();
+  onBoard(world, 891, { title: "row", ready: true });
+  const items = fetchBoardItems({ excludeIssueNumber: 891 });
+  assert.deepEqual(items, [{ itemId: "PVTI_891", number: 891, title: "row", status: null, state: "OPEN" }]);
 });
 
 test("fetchBoardItems, MUTATION TARGET: excludeIssueNumber naming the WRONG row still refuses -- proving "
   + "the exclusion is by number, not a blanket bypass of the floor", () => {
-  const run = dualRun(page({ nodes: [{ id: "PVTI_1", number: 891, title: "row" }] }), [891]);
-  assert.throws(() => fetchBoardItems({ run, readTouched: touchedOnBoard([]), excludeIssueNumber: 1 }), /#891/);
+  const { world } = board();
+  onBoard(world, 891, { title: "row", ready: true });
+  assert.throws(() => fetchBoardItems({ excludeIssueNumber: 1 }), /#891/);
 });
 
 // --- #852: ONE SWEEP PER PROCESS ----------------------------------------------------------------
 //
 // Every Status move swept the whole board first: `moveProjectStatus` wraps a single-field edit in
 // `withBoardSnapshot`, and the page count grows with the board, so every row added made every future
-// claim more expensive. Measured on this branch with an injected `run` against a 3-page board:
+// claim more expensive. Measured on this branch against a 3-page board:
 //
 //   before   1 move -> 3 pages   3 moves -> 9 pages    20 moves -> 60 pages
 //   after    1 move -> 3 pages   3 moves -> 3 pages    20 moves -> 3 pages
@@ -613,22 +621,11 @@ test("fetchBoardItems, MUTATION TARGET: excludeIssueNumber naming the WRONG row 
 // THE ASSERTIONS ARE ON THE CALLS, not on anything the result contains, because the result is identical
 // either way — which is the reason nobody noticed for four days.
 
-/** A board of `pages` pages, and a recorder of every `gh` invocation made against it. */
+/** A board of `pages` pages on the fake code host, and a count of the pages of it the snapshot has read. */
 function boardOf(pages: number) {
-  const calls: string[][] = [];
-  let served = 0;
-  const run = (cmd: string, args: string[]) => {
-    calls.push([cmd, ...args]);
-    if (!args.join(" ").includes("graphql")) return "";
-    const cursor = served; served += 1;
-    return JSON.stringify({ data: { organization: { projectV2: { items: {
-      pageInfo: { hasNextPage: cursor < pages - 1, endCursor: `c${cursor + 1}` },
-      nodes: [{ id: `PVTI_${cursor}`, content: { number: cursor, title: "t", state: "OPEN" },
-        fieldValues: { nodes: [{ name: "Ready", field: { name: "Status" } }] } }],
-    } } } } });
-  };
-  const boardPages = () => calls.filter((c) => c.join(" ").includes("graphql")).length;
-  return { run, calls, boardPages };
+  const fake = board();
+  boardOfPages(fake.world, pages);
+  return { ...fake, boardPages: () => fake.asked("boardItemsPageOf").length };
 }
 
 // `exists` is stubbed TRUE here because `writeFile` is stubbed to drop the file: with the real
@@ -638,21 +635,21 @@ const quiet = { fetchReady: () => [], mkdir: () => {}, writeFile: () => {}, log:
   exists: () => true };
 
 /** Forgets the process's record, then runs one board mutation through `withBoardSnapshot`: the sweep it pays is what a test counts. */
-function sweepOnce(run: (cmd: string, args: string[]) => string, io: Partial<typeof quiet>) {
+function sweepOnce(io: Partial<typeof quiet>) {
   forgetProcessSnapshot();
-  withBoardSnapshot(() => {}, { ...io, run });
+  withBoardSnapshot(() => {}, { ...io });
 }
 
 test("#852: N board mutations in one process cost ONE sweep, not N", () => {
   forgetProcessSnapshot();
-  const board = boardOf(3);
+  const fake = boardOf(3);
   let mutations = 0;
   const N = 20;
   for (let i = 0; i < N; i += 1) {
-    withBoardSnapshot(() => { mutations += 1; }, { ...quiet, run: board.run });
+    withBoardSnapshot(() => { mutations += 1; }, { ...quiet });
   }
   assert.equal(mutations, N, "every mutation must still run -- this is a cost fix, not a skip");
-  assert.equal(board.boardPages(), 3,
+  assert.equal(fake.boardPages(), 3,
     `${N} mutations must cost one 3-page sweep. Before #852 this was ${N * 3} pages, and the page count `
     + "grows with the board, so the old cost rose every time a row was filed");
 });
@@ -660,21 +657,21 @@ test("#852: N board mutations in one process cost ONE sweep, not N", () => {
 test("#852 POSITIVE CONTROL: a fresh process still sweeps, so the reuse is not a skip", () => {
   // Without this, "0 pages" would satisfy the test above perfectly — including for an implementation
   // that never snapshots at all, which is #399's guarantee deleted rather than made cheaper.
-  const board = boardOf(3);
-  sweepOnce(board.run, quiet);
-  assert.equal(board.boardPages(), 3, "the FIRST mutation of a process must pay for a real sweep");
+  const fake = boardOf(3);
+  sweepOnce(quiet);
+  assert.equal(fake.boardPages(), 3, "the FIRST mutation of a process must pay for a real sweep");
 });
 
 test("#852: the reuse EXPIRES, so the record is never more than the bound older than the change", () => {
   forgetProcessSnapshot();
-  const board = boardOf(1);
+  const fake = boardOf(1);
   const start = new Date("2026-09-13T12:00:00.000Z");
   const at = (ms: number) => new Date(start.getTime() + ms);
-  withBoardSnapshot(() => {}, { ...quiet, run: board.run, now: () => start });
-  withBoardSnapshot(() => {}, { ...quiet, run: board.run, now: () => at(SNAPSHOT_MAX_AGE_MS - 1000) });
-  assert.equal(board.boardPages(), 1, "inside the bound, the existing snapshot still describes the board");
-  withBoardSnapshot(() => {}, { ...quiet, run: board.run, now: () => at(SNAPSHOT_MAX_AGE_MS + 1000) });
-  assert.equal(board.boardPages(), 2,
+  withBoardSnapshot(() => {}, { ...quiet, now: () => start });
+  withBoardSnapshot(() => {}, { ...quiet, now: () => at(SNAPSHOT_MAX_AGE_MS - 1000) });
+  assert.equal(fake.boardPages(), 1, "inside the bound, the existing snapshot still describes the board");
+  withBoardSnapshot(() => {}, { ...quiet, now: () => at(SNAPSHOT_MAX_AGE_MS + 1000) });
+  assert.equal(fake.boardPages(), 2,
     "past the bound a fresh sweep is taken -- the trade is a snapshot slightly older than the mutation "
     + "it covers, and the bound is what keeps that sayable rather than unbounded");
 });
@@ -683,9 +680,9 @@ test("#852: the snapshot FILE says it describes the board before the FIRST mutat
   // A reader who finds a snapshot next to a mutation will otherwise assume the stronger guarantee —
   // "the board immediately before THIS change" — which is exactly what it no longer is.
   forgetProcessSnapshot();
-  const board = boardOf(1);
+  boardOf(1);
   const written: string[] = [];
-  withBoardSnapshot(() => {}, { ...quiet, run: board.run, writeFile: (_p, data) => written.push(data) });
+  withBoardSnapshot(() => {}, { ...quiet, writeFile: (_p, data) => written.push(data) });
   const parsed = JSON.parse(written[0]);
   assert.match(parsed.takenBefore, /first board mutation of this process/);
   assert.match(parsed.takenBefore, /reuse this snapshot/,
@@ -698,21 +695,21 @@ test("#852: a REUSED snapshot is re-read from disk, so a deleted one does not li
   // so `git clean -xdf` removes it too. Without the disk check, #399's guarantee holds at SWEEP time and
   // not at MUTATION time -- true of a process's first mutation and false of every reused one.
   forgetProcessSnapshot();
-  const board = boardOf(1);
+  const fake = boardOf(1);
   const onDisk = new Set<string>();
-  const deps = { ...quiet, run: board.run,
+  const deps = { ...quiet,
     writeFile: (p: string) => onDisk.add(p),
     exists: (p: string) => onDisk.has(p) };
 
   withBoardSnapshot(() => {}, deps);
-  assert.equal(board.boardPages(), 1, "the first mutation sweeps");
+  assert.equal(fake.boardPages(), 1, "the first mutation sweeps");
   withBoardSnapshot(() => {}, deps);
-  assert.equal(board.boardPages(), 1, "the second reuses it, because it is still there");
+  assert.equal(fake.boardPages(), 1, "the second reuses it, because it is still there");
 
   onDisk.clear(); // `rm -rf runs/`
   let ranWithNothingBehindIt = false;
   withBoardSnapshot(() => { ranWithNothingBehindIt = true; }, deps);
-  assert.equal(board.boardPages(), 2,
+  assert.equal(fake.boardPages(), 2,
     "the snapshot is gone, so the next mutation takes a FRESH sweep rather than trusting a remembered path");
   assert.equal(ranWithNothingBehindIt, true, "and it still runs -- with a real snapshot behind it again");
 });
@@ -721,10 +718,10 @@ test("#852: #399's guarantee is untouched -- a failed write still means the muta
   // The cost fix must not weaken the reason the sweep exists. A snapshot that cannot be written is still
   // a refusal, not a warning, on the first mutation of a process.
   forgetProcessSnapshot();
-  const board = boardOf(1);
+  boardOf(1);
   let ran = false;
   assert.throws(() => withBoardSnapshot(() => { ran = true; },
-    { ...quiet, run: board.run, writeFile: () => { throw new Error("read-only filesystem"); } }),
+    { ...quiet, writeFile: () => { throw new Error("read-only filesystem"); } }),
   /refusing to proceed/);
   assert.equal(ran, false, "mutate must never be reached when the snapshot could not be written");
 });
@@ -733,71 +730,57 @@ test("#852: #399's guarantee is untouched -- a failed write still means the muta
 //
 // The scoped snapshot itself -- its request, parsing, refusals, file and reuse -- is tested in
 // board-snapshot-scope.test.ts, which imports nothing from this file so CI's acceptance job can run it. What stays
-// here is the part that needs `gh`: which `gh` calls `withBoardSnapshot` actually makes.
+// here is the part that needs the wrapper: which reads of the code host `withBoardSnapshot` actually makes.
 
-/** Every `gh` call by command and argv: board pages answered, the ready list empty, a touched read refused. */
-function recordingGh(pages: number) {
-  const calls: Array<{ cmd: string; args: string[] }> = [];
-  let served = 0;
-  const run = (cmd: string, args: string[]) => {
-    calls.push({ cmd, args });
-    if (readsRowsByLabel(args) !== null) return connectionOf([]);
-    if (args.some((arg) => arg.startsWith("issue="))) {
-      throw new Error("the touched read is not served here -- board-snapshot-scope.test.ts drives it");
-    }
-    const cursor = served; served += 1;
-    return JSON.stringify({ data: { organization: { projectV2: { items: {
-      pageInfo: { hasNextPage: cursor < pages - 1, endCursor: `c${cursor + 1}` },
-      nodes: [{ id: `PVTI_page${cursor}`, content: { number: 10000 + cursor, title: "t", state: "OPEN" },
-        fieldValues: { nodes: [{ name: "Backlog", field: { name: "Status" } }] } }],
-    } } } } });
-  };
-  const readyLists = () => calls.filter((call) => readsRowsByLabel(call.args) !== null).length;
-  const boardPages = () => calls.filter((call) => call.args.includes("graphql") && readsRowsByLabel(call.args) === null
-    && !call.args.some((arg) => arg.startsWith("issue="))).length;
-  return { run, calls, boardPages, readyLists };
+/** A board of `pages` pages on the fake code host: the operations the snapshot asked of it, by name; and a count of the board pages and the ready lists. */
+function recordingBoard(pages: number) {
+  const fake = board();
+  boardOfPages(fake.world, pages);
+  return { ...fake, boardPages: () => fake.asked("boardItemsPageOf").length, readyLists: () => fake.asked("readRowsByLabel").length };
 }
 
 // `exists` is stubbed TRUE because `writeFile` is stubbed to drop the file -- see `quiet` above.
 const quietIO = { mkdir: () => {}, writeFile: () => {}, log: () => {}, exists: () => true };
 
-test("#1275 WIRING: a mutation that names its item makes ONE gh call, the scoped request -- no board page, no ready list", () => {
+test("#1275 WIRING: a mutation that names its item makes ONE read, the scoped one -- no board page, no ready list", () => {
   forgetProcessSnapshot();
-  const gh = recordingGh(6);
+  const fake = recordingBoard(6);
+  fake.world.failures.set("touchedItemTextOf", new Error("the touched read is refused"));
   let ran = false;
-  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 }),
+  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, touches: 725 }),
     /could not read Project 1's item for #725/);
-  assert.deepEqual(gh.calls, [{ cmd: "gh", args: touchedItemRequest(725) }],
-    "exactly the pure module's request, sent through gh by THIS file -- the gh call the pure half leaves here");
+  assert.deepEqual(fake.calls.map((call) => ({ op: call.op, owner: call.request.owner, repo: call.request.repo, project: call.request.project, issue: call.request.issue })),
+    [{ op: "touchedItemTextOf", owner: PROJECT_OWNER, repo: REPO, project: PROJECT_NUMBER, issue: 725 }],
+    "exactly one read of the code host, the item of #725 on the project -- the read the pure half leaves to this file");
   assert.equal(ran, false, "and a refused read still means no mutation (#399)");
 });
 
 test("#1275: the same wrapper with no `touches` still sweeps the board -- what every one-item move paid before", () => {
-  const gh = recordingGh(6);
-  sweepOnce(gh.run, quietIO);
-  assert.equal(gh.boardPages(), 6, "six pages of 100 at today's 555 items -- and one more per hundred rows filed");
-  assert.equal(gh.readyLists(), 1, "plus #747's ready-issue list, which `gh issue list --json` reads over GraphQL too");
+  const fake = recordingBoard(6);
+  sweepOnce(quietIO);
+  assert.equal(fake.boardPages(), 6, "six pages of 100 at today's 555 items -- and one more per hundred rows filed");
+  assert.equal(fake.readyLists(), 1, "plus #747's ready-issue list, which is a GraphQL connection read too");
 });
 
-test("#1275: a FULL snapshot this process already holds covers a scoped move, with no further gh call (#852)", () => {
+test("#1275: a FULL snapshot this process already holds covers a scoped move, with no further read (#852)", () => {
   forgetProcessSnapshot();
-  const gh = recordingGh(2);
-  withBoardSnapshot(() => {}, { ...quietIO, run: gh.run, fetchReady: () => [] });
-  const callsAfterTheSweep = gh.calls.length;
+  const fake = recordingBoard(2);
+  withBoardSnapshot(() => {}, { ...quietIO, fetchReady: () => [] });
+  const callsAfterTheSweep = fake.calls.length;
   let ran = false;
-  withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: 725 });
-  assert.equal(gh.calls.length, callsAfterTheSweep, "the board already covers the item");
+  withBoardSnapshot(() => { ran = true; }, { ...quietIO, touches: 725 });
+  assert.equal(fake.calls.length, callsAfterTheSweep, "the board already covers the item");
   assert.equal(ran, true);
 });
 
-test("#1275: `touches` that names no issue refuses in the wrapper before gh is asked anything", () => {
+test("#1275: `touches` that names no issue refuses in the wrapper before the code host is asked anything", () => {
   forgetProcessSnapshot();
-  const gh = recordingGh(1);
+  const fake = recordingBoard(1);
   let ran = false;
-  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, run: gh.run, touches: [] as number[] }),
+  assert.throws(() => withBoardSnapshot(() => { ran = true; }, { ...quietIO, touches: [] as number[] }),
     /`touches` must name the issue\(s\) this mutation changes/);
   assert.equal(ran, false);
-  assert.equal(gh.calls.length, 0);
+  assert.equal(fake.calls.length, 0);
 });
 
 // --- #1425: the FULL route honours the same once-per-process record ---------------------------------------------------
@@ -806,14 +789,11 @@ test("#1275: `touches` that names no issue refuses in the wrapper before gh is a
 // page is refused, and before #1425 every later mutation in the process asked again. The record lives in the scoped
 // module, so both routes share one answer.
 
-/** A run failing every call as CI's token does against Project 2 (#546), or with `stdout` when one is given. */
-function refusingRun(message: string, stdout?: string) {
-  const calls: string[][] = [];
-  const run = (cmd: string, args: string[]): string => {
-    calls.push([cmd, ...args]);
-    throw Object.assign(new Error(message), { status: 1, ...(stdout === undefined ? {} : { stdout }) });
-  };
-  return { run, calls };
+/** A board whose page read fails every time as CI's token does against Project 2 (#546), or with `stdout` when one is given. */
+function refusingBoard(message: string, stdout?: string) {
+  const fake = board();
+  fake.world.failures.set("boardItemsPageOf", failedProcess(message, stdout));
+  return { ...fake, requests: () => fake.asked("boardItemsPageOf").length };
 }
 
 const PROJECT_2_NOT_FOUND = JSON.stringify({ data: { organization: { projectV2: null } }, errors: [{ type: "NOT_FOUND",
@@ -821,17 +801,17 @@ const PROJECT_2_NOT_FOUND = JSON.stringify({ data: { organization: { projectV2: 
 
 test("#1425: 7 full-route mutations against an unreadable Project make ONE request, and none mutates", () => {
   forgetProcessSnapshot();
-  const board = refusingRun("Command failed: gh api graphql", PROJECT_2_NOT_FOUND);
+  const fake = refusingBoard("Command failed: gh api graphql", PROJECT_2_NOT_FOUND);
   let mutations = 0;
   const messages: string[] = [];
   for (let i = 0; i < 7; i += 1) {
     try {
-      withBoardSnapshot(() => { mutations += 1; }, { ...quiet, run: board.run });
+      withBoardSnapshot(() => { mutations += 1; }, { ...quiet });
     } catch (error) {
       messages.push((error as Error).message);
     }
   }
-  assert.equal(board.calls.length, 1, "the first sweep's refusal is recorded, and the other six refuse from it");
+  assert.equal(fake.requests(), 1, "the first sweep's refusal is recorded, and the other six refuse from it");
   assert.equal(mutations, 0);
   assert.equal(messages.length, 7);
   for (const message of messages) {
@@ -842,13 +822,14 @@ test("#1425: 7 full-route mutations against an unreadable Project make ONE reque
 
 test("#1425 CONTROL: a full-route failure that is NOT project-unreadable is read again on every mutation", () => {
   forgetProcessSnapshot();
-  const board = refusingRun("Command failed: gh api graphql\nerror connecting to api.github.com");
+  const fake = refusingBoard("Command failed: gh api graphql\nerror connecting to api.github.com");
   for (let i = 0; i < 3; i += 1) {
-    assert.throws(() => withBoardSnapshot(() => {}, { ...quiet, run: board.run }), /could not read Project/);
+    assert.throws(() => withBoardSnapshot(() => {}, { ...quiet }), /could not read Project/);
   }
-  assert.equal(board.calls.length, 3);
+  assert.equal(fake.requests(), 3);
   forgetProcessSnapshot();
 });
+
 
 // --- #1352: ONE snapshot directory from every worktree, and policy scripts refuse outside a linked worktree -----------
 
@@ -993,73 +974,23 @@ test("#1352 DONE-WHEN 1: each policy script, launched from a plain checkout, ref
 // commented that call out and the stated 25-test Acceptance stayed green, because
 // `board-status-health.test.ts` imports only the pure module and never `board-snapshot.ts`.
 //
-// **And the fixtures could not have caught it either.** Every existing `page()` omitted `field` entirely,
+// **And the fixtures could not have caught it either.** Every existing page omitted `field` entirely,
 // so `statusOptions` stayed `null` and the implementation took its SHORT-READ branch -- printing
 // "the vocabulary drift check DID NOT RUN" -- which looks nothing like a drift and fails no assertion. A
 // fixture set that never supplies the input cannot witness the code that consumes it: the same
 // empty-population defect one level up, inside the fix for a vocabulary nothing live ever read.
 //
-// So both directions are pinned here, against an INJECTED `run` (no token, no network): a board missing
+// So both directions are pinned here, against the fake code host (no token, no network): a board missing
 // `Done` must REPORT, and a board offering it must NOT. Either one alone would pass with the call deleted
 // -- the negative control is what kills that mutant, and the positive control is what stops the check
 // being satisfied by a function that always complains.
-
-// **AND THE THIRD TIME, ONE LAYER BELOW AGAIN.** `product-manager`, upholding `reviewer-2` at `bd398c5f`:
-// the two controls below prove `fetchBoardItems` CONSUMES an injected `field.options`, and nothing proved
-// the live query ASKS for them. Measured from a worktree at that head -- with `field(name: "Status")`
-// deleted from `ITEMS_QUERY` the three-file Acceptance was 83/83 GREEN, because each injected `run` was
-// `() => page(...)`, ignored its `args`, and handed back `field` whenever `statusOptions` was passed. The
-// fake answered a question production need never have asked; on the real board `statusOptions` would stay
-// `null`, `fetchBoardItems` would take its SHORT-READ branch forever, and clause 2's drift would never be
-// reported anywhere.
 //
-// So the fixture now answers THE QUERY IT IS HANDED, the way GraphQL does: `field` comes back only when
-// the request selects it. That is a pin on the REQUEST rather than only the response, and it reads the
-// query `run` actually received rather than the source text the file happens to contain (#1219's
-// `readFileSync` guard is the weaker form, and has its own reason to exist).
-
-/** The `query=` argument production actually sent, pulled off the argv `run` was handed. */
-function sentQuery(args: string[]): string {
-  return args.find((arg) => arg.startsWith("query="))?.slice("query=".length) ?? "";
-}
-
-/**
- * Does that query SELECT the Status field's option names? Lazy spans rather than a literal, so
- * reformatting the query does not fail this -- but deleting the `field(name: "Status")` selection, which
- * is the mutation that survived at `bd398c5f`, leaves nothing for it to match.
- */
-function asksForStatusOptions(query: string): boolean {
-  return /field\s*\(\s*name:\s*"Status"\s*\)[\s\S]*?options\s*\{[\s\S]*?\bname\b/.test(query);
-}
-
-/**
- * A `run` that answers only what the query asked for: `statusOptions` reach the response when the request
- * selects them, and are withheld when it does not. Every case written through this is honest about which
- * of its inputs production had to ask for.
- */
-function boardRun(opts: { nodes: Array<{ id: string; number?: number; title?: string; status?: string }>;
-  statusOptions?: string[] }) {
-  return (_cmd: string, args: string[]) => page({
-    ...opts,
-    statusOptions: asksForStatusOptions(sentQuery(args)) ? opts.statusOptions : undefined,
-  });
-}
-
-test("#1996: the LIVE query asks the board for the Status field's options -- the request, not the response", () => {
-  // THE MUTANT THIS KILLS: deleting the `field(name: "Status")` selection from `ITEMS_QUERY`. The two
-  // controls below kill it too, now that they answer the query they are handed -- this one says WHY they
-  // went red, because "drift was not reported" points at the consumer and the defect is in the request.
-  let seenArgs: string[] = [];
-  const run = (_cmd: string, args: string[]) => {
-    seenArgs = args;
-    return page({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
-  };
-  stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
-  assert.ok(asksForStatusOptions(sentQuery(seenArgs)),
-    "the drift check can only ever run on a board whose option list was REQUESTED -- a query that stops "
-    + "selecting `field(name: \"Status\") { ... options { name } }` takes the short-read branch on every "
-    + "real board, silently, which is the silence this row exists to end");
-});
+// **AND THE THIRD TIME, ONE LAYER BELOW AGAIN.** The two controls below prove `fetchBoardItems` CONSUMES the
+// option list the world holds, and nothing here proves the live query ASKS for it: measured at `bd398c5f`, with
+// `field(name: "Status")` deleted from the query the three-file Acceptance was 83/83 GREEN, because a fake that
+// hands back `field` whenever it is seeded answers a question production need never have asked. That half
+// is the code host's: the request the query sends is held by the plugin's test (`board-snapshot-rows.test.ts`,
+// "the items query ASKS for the Status field's options"), the query `run` actually received and not the source text.
 
 /** Captures `process.stderr` for the duration of `fn`, restoring it even when `fn` throws. */
 function stderrDuring(fn: () => void): string {
@@ -1074,17 +1005,19 @@ function stderrDuring(fn: () => void): string {
   return captured;
 }
 
+/** A board with the one row, whose Status field offers `statusOptions` (`null`: the page does not carry the field). */
+function boardOffering(statusOptions: string[] | null) {
+  const { world } = board();
+  onBoard(world, 42, { title: "the row", status: "Ready" });
+  world.reports.snapshot.project.statusOptions = statusOptions;
+}
+
 test("#1996: a board that does not offer `Done` is REPORTED as drift -- by fetchBoardItems, not the helper", () => {
   // THE MUTANT THIS KILLS is the one the review actually applied: deleting
   // `reportVocabularyDrift(statusOptions)` from `fetchBoardItems`. With the call gone this stderr is
-  // silent and the assertion fails, which is precisely what the old Acceptance could not do. Through
-  // `boardRun`, it also kills the second mutant: a query that stops asking for the options gets none
-  // back, so this goes red rather than passing on an answer production never requested.
-  const run = boardRun({
-    nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }],
-    statusOptions: ["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated"],
-  });
-  const noted = stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
+  // silent and the assertion fails, which is precisely what the old Acceptance could not do.
+  boardOffering(["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated"]);
+  const noted = stderrDuring(() => { fetchBoardItems({ fetchReady: () => [] }); });
   assert.match(noted, /does NOT offer "Done"/,
     "the live option list came back WITHOUT `Done` -- the exact state measured on the board 2026-09-22, "
     + "with 121 closed rows stranded because every settle was refused");
@@ -1096,11 +1029,8 @@ test("#1996: a board that does not offer `Done` is REPORTED as drift -- by fetch
 });
 
 test("#1996: a board that DOES offer `Done` reports nothing -- the control that stops a check crying wolf", () => {
-  const run = boardRun({
-    nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }],
-    statusOptions: ["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated", "Done"],
-  });
-  const noted = stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
+  boardOffering(["Backlog", "Ready", "In progress", "Blocked", "Fleet-gated", "Done"]);
+  const noted = stderrDuring(() => { fetchBoardItems({ fetchReady: () => [] }); });
   assert.doesNotMatch(noted, /does NOT offer/,
     "every name this code writes is on the board -- this is the state the row repaired the board INTO, "
     + "and a check that still complained here would be turned off within a day");
@@ -1110,10 +1040,9 @@ test("#1996: a board that DOES offer `Done` reports nothing -- the control that 
 test("#1996: a page carrying NO `field` is a SHORT READ, never a clean board", () => {
   // The third answer, and the reason `statusOptions` is `null` rather than `[]`. An empty array would
   // make `vocabularyDrift` report every written name as missing -- "the board lost its whole vocabulary"
-  // when it means "nobody asked it". This is the branch every pre-existing fixture in this file takes --
-  // and the branch a query that stopped selecting `field` would take on the REAL board, forever.
-  const run = boardRun({ nodes: [{ id: "PVTI_1", number: 42, title: "the row", status: "Ready" }] });
-  const noted = stderrDuring(() => { fetchBoardItems({ run, fetchReady: () => [] }); });
+  // when it means "nobody asked it". This is the branch a query that stopped selecting `field` would take on the REAL board, forever.
+  boardOffering(null);
+  const noted = stderrDuring(() => { fetchBoardItems({ fetchReady: () => [] }); });
   assert.match(noted, /DID NOT RUN/,
     "a read that came back short must say so rather than pass as a board with no drift");
   assert.doesNotMatch(noted, /does NOT offer/,

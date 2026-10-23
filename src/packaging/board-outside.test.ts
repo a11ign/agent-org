@@ -1,5 +1,5 @@
 // no-token: gh
-// agent-org#1574: nothing here reaches GitHub. The pure reads take an injected `run`, and the CLI tests put a fake `gh` first on PATH and hold no token.
+// agent-org#1574: nothing here reaches GitHub. The reads run on the fake code host's rows (A11-160, step 8: they took an injected `run` answering `gh` argument lists), and the CLI tests put a fake `gh` first on PATH and hold no token.
 /**
  * agent-org#1574: THE OUTSIDE HOME OF THE BOARD REPORT, SHIPPED OFF, AND ITS SECOND ACTOR DOES NOTHING.
  *
@@ -9,7 +9,7 @@
  *     dispatch, or with the flag off, the same command goes on to write. The `postAbsence` marker is the summary check's own guard.
  *   - the WORKFLOW'S SHAPE (`.github/workflows/board-outside.yml`): the mint only after the flag is read on, no fallback to `GITHUB_TOKEN`, the tool at a release tag and never a branch.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +21,23 @@ import { HOME_CHECKOUT } from "../project-config.ts";
 import { editionUrlIfPublished, outsideBoardOn, scheduledRunFindsWorkDone, OUTSIDE_BOARD_FLAG, editionTitle } from "../board-discussion.ts";
 import { editionPosted } from "../board-report.ts";
 import { postAbsence } from "../board-summary-check.ts";
+import { REPO } from "../board-data.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
+
+/** The fake code host serving the project's tracker, holding row #20 (the board report's issue) with the comments given, and the calls made to its rows. */
+function tracker(comments: { body: string; createdAt: string }[] = []) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.rows.set(20, fakeRow(host.rowsWorld, 20, { title: "The board report", labels: ["meta"], comments: comments.map((comment, id) => ({ id: id + 1, ...comment })) }));
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { world: host.rowsWorld, calls: watched.calls, bodies: () => host.rowsWorld.rows.get(20)!.comments.map((comment) => comment.body) };
+}
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -61,46 +78,49 @@ test("#1574: only a SCHEDULED run with the flag on is a second actor", () => {
 // ---------------------------------------------------------------- the reads that say "done"
 
 test("#1574: the report is posted when a comment of today's title is on the issue, and a failed read is not 'posted'", () => {
-  const calls: string[][] = [];
-  const answering = (out: string) => (args: string[]) => { calls.push(args); return out; };
   const now = new Date("2026-10-16T07:10:00Z");
-  assert.equal(editionPosted({ day: DAY, issue: "20", now, run: answering("0\n0\n") }), false, "no comment of today's title on any page");
-  assert.equal(editionPosted({ day: DAY, issue: "20", now, run: answering("0\n1\n") }), true, "one on the second page");
-  const asked = calls[0].join(" ");
-  assert.match(asked, /issues\/20\/comments\?since=2026-10-14T07:10:00\.000Z/, "only the last 48 hours are read: one comment per day for months is not paged through");
-  assert.ok(asked.includes(`# ${editionTitle(DAY)}`), "the title is the one `render` writes");
-  assert.equal(editionPosted({ day: DAY, issue: "20", now, run: () => { throw new Error("HTTP 502"); } }), false, "a skip on a failed read would post nothing and call it done");
+  const title = `# ${editionTitle(DAY)}`;
+  const t = tracker([{ body: `# ${editionTitle("2026-10-15")}\nyesterday's edition`, createdAt: "2026-10-15T07:10:00Z" }, { body: "a comment of someone's", createdAt: "2026-10-16T06:00:00Z" }]);
+  assert.equal(editionPosted({ day: DAY, issue: "20", now }), false, "no comment of today's title on the issue");
+  t.world.rows.get(20)!.comments.push({ id: 90, body: `${title}\nthe edition`, createdAt: "2026-10-12T07:10:00Z" });
+  assert.equal(editionPosted({ day: DAY, issue: "20", now }), false, "a comment of today's title from before the window is not today's");
+  t.world.rows.get(20)!.comments.push({ id: 91, body: `${title}\nthe edition`, createdAt: "2026-10-16T07:05:00Z" });
+  assert.equal(editionPosted({ day: DAY, issue: "20", now }), true, "one inside it");
+  const asked = t.calls.filter((call) => call.op === "editionCommentCountOf").map((call) => call.request);
+  assert.ok(asked.every((request) => request.since === "2026-10-14T07:10:00.000Z"), "only the last 48 hours are read: one comment per day for months is not paged through");
+  assert.ok(asked.every((request) => request.title === title && request.issue === "20"), "the title is the one `render` writes");
+  t.world.failures.set("editionCommentCountOf", new Error("HTTP 502"));
+  assert.equal(editionPosted({ day: DAY, issue: "20", now }), false, "a skip on a failed read would post nothing and call it done");
 });
 
-function discussionsGh(editions: { title: string; url: string }[]) {
-  return (args: string[]): string => {
-    const query = args.find((a) => a.startsWith("query=")) ?? "";
-    if (query.includes("discussionCategories")) return JSON.stringify({ data: { repository: { id: "R", discussionCategories: { nodes: [{ id: "C", slug: "board-editions" }] } } } });
-    return JSON.stringify({ data: { repository: { discussions: { nodes: editions.map((e, i) => ({ id: `D${i}`, ...e })) } } } });
-  };
+/** The fake code host holding the project's Discussions: a board-editions category and `editions` in it. */
+function discussions(editions: { title: string; url: string }[]) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.reports.board.discussions.set(REPO, { repositoryId: "R", categories: [{ id: "C", slug: "board-editions" }], editions: editions.map((e, i) => ({ id: `D${i}`, body: "", ...e })) });
+  substituteCodeHost(host);
+  return host;
 }
 
 test("#1574: the edition is published when a Discussion of today's title exists; absent, and a failed read, are null", () => {
   const url = "https://github.com/x/y/discussions/9";
-  assert.equal(editionUrlIfPublished({ day: DAY, run: discussionsGh([{ title: editionTitle(DAY), url }]) }), url);
-  assert.equal(editionUrlIfPublished({ day: DAY, run: discussionsGh([{ title: editionTitle("2026-10-15"), url }]) }), null, "yesterday's is not today's");
-  assert.equal(editionUrlIfPublished({ day: DAY, run: () => { throw new Error("HTTP 502"); } }), null);
+  discussions([{ title: editionTitle(DAY), url }]);
+  assert.equal(editionUrlIfPublished({ day: DAY }), url);
+  discussions([{ title: editionTitle("2026-10-15"), url }]);
+  assert.equal(editionUrlIfPublished({ day: DAY }), null, "yesterday's is not today's");
+  discussions([{ title: editionTitle(DAY), url }]).rowsWorld.failures.set("discussionCategoriesOf", new Error("HTTP 502"));
+  assert.equal(editionUrlIfPublished({ day: DAY }), null);
 });
 
 test("#1574: the summary check posts once however many actors run it, in either order", () => {
-  const posted: string[][] = [];
-  const issue = (bodies: string[]) => (args: string[]): string => {
-    if (args[0] === "issue" && args[1] === "view") return bodies.join("\n");
-    posted.push(args);
-    bodies.push(String(args[args.indexOf("--body") + 1]));
-    return "";
-  };
-  const comments: string[] = [];
-  const run = issue(comments);
-  assert.equal(postAbsence({ day: DAY, issue: "20", reminder: true, run }), true, "the first actor writes");
-  assert.equal(postAbsence({ day: DAY, issue: "20", reminder: false, run }), false, "the second, in the other mode, finds the marker");
-  assert.equal(postAbsence({ day: "2026-10-17", issue: "20", reminder: true, run }), true, "positive control: another day is not 'done'");
-  assert.equal(posted.length, 2);
+  const t = tracker();
+  assert.equal(postAbsence({ day: DAY, issue: "20", reminder: true }), true, "the first actor writes");
+  assert.equal(postAbsence({ day: DAY, issue: "20", reminder: false }), false, "the second, in the other mode, finds the marker");
+  assert.equal(postAbsence({ day: "2026-10-17", issue: "20", reminder: true }), true, "positive control: another day is not 'done'");
+  assert.equal(t.bodies().length, 2);
+  assert.match(t.bodies()[0], /no summary for 2026-10-16/);
+  assert.match(t.bodies()[0], /Posted automatically at 07:15 London/);
+  assert.match(t.bodies()[1], /no summary for 2026-10-17/);
 });
 
 // ---------------------------------------------------------------- the commands, run for real against a fake gh

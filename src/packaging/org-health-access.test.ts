@@ -1,4 +1,4 @@
-// no-token: gh -- pure: the reading is a function of values handed in, `readTeamAccess` is given a fake `run` and a fake `read`, and `orgHealthNow` is given a `teamAccess` seam; nothing here reaches the real `gh`
+// no-token: none -- pure: the reading is a function of values handed in, `readTeamAccess` reads the teams the fake code host holds (A11-160, step 8) and a fake `read` of the declaration, and `orgHealthNow` is given a `teamAccess` seam; nothing here reaches `gh`
 /**
  * `src/org-health.ts`, a11ign/a11ign#3634: THE `bots` TEAM'S LEVEL ON EVERY REPOSITORY IT REACHES IS READ AGAINST THE PROJECT'S DECLARATION, and a read that cannot run is UNKNOWN, never clear.
  *
@@ -6,7 +6,7 @@
  * that repository; every "clear" and every "unknown" below is only worth anything because it does, and each is run beside the same listing with one field changed.
  * THE REPOSITORIES ARE WRITTEN OUT AS LITERALS, never derived from the declaration under test.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, cpSync } from "node:fs";
@@ -24,11 +24,16 @@ writeFileSync(HOST_FILE, JSON.stringify({ schema: 1, home: SCRATCH, binDir: join
   gh: { workers: join(SCRATCH, "workers"), leads: join(SCRATCH, "leads"), leadsHeader: [], leadsWorkspaces: [] } }));
 process.env.AGENT_ORG_HOST = HOST_FILE;
 
+const { forgetActivation, substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+const { watchedRows } = await import("../plugins/fakes/watched-rows.test.support.ts");
 const { SIGNALS } = await import("../org-health/thresholds.ts");
 const { teamAccessReading } = await import("../org-health/board-truth-and-access-readings.ts");
 const { readTeamAccess, parseTeamListing } = await import("../org-health/sweep-readings.ts");
 const { orgHealthReadings } = await import("../org-health/fleet-build-readings.ts");
 const { orgHealthNow } = await import("../work-gate/org-health.ts");
+
+afterEach(() => forgetActivation());
 
 const DECLARED = ["a11ign/a11ign", "a11ign/agent-org", "a11ign/screenreader-worker"];
 const listing = (rows: Record<string, string>) => Object.entries(rows).map(([repo, level]) => ({ repo, level }));
@@ -121,8 +126,7 @@ const EXCEPTION_FILES = (exceptions: unknown): Record<string, string> => ({ ...F
   repositories: { "a11ign/a11ign": {}, "a11ign/agent-org": {}, "a11ign/.github": {} } }) });
 
 test("#4467: the reader carries a declared exception to the comparison", () => {
-  // `tsv` above writes `maintain` as true on every row, so these two are written out: admin, maintain, push, triage, pull
-  const run = () => "a11ign/a11ign\tfalse\tfalse\ttrue\ttrue\ttrue\na11ign/agent-org\tfalse\tfalse\ttrue\ttrue\ttrue";
+  const { run } = codeHostWith({ "a11ign/bots": { "a11ign/a11ign": "push", "a11ign/agent-org": "push" } });
   const fact = readTeamAccess(run, { root: "/p", read: fakeRead(EXCEPTION_FILES({ _why: "least privilege", "a11ign/.github": "none" })) });
   assert.equal(teamAccessReading({ access: fact as never }).status, "clear");
   const absent = readTeamAccess(run, { root: "/p", read: fakeRead(EXCEPTION_FILES(undefined)) });
@@ -157,28 +161,38 @@ const fakeRead = (files: Record<string, string>) => (path: string) => {
   if (!(path in files)) throw new Error(`ENOENT: ${path}`);
   return files[path];
 };
-const tsv = (rows: [string, string][]) => rows.map(([repo, level]) => `${repo}\t${level === "admin"}\ttrue\t${level !== "pull"}\ttrue\ttrue`).join("\n");
+/** The fake code host in place, watched, holding what each team reaches (`org/team` -> repository -> level); a team it holds nothing of cannot be asked about, which is a refused read. `run` is never used by it. */
+function codeHostWith(teams: Record<string, Record<string, string>>) {
+  const watched = watchedRows(createFakeCodeHost());
+  substituteCodeHost(watched.host);
+  const code = (watched.host as unknown as { rowsWorld: ReturnType<typeof createFakeCodeHost>["rowsWorld"] }).rowsWorld;
+  for (const [team, reached] of Object.entries(teams)) code.reports.health.teamRepositories.set(team, Object.entries(reached).map(([repo, level]) => ({ repo, level })));
+  const run = (args: string[]): string => { throw new Error(`the code host answers this, not a gh: ${args.join(" ")}`); };
+  return { run, code, asked: () => watched.calls.map((call) => ({ op: call.op, ...call.request })) };
+}
 
-test("#3634: the reader follows the project's key to the declaration and asks GitHub once per team, for the declared org", () => {
-  const asked: string[][] = [];
-  const run = (args: string[]) => { asked.push(args); return tsv([["a11ign/a11ign", "push"], ["a11ign/agent-org", "admin"]]); };
+test("#3634: the reader follows the project's key to the declaration and asks the code host once per team, for the declared org", () => {
+  const { run, asked } = codeHostWith({ "a11ign/bots": { "a11ign/a11ign": "push", "a11ign/agent-org": "admin" } });
   const fact = readTeamAccess(run, { root: "/p", read: fakeRead(FILES) });
-  assert.equal(asked.length, 1);
-  assert.equal(asked[0][1], "orgs/a11ign/teams/bots/repos?per_page=100");
-  assert.ok(asked[0].includes("--paginate"));
+  assert.deepEqual(asked().map(({ op, org, team }) => [op, org, team]), [["teamRepositoriesTextOf", "a11ign", "bots"]]);
   assert.equal(teamAccessReading({ access: fact as never }).status, "tripped");
+  assert.deepEqual((fact as { teams: { reached: unknown }[] }).teams[0].reached, [{ repo: "a11ign/a11ign", level: "push" }, { repo: "a11ign/agent-org", level: "admin" }]);
 });
 
 test("#3634: a 404 on the team read is unknown, and a project with no teamAccess key makes no call at all", () => {
-  const refused = readTeamAccess(() => { throw new Error("gh: Not Found (HTTP 404)"); }, { root: "/p", read: fakeRead(FILES) });
+  const refusing = codeHostWith({ "a11ign/bots": { "a11ign/a11ign": "push", "a11ign/agent-org": "push" } });
+  refusing.code.failures.set("teamRepositoriesTextOf", new Error("gh: Not Found (HTTP 404)"));
+  const refused = readTeamAccess(refusing.run, { root: "/p", read: fakeRead(FILES) });
   const reading = teamAccessReading({ access: refused as never });
   assert.equal(reading.status, "unknown");
   assert.match(reading.detail, /HTTP 404/);
+  refusing.code.failures.clear();
+  assert.equal(teamAccessReading({ access: readTeamAccess(refusing.run, { root: "/p", read: fakeRead(FILES) }) as never }).status, "clear", "CONTROL: the same team, read, is clear");
 
-  let calls = 0;
-  const none = readTeamAccess(() => { calls += 1; return ""; }, { root: "/p", read: fakeRead({ "/p/.agent-org/project.json": "{}" }) });
+  const idle = codeHostWith({});
+  const none = readTeamAccess(idle.run, { root: "/p", read: fakeRead({ "/p/.agent-org/project.json": "{}" }) });
   assert.equal(none, undefined);
-  assert.equal(calls, 0);
+  assert.deepEqual(idle.asked(), []);
 });
 
 test("#3634: a malformed key, a path out of the project, a missing file and a declaration of two orgs are named unknowns, never off", () => {

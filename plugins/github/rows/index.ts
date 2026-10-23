@@ -5,6 +5,7 @@
 // labels and board, how a row's waits and GitHub's rate-limit answers are read, the error a window throws) is `helpers`, asked when an operation needs it: a host with no project declaration builds a
 // code host that has never been asked for a row.
 import type { BatchAnswer, BatchCall, CodeHostRows, GateRunOptions, AimedRun, RowsHelpers, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
+import type { AnsweringRun, AsyncRowsRun, RunnerRequest } from "../../../src/plugins/contracts/code-host-rows-facts.ts";
 import { githubTicketAdapter, OPEN_ITEMS_QUERY, TRACKER } from "./adapter.ts";
 import { closedClaimedRowsOf, closedRowsCarryingLabels } from "./gate-closed-reads.ts";
 import { actionsJobOf, checkRunSummariesAt, commitShasOf, compareDiffOf, failingCheckNamesAt, jobsOfMergeGroupRun, labelNamesWithPrefix, mainTipOf, mergeGroupRunsOf, newestMergedPulls, openPullListArgs, openRowsOf, pullFileNamesOf, pullsOfBranch, readRequiredContexts } from "./gate-pull-reads.ts";
@@ -35,7 +36,7 @@ import { pullRequestFieldsOf } from "./pull-request-fields.ts";
 import { dequeuePullRequestOf, mergeGroupRunCountOf, queueEntriesOf } from "./queue-entry-reads.ts";
 import { closeIncident, closedIncidentsOf, createIncident, jobLogOf } from "./release-incidents.ts";
 import { forgetRefusedReads, isRowsByLabelRead, readClaimedRows, readRowsByLabel, readUnlessRefused } from "./rows-by-label.ts";
-import { asListJson, foldPage, isSinceRead, parsePage, readMergedPullRequests, readRowsSince, SINCE_PAGE_SIZE, sincePageArgs } from "./rows-since.ts";
+import { asListJson, foldPage, isSinceRead, parsePage, readMergedPullRequests, readRowsSince, readRowsSinceAsync, SINCE_PAGE_SIZE, sincePageArgs } from "./rows-since.ts";
 import { isArmedPull, isCrossRepositoryPull, isMergedPull, openPullRequestsQueryArgs, readOpenPullNodes, readOutsideArmListed, readSweepFacts } from "./sweep-reads.ts";
 import { testsFirstReadsOf } from "./tests-first-reads.ts";
 import { claimRows } from "./claim-rows.ts";
@@ -44,6 +45,11 @@ import { wakeRows, wakeRunnersOf } from "./wake-rows.ts";
 import { miscRowsOf } from "./misc-rows.ts";
 import { withOwnRun } from "./with-own-run.ts";
 import { rulesRows } from "./rules-rows.ts";
+import { messagingRows } from "./messaging-rows.ts";
+import { boardRows } from "./board-rows.ts";
+import { doraRows } from "./dora-rows.ts";
+import { healthRows } from "./health-rows.ts";
+import { commentOnRowByInput, conditionalGetOf, traceRows } from "./trace-rows.ts";
 
 /** The values of the rows, and the operations that read the project's declaration: what core hands over as `helpers`, asked when an operation needs it. */
 function projectRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "acts" | "tracker" | "sincePageSize" | "projectItemsPage" | "openItemsQuery" | "corePoolProbe" | "ticketAdapter" | "boardFiledRow" | "isIssueOnBoard" | "boardItemOf"> {
@@ -71,7 +77,7 @@ const pullRequestRows = {
 };
 
 /** The reads of rows by label and of windows of rows, which read GitHub's rate-limit answers and the claim label, and throw core's error for a window too long. */
-function listRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "readUnlessRefused" | "readRowsByLabel" | "readClaimedRows" | "foldPage" | "readRowsSince" | "readMergedPullRequests"> {
+function listRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "readUnlessRefused" | "readRowsByLabel" | "readClaimedRows" | "foldPage" | "readRowsSince" | "readRowsSinceAsync" | "readMergedPullRequests"> {
   const sincing = () => ({ pool: helpers().pool, WindowCutShort: helpers().WindowCutShort });
   return {
     readUnlessRefused: (request) => readUnlessRefused({ ...request, pool: helpers().pool }),
@@ -79,6 +85,7 @@ function listRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "readUnlessRef
     readClaimedRows: (request) => readClaimedRows(request, { pool: helpers().pool, claimLabel: helpers().claimLabel }),
     foldPage: (request) => foldPage(request, helpers().WindowCutShort),
     readRowsSince: (request) => readRowsSince(request, sincing()),
+    readRowsSinceAsync: (request) => readRowsSinceAsync(request, sincing()),
     readMergedPullRequests: (request) => readMergedPullRequests(request, sincing()),
   };
 }
@@ -94,6 +101,10 @@ export type RowsRunners = Readonly<{
   /** The work gate's executor's process (`gateRun`), and a batch of calls started at once (`runTogether`): absent, an operation that asks for one is refused. */
   gate?: (options: GateRunOptions) => AimedRun;
   together?: (request: { calls: BatchCall[]; env: NodeJS.ProcessEnv; callMs: number; graceMs: number; maxBuffer: number }) => BatchAnswer[];
+  /** `gh` with the policy a caller names (where it runs, its bound and buffer, a guard): the plugin's one way to start a program for a caller that keeps its own policy (contract 1.11). */
+  with?: (request: RunnerRequest) => RowsRun;
+  withAsync?: (request: RunnerRequest) => AsyncRowsRun;
+  withAnswer?: (request: RunnerRequest) => AnsweringRun;
 }>;
 
 const NO_RUNNER: RowsRun = () => {
@@ -108,7 +119,7 @@ const NO_BATCH = (): never => {
 
 
 /** The operations a moved caller reaches without a `run` of its own, and the 1.7 ones among them that took one. */
-function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows> | keyof typeof gateRows | keyof typeof wakeRows | keyof typeof claimRows | keyof typeof filingRows | keyof typeof rulesRows | keyof ReturnType<typeof miscRowsOf> | "gateRun" | "runTogether" | "ownRunWithin" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
+function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows> | keyof typeof gateRows | keyof typeof wakeRows | keyof typeof claimRows | keyof typeof filingRows | keyof typeof rulesRows | keyof ReturnType<typeof miscRowsOf> | keyof ReturnType<typeof policyRunners> | keyof typeof messagingRows | keyof typeof traceRows | keyof typeof healthRows | keyof typeof doraRows | keyof typeof boardRows | "gateRun" | "runTogether" | "ownRunWithin" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
   return {
     ownRun: own,
     armedQueryArgs, armedFromApi, armedReason, ejectionQueryArgs, queueEjectionOf, openBlockersOf, settledReason, dequeueByHandCommand, openPullRequestsQueryArgs,
@@ -146,7 +157,20 @@ function gateRowsOf(helpers: () => RowsHelpers, { gate, together }: RowsRunners)
   };
 }
 
+/** The runners for a caller that keeps its own policy, and the operations that start a program of their own (contract 1.11). Absent, a runner is refused as the others are. */
+function policyRunners(runners: RowsRunners): Pick<CodeHostRows, "command" | "runnerWith" | "asyncRunnerWith" | "commentOnRowByInput" | "conditionalGetOf"> {
+  const refuse = (): never => { throw new Error("this code host's rows were built with no runner of their own, so a runner with a policy cannot be made"); };
+  const answering = (request?: RunnerRequest): AnsweringRun => (runners.withAnswer ?? refuse)(request ?? {});
+  return {
+    command: "gh",
+    runnerWith: (request) => (runners.with ?? refuse)(request ?? {}),
+    asyncRunnerWith: (request) => (runners.withAsync ?? refuse)(request ?? {}),
+    commentOnRowByInput: ({ repo, number, body, timeoutMs }) => commentOnRowByInput({ repo, number, body, run: answering({ timeoutMs, echo: false }) }),
+    conditionalGetOf: ({ path, etag, maxBuffer }) => conditionalGetOf({ path, etag, run: answering({ maxBuffer, echo: false }) }),
+  };
+}
+
 /** The GitHub code host's `rows`. `helpers` is what core owns of row mode, asked when an operation needs it; `runners` are the plugin's own, for the operations whose caller hands none. */
 export function createRows(helpers: () => RowsHelpers, runners: RowsRunners = NO_RUNNERS): CodeHostRows {
-  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners), ...gateRows, ...gateRowsOf(helpers, runners), ...wakeRows, ...wakeRunnersOf(runners), ...claimRows, ...filingRows, ...rulesRows, ...miscRowsOf(runners.own) };
+  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners), ...gateRows, ...gateRowsOf(helpers, runners), ...wakeRows, ...wakeRunnersOf(runners), ...claimRows, ...filingRows, ...rulesRows, ...miscRowsOf(runners.own), ...policyRunners(runners), ...messagingRows, ...traceRows, ...healthRows, ...doraRows, ...boardRows };
 }

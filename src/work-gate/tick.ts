@@ -507,7 +507,7 @@ export const boardingPortOf = (scope: string): TicketPort => githubTicketAdapter
     } catch (err) {
       throw new Error(`the row was ADDED to Project ${PROJECT_NUMBER} but its Status could not be set (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}); it is on the board with no Status`, { cause: err });
     }
-  }, { run: (_cmd, args) => defaultRun(args), log: (line) => process.stderr.write(`${line}\n`), excludeIssueNumber: id, touches: id });
+  }, { run: defaultRun, log: (line) => process.stderr.write(`${line}\n`), excludeIssueNumber: id, touches: id });
 } });
 
 /**

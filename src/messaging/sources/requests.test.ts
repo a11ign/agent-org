@@ -5,20 +5,27 @@
 //
 // POSITIVE CONTROLS: a fixture with no `needs:chairman` rows yields no request, and one with the label yields EXACTLY one. Each
 // suppression below sits beside the case where the same row IS sent, so "nothing sent" cannot be a source that never emits.
+//
+// A11-160, step 8: the reader's `issueComments`, `redPulls` and `api` are the code host's operations. The red-pull cases run on the fake code host's open pull requests and their checks; the guard cases hand the reader a code host
+// whose operations run what they build on the `run` they are given, so it is the reader's allowlist that is tried; and the argument lists (that the red read asks for `labels`, the `gh issue view` of the comments) are held
+// beside the operations in `plugins/github/rows/messaging-rows.test.ts`. The connection reads (`issuesLabelled`, `mergedPullsSince`) run on the fake code host's rows (`readRowsSinceAsync`); their pages, the allowlist over each page and the window cut short are held beside the operation.
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 
 import { createMessenger } from "../core.ts";
 import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger, foldLedger, readLedgerLines } from "../ledger.ts";
 import { READ_METHODS, assertReadOnlyGh, createGhReader, main, runWatch } from "../watch.ts";
 import { defaultLedgerPath } from "../state.ts";
-import { readsRowsSince, sinceAnswer } from "../../packaging/rows-by-label-fixtures.ts";
 import { observeRequests, parseChairmanOptions, parseRequestKey, readRequests, requestKey } from "./requests.ts";
+import { forgetActivation, substituteCodeHost } from "../../plugins/active.ts";
+import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
+import { fakeRow } from "../../plugins/fakes/code-host-rows.ts";
+import { fakeRowPull } from "../../plugins/fakes/code-host-messaging.ts";
 
 const REPO = "a11ign/a11ign";
 const START = Date.parse("2026-10-02T09:00:00Z");
@@ -26,6 +33,7 @@ const MINUTE = 60_000;
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-requests-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 let nextLedger = 0;
 
 /**
@@ -540,14 +548,6 @@ function watched({ github, startIso = "2026-10-02T09:00:00Z" }: { github: any; s
   return { provider, logged, path, pass, advance: (/** @type {number} */ ms: number) => { now += ms; } };
 }
 
-/** A `run` for the real reader: a connection read gets an empty connection, any other list `[]`; every argv is kept. */
-function recordingRun(commands: string[][]) {
-  return async (argv: readonly string[]): Promise<string> => {
-    commands.push([...argv]);
-    return readsRowsSince(argv) === null ? "[]" : sinceAnswer(argv, []);
-  };
-}
-
 describe("chairman-watch makes only read calls (done-when 5)", () => {
   test("POSITIVE CONTROL: the fixture reader does throw on a write, so a clean run below means something", () => {
     const { github } = readOnlyFixture(goodReads());
@@ -565,52 +565,41 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
     assert.equal(w.provider.sent.length, 2, "one request and one summary");
   });
 
-  test("the real reader: every command it builds is a list and passes the read-only check, and none is a search (#5076)", async () => {
-    const commands: string[][] = [];
-    const reader = createGhReader({ run: recordingRun(commands) });
-    await reader.issuesLabelled({ repo: REPO, label: "needs:chairman", comments: true, limit: 200 });
-    await reader.issuesLabelled({ repo: REPO, label: "ready" });
-    await reader.mergedPullsSince({ repo: REPO, sinceMs: Date.parse("2026-10-01T07:00:00Z") });
-    await reader.redPulls({ repo: REPO });
-    await reader.issueComments({ repo: REPO, number: 2623 });
-    assert.equal(commands.length, 5);
-    for (const argv of commands) assert.doesNotThrow(() => assertReadOnlyGh(argv), argv.join(" "));
-    for (const argv of commands) assert.ok(!argv.includes("--label") && !argv.includes("--search"), `a search-backed list: ${argv.join(" ")}`);
-    const [first, second, merged] = commands.map((argv) => readsRowsSince(argv));
-    assert.deepEqual(first, { kind: "issues", states: ["OPEN"], orderBy: "CREATED_AT", label: "needs:chairman", repo: REPO, after: null });
-    assert.equal(second?.label, "ready");
-    assert.deepEqual(merged, { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", label: null, repo: REPO, after: null });
-    assert.match(commands[0].find((arg) => arg.startsWith("query=")) ?? "", /comments\(first:100\)\{nodes\{body createdAt authorAssociation\}\}/, "the comments are selected only when asked for");
-    assert.doesNotMatch(commands[1].find((arg) => arg.startsWith("query=")) ?? "", /comments/);
-    assert.deepEqual(commands[4], ["issue", "view", "2623", "-R", REPO, "--json", "comments"]);
+  // A11-160, step 8: the reader's `issueComments`, `redPulls`, `api` and the connection reads (`issuesLabelled`, `mergedPullsSince`) are the code host's operations. The argument lists they build, the paging and the allowlist
+  // over every page are held beside them (`plugins/github/rows/messaging-rows.test.ts`); here the reader runs on the fake code host's rows.
+  test("issuesLabelled reads the OPEN rows that carry the label, newest created first, at most `limit` of them", async () => {
+    const host = createFakeCodeHost();
+    const at = (day: number) => `2026-09-${String(day).padStart(2, "0")}T08:00:00Z`;
+    host.rowsWorld.rows.set(11, fakeRow(host.rowsWorld, 11, { labels: ["needs:chairman"], createdAt: at(1) }));
+    host.rowsWorld.rows.set(12, fakeRow(host.rowsWorld, 12, { labels: ["needs:chairman", "ready"], createdAt: at(3) }));
+    host.rowsWorld.rows.set(13, fakeRow(host.rowsWorld, 13, { labels: ["needs:chairman"], createdAt: at(2) }));
+    host.rowsWorld.rows.set(14, fakeRow(host.rowsWorld, 14, { labels: ["needs:chairman"], state: "CLOSED", createdAt: at(4) }));
+    host.rowsWorld.rows.set(15, fakeRow(host.rowsWorld, 15, { labels: ["ready"], createdAt: at(5) }));
+    substituteCodeHost(host);
+    const reader = createGhReader();
+    assert.deepEqual((await reader.issuesLabelled({ repo: REPO, label: "needs:chairman" })).map((issue) => issue.number), [12, 13, 11], "not the closed row, not the row without the label");
+    assert.deepEqual((await reader.issuesLabelled({ repo: REPO, label: "needs:chairman", limit: 2 })).map((issue) => issue.number), [12, 13]);
+    assert.deepEqual((await reader.issuesLabelled({ repo: REPO, label: "ready" })).map((issue) => issue.number), [15, 12], "CONTROL: another label, another list");
   });
 
-  test("assertReadOnlyGh admits a GraphQL QUERY with variables and refuses a mutation, a second document, and a variable read from a file (#5076)", async () => {
-    const commands: string[][] = [];
-    await createGhReader({ run: recordingRun(commands) }).issuesLabelled({ repo: REPO, label: "ready" });
-    const built = commands[0];
-    assert.doesNotThrow(() => assertReadOnlyGh(built), "POSITIVE CONTROL: the argv the reader really builds");
-    const document = built.find((arg) => arg.startsWith("query=")) as string;
-    const refused: [string, string[]][] = [
-      ["a mutation", built.map((arg) => (arg === document ? document.replace("query=query(", "query=mutation(") : arg))],
-      ["a mutation after the query", built.map((arg) => (arg === document ? `${document} mutation { x }` : arg))],
-      ["a subscription", built.map((arg) => (arg === document ? document.replace("query=query(", "query=subscription(") : arg))],
-      ["a second document", [...built, "-f", "query=mutation { x }"]],
-      ["a variable read from a file", [...built, "-F", "x=@/etc/passwd"]],
-      ["a flag that is not a variable", [...built, "--method", "POST"]],
-      ["no document", ["api", "graphql", "-F", "owner=a"]],
-      ["the document not first", ["api", "graphql", "-F", "owner=a", "-f", document]],
-    ];
-    for (const [what, argv] of refused) assert.throws(() => assertReadOnlyGh(argv), /reads only/, what);
+  test("mergedPullsSince reads the MERGED pull requests merged inside the window: not an open one, not one closed unmerged, not one merged before it", async () => {
+    const host = createFakeCodeHost();
+    const since = Date.parse("2026-10-01T07:00:00Z");
+    host.rowsWorld.pulls.set(1, fakeRowPull(1, { merged: true, mergedAt: "2026-10-01T07:00:00Z" }));
+    host.rowsWorld.pulls.set(2, fakeRowPull(2, { merged: true, mergedAt: "2026-09-30T23:00:00Z" }));
+    host.rowsWorld.pulls.set(3, fakeRowPull(3));
+    host.rowsWorld.pulls.set(4, fakeRowPull(4, { closedAt: "2026-10-01T08:00:00Z" }));
+    host.rowsWorld.pulls.set(5, fakeRowPull(5, { merged: true, mergedAt: "2026-10-01T09:30:00Z" }));
+    substituteCodeHost(host);
+    assert.deepEqual((await createGhReader().mergedPullsSince({ repo: REPO, sinceMs: since })).map((pull) => pull.number), [5, 1]);
+    assert.deepEqual((await createGhReader().mergedPullsSince({ repo: REPO, sinceMs: Date.parse("2026-10-01T08:00:00Z") })).map((pull) => pull.number), [5], "CONTROL: a later window leaves out the earlier merge");
   });
 
-  test("a label that looks like a flag is a VARIABLE's value now, never a flag: the command is the same read, and the value is not a token of its own (#5076)", async () => {
-    const commands: string[][] = [];
-    await createGhReader({ run: recordingRun(commands) }).issuesLabelled({ repo: REPO, label: "--web" });
-    assert.equal(commands.length, 1);
-    assert.ok(commands[0].includes("label=--web"), "carried as `-F label=--web`");
-    assert.ok(!commands[0].includes("--web"), "and never as a token that `gh` could read as a flag");
-    assert.equal(commands[0][commands[0].indexOf("label=--web") - 1], "-F");
+  test("a merged window of two pages is read whole (the window cut short is the operation's: messaging-rows.test.ts)", async () => {
+    const host = createFakeCodeHost();
+    for (let number = 1; number <= 150; number += 1) host.rowsWorld.pulls.set(number, fakeRowPull(number, { merged: true, mergedAt: "2026-10-01T08:00:00Z" }));
+    substituteCodeHost(host);
+    assert.equal((await createGhReader().mergedPullsSince({ repo: REPO, sinceMs: Date.parse("2026-10-01T07:00:00Z"), limit: 100 })).length, 150);
   });
 
 });
@@ -633,81 +622,68 @@ describe("chairman-watch makes only read calls (done-when 5)", () => {
     assert.doesNotThrow(() => assertReadOnlyGh(["pr", "list", "-R", REPO, "--state", "open", "--json", "number", "--limit", "5"]), "POSITIVE CONTROL");
   });
 
-  test("the real reader checks the command it built BEFORE it runs it, whatever `run` would have allowed", async () => {
-    let ran = 0;
-    const reader = createGhReader({ run: async () => { ran += 1; return "[]"; } });
-    await reader.redPulls({ repo: REPO });
-    assert.equal(ran, 1, "POSITIVE CONTROL: a read the check admits is run");
-    // The check is `assertReadOnlyGh` over the built argv, called before `run` (a reader that handed `run` first would have run this one: the document is no query).
-    const checked: string[][] = [];
-    const guarded = createGhReader({ run: async (argv) => { checked.push([...argv]); return "[]"; } });
-    await assert.rejects(() => guarded.issuesLabelled({ repo: REPO, label: "ready" }), /did not come back as a connection/, "an admitted read whose answer is not a connection throws, never an empty list");
-    assert.equal(checked.length, 1);
-  });
+  /** A code host whose reads of the watch RUN the argument list they build on the `run` they are handed, as the GitHub plugin's do, so the allowlist the reader puts on that `run` is what is tried. */
+  function hostThatRuns(build: Record<string, (request: any) => string[]>) {
+    const host = createFakeCodeHost();
+    const operations = Object.fromEntries(Object.entries(build).map(([name, argv]) => [name, async (request: any) => JSON.parse(await request.run(argv(request)))]));
+    return { ...host, rows: { ...host.rows!, ...operations } as NonNullable<typeof host.rows> };
+  }
 
-  test("the merged filter drops a merge older than the window even if the connection returned it (it was UPDATED inside the window)", async () => {
-    const since = Date.parse("2026-10-01T07:00:00Z");
-    const rows = [
-      { number: 1, mergedAt: "2026-10-01T07:00:00Z", updatedAt: "2026-10-01T07:00:00Z" },
-      { number: 2, mergedAt: "2026-09-30T23:00:00Z", updatedAt: "2026-10-01T08:00:00Z" },
-    ].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-    const reader = createGhReader({ run: async (argv) => sinceAnswer(argv, rows) });
-    assert.deepEqual((await reader.mergedPullsSince({ repo: REPO, sinceMs: since })).map((pull) => pull.number), [1]);
-  });
-
-  test("a merged window the pages cannot hold THROWS, never a count cut short (#5076)", async () => {
-    const rows = Array.from({ length: 450 }, (_, i) => ({ number: i + 1, mergedAt: "2026-10-01T08:00:00Z", updatedAt: "2026-10-01T08:00:00Z" }));
-    const reader = createGhReader({ run: async (argv) => sinceAnswer(argv, rows) });
-    await assert.rejects(() => reader.mergedPullsSince({ repo: REPO, sinceMs: Date.parse("2026-10-01T07:00:00Z"), limit: 100 }), /cut short/);
-    const fits = createGhReader({ run: async (argv) => sinceAnswer(argv, rows.slice(0, 150)) });
-    assert.equal((await fits.mergedPullsSince({ repo: REPO, sinceMs: Date.parse("2026-10-01T07:00:00Z"), limit: 100 })).length, 150, "control: a window of two pages is read");
+  test("the real reader checks every command an operation builds BEFORE it runs it, whatever `run` would have allowed", async () => {
+    substituteCodeHost(hostThatRuns({ restGetAsync: ({ path }) => ["api", path], issueCommentsAsync: () => ["issue", "comment", "1", "--body", "x"], openPullChecksAsync: () => ["pr", "merge", "1"] }));
+    const ran: string[][] = [];
+    const reader = createGhReader({ run: async (argv) => { ran.push([...argv]); return "{}"; } });
+    assert.deepEqual(await reader.api(`repos/${REPO}/pulls/1`), {});
+    assert.equal(ran.length, 1, "POSITIVE CONTROL: a read the check admits is run");
+    await assert.rejects(() => reader.api(`repos/${REPO}/issues/1/labels`), /reads only/);
+    await assert.rejects(() => reader.issueComments({ repo: REPO, number: 1 }), /is not an allowed command/);
+    await assert.rejects(() => reader.redPulls({ repo: REPO }), /is not an allowed command/);
+    assert.equal(ran.length, 1, "a write the operation built was refused before `run` was asked");
   });
 });
 
 describe("the red-PR read decides red through the one decider (#3014, #2956)", () => {
+  // A11-160, step 8: the open pull requests and their checks are the fake code host's world (`rollup` is what GitHub calls `statusCheckRollup`); the argument list that asks for them is held in `messaging-rows.test.ts`.
+  /** The reader over a fake code host holding these open pull requests: `[number, checks, labels]`; `null` checks are a pull request whose rollup is unknown. */
+  function readerOver(pulls: [number, any[] | undefined, string[]?][]) {
+    const host = createFakeCodeHost();
+    for (const [number, rollup, labels = []] of pulls) host.rowsWorld.pulls.set(number, fakeRowPull(number, { rollup, labels }));
+    substituteCodeHost(host);
+    return createGhReader();
+  }
+
   test("the red filter keeps a failed check and nothing else: ACTION_REQUIRED is red, a failed commit STATUS is not (#3014)", async () => {
-    const pulls = [
-      { number: 1, statusCheckRollup: [{ name: "lint", conclusion: "SUCCESS" }, { name: "gate", conclusion: "FAILURE" }] },
-      { number: 2, statusCheckRollup: [{ name: "lint", conclusion: "SUCCESS" }, { name: "gate", conclusion: "SKIPPED" }] },
-      { number: 3, statusCheckRollup: [{ context: "ci/legacy", state: "ERROR" }, { context: "ci/other", state: "FAILURE" }] },
-      { number: 4, statusCheckRollup: [] },
-      { number: 5 },
-      { number: 6, statusCheckRollup: [{ name: "gate", conclusion: "TIMED_OUT" }] },
-      { number: 7, statusCheckRollup: [{ name: "gate", conclusion: "ACTION_REQUIRED" }] },
-    ];
-    const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
+    const reader = readerOver([
+      [1, [{ name: "lint", conclusion: "SUCCESS" }, { name: "gate", conclusion: "FAILURE" }]],
+      [2, [{ name: "lint", conclusion: "SUCCESS" }, { name: "gate", conclusion: "SKIPPED" }]],
+      [3, [{ context: "ci/legacy", state: "ERROR" }, { context: "ci/other", state: "FAILURE" }]],
+      [4, []],
+      [5, undefined],
+      [6, [{ name: "gate", conclusion: "TIMED_OUT" }]],
+      [7, [{ name: "gate", conclusion: "ACTION_REQUIRED" }]],
+    ]);
     assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [1, 6, 7]);
   });
 
   test("only the NEWEST attempt of each named check counts: a failure that was re-run green is not red", async () => {
-    const pulls = [
-      { number: 1, statusCheckRollup: [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }] },
-      { number: 2, statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:30:00Z" }] },
-      { number: 3, statusCheckRollup: [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "lint", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }] },
-    ];
-    const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
+    const reader = readerOver([
+      [1, [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }]],
+      [2, [{ name: "gate", conclusion: "SUCCESS", completedAt: "2026-10-02T08:00:00Z" }, { name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:30:00Z" }]],
+      [3, [{ name: "gate", conclusion: "FAILURE", completedAt: "2026-10-02T08:00:00Z" }, { name: "lint", conclusion: "SUCCESS", completedAt: "2026-10-02T08:30:00Z" }]],
+    ]);
     assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [2, 3]);
   });
 
   test("a HELD pull request is red only for a reason its hold does not explain (#3014, #2956's one decider)", async () => {
     const holdJobs = [{ name: "deliberateRefusals", conclusion: "FAILURE" }, { name: "gate", conclusion: "FAILURE" }];
-    const hold = [{ name: "hold:ceo" }];
-    const pulls = [
-      { number: 1, labels: hold, statusCheckRollup: holdJobs },
-      { number: 2, labels: hold, statusCheckRollup: [...holdJobs, { name: "ts / run", conclusion: "FAILURE" }] },
-      { number: 3, labels: [{ name: "session:worker-7" }], statusCheckRollup: holdJobs },
-      { number: 4, statusCheckRollup: holdJobs },
-    ];
-    const reader = createGhReader({ run: async () => JSON.stringify(pulls) });
+    const reader = readerOver([
+      [1, holdJobs, ["hold:ceo"]],
+      [2, [...holdJobs, { name: "ts / run", conclusion: "FAILURE" }], ["hold:ceo"]],
+      [3, holdJobs, ["session:worker-7"]],
+      [4, holdJobs],
+    ]);
     assert.deepEqual((await reader.redPulls({ repo: REPO })).map((pull) => pull.number), [2, 3, 4],
       "1: the hold's own two jobs are a decision; 2: a real red under a hold still counts; 3 and 4: no hold, so deliberateRefusals/gate red is a breakage");
-  });
-
-  test("the red read ASKS for `labels`: without them no hold can be seen, and `gh` would not send them (#3014)", async () => {
-    const asked: (string|string[])[]|(readonly string[])[] = /** @type {(readonly string[])[]} */ ([]);
-    const reader = createGhReader({ run: async (argv) => { asked.push(argv); return "[]"; } });
-    await reader.redPulls({ repo: REPO });
-    assert.match(asked[0][asked[0].indexOf("--json") + 1], /(^|,)labels(,|$)/);
   });
 });
 

@@ -1,13 +1,23 @@
-// no-token: gh -- the audit reaches `gh` only through the `run` a caller injects; every read in this file is a fixture
+// no-token: gh -- the audit reaches `gh` only through the code host's rows; every read in this file is the fake code host
 // a11ign/a11ign#4232 (chairman, 2026-10-08, root cause 1): A HANDOFF WRITTEN AS A SENTENCE MOVES NOBODY. `ceo`'s 10:22Z comment on #4090 asked `product-manager` to file a defect; no
 // order was sent and no row existed for ten hours. The board-truth audit now reads the last day's comments by org accounts and flags (1) a comment that hands off in prose with no
 // row filed and no `answer:<session>` label by the same author within 15 minutes, and (2) a reading comment with no `Defect-row:` field.
 //
 // POSITIVE AND NEGATIVE CONTROL for each: the flagged case is the real comment text; its twin differs by ONE fact (a row filed, a label added, a field line, a fence).
 // The flagged cases are the controls for every "not flagged" below: the same audit, the same comment, flagged when the fact is absent.
-import { test } from "node:test";
+//
+// A11-160, STEP 8: THE DAY'S READS (the org accounts' comments, the issues filed in the day, a row's `labeled` events) AND THE TABLE'S POST ARE THE CODE HOST'S ROWS, so the cases that read them seed the fake code host's world
+// (rows with comments, an author and a filing time; the labels applied) and read what the table or the audit makes of it. The REST paths and `--jq` filters those reads send are the plugin's
+// (`plugins/github/rows/board-rows.test.ts`).
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { PROSE_QUESTIONS, boardTruthAudit, postDaysTable, proseAudit, readProseFacts } from "../board-truth-audit.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 const MINUTE = 60_000;
 const AT = Date.parse("2026-10-08T10:22:00Z");
@@ -96,52 +106,61 @@ test("absence is not proof: unread evidence lists the handoff question UNREAD an
   assert.deepEqual([notAsked.unread, notAsked.findings], [[], []], "no `proseEvidence` key: the caller did not ask");
 });
 
-/** A fake `gh` for the day's read: the comment list, the issues created, and one row's events. @param {{ comments: any[], created?: any[], events?: any[] }} day */
-const fakeGh = ({ comments, created = [], events = [] }: { comments: any[]; created?: any[]; events?: any[] }) => {
-  const calls: string[] = [];
-  const ndjson = (items: any[]) => items.map((i) => JSON.stringify(i)).join("\n");
-  const run = (args: string[]) => {
-    const path = args[2] ?? "";
-    calls.push(path);
-    if (path.includes("/issues/comments?")) return ndjson(comments);
-    if (path.includes("/events?")) return ndjson(events);
-    if (path.includes("/issues?state=all")) return ndjson(created);
-    return "";
-  };
-  return { run, calls };
-};
+/**
+ * The fake code host holding the day's read: `comments` are what the org accounts posted (each on its row), `created` the rows filed in the day (who filed them, when, and the title they carry) and `events` the labels
+ * applied to row #4090. The row #4090 itself was filed long before the day. `calls` is every operation of the rows that was called, with the request; `record` is what was posted on the day's record row, #928.
+ */
+function dayOf({ comments, created = [], events = [], table = [] }: { comments: any[]; created?: { author: string; createdAt: string; text: string }[]; events?: any[]; table?: string[] }) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = "a11ign/a11ign";
+  world.now = () => NOW;
+  world.rows.set(928, fakeRow(world, 928, { title: "The record", labels: ["meta"], createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
+    comments: table.map((body, id) => ({ id: 9000 + id, body, createdAt: new Date(NOW - 60 * MINUTE).toISOString() })) }));
+  for (const c of comments) {
+    const held = world.rows.get(c.number) ?? fakeRow(world, c.number, { createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", openedBy: "a11ign-ai-workers" });
+    world.rows.set(c.number, held);
+    held.comments.push({ id: held.comments.length + 1, body: c.body, createdAt: c.createdAt, author: c.author.login });
+  }
+  created.forEach(({ author, createdAt, text }, index) => world.rows.set(5000 + index, fakeRow(world, 5000 + index, { title: text, body: "", openedBy: author, createdAt })));
+  if (events.length > 0) world.gate.events.set(4090, events.map((e) => ({ event: "labeled" as const, label: e.label, actor: e.actor, at: e.createdAt })));
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  const record = () => world.rows.get(928)!.comments.slice(table.length).map((c) => c.body);
+  return { world, calls: watched.calls, ops: () => watched.calls.map((call) => call.op), record };
+}
 const posted = (c = comment(COMMENT_4090)) => ({ number: 4090, author: c.author, body: c.body, createdAt: c.createdAt, url: c.url });
+const noRunner = () => assert.fail("the code host's rows are asked, not a runner");
 
 test("readProseFacts reads the day's comments once, and the evidence only when a comment could need it", () => {
-  const withHandoff = fakeGh({ comments: [posted()], created: [{ author: AUTHOR, createdAt: "2026-10-08T10:27:00Z", text: "Filed from #4090" }] });
-  const facts = readProseFacts({ repo: "a11ign/a11ign", run: withHandoff.run, now: NOW })!;
+  const withHandoff = dayOf({ comments: [posted()], created: [{ author: AUTHOR, createdAt: "2026-10-08T10:27:00Z", text: "Filed from #4090" }] });
+  const facts = readProseFacts({ repo: "a11ign/a11ign", run: noRunner, now: NOW })!;
   assert.deepEqual(proseAudit(facts).findings.map((f) => f.question), [PROSE_QUESTIONS.READING_FIELD], "the row filed 5 minutes later answers the handoff; the missing field remains");
-  assert.equal(withHandoff.calls.length, 3, "comments, issues created, one row's events");
-  const quiet = fakeGh({ comments: [posted(comment("A plain note."))] });
-  assert.deepEqual(proseAudit(readProseFacts({ repo: "a11ign/a11ign", run: quiet.run, now: NOW })!), { findings: [], unread: [] });
-  assert.equal(quiet.calls.length, 1, "nothing to judge: only the comment list is read");
-  const refused = readProseFacts({ repo: "a11ign/a11ign", run: () => { throw new Error("403"); }, now: NOW });
-  assert.equal(refused, null);
+  assert.deepEqual(withHandoff.ops(), ["orgCommentsSinceOf", "issuesSinceOf", "labeledEventsOfRow"], "comments, issues created, one row's events");
+  const quiet = dayOf({ comments: [posted(comment("A plain note."))] });
+  assert.deepEqual(proseAudit(readProseFacts({ repo: "a11ign/a11ign", run: noRunner, now: NOW })!), { findings: [], unread: [] });
+  assert.deepEqual(quiet.ops(), ["orgCommentsSinceOf"], "nothing to judge: only the comment list is read");
+  const refusing = dayOf({ comments: [posted()] });
+  refusing.world.failures.set("orgCommentsSinceOf", new Error("403"));
+  assert.equal(readProseFacts({ repo: "a11ign/a11ign", run: noRunner, now: NOW }), null);
 });
 
 test("the day's table carries both questions; an unreadable comment list posts nothing; an already-posted day reads no comments", () => {
-  const bodies: string[] = [];
   const clear = { findings: [], unread: [] };
-  const day = (over: any) => {
-    const gh = fakeGh({ comments: [posted()] });
-    const run = (args: string[]) => (args[0] === "issue" ? (bodies.push(args[args.indexOf("--body") + 1]), "") : (args[2]?.includes("/issues/928/comments") ? (over.already ?? "") : gh.run(args)));
-    return { run, gh };
-  };
-  const { run, gh } = day({});
-  assert.equal(postDaysTable({ audit: clear, day: "2026-10-08", repo: "a11ign/a11ign", run, now: NOW }), "posted");
+  const first = dayOf({ comments: [posted()] });
+  assert.equal(postDaysTable({ audit: clear, day: "2026-10-08", repo: "a11ign/a11ign", run: noRunner, now: NOW }), "posted");
+  const bodies = first.record();
+  assert.equal(bodies.length, 1);
   assert.match(bodies[0], /\*\*2 disagree\*\*/);
   assert.match(bodies[0], /handoff-in-prose/);
   assert.match(bodies[0], /reading-without-defect-row/);
-  assert.equal(gh.calls.length > 0, true);
-  const before = bodies.length;
-  assert.equal(postDaysTable({ audit: clear, day: "2026-10-08", repo: "a11ign/a11ign", run, now: NOW, readProse: () => null }), "unread");
-  assert.equal(bodies.length, before, "nothing posted");
-  const again = day({ already: "12345" });
-  assert.equal(postDaysTable({ audit: clear, day: "2026-10-08", repo: "a11ign/a11ign", run: again.run, now: NOW }), "already-posted");
-  assert.equal(again.gh.calls.length, 0, "no comment read once the day is posted");
+  assert.ok(first.ops().includes("orgCommentsSinceOf"), "the day's comments were read");
+  assert.equal(postDaysTable({ audit: clear, day: "2026-10-08", repo: "a11ign/a11ign", run: noRunner, now: NOW, readProse: () => null }), "already-posted", "the table stands, so nothing is read or posted again");
+  const unreadable = dayOf({ comments: [posted()] });
+  assert.equal(postDaysTable({ audit: clear, day: "2026-10-08", repo: "a11ign/a11ign", run: noRunner, now: NOW, readProse: () => null }), "unread");
+  assert.deepEqual(unreadable.record(), [], "nothing posted");
+  const again = dayOf({ comments: [posted()], table: ["### Board against reality, 2026-10-08\n\n**0 disagree**"] });
+  assert.equal(postDaysTable({ audit: clear, day: "2026-10-08", repo: "a11ign/a11ign", run: noRunner, now: NOW }), "already-posted");
+  assert.equal(again.ops().filter((op) => op === "orgCommentsSinceOf").length, 0, "no comment read once the day is posted");
+  assert.deepEqual(again.record(), []);
 });

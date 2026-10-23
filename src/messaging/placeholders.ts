@@ -24,6 +24,8 @@
 // below is what a test's fixture implements. Reads are made ONCE per thing named, however many fields of it the text uses.
 
 import { describeError } from "./ledger.ts";
+import type { AsyncRowsRun } from "../plugins/contracts/code-host-rows-facts.ts";
+import { rows } from "../plugins/rows.ts";
 import { readFleetRoster, readLastMerge, readLastTick, readWaitingRows } from "./sources/readers.ts";
 
 /** Stands in for a placeholder while the free text around it is judged. NUL cannot be typed into a chat message and never matches a word or a digit. */
@@ -261,10 +263,10 @@ function parseProperties(text: string): Record<string, string> {
  * the tick writes at the end of `main()`). A host that names none gets a reader that refuses and says so, never a guess at a path.
  */
 export function createGhReaders({ gh, systemctl, repo, fleet, gateRecordPath, now = Date.now }: {
-        gh: (argv: string[]) => Promise<string>; systemctl: (argv: string[]) => Promise<string>; repo: string;
+        gh: AsyncRowsRun; systemctl: (argv: string[]) => Promise<string>; repo: string;
         fleet?: { statePath: string; capturesPath: string; }; gateRecordPath?: string; now?: () => number;
     }): Readers {
-  const github = { api: async (path: string) => JSON.parse(await gh(["api", path])) };
+  const github = { api: async (path: string) => rows().restGetAsync({ path, run: gh }) };
   return {
     async issue(number) {
       const issue = await github.api(`repos/${repo}/issues/${number}`);
@@ -273,9 +275,9 @@ export function createGhReaders({ gh, systemctl, repo, fleet, gateRecordPath, no
       return { number: issue.number, state: issue.state, labels: issue.labels.map((label: any) => String(label?.name ?? label)) };
     },
     async pr(number) {
-      const [pull, view] = await Promise.all([github.api(`repos/${repo}/pulls/${number}`), gh(["pr", "view", String(number), "--repo", repo, "--json", "reviewDecision"])]);
+      const [pull, decision] = await Promise.all([github.api(`repos/${repo}/pulls/${number}`), rows().pullReviewDecisionAsync({ repo, number, run: gh })]);
       // `reviewDecision` is EMPTY when the base requires no approval (`.claude/rules/main-review-requirement.md`): that is a reading, and it says "none".
-      return { number: pull.number, state: pull.merged_at ? "merged" : pull.state, review: JSON.parse(view).reviewDecision || "none" };
+      return { number: pull.number, state: pull.merged_at ? "merged" : pull.state, review: decision || "none" };
     },
     async run(id) {
       const run = await github.api(`repos/${repo}/actions/runs/${id}`);

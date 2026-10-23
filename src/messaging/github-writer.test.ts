@@ -1,17 +1,19 @@
 // @ts-check
-// THE GITHUB WRITER AND THE WIRING (a11ign/a11ign#3062 done-whens 2 and 3): `createGithubWriter` against a fixture `gh` that records its argv, and
-// a stream of updates through the REAL inbound core, the real answers, the real writer and `listen.ts`'s forwarder, with the in-memory provider's listen loop.
-// Nothing here reaches a network or runs `gh`.
+// THE GITHUB WRITER AND THE WIRING (a11ign/a11ign#3062 done-whens 2 and 3): `createGithubWriter` over the fake code host's rows, and a stream of updates through the REAL inbound core, the real answers, the real writer and
+// `listen.ts`'s forwarder, with the in-memory provider's listen loop. Nothing here reaches a network or runs `gh`.
 //
-// POSITIVE CONTROLS: "resolves when the label is absent" is also what a writer that swallows every failure reports, so the same call with a
-// DIFFERENT failure is asserted to throw; "pages past 100" is also what a reader that was only ever given one page reports, so the fixture holds
-// 250 comments and the newest brief is the 250th.
+// A11-160, step 8: the writer's four calls are the code host's operations now (`readRowAsync`, `commentOnRowAsync`, `removeLabelAsync`, `addLabelAsync`), and these cases run on the fake code host's world: the row, its labels
+// and its comments (with the author association of each) are SEEDED, and what the writer is held to is what it returns and what it leaves in the row. The argument lists, `--paginate` and the 404 that says `Label does not exist`
+// are GitHub's words and are held beside the operations (`plugins/github/rows/messaging-rows.test.ts`, moved from this file).
+//
+// POSITIVE CONTROLS: "resolves when the label is absent" is also what a writer that swallows every failure reports, so the same call with a REFUSED removal is asserted to throw; "pages past 100" is also what a reader that was
+// only ever given one page reports, so the world holds 250 comments and the newest brief is the 250th.
 
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 
 import { buttonData, createAnswers } from "./answers.ts";
 import { createGithubWriter } from "./github-writer.ts";
@@ -21,6 +23,10 @@ import { createConverse } from "./converse.ts";
 import { createForwarder } from "./listen.ts";
 import { createFakeProvider } from "./fake-provider.ts";
 import { latestBrief, NEEDS_CHAIRMAN } from "./sources/requests.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 
 const REPO = "a11ign/a11ign";
 const CHAIRMAN = Object.freeze({ userId: 4242, chatId: 4242 });
@@ -29,69 +35,48 @@ const brief = (/** @type {string} */ question: string) => `**Brief for the chair
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-github-writer-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 
-/**
- * A fixture `gh api`: records every argv and serves REST shaped like GitHub's (lowercase state, `created_at`, `author_association`), applying the
- * writes to `rows`. `--paginate` is the platform's, so the fixture answers it with every comment, as `gh` does after following the pages.
- *
- * @param {Map<number, {state: string, labels: string[], comments: {body: string, created_at: string, author_association: string}[]}>} rows
- * @param {{fail?: (argv: readonly string[]) => Error | null}} [options]
- */
-function fixtureGh(rows: Map<number, { state: string; labels: string[]; comments: { body: string; created_at: string; author_association: string; }[]; }>, { fail = () => null }: { fail?: (argv: readonly string[]) => Error | null; } = {}) {
-  /** @type {(readonly string[])[]} */
-  const calls: (readonly string[])[] = [];
-  /** @param {readonly string[]} argv @returns {Promise<string>} */
-  async function run(argv: readonly string[]): Promise<string> {
-    calls.push(argv);
-    const failure = fail(argv);
-    if (failure !== null) throw failure;
-    const [, ...rest] = argv;
-    const method = rest[0] === "--method" ? rest[1] : "GET";
-    const path = /** @type {string} */ (rest.find((token) => token.startsWith("repos/")));
-    const [, number, tail, label] = /** @type {RegExpMatchArray} */ (path.match(/^repos\/[^/]+\/[^/]+\/issues\/(\d+)(?:\/(comments|labels)(?:\/(.+))?)?$/));
-    const row = /** @type {NonNullable<ReturnType<typeof rows.get>>} */ (rows.get(Number(number)));
-    if (method === "GET" && tail === undefined) return `${JSON.stringify({ state: row.state, labels: row.labels })}\n`;
-    if (method === "GET") return row.comments.map((comment) => JSON.stringify({ body: comment.body, createdAt: comment.created_at, authorAssociation: comment.author_association })).join("\n");
-    if (tail === "comments") row.comments.push({ body: String(rest.find((token) => token.startsWith("body="))).slice("body=".length), created_at: "2026-10-02T12:00:00Z", author_association: "MEMBER" });
-    else if (method === "DELETE") row.labels = row.labels.filter((existing) => existing !== decodeURIComponent(label));
-    else row.labels.push(String(rest.find((token) => token.startsWith("labels[]="))).slice("labels[]=".length));
-    return "";
-  }
-  return { run, calls };
+/** The fake code host in place, its tracker the repository the chairman's rows live in; `rows` are seeded into its world. */
+function world(rows: Record<number, Partial<FakeRow>> = {}) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  for (const [number, over] of Object.entries(rows)) host.rowsWorld.rows.set(Number(number), fakeRow(host.rowsWorld, Number(number), over));
+  return host;
 }
 
-/** @param {number} count @returns {{body: string, created_at: string, author_association: string}[]} `count` comments, the newest a brief of its own */
-function manyComments(count: number): { body: string; created_at: string; author_association: string; }[] {
+/** @param {number} count @returns {FakeRow["comments"]} `count` comments, the newest a brief of its own, by an owner */
+function manyComments(count: number): FakeRow["comments"] {
   return Array.from({ length: count }, (_, index) => ({
+    id: index + 1,
     body: index === count - 1 ? brief("The newest ask") : `comment ${index}`,
-    created_at: new Date(Date.UTC(2026, 9, 1, 0, 0, index)).toISOString(),
-    author_association: index === count - 1 ? "OWNER" : "NONE",
+    createdAt: new Date(Date.UTC(2026, 9, 1, 0, 0, index)).toISOString(),
+    association: index === count - 1 ? "OWNER" : "NONE",
   }));
 }
 
-describe("the writer over `gh` (done-when 2)", () => {
+describe("the writer over the code host's rows (done-when 2)", () => {
   const ROW = { repo: REPO, number: 3062 };
 
-  test("each of the four calls is one `gh api` with the argv a person would type, and the row is changed", async () => {
-    /** @type {Parameters<typeof fixtureGh>[0]} */
-    const rows: Parameters<typeof fixtureGh>[0] = new Map([[3062, { state: "open", labels: ["ready", NEEDS_CHAIRMAN], comments: [] }]]);
-    const gh = fixtureGh(rows);
-    const writer = createGithubWriter({ run: gh.run });
+  test("each of the three writes is the code host's operation for that row, and the row is changed", async () => {
+    const host = world({ 3062: { labels: ["ready", NEEDS_CHAIRMAN] } });
+    const watched = watchedRows(host);
+    substituteCodeHost(watched.host);
+    const writer = createGithubWriter();
     await writer.comment(ROW, "hello\n> quoted");
     await writer.removeLabel(ROW, NEEDS_CHAIRMAN);
     await writer.addLabel(ROW, ANSWER_LABEL);
-    assert.deepEqual(gh.calls, [
-      ["api", "--method", "POST", `repos/${REPO}/issues/3062/comments`, "-f", "body=hello\n> quoted"],
-      ["api", "--method", "DELETE", `repos/${REPO}/issues/3062/labels/needs%3Achairman`],
-      ["api", "--method", "POST", `repos/${REPO}/issues/3062/labels`, "-f", `labels[]=${ANSWER_LABEL}`],
+    assert.deepEqual(watched.calls.map(({ op, request }) => [op, request.repo, request.number, request.body ?? request.label]), [
+      ["commentOnRowAsync", REPO, 3062, "hello\n> quoted"], ["removeLabelAsync", REPO, 3062, NEEDS_CHAIRMAN], ["addLabelAsync", REPO, 3062, ANSWER_LABEL],
     ]);
-    assert.deepEqual(rows.get(3062)?.labels, ["ready", ANSWER_LABEL]);
-    assert.equal(rows.get(3062)?.comments[0].body, "hello\n> quoted");
+    const row = host.rowsWorld.rows.get(3062)!;
+    assert.deepEqual(row.labels, ["ready", ANSWER_LABEL]);
+    assert.deepEqual(row.comments.map(({ body }) => body), ["hello\n> quoted"]);
   });
 
   test("readRow returns the shape answers reads: state, label names and each comment's body, createdAt and authorAssociation", async () => {
-    const rows = new Map([[3062, { state: "open", labels: ["ready", NEEDS_CHAIRMAN], comments: manyComments(2) }]]);
-    const read = await createGithubWriter({ run: fixtureGh(rows).run }).readRow(ROW);
+    substituteCodeHost(world({ 3062: { labels: ["ready", NEEDS_CHAIRMAN], comments: manyComments(2) } }));
+    const read = await createGithubWriter().readRow(ROW);
     assert.deepEqual(read.labels, ["ready", NEEDS_CHAIRMAN]);
     assert.equal(read.state, "open");
     assert.deepEqual(read.comments.map(({ body, authorAssociation }) => ({ body, authorAssociation })), [
@@ -100,36 +85,38 @@ describe("the writer over `gh` (done-when 2)", () => {
     assert.equal(read.comments[1].createdAt, "2026-10-01T00:00:01.000Z");
   });
 
-  test("readRow pages past 100 comments: 250 are read, the newest brief is the 250th, and the call asks `gh` to paginate", async () => {
-    const rows = new Map([[3062, { state: "open", labels: [NEEDS_CHAIRMAN], comments: manyComments(250) }]]);
-    const gh = fixtureGh(rows);
-    const read = await createGithubWriter({ run: gh.run }).readRow(ROW);
+  test("readRow of a closed row says so: the state is the row's own", async () => {
+    substituteCodeHost(world({ 3062: { state: "CLOSED" }, 3063: {} }));
+    assert.equal((await createGithubWriter().readRow(ROW)).state, "closed");
+    assert.equal((await createGithubWriter().readRow({ repo: REPO, number: 3063 })).state, "open", "CONTROL: an open row reads open");
+  });
+
+  test("readRow reads past 100 comments: 250 are returned and the newest brief is the 250th (the paging is the operation's: messaging-rows.test.ts)", async () => {
+    substituteCodeHost(world({ 3062: { labels: [NEEDS_CHAIRMAN], comments: manyComments(250) } }));
+    const read = await createGithubWriter().readRow(ROW);
     assert.equal(read.comments.length, 250);
     assert.equal(latestBrief(read.comments)?.body, brief("The newest ask"));
-    const commentsCall = /** @type {readonly string[]} */ (gh.calls.find((argv) => argv.some((token) => token.endsWith("/comments"))));
-    assert.ok(commentsCall.includes("--paginate"), `argv was ${JSON.stringify(commentsCall)}: without --paginate gh returns the OLDEST thirty`);
   });
 
-  test("removeLabel resolves when the label is already absent, and ONLY then: any other failure is thrown", async () => {
-    const rows = new Map([[3062, { state: "open", labels: [], comments: [] }]]);
-    const absent = Object.assign(new Error("Command failed: gh api"), { stderr: 'gh: Label does not exist (HTTP 404)\n{"message":"Label does not exist"}' });
-    await createGithubWriter({ run: fixtureGh(rows, { fail: () => absent }).run }).removeLabel(ROW, NEEDS_CHAIRMAN);
-    for (const other of [
-      Object.assign(new Error("Command failed: gh api"), { stderr: "gh: Not Found (HTTP 404)" }),
-      Object.assign(new Error("Command failed: gh api"), { stderr: "gh: Service Unavailable (HTTP 503)" }),
-      new Error("spawn gh ENOENT"),
-    ]) {
-      await assert.rejects(createGithubWriter({ run: fixtureGh(rows, { fail: () => other }).run }).removeLabel(ROW, NEEDS_CHAIRMAN), other);
+  test("removeLabel resolves when the label is already absent (a resumed answer repeats it), and a REFUSED removal is thrown as it was refused", async () => {
+    const host = world({ 3062: { labels: [] } });
+    substituteCodeHost(host);
+    await createGithubWriter().removeLabel(ROW, NEEDS_CHAIRMAN);
+    for (const refusal of [Object.assign(new Error("Command failed: gh api"), { stderr: "gh: Not Found (HTTP 404)" }), Object.assign(new Error("Command failed: gh api"), { stderr: "gh: Service Unavailable (HTTP 503)" }), new Error("spawn gh ENOENT")]) {
+      host.rowsWorld.failures.set("removeLabelAsync", refusal);
+      await assert.rejects(createGithubWriter().removeLabel(ROW, NEEDS_CHAIRMAN), refusal);
     }
   });
 
-  test("a repository or number that is not a row builds no path and runs nothing", async () => {
-    const gh = fixtureGh(new Map());
-    const writer = createGithubWriter({ run: gh.run });
-    for (const row of [{ repo: "a11ign/a11ign/../../user", number: 1 }, { repo: "a11ign", number: 1 }, { repo: REPO, number: 0 }, { repo: REPO, number: 1.5 }]) {
-      await assert.rejects(writer.comment(row, "x"), TypeError);
-    }
-    assert.deepEqual(gh.calls, []);
+  test("a row the code host cannot reach is a rejection of the call, for each of the four", async () => {
+    substituteCodeHost(world({ 3062: {} }));
+    const writer = createGithubWriter();
+    const absent = { repo: REPO, number: 9999 };
+    await assert.rejects(writer.readRow(absent), /holds no row/);
+    await assert.rejects(writer.comment(absent, "x"), /holds no row/);
+    await assert.rejects(writer.removeLabel(absent, "x"), /holds no row/);
+    await assert.rejects(writer.addLabel(absent, "x"), /holds no row/);
+    assert.deepEqual((await writer.readRow(ROW)).comments, [], "CONTROL: the row it holds reads");
   });
 });
 
@@ -150,17 +137,18 @@ const updates: any[] = [
  * @returns {Promise<{events: string[], rows: Map<number, any>}>} what happened, in order
  */
 async function listen(stream: any[], consumer: (parts: { ledger: any; say: (text: string) => void; }) => (accepted: Readonly<Record<string, any>>) => Promise<unknown> | void = ({ say }) => (accepted) => say(`converse ${accepted.text}`)): Promise<{ events: string[]; rows: Map<number, any>; }> {
-  const rows = new Map([ASK_A, ASK_B].map(({ row }) => [row, { state: "open", labels: ["ready", NEEDS_CHAIRMAN], comments: [{ ...manyComments(1)[0], body: brief(`Ask ${row}`) }] }]));
+  const host = world(Object.fromEntries([ASK_A, ASK_B].map(({ row }) => [row, { labels: ["ready", NEEDS_CHAIRMAN], comments: [{ ...manyComments(1)[0], body: brief(`Ask ${row}`) }] }])));
   /** @type {string[]} */
   const events: string[] = [];
-  const gh = fixtureGh(rows);
-  const writer = createGithubWriter({
-    // Only the writes are events: the reads are the answer's own business and the order of the WRITES is the design.
-    run: async (argv) => {
-      if (argv.includes("--method")) events.push(`gh ${argv[2]} ${argv[3].replace(/^repos\/[^/]+\/[^/]+\/issues\//, "")}`);
-      return gh.run(argv);
-    },
-  });
+  // Only the writes are events: the reads are the answer's own business and the order of the WRITES is the design.
+  for (const [operation, say] of [["commentOnRowAsync", ({ number }: any) => `row ${number} comment`], ["removeLabelAsync", ({ number, label }: any) => `row ${number} remove ${label}`],
+    ["addLabelAsync", ({ number, label }: any) => `row ${number} add ${label}`]] as const) {
+    const done = host.rows![operation].bind(host.rows);
+    (host.rows as any)[operation] = (request: any) => { events.push(say(request)); return done(request); };
+  }
+  substituteCodeHost(host);
+  const writer = createGithubWriter();
+  const rows = host.rowsWorld.rows;
   let at = Date.parse("2026-10-02T10:00:00Z");
   const now = () => at += 1000;
   const ledger = createLedger({ path: join(scratch, `ledger-${Math.random().toString(36).slice(2)}.jsonl`), now });
@@ -182,8 +170,8 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
   test("a press, a reply and a plain message produce the row writes, the two replies and one pass-through, in that order", async () => {
     const { events, rows } = await listen(updates);
     assert.deepEqual(events, [
-      "gh POST 2885/comments", "gh DELETE 2885/labels/needs%3Achairman", "gh POST 2885/labels", "send Recorded on a11ign/a11ign#2885: ceo has it.",
-      "gh POST 2886/comments", "gh DELETE 2886/labels/needs%3Achairman", "gh POST 2886/labels", "send Recorded on a11ign/a11ign#2886: ceo has it.",
+      "row 2885 comment", "row 2885 remove needs:chairman", "row 2885 add answer:ceo", "send Recorded on a11ign/a11ign#2885: ceo has it.",
+      "row 2886 comment", "row 2886 remove needs:chairman", "row 2886 add answer:ceo", "send Recorded on a11ign/a11ign#2886: ceo has it.",
       "converse how is the queue today?",
     ]);
     for (const row of [2885, 2886]) assert.deepEqual(rows.get(row).labels, ["ready", ANSWER_LABEL], `row ${row} is answered and ceo is woken`);
@@ -214,7 +202,7 @@ describe("a stream of updates through the listener's wiring (done-when 3)", () =
   test("the control: the same stream with the reply's target removed writes nothing for it and passes it through, so a value without the target fails above", async () => {
     const { events } = await listen([updates[0], { update_id: 2, message: { ...updates[1].message, reply_to_message: undefined } }, updates[2]]);
     assert.deepEqual(events.filter((event) => event.startsWith("converse")), ["converse hold it until Monday", "converse how is the queue today?"]);
-    assert.equal(events.filter((event) => event.startsWith("gh ")).length, 3, "only the press wrote to a row");
+    assert.equal(events.filter((event) => event.startsWith("row ")).length, 3, "only the press wrote to a row");
   });
 
   test("a GitHub failure is said to the chairman and the forwarder does not throw; nothing is passed through", async () => {

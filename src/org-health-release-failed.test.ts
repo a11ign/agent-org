@@ -1,20 +1,25 @@
-// no-token: pure -- the reading is a function of values handed in, and `readReleaseRuns` is given a fake `run`; nothing here calls `gh`, ssh or the fleet.
+// no-token: none -- the reading is a function of values handed in, and `readReleaseRuns` reads the fake code host's release runs, jobs and changesets (A11-160, step 8); nothing here calls `gh`, ssh or the fleet.
 /**
  * `src/org-health.ts`, #4001: A FAILED `release.yml` RUN ON `main` IS RAISED WITHIN A TICK, NAMING THE JOB, instead of being found by a person going to look (a11ign/a11ign, 2026-10-07: it
  * failed in `guards` at 14:15Z, was found at 15:23Z, and the second failure at 15:23Z was read the same way).
  *
  * THE FIXTURE IS THAT DAY'S RUN LIST, in the shape `readReleaseRuns` projects it: two `workflow_dispatch` failures, the `status` runs between them that were skipped (the 14:26Z-14:59Z rows,
  * which must not read as a release) and the `status` success at 14:00Z. POSITIVE CONTROLS: that list trips; the same list with a later success clears; and the reader's three-call
- * path is driven to a failure it then names. MUTATIONS, each run by hand and recorded on the row: never trip (the failed-run tests go red), always trip (the clearing and
+ * path is driven (on the fake code host's release runs) to a failure it then names. MUTATIONS, each run by hand and recorded on the row: never trip (the failed-run tests go red), always trip (the clearing and
  * cancelled/skipped tests go red, and only they), read a skipped run as a success (the skipped-after-failure test goes red), and read a refused list as clear (the unknown test goes red).
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-auto-off-refusal.test.ts`'s rule): the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "org-health-release-"));
@@ -148,37 +153,39 @@ test("the tick says an unread release on stderr and offers nothing; a cleared on
 
 // --- the reader ---------------------------------------------------------------------------------------------------------------------
 
-/** A fake `gh` that answers by URL and records every call. */
-function fakeGh(answers: Record<string, string | Error>) {
-  const calls: string[][] = [];
-  const gh = (args: string[]) => {
-    calls.push(args);
-    const key = Object.keys(answers).find((k) => args.some((a) => a.includes(k)));
-    const answer = key === undefined ? new Error("HTTP 404") : answers[key];
-    if (answer instanceof Error) throw answer;
-    return answer;
-  };
-  return { gh, calls };
+/**
+ * The fake code host in place, watched, holding the repository's `release.yml` runs, the jobs of the runs it is given (`name`/`conclusion`, and for a failed one the steps that failed) and the files of
+ * `.changeset/`. What is not given is what the code host cannot answer: a refused read.
+ */
+function world({ runs, jobs = {}, changesets }: { runs?: Run[]; jobs?: Record<number, { name: string; conclusion: string | null; failedSteps?: string[] }[]>; changesets?: string[] }) {
+  const watched = watchedRows(createFakeCodeHost());
+  substituteCodeHost(watched.host);
+  const health = (watched.host as unknown as { rowsWorld: ReturnType<typeof createFakeCodeHost>["rowsWorld"] }).rowsWorld;
+  if (runs !== undefined) health.reports.health.releaseRuns.set(REPO, runs);
+  for (const [id, held] of Object.entries(jobs)) health.reports.health.releaseJobs.set(`${REPO}#${id}`, held.map((job, at) => ({ id: at + 1, ...job })));
+  if (changesets !== undefined) health.reports.health.changesets.set(REPO, changesets);
+  return { world: health, asked: () => watched.calls.map((call) => call.op), read: () => readReleaseRuns(neverRun, REPO) };
 }
-const RUNS = "workflows/release.yml/runs";
+const neverRun = (args: string[]): string => { throw new Error(`the code host answers this, not a gh: ${args.join(" ")}`); };
+const FAILED_GUARDS = [{ name: "guards", conclusion: "failure", failedSteps: GUARDS[0].steps }];
+const failedJobsOf = [{ id: 1, name: "guards", steps: GUARDS[0].steps }];
 
 test("the reader makes ONE call while the newest verdict is a success, and three while it is a failure", () => {
-  const ok = fakeGh({ [RUNS]: JSON.stringify([run(1, "push", "success", "2026-10-07T15:40:00Z")]) });
-  assert.deepEqual(readReleaseRuns(ok.gh, REPO), { runs: [run(1, "push", "success", "2026-10-07T15:40:00Z")] });
-  assert.equal(ok.calls.length, 1);
-  assert.ok(ok.calls[0].includes(`repos/${REPO}/actions/workflows/release.yml/runs`) && ok.calls[0].includes("branch=main"));
+  const ok = world({ runs: [run(1, "push", "success", "2026-10-07T15:40:00Z")] });
+  assert.deepEqual(ok.read(), { runs: [run(1, "push", "success", "2026-10-07T15:40:00Z")] });
+  assert.deepEqual(ok.asked(), ["releaseRunsOf"]);
 
-  const bad = fakeGh({ [RUNS]: JSON.stringify(THAT_DAY), "runs/37643562214/jobs": JSON.stringify(GUARDS), "contents/.changeset": JSON.stringify(["README.md", "config.json", ...PENDING]) });
-  const fact = readReleaseRuns(bad.gh, REPO);
-  assert.equal(bad.calls.length, 3);
-  assert.deepEqual(fact?.jobs, GUARDS);
+  const bad = world({ runs: THAT_DAY, jobs: { 37643562214: FAILED_GUARDS }, changesets: ["README.md", "config.json", ...PENDING] });
+  const fact = bad.read();
+  assert.deepEqual(bad.asked(), ["releaseRunsOf", "releaseJobsOf", "changesetNamesOf"]);
+  assert.deepEqual(fact?.jobs, failedJobsOf);
   assert.deepEqual(fact?.pending, PENDING, "README.md and config.json are not changesets");
   assert.equal(reading(fact).status, "tripped");
 });
 
 // A called workflow's jobs are named `<caller job> / <job>`. release.yml calls its publishing workflow as job `release`, so the publishing job is `release / publish`.
-// These are the jobs of run 38332090768 (a11ign/a11ign, `workflow_dispatch` on main, 2026-10-13T01:25:50Z), as the API names and concludes them. The fake returns the projection
-// `readReleaseRuns` asks for, `{name, conclusion}`, so the name match runs for real: a fake that returned a pre-filtered list could not see a wrong name.
+// These are the jobs of run 38332090768 (a11ign/a11ign, `workflow_dispatch` on main, 2026-10-13T01:25:50Z), as the API names and concludes them. The fake code host's `named` jobs are the projection
+// `{name, conclusion}`, so the name match runs for real: a fake that returned a pre-filtered list could not see a wrong name.
 const DISPATCH = 38332090768;
 const PUBLISHED_JOBS = [
   { name: "release / ci gate result on this sha", conclusion: "success" },
@@ -196,34 +203,38 @@ const PROMOTE_ONLY_JOBS = [
 
 test("a dispatch's success clears when its `release / publish` job succeeded, on the REAL job names of run 38332090768", () => {
   const dispatch = run(DISPATCH, "workflow_dispatch", "success", "2026-10-13T01:25:50Z");
-  const published = fakeGh({ [RUNS]: JSON.stringify([dispatch, ...THAT_DAY]), [`runs/${DISPATCH}/jobs`]: JSON.stringify(PUBLISHED_JOBS) });
-  assert.equal(reading(readReleaseRuns(published.gh, REPO)).status, "clear");
-  assert.equal(published.calls.length, 2, "one call for the runs and one for the dispatch's jobs");
+  const published = world({ runs: [dispatch, ...THAT_DAY], jobs: { [DISPATCH]: PUBLISHED_JOBS } });
+  assert.equal(reading(published.read()).status, "clear");
+  assert.deepEqual(published.asked(), ["releaseRunsOf", "releaseJobsOf"], "one call for the runs and one for the dispatch's jobs");
 });
 
 test("a promote-only dispatch (its `release / publish` job skipped) is no verdict: the failure before it still trips", () => {
   const dispatch = run(DISPATCH, "workflow_dispatch", "success", "2026-10-13T01:25:50Z");
-  const promoteOnly = fakeGh({ [RUNS]: JSON.stringify([dispatch, ...THAT_DAY]), [`runs/${DISPATCH}/jobs`]: JSON.stringify(PROMOTE_ONLY_JOBS),
-    "runs/37643562214/jobs": JSON.stringify(GUARDS), "contents/.changeset": JSON.stringify(PENDING) });
-  const fact = readReleaseRuns(promoteOnly.gh, REPO);
+  const promoteOnly = world({ runs: [dispatch, ...THAT_DAY], jobs: { [DISPATCH]: PROMOTE_ONLY_JOBS, 37643562214: FAILED_GUARDS }, changesets: PENDING });
+  const fact = promoteOnly.read();
   assert.equal(reading(fact).status, "tripped", "the dispatch that did not publish does not clear the failure before it");
   assert.equal(reading(fact).discriminator, `${SIGNAL}@37643562214`);
 });
 
 test("a job named just `release` does not publish: no run's jobs carry that name, so it was the wrong name to look for", () => {
   const dispatch = run(DISPATCH, "workflow_dispatch", "success", "2026-10-13T01:25:50Z");
-  const oldName = fakeGh({ [RUNS]: JSON.stringify([dispatch, ...THAT_DAY]), [`runs/${DISPATCH}/jobs`]: JSON.stringify([{ name: "release", conclusion: "success" }]),
-    "runs/37643562214/jobs": JSON.stringify(GUARDS), "contents/.changeset": JSON.stringify(PENDING) });
-  assert.equal(reading(readReleaseRuns(oldName.gh, REPO)).status, "tripped");
+  const oldName = world({ runs: [dispatch, ...THAT_DAY], jobs: { [DISPATCH]: [{ name: "release", conclusion: "success" }], 37643562214: FAILED_GUARDS }, changesets: PENDING });
+  assert.equal(reading(oldName.read()).status, "tripped");
 });
 
 test("the reader's refusals are nulls, never an empty answer: the list, the jobs and the changesets", () => {
-  assert.equal(readReleaseRuns(fakeGh({ [RUNS]: new Error("HTTP 403") }).gh, REPO), null);
-  assert.equal(readReleaseRuns(fakeGh({ [RUNS]: "not json" }).gh, REPO), null);
-  assert.equal(readReleaseRuns(fakeGh({ [RUNS]: "{}" }).gh, REPO), null, "an object where a list was projected is not a list");
-  const partial = readReleaseRuns(fakeGh({ [RUNS]: JSON.stringify(THAT_DAY) }).gh, REPO);
+  const refused = world({});
+  assert.equal(refused.read(), null, "CONTROL of the next: a code host that holds no list cannot be asked");
+  const listRefused = world({ runs: THAT_DAY });
+  listRefused.world.failures.set("releaseRunsOf", new Error("HTTP 403"));
+  assert.equal(listRefused.read(), null);
+  const partial = world({ runs: THAT_DAY }).read();
   assert.deepEqual([partial?.jobs, partial?.pending], [null, null]);
   assert.equal(reading(partial).status, "tripped");
+  const changesetsRefused = world({ runs: THAT_DAY, jobs: { 37643562214: FAILED_GUARDS } });
+  changesetsRefused.world.failures.set("changesetNamesOf", new Error("HTTP 404"));
+  const half = changesetsRefused.read();
+  assert.deepEqual([half?.jobs, half?.pending], [failedJobsOf, null]);
 });
 
 // --- the gate: the signal is WIRED, which is what "within one tick" means ------------------------------------------------------------------

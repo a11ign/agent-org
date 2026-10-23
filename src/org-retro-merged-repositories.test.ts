@@ -1,4 +1,4 @@
-// no-token: gh -- `org-retro.ts` reaches `gh` only through the `readPrs` seam every test here supplies; nothing imported reaches the real one
+// no-token: none -- `org-retro.ts` reads the merged lists through the `readPrs` seam every test here supplies, or (the read-limit case) from the fake code host's pull requests (A11-160, step 8); nothing imported reaches `gh`
 /**
  * a11ign/a11ign#3593: THE RETROSPECTIVE COUNTS MERGED PULL REQUESTS ACROSS EVERY DECLARED REPOSITORY. Its 2026-10-05 reading said "PRs merged: worse, -56" and
  * "tokens per merged PR" doubled, both from a count of ONE repository (a11ign/a11ign, 48) against tokens summed over EVERY session, while `a11ign/agent-org` merged 82.
@@ -12,16 +12,20 @@
  *   a11ign/lab                 3 merged:  5, 15, 25
  * Ten merges; sorted 5 10 15 20 25 30 40 50 60 90, so the median is (25 + 30) / 2 = 27.5, which prints as 28m. The primary alone is 2 merges and a median of 30.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import * as retro_0 from "./org-retro/retro-window-and-journal-patterns.ts";
 import * as retro_1 from "./org-retro/journal-stats-and-verdicts.ts";
 import * as retro_2 from "./org-retro.ts";
-import { readsRowsSince, sinceAnswer } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { holdRepository, withRepositoryReads } from "./plugins/fakes/code-host-health.ts";
 import { parseProjectDeclaration } from "./project-config.ts";
 import { tmpDir } from "./lib/tmp-fixture.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-05T00:22:00Z");
 const WINDOW = { since: NOW - 24 * 3_600_000, until: NOW };
@@ -124,23 +128,27 @@ test("a repository that is unreadable and empty elsewhere: every repository read
 });
 
 test("the read pages past 200 and says so when it hits its limit: a full page is `unknown`, never a count that stopped short", () => {
-  // #5076: the read is the `pullRequests` connection (it was `pr list -R repo --search merged:>= --limit`, a GitHub SEARCH), paged until a row falls before the window.
+  // A11-160 (step 8): the merged list is the fake code host's pull requests of the repository, read newest-updated first; how the plugin pages the connection and names the repository in its variables is held beside the
+  // operation (`plugins/github/rows/health-rows.test.ts`, moved from this case).
   const limit = retro_0.MERGED_READ_LIMIT;
   assert.ok(limit > 200, `the old read was --limit 200; this one is ${limit}`);
   const inWindow = (count: number) => Array.from({ length: count }, (_, i) => ({ ...pr(i + 1, 10), updatedAt: "2026-10-04T12:00:00Z" }));
-  const asked: string[][] = [];
-  const readOver = (rows: any[]) => (args: string[]) => { asked.push(args); return JSON.parse(sinceAnswer(args, rows)); };
-  const paged = retro_0.readMergedSince(AGENT_ORG, WINDOW.since, readOver(inWindow(150))) as any[];
-  assert.equal(paged.length, 150, "the read pages past one page of a hundred");
-  assert.equal(asked.length, 2);
-  assert.deepEqual(readsRowsSince(asked[0]), { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", label: null, repo: AGENT_ORG, after: null },
-    "the repository is named in the variables: a read with none would answer for the working directory's repository only");
-  assert.ok(asked.every((args) => !args.includes("--search") && !args.includes("--limit") && !args.includes("--label")), "and none is a search");
-  assert.equal((retro_0.readMergedSince(AGENT_ORG, WINDOW.since, readOver([...inWindow(1), { ...pr(9, 5, "2026-10-03T00:00:00Z"), updatedAt: "2026-10-04T12:00:00Z" }])) as any[]).length, 1,
+  const host = withRepositoryReads(createFakeCodeHost());
+  substituteCodeHost(host);
+  const hold = (repo: string, rows: any[]) => holdRepository(host.rowsWorld, repo, { pulls: rows.map((row) => ({ number: row.number, body: "", headRefName: `agent/p-${row.number}`, labels: [], isDraft: false, armed: false, merged: true,
+    mergedAt: row.mergedAt, createdAt: row.createdAt, updatedAt: row.updatedAt, comments: [] })) });
+  hold(AGENT_ORG, inWindow(150));
+  assert.equal((retro_0.readMergedSince(AGENT_ORG, WINDOW.since) as any[]).length, 150, "the read pages past one page of a hundred");
+  hold(AGENT_ORG, [...inWindow(1), { ...pr(9, 5, "2026-10-03T00:00:00Z"), updatedAt: "2026-10-04T12:00:00Z" }]);
+  assert.equal((retro_0.readMergedSince(AGENT_ORG, WINDOW.since) as any[]).length, 1,
     "a row updated inside the window and merged before it is read and not counted: it is kept by its own mergedAt");
-  assert.equal(retro_0.readMergedSince(AGENT_ORG, WINDOW.since, () => null), null, "a refused read is null: unknown, never an empty list");
-  assert.equal(retro_0.readMergedSince(AGENT_ORG, WINDOW.since, readOver(inWindow(limit + 1))), retro_0.MERGED_LIMIT_HIT, "a window of more rows than the pages hold says it hit the limit");
-  const hit = retro_0.readMerged({ declaration: THREE, since: WINDOW.since, readPrs: (repo, from) => retro_0.readMergedSince(repo, from, readOver(inWindow(limit + 1))) });
+  host.rowsWorld.failures.set("readMergedPullRequests", new Error("HTTP 502"));
+  assert.equal(retro_0.readMergedSince(AGENT_ORG, WINDOW.since), null, "a refused read is null: unknown, never an empty list");
+  host.rowsWorld.failures.clear();
+  hold(AGENT_ORG, inWindow(limit + 1));
+  assert.equal(retro_0.readMergedSince(AGENT_ORG, WINDOW.since), retro_0.MERGED_LIMIT_HIT, "a window of more rows than the pages hold says it hit the limit");
+  for (const repo of [PRIMARY, LAB]) hold(repo, inWindow(limit + 1));
+  const hit = retro_0.readMerged({ declaration: THREE, since: WINDOW.since });
   assert.deepEqual(hit.map((r: any) => [r.prs, r.limitHit]), [[null, true], [null, true], [null, true]]);
 
   const full = Array.from({ length: limit }, (_, i) => pr(i + 1, 10));
