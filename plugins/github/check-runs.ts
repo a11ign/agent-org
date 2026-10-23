@@ -11,6 +11,9 @@ export function jobOfDetails(detailsUrl: string): { repo: string; runId: number;
   return match === null ? null : { repo: match[1], runId: Number(match[2]), jobId: Number(match[3]) };
 }
 
+/** An error's whole message on one line: the command on its first line and GitHub's reason after it. */
+const wholeMessage = (err: unknown): string => String((err as Error)?.message ?? err).split("\n").map((line) => line.trim()).filter((line) => line !== "").join(" ");
+
 /**
  * The log of the job `detailsUrl` names, its colour codes included: `gh api` exits 1 on a terminal escape sequence unless told to allow it (#767), so the caller strips them. Null when the address
  * names no job or the log could not be read, and the reason is logged.
@@ -21,8 +24,7 @@ export function readCheckLog(detailsUrl: string, gh: Gh, log: (line: string) => 
   try {
     return gh(["api", `repos/${job.repo}/actions/jobs/${job.jobId}/logs`, "--allow-escape-sequences"]);
   } catch (err) {
-    // The whole message: the command on its first line and GitHub's reason after it.
-    log(`the log of the job at ${detailsUrl} could not be read: ${String((err as Error)?.message ?? err).split("\n").map((line) => line.trim()).filter((line) => line !== "").join(" ")}`);
+    log(`the log of the job at ${detailsUrl} could not be read: ${wholeMessage(err)}`);
     return null;
   }
 }
