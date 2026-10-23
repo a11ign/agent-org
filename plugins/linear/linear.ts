@@ -392,6 +392,13 @@ async function completeTicket(client: Client, identifier: string, comment: strin
   return null;
 }
 
+/** Post `body` on the ticket `identifier`, in whatever state it is in (A11-173). */
+async function commentOn(client: Client, identifier: string, body: string): Promise<void> {
+  const found = await issue<{ id: string }>(client, identifier, "id");
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  await postComment(client, identifier, found.id, body);
+}
+
 type Claims = { comments: { nodes: { body: string; createdAt: string }[] } };
 
 /**
@@ -538,6 +545,10 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
 
     async complete(identifier, comment) {
       return completeTicket(client, identifier, comment);
+    },
+
+    async comment(identifier, body) {
+      return commentOn(client, identifier, body);
     },
 
     async claim(identifier, claimant) {

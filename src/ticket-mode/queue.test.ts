@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
-import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
+import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, talkRound, type Outcome, type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, checkRound, conflictRound, holdForSession, recordCheckHeads, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
-import { nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
+import { clearPartial, nextStepRuns, planStepsUnread, queueNextStep, recordPlanSteps } from "./queue/queue-next-step.ts";
+import { afterMergeDue, afterMergeUnposted, markAfterMergePosted, markAfterMergeUnposted, recordAfterMerge } from "./queue/queue-after-merge.ts";
 import { talk } from "./queue/talk.ts";
 import { requeueForUpdate } from "./queue/queue-pins.ts";
 import { declinedPrompt, toldDeclined } from "./queue/queue-declined.ts";
@@ -1138,6 +1139,70 @@ test("A11-167: a retried review round keeps the text it was briefed with, so it 
   const failed = finish({ ...queuedA(), entries: queuedA().entries.map((e) => ({ ...e, review: [pr], briefedAgainst: read, plannedWith: { model: "opus", effort: "max" } })) }, "A", { kind: "crashed", reason: "x" }, 5);
   const [retried] = retry(failed, "A", 9).entries;
   assert.deepEqual([retried.briefedAgainst, retried.plannedWith], [read, { model: "opus", effort: "max" }]);
+});
+
+test("A11-173: a done outcome clears the run's partial; checked and reviewed keep it", () => {
+  const declared = (outcome: Outcome) => finish(mergedPartial("a live check the chairman runs after merge"), "A", outcome, 20).entries[0].partial;
+  assert.equal(declared({ kind: "done", reason: "PR merged", evidence: ["e"] }), undefined, "done says nothing remains to build");
+  assert.equal(declared({ kind: "checked", reason: "nothing to change" }), "a live check the chairman runs after merge", "checked keeps it");
+  assert.equal(declared({ kind: "reviewed", prs: [{ repo: "agent-org", url: PR_1 }] }), "a live check the chairman runs after merge", "reviewed keeps it");
+  assert.equal(declared({ kind: "crashed", reason: "boom" }), "a live check the chairman runs after merge", "a crash keeps it");
+  assert.equal(clearPartial(mergedPartial("the docs"), "A").entries[0].partial, undefined, "clearPartial drops it on the run it names");
+  assert.equal(clearPartial(mergedPartial("the docs"), "B").entries[0].partial, "the docs", "and leaves another run's");
+});
+
+test("A11-173: a merged partial run that names no step is due the step after the last recorded one once the plan's size is known, and never before", () => {
+  assert.deepEqual(nextStepRuns(mergedPartial("step 2 of the plan (identity)")), [], "a plan not counted yet queues nothing");
+  assert.deepEqual(nextStepRuns(mergedPartial("step 2 of the plan (identity)", { planSteps: 9 })).map(({ step }) => step), [{ step: 2, of: 9, prs: [PR_1], counted: true }], "the step it names, marked as counted by the board");
+  assert.deepEqual(nextStepRuns(mergedPartial("the identity work", { planSteps: 9, steps: [{ step: 1, of: 9, prs: [PR_2] }] })).map(({ step }) => step), [{ step: 2, of: 9, prs: [PR_1], counted: true }], "no step named: the one after the last recorded");
+  assert.deepEqual(nextStepRuns(mergedPartial("the identity work", { planSteps: 0 })), [], "a plan with no numbered steps stops");
+  assert.deepEqual(nextStepRuns(mergedPartial("the identity work", { planSteps: 1 })), [], "a one-step plan has no step after its first");
+  const [queued] = queueNextStep(mergedPartial("step 2 of the plan", { planSteps: 9 }), "A", { step: 2, of: 9, prs: [PR_1], counted: true }, 50).entries;
+  assert.deepEqual([queued.steps, queued.planSteps], [[{ step: 2, of: 9, prs: [PR_1], counted: true }], 9], "the next step's run keeps the count and records the step as counted");
+  const asked = finish(markRunning(markStarting({ ...emptyQueue(1), entries: [{ ...queued, session: "s-2" }] }, "A", 51), "A", "w1", "w1:p1"), "A", { kind: "draft-pr", prs: [{ repo: "agent-org", url: PR_2 }], partial: "step 3 of 9" }, 52);
+  assert.equal(approve(asked, "A", 60).entries[0].planSteps, 9, "a review round carries it");
+});
+
+test("A11-173: the plan's step count is wanted by a merged partial run that gives no total, once, and 0 is a count", () => {
+  assert.deepEqual(planStepsUnread(mergedPartial("step 2 of the plan")).map((e) => e.ticket.key), ["A"]);
+  assert.deepEqual(planStepsUnread(mergedPartial("the identity work")).map((e) => e.ticket.key), ["A"]);
+  assert.deepEqual(planStepsUnread(mergedPartial("step 2 of 9")), [], "the declaration gives the total");
+  assert.deepEqual(planStepsUnread(mergedPartial("the work", { steps: [{ step: 1, of: 9, prs: [] }] })), [], "the record gives it");
+  assert.deepEqual(planStepsUnread(mergedPartial("the work", { planSteps: 0 })), [], "already counted, even as 0");
+  assert.deepEqual(planStepsUnread(mergedPartial("the work", { partial: undefined })), [], "no declaration");
+  assert.deepEqual(planStepsUnread(recordPullStates(mergedPartial("the work"), new Map([["A", { [PR_1]: "open" as const }]]))), [], "a pull request still open");
+  assert.deepEqual(planStepsUnread(mergedPartial("the work", { trackerState: "completed" })), [], "a settled ticket");
+  assert.equal(recordPlanSteps(mergedPartial("the work"), "A", 0).entries[0].planSteps, 0);
+  assert.equal(recordPlanSteps(queuedA(), "A", 9).entries[0].planSteps, undefined, "recorded on a finished run only");
+});
+
+const AFTER_MERGE_TICKET = { ...ticket("A"), description: "## Done-when\n\n### Before merge\n\n- a test\n\n### After merge (who runs it)\n\n- the laptop run. The chairman, after merge." };
+/** Ticket A, whose description has an After-merge line, ended on a ready pull request that merged. */
+const mergedWithChecks = (over: Partial<Queue["entries"][number]> = {}): Queue => {
+  const queue = finish(markRunning(markStarting(enqueue(emptyQueue(1), [AFTER_MERGE_TICKET], choice, 0), "A", 1), "A", "w1", "w1:p1"), "A", { kind: "ready-pr", prs: [{ repo: "agent-org", url: PR_1 }] }, 9);
+  return { ...recordPullStates(queue, new Map([["A", { [PR_1]: "merged" as const }]])), entries: recordPullStates(queue, new Map([["A", { [PR_1]: "merged" as const }]])).entries.map((e) => ({ ...e, ...over })) };
+};
+
+test("A11-173: a Completed run whose pull requests merged is due its After-merge lines once, and a declared, unmerged, listed or line-less one is not", () => {
+  const lines = [{ line: "the laptop run. The chairman, after merge.", owner: "The chairman" }];
+  assert.deepEqual(afterMergeDue(mergedWithChecks()).map(({ entry, lines: due }) => [entry.ticket.key, due]), [["A", lines]]);
+  const recorded = recordAfterMerge(mergedWithChecks(), "A", lines);
+  assert.deepEqual(recorded.entries[0].afterMerge, lines);
+  assert.deepEqual(afterMergeDue(recorded), [], "recorded once, never again");
+  assert.deepEqual(afterMergeDue(mergedWithChecks({ partial: "step 1 of 3" })), [], "a partial run is not Completed");
+  assert.deepEqual(afterMergeDue(recordPullStates(mergedWithChecks(), new Map([["A", { [PR_1]: "open" as const }]]))), [], "the pull request is still open");
+  assert.deepEqual(afterMergeDue(mergedWithChecks({ ticket: ticket("A") })), [], "a ticket with no After-merge line");
+  assert.deepEqual(afterMergeDue(mergedWithChecks({ trackerState: "completed" })).map(({ entry }) => entry.ticket.key), ["A"], "a ticket the tracker closed on Closes is listed too");
+  assert.deepEqual(afterMergeUnposted(recorded).map((e) => e.ticket.key), ["A"], "listed and not yet posted");
+  const posted = markAfterMergePosted(recorded, "A");
+  assert.deepEqual(afterMergeUnposted(posted), [], "marked posted: not posted again");
+  assert.deepEqual(afterMergeUnposted(markAfterMergeUnposted(posted, "A")).map((e) => e.ticket.key), ["A"], "unmarked after a failed post: tried again");
+  assert.deepEqual(afterMergeUnposted(mergedWithChecks()), [], "nothing is posted that was never listed");
+  const carried = talkRound(posted.entries[0], 70);
+  assert.deepEqual([carried.afterMerge, carried.afterMergePosted], [lines, true], "a talk session opened on the run keeps what was listed and posted, so it is not posted again");
+  const done = finish(markRunning(markStarting(enqueue(emptyQueue(1), [AFTER_MERGE_TICKET], choice, 0), "A", 1), "A", "w1", "w1:p1"), "A", { kind: "done", reason: "r", evidence: ["e"] }, 9);
+  assert.equal(runStatus(done.entries[0]), "completed");
+  assert.deepEqual(afterMergeDue(done), [], "a done with no merged pull request verified every Done-when item: nothing is left to list");
 });
 
 test("A11-174: a waiting run keeps the first line of its dialog, a run that stops waiting drops it, and a first line is ignored for a status that is not waiting", () => {

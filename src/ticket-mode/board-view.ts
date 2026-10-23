@@ -10,6 +10,7 @@
 
 /** The fields of a ticket the board shows. */
 import { openPulls, pullsOf, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
+import { pullLabel } from "./board-view/pull-label.ts";
 
 /**
  * The model and effort a run uses, as its row names them: a ticket still to be planned names its planning run's too, and one worked from a
@@ -113,11 +114,6 @@ export type WriterRunView = Readonly<{
   workspace?: string; pane?: string; failure?: string; tickets: readonly WriterTicketView[];
 }>;
 
-/** A pull request's address as the board names it: `owner/repo #number`, read off its url (A11-119). */
-export function pullLabel(url: string): string {
-  return url.replace("https://github.com/", "").replace("/pull/", " #");
-}
-
 /**
  * The review line of each open pull request of a run that the pool has read (A11-119): `owner/repo #n: <its review state>`. A pull request the pool has not
  * read shows none. `reviews` is the queue's `pulls`, a url to the words its review state reads as (`pullReviewText`).
@@ -133,4 +129,18 @@ export function reviewLinesOf(entry: ViewEntry, reviews: Readonly<Record<string,
 export function unlistedPulls(entries: readonly ViewEntry[], reviews: Readonly<Record<string, string>>): { url: string; label: string; text: string }[] {
   const listed = new Set(entries.flatMap((entry) => pullsOf(entry).map(({ url }) => url)));
   return Object.entries(reviews).filter(([url]) => !listed.has(url)).map(([url, text]) => ({ url, label: pullLabel(url), text }));
+}
+
+/** A line of the board's "After-merge checks" list (A11-173): the ticket it belongs to, with its address when the entry has one, the line, and who runs it. */
+export type AfterMergeCheck = Readonly<{ key: string; url: string | null; line: string; owner: string }>;
+
+/** The words a check says when its line names no one. */
+export const OWNER_NOT_NAMED = "owner not named";
+
+/**
+ * The After-merge checks of every run on the board that has listed some (A11-173): one row per line, in the order of the runs, each with who runs it or "owner not named". A row leaves with
+ * its run, since the list is read from the runs; there is nothing else to remove it from. PURE.
+ */
+export function afterMergeChecks(entries: readonly ViewEntry[]): AfterMergeCheck[] {
+  return entries.flatMap((entry) => (entry.afterMerge ?? []).map(({ line, owner }) => ({ key: entry.ticket.key, url: entry.ticket.url ?? null, line, owner: owner ?? OWNER_NOT_NAMED })));
 }

@@ -5,6 +5,7 @@
 // offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
 // write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
 //
+// CONTRACT 1.4 (A11-173) adds the optional `comment`: one call posts one comment on a ticket in any state, and the suite checks that it is no error on the known ticket and refused for a ticket the tracker has none of.
 // CONTRACT 1.3 (A11-167) adds the optional `texts` and `detachPlan`, and `updatedAt` of a ticket: `texts` answers the description a `read` gives with a time, and `detachPlan` of a title the ticket has no attachment under is no error.
 // CONTRACT 1.2 (A11-168) adds the optional `claim` and `claims`, checked together: a claim is read back as the latest, and a repeated one changes nothing.
 // CONTRACT 1.1 (A11-159): a tracker also declares what a new-ticket run files with (`TrackerWriting`, the plugin's manifest data). The caller passes it, and the suite checks that it
@@ -195,6 +196,16 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       expect(!(await expectMap(source.claims!([probe.missing]), "claims()")).has(probe.missing), `claims() must leave out ${probe.missing}, which the tracker has none of`);
     },
   },
+  "comment posts on a ticket in any state, and is refused for a key the tracker has none of": optional("comment", async ({ source, probe }) => {
+    await source.comment!(probe.known, "commented by the conformance suite");
+    let refused = false;
+    try {
+      await source.comment!(probe.missing, "commented by the conformance suite");
+    } catch {
+      refused = true;
+    }
+    expect(refused, `comment() must throw for ${probe.missing}, which the tracker has none of`);
+  }),
   "complete finishes a ticket once and leaves a finished one alone": optional("complete", async ({ source, probe }) => {
     await source.complete!(probe.known, "completed by the conformance suite");
     if (typeof source.stateTypes === "function") {

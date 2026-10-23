@@ -18,7 +18,7 @@ export type TicketNode<T extends ViewTicket = ViewTicket> = Readonly<{ ticket: T
 
 /** The fields of a queue entry the board reads. */
 export type ViewEntry = Readonly<{
-  ticket: Readonly<{ key: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
+  ticket: Readonly<{ key: string; url?: string }>; phase: string; outcome?: Readonly<{ kind: string; prs?: readonly PullRef[]; edit?: ViewEdit; reason?: string; where?: string; unreadable?: boolean }>; waiting?: boolean;
   /** What the first line of the dialog a waiting run sits on says, when the pool could read one (A11-174). */
   prompt?: string;
   /** A Claude Code safety prompt the pool answered No to on this run, and the command it asked about (A11-174). */
@@ -58,6 +58,10 @@ export type ViewEntry = Readonly<{
   partial?: string;
   /** The plan steps of this ticket whose pull requests merged, in order, with the pull requests that finished each: the run is the next step (A11-168). */
   steps?: readonly MergedStep[];
+  /** The After-merge lines of the ticket's Done-when, listed once its pull requests merged, each with who runs it (A11-173). Unset until listed; empty is never recorded. */
+  afterMerge?: readonly AfterMergeLine[];
+  /** How many numbered steps the ticket's plan has, read once from the plan file when a partial pull request merged without saying (A11-173). 0 when the plan has none. */
+  planSteps?: number;
   /** The repository its batch's planner said its work lands in, or null when it named none. */
   plannedRepo?: string | null;
   /** The repository its project names, or null when it names none: what a run without a planned repository stacks in (see `repoOf`). */
@@ -90,6 +94,9 @@ export type ViewEntry = Readonly<{
   /** Each open pull request's head now, and whether the newest verdict on it is an approval, by URL, as the last watch read them (A11-153). */
   pullHeads?: Readonly<Record<string, PullHead>>;
 }>;
+
+/** A line of a ticket's After-merge section, and who runs it, or null when the line names no one (A11-173). */
+export type AfterMergeLine = Readonly<{ line: string; owner: string | null }>;
 
 /** A pull request's head commit, and whether a reviewer other than the workers' account has approved it at that commit. */
 export type PullHead = Readonly<{ head: string; approved: boolean }>;

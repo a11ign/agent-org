@@ -534,6 +534,22 @@ test("A11-92: complete() is refused when Linear answers success false to the mov
   await assert.rejects(linearSource({ key: "k", fetch: refusedComment.fetch }).complete!("NBF-1", "c"), /Linear did not post a comment on NBF-1/);
 });
 
+test("A11-173: comment() posts the body through commentCreate on the ticket's id, in whatever state the ticket is in, and moves nothing", async () => {
+  const { fetch, requests } = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, commented]);
+  await linearSource({ key: "k", fetch }).comment!("NBF-1", "After-merge checks for NBF-1");
+  const bodies = requests.map((r) => JSON.parse(String(r.init.body)));
+  assert.equal(requests.length, 2, "one read of the ticket, one comment");
+  assert.deepEqual(bodies[1].variables, { issueId: "uuid-1", body: "After-merge checks for NBF-1" });
+  assert.match(bodies[1].query, /commentCreate/);
+});
+
+test("A11-173: comment() is refused when Linear has no ticket by that key, or answers success false", async () => {
+  const none = linear([{ data: { issues: { nodes: [] } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: none.fetch }).comment!("NBF-9", "c"), /Linear has no ticket NBF-9/);
+  const refused = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, { data: { commentCreate: { success: false } } }]);
+  await assert.rejects(linearSource({ key: "k", fetch: refused.fetch }).comment!("NBF-1", "c"), /Linear did not post a comment on NBF-1/);
+});
+
 test("A11-91: updateTicketText() writes only the title and description it is given, to the ticket's id", async () => {
   const { fetch, requests } = linear([{ data: { issues: { nodes: [{ id: "uuid-1" }] } } }, moved]);
   await linearSource({ key: "k", fetch }).updateTicketText!("NBF-1", { title: "New title" });

@@ -6,16 +6,19 @@ import { headsToRead, readBlockers, readHeads } from "./pool-start.ts";
 import { completableRuns, MAX_FEEDBACK_ROUNDS, recordPullStates, recordRetargets, recordStackBase, recordTrackerStates, roundsLeft, unsettledKeys } from "./queue/queue-transitions.ts";
 import { SETTLED, type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { nextStepRuns, queueNextStep } from "./queue/queue-next-step.ts";
+import { afterMergeDue, afterMergeUnposted, markAfterMergePosted, markAfterMergeUnposted, recordAfterMerge } from "./queue/queue-after-merge.ts";
 import { moveOutcomeHeads } from "./queue/queue-pull-heads.ts";
 import { log, messageOf, update } from "./pool-state.ts";
 import { restoreStranded } from "./pool-settle.ts";
 import { startStackConflictRound } from "./pool-watch.ts";
 import { openPulls, pullsOf, type StackBaseRecord } from "./board-view/view-types-and-filters.ts";
+import { pullLabel } from "./board-view/pull-label.ts";
 import { resumesOnConflict, settledByPulls } from "./board-view/pull-status-and-notes.ts";
 import { recordClosedByBoard } from "./queue.ts";
 import { afterConflictCleared, afterMerge, conflictFeedback, mergedIn, mergeBaseIn, mergeDue, protectStack, readStackBase, releaseStack, remoteHead, stackBaseFile, stackBaseIn, stackRef, type MergeResult } from "./stack-rebase.ts";
 import { worktreePath } from "./worktree.ts";
 import { followTicketTexts, learnFromBlockers } from "./pool-ticket-text.ts";
+import { readPlanSteps } from "./pool-plan-steps.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /**
@@ -45,8 +48,10 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       // the tracker could not be asked: the next refresh asks again
     }
   }
+  await readPlanSteps(ctx);
   queueNextSteps(ctx);
   await completeMerged(ctx);
+  await noteAfterMerge(ctx);
   // What each queued run's blockers' merged pull requests found reaches its planner, and a change in a ticket's description reaches its stamped plan or its live worker (A11-167).
   learnFromBlockers(ctx);
   try {
@@ -70,8 +75,40 @@ function queueNextSteps(ctx: PoolContext): void {
   const { now, store } = ctx;
   for (const { entry, step } of nextStepRuns(store.get())) {
     update(ctx, (queue) => queueNextStep(queue, entry.ticket.key, step, now()));
-    log(`${entry.ticket.key}: step ${step.step} of ${step.of} merged; step ${step.step + 1} queued`);
+    const counted = step.counted ? `the Partial line named no step; counted as step ${step.step} of ${step.of}; ` : `step ${step.step} of ${step.of} merged; `;
+    log(`${entry.ticket.key}: ${counted}step ${step.step + 1} queued`);
   }
+}
+
+/**
+ * List the After-merge checks of each Completed run whose pull requests merged (A11-173): the ticket's After-merge lines, with who runs each, are recorded on the run, which the board's
+ * "After-merge checks" list shows, and then posted once as a comment on the ticket, whoever completed it. The post is marked before it is sent, so a second sweep never posts it beside the
+ * first, and unmarked when it fails, so the next sweep tries again. A tracker that cannot comment has them on the board alone, and the log says so.
+ */
+async function noteAfterMerge(ctx: PoolContext): Promise<void> {
+  const { source, store } = ctx;
+  for (const { entry, lines } of afterMergeDue(store.get())) {
+    update(ctx, (queue) => recordAfterMerge(queue, entry.ticket.key, lines));
+    if (source.comment === undefined) log(`${entry.ticket.key}: its After-merge checks are on the board; this tracker cannot post them as a comment`);
+  }
+  if (source.comment === undefined) return;
+  for (const entry of afterMergeUnposted(store.get())) {
+    const key = entry.ticket.key;
+    update(ctx, (queue) => markAfterMergePosted(queue, key));
+    try {
+      await source.comment(key, afterMergeComment(entry));
+    } catch (err) {
+      update(ctx, (queue) => markAfterMergeUnposted(queue, key));
+      log(`${key}: its After-merge checks could not be posted as a comment, and are tried again at the next refresh: ${messageOf(err)}`);
+    }
+  }
+}
+
+/** The comment that lists a merged run's After-merge checks on its ticket. PURE. */
+function afterMergeComment(entry: Entry): string {
+  const merged = pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] === "merged").map(({ url }) => pullLabel(url));
+  const lines = (entry.afterMerge ?? []).map(({ line, owner }) => `- ${line} (${owner ?? "owner not named"})`);
+  return [`After-merge checks for ${entry.ticket.key}, now that ${merged.join(", ")} merged:`, ...lines].join("\n");
 }
 
 /**

@@ -22,7 +22,8 @@ test("the fake tracker passes the tracker contract suite, and the checks that ra
     "detachPlan of a title the ticket has no attachment under changes nothing and is no error", "pullStates answers a Map by key", "blockers answers a Map, leaving out a key with no ticket",
     "projectSummaries answers a Map, leaving out a key with no project", "keywords name the words a pull request body is read by",
     "updateTicketText writes the fields it is given and no others", "addBlockers records a relation once, and again without error",
-    "claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing", "complete finishes a ticket once and leaves a finished one alone",
+    "claim records the claimant, claims reads the latest one back, and a repeated claim changes nothing",
+    "comment posts on a ticket in any state, and is refused for a key the tracker has none of", "complete finishes a ticket once and leaves a finished one alone",
     "writing grants the create and attach tools, and its filing pattern covers every one", "writing refuses a creation that names an id, which would update a ticket",
     "writing reads a created ticket's key back by the shape it declares", "writing numbers every priority, and none is 0",
   ]);
@@ -82,4 +83,13 @@ test("download writes the files a ticket holds, with their text, into the folder
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("A11-173: comment posts one comment on a ticket in any state, moves nothing, and is refused for a ticket the tracker has none of", async () => {
+  const fake = seeded();
+  await fake.complete!("FAKE-1", "completed");
+  await fake.comment!("FAKE-1", "After-merge checks for FAKE-1");
+  assert.deepEqual(fake.comments, [{ key: "FAKE-1", text: "completed" }, { key: "FAKE-1", text: "After-merge checks for FAKE-1" }], "one call, one comment, on a ticket already completed");
+  assert.equal(fake.ticketOf("FAKE-1")?.statusType, "completed", "and the ticket is where it was");
+  await assert.rejects(fake.comment!("FAKE-404", "text"), /no ticket/);
 });

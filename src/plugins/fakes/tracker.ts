@@ -96,7 +96,7 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
 }
 
 /** The writes: what the board does to a ticket. Each is idempotent where the contract says so. */
-function writesOf(held: Tickets, comments: { key: string; text: string }[], claimed: { key: string; claimant: string }[]): Pick<TicketSource, "attachPlan" | "detachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "updateTicketText" | "claim"> {
+function writesOf(held: Tickets, comments: { key: string; text: string }[], claimed: { key: string; claimant: string }[]): Pick<TicketSource, "attachPlan" | "detachPlan" | "moveToWorkingState" | "restoreState" | "addBlockers" | "complete" | "comment" | "updateTicketText" | "claim"> {
   return {
     async attachPlan(key, files, state) {
       const entry = heldOf(held, key);
@@ -130,6 +130,10 @@ function writesOf(held: Tickets, comments: { key: string; text: string }[], clai
       comments.push({ key, text: comment });
       setStatus(entry, "Done", "completed");
       return null;
+    },
+    async comment(key, body) {
+      heldOf(held, key);
+      comments.push({ key, text: body });
     },
     async claim(key, claimant) {
       const entry = heldOf(held, key);
