@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { markOutcomeStale, PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parsePaths } from "./overlap.ts";
+import { stepPathsOf } from "./plan-step-sections.ts";
 import { availableParallelism, loadavg } from "node:os";
 import { talk, talkFailed } from "./queue/talk.ts";
 import { markWriterRunning, markWriterStarting, nextStarts, recordWriterPin, writerFailed, writerOf, writerToStart } from "./queue.ts";
@@ -280,18 +281,23 @@ const withConflict = (entry: Entry, feedback: string): Entry => {
   return { ...entry, feedback: `${entry.feedback}\n${feedback}` };
 };
 
-/** The repository-prefixed paths a ticket's plan files declare in their `## Paths` sections, each once. A file that is not a plan, or is too large, declares none. */
-function pathsIn(files: readonly string[], plan: string | null): string[] {
-  if (plan === null) return [];
+/**
+ * What a ticket's plan files declare of the files its work touches: the repository-prefixed paths of their `## Paths` sections, each once, and the paths each step section lists, by step number
+ * (A11-175, see `plan-step-sections.ts`). A file that is not a plan, or is too large, declares none. The first plan file to list a step's paths gives them.
+ */
+function pathsIn(files: readonly string[], plan: string | null): { paths: string[]; stepPaths: Record<string, string[]> } {
+  const found = { paths: [] as string[], stepPaths: {} as Record<string, string[]> };
+  if (plan === null) return found;
   const pattern = new RegExp(plan);
-  const paths: string[] = [];
   for (const file of files) {
     if (!pattern.test(basename(file)) || statSync(file).size > PLAN_FILE_BYTES) continue;
-    for (const path of parsePaths(readFileSync(file, "utf8"))) {
-      if (!paths.includes(path)) paths.push(path);
+    const text = readFileSync(file, "utf8");
+    for (const path of parsePaths(text)) {
+      if (!found.paths.includes(path)) found.paths.push(path);
     }
+    for (const [step, paths] of Object.entries(stepPathsOf(text))) found.stepPaths[step] ??= paths;
   }
-  return paths;
+  return found;
 }
 
 /**
@@ -302,6 +308,7 @@ function pathsIn(files: readonly string[], plan: string | null): string[] {
 async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<void> {
   if (entries.length === 0) return;
   const found = new Map<string, readonly string[]>();
+  const stepFound = new Map<string, Readonly<Record<string, readonly string[]>>>();
   const stamps = new Map<string, PlannedAgainst | null>();
   const failed = new Map<string, string>();
   for (const { ticket } of entries) {
@@ -312,11 +319,13 @@ async function readPaths(ctx: PoolContext, entries: readonly Entry[]): Promise<v
       failed.set(ticket.key, messageOf(err).split("\n")[0]);
       continue;
     }
-    found.set(ticket.key, pathsIn(files, ctx.settings.plan));
+    const declared = pathsIn(files, ctx.settings.plan);
+    found.set(ticket.key, declared.paths);
+    stepFound.set(ticket.key, declared.stepPaths);
     // The plan's stamp is read with its paths, from the same download: it says which text of the ticket the plan was written against (A11-167).
     stamps.set(ticket.key, plannedAgainstIn(files, ctx.settings.plan));
   }
-  update(ctx, (queue) => recordPlannedAgainst(recordPathsFailure(recordPaths(queue, found), failed), stamps));
+  update(ctx, (queue) => recordPlannedAgainst(recordPathsFailure(recordPaths(queue, found, stepFound), failed), stamps));
 }
 
 /**

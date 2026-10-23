@@ -505,9 +505,9 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 /**
  * What every plan says of the paths its work touches, in its one `## Paths` section: the board's overlap wait reads it (`overlap.ts`), and `pr:open`
  * reads it as the Region its pull request's diff is checked against (A11-125). The board holds back a ticket whose paths overlap a run in progress, so
- * the list must be complete.
+ * the list must be complete. A plan in numbered steps also lists each step's own paths in its step section, which is all the board holds for a run on that step (A11-175).
  */
-const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. That one section is what the board's overlap wait and `pr:open` both read, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says.";
+const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. That one section is what the board's overlap wait and `pr:open` both read, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says. A plan delivered in numbered steps, one pull request each, gives each step a `### Step <N> of <M>: <title>` section that ends with that step's own `- \`<repo>:<path>\`` bullets: the board holds only the current step's paths and its open pull requests' files, and gives a reviewer that step's section. `## Paths` still lists every path of every step, because `pr:open` reads it as the Region.";
 
 /**
  * Step 5 of the brief, the commit. With the machine's pre-PR review skill named, the review runs after the commit, on the whole diff, before a push or a

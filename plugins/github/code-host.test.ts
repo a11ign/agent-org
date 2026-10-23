@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { corePolicy } from "../../src/plugins/policy.ts";
+import { settledGreenOf, unrequiredRedOf } from "../../src/work-gate/pr-orders.ts";
 import { createCodeHost } from "./code-host.ts";
 
 const URL = "https://github.com/netboxlabs/nbl-ui-netbox/pull/806";
@@ -37,7 +38,7 @@ test("a read of feedback leaves out the accounts the board is told to ignore, as
 test("a read of a pull request's review state asks GitHub for the fields the policy names, and the policy judges what it read", () => {
   const asked: string[][] = [];
   const pull = { headRefOid: HEAD, reviews: [{ author: { login: "a11ign-reviewer" }, state: "APPROVED", commit: { oid: HEAD }, submittedAt: at(5) }], author: { login: "someone" }, isCrossRepository: true, statusCheckRollup: [] };
-  const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author", trustOf: (pr) => (pr.isCrossRepository === true ? "outside" : "inside"), settledOf: (pr) => pr.statusCheckRollup.length === 0 }));
+  const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author", trustOf: (pr) => (pr.isCrossRepository === true ? "outside" : "inside"), settledOf: (pr) => pr.statusCheckRollup.length === 0, unrequiredRedOf: () => [] }));
   const host = createCodeHost(fakePluginDeps({ policy, exec: (_file, args) => { asked.push([...args]); return { status: 0, stdout: JSON.stringify(pull), stderr: "" }; } }));
   const state = host.readReviewState(URL);
   assert.deepEqual(asked, [["pr", "view", "806", "--repo", "netboxlabs/nbl-ui-netbox", "--json", "headRefOid,reviews,author"]]);
@@ -54,7 +55,7 @@ test("a host whose reviewer gate does not load refuses the read by the gate's ow
 });
 
 test("a pull request GitHub does not say is null, never a reading: no head, an address that is none, and a refused gh", () => {
-  const policy = corePolicy(() => ({ fields: "headRefOid", trustOf: () => "inside", settledOf: () => true }));
+  const policy = corePolicy(() => ({ fields: "headRefOid", trustOf: () => "inside", settledOf: () => true, unrequiredRedOf: () => [] }));
   const answering = (stdout: string, status = 0) => createCodeHost(fakePluginDeps({ policy, exec: () => ({ status, stdout, stderr: status === 0 ? "" : "gh: boom" }) }));
   assert.equal(answering("{}").readReviewState(URL), null, "no head is no reading");
   assert.equal(answering("{}", 1).readReviewState(URL), null);
@@ -105,4 +106,53 @@ test("A11-119: a repository's open pull request urls are listed, and an unanswer
   assert.equal(listed(() => ({ status: 1, stdout: "", stderr: "gh exited 1" })), null, "a refused gh is no reading");
   assert.equal(listed(ok("not json")), null);
   assert.equal(listed(ok(JSON.stringify(Array.from({ length: 200 }, (_, i) => ({ number: i, body: "" }))))), null, "a list at the limit may be cut short");
+});
+
+// A11-175: a head is settled when the checks the base REQUIRES have settled green. The plugin reads which are required from GitHub (`isRequired`), only when the rollup is not all green, and core's judge decides.
+const lab = (name: string, conclusion: string) => ({ name, status: "COMPLETED", conclusion, completedAt: at(1) });
+const LAB_ROLLUP = [lab("gate", "SUCCESS"), lab("refusalOwners", "SUCCESS"), lab("checks (own)", "SUCCESS"), lab("checks (cross-repo)", "FAILURE")];
+const requiredAnswer = (required: string[], all: string[]) => JSON.stringify({ data: { repository: { pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes:
+  all.map((name) => ({ __typename: "CheckRun", name, isRequired: required.includes(name) })) } } } }] } } } } });
+
+/** A code host over a scripted `gh`: `pr view` answers the pull request, `api graphql` answers which of its checks are required (or fails when `required` is null). */
+function hostWithChecks(rollup: unknown[], required: string[] | null) {
+  const asked: string[][] = [];
+  const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf }));
+  const pull = { headRefOid: HEAD, reviews: [], author: { login: "someone" }, statusCheckRollup: rollup };
+  const exec = (_file: string, args: readonly string[]) => {
+    asked.push([...args]);
+    if (args[0] === "pr") return { status: 0, stdout: JSON.stringify(pull), stderr: "" };
+    return required === null ? { status: 1, stdout: "", stderr: "gh: HTTP 502" } : { status: 0, stdout: requiredAnswer(required, rollup.map((check) => (check as { name: string }).name)), stderr: "" };
+  };
+  return { host: createCodeHost(fakePluginDeps({ policy, exec })), asked };
+}
+
+test("A11-175: readReviewState is settled when the required checks are green and an unrequired one is red, and reads isRequired only when the rollup is not green", () => {
+  const { host, asked } = hostWithChecks(LAB_ROLLUP, ["gate", "refusalOwners", "checks (own)"]);
+  const state = host.readReviewState(URL);
+  assert.deepEqual([state?.settled, state?.unrequiredRed], [true, ["checks (cross-repo)"]], "lab#144: the required checks are green, the red one is named and holds nothing");
+  assert.deepEqual(asked.map((args) => args.slice(0, 2)), [["pr", "view"], ["api", "graphql"]]);
+  assert.ok(asked[1].some((arg) => arg.includes("isRequired(pullRequestNumber: $number)")), "GitHub's own answer for the pull request's base, as the board's failing checks read it");
+  assert.ok(asked[1].includes("number=806") && asked[1].includes("repo=nbl-ui-netbox") && asked[1].includes("owner=netboxlabs"));
+
+  const green = hostWithChecks(LAB_ROLLUP.map((check) => ({ ...check, conclusion: "SUCCESS" })), []);
+  const settled = green.host.readReviewState(URL);
+  assert.deepEqual([settled?.settled, settled?.unrequiredRed], [true, undefined], "an all-green rollup is settled and names nothing");
+  assert.equal(green.asked.length, 1, "and asks GitHub only the one question: which checks are required is read when something is not green");
+
+  const requiredRed = hostWithChecks(LAB_ROLLUP, ["gate", "checks (cross-repo)"]).host.readReviewState(URL);
+  assert.deepEqual([requiredRed?.settled, requiredRed?.unrequiredRed], [false, undefined], "a required check that failed holds the start");
+
+  const pending = hostWithChecks([lab("gate", "SUCCESS"), { name: "checks (cross-repo)", status: "IN_PROGRESS", conclusion: null }], ["gate"]).host.readReviewState(URL);
+  assert.deepEqual([pending?.settled, pending?.unrequiredRed], [true, undefined], "an unrequired check still running holds nothing either");
+});
+
+test("A11-175: a list of required checks GitHub would not give, or that is empty, counts every check, so the reviewer waits as it did", () => {
+  const unreadable = hostWithChecks(LAB_ROLLUP, null).host.readReviewState(URL);
+  assert.deepEqual([unreadable?.settled, unreadable?.unrequiredRed], [false, undefined], "an unreadable answer is not 'nothing is required'");
+  const none = hostWithChecks(LAB_ROLLUP, []).host.readReviewState(URL);
+  assert.deepEqual([none?.settled, none?.unrequiredRed], [false, undefined], "a branch that requires nothing counts every check");
+  const odd = createCodeHost(fakePluginDeps({ policy: corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf })),
+    exec: (_file, args) => ({ status: 0, stdout: args[0] === "pr" ? JSON.stringify({ headRefOid: HEAD, reviews: [], statusCheckRollup: LAB_ROLLUP }) : "not json", stderr: "" }) }));
+  assert.equal(odd.readReviewState(URL)?.settled, false, "an answer that does not parse counts every check");
 });

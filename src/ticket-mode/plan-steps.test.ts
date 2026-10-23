@@ -1,7 +1,7 @@
 // no-token: none -- pure: the declarations are given here, and nothing is read
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { afterPartialMerge, stepNamed, stepQueuedLine, stepRunningLine } from "./board-view/plan-steps.ts";
+import { afterPartialMerge, currentStepOf, currentStepPaths, partialStepOf, stepNamed, stepQueuedLine, stepRunningLine } from "./board-view/plan-steps.ts";
 
 test("A11-168: a declaration names a step as `step <N> of <M>`, in any case, wherever the words are, and the first one counts", () => {
   assert.deepEqual(stepNamed("step 1 of 9 of the plan. Steps 2 to 9 remain."), { step: 1, of: 9 });
@@ -53,4 +53,36 @@ test("A11-173: a step the board counted says so in the queued and running lines,
   assert.equal(stepQueuedLine([{ step: 2, of: 9, counted: true }]), "step 2 of 9 merged (counted by the board: the Partial line named no step); step 3 queued");
   assert.equal(stepRunningLine([{ step: 2, of: 9, counted: true }]), "step 2 of 9 merged (counted by the board: the Partial line named no step); step 3 running");
   assert.equal(stepQueuedLine([{ step: 2, of: 9 }]), "step 2 of 9 merged; step 3 queued");
+});
+
+// A11-175: the step a pull request finishes is read from its body's `Partial:` line, and the step a run is on from its declaration, its merged steps and its plan.
+test("A11-175: partialStepOf reads the step from the body's Partial: line, in any case and under any markdown decoration, and nothing from a body without one", () => {
+  const body = (line: string) => `Refs A11-160\n\n## What changed\n\n- the reviewer's calls move\n\n${line}\n\nOutside-Region: README.md — docs\n`;
+  assert.deepEqual(partialStepOf(body("Partial: step 3 of 9: reviews, checks and the verdict door. Steps 4 to 9 remain.")), { step: 3, of: 9 });
+  assert.deepEqual(partialStepOf(body("**Partial:** step 3 of 9 - the rest")), { step: 3, of: 9 });
+  assert.deepEqual(partialStepOf(body("- partial: Step 2 Of 5")), { step: 2, of: 5 });
+  assert.deepEqual(partialStepOf(body("> Partial: step 1 of 2")), { step: 1, of: 2 });
+  assert.deepEqual(partialStepOf("Partial: step 3 of 9\r\nCloses nothing"), { step: 3, of: 9 }, "a line ends at a line break of either kind");
+  assert.equal(partialStepOf(body("Partial: the settings page")), null, "a Partial: line that names no step names none");
+  assert.equal(partialStepOf(body("Partial: step 12 of 9")), null, "nor an impossible one");
+  assert.equal(partialStepOf("Closes A11-160\n\nThis completes the plan: step 9 of 9 is done."), null, "a body with no Partial: line finishes its ticket, and no step is named in prose");
+  assert.equal(partialStepOf("It is not Partial: nothing here\nstep 3 of 9 is on the next line"), null, "the step must be on the Partial: line itself");
+  assert.equal(partialStepOf(""), null);
+});
+
+test("A11-175: a run's current step is the step its partial names, else the one after the last merged, else step 1 of a plan whose sections list paths, else none", () => {
+  const merged = [{ step: 1, of: 9, prs: [] }, { step: 2, of: 9, prs: [] }];
+  const stepPaths = { "3": ["agent-org:src/c/"], "4": ["agent-org:src/d/"] };
+  assert.equal(currentStepOf({ partial: "step 3 of 9: reviews", steps: merged }), 3, "a finished run whose partial pull request is open");
+  assert.equal(currentStepOf({ partial: "step 5 of 9", steps: merged }), 5, "the declaration is what the run finished");
+  assert.equal(currentStepOf({ steps: merged }), 3, "a run queued or running for the next step");
+  assert.equal(currentStepOf({ partial: "the identity work", steps: merged }), 3, "a declaration that names no step is the run's step by the record");
+  assert.equal(currentStepOf({ stepPaths }), 1, "no step merged or declared, in a plan whose sections list paths");
+  assert.equal(currentStepOf({}), null, "a run that is no step of a plan");
+  assert.equal(currentStepOf({ partial: "the settings page" }), null);
+  assert.equal(currentStepOf({ stepPaths: {} }), null);
+  assert.deepEqual([currentStepPaths({ partial: "step 3 of 9", stepPaths }), currentStepPaths({ steps: merged, stepPaths })], [["agent-org:src/c/"], ["agent-org:src/c/"]]);
+  assert.equal(currentStepPaths({ partial: "step 5 of 9", stepPaths }), null, "a step whose section lists no paths has none");
+  assert.equal(currentStepPaths({ steps: merged }), null, "a run with no recorded step paths has none");
+  assert.equal(currentStepPaths({ partial: "step 3 of 9", stepPaths: { "3": [] } }), null, "and an empty list is none");
 });

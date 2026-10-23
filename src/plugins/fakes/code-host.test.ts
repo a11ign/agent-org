@@ -182,3 +182,14 @@ test("the fake reruns what it is asked to and refuses when told to, and reads on
   assert.deepEqual(host.checksAndClaims.reruns, [["u1", "u2"]], "a refused rerun is not recorded as made");
   assert.equal(host.readCheckLog("https://github.com/owner/repo/actions/runs/9/job/9"), null);
 });
+
+test("A11-175: the fake reports the unrequired red checks it is told of, and the contract suite takes a host that reports them as a list of names, and refuses one that does not", async () => {
+  const { host, probe } = seeded();
+  assert.equal(host.readReviewState(probe.pull)?.unrequiredRed, undefined, "a pull request with none names none");
+  const named = createFakeCodeHost("fake-worker");
+  const { url } = named.seedPull("owner/repo", 8, { unrequiredRed: ["checks (cross-repo)"] });
+  assert.deepEqual(named.readReviewState(url)?.unrequiredRed, ["checks (cross-repo)"]);
+  const liar = { ...host, readReviewState: (pull: string) => ({ ...host.readReviewState(pull)!, unrequiredRed: "checks (cross-repo)" as unknown as readonly string[] }) };
+  await assert.rejects(runCodeHostConformance(liar, probe), (error: unknown) => error instanceof ContractError
+    && error.failures.some(({ check }) => check === "readReviewState reads the head, the reviews and whether the checks settled"));
+});

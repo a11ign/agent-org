@@ -9,6 +9,8 @@
 //
 // ROW MODE'S GITHUB OPERATIONS will join as an optional `rows` group of this contract, not as a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
 //
+// 1.6 (A11-175): `ReviewState.unrequiredRed`, OPTIONAL: the checks that failed and that the branch does not require. `settled` counts only the required checks, so a head with one of these red is settled, and the
+// reviewer is told which they are. A plugin of 1.5 is read as one that names none.
 // 1.5 (A11-160, step 3): `readCheckLog` and `rerunFailedChecks` (what the board does about a red check), `readReviewClaims` and `writeReviewClaim` (the commit status that says which instance is reviewing a head), and `verdictDoor`,
 // an OPTIONAL group: the program a reviewer posts its verdict with, as an owned file of the host. A plugin of 1.4 is read as one that implements none of the four operations, which a 1.4 plugin
 // would have to be updated for; while plugins are in-repo that is the same pull request (Decision 8 of A11-157).
@@ -25,7 +27,7 @@ import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHost
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.5";
+export const CODE_HOST_CONTRACT_VERSION = "1.6";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -93,10 +95,11 @@ export type RepliesRequest = Readonly<{ since: number; authors: readonly string[
 export type ReviewTrust = "inside" | "outside";
 
 /**
- * What the pool reads of a pull request's reviewer: its head, whether the org's own, the reviews on it, whether its checks have settled green, and
- * the pull request as the gate's verdict prompt reads it (`view`).
+ * What the pool reads of a pull request's reviewer: its head, whether the org's own, the reviews on it, whether its required checks have settled green, and
+ * the pull request as the gate's verdict prompt reads it (`view`). `unrequiredRed` (contract 1.6) names the checks that failed and are not required: they did not hold the review, and the
+ * reviewer is told they are red. Absent when none, or when the host does not say.
  */
-export type ReviewState = Readonly<{ head: string; trust: ReviewTrust; reviews: readonly Review[]; settled: boolean; view: Readonly<Record<string, any>> }>;
+export type ReviewState = Readonly<{ head: string; trust: ReviewTrust; reviews: readonly Review[]; settled: boolean; unrequiredRed?: readonly string[]; view: Readonly<Record<string, any>> }>;
 export type Review = Readonly<{ author: string; state: string; commit: string; at: number }>;
 
 /** What a stack retarget sweep reads and moves: the open pull requests of a run, the bases it stacked on, and the default branch of each repository. */

@@ -68,6 +68,8 @@ export type ViewEntry = Readonly<{
   projectRepo?: string | null;
   /** The repository-prefixed paths its plan says its work touches, as last read: unset until read, empty when the plan declares none. */
   paths?: readonly string[];
+  /** The paths each step section of its plan lists, by step number, when the plan has step sections that list any (A11-175): see `currentStepPaths`. */
+  stepPaths?: Readonly<Record<string, readonly string[]>>;
   /**
    * The files each open pull request of the run changes, by URL, as the last watch read them, in the repository the pull request is in. An empty
    * name in a list marks a list cut short: the files past the ones listed are unknown and hold nothing, see {@link footprintOf}.

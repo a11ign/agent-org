@@ -878,3 +878,14 @@ test("A11-173: a counted step's brief says the board counted it and asks for ste
   const named = brief([{ step: 2, of: 9, prs: ["https://github.com/a11ign/agent-org/pull/1816"] }]);
   assert.equal(named.includes("counted"), false, "a step the declaration named says nothing of counting");
 });
+
+// A11-175: a plan delivered in steps gives each step its own section and paths, which the board holds for a run on that step and quotes to a reviewer.
+test("A11-175: both planner briefs tell the planner to give each step of a numbered plan a `### Step <N> of <M>` section that ends with that step's own paths, and keep ## Paths complete", () => {
+  const plan = planBriefText({ ticket, ticketDir: "/d", planDir: "/d/plan", attachments: [], clones, run: "plan {key} into {dir}" });
+  const batch = batchPlanBriefText({ tickets: [{ ticket, attachments: [], parent: null }], runDir: "/d", planDir: "/d/plan", clones, run: "plan {keys} into {dir}" });
+  for (const brief of [plan, batch]) {
+    assert.ok(brief.includes("A plan delivered in numbered steps, one pull request each, gives each step a `### Step <N> of <M>: <title>` section that ends with that step's own `- \`<repo>:<path>\`` bullets"));
+    assert.ok(brief.includes("the board holds only the current step's paths and its open pull requests' files, and gives a reviewer that step's section"));
+    assert.ok(brief.includes("`## Paths` still lists every path of every step, because `pr:open` reads it as the Region."));
+  }
+});

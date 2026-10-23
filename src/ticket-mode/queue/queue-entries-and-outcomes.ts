@@ -223,6 +223,11 @@ export type Entry = Readonly<{
    */
   paths?: readonly string[];
   /**
+   * The paths each step section of its plan lists, by step number (A11-175), read with {@link paths} and only when a section lists any. A run on step N holds step N's, not the whole plan's
+   * (`footprintOf`); a step whose section lists none is not in it. Carried to the run queued for the next step.
+   */
+  stepPaths?: Readonly<Record<string, readonly string[]>>;
+  /**
    * Why its plan could not be downloaded on the last pass (A11-125): the run is held, and the board asks again on every pass. Set by
    * `recordPathsFailure`, and cleared once the plan is read.
    */
@@ -588,12 +593,12 @@ export function retry(queue: Queue, key: string, now: number): Queue {
   const entry = find(queue, key);
   const isConcludedEntry = entry === undefined || entry.phase !== "finished" || isResult(entry) || CONCLUDED.has(entry.outcome?.kind ?? "") || isParked(entry);
   if (isConcludedEntry) return queue;
-  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, briefedAgainst, plannedWith } = entry;
+  const { ticket, repos, model, effort, plan, planned, session, review, published, feedback, asked, conflict, rounds, movedFrom, paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, overlapOverride, checkHeads, briefedAgainst, plannedWith } = entry;
   // A review run that failed is retried as the same review round, resuming the same worker, so it does not start the ticket over, and a round
   // the board started still counts towards its cap. Any other run starts a fresh worker, whose session replaces this one. A ticket of a batch
   // is planned again on its own.
   const round = { ...(session ? { session } : {}), ...(published ? { published } : {}), ...(feedback !== undefined ? { feedback } : {}), ...(asked ? { asked } : {}),
-    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }) };
+    ...(conflict !== undefined ? { conflict } : {}), ...(overlapOverride ? { overlapOverride } : {}), ...(rounds !== undefined ? { rounds } : {}), ...carriedFields({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }) };
   // The record of the board's move is carried over too: a retried run finds its ticket already started, and would move nothing to record again. So are the plan
   // steps already merged: a fresh worker for a step that crashed is still on that step (A11-168).
   const retried: Entry = { ticket, repos, model, effort, ...(plan ? { plan } : {}), ...(plannedWith ? { plannedWith } : {}), ...(planned ? { planned } : {}), ...(movedFrom ? { movedFrom } : {}), ...(steps ? { steps } : {}),
@@ -637,8 +642,8 @@ export function talkRound(entry: Entry, now: number): Entry {
 /**
  * The fields a review round carries from the run it continues, the ticket text it was briefed with, its paths, pull request files, partial declaration, merged plan steps, the plan's step count, the After-merge lines listed and posted, and the heads its red checks were answered at: only those the run has set. PURE.
  */
-const carriedFields = ({ paths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }: Pick<Entry, "paths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "briefedAgainst">) => ({
-  ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
+const carriedFields = ({ paths, stepPaths, plannedRepo, projectRepo, pullFiles, partial, steps, planSteps, afterMerge, afterMergePosted, stackBase, checkHeads, briefedAgainst }: Pick<Entry, "paths" | "stepPaths" | "plannedRepo" | "projectRepo" | "pullFiles" | "partial" | "steps" | "planSteps" | "afterMerge" | "afterMergePosted" | "stackBase" | "checkHeads" | "briefedAgainst">) => ({
+  ...(briefedAgainst ? { briefedAgainst } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}), ...(projectRepo !== undefined ? { projectRepo } : {}), ...(pullFiles ? { pullFiles } : {}),
   ...(partial !== undefined ? { partial } : {}), ...(steps ? { steps } : {}), ...(planSteps !== undefined ? { planSteps } : {}), ...(afterMerge ? { afterMerge } : {}), ...(afterMergePosted ? { afterMergePosted } : {}), ...(stackBase ? { stackBase } : {}), ...(checkHeads ? { checkHeads } : {}),
 });
 

@@ -30,6 +30,36 @@ export function stepNamed(partial: string): PlanStep | null {
   return step >= 1 && step <= of ? { step, of } : null;
 }
 
+/**
+ * The step a pull request's body says it finishes: the first `step <N> of <M>` on its `Partial:` line, or null when the body has no such line or the line names no step (A11-175). A body with no
+ * `Partial:` line is a pull request that finishes its ticket, and one with a `Partial:` line that names no step is one the reviewer holds to the whole ticket as before. PURE.
+ */
+export function partialStepOf(body: string): PlanStep | null {
+  const line = /^[\s>*_-]*Partial:[^\n]*/im.exec(body);
+  return line === null ? null : stepNamed(line[0]);
+}
+
+/** The fields of a run that say which step of its plan it is on (A11-175): what it declared, the steps merged before it, and the paths the plan's step sections list. */
+type StepFields = Readonly<{ partial?: string; steps?: readonly MergedStep[]; stepPaths?: Readonly<Record<string, readonly string[]>> }>;
+
+/**
+ * The plan step a run is on (A11-175), or null for a run that is no step of a plan: the step its `partial` names (a finished run whose partial pull request is open); else the step after the last
+ * merged one (a run queued or running for the next step); else step 1, when the plan's step sections list paths. A run with no current step is a single-step run. PURE.
+ */
+export function currentStepOf({ partial, steps, stepPaths }: StepFields): number | null {
+  const named = partial === undefined ? null : stepNamed(partial);
+  if (named !== null) return named.step;
+  if (steps !== undefined && steps.length > 0) return Math.max(...steps.map(({ step }) => step)) + 1;
+  return Object.keys(stepPaths ?? {}).length > 0 ? 1 : null;
+}
+
+/** The paths the plan's section for the run's current step lists, or null when the run has no current step or that section lists none (A11-175). PURE. */
+export function currentStepPaths(run: StepFields): readonly string[] | null {
+  const step = currentStepOf(run);
+  const own = step === null ? undefined : run.stepPaths?.[String(step)];
+  return own === undefined || own.length === 0 ? null : own;
+}
+
 /** What a merged partial pull request leads to: the next step to queue, `counted` when the board counted the step the declaration finished, or why nothing is queued, worded for the card. */
 export type AfterMerge = Readonly<{ next: PlanStep & Readonly<{ counted?: true }> } | { stalled: string }>;
 

@@ -12,7 +12,7 @@ export type FakePull = {
   repository: string; number: number; state: "open" | "merged" | "closed"; base: string; head: string; files: string[];
   /** What the pull request found, once it has merged (A11-167). */
   findings?: MergedFindings;
-  feedback: Partial<PullFeedback>; replies: readonly Reply[]; reviews: ReviewState["reviews"]; settled: boolean; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
+  feedback: Partial<PullFeedback>; replies: readonly Reply[]; body?: string; reviews: ReviewState["reviews"]; settled: boolean; unrequiredRed?: ReviewState["unrequiredRed"]; trust: ReviewState["trust"]; merge: { armed: boolean; mergeable: boolean | null };
 };
 
 const HOST = "fake";
@@ -56,7 +56,7 @@ function readsOf(pulls: Pulls, repositories: Set<string>, login: string | null, 
     readReviewState(url) {
       calls.push(`readReviewState ${url}`);
       const pull = pulls.get(url);
-      return pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled, view: { number: pull.number } };
+      return pull === undefined ? null : { head: pull.head, trust: pull.trust, reviews: pull.reviews, settled: pull.settled, ...(pull.unrequiredRed === undefined ? {} : { unrequiredRed: pull.unrequiredRed }), view: { number: pull.number, ...(pull.body === undefined ? {} : { body: pull.body }) } };
     },
     readPullState(url) {
       calls.push(`readPullState ${url}`);

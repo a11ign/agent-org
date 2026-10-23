@@ -1,4 +1,4 @@
-// module: what the reviewer reads of a pull request -- its head, its reviews, its trust and whether its checks settled, and its state (A11-160)
+// module: what the reviewer reads of a pull request -- its head, its reviews, its trust and whether its required checks settled, and its state (A11-160, A11-175)
 //
 // Moved out of `ticket-mode/reviewer-port.ts` (`readReviewState`, `readPullState`), over the plugin's `gh`. WHAT IS TRUSTED AND WHAT IS SETTLED IS CORE'S: the pull request is read by
 // the fields the reviewer's policy names (`policy.review().fields`), and the same policy judges it (`trustOf`, `settledOf`). Asking for the policy THROWS where the reviewer's gate does not
@@ -20,6 +20,35 @@ function fieldsOf(repo: string, number: number, fields: string, gh: Gh): Record<
   }
 }
 
+/**
+ * What GitHub says is required of a pull request, for each check of its head commit: `isRequired(pullRequestNumber:)` is GitHub's own answer from the base branch's protection rules and rulesets, so a
+ * stacked pull request is judged by its own base (A11-175). `pull-feedback.ts` reads the same field for the board's failing checks.
+ */
+const REQUIRED_QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
+  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+    __typename
+    ... on CheckRun { name isRequired(pullRequestNumber: $number) }
+    ... on StatusContext { context isRequired(pullRequestNumber: $number) }
+  } } } } } }
+} } }`;
+
+/**
+ * The names of the checks the pull request's base requires, or null when GitHub did not say: a refused `gh`, or an answer that does not hold the head commit's checks. Null is never "nothing is
+ * required", which is an empty list: the caller counts every check for both. Required checks that have not reported are not in the answer, so they are not named.
+ */
+function readRequiredChecks(pull: { repository: string; number: number }, gh: Gh): string[] | null {
+  const [owner, repo] = pull.repository.split("/");
+  try {
+    const answer = JSON.parse(gh(["api", "graphql", "-f", `query=${REQUIRED_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `number=${pull.number}`]));
+    const contexts = answer?.data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes;
+    if (!Array.isArray(contexts)) return null;
+    const required = contexts.filter((check: { isRequired?: boolean } | null) => check?.isRequired === true).map((check: { name?: string; context?: string }) => String(check.name ?? check.context ?? ""));
+    return [...new Set(required.filter((name) => name !== ""))];
+  } catch {
+    return null;
+  }
+}
+
 /** The pull request's repository (`owner/name`) and number, or null for a url that is none. */
 export function pullOf(url: string): { repository: string; number: number } | null {
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/([1-9][0-9]*)(?:[/?#].*)?$/.exec(url);
@@ -27,8 +56,10 @@ export function pullOf(url: string): { repository: string; number: number } | nu
 }
 
 /**
- * The pull request's state as the reviewer sees it: its head, whether its author is the org's own (`INSIDE`), and its reviews. Null when GitHub does not say, which the caller reads
- * as no reading rather than as a verdict. THROWS the gate's refusal when the gate does not load.
+ * The pull request's state as the reviewer sees it: its head, whether its author is the org's own (`INSIDE`), its reviews, and whether its REQUIRED checks have settled green (A11-175). A rollup
+ * that is all green is settled and asks nothing more; otherwise GitHub is asked which checks are required (`readRequiredChecks`), and a failing check that is not required is named in `unrequiredRed`
+ * and holds nothing. An answer that cannot be had counts every check. Null when GitHub does not say, which the caller reads as no reading rather than as a verdict. THROWS the gate's refusal when the
+ * gate does not load.
  */
 export function readReviewState(url: string, gh: Gh, policy: CodeHostPolicy): ReviewState | null {
   const judge = policy.review();
@@ -41,8 +72,11 @@ export function readReviewState(url: string, gh: Gh, policy: CodeHostPolicy): Re
       author: String(r.author?.login ?? ""), state: String(r.state ?? ""), commit: String(r.commit?.oid ?? ""),
       at: Date.parse(String(r.submittedAt ?? "")) || 0,
     }));
-    const settled = judge.settledOf(pr);
-    return { head: pr.headRefOid, trust: judge.trustOf(pr), reviews, settled, view: { ...pr, number: pull.number } };
+    const allGreen = judge.settledOf(pr, null);
+    const required = allGreen ? null : readRequiredChecks(pull, gh);
+    const settled = allGreen || judge.settledOf(pr, required);
+    const unrequiredRed = judge.unrequiredRedOf(pr, required);
+    return { head: pr.headRefOid, trust: judge.trustOf(pr), reviews, settled, ...(unrequiredRed.length === 0 ? {} : { unrequiredRed }), view: { ...pr, number: pull.number } };
   } catch {
     return null;
   }

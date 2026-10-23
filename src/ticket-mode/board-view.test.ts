@@ -1449,3 +1449,78 @@ test("A11-173: the After-merge checks list names each line's ticket and owner, a
   assert.deepEqual(afterMergeChecks([run({})]), [], "nothing is listed for a run that recorded none");
   assert.deepEqual(afterMergeChecks([]), []);
 });
+
+// A11-175: a run on one step of a multi-step plan holds that step's paths and its open pull requests' files, not the whole plan's. A11-160 (step 3 of 9) held every path its nine steps name, so A11-173 and
+// A11-174 sat Blocked on pool-settle.ts and safety-prompt.ts, which its open pull request does not touch.
+const STEP_PULL = "https://github.com/a11ign/agent-org/pull/1824";
+const PLAN_PATHS = ["agent-org:src/", "agent-org:plugins/", "agent-org:docs/gh-call-baseline.json"];
+const STEP_3_FILES = ["plugins/github/reviews.ts", "src/ticket-mode/reviewer-port.ts"];
+/** A11-160 as it stood: finished on step 3 with its pull request open, its plan's paths the whole nine steps'. */
+const stepThree = (patch: Partial<ViewEntry> = {}) => holderOf("A11-160", { phase: "finished", paths: PLAN_PATHS, partial: "step 3 of 9: reviews, checks and the verdict door", outcome: { kind: "ready-pr", prs: [pulled(STEP_PULL)] },
+  pullFiles: { [STEP_PULL]: STEP_3_FILES }, ...patch });
+
+test("A11-175: a finished step-3 run holds its step's paths and its pull request's files, not the plan's", () => {
+  const run = stepThree({ stepPaths: { "2": ["agent-org:plugins/identity/"], "3": ["agent-org:plugins/github/", "agent-org:src/ticket-mode/reviewer-port.ts"], "4": ["agent-org:src/ticket-port/"] } });
+  assert.deepEqual(footprintOf(run), ["agent-org:plugins/github/", "agent-org:src/ticket-mode/reviewer-port.ts", "agent-org:plugins/github/reviews.ts", "agent-org:src/ticket-mode/reviewer-port.ts"]);
+  for (const file of ["src/ticket-mode/pool-settle.ts", "src/ticket-mode/safety-prompt.ts", "plugins/identity/gh.ts", "src/ticket-port/port.ts"]) {
+    const waiting = waitingOn([`agent-org:${file}`], { ticket: { key: "A11-173" } });
+    assert.equal(overlapWait(waiting, [run, waiting]), null, `${file} is another step's, or no step's: not held`);
+    assert.equal(runStatus(waiting, [run, waiting]), "queued");
+  }
+  const sharing = waitingOn(["agent-org:plugins/github/pull-feedback.ts"], { ticket: { key: "A11-173" } });
+  assert.deepEqual(overlapWait(sharing, [run, sharing]), { key: "A11-160", pull: "1824", path: "plugins/github/pull-feedback.ts" }, "a file in its step's directory still holds");
+  const touched = waitingOn(["agent-org:src/ticket-mode/reviewer-port.ts"], { ticket: { key: "A11-173" } });
+  assert.equal(overlapWait(touched, [run, touched])?.key, "A11-160", "and so does a file its pull request changes");
+});
+
+test("A11-175: a step with no paths of its own holds only its open pull request's files, as A11-160's does, whose plan numbers its steps as table rows", () => {
+  const run = stepThree();
+  assert.deepEqual(footprintOf(run), ["agent-org:plugins/github/reviews.ts", "agent-org:src/ticket-mode/reviewer-port.ts"], "no new read of its plan: its partial names the step, and its pull request is open");
+  for (const file of ["src/ticket-mode/pool-settle.ts", "src/ticket-mode/safety-prompt.ts"]) {
+    const waiting = waitingOn([`agent-org:${file}`], { ticket: { key: file.includes("settle") ? "A11-173" : "A11-174" } });
+    assert.equal(overlapWait(waiting, [run, waiting]), null, `${file}: the pull request does not touch it, so the chairman need not press Start`);
+    assert.equal(waitNote(waiting, [run, waiting]), null);
+  }
+  const touching = waitingOn(["agent-org:src/ticket-mode/reviewer-port.ts"]);
+  assert.deepEqual(overlapWait(touching, [run, touching]), { key: "A11-160", pull: "1824", path: "src/ticket-mode/reviewer-port.ts" });
+  const unread = stepThree({ pullFiles: undefined });
+  assert.deepEqual(footprintOf(unread), [], "a pull request whose files are not read holds none by name");
+  const waiting = waitingOn(["agent-org:src/ticket-mode/pool-settle.ts"]);
+  assert.deepEqual(overlapWait(waiting, [unread, waiting]), { key: "A11-160", pull: "1824", path: null }, "but its repository is held until a watch reads them (A11-125)");
+  const review = stepThree({ phase: "queued", review: [pulled(STEP_PULL)] });
+  assert.deepEqual(footprintOf(review), footprintOf(run), "a review round of the step holds the same");
+  const merged = stepThree({ pullStates: { [STEP_PULL]: "merged" } });
+  assert.deepEqual(footprintOf(merged), PLAN_PATHS, "a step whose pull request is merged has none open: its footprint is the plan's, and it holds nothing since it is not holding (finished, no pull request open)");
+  const mergedWaiting = waitingOn(["agent-org:src/ticket-mode/reviewer-port.ts"]);
+  assert.equal(overlapWait(mergedWaiting, [merged, mergedWaiting]), null);
+});
+
+test("A11-175: a running step with no paths and no pull request holds the whole plan, and so does a worker that is still going with a pull request open", () => {
+  const running = holderOf("A11-160", { phase: "running", paths: PLAN_PATHS, steps: [{ step: 1, of: 9, prs: [] }, { step: 2, of: 9, prs: [] }] });
+  assert.deepEqual(footprintOf(running), PLAN_PATHS, "step 3 is running and its files are unknown (A11-125)");
+  const waiting = waitingOn(["agent-org:src/ticket-mode/pool-settle.ts"]);
+  assert.equal(overlapWait(waiting, [running, waiting])?.key, "A11-160");
+  const going = { ...running, outcome: { kind: "ready-pr", prs: [pulled(STEP_PULL)] } as ViewEntry["outcome"], pullFiles: { [STEP_PULL]: STEP_3_FILES } };
+  assert.deepEqual(footprintOf(going), [...PLAN_PATHS, "agent-org:plugins/github/reviews.ts", "agent-org:src/ticket-mode/reviewer-port.ts"], "its worker may push more files than the pull request has now");
+  const single = holderOf("APP-1", { phase: "finished", paths: PLAN_PATHS, outcome: { kind: "ready-pr", prs: [pulled(STEP_PULL)] }, pullFiles: { [STEP_PULL]: STEP_3_FILES } });
+  assert.deepEqual(footprintOf(single), [...PLAN_PATHS, "agent-org:plugins/github/reviews.ts", "agent-org:src/ticket-mode/reviewer-port.ts"], "a run that is no step of a plan holds what it always held");
+});
+
+test("A11-175: a running step holds its step's paths, from the steps merged before it, and step 1 is the step of a plan whose sections list paths", () => {
+  const stepPaths = { "1": ["agent-org:src/a/"], "2": ["agent-org:src/b/"], "3": ["agent-org:src/c/"] };
+  assert.deepEqual(footprintOf(holderOf("APP-1", { phase: "running", paths: PLAN_PATHS, stepPaths, steps: [{ step: 1, of: 3, prs: [] }, { step: 2, of: 3, prs: [] }] })), ["agent-org:src/c/"]);
+  assert.deepEqual(footprintOf(holderOf("APP-1", { phase: "running", paths: PLAN_PATHS, stepPaths })), ["agent-org:src/a/"], "no step merged and none declared: the first");
+  assert.deepEqual(footprintOf(holderOf("APP-1", { phase: "running", paths: PLAN_PATHS, stepPaths, steps: [{ step: 3, of: 3, prs: [] }] })), PLAN_PATHS, "past the last section there is no step to hold: the plan's, as before");
+});
+
+test("A11-175: a queued later step contests only its step's paths, so it waits on nobody else in the plan's directories", () => {
+  const stepPaths = { "3": ["agent-org:plugins/github/"], "4": ["agent-org:src/ticket-port/"] };
+  const later = (patch: Partial<ViewEntry> = {}) => waitingOn(PLAN_PATHS, { ticket: { key: "A11-160" }, stepPaths, steps: [{ step: 1, of: 9, prs: [] }, { step: 2, of: 9, prs: [] }], ...patch });
+  const other = holderOf("A11-190", { phase: "running", paths: ["agent-org:src/ticket-mode/pool.ts"] });
+  assert.equal(overlapWait(later(), [other, later()]), null, "the whole plan's src/ would hold this run behind A11-190; its step 3 does not");
+  const alike = holderOf("A11-191", { phase: "running", paths: ["agent-org:plugins/github/reviews.ts"] });
+  assert.deepEqual(overlapWait(later(), [alike, later()]), { key: "A11-191", pull: null, path: "plugins/github/" }, "and a holder of its step's path still holds it");
+  assert.equal(overlapWait(later({ steps: [{ step: 1, of: 9, prs: [] }, { step: 2, of: 9, prs: [] }, { step: 3, of: 9, prs: [] }] }), [alike]), null, "step 4 contests step 4's paths, not step 3's");
+  const noPaths = later({ stepPaths: undefined });
+  assert.equal(overlapWait(noPaths, [other, noPaths])?.key, "A11-190", "a step whose plan lists no paths for it contests the whole plan: its files are unknown");
+});

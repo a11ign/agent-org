@@ -535,7 +535,7 @@ test("A11-161: `plugin list` shows slack and atomic as bundled plugins, from the
   const host = scratch(WITH_REVIEWER);
   const { out } = await host.run("list");
   for (const line of [/^publisher: slack \(from tickets\.providers\.publish\)$/m, /^reviewer: atomic \(from tickets\.providers\.reviewer\)$/m, /^ {2}slack +enabled +contract 1\.1 +plugins\/slack$/m,
-    /^ {2}atomic +enabled +contract 1\.2 +plugins\/atomic-reviewer$/m]) assert.match(out, line);
+    /^ {2}atomic +enabled +contract 1\.3 +plugins\/atomic-reviewer$/m]) assert.match(out, line);
 });
 
 test("A11-161: the publisher is switched off and on, keeping its settings, and each change is read back from the file", async () => {

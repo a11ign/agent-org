@@ -1,7 +1,7 @@
 // no-token: none -- pure text
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { NO_TICKET_LINE, POST_MERGE_RULE, rereviewWords, reviewWords } from "./prompt.ts";
+import { NO_SECTION_LINE, NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, rereviewWords, reviewWords, unrequiredRedWords } from "./prompt.ts";
 
 const GATE = "Ready (not a draft) #7 at `h1` has settled green checks and no verdict at that head. Review it per .agent-org/roles/reviewer.md and post the verdict as it says.";
 const DONE_WHEN = "## Done-when\n\n### Before merge\n\n- a test\n\n### After merge (who runs it)\n\n- the chairman, after 0.9.0";
@@ -44,4 +44,49 @@ test("A11-156: a re-review without a ticket says so, and a long reply is cut wit
   assert.ok(words.includes(NO_TICKET_LINE));
   assert.match(words, /\[cut: 1000 more characters on the pull request\]/);
   assert.ok(!words.includes("x".repeat(4001)), "no more than the limit is quoted");
+});
+
+// A11-175: the checks left red because they are not required are named, and a pull request that finishes one step of a plan is reviewed against that step.
+const SECTION = "### Step 3 of 9: Reviews, checks and the verdict door\n\nMove the reviewer's GitHub calls into `plugins/github`.\n\n- `agent-org:plugins/github/reviews.ts`";
+
+test("A11-175: the prompt names the unrequired red checks and says they did not hold the review, in a first review, a reprompt and a re-review", () => {
+  const first = reviewWords(GATE, { doneWhen: DONE_WHEN }, ["checks (cross-repo)", "lint"]);
+  const naming = unrequiredRedWords(["checks (cross-repo)", "lint"]);
+  assert.match(naming, /`checks \(cross-repo\)`, `lint`/);
+  assert.match(naming, /not required, so they did not hold this review/);
+  assert.match(naming, /A failure this diff caused is still a defect to name/);
+  assert.ok(first.indexOf(naming) > GATE.length && first.indexOf(naming) < first.indexOf(DONE_WHEN), "after the gate's words and before the contract");
+  const again = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies: [{ author: "w", url: "u", text: "t" }], doneWhen: DONE_WHEN, unrequiredRed: ["checks (cross-repo)"] });
+  assert.ok(again.includes(unrequiredRedWords(["checks (cross-repo)"])), "a re-review names them too");
+  for (const none of [undefined, []]) {
+    assert.equal(unrequiredRedWords(none), "", "nothing red and not required: nothing is said");
+    assert.equal(reviewWords(GATE, { doneWhen: DONE_WHEN }, none), reviewWords(GATE, { doneWhen: DONE_WHEN }), "and the prompt is the one it always was");
+  }
+});
+
+test("A11-175: a step brief quotes the section, states the ratchets' direction and heads the Done-when 'for the last step (step 9 of 9)'", () => {
+  const words = reviewWords(GATE, { doneWhen: DONE_WHEN, step: { step: 3, of: 9, section: SECTION } });
+  const order = ["This pull request is step 3 of 9 of its ticket's plan", `The plan's section for step 3:\n\n${SECTION}`, RATCHET_RULE,
+    `The ticket's Done-when, for the last step (step 9 of 9), as the ticket states it:\n\n${DONE_WHEN}`, "Do not block this step on a whole-ticket line that only the last step can meet, unless this step makes that line harder to meet", POST_MERGE_RULE].map((part) => words.indexOf(part));
+  assert.ok(order.every((at) => at > GATE.length), `every part is there, after the gate's words: ${order}`);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), "in the order: the step, its section, the ratchets, the last step's Done-when, then the post-merge rule");
+  assert.ok(!words.includes("The ticket's Done-when, as the ticket states it"), "the whole-ticket heading is not used for a step");
+  assert.match(RATCHET_RULE, /a baseline or allow-list it changes only shrinks, a rule or check it changes only tightens, and a change the other way is a defect/);
+});
+
+test("A11-175: a step brief with no section says so, and the reviewer goes by the body's Partial: line; a re-review carries the step too", () => {
+  const words = reviewWords(GATE, { doneWhen: DONE_WHEN, step: { step: 3, of: 9, section: null } });
+  assert.ok(words.includes(NO_SECTION_LINE) && !words.includes("The plan's section for step 3"));
+  assert.match(NO_SECTION_LINE, /go by the `Partial:` line of the pull request body/);
+  const noTicket = reviewWords(GATE, { doneWhen: null, step: { step: 3, of: 9, section: SECTION } });
+  assert.ok(noTicket.includes(SECTION) && noTicket.includes(NO_TICKET_LINE) && !noTicket.includes("for the last step"), "with no Done-when there is none to head");
+  const again = rereviewWords({ number: 7, head: "a1b2c3d4e5f6", pr: "u", roleFile: "r.md", replies: [{ author: "w", url: "u", text: "t" }], doneWhen: DONE_WHEN, step: { step: 3, of: 9, section: SECTION } });
+  assert.ok(again.indexOf("step 3 of 9") < again.indexOf("for the last step (step 9 of 9)") && again.indexOf("for the last step") < again.indexOf(POST_MERGE_RULE));
+  const long = reviewWords(GATE, { doneWhen: null, step: { step: 3, of: 9, section: "y".repeat(9000) } });
+  assert.match(long, /\[cut: 1000 more characters on the pull request\]/);
+});
+
+test("A11-175: with no step in the brief the prompt is the one it was: the whole ticket's Done-when under its own heading", () => {
+  const words = reviewWords(GATE, { doneWhen: DONE_WHEN });
+  assert.equal(words, `${GATE}\n\nThe ticket's Done-when, as the ticket states it:\n\n${DONE_WHEN}\n\n${POST_MERGE_RULE}`);
 });

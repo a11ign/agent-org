@@ -40,7 +40,7 @@ function sectionLines(lines: string[], name: string): string[] | null {
 }
 
 /** The `<repo>:<path>` bullets of a section's lines, each once, in order. */
-function bulletPaths(lines: string[]): string[] {
+export function bulletPaths(lines: string[]): string[] {
   const paths: string[] = [];
   for (const line of lines) {
     const match = /^\s*[-*]\s+`([^`:\s]+):([^`\s]+)`(\s.*)?$/.exec(line);

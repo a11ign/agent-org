@@ -69,7 +69,7 @@ export const WRAPPER_INPUTS: WrapperInputs = {
 };
 
 /** The policy a host with a loaded reviewer gate gives: the author is the org's own, and the checks have settled. */
-const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRepository", trustOf: () => "inside", settledOf: () => true }));
+const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRepository", trustOf: () => "inside", settledOf: () => true, unrequiredRedOf: () => [] }));
 
 test("the GitHub plugin passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
   const host = create({}, fakePluginDeps({ exec: github(), policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));

@@ -20,6 +20,8 @@ import { type PoolContext } from "./pool-context.ts";
 import { AWAITING_PERSON_LINE, claimWarning, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { doneWhenOf } from "./done-when.ts";
+import { partialStepOf } from "./board-view/plan-steps.ts";
+import { planStepSection } from "./pool-ticket-text.ts";
 import type { Reply } from "../plugins/contracts/code-host.ts";
 import type { ReviewBrief } from "../plugins/contracts/reviewer.ts";
 
@@ -49,7 +51,8 @@ const rememberReviewers = (ctx: PoolContext): void => {
  * there are: past them, and when the door refuses a repost for good, the failure is what the run says. Returns that line, or null while there is
  * nothing to say: the reviewer is still working, or an attempt is still to come. Nothing is attempted while the reviewer is working.
  */
-function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, url: string, head: string, key: string): string | null {
+function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, state: ReviewState, url: string, key: string): string | null {
+  const { head } = state;
   const { reviewerReposts } = ctx;
   const ref = { pr: url, head };
   const repost = reviewerReposts.get(key) ?? { attempts: 0 };
@@ -65,7 +68,7 @@ function unpostedVerdict(ctx: PoolContext, port: ReviewerPort, url: string, head
     // Nothing to post. The reviewer is prompted once, as a reviewer that has just started is; a second look with no file is the failure.
     if (repost.attempts > 0) return surfaced(NO_VERDICT_FILE);
     recordRepost({ attempts: 1, reason: NO_VERDICT_FILE });
-    const prompted = port.reprompt(ref, briefOf(ctx, url));
+    const prompted = port.reprompt(ref, briefOf(ctx, url, state));
     if ("refusal" in prompted) log(`${url}: ${prompted.refusal}`);
     return null;
   }
@@ -97,10 +100,15 @@ type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null; u
 /**
  * What the pool tells a reviewer of the ticket behind `url` (A11-156): the Done-when of the run that holds the pull request, since the reviewer cannot read the tracker. Null when no run holds
  * it (one a person opened, or a run since removed) or its ticket has no such section: the reviewer is then told the pull request is the only copy of the contract it has.
+ * A pull request whose body says `Partial: step N of M` also carries the step (A11-175), with the plan's section for it when the run that holds the pull request has a plan file with one, else null.
  */
-function briefOf(ctx: PoolContext, url: string): ReviewBrief {
+function briefOf(ctx: PoolContext, url: string, state: ReviewState): ReviewBrief {
   const held = ctx.store.get().entries.find((entry) => pullsOf(entry).some((pull) => pull.url === url));
-  return { doneWhen: doneWhenOf(held?.ticket.description) };
+  const step = partialStepOf(String(state.view.body ?? ""));
+  return {
+    doneWhen: doneWhenOf(held?.ticket.description),
+    ...(step === null ? {} : { step: { ...step, section: held === undefined ? null : planStepSection(ctx, held.ticket.key, step.step) } }),
+  };
 }
 
 /** How a start is recorded: the set that holds its `url@head` before the start, the key `reviewerDropped` keeps it under when it is un-recorded, and what it is called in a log line. */
@@ -145,8 +153,8 @@ function startWith(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: 
 }
 
 /** The first review of a head (A11-119): recorded in `reviewerStarted`, under the key `reviewerDropped` has always held it by. */
-function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, head: string): StartAnswer {
-  return startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url), adopts: true });
+function startFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, state: ReviewState): StartAnswer {
+  return startWith(ctx, reviewer, url, state.head, { recorded: ctx.reviewerStarted, droppedKey: (key) => key, says: "for", brief: briefOf(ctx, url, state), adopts: true });
 }
 
 /**
@@ -209,7 +217,7 @@ function rereviewFor(ctx: PoolContext, reviewer: ReviewerPort, url: string, stat
   if (block === null || asked || !state.settled) return null;
   const replies = repliesAfter(ctx, url, key, block.at);
   if (replies === null || replies.length === 0 || ctx.codeHost.readPullState(url) !== "OPEN") return null;
-  const brief: ReviewBrief = { ...briefOf(ctx, url), rereview: { replies: replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text })) } };
+  const brief: ReviewBrief = { ...briefOf(ctx, url, state), rereview: { replies: replies.slice(-MAX_REPLIES_QUOTED).map(({ author, url: where, text }) => ({ author, url: where, text })) } };
   return startWith(ctx, reviewer, url, head, { recorded: ctx.reviewerRereviewed, droppedKey: rereviewKey, says: "to re-review", brief, adopts: false });
 }
 
@@ -268,13 +276,13 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   if (posted) {
     if (reviewerReposts.delete(key)) rememberReviewers(ctx);
   } else if (reviewerStarted.has(key)) {
-    unposted = unpostedVerdict(ctx, reviewer, url, head, key);
+    unposted = unpostedVerdict(ctx, reviewer, state, url, key);
   }
   // A head whose checks have not settled green gets no reviewer yet: this look passes it by, and the next one asks again. Nor does a pull request GitHub
   // does not show open: a merged one's memory is forgotten once it is retired (`releaseReviewers`), and a tracker that still reads it open must not start a
   // reviewer for it again. A new head after requested changes has no posted review, so it is started here.
   const startable = state.settled && !posted && !reviewerStarted.has(key);
-  const first = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, head) : null;
+  const first = startable && codeHost.readPullState(url) === "OPEN" ? startFor(ctx, reviewer, url, state) : null;
   closeAnsweredReviewer(ctx, reviewer, url, state);
   // The reply to a block asks for one more look at the same head, once the first reviewer has gone.
   const rereview = first === null ? rereviewFor(ctx, reviewer, url, state) : null;

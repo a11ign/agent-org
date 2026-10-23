@@ -74,3 +74,18 @@ test("A11-149: ticket:review takes over a claim past its lease with no verdict, 
   assert.match(r.out, /started reviewer-plugin-7 for .* at 3aeaba9b; took over the claim of laptop, 61 min old with no verdict; its verdict posts/);
   assert.deepEqual(spawned, ["reviewer-plugin-7"]);
 });
+
+test("A11-175: ticket:review starts a reviewer past a red unrequired check, and the reviewer is told which check was left red", async () => {
+  await loadReviewerGate();
+  const codeHost = createFakeCodeHost();
+  codeHost.seedPull("a11ign/plugin", 7, { head: HEAD, trust: "inside", settled: true, unrequiredRed: ["checks (cross-repo)"] });
+  const spawned: string[] = [];
+  const sent: string[][] = [];
+  const port = atomicReviewerPort({ session: "tickets", instance: "work", run: (args) => { sent.push(args); return JSON.stringify({ result: { agents: [], workspaces: [] } }); }, mint: () => null, codeHost,
+    clones: { plugin: "/repos/plugin" }, checkout: () => ({ path: "/work/pr-7", head: HEAD }), spawn: (order) => { spawned.push(order.session); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; } });
+  const r = reviewOnDemand({ url: PLUGIN, port, readState: (url) => codeHost.readReviewState(url), started: new Set(), record: () => {} });
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(spawned, ["reviewer-plugin-7"]);
+  const prompt = sent.filter((args) => args.includes("prompt")).map((args) => args[args.length - 1]).at(-1) ?? "";
+  assert.match(prompt, /These checks failed at this head and are not required, so they did not hold this review: `checks \(cross-repo\)`/);
+});
