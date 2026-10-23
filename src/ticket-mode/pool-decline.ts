@@ -71,6 +71,7 @@ const refusedAsBlocked = (err: unknown): boolean => ["stdout", "stderr", "messag
  */
 export function tellDeclined(ctx: PoolContext, entry: Entry, { name }: RunPlace): boolean {
   const { herdr, settings } = ctx;
+  // The entry the caller holds may predate the decline it records: read the queue's.
   const current = ctx.store.get().entries.find((e) => e.ticket.key === entry.ticket.key) ?? entry;
   if (!untoldDecline(ctx, current) || current.declined === undefined) return false;
   try {

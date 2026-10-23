@@ -29,7 +29,7 @@ const LINE = /^( *)(?:([›❯▶➤]|>(?=\s+\d{1,2}[.)]\s))( +))?(?:(\d{1,2})[.
 type Line = { indent: number; col: number; marker: boolean; number: number | null; text: string };
 
 const isHint = (line: string): boolean => HINTS.some((hint) => hint.test(line));
-const isFrame = (line: string): boolean => line !== "" && FRAME.test(line);
+export const isFrame = (line: string): boolean => line !== "" && FRAME.test(line);
 const isMenuTail = (line: string): boolean => line === "" || isFrame(line) || isHint(line);
 const isUnnumberedText = (line: Line | null | undefined): boolean => line !== null && line?.number === null && !line?.marker;
 const isParagraphLine = (line: string, parsedLine: Line | null | undefined): boolean => line !== "" && !isFrame(line)

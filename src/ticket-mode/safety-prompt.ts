@@ -8,7 +8,7 @@
 // first (`pool-start.ts`) and they are never read as safety prompts here.
 //
 // PURE, and a leaf: the dialog reader it builds on (`pane-dialog-read.ts`) imports nothing.
-import { readDialogLines } from "../pane-dialog-read.ts";
+import { isFrame, readDialogLines } from "../pane-dialog-read.ts";
 
 /** The longest command quoted: a pasted script is cut. */
 const COMMAND_CHARS = 200;
@@ -28,7 +28,6 @@ export type PanePrompt =
   | { kind: "unrecognised"; firstLine: string };
 
 const squeeze = (lines: readonly string[], chars: number): string => lines.join(" ").replace(/\s+/g, " ").trim().slice(0, chars);
-const isFrame = (line: string): boolean => /^[\s─━═│┃┌┐└┘╭╮╰╯├┤┬┴┼\-_=+|]*$/.test(line);
 
 /** The lines above the question in blocks, nearest the question last: each is a run of lines with no blank line or frame between them. */
 function blocksOf(above: readonly string[]): string[][] {
