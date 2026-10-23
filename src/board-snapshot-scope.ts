@@ -15,6 +15,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { REPO } from "./project-identity.ts";
+import { rows } from "./plugins/rows.ts";
 // #2616: the board is a field of the project's declaration, not a value derived from `REPO` and a constant.
 import { HOME_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 // #1425: the classifier the close path already uses. That module imports nothing, so this file stays free of `gh`.
@@ -187,37 +188,10 @@ function launchCheckRefusal(command: string, { cwd, fs }: { cwd: string; fs: Git
  */
 export type GhRequest = (args: string[]) => string;
 
-/**
- * #1275: ONE ISSUE'S ITEM ON THIS PROJECT, AND THE PROJECT ITSELF, IN ONE REQUEST.
- *
- * `user.projectV2` is asked for although only its presence is read. CI's token cannot read the user-owned
- * Project (#546), and the close path classifies that refusal by GraphQL's own
- * `NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number N` (`settle-closed-status.ts`'s
- * `refusalCause`). Measured live 2026-09-13 with project 999: exit 1, `data.organization.projectV2: null`, and exactly
- * that error, while `repository.issue` still answered. What a token that cannot see the Project gets back for
- * `projectItems` ALONE is not measured -- this host's token can read it -- so the Project is named in the request,
- * where its refusal is already classified, rather than inferred from an item list.
- *
- * `totalCount` is asked for so a list shorter than its own count refuses rather than reads as "not on the board".
- */
-export const TOUCHED_ITEM_QUERY = `
-  query($owner: String!, $name: String!, $project: Int!, $issue: Int!) {
-    organization(login: $owner) { projectV2(number: $project) { id } }
-    repository(owner: $owner, name: $name) {
-      issue(number: $issue) {
-        number title state
-        projectItems(first: 10) {
-          totalCount
-          nodes {
-            id
-            project { number }
-            fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } }
-          }
-        }
-      }
-    }
-  }
-`;
+// #1275: ONE ISSUE'S ITEM ON THIS PROJECT, AND THE PROJECT ITSELF, IN ONE REQUEST (`touchedItemTextOf` of the code host's `rows`, which holds the query). `user.projectV2` is asked for although only its
+// presence is read: CI's token cannot read the user-owned Project (#546), and the close path classifies that refusal by GraphQL's own
+// `NOT_FOUND (organization.projectV2): Could not resolve to a ProjectV2 with the number N` (`settle-closed-status.ts`'s `refusalCause`). `totalCount` is asked for so a list shorter than its own count refuses rather than
+// reads as "not on the board". The query itself is the plugin's (`plugins/github/rows/board-rows.ts`), where its reasons are kept.
 
 /**
  * #1219: `state` was NOT fetched until this row, and that is why the health check could never have asked whether a CLOSED row advertises live work. It is not that the check was one-directional -- the field that would answer the other direction was never requested, so the question could not be asked at all. A filter on a field nobody fetched, in the instrument watching for exactly this.
@@ -422,17 +396,6 @@ export function readUnlessProjectUnreadable<T>(read: () => T, subject: string): 
 }
 
 /**
- * #1275: the arguments for one touched issue's read. The caller adds `gh`: this file never names it, because the
- * closure walk charges a `token` to any file that spawns `gh`, and this file must not carry one.
- * @param {number} issueNumber
- * @returns {string[]}
- */
-export function touchedItemRequest(issueNumber: number): string[] {
-  return ["api", "graphql", "-f", `query=${TOUCHED_ITEM_QUERY}`, "-f", `owner=${PROJECT_OWNER}`,
-    "-f", `name=${REPO.split("/")[1]}`, "-F", `project=${PROJECT_NUMBER}`, "-F", `issue=${issueNumber}`];
-}
-
-/**
  * #1275: THE ITEMS A MUTATION TOUCHES, ONE REQUEST EACH, AND NOTHING ELSE ON THE BOARD. No #747 floor here: that
  * floor exists because `fieldValues` is narrowed to a budget shared with the other items in a 100-item page, and a
  * single issue's `fieldValueByName` shares its request with nothing. A failed request THROWS, quoting GraphQL's own
@@ -447,7 +410,7 @@ export function readTouchedItems(issueNumbers: number[], { request }: { request:
   for (const issue of issueNumbers) {
     let raw: string;
     try {
-      raw = request(touchedItemRequest(issue));
+      raw = rows().touchedItemTextOf({ owner: PROJECT_OWNER, repo: REPO, project: PROJECT_NUMBER, issue, run: request });
     } catch (cause) {
       const graphqlDetail = graphqlErrorFromFailedRun(cause);
       throw new Error(`board-snapshot: could not read Project ${PROJECT_NUMBER}'s item for #${issue} -- refusing `

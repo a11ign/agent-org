@@ -19,6 +19,7 @@ export function fakePluginDeps(over: Partial<PluginDeps> = {}): PluginDeps {
     env: {}, stateDir: "/state", log: () => undefined, pick: "assigned", clones: {}, policy: corePolicy(),
     fetch: () => Promise.reject(new Error("fetch is not injected")),
     exec: () => NO_PROGRAM,
+    execAsync: () => Promise.resolve(NO_PROGRAM),
     readFile: (path) => { throw new Error(`ENOENT: ${path}`); },
     mode: () => null,
     probe: () => Promise.resolve(null),

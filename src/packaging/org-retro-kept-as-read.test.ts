@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh` or file outside a temp directory is touched; the merged pull requests, the acceptance files and the clock are fixtures, and every other `gh` is a script that exits 1 (agent-org#1092)
+// no-token: gh -- no `gh` or file outside a temp directory is touched; the merged pull requests are the fake code host's, the acceptance files and the clock are fixtures, and every other `gh` is a script that exits 1 (agent-org#1092; A11-160, step 8)
 /**
  * a11ign/agent-org#1092: THE RETRO'S MEMORY IS WRITTEN AS IT IS READ. The memory was written only after a class had finished, so a class the gate SIGTERMed kept nothing and the
  * next tick read every acceptance file again. Now each new acceptance text and each new merged mark is kept the moment it is read, and a class that reaches an item past the
@@ -8,13 +8,15 @@
  * (the gate's SIGTERM) leaves twenty kept, and the second run reads the other twenty. The third and fourth run the same budget through `retrospectiveTick`: the first tick stops
  * inside `inert options` after six files, logs it and offers nothing; the second reads only the thirty-four the first did not reach, and offers the order.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as retro_0 from "../org-retro.ts";
 import * as retro_1 from "../org-retro/retro-window-and-journal-patterns.ts";
-import { readsRowsSince, sinceAnswer, type FakeRow } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { holdRepository, withRepositoryReads, type FakeForeignPull } from "../plugins/fakes/code-host-health.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
 
 const MIN = 60_000;
@@ -41,18 +43,21 @@ installRefusingTools();
 
 /** Merged pull request `n` of `CODE`, merged `n` minutes ago, with the acceptance file it added at its own merge commit. */
 const sha = (n: number) => n.toString(16).padStart(40, "0");
-const merged = (n: number): FakeRow => ({
-  number: n, body: `Closes ${TRACKER}#${4000 + n}`, headRefName: `agent/row-${n}`, mergedAt: new Date(NOW - n * MIN).toISOString(), updatedAt: new Date(NOW - n * MIN).toISOString(),
-  mergeCommit: { oid: sha(n) }, files: [{ path: `.acceptance/row-${n}.md` }],
-} as FakeRow);
+const merged = (n: number): FakeForeignPull => ({
+  number: n, body: `Closes ${TRACKER}#${4000 + n}`, headRefName: `agent/row-${n}`, labels: [], isDraft: false, armed: false, merged: true, comments: [],
+  mergedAt: new Date(NOW - n * MIN).toISOString(), updatedAt: new Date(NOW - n * MIN).toISOString(), createdAt: new Date(NOW - n * MIN).toISOString(),
+  mergeCommit: sha(n), files: [`.acceptance/row-${n}.md`],
+});
 const FIXTURE = Array.from({ length: FILES }, (_, i) => merged(i + 1));
 
-/** The `gh` the inert read asks: the merged pull requests of the look-back, in one page; no other list is read. */
+afterEach(() => forgetActivation());
+
+/** The fake code host the inert read asks (A11-160, step 8): the merged pull requests of the look-back, all of `CODE`'s; no other list is held. */
 function forge() {
-  return (args: string[]): any[] | null => {
-    if (readsRowsSince(args) === null) return [];
-    return JSON.parse(sinceAnswer(args, FIXTURE));
-  };
+  const host = withRepositoryReads(createFakeCodeHost());
+  holdRepository(host.rowsWorld, TRACKER);
+  holdRepository(host.rowsWorld, CODE, { pulls: FIXTURE });
+  substituteCodeHost(host);
 }
 
 /**
@@ -74,29 +79,31 @@ function acceptanceFile(onRead: (count: number) => void = () => {}) {
 const keptContents = (dir: string) => Object.keys(JSON.parse(readFileSync(join(dir, retro_0.RETRO_READS_FILE), "utf8")).contents);
 
 test("THE CONTROL: a read that never fails reads each of the forty files once, and a second run reads none", () => {
+  forge();
   const dir = tmpDir("retro-kept-control-");
   const first = acceptanceFile();
-  const inert = retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: first.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
+  const inert = retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, readFile: first.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
   assert.notEqual(inert, null);
   assert.equal(first.reads(), FILES, "forty acceptance reads on the first run");
   assert.equal(keptContents(dir).length, FILES, "every text is kept");
 
   const second = acceptanceFile();
-  retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: second.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
+  retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, readFile: second.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
   assert.equal(second.reads(), 0, "no acceptance read on the second run: the memory answers all forty");
 });
 
 test("THE CUT: a read that dies on the 21st file keeps the twenty it read, and the next run reads only the other twenty", () => {
+  forge();
   const dir = tmpDir("retro-kept-cut-");
   const dying = acceptanceFile((count) => {
     if (count === 21) throw new Error("SIGTERM: the gate's tick was cut");
   });
-  assert.throws(() => retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: dying.readFile, recorded: [], memory: retro_0.readRetroReads(dir) }), /SIGTERM/);
+  assert.throws(() => retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, readFile: dying.readFile, recorded: [], memory: retro_0.readRetroReads(dir) }), /SIGTERM/);
   assert.equal(dying.reads(), 21, "the twenty-first read is the one that died");
   assert.equal(keptContents(dir).length, 20, "the twenty texts read before the cut are on disk, though no class finished");
 
   const resumed = acceptanceFile();
-  const inert = retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, read: forge(), readFile: resumed.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
+  const inert = retro_1.readInertOptions({ now: NOW, declaration: DECLARATION, readFile: resumed.readFile, recorded: [], memory: retro_0.readRetroReads(dir) });
   assert.notEqual(inert, null);
   assert.equal(resumed.reads(), 20, "call counts 20 then 20, not 20 then 40");
   assert.equal(keptContents(dir).length, FILES);
@@ -107,6 +114,7 @@ test("THE CUT: a read that dies on the 21st file keeps the twenty it read, and t
  * is given the inert read directly, so the other classes are the real ones, refused as the tool says.
  */
 function tickWith(stateDir: string, now: number, { clock, costMs }: { clock: { ms: number }; costMs: number }, readFile: ReturnType<typeof acceptanceFile>["readFile"]) {
+  forge();
   const said: string[] = [];
   const orders = retro_0.retrospectiveTick({
     now, stateDir, log: (line) => said.push(line), readLedger: () => "", readUntiered: () => null,
@@ -114,7 +122,7 @@ function tickWith(stateDir: string, now: number, { clock, costMs }: { clock: { m
       dora: { repositories: [] },
       readRest: (rest) => retro_0.readRetroClasses({
         ...rest,
-        readInertOptionReading: (at, recorded) => retro_1.readInertOptions({ now: at, declaration: DECLARATION, read: forge(), readFile: (repo, path, ref) => { clock.ms += costMs; return readFile(repo, path, ref); }, recorded, memory: rest.memory }),
+        readInertOptionReading: (at, recorded) => retro_1.readInertOptions({ now: at, declaration: DECLARATION, readFile: (repo, path, ref) => { clock.ms += costMs; return readFile(repo, path, ref); }, recorded, memory: rest.memory }),
       }, { budgetMs: retro_0.RETRO_TICK_BUDGET_MS, clock: () => clock.ms }),
     }),
   });

@@ -1,9 +1,9 @@
-// no-token: gh -- the day's comments and label events of `readProseFacts` go through the `run` fake below; the row's state, its newest comment and the label POST of `readProseAndOrder` are the fake code host's rows (A11-160, step 6); nothing here reaches GitHub
+// no-token: none -- the org's comments of the day, the label events, the row's state, its newest comment and the label POST of `readProseAndOrder` are the fake code host's rows (A11-160, steps 6 and 8); nothing here reaches `gh`
 /**
  * a11ign/a11ign#4679: THE WRITER OF `answer:<session>` ASKS THE GUARD. `boardTruthNow` posts the day's table and, through `readProseAndOrder`, labels the row of every prose finding. On
  * 2026-10-09T23:00Z that labelled closed rows and rows nobody had asked anything, 56 times. Each test below runs the real writer over the fake code host's rows, which hold each row's state
- * and comments and take the label, so "labelled" and "not labelled" are read off the labels the rows carry. The org's comments of the day and the label events (`readProseFacts`, not a moved
- * caller) still come from a fake `run`, which refuses the reads that are the code host's now.
+ * and comments and take the label, so "labelled" and "not labelled" are read off the labels the rows carry. Since A11-160 (step 8) the org's comments of the day and the label events (`readProseFacts`) are
+ * the code host's reads too, so the same rows answer them; a `run` that spawned `gh` would throw.
  * POSITIVE CONTROL: the open row whose newest comment asks the session is labelled in `LABELLED`, so a writer that labels nothing, or a fixture that no finding reaches, is red there.
  */
 import { test } from "node:test";
@@ -22,29 +22,30 @@ const HANDOFF_AGE = 120;
 
 type Fixture = { state?: string; comments: { body: string; createdAt: string; login?: string }[]; labelEvents?: { label: string; createdAt: string; actor: string }[] };
 
-/** The code host's rows hold each fixture row (its state and comments); `refuse` names the rows whose newest comment cannot be read, which the fake answers as it answers a row it holds none of. A `run` answers the org's comments of the day and the label events. */
-function world(rows: Record<number, Fixture>, { refuse = [] as number[] } = {}) {
+/**
+ * The code host's rows hold each fixture row: its state, its comments with their authors (the org's comments of the day and each row's newest comment are READ off them), the label events it carries, and X names the rows whose state and newest comment cannot be read (the row is listed among the day's comments all the same), which the host answers as it answers a row it holds none of.
+ */
+function world(rows: Record<number, Fixture>, { refuse = [] as number[], listsClosed = false } = {}) {
   const log: string[] = [];
   const host = createFakeCodeHost();
   const code = host.rowsWorld;
   for (const [n, r] of Object.entries(rows)) {
-    if (refuse.includes(Number(n))) continue;
-    code.rows.set(Number(n), fakeRow(code, Number(n), { state: r.state === "closed" ? "CLOSED" : "OPEN", comments: r.comments.map((c, id) => ({ id, body: c.body, createdAt: c.createdAt })) }));
+    const number = Number(n);
+    const newest = r.comments.map((c) => c.createdAt).sort().at(-1);
+    code.rows.set(number, fakeRow(code, number, { state: r.state === "closed" ? "CLOSED" : "OPEN", createdAt: newest, updatedAt: newest, closedAt: r.state === "closed" ? newest : null,
+      comments: r.comments.map((c, id) => ({ id: id + 1, body: c.body, createdAt: c.createdAt, author: c.login ?? "a11ign-ai-leads" })) }));
+    if (r.labelEvents) code.gate.events.set(number, r.labelEvents.map((e) => ({ event: "labeled" as const, label: e.label, actor: e.actor, at: e.createdAt })));
   }
+  const readState = host.rows!.rowStateAndNewestComment;
+  host.rows!.rowStateAndNewestComment = (request) => (refuse.includes(request.number) ? null : readState(request));
+  const listed = host.rows!.issuesSinceOf;
+  if (!listsClosed) host.rows!.issuesSinceOf = (request) => listed(request).filter((issue: { state: string }) => issue.state !== "closed");
   substituteCodeHost(host);
   const posts = (): string[] => [...code.rows.values()].flatMap((row) => row.labels.filter((l) => l.startsWith("answer:")).map((l) => `${row.number} labels[]=${l}`));
-  const run = (args: string[]): string => {
-    const path = args[0] === "api" ? args.find((a) => a.startsWith("repos/")) ?? "" : "";
-    if (args[0] !== "api") return "[]";
-    if (path.includes("/issues/comments?")) return Object.entries(rows).flatMap(([n, r]) => r.comments.map((c) => JSON.stringify({ number: Number(n), author: { login: c.login ?? "a11ign-ai-leads" }, body: c.body, createdAt: c.createdAt, url: "" }))).join("\n");
-    if (path.includes("/issues?state=all")) return "";
-    const events = path.match(/issues\/(\d+)\/events/);
-    if (events) return (rows[Number(events[1])]?.labelEvents ?? []).map((e) => JSON.stringify({ number: Number(events[1]), ...e })).join("\n");
-    throw new Error(`the row's state, its newest comment and the label are the code host's rows, not a gh: ${args.join(" ")}`);
-  };
+  const run = (args: string[]): string => { throw new Error(`every read here is the code host's, not a gh: ${args.join(" ")}`); };
   const post = ({ readProse, repo, run: r, now }: any) => { readProse({ repo, run: r, now }); return "posted"; };
   const agents = () => [{ label: "orchestrator", status: "idle" }];
-  const read = () => boardTruthNow({ openRowsRead: [], waitFacts: { items: {} }, now: NOW } as any, { repo: "a/b", run, agents, post, log: (line: string) => log.push(line) } as any);
+  const read = () => boardTruthNow({ openRowsRead: [], waitFacts: { items: {} }, now: NOW } as any, { repo: code.repo, run, agents, post, log: (line: string) => log.push(line) } as any);
   return { posts, log, read };
 }
 
@@ -89,4 +90,11 @@ test("the newest comment is read from the row, not from the day's org comments: 
   w.read();
   assert.deepEqual(w.posts(), []);
   assert.match(w.log.join("\n"), /asks nothing/);
+});
+
+test("a closed row the issues listing already shows closed raises no finding at all, so it is neither labelled nor refused on the log", () => {
+  const w = world({ [LABELLED]: { comments: [handoff(true)] }, [CLOSED]: { state: "closed", comments: [handoff(true)] } }, { listsClosed: true });
+  w.read();
+  assert.deepEqual(w.posts(), [`${LABELLED} labels[]=answer:product-manager`], "CONTROL: the open row is labelled");
+  assert.ok(!w.log.some((line) => line.includes(`#${CLOSED}:`)));
 });

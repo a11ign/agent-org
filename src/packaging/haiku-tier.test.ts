@@ -5,7 +5,7 @@
  * EVERY CLAIM HERE HAS A POSITIVE AND A NEGATIVE CONTROL: a `tier:haiku` row that gets the profile beside the same row that does not, a switch that
  * is on beside the three ways it is off, and a stop rule that trips on a fixture built to trip EXACTLY ONE condition beside the baseline that trips none.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,10 +15,14 @@ import { haikuTierProfile, readHaikuSwitch, agentArgs, AUTO_COMPACT_TRIGGER_MARG
 import { spawnInvocation } from "../wake/pull-request-spawn-orders.ts";
 import { spawnClaimer } from "../wake/release-line-and-seats.ts";
 import { repriceEvents, type TraceEvent } from "../trace/store.ts";
-import { readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
+import { WindowCutShort } from "../ticket-port/window-cut-short.ts";
 import { REPO as REPO_OF_TRACKER } from "../project-identity.ts";
 import { closedRowOf, readClosedRows, windowStartOf, measuresOf, reportLines, stopRule, summarise, firstHaikuStart, median, CLOSED_ROWS_LIMIT, MIN_RATE_ROWS,
-  type GhRunner, type RowMeasures } from "../trace/haiku-tier-report.ts";
+  type RowMeasures } from "../trace/haiku-tier-report.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "haiku-tier-"));
 after(() => { rmSync(SCRATCH, { recursive: true, force: true }); });
@@ -242,57 +246,61 @@ test("closedRowOf still takes a nameWithOwner where one is given, takes no pull 
 });
 
 // --- the read of the closed rows (agent-org#707, #5076) -------------------------------------------------------------------
+// Since A11-160 (step 8) these cases run on the fake code host's rows: `readClosedRows` asks the code host for the closed rows of a window (`readRowsSince`) and KEEPS those whose own `closedAt` falls inside it. What the caller
+// ASKS (the connection, the order, the window, the pages it may walk) is read off the operation's request; how the GitHub plugin pages that connection and refuses a window longer than its pages is held beside the operation
+// (`plugins/github/rows/trace-rows.test.ts`, moved from this file).
 
-/** A GitHub whose CLOSED issues are `all` (`number` is creation order): a `issues(states:CLOSED)` connection read answers them newest-UPDATED first, 100 to a page, and keeps every argv sent. */
-function fakeGh(all: { number: number; closedAt: string; updatedAt?: string }[]): GhRunner & { calls: string[][] } {
-  const run = (args: string[]): string => {
-    run.calls.push(args);
-    const asked = readsRowsSince(args);
-    if (asked === null) throw new Error(`unexpected call: ${args.join(" ")}`);
-    assert.deepEqual([asked.kind, asked.states, asked.orderBy], ["issues", ["CLOSED"], "UPDATED_AT"]);
-    const stamped = all.map((row) => ({ updatedAt: row.closedAt, ...row }));
-    return sinceAnswer(args, stamped.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
-  };
-  run.calls = [] as string[][];
-  return run;
+afterEach(() => forgetActivation());
+
+/** The fake code host in place, holding `all` as CLOSED rows (`closedAt`, and the labels a Haiku row carries); `asked` is every request the closed-row read made of it. */
+function closedWorld(all: { number: number; haiku: boolean; closedAt: number }[]) {
+  const host = createFakeCodeHost();
+  const watched = watchedRows(host);
+  // The fake lists a window by a row's creation time; every row here is created inside the window, so only `closedAt` decides what the report keeps.
+  const createdAt = new Date(T0 + 50 * HOUR).toISOString();
+  for (const row of all) {
+    host.rowsWorld.rows.set(row.number, fakeRow(host.rowsWorld, row.number, { state: "CLOSED", labels: [row.haiku ? HAIKU_TIER_LABEL : "ready"], createdAt, closedAt: new Date(row.closedAt).toISOString() }));
+  }
+  substituteCodeHost(watched.host);
+  return { world: host.rowsWorld, asked: () => watched.calls.filter((call) => call.op === "readRowsSince").map((call) => call.request.ask) };
 }
 
 const EARLY = 10;
-/** Row #10 was opened long ago and closed five hours into the window; #20 was closed ten hours BEFORE it; 350 newer rows were all closed inside it, so the 300 newest created never reach #10. */
+/** Row #10 was opened long ago and closed five hours into the window; #20 was closed ten hours BEFORE it; 350 newer rows were all closed inside it. */
 const GITHUB = [
-  ghIssue({ number: EARLY, haiku: true, closedAt: T0 + 5 * HOUR }),
-  ghIssue({ number: 20, haiku: false, closedAt: T0 - 10 * HOUR }),
-  ...Array.from({ length: 350 }, (_, i) => ghIssue({ number: 5000 + i, haiku: false, closedAt: T0 + (i % 40) * HOUR })),
+  { number: EARLY, haiku: true, closedAt: T0 + 5 * HOUR },
+  { number: 20, haiku: false, closedAt: T0 - 10 * HOUR },
+  ...Array.from({ length: 350 }, (_, i) => ({ number: 5000 + i, haiku: false, closedAt: T0 + (i % 40) * HOUR })),
 ];
 
-test("a row opened before the 300 newest created and closed inside the window is read, and the report counts it (agent-org#707)", () => {
-  const gh = fakeGh(GITHUB);
-  // NEGATIVE CONTROL: the read this replaced took the newest CREATED rows, and on the same rows never reaches #10; it is what made the report short by the rows opened earliest.
-  const newestCreated = [...GITHUB].sort((a, b) => b.number - a.number).slice(0, 300);
-  assert.ok(!newestCreated.some((issue) => issue.number === EARLY), "the fixture must put #10 past the 300 newest created, or this test proves nothing");
-  const rowsRead = readClosedRows(T0, T0 + 100 * HOUR, gh);
+test("a row closed inside the window is read however long ago it was opened, one closed before it is not, and the report counts the one it read (agent-org#707)", () => {
+  const { asked } = closedWorld(GITHUB);
+  const rowsRead = readClosedRows(T0, T0 + 100 * HOUR);
   assert.ok(rowsRead.some((row) => row.number === EARLY), "#10 closed in the window must be read");
   assert.ok(!rowsRead.some((row) => row.number === 20), "a row closed before the window is not read");
   assert.equal(rowsRead.length, 351);
-  assert.equal(gh.calls.length, 4, "351 rows updated inside the window are four pages of the connection, read to the first row before it");
+  assert.equal(rowsRead.find((row) => row.number === EARLY)?.haiku, true, "the row keeps the tier label it carries");
+  // The window is read as a connection of the rows UPDATED since it opened (not the newest CREATED, which never reaches #10) and the read may walk the ten pages `CLOSED_ROWS_LIMIT` is.
+  assert.equal(asked().length, 1, "one read of the code host");
+  assert.deepEqual([asked()[0].kind, asked()[0].states, asked()[0].orderBy, asked()[0].repo, asked()[0].since, asked()[0].maxPages],
+    ["issues", ["CLOSED"], "UPDATED_AT", REPO_OF_TRACKER, new Date(T0).toISOString(), CLOSED_ROWS_LIMIT / 100]);
   const evts = repriceEvents(events({ number: EARLY, haiku: true, closedAt: T0 + 5 * HOUR }) as unknown as TraceEvent[]);
   const lines = reportLines({ closed: rowsRead, events: evts, now: T0 + 100 * HOUR });
-  assert.match(lines[lines.indexOf(`${HAIKU_TIER_LABEL} rows:`) + 1], /n=1 closed \(1 with a merged pull request/);
+  assert.match(lines[lines.indexOf(`${HAIKU_TIER_LABEL} rows:`) + 1], /n=1 closed /, "the Haiku row read is the report's one");
 });
 
 test("the read selects by closing time, not by update time: a row UPDATED in the window but closed outside it is not read, and the ends are read to the second", () => {
-  const closed = (number: number, closedAt: number, updatedAt = closedAt) => ({ ...ghIssue({ number, haiku: false, closedAt }), updatedAt: new Date(updatedAt).toISOString() });
-  const gh = fakeGh([
-    closed(1, T0 - 10 * HOUR, T0 + HOUR), // closed before the window, commented on inside it
-    closed(2, T0 + 2000),                 // inside: after the second `from` falls in
-    closed(3, T0 + HOUR),                 // inside: the same second as `to`
-    closed(4, T0 + HOUR + 1000),          // after `to`
-    closed(5, T0 + 500),                  // before the second `from` falls in
-  ] as never);
-  const read = readClosedRows(T0 + 1500, T0 + HOUR + 999, gh);
+  const { asked } = closedWorld([
+    { number: 1, haiku: false, closedAt: T0 - 10 * HOUR }, // closed before the window, commented on inside it
+    { number: 2, haiku: false, closedAt: T0 + 2000 },      // inside: after the second `from` falls in
+    { number: 3, haiku: false, closedAt: T0 + HOUR },      // inside: the same second as `to`
+    { number: 4, haiku: false, closedAt: T0 + HOUR + 1000 }, // after `to`
+    { number: 5, haiku: false, closedAt: T0 + 500 },       // before the second `from` falls in
+  ]);
+  const read = readClosedRows(T0 + 1500, T0 + HOUR + 999);
   assert.deepEqual(read.map((row) => row.number).sort(), [2, 3]);
-  assert.deepEqual(readsRowsSince(gh.calls[0]), { kind: "issues", states: ["CLOSED"], orderBy: "UPDATED_AT", label: null, repo: REPO_OF_TRACKER, after: null });
-  assert.ok(gh.calls.every((args) => !args.includes("--search") && !args.includes("--label") && !args.includes("--limit")), "no argv is a GitHub search (#5076)");
+  assert.deepEqual([asked()[0].kind, asked()[0].states, asked()[0].orderBy, asked()[0].repo, asked()[0].label], ["issues", ["CLOSED"], "UPDATED_AT", REPO_OF_TRACKER, undefined]);
+  assert.equal(asked()[0].since, new Date(T0 + 1000).toISOString(), "the window opens at the second `from` falls in");
 });
 
 test("the window opens at the earliest Haiku-model turn the store holds, never a Sonnet turn or another kind of event", () => {
@@ -303,12 +311,11 @@ test("the window opens at the earliest Haiku-model turn the store holds, never a
   assert.equal(windowStartOf([]), null);
 });
 
-test("a window of more updated rows than CLOSED_ROWS_LIMIT THROWS, never a count short by the rows it left behind; one that fits is read whole", () => {
-  const light = (number: number, closedAt: number) => ({ number, labels: [], closedAt: new Date(closedAt).toISOString() });
-  const within = (count: number) => Array.from({ length: count }, (_, i) => light(i + 1, T0 + HOUR + i * 1000));
-  assert.throws(() => readClosedRows(T0, T0 + 10 * HOUR, fakeGh(within(CLOSED_ROWS_LIMIT + 1))), /may be cut short/);
-  const gh = fakeGh(within(CLOSED_ROWS_LIMIT));
-  const got = readClosedRows(T0, T0 + 10 * HOUR, gh);
-  assert.deepEqual(got.map((row) => row.number).sort((a, b) => a - b), within(CLOSED_ROWS_LIMIT).map((row) => row.number), "control: exactly the limit is a whole window");
-  assert.equal(gh.calls.length, CLOSED_ROWS_LIMIT / 100);
+test("a window the code host refuses as longer than its pages THROWS, never a count short by the rows it left behind; one that fits is read whole", () => {
+  const { world } = closedWorld([{ number: 1, haiku: false, closedAt: T0 + HOUR }]);
+  world.failures.set("readRowsSince", new WindowCutShort("the issues of a11ign/agent-org since the window: more than 1000 rows, so the window may be cut short"));
+  assert.throws(() => readClosedRows(T0, T0 + 10 * HOUR), /may be cut short/);
+  world.failures.clear();
+  assert.deepEqual(readClosedRows(T0, T0 + 10 * HOUR).map((row) => row.number), [1], "control: the same world, unrefused, is read whole");
 });
+

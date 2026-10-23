@@ -1,4 +1,4 @@
-// no-token: gh -- importing `org-health.ts` reaches `defaultRun`, and this file never lets it run: every read step is handed a recorded `run` that answers from a table and REFUSES any effect, and the effect steps are handed a fake `release` or a fake `post`.
+// no-token: gh -- importing `org-health.ts` reaches `defaultRun`, and this file never lets it run: every read step reads the fake code host's rows, watched so that any effect is caught, and the effect steps are handed a fake `release` or a fake `post`.
 /**
  * agent-org#1209: THE READS OF `orgHealthNow`'s readers are separated from their EFFECTS, with no behaviour change. Each reader that interleaved the two is split into a READ step
  * (returns data, performs no effect) and an EFFECT step (consumes that data, performs the effects, in the order the reader always did):
@@ -7,18 +7,24 @@
  *   - the board truth audit and its post     -- `readBoardTruthAudit` (read: the closed rows, the merged pull requests, the herdr listing, the roadmaps, the epics)
  *     then `postBoardTruth` (effect: the day's table, and the prose findings' labels, inside `postDaysTable`); `boardTruthNow` is the two in order.
  *
- * THE RECORDED RUNNER is the test's proof: a read step is run against `recorder`, which answers the read verbs and THROWS on any effect verb (a comment, an edit, a POST or a
- * field write to the API), recording the call first. A read step that performs an effect is therefore caught twice: the call is in `writes`, and the step throws.
- * The POSITIVE CONTROLS are a reader with an effect, which the recorder catches, and the effect step itself, which the same recorder catches, so the negatives are not passing
- * because the recorder never sees a write.
+ * THE WATCHED CODE HOST is the test's proof (A11-160, step 8: it was a recorded runner answering `gh` argument lists): a read step is run against the fake code host whose rows are watched (`watchedRows`), and it is held to
+ * asking only READ operations of it and to leaving the world as it was (every row, comment and label). A read step that performs an effect is therefore caught twice: the operation is in `writes`, and the world changed.
+ * The POSITIVE CONTROLS are a reader with an effect, which the watch catches, and the effect step itself, which the same watch catches, so the negatives are not passing because the watch never sees a write.
  *
  * Logging is NOT an effect for this file: the log lines are the same text in the same order before and after the split, and the tests say so where they check them.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { rows } from "../plugins/rows.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 import { WAIT_MARKER, waitItemOf, staleWaits } from "../wait-condition.ts";
 import { postDaysTable } from "../board-truth-audit.ts";
 import { applyHoldLifts, boardTruthNow, liftResolvedHolds, liftableWaits, postBoardTruth, readBoardTruthAudit } from "./org-health.ts";
+
+afterEach(() => forgetActivation());
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-03T16:00:00Z");
@@ -41,35 +47,21 @@ function staleOf(raw: Record<string, unknown>, facts: Record<string, Fact>) {
   return staleWaits({ items: [waitItemOf(raw, "pr")], facts: { items: facts }, now: NOW });
 }
 
-// --- the recorded runner --------------------------------------------------------------------------------------------------------
+// --- the watched code host -----------------------------------------------------------------------------------------------------
 
-/** The verbs `gh` takes for an effect: a comment, an edit, a create, a state change, a merge, or an API write (POST, PATCH, PUT, DELETE, or a field). */
-const EFFECT_VERBS = new Set(["comment", "edit", "create", "close", "reopen", "merge", "lock", "delete", "transfer"]);
-const FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
+/** The operations of the code host's rows that WRITE (a comment, a label, a Discussion, a release): a read step may call none of them. */
+const WRITES = new Set(["commentOnIssue", "addLabelToRowByApi", "addLabelToRow", "removeLabelFromRow", "setRowBody", "createDiscussion", "updateDiscussion", "createDraftRelease", "uploadReleaseAsset", "closeRowWithComment", "createRow"]);
 
-function isEffect(args: string[]): boolean {
-  if (args[0] === "api") {
-    if (args.some((a) => a === "-X" || a === "--method" || a === "--input")) return true;
-    return args[1] !== "graphql" && args.some((a) => FIELD_FLAGS.has(a));
-  }
-  return EFFECT_VERBS.has(args[1]);
-}
-
-/** A `run` for a read step: it answers the read verbs from a table (an empty list for a list, nothing for a REST read), records every call, and REFUSES an effect. */
+/** The fake code host serving the project's tracker with the open row #4001 and the record row #928, watched: `calls` is every operation of its rows that was called, `writes` those that write, and `world()` the rows as they stand. */
 function recorder() {
-  const calls: string[][] = [];
-  const writes: string[][] = [];
-  const run = (args: string[]): string => {
-    calls.push(args);
-    if (isEffect(args)) {
-      writes.push(args);
-      throw new Error(`EFFECT REFUSED in a read step: gh ${args.join(" ")}`);
-    }
-    if (args[0] === "api" && args[1] === "graphql") return JSON.stringify({ data: { repository: null } });
-    if (args[0] === "issue" || args[0] === "pr") return "[]";
-    return "";
-  };
-  return { run, calls, writes };
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.now = () => NOW;
+  host.rowsWorld.rows.set(4001, fakeRow(host.rowsWorld, 4001, { title: "a row", labels: [] }));
+  host.rowsWorld.rows.set(928, fakeRow(host.rowsWorld, 928, { title: "The record", labels: ["meta"], createdAt: ISO(NOW - 90 * HOUR_MS), updatedAt: ISO(NOW - 90 * HOUR_MS) }));
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { calls: watched.calls, writes: () => watched.calls.filter((call) => WRITES.has(call.op)), world: () => JSON.stringify([...host.rowsWorld.rows.values()]), host: watched.host };
 }
 
 // --- the lift: the read step names what may be lifted, the effect step releases it ----------------------------------------------
@@ -129,40 +121,49 @@ test("`liftResolvedHolds` is the read step then the effect step, the same calls,
 // --- the board truth: the read step performs no effect, the effect step posts ----------------------------------------------------
 
 const OPEN_ROW = { number: 4001, title: "a row", labels: [], body: "", comments: [], updatedAt: ISO(NOW - HOUR_MS) };
+const noRunner = () => assert.fail("the code host's rows are asked, not a runner");
 
-test("the board truth READ STEP performs no effect: the audit is read through a recorded runner that refuses every write", () => {
+test("the board truth READ STEP performs no effect: the audit is read through a watched code host that records every write", () => {
   const rec = recorder();
-  const audit = readBoardTruthAudit({ openRowsRead: [OPEN_ROW], claimedComments: [], waitFacts: null, now: NOW }, { repo: REPO, run: rec.run, agents: () => [] });
-  assert.deepEqual(rec.writes, [], `no effect was attempted: ${JSON.stringify(rec.writes)}`);
-  assert.ok(rec.calls.length > 0, "the read step did read, so the runner was really exercised");
+  const before = rec.world();
+  const audit = readBoardTruthAudit({ openRowsRead: [OPEN_ROW], claimedComments: [], waitFacts: null, now: NOW }, { repo: REPO, run: noRunner, agents: () => [] });
+  assert.deepEqual(rec.writes(), [], `no effect was attempted: ${JSON.stringify(rec.writes())}`);
+  assert.equal(rec.world(), before, "and the world is as it was");
+  assert.ok(rec.calls.length > 0, "the read step did read, so the code host was really exercised");
   assert.ok(Array.isArray(audit.findings) && Array.isArray(audit.unread), "and it returns the audit a post would consume");
 });
 
-test("POSITIVE CONTROL: a reader that performs an effect is caught by the recorded runner, and the call is recorded before the refusal", () => {
+test("POSITIVE CONTROL: a reader that performs an effect is caught by the watched code host, and the operation is recorded", () => {
   const rec = recorder();
-  const readerWithEffect = (run: (args: string[]) => string) => { run(["issue", "comment", "3", "--body", "a post"]); return {}; };
-  assert.throws(() => readerWithEffect(rec.run), /EFFECT REFUSED/);
-  assert.deepEqual(rec.writes, [["issue", "comment", "3", "--body", "a post"]]);
+  const before = rec.world();
+  const readerWithEffect = () => { rows().commentOnIssue({ repo: REPO, issue: 4001, body: "a post", run: noRunner }); return {}; };
+  readerWithEffect();
+  assert.deepEqual(rec.writes().map((call) => [call.op, call.request.issue, call.request.body]), [["commentOnIssue", 4001, "a post"]]);
+  assert.notEqual(rec.world(), before, "and the world changed");
 });
 
-test("POSITIVE CONTROL: the effect step, `postBoardTruth`, is caught by the same recorder when it posts the day's table", () => {
+test("POSITIVE CONTROL: the effect step, `postBoardTruth`, is caught by the same watch when it posts the day's table", () => {
   const rec = recorder();
-  const audit = readBoardTruthAudit({ openRowsRead: [OPEN_ROW], claimedComments: [], waitFacts: null, now: NOW }, { repo: REPO, run: recorder().run, agents: () => [] });
+  const audit = readBoardTruthAudit({ openRowsRead: [OPEN_ROW], claimedComments: [], waitFacts: null, now: NOW }, { repo: REPO, run: noRunner, agents: () => [] });
   const logged: string[] = [];
-  postBoardTruth({ ...audit, unread: [] }, { now: NOW, repo: REPO, run: rec.run, post: postDaysTable, log: (l: string) => logged.push(l) });
-  assert.ok(rec.writes.length > 0, `the day's table was the effect the recorder caught: ${logged.join(" | ")}`);
-  assert.ok(rec.writes.some((args) => args[0] === "issue" && args[1] === "comment"), "posted as an issue comment");
+  postBoardTruth({ ...audit, unread: [] }, { now: NOW, repo: REPO, run: noRunner, post: postDaysTable, log: (l: string) => logged.push(l) });
+  assert.ok(rec.writes().length > 0, `the day's table was the effect the watch caught: ${logged.join(" | ")}`);
+  assert.deepEqual(rec.writes().map((call) => call.op), ["commentOnIssue"], "posted as a comment on the record row");
+  assert.match(rec.writes()[0].request.body, /^### Board against reality/);
 });
 
 test("`boardTruthNow` is the read step then the effect step: the post receives the very audit it returns, after the reads", () => {
+  const rec = recorder();
   const order: string[] = [];
-  const run = (args: string[]): string => { order.push(`read ${args[0]} ${args[1] ?? ""}`.trim()); return recorder().run(args); };
   let posted: { audit: unknown } | null = null;
+  let operationsBeforePost = -1;
   const returned = boardTruthNow({ openRowsRead: [OPEN_ROW], claimedComments: [], waitFacts: null, now: NOW }, {
-    repo: REPO, run, agents: () => [], log: () => {},
-    post: (input) => { order.push("post"); posted = { audit: input.audit }; return "posted"; },
+    repo: REPO, run: noRunner, agents: () => [], log: () => {},
+    post: (input) => { order.push("post"); operationsBeforePost = rec.calls.length; posted = { audit: input.audit }; return "posted"; },
   });
   assert.equal(posted!.audit, returned, "the post is handed the audit the gate gets back");
-  assert.equal(order[order.length - 1], "post", "every read happens before the post");
-  assert.ok(order.slice(0, -1).every((step) => step.startsWith("read ")), "and nothing but reads comes before it");
+  assert.deepEqual(order, ["post"]);
+  assert.ok(operationsBeforePost > 0, "the reads were made before the post");
+  assert.equal(rec.calls.length, operationsBeforePost, "and nothing was asked of the code host after it");
+  assert.deepEqual(rec.writes(), [], "and nothing but reads came before it (the post here is the injected one)");
 });

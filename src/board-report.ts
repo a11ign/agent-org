@@ -30,6 +30,7 @@ import { editionDay, editionTitle, outsideBoardOn, scheduledRunFindsWorkDone } f
 import { liveToolVersion } from "./lib/tool-version.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
 import { claimsFromEvents, labelEventsByIssue, parseEventLines } from "./claim-provenance.ts";
+import { rows } from "./plugins/rows.ts";
 
 const argv = process.argv.slice(2);
 const flag: (name: string) => string | undefined = (name): string | undefined => argv.find((a) => a.startsWith(`${name}=`))?.split("=").slice(1).join("=");
@@ -279,13 +280,6 @@ const YOUNG_DAYS = 2;
 const AGING_DAYS = 7;
 const MINUTES_PER_HOUR = 60;
 const HOURS_PER_DAY = 24;
-// Every label event in the repository, projected to four fields inside `gh` (`--jq`), one object per line so
-// paginated pages concatenate. Same shape `claim-provenance.ts` reads; restated because that file keeps it
-// private and a copy of a jq string is cheaper than widening its exports past this row's Region.
-const LABEL_EVENTS_PATH = `repos/${REPO}/issues/events?per_page=100`;
-const LABEL_EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
-  + ' | { number: .issue.number, event: .event, label: .label.name, at: .created_at }';
-
 /** The day is LONDON's, from `editionDay`, like the edition's own title (#1302): a second zone here is the
  * split that guard exists to stop. @param {string | null | undefined} iso @returns {string | null} */
 function londonDay(iso: string | null | undefined): string | null {
@@ -501,11 +495,6 @@ export function flow(d: any, L: string[]) {
   flowAges(d, L);
 }
 
-// One REST row projected to the listing shape `flowReadings` reads. `issues` returns pull requests too; they
-// carry a `pull_request` key and are not rows.
-const WINDOW_ROWS_JQ = '.[] | select(.pull_request == null) | { number, state: (.state | ascii_upcase),'
-  + ' createdAt: .created_at, closedAt: .closed_at, labels: [.labels[] | { name }] }';
-
 /** @param {string} raw one JSON object per line, as `--paginate` with a `--jq` that emits objects prints them */
 function jsonLines(raw: string) {
   return raw.split("\n").filter((line) => line.trim().length > 0).map((line) => JSON.parse(line));
@@ -530,14 +519,14 @@ export function mergeFlowRows<Row extends { number: number }>(openRows: Row[], w
  */
 function readFlow(now: number) {
   const shape = "number,state,createdAt,closedAt,labels";
-  const openRows = JSON.parse(gh(["issue", "list", "--repo", REPO, "--state", "open", "--limit", String(FLOW_LIST_LIMIT), "--json", shape]));
+  const openRows = rows().rowsListedIn({ repo: REPO, state: "open", limit: FLOW_LIST_LIMIT, fields: shape, run: gh });
   const since = new Date(now - (FLOW_DAYS + 1) * DAY_MS).toISOString();
-  const windowRows = jsonLines(gh(["api", "--paginate", `repos/${REPO}/issues?state=all&since=${since}&per_page=100`, "--jq", WINDOW_ROWS_JQ]));
-  const rows = mergeFlowRows(openRows, windowRows);
-  const read = { rows, capped: openRows.length >= FLOW_LIST_LIMIT,
+  // One REST row per line, in the listing shape `flowReadings` reads: `issues` returns pull requests too, and the code host leaves them out.
+  const windowRows = jsonLines(rows().windowRowsTextOf({ repo: REPO, since, run: gh }));
+  const read = { rows: mergeFlowRows(openRows, windowRows), capped: openRows.length >= FLOW_LIST_LIMIT,
     source: `every open issue (\`gh issue list --state open --limit ${FLOW_LIST_LIMIT}\`) plus every issue updated since ${since} (paged REST, not capped)` };
   try {
-    const raw = gh(["api", "--paginate", LABEL_EVENTS_PATH, "--jq", LABEL_EVENTS_JQ]);
+    const raw = rows().labelEventLogTextOf({ repo: REPO, run: gh });
     return flowReadings({ ...read, events: labelEventsByIssue(parseEventLines(raw)), now });
   } catch (cause) {
     // Recorded in the edition itself, never swallowed: the other two readings do not depend on the log.
@@ -682,8 +671,7 @@ export function editionPosted({ day, issue, now = new Date(), run = gh }: { day:
   const since = new Date(now.getTime() - POSTED_LOOKBACK_MS).toISOString();
   const title = `# ${editionTitle(day)}`;
   try {
-    const found = run(["api", "--paginate", `repos/${REPO}/issues/${issue}/comments?since=${since}&per_page=100`, "--jq", `[.[] | select(.body | startswith(${JSON.stringify(title)}))] | length`]);
-    return found.split("\n").some((count) => Number(count) > 0);
+    return rows().editionCommentCountOf({ repo: REPO, issue, since, title, run }) > 0;
   } catch {
     return false;
   }
@@ -725,7 +713,7 @@ function main() {
         + "the working tree are not `main`'s, so the gate line and the fleet-hours line above may quote "
         + "something unreviewed. Stated here rather than left for a reader to discover."
       : body;
-    gh(["issue", "comment", issue, "--repo", REPO, "--body", published]);
+    rows().commentOnIssue({ repo: REPO, issue, body: published, run: gh });
     process.stdout.write(`posted to https://github.com/${REPO}/issues/${issue}\n`);
   } else {
     process.stdout.write(body + "\n");

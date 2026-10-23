@@ -41,6 +41,7 @@ import { asListJson, readRowsSince, sincePageSize } from "./ticket-port/rows-sin
 // selection runs where a test of this file cannot. Re-exported: no importer of this file changes.
 import { latestVerdictGate } from "./board-gates.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
+import { rows } from "./plugins/rows.ts";
 import { foundByChairman } from "./found-by-chairman.ts";
 export { gateVerdicts, isConformanceGate, latestVerdictGate, worstVerdict } from "./board-gates.ts";
 
@@ -92,10 +93,9 @@ export const READ_SET = ["docs/board/reported", ...(REPORT_SOURCE.startsWith("..
 export function gh(args: string[]) {
   // #1053: the leak check lives in the SPAWN HELPER, so every consumer of this `gh` is covered and so is
   // every call somebody adds to one tomorrow. Four of the eight writers #1053 names reach GitHub through
-  // this one function.
-  assertNoLeakInArgv("gh", args);
-  return execFileSync("gh", args,
-    { encoding: "utf8", cwd: ROOT, env: sandboxGitEnv(), maxBuffer: 32 * 1024 * 1024 });
+  // this one function. (A11-160, step 8: the process is the code host's, started in `ROOT` with the git
+  // variables of a hook taken off and the 32 MiB this file has always allowed; the guard is this file's.)
+  return rows().runnerWith({ cwd: ROOT, withoutGitEnv: true, maxBuffer: 32 * 1024 * 1024, guard: (argv) => assertNoLeakInArgv(rows().command, [...argv]) })(args);
 }
 /** @param {string[]} args */
 export function git(args: string[]) {
@@ -149,18 +149,12 @@ export function misAuthored(since: string) {
 // cursor and compares what it collected with the `totalCount` the same query reports. A count that
 // matches is proof; a page that fails, a cursor that stops advancing, or a shortfall is a REFUSAL, never
 // the pages that were read. That refusal is the part that cannot rot.
-const ISSUES_QUERY = "query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){"
-  + "issues(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{number title state createdAt closedAt url "
-  + "labels(first:100){totalCount nodes{name}} milestone{number title description dueOn}}}}}";
 // A backstop against a cursor that never ends, not a cap on the tracker: 500 pages is 50,000 issues.
 const MAX_ISSUE_PAGES = 500;
 
 /** @param {(args: string[]) => string} run @param {string | null} after @param {string} repo `owner/name` */
 function issuePage(run: (args: string[]) => string, after: string | null, repo: string) {
-  const [owner, name] = repo.split("/");
-  const args = ["api", "graphql", "-f", `query=${ISSUES_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`];
-  if (after) args.push("-f", `after=${after}`);
-  const body = JSON.parse(run(args));
+  const body = rows().issuePageOf({ repo, after, run });
   const page = body?.data?.repository?.issues;
   // `pageInfo` is part of the shape: an absent one must not read as "this was the last page".
   const isMalformedPage = !page || !Array.isArray(page.nodes) || !Number.isInteger(page.totalCount)
@@ -293,7 +287,7 @@ export function countable(list: any[]) {
 }
 
 export function milestone() {
-  const all = JSON.parse(gh(["api", `repos/${REPO}/milestones?state=all`]));
+  const all = rows().allMilestonesOf({ repo: REPO, run: gh });
   return all.find((m: any) => m.title === MILESTONE) ?? null;
 }
 
@@ -708,7 +702,7 @@ export function collect(since: string) {
     open,
     closed: all.filter((i: any) => i.state === "CLOSED" && i.closedAt
       && Date.parse(i.closedAt) >= Date.parse(since)),
-    milestones: JSON.parse(gh(["api", `repos/${REPO}/milestones?state=all`])),
+    milestones: rows().allMilestonesOf({ repo: REPO, run: gh }),
     release: milestone(),
     ...mergeState(since),
     strays: misAuthored(since),

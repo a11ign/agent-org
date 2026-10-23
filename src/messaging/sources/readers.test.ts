@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 
 import { createFakeProvider } from "../fake-provider.ts";
 import { createLedger } from "../ledger.ts";
@@ -24,6 +24,8 @@ import {
   SYSTEMD_PROPERTIES, createReaders, readCiRuns, readEpisodeStart, readFixRow, readFleetRoster, readFleetState, readGateUnit, readLastMerge, readLastTick, readTicks, readTrunkRuns, takeSample,
 } from "./readers.ts";
 import { observeStalls } from "./stall.ts";
+import { forgetActivation, substituteCodeHost } from "../../plugins/active.ts";
+import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
 
 const REPO = "example/project";
 const MINUTE = 60_000;
@@ -32,6 +34,7 @@ const iso = (/** @type {number} */ ms: number) => new Date(ms).toISOString();
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-readers-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 let directories = 0;
 const freshDirectory = () => mkdtempSync(join(scratch, `d${(directories += 1)}-`));
 
@@ -597,12 +600,30 @@ describe("the read-only gh allowlist covers `gh api`", () => {
     }
   });
 
-  test("the real reader's `api` builds `gh api <path>` and parses what it printed", async () => {
-    const commands: unknown = /** @type {string[][]} */ ([]);
+  // A11-160, step 8: the reader's `api` is the code host's `restGetAsync`. What GitHub's `gh api <path>` is (the argument list, the parsing) is held beside the operation (`plugins/github/rows/messaging-rows.test.ts`); here the
+  // reader returns the code host's document, and the allowlist is the reader's own guard on the `run` the operation is handed.
+  test("the real reader's `api` asks the code host for the document at the path and returns it", async () => {
+    const host = createFakeCodeHost();
+    host.rowsWorld.reports.messaging.rest.set(READS[3], { workflow_runs: [] });
+    const watched: string[] = [];
+    const asked = host.rows!.restGetAsync;
+    host.rows!.restGetAsync = (request) => { watched.push(request.path); return asked(request); };
+    substituteCodeHost(host);
+    assert.deepEqual(await createGhReader().api(READS[3]), { workflow_runs: [] });
+    assert.deepEqual(watched, [READS[3]]);
+    host.rowsWorld.failures.set("restGetAsync", new Error("HTTP 502"));
+    await assert.rejects(createGhReader().api(READS[3]), /HTTP 502/, "CONTROL: a refused read is thrown, never an empty document");
+  });
+
+  test("the real reader's `api` refuses a path that writes before anything is run: the allowlist is a guard on the `run` the operation is handed", async () => {
+    const host = createFakeCodeHost();
+    substituteCodeHost({ ...host, rows: { ...host.rows!, restGetAsync: async ({ path, run }) => JSON.parse(await run(["api", path])) } });
+    const commands: string[][] = [];
     const reader = createGhReader({ run: async (argv) => { commands.push([...argv]); return '{"workflow_runs": []}'; } });
     assert.deepEqual(await reader.api(READS[3]), { workflow_runs: [] });
-    assert.deepEqual(commands, [["api", READS[3]]]);
+    assert.deepEqual(commands, [["api", READS[3]]], "POSITIVE CONTROL: a read the allowlist admits is run");
     await assert.rejects(reader.api("repos/example/project/issues/1/labels"), /reads only/);
+    assert.equal(commands.length, 1, "and the write was refused before `run` was asked");
   });
 });
 

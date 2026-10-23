@@ -48,6 +48,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { isShipped, noReleaseReason } from "./release-behind-main.ts";
+import { rows } from "./plugins/rows.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5076: the regression rows and the merged list are connections, never a search
 import { readMergedPullRequests, sincePageSize } from "./ticket-port/rows-since.ts";
 
@@ -981,12 +982,15 @@ function startable(call: string): number {
   return left;
 }
 
-/** @param {string} command @param {string[]} args @returns {string} */
-function run(command: string, args: string[], env?: Record<string, string | undefined>): string {
+/**
+ * One read under this repository's budget and a call's own limit: `start` starts it, cut at the milliseconds it is given, and a call that ran past them is recorded as the one the budget (or its own limit) ended.
+ * @param {string} command @param {string[]} args @param {(timeoutMs: number) => string} start @returns {string}
+ */
+function bounded(command: string, args: string[], start: (timeoutMs: number) => string): string {
   const call = callName(command, args);
   const timeout = Math.min(readLimits.timeoutMs, startable(call));
   try {
-    return execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout, ...(env === undefined ? {} : { env }) });
+    return start(timeout);
   } catch (err: any) {
     if (err?.code !== "ETIMEDOUT") throw err;
     // The limit it ran is its OWN unless the repository's budget had less left than that: then it is the budget's, and a call that was only ever given a few seconds says so.
@@ -996,11 +1000,13 @@ function run(command: string, args: string[], env?: Record<string, string | unde
   }
 }
 
-/** The ONE place this file's `run` is handed `gh` for a list read: the text of the answer. The connection readers of `ticket-port/` take it as their `run`. */
-const ghText = (args: string[]): string => run("gh", args);
+/** @param {string} command @param {string[]} args @returns {string} */
+function run(command: string, args: string[], env?: Record<string, string | undefined>): string {
+  return bounded(command, args, (timeout) => execFileSync(command, args, { encoding: "utf8", maxBuffer: MAX_BUFFER, stdio: ["ignore", "pipe", "ignore"], timeout, ...(env === undefined ? {} : { env }) }));
+}
 
-/** @param {string[]} args @returns {any} */
-const ghJson = (args: string[]): any => JSON.parse(ghText(args));
+/** The ONE place this file reaches the code host's program for a list read: the text of the answer, under the same budget and limit as every read. The connection readers and the operations of the code host's `rows` take it as their `run`. */
+const ghText = (args: string[]): string => bounded(rows().command, args, (timeoutMs) => rows().runnerWith({ maxBuffer: MAX_BUFFER, timeoutMs, echo: false })(args));
 
 /**
  * The ONE parent of every commit this process has read, keyed `repo@sha` (a commit's parents never change, so it is never stale): `null` for a commit with none or with two.
@@ -1011,7 +1017,7 @@ const onlyParents: Map<string, string | null> = new Map();
 
 /** @param {string} repo @param {string} ref @returns {{ sha: string, parent: string | null } | null} the commit a tag or sha names; `null` when GitHub does not know it */
 function readCommit(repo: string, ref: string): { sha: string; parent: string | null; } | null {
-  const answer = attempt(() => run("gh", ["api", `repos/${repo}/commits/${encodeURIComponent(ref)}`, "--jq", `[.sha, (.parents | map(.sha) | join(","))] | join(" ")`]).trim());
+  const answer = attempt(() => rows().commitAndParentsTextOf({ repo, ref, run: ghText }).trim());
   const [sha, parents = ""] = answer === null ? [] : answer.split(" ");
   if (sha === undefined || sha.length !== SHA_LENGTH) return null;
   const parent = parents.length === SHA_LENGTH ? parents : null;
@@ -1111,8 +1117,8 @@ export function tagReleasesFrom({ rows, repository, since, commits }: { rows: an
 
 /** @param {Repository} repository @param {ReleaseWindow} window @returns {Release[]} the `v*` tags that have a published GitHub Release */
 function tagReleases(repository: Repository, { since, tagCommit }: ReleaseWindow): Release[] {
-  const rows = ghJson(["api", `repos/${repository.repo}/releases`, "--paginate", "--slurp"]).flat();
-  return tagReleasesFrom({ rows, repository, since, commits: { commitOf, ...(tagCommit === undefined ? {} : { tagCommit }) } });
+  const releases = rows().releasesOf({ repo: repository.repo, run: ghText });
+  return tagReleasesFrom({ rows: releases, repository, since, commits: { commitOf, ...(tagCommit === undefined ? {} : { tagCommit }) } });
 }
 
 /**
@@ -1143,7 +1149,7 @@ function latestTag(npmPackage: string): string | null {
 /** @param {Repository & { release: { kind: "npm", package: string } }} repository @returns {PromotionRecords} */
 function promotionRecords(repository: Repository & { release: { kind: "npm"; package: string; }; }): PromotionRecords {
   const npmPackage = repository.release.package;
-  const releases = ghJson(["api", `repos/${repository.repo}/releases`, "--paginate", "--slurp"]).flat();
+  const releases = rows().releasesOf({ repo: repository.repo, run: ghText });
   return promotionRecordsFrom({ releases, latest: latestTag(npmPackage), npmPackage });
 }
 
@@ -1170,7 +1176,7 @@ function regressionRowsOf(repo: string): any[] {
  * @param {string} repo @param {string} since @returns {Regression[]}
  */
 function regressionRows(repo: string, since: string): Regression[] {
-  if (ghJson(["repo", "view", repo, "--json", "hasIssuesEnabled"]).hasIssuesEnabled !== true) return [];
+  if (!rows().hasIssuesEnabled({ repo, run: ghText })) return [];
   return regressionRowsOf(repo).map((row: any) => ({
     number: row.number, openedAt: row.createdAt, closedAt: row.closedAt ?? null,
     ...(row.closedAt && row.closedAt >= since ? fixOf(repo, row.closedByPullRequestsReferences ?? []) : { fixCommit: null, fixMergedAt: null }),
@@ -1202,7 +1208,7 @@ export const githubReaders: Readers = {
   // `compare/<base>...<head>`, every page: `status` once, and the commits of `head` that `base` lacks.
   parentOf: (repository, commit) => parentOf(repository.repo, commit),
   range: (repository, { base, head }) => {
-    const pages = ghJson(["api", `repos/${repository.repo}/compare/${base}...${head}?per_page=100`, "--paginate", "--slurp"]);
+    const pages = rows().compareRangeOf({ repo: repository.repo, base, head, run: ghText });
     return { status: pages[0].status, commits: pages.flatMap((page: any) => page.commits.map((commit: any) => commit.sha))};
   },
 };
@@ -1218,7 +1224,7 @@ export const githubReaders: Readers = {
 function fixOf(repo: string, references: { number: number; repository?: { name: string; owner: { login: string; }; }; }[]): { fixCommit: string | null; fixMergedAt: string | null; } {
   for (const reference of references) {
     if (reference.repository === undefined || `${reference.repository.owner.login}/${reference.repository.name}` !== repo) continue;
-    const merged = attempt(() => ghJson(["pr", "view", String(reference.number), "-R", repo, "--json", "mergeCommit,mergedAt"]));
+    const merged = attempt(() => rows().pullMergeOf({ repo, number: reference.number, run: ghText }));
     if (merged?.mergeCommit?.oid) return { fixCommit: merged.mergeCommit.oid, fixMergedAt: merged.mergedAt ?? null };
   }
   return { fixCommit: null, fixMergedAt: null };

@@ -31,6 +31,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { rows as codeHostRows } from "../plugins/rows.ts";
 import { esc } from "./swimlane.ts";
 
 const MS_PER_MINUTE = 60 * 1000;
@@ -181,7 +182,7 @@ function rowsToStamp({ wanted, pages, stamp, now }: { wanted: WantedRow[]; pages
 /**
  * One run: decide, render, move into place, stamp. Returns `{ ran: false }` when nothing moved and the stamp is fresh; THROWS when a head cannot be read, a write fails, or any page failed.
  */
-export function publish({ out, repos, rows, readHead, render, now, maxAgeMs }: { out: string; repos: string[]; rows: () => WantedRow[]; readHead: (repo: string) => string; render: (page: Page) => void; now: number; maxAgeMs: number; }): { ran: boolean; reason: string | null; pages: string[]; held: string[]; } {
+export function publish({ out, repos, rows: wantedRows, readHead, render, now, maxAgeMs }: { out: string; repos: string[]; rows: () => WantedRow[]; readHead: (repo: string) => string; render: (page: Page) => void; now: number; maxAgeMs: number; }): { ran: boolean; reason: string | null; pages: string[]; held: string[]; } {
   const heads = Object.fromEntries(repos.map((repo) => [repo, readHead(repo)]));
   const stamp = readStamp(out);
   const reason = whyRun({ heads, stamp, now, maxAgeMs });
@@ -189,7 +190,7 @@ export function publish({ out, repos, rows, readHead, render, now, maxAgeMs }: {
   mkdirSync(out, { recursive: true });
   const staging = mkdtempSync(join(out, ".staging-"));
   try {
-    const wanted = rows();
+    const wanted = wantedRows();
     const held = new Set(wanted.filter((one) => pageStillHolds({ wanted: one, stamp, out, now })).map(({ row }) => row));
     const { pages, failed } = renderAll({ staging, rows: wanted.map(({ row }) => row), held, render });
     for (const { file, held: inPlace } of pages) if (!inPlace) renameSync(join(staging, file), join(out, file));
@@ -229,8 +230,8 @@ export function parseReply({ stdout, stderr, path, sent }: { stdout: string; std
  * count the conditional reads apart from the unconditional ones (`api -i`, and the ledger's `script` says `publish.ts`).
  */
 export function ghAsk(path: string, etag: string | null): Reply {
-  const ran = spawnSync("gh", ["api", ...(etag === null ? [] : ["-H", `If-None-Match: ${etag}`]), "-i", path], { encoding: "utf8", maxBuffer: GH_MAX_BUFFER });
-  if (ran.error) throw new Error(`gh api ${path}: ${ran.error.message}`);
+  const ran = codeHostRows().conditionalGetOf({ path, etag, maxBuffer: GH_MAX_BUFFER });
+  if (ran.error !== undefined) throw new Error(`gh api ${path}: ${ran.error}`);
   return parseReply({ stdout: ran.stdout, stderr: ran.stderr, path, sent: etag });
 }
 

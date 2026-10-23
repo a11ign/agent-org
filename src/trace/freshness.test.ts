@@ -7,14 +7,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { DEFERRAL_LOG_FILE } from "../deferral-log.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import {
-  advance, checkAndRaise, episodeFileFor, freshnessLine, incidentComment, INCIDENT_CLASS, INCIDENT_ROW, incidentOrder, ingestThenCheck, NO_EPISODE, newestMessageAt, newestTurnAt, OWED_AFTER_MS, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcriptRoots,
+  advance, checkAndRaise, episodeFileFor, freshnessLine, hostEffects, incidentComment, INCIDENT_CLASS, INCIDENT_ROW, incidentOrder, ingestThenCheck, NO_EPISODE, newestMessageAt, newestTurnAt, OWED_AFTER_MS, sessionsWorking, STALE_AFTER_MS, storeFreshness, transcriptRoots,
 } from "./freshness.ts";
 import type { Effects } from "./freshness.ts";
 import { readStore } from "./store.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { homeProjectDeclaration } from "../project-config.ts";
 
 const MINUTE = 60 * 1000;
 const NOW = Date.parse("2026-10-10T12:00:00Z");
@@ -523,4 +527,25 @@ test("`--freshness` exits 1 for a stale store and 0 for a fresh one, and 0 for a
   assert.equal(quiet.status, 0, "NEGATIVE CONTROL: the same 11-minute-old store, every transcript untouched for an hour");
   assert.match(quiet.stdout, /no session is working/);
   assert.equal(existsSync(GH_CALLS), false, "no `gh` was called");
+});
+
+// --- the incident's comment goes through the code host (A11-160, step 8) ---------------------------------------------------------------
+
+afterEach(() => forgetActivation());
+
+test("the incident's comment is the code host's: it lands on the standing record row of the home tracker, and a refusal is said with the row it was for", async () => {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  const repo = homeProjectDeclaration().tracker[0].repo;
+  world.repo = repo;
+  world.rows.set(Number(INCIDENT_ROW), fakeRow(world, Number(INCIDENT_ROW), { title: "the standing record" }));
+  substituteCodeHost(host);
+  const told: string[] = [];
+  await hostEffects((line) => told.push(line)).comment("the store has stopped");
+  assert.deepEqual(world.rows.get(Number(INCIDENT_ROW))!.comments.map((comment) => comment.body), ["the store has stopped"]);
+  assert.deepEqual(world.reports.trace.inputComments, [{ repo, number: INCIDENT_ROW, body: "the store has stopped" }]);
+
+  world.failures.set("commentOnRowByInput", new Error("HTTP 502: Bad Gateway"));
+  await assert.rejects(async () => hostEffects((line) => told.push(line)).comment("again"), new RegExp(`comment on ${repo.replace("/", "\\/")}#${INCIDENT_ROW}: HTTP 502: Bad Gateway`));
+  assert.equal(world.rows.get(Number(INCIDENT_ROW))!.comments.length, 1, "a refused comment is not on the row: the effect is not recorded as landed");
 });

@@ -1,4 +1,4 @@
-// no-token: gh -- boardTruthNow reaches `gh` only through the `run` injected here (the day's comments, the table, the label events) and the fake code host's rows (the row's state and newest comment, the label); every read in this file is a fixture
+// no-token: gh -- boardTruthNow reaches `gh` only through the fake code host's rows (the day's comments, the table, the label events, the row's state and newest comment, the label); every read in this file is a fixture
 // a11ign/a11ign#4250 (follow-up of #4232): THE FLAG IN THE DAY'S TABLE MOVES THE AUTHOR NO BETTER THAN THE SENTENCE DID. The chairman's rule was that a handoff written as prose is flagged "to the
 // author's own session as an `answer:` order and in the audit's daily list"; #4232 delivered the list. The tick now also puts `answer:<route>` on the row each `handoff-in-prose` and
 // `reading-without-defect-row` finding names.
@@ -7,6 +7,8 @@
 // already there, a row that no finding names). The flagged case is the control for every "nothing" below: the same tick, the same comment, a label when the fact is absent.
 // a11ign/a11ign#4679: EVERY LABEL ASKS `answerLabelRefusal` FIRST, so each flagged comment below ENDS IN A QUESTION naming its route and the fake code host's rows (A11-160, step 6) answer the row's state and newest comment and take the label.
 // The 2026-10-09T23:00Z replay labelled closed rows and rows nobody had asked anything: `closed` and `report` below are those two, and `org-health.test.ts` pins the rest.
+// A11-160, STEP 8: THE DAY'S READS AND THE TABLE'S POST ARE THE FAKE'S ROWS TOO (they were a `run` answering `gh` argument lists): the org's comments are the comments of the rows the world holds, the day's table is a
+// comment on #928, and the labels the author already added are the world's label history.
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { boardTruthNow } from "../work-gate/org-health.ts";
@@ -31,32 +33,27 @@ const COMMENT_4090 = [
 const READING_4100 = "**ceo, reading 1 of 3 on #4100.** The run finished. Does `ceo` close it?";
 
 const posted = (number: number, body: string, login = AUTHOR) => ({ number, author: { login }, body, createdAt: new Date(AT).toISOString(), url: `https://github.com/a11ign/a11ign/issues/${number}#issuecomment-1` });
-const ndjson = (items: any[]) => items.map((i) => JSON.stringify(i)).join("\n");
 
-/** One tick of the real `boardTruthNow` over a fake `gh` (the org's comments, the table) and the fake code host's rows (each row's state and newest comment, the label): `table` is the day's table already on #928 (or not), `events` the labels the author already added, `closed` the rows GitHub reports closed. The newest comment of a row is the last one given for it. */
+/** One tick of the real `boardTruthNow` over the fake code host's rows: each row holds the comments given for it (the newest of a row is the last one given), `table` is the day's table already on #928 (or not), `events` the labels the author already added, `closed` the rows GitHub reports closed and `refuse` makes the label a refused write. */
 function tick({ comments, table = "", events = [], refuse = [], closed = [] }: { comments: any[]; table?: string; events?: any[]; refuse?: string[]; closed?: number[] }) {
-  const tables: string[] = [];
   const logged: string[] = [];
   const host = createFakeCodeHost();
   const code = host.rowsWorld;
+  code.repo = "a11ign/a11ign";
+  code.now = () => NOW;
+  code.rows.set(928, fakeRow(code, 928, { title: "The record", labels: ["meta"], createdAt: "2026-09-01T00:00:00Z", updatedAt: "2026-09-01T00:00:00Z",
+    comments: table === "" ? [] : [{ id: 12345, body: `### Board against reality, 2026-10-08\n\n**0 disagree**`, createdAt: new Date(NOW - 60 * 60_000).toISOString() }] }));
   for (const number of new Set<number>(comments.map((c) => c.number))) {
-    code.rows.set(number, fakeRow(code, number, { state: closed.includes(number) ? "CLOSED" : "OPEN", comments: comments.filter((c) => c.number === number).map((c, id) => ({ id, body: c.body, createdAt: c.createdAt })) }));
+    code.rows.set(number, fakeRow(code, number, { state: closed.includes(number) ? "CLOSED" : "OPEN", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", openedBy: "a11ign-ai-workers", closedAt: closed.includes(number) ? "2026-10-08T11:00:00Z" : null,
+      comments: comments.filter((c) => c.number === number).map((c, id) => ({ id: id + 1, body: c.body, createdAt: c.createdAt, author: c.author.login })) }));
   }
+  for (const number of new Set<number>(events.map((e) => e.number))) code.gate.events.set(number, events.filter((e) => e.number === number).map((e) => ({ event: "labeled" as const, label: e.label, actor: e.actor, at: e.createdAt })));
   if (refuse.length > 0) code.failures.set("addLabelToRowByApi", new Error("HTTP 403\nforbidden"));
   substituteCodeHost(host);
-  const run = (args: string[]) => {
-    const path = args[0] === "api" ? (args.find((a) => a.startsWith("repos/")) ?? "") : "";
-    if (args[0] === "issue" && args[1] === "comment") { tables.push(args[args.indexOf("--body") + 1]); return ""; }
-    if (path.includes("/issues/928/comments")) return table;
-    if (path.includes("/issues/comments?")) return ndjson(comments);
-    if (path.includes("/events?")) return ndjson(events);
-    if (path.includes("/issues?state=all")) return "";
-    if (/issues\/\d+(\/labels|\/comments\?per_page=1)?/.test(path)) throw new Error(`the row's state, its newest comment and the label are the code host's rows, not a gh: ${args.join(" ")}`);
-    return "[]";
-  };
   const agents = () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }];
-  boardTruthNow({ openRowsRead: [], claimedComments: [], waitFacts: { items: {} }, now: NOW }, { repo: "a11ign/a11ign", run, agents, log: (line: string) => logged.push(line) } as any);
+  boardTruthNow({ openRowsRead: [], claimedComments: [], waitFacts: { items: {} }, now: NOW }, { repo: "a11ign/a11ign", agents, log: (line: string) => logged.push(line) } as any);
   const labels = [...code.rows.values()].flatMap((row) => row.labels.filter((l) => l.startsWith("answer:")).map((l) => `${row.number} ${l}`));
+  const tables = code.rows.get(928)!.comments.slice(table === "" ? 0 : 1).map((c) => c.body);
   return { labels, tables, logged };
 }
 

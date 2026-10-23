@@ -1,4 +1,4 @@
-// no-token: pure -- every reading is a function of values handed in, and the readers are given a fake `run`; nothing here calls `gh`, ssh or the fleet.
+// no-token: none -- every reading is a function of values handed in; the reader reads the fake code host's release runs, jobs and changesets (A11-160, step 8), the failed job's log and the incident tracker answer through a stub `run` (the ticket port, not the code host's rows); nothing here calls `gh`, ssh or the fleet.
 /**
  * `src/org-health.ts`, agent-org#887 (a11ign/agent-org#885 class 1): A FAILED RELEASE ON ANY REPOSITORY THE ORG RELEASES RAISES AN INCIDENT NAMING THE RUN'S FIRST ERROR LINE WITHIN ONE TICK, AND A SECOND
  * CONSECUTIVE FAILURE WAKES `ceo`. Five failures of agent-org's own `release.yml` from 08:42Z on 2026-10-11 were read by nobody for 50+ minutes, because `readReleaseRuns` was asked of the project's
@@ -10,13 +10,19 @@
  * share one discriminator (the own-discriminator test), wake on the first failure (the single-failure tests), never wake (the second-failure tests), and quote the `##[error]` line instead of the line
  * before it (the first-error tests).
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-release-failed.test.ts`'s rule): the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "release-failure-alarm-"));
@@ -238,130 +244,146 @@ test("the signal is `release-run-failed` still, and a caller that gives only `re
 
 // --- the reader --------------------------------------------------------------------------------------------------------------------
 
-/** A fake `gh` that answers by URL fragment, records every call, and refuses what it was not given. */
-function fakeGh(answers: Record<string, string | Error>) {
-  const calls: string[][] = [];
-  const gh = (args: string[]) => {
-    calls.push(args);
-    const key = Object.keys(answers).find((k) => args.some((a) => a.includes(k)));
-    const answer = key === undefined ? new Error("HTTP 404") : answers[key];
-    if (answer instanceof Error) throw answer;
-    return answer;
+/**
+ * The fake code host in place, watched, holding each repository's runs, the jobs of the runs it is given and its `.changeset/`; what it is not given it cannot answer (a refused read). The fake does not model a
+ * job's log (`jobLogOf` is unmodeled there), so the test seeds it here: the code host answers `log` for any job (or throws it, a refused read), and `logAsked` is the jobs it was asked for.
+ */
+function world({ runs = { [PROJECT_REPO]: PROJECT_GREEN, [AGENT_ORG]: AGENT_ORG_STREAK } as Record<string, Run[]>, jobs = { [`${AGENT_ORG}#5005`]: [{ id: 880001, name: "release", conclusion: "failure", failedSteps: JOB[0].steps }] } as Record<string, { id: number; name: string; conclusion: string | null; failedSteps?: string[] }[]>,
+  changesets = { [AGENT_ORG]: ["README.md", "a-change.md"] } as Record<string, string[]>, log = LOG as string | Error } = {}) {
+  const watched = watchedRows(createFakeCodeHost());
+  substituteCodeHost(watched.host);
+  const health = (watched.host as unknown as { rowsWorld: ReturnType<typeof createFakeCodeHost>["rowsWorld"] }).rowsWorld;
+  for (const [repo, held] of Object.entries(runs)) health.reports.health.releaseRuns.set(repo, held);
+  for (const [key, held] of Object.entries(jobs)) health.reports.health.releaseJobs.set(key, held);
+  for (const [repo, held] of Object.entries(changesets)) health.reports.health.changesets.set(repo, held);
+  const logAsked: string[] = [];
+  watched.host.rows!.jobLogOf = (repo, jobId) => {
+    logAsked.push(`${repo} job ${jobId}`);
+    if (log instanceof Error) throw log;
+    return log;
   };
-  return { gh, calls };
+  return { health, run: neverRun, logAsked, asked: (repo?: string) => watched.calls.filter((c) => repo === undefined || c.request.repo === repo).map((c) => c.op) };
 }
-const RUNS = (repo: string) => `repos/${repo}/actions/workflows/release.yml/runs`;
-const world = () => ({
-  [RUNS(PROJECT_REPO)]: JSON.stringify(PROJECT_GREEN),
-  [RUNS(AGENT_ORG)]: JSON.stringify(AGENT_ORG_STREAK),
-  [`repos/${AGENT_ORG}/actions/runs/5005/jobs`]: JSON.stringify(JOB),
-  [`repos/${AGENT_ORG}/contents/.changeset`]: JSON.stringify(["README.md", "a-change.md"]),
-  [`repos/${AGENT_ORG}/actions/jobs/880001/logs`]: LOG,
-});
+const neverRun = (args: string[]): string => { throw new Error(`the code host answers this, not a gh: ${args.join(" ")}`); };
 
 test("the reader asks ONE call of a repository that released, and FOUR of one that failed (runs, jobs, changesets, and the failed job's log)", () => {
-  const { gh, calls } = fakeGh(world());
-  const reads = readReleaseFailures(gh, [PROJECT_REPO, AGENT_ORG]);
-  assert.equal(calls.length, 5);
-  assert.equal(calls.filter((c) => c.some((a) => a.includes(`repos/${PROJECT_REPO}/`))).length, 1);
+  const { run, logAsked, asked } = world();
+  const reads = readReleaseFailures(run, [PROJECT_REPO, AGENT_ORG]);
+  assert.deepEqual(asked(PROJECT_REPO), ["releaseRunsOf"]);
+  assert.deepEqual(asked(AGENT_ORG), ["releaseRunsOf", "releaseJobsOf", "changesetNamesOf"]);
+  assert.deepEqual(logAsked, [`${AGENT_ORG} job 880001`], "and the one log read, of the failed job");
   assert.deepEqual(reads[1].firstError, LINE);
-  const logCall = calls.find((c) => c.some((a) => a.endsWith("/logs")))!;
-  assert.ok(logCall.includes("--allow-escape-sequences"), "gh refuses a response with terminal escape sequences, and a job log has them");
   assert.deepEqual(reads[1].runs?.pending, ["a-change.md"]);
   assert.deepEqual(tripped(reads).map((r) => r.discriminator), [`${SIGNAL}@${AGENT_ORG}@5001`]);
   assert.match(tripped(reads)[0].detail, /FAILED 4 times running/);
 });
 
 test("the reader reuses runs the tick already read, and says what it could not read: a refused list, a refused log, no job id", () => {
-  const { gh, calls } = fakeGh(world());
-  const known = readReleaseFailures(gh, [PROJECT_REPO], { known: { [PROJECT_REPO]: failed(PROJECT_GREEN) } });
-  assert.equal(calls.length, 0, "the project's runs were read once this tick");
+  const { run, asked } = world();
+  const known = readReleaseFailures(run, [PROJECT_REPO], { known: { [PROJECT_REPO]: failed(PROJECT_GREEN) } });
+  assert.deepEqual(asked(), [], "the project's runs were read once this tick");
   assert.equal(known[0].runs?.runs.length, 2);
 
-  assert.deepEqual(readReleaseFailures(fakeGh({ [RUNS(AGENT_ORG)]: new Error("HTTP 403") }).gh, [AGENT_ORG]), [{ repo: AGENT_ORG, runs: null }]);
-  const noLog = readReleaseFailures(fakeGh({ ...world(), [`repos/${AGENT_ORG}/actions/jobs/880001/logs`]: new Error("HTTP 410") }).gh, [AGENT_ORG]);
+  const listRefused = world();
+  listRefused.health.failures.set("releaseRunsOf", new Error("HTTP 403"));
+  assert.deepEqual(readReleaseFailures(listRefused.run, [AGENT_ORG]), [{ repo: AGENT_ORG, runs: null }]);
+  const noLog = readReleaseFailures(world({ log: new Error("HTTP 410") }).run, [AGENT_ORG]);
   assert.deepEqual(noLog[0].firstError, { unread: "the failed job's log could not be read" });
   assert.equal(tripped(noLog).length, 1, "a log that cannot be read does not turn the trip into an unknown");
-  const noJobs = readReleaseFailures(fakeGh({ [RUNS(AGENT_ORG)]: JSON.stringify(AGENT_ORG_STREAK) }).gh, [AGENT_ORG]);
+  const noJobs = readReleaseFailures(world({ jobs: {} }).run, [AGENT_ORG]);
   assert.deepEqual(noJobs[0].firstError, { unread: "the failed job could not be read" });
 });
 
 // --- the incident ------------------------------------------------------------------------------------------------------------------
 
 type Item = { number: number; title: string; createdAt: string; body: string };
-/** A tracker that lists open and closed incident items, records `issue create` and `issue close`, and refuses the rest. */
-function fakeTracker({ open = [] as Item[], closed = [] as Item[], refuse = false, refuseClosed = false } = {}) {
-  const writes: string[][] = [];
-  const gh = (args: string[]) => {
-    if (args[0] === "issue" || args.includes("PATCH")) { writes.push(args); return "https://github.com/x/y/issues/1\n"; }
-    if (refuse || (refuseClosed && args.includes("state=closed"))) throw new Error("HTTP 502");
-    return JSON.stringify(args.includes("state=closed") ? closed : open);
-  };
-  return { gh, writes };
+/**
+ * The tracker as the fake code host's rows: an incident item is a row labelled `incident`, open or closed. `filed()` is the incident rows that were not seeded, `closedNow()` the seeded open ones that are closed now,
+ * and `asked` the operations called, with the tracker each was given. `unreadable` names the incident reads the code host answers `null` to (it could not ask: the contract's word for a refused read of a list).
+ */
+function tracker({ open = [] as Item[], closed = [] as Item[], unreadable = [] as ("openIncidentsOf" | "closedIncidentsOf")[] } = {}) {
+  const watched = watchedRows(createFakeCodeHost());
+  substituteCodeHost(watched.host);
+  const code = (watched.host as unknown as { rowsWorld: ReturnType<typeof createFakeCodeHost>["rowsWorld"] }).rowsWorld;
+  for (const [state, items] of [["OPEN", open], ["CLOSED", closed]] as const) {
+    for (const { number, title, createdAt, body } of items) code.rows.set(number, fakeRow(code, number, { title, body, createdAt, labels: ["incident"], state, closedAt: state === "CLOSED" ? createdAt : null }));
+  }
+  const seeded = new Set(code.rows.keys());
+  const rows = watched.host.rows as unknown as Record<string, () => null>;
+  for (const op of unreadable) rows[op] = () => null;
+  watched.calls.length = 0;
+  return { code, asked: () => watched.calls.map((c) => c.op),
+    writes: () => watched.calls.filter((c) => c.op === "createIncident" || c.op === "closeIncident").map((c) => `${c.op} ${c.request}`),
+    filed: () => [...code.rows.values()].filter((row) => !seeded.has(row.number)),
+    closedNow: () => open.filter(({ number }) => code.rows.get(number)?.state === "CLOSED").map(({ number }) => number) };
 }
 const TRACKER = PROJECT_REPO;
+const never = (): string => { throw new Error("a gh was run: the incident reads and writes are the code host's"); };
 const item = (repo: string, episode: number, number = 40): Item =>
   ({ number, title: "x", createdAt: "2026-10-11T08:43:00Z", body: `Incident: ${RELEASE_INCIDENT_KEY}\nRelease-failure: ${repo}@${episode}\n` });
 const quiet = (lines: string[]) => (line: string) => { lines.push(line); };
 
 test("a first failure FILES ONE incident item: labelled `incident`, naming the repository, the run and the first error line, carrying the Incident key and the line it is found by", () => {
-  const { gh, writes } = fakeTracker();
-  const out = fileReleaseIncidents([read(PROJECT_REPO, PROJECT_GREEN), read(AGENT_ORG, AGENT_ORG_ONE_FAILURE, LINE)], { run: gh, tracker: TRACKER, say: quiet([]) });
+  const t = tracker();
+  const out = fileReleaseIncidents([read(PROJECT_REPO, PROJECT_GREEN), read(AGENT_ORG, AGENT_ORG_ONE_FAILURE, LINE)], { run: never, tracker: TRACKER, say: quiet([]) });
   assert.equal(out.filed.length, 1);
-  assert.equal(writes.length, 1);
-  const after = (flag: string) => writes[0][writes[0].indexOf(flag) + 1];
-  const [title, label, body] = [after("--title"), after("--label"), after("--body")];
-  assert.deepEqual([writes[0][0], writes[0][1], label, after("--repo")], ["issue", "create", "incident", TRACKER], "filed in the tracker it read, not in whichever repository the process stands in");
-  assert.equal(title, `Release failed on ${AGENT_ORG}: ${QUOTE}`);
-  assert.ok(body.includes(`its first error line: "${QUOTE}"`));
-  assert.ok(body.includes(`\nIncident: ${RELEASE_INCIDENT_KEY}\n`));
-  assert.ok(body.includes(`\nRelease-failure: ${AGENT_ORG}@5001\n`));
+  assert.equal(t.filed().length, 1);
+  const [filed] = t.filed();
+  assert.deepEqual(filed.labels, ["incident"]);
+  assert.equal(filed.title, `Release failed on ${AGENT_ORG}: ${QUOTE}`);
+  assert.ok(filed.body.includes(`its first error line: "${QUOTE}"`));
+  assert.ok(filed.body.includes(`\nIncident: ${RELEASE_INCIDENT_KEY}\n`));
+  assert.ok(filed.body.includes(`\nRelease-failure: ${AGENT_ORG}@5001\n`));
+  assert.deepEqual(t.writes(), [`createIncident ${TRACKER}`], "filed in the tracker it read, not in whichever repository the process stands in");
 });
 
 test("the incident is filed ONCE: an open item for the repository, or a closed one for the same streak, files nothing; the NEXT streak files again", () => {
   const rows = [read(AGENT_ORG, AGENT_ORG_STREAK, LINE)];
-  const openOne = fakeTracker({ open: [item(AGENT_ORG, 5001)] });
-  assert.deepEqual(fileReleaseIncidents(rows, { run: openOne.gh, tracker: TRACKER, say: quiet([]) }), { filed: [], closed: [] });
-  assert.deepEqual(openOne.writes, []);
-  const openOlder = fakeTracker({ open: [item(AGENT_ORG, 4000)] });
-  fileReleaseIncidents(rows, { run: openOlder.gh, tracker: TRACKER, say: quiet([]) });
-  assert.deepEqual(openOlder.writes, [], "a streak that slid out of the run window is not a second incident");
-  const closedSame = fakeTracker({ closed: [item(AGENT_ORG, 5001)] });
-  fileReleaseIncidents(rows, { run: closedSame.gh, tracker: TRACKER, say: quiet([]) });
-  assert.deepEqual(closedSame.writes, [], "a person who closed it did not ask for it again");
-  const closedOlder = fakeTracker({ closed: [item(AGENT_ORG, 4000)] });
-  assert.equal(fileReleaseIncidents(rows, { run: closedOlder.gh, tracker: TRACKER, say: quiet([]) }).filed.length, 1);
+  const filedWith = (seed: Parameters<typeof tracker>[0]) => { const t = tracker(seed); const out = fileReleaseIncidents(rows, { run: never, tracker: TRACKER, say: quiet([]) }); return { t, out }; };
+  const openOne = filedWith({ open: [item(AGENT_ORG, 5001)] });
+  assert.deepEqual(openOne.out, { filed: [], closed: [] });
+  assert.deepEqual(openOne.t.writes(), []);
+  const openOlder = filedWith({ open: [item(AGENT_ORG, 4000)] });
+  assert.deepEqual(openOlder.t.writes(), [], "a streak that slid out of the run window is not a second incident");
+  const closedSame = filedWith({ closed: [item(AGENT_ORG, 5001)] });
+  assert.deepEqual(closedSame.t.writes(), [], "a person who closed it did not ask for it again");
+  const closedOlder = filedWith({ closed: [item(AGENT_ORG, 4000)] });
+  assert.equal(closedOlder.out.filed.length, 1);
+  assert.equal(closedOlder.t.filed().length, 1);
 });
 
 test("a closed list that cannot be read files NOTHING and says so: an unread list is never 'no one closed it'", () => {
   const said: string[] = [];
-  const { gh, writes } = fakeTracker({ refuseClosed: true });
-  const out = fileReleaseIncidents([read(AGENT_ORG, AGENT_ORG_STREAK, LINE)], { run: gh, tracker: TRACKER, say: quiet(said) });
+  const t = tracker({ unreadable: ["closedIncidentsOf"] });
+  const out = fileReleaseIncidents([read(AGENT_ORG, AGENT_ORG_STREAK, LINE)], { run: never, tracker: TRACKER, say: quiet(said) });
   assert.deepEqual(out, { filed: [], closed: [] });
-  assert.deepEqual(writes, []);
+  assert.deepEqual(t.writes(), []);
   assert.equal(said.length, 1);
   assert.ok(said[0].includes("could not read the closed incidents"), said[0]);
+  const control = tracker();
+  assert.equal(fileReleaseIncidents([read(AGENT_ORG, AGENT_ORG_STREAK, LINE)], { run: never, tracker: TRACKER, say: quiet([]) }).filed.length, 1, "CONTROL: the same streak, the list read, is filed");
+  assert.equal(control.filed().length, 1);
 });
 
 test("a repository that RELEASES again closes its open incident, and only its own", () => {
-  const { gh, writes } = fakeTracker({ open: [item(AGENT_ORG, 5001, 41), item(PROJECT_REPO, 7003, 42)] });
+  const t = tracker({ open: [item(AGENT_ORG, 5001, 41), item(PROJECT_REPO, 7003, 42)] });
   const fixed = [run(AGENT_ORG, 5006, "success", "2026-10-11T09:40:00Z"), ...AGENT_ORG_STREAK];
-  const out = fileReleaseIncidents([read(AGENT_ORG, fixed), read(PROJECT_REPO, PROJECT_FAILED, LINE)], { run: gh, tracker: TRACKER, say: quiet([]) });
+  const out = fileReleaseIncidents([read(AGENT_ORG, fixed), read(PROJECT_REPO, PROJECT_FAILED, LINE)], { run: never, tracker: TRACKER, say: quiet([]) });
   assert.deepEqual(out.closed, [41]);
-  assert.deepEqual(writes.map((w) => w.slice(0, 2)), [["issue", "comment"], ["api", "--method"]]);
-  assert.deepEqual([writes[0][2], writes[0][writes[0].indexOf("--repo") + 1], writes[1][2]], ["41", TRACKER, "PATCH"]);
-  assert.ok(writes[1].includes(`repos/${TRACKER}/issues/41`) && writes[1].includes("state=closed"), "the item that was closed is the agent-org one, in the tracker");
+  assert.deepEqual(t.closedNow(), [41], "the item that was closed is the agent-org one");
+  assert.deepEqual(t.writes(), [`closeIncident ${TRACKER}`], "in the tracker");
+  assert.match(t.code.rows.get(41)!.comments.at(-1)!.body, /release\.yml on a11ign\/agent-org's main succeeded again/);
 });
 
 test("a tracker that cannot be read files and closes NOTHING and says so; a tick with no verdict to act on makes no call at all", () => {
   const said: string[] = [];
-  const refused = fakeTracker({ refuse: true });
-  assert.deepEqual(fileReleaseIncidents([read(AGENT_ORG, AGENT_ORG_ONE_FAILURE, LINE)], { run: refused.gh, tracker: TRACKER, say: quiet(said) }), { filed: [], closed: [] });
-  assert.deepEqual(refused.writes, []);
+  const refused = tracker({ unreadable: ["openIncidentsOf"] });
+  assert.deepEqual(fileReleaseIncidents([read(AGENT_ORG, AGENT_ORG_ONE_FAILURE, LINE)], { run: never, tracker: TRACKER, say: quiet(said) }), { filed: [], closed: [] });
+  assert.deepEqual(refused.writes(), []);
   assert.match(said.join(""), /could not read the open incidents of a11ign\/a11ign, so none is filed or closed this tick/);
-  let asked = 0;
-  const unread = fileReleaseIncidents([read(AGENT_ORG, null)], { run: () => { asked += 1; return "[]"; }, tracker: TRACKER, say: quiet([]) });
-  assert.deepEqual([unread, asked], [{ filed: [], closed: [] }, 0]);
+  const idle = tracker();
+  const unread = fileReleaseIncidents([read(AGENT_ORG, null)], { run: never, tracker: TRACKER, say: quiet([]) });
+  assert.deepEqual([unread, idle.asked()], [{ filed: [], closed: [] }, []]);
 });
 
 // --- the gate: the reading is WIRED, which is what "within one tick" means ------------------------------------------------------------------

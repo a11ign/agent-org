@@ -7,18 +7,24 @@
 // **THE POSITIVE CONTROLS:** every "refused" case asserts the provider's `sent` is empty AND the sentence with the same shape and a name that exists is sent
 // (`NAMED_FACTS`), so a checker that refuses everything fails the second and one that accepts everything fails the first. The address control is a real
 // address in both files that must not appear in what was sent.
+//
+// A11-160, step 8: the REAL readers (`createGhReaders`) read GitHub through the code host's `restGetAsync` and `pullReviewDecisionAsync` now, so the cases that run them (4, 6, 7) run on the fake code host's world: the
+// release, the run and the rows a case needs are SEEDED, and what is held is what the reader makes of them and what it asked for. The argument lists those reads build are GitHub's words and are held beside the operations
+// (`plugins/github/rows/messaging-rows.test.ts`, which also runs every reader under the reply command's read-only allowlist).
 
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 
 import { COMPLETION_FILE, writeCompletion } from "../lib/tick-completion.ts";
 import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger } from "./ledger.ts";
 import { PLACEHOLDER_NAMES, createGhReaders, parsePlaceholders } from "./placeholders.ts";
 import { createReply } from "./reply.ts";
+import { forgetActivation } from "../plugins/active.ts";
+import { fakeRow, fakeRowPull, messagingHost, noGh } from "../plugins/fakes/messaging-world.test.support.ts";
 
 const NOW = Date.parse("2026-10-04T14:05:30Z");
 const STAMP = "as of 14:05Z";
@@ -28,6 +34,11 @@ const NAMED_FACTS = "Up: {{fleet.workers-up}}. Down: {{fleet.workers-down}}. Gat
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-placeholders-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
+
+/** The fake code host in place, its tracker the repository the placeholders are about, and its `rows` watched: `calls` is every operation the readers asked, with the request. */
+const codeHost = () => messagingHost("a11ign/a11ign");
+
 let directories = 0;
 const freshDirectory = () => mkdtempSync(join(scratch, `d${(directories += 1)}-`));
 
@@ -118,7 +129,7 @@ describe("(2) a reader that fails REFUSES the send and names which", () => {
   });
 
   test("a host that named no fleet files or no gate record refuses with that, rather than guessing a path", async () => {
-    const { reply, provider } = replyOver(createGhReaders({ gh: async () => "{}", systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
+    const { reply, provider } = replyOver(createGhReaders({ gh: noGh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
     const result = /** @type {any} */ (await reply.send("{{fleet.workers-up}} {{gate.last-tick.age}}"));
     assert.equal(result.outcome, "refused");
     assert.deepEqual(result.problems.map((problem: any) => problem.placeholder), ["{{fleet.workers-up}}", "{{gate.last-tick.age}}"]);
@@ -184,17 +195,16 @@ describe("(4) through the REAL readers: the worker's NAME and never its address,
   test("{{fleet.workers-up}} and {{fleet.workers-down}} say names over files that carry an address; the address is in neither the message nor the ledger", async () => {
     const gateRecordPath = join(freshDirectory(), COMPLETION_FILE);
     writeCompletion(gateRecordPath, { at: NOW - 4 * MINUTE, exit: 0 });
-    const gh = async (/** @type {string[]} */ argv: string[]) => {
-      assert.deepEqual(argv, ["api", `repos/${RELEASE_REPO}/releases/latest`], "the one read the release makes: a GET of the repository's latest release");
-      return JSON.stringify({ tag_name: "v1.4.0", draft: false });
-    };
-    const readers = createGhReaders({ gh, systemctl: async () => "", repo: "a11ign/a11ign", fleet: fleetFiles(), gateRecordPath, now: () => NOW });
+    const { world, calls } = codeHost();
+    world.reports.messaging.latestReleases.set(RELEASE_REPO, "v1.4.0");
+    const readers = createGhReaders({ gh: noGh, systemctl: async () => "", repo: "a11ign/a11ign", fleet: fleetFiles(), gateRecordPath, now: () => NOW });
     const ledgerPath = join(freshDirectory(), "ledger.jsonl");
     const provider = createFakeProvider();
     const reply = createReply({ send: (message) => provider.send(message), ledger: createLedger({ path: ledgerPath, now: () => NOW }), readers, now: () => NOW });
     assert.equal((await reply.send(NAMED_FACTS)).outcome, "sent");
     assert.equal(provider.sent[0].text, `Up: worker-a, worker-c (fleet-watch poll 10m ago). Down: worker-b, worker-d (fleet-watch poll 10m ago). Gate: 4m. Newest: v1.4.0.\n\n${STAMP}`);
     assert.doesNotMatch(provider.sent[0].text, /host-z|8765/);
+    assert.deepEqual(calls.map(({ op, request }) => [op, request.path]), [["restGetAsync", `repos/${RELEASE_REPO}/releases/latest`]], "the one read the release makes: a GET of the repository's latest release");
     const ledger = readFileSync(ledgerPath, "utf8");
     assert.match(ledger, /worker-a/, "CONTROL: the ledger holds what was said, so its having no address is a finding");
     assert.doesNotMatch(ledger, /host-z|8765/);
@@ -203,7 +213,7 @@ describe("(4) through the REAL readers: the worker's NAME and never its address,
   test("a watcher that stopped, and a gate that has completed nothing, REFUSE: the real readers throw, they do not say 'none'", async () => {
     const stale = fleetFiles();
     const readers = createGhReaders({
-      gh: async () => "{}", systemctl: async () => "", repo: "a11ign/a11ign", fleet: stale, gateRecordPath: join(freshDirectory(), COMPLETION_FILE), now: () => NOW + 3 * 60 * MINUTE,
+      gh: noGh, systemctl: async () => "", repo: "a11ign/a11ign", fleet: stale, gateRecordPath: join(freshDirectory(), COMPLETION_FILE), now: () => NOW + 3 * 60 * MINUTE,
     });
     const { result, provider } = await sendOver(readers, "{{fleet.workers-down}} {{gate.last-tick.age}}");
     assert.equal(result.outcome, "refused");
@@ -213,11 +223,14 @@ describe("(4) through the REAL readers: the worker's NAME and never its address,
   });
 
   test("a repository with no release refuses with what GitHub said (a 404 is not 'no release')", async () => {
-    const readers = createGhReaders({ gh: async () => { throw new Error("HTTP 404: Not Found"); }, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW });
+    const { world } = codeHost();
+    world.reports.messaging.latestReleases.set("a11ign/a11ign", "v0.1.0");
+    const readers = createGhReaders({ gh: noGh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW });
     const { result, provider } = await sendOver(readers, "{{release:a11ign/agent-org.latest}}");
     assert.equal(result.outcome, "refused");
     assert.match(result.problems[0].reason, /404/);
     assert.deepEqual(provider.sent, []);
+    assert.equal((await sendOver(readers, "{{release:a11ign/a11ign.latest}}")).result.outcome, "sent", "CONTROL: a repository that has one reads");
   });
 });
 
@@ -246,13 +259,11 @@ describe("(5) the list of placeholder names is pinned, because the liaison's bri
 });
 
 describe("(6) a run is read by `.status` while it runs and by its conclusion once it has one", () => {
-  /** @param {{status: string, conclusion: string | null}} run the REAL run reader over the one GET it makes, so what GitHub says is what is read */
+  /** @param {{status: string, conclusion: string | null}} run the REAL run reader over the world's run 7, so what the world holds is what is read */
   function readerOver(run: { status: string; conclusion: string | null; }) {
-    const gh = async (/** @type {string[]} */ argv: string[]) => {
-      assert.deepEqual(argv, ["api", "repos/a11ign/a11ign/actions/runs/7"], "the one read a run makes: a GET of the run");
-      return JSON.stringify({ id: 7, ...run });
-    };
-    return replyOver(createGhReaders({ gh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
+    const { world, calls } = codeHost();
+    world.reports.messaging.runs.set(7, run);
+    return { ...replyOver(createGhReaders({ gh: noGh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW })), calls };
   }
 
   test("`.status` of a run in progress says where it is; once concluded it says the conclusion, and the same field serves both", async () => {
@@ -262,9 +273,10 @@ describe("(6) a run is read by `.status` while it runs and by its conclusion onc
       [{ status: "completed", conclusion: "failure" }, "failure"],
       [{ status: "completed", conclusion: "success" }, "success"],
     ])) {
-      const { reply, provider } = readerOver(run);
+      const { reply, provider, calls } = readerOver(run);
       assert.equal((await reply.send("{{run:7.status}}")).outcome, "sent", said);
       assert.match(provider.sent[0].text, new RegExp(`^${said}\\n`));
+      assert.deepEqual(calls.map(({ op, request }) => [op, request.path]), [["restGetAsync", "repos/a11ign/a11ign/actions/runs/7"]], "the one read a run makes: a GET of the run");
     }
   });
 
@@ -288,42 +300,32 @@ describe("(6) a run is read by `.status` while it runs and by its conclusion onc
 });
 
 describe("(7) how many rows are open is a placeholder, so the figure is read and never typed (a11ign/a11ign#3909)", () => {
-  const ROW = (/** @type {number} */ number: number) => ({ number, labels: [] });
-  const PULL = (/** @type {number} */ number: number) => ({ number, labels: [], pull_request: {} });
-  /** @param {unknown[][]} pages what GitHub lists, page by page, with pull requests among the issues as it does @param {string[]} asked collects each path read */
-  function ghOver(pages: unknown[][], asked: string[]) {
-    return async (/** @type {string[]} */ argv: string[]) => {
-      assert.equal(argv[0], "api");
-      asked.push(argv[1]);
-      const page = Number(/[?&]page=(\d+)/.exec(argv[1])?.[1]);
-      return JSON.stringify(pages[page - 1] ?? []);
-    };
-  }
-  /** @param {unknown[][]} pages */
-  function readerOver(pages: unknown[][], asked = /** @type {string[]} */ ([])) {
-    return replyOver(createGhReaders({ gh: ghOver(pages, asked), systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }));
+  /** @param {number[]} rows @param {number[]} pulls the numbers of the open rows and of the open pull requests, which the issues endpoint lists together, newest first */
+  function readerOver(rows: number[], pulls: number[]) {
+    const { world, calls } = codeHost();
+    for (const number of rows) world.rows.set(number, fakeRow(world, number));
+    for (const number of pulls) world.pulls.set(number, fakeRowPull(number));
+    return { ...replyOver(createGhReaders({ gh: noGh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW })), world, asked: () => calls.map(({ request }) => request.path as string) };
   }
 
   test("`{{open.count}}` is the number of open ROWS: pull requests the issues endpoint lists are not counted", async () => {
-    const { reply, provider } = readerOver([[ROW(1), PULL(2), ROW(3), PULL(4), ROW(5)]]);
+    const { reply, provider } = readerOver([1, 3, 5], [2, 4]);
     assert.equal((await reply.send("{{open.count}} rows are open")).outcome, "sent");
     assert.match(provider.sent[0].text, /^3 rows are open\n/);
   });
 
   test("a list longer than a page is counted to its end, and the read stops at the first short page", async () => {
-    const full = Array.from({ length: 100 }, (_, index) => (index % 2 === 0 ? ROW(index + 1) : PULL(index + 1)));
-    const asked: string|any[]|undefined = /** @type {string[]} */ ([]);
-    const { reply, provider } = readerOver([full, full, [ROW(201), ROW(202)]], asked);
+    const numbers = Array.from({ length: 202 }, (_, index) => index + 1);
+    const { reply, provider, asked } = readerOver(numbers.filter((number) => number > 200 || number % 2 === 1), numbers.filter((number) => number <= 200 && number % 2 === 0));
     assert.equal((await reply.send("{{open.count}} rows are open")).outcome, "sent");
     assert.match(provider.sent[0].text, /^102 rows are open\n/);
-    assert.equal(asked.length, 3, "three pages read, and no fourth after the short one");
+    assert.deepEqual(asked(), [1, 2, 3].map((page) => `repos/a11ign/a11ign/issues?state=open&per_page=100&page=${page}`), "three pages read, and no fourth after the short one");
   });
 
   test("the count is read ONCE however often the text uses it", async () => {
-    const asked: string|any[]|undefined = /** @type {string[]} */ ([]);
-    const { reply } = readerOver([[ROW(1), ROW(2)]], asked);
+    const { reply, asked } = readerOver([1, 2], []);
     assert.equal((await reply.send("{{open.count}} and {{open.count}}")).outcome, "sent");
-    assert.equal(asked.length, 1);
+    assert.equal(asked().length, 1);
   });
 
   test("a figure the reader did not return is still REFUSED, and so is the very figure it did: the filter is on free text, not on what was read", async () => {
@@ -341,8 +343,11 @@ describe("(7) how many rows are open is a placeholder, so the figure is read and
   });
 
   test("a page that is not a list refuses with that, and a failed read refuses and sends nothing", async () => {
-    for (const gh of [async () => JSON.stringify({ message: "Bad credentials" }), async () => { throw new Error("HTTP 502"); }]) {
-      const { result: refused, provider } = await sendOver(createGhReaders({ gh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }), "{{open.count}} rows are open");
+    for (const refuse of [(world: any) => world.reports.messaging.rest.set("repos/a11ign/a11ign/issues?state=open&per_page=100&page=1", { message: "Bad credentials" }),
+      (world: any) => world.failures.set("restGetAsync", new Error("HTTP 502"))]) {
+      const { world } = codeHost();
+      refuse(world);
+      const { result: refused, provider } = await sendOver(createGhReaders({ gh: noGh, systemctl: async () => "", repo: "a11ign/a11ign", now: () => NOW }), "{{open.count}} rows are open");
       const [problem] = refused.problems;
       assert.equal(refused.outcome, "refused");
       assert.equal(problem.placeholder, "{{open.count}}");

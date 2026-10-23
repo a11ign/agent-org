@@ -67,8 +67,9 @@ export type ExecResult = Readonly<{ status: number | null; stdout: string; stder
  * What running a program may be asked: `inherit` gives it this process's terminal, `timeoutMs` bounds it, `env` is laid over this process's environment for that one run, and `withoutEnv` names the
  * variables taken OFF it first (the git variables a hook sets, which would aim a program started from a worktree at the wrong repository).
  * `killSignal` is what a program that runs past `timeoutMs` is stopped with (SIGTERM unless a plugin asks for SIGKILL, for a program that has hung), and `maxBuffer` the most it may print.
+ * `cwd` is the directory it runs in, and `input` the text written to its standard input (A11-160: a comment body that must not travel in an argument list).
  */
-export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>>; withoutEnv?: readonly string[]; killSignal?: "SIGKILL"; maxBuffer?: number }>;
+export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>>; withoutEnv?: readonly string[]; killSignal?: "SIGKILL"; maxBuffer?: number; cwd?: string; input?: string }>;
 
 /**
  * How a reviewer judges a pull request, as the gate's modules decide it: the `--json` fields it reads by, whether the author is the org's own, and whether the checks settled green.
@@ -259,6 +260,8 @@ export type PluginDeps = Readonly<{
    * when absent); a program that cannot start answers no status and the reason in its stderr.
    */
   exec: (file: string, args: readonly string[], options?: ExecOptions) => ExecResult;
+  /** {@link PluginDeps.exec} for a caller that must not hold this process still while the program runs (a listener that answers a chairman while a GitHub call is out). A program that cannot start answers as `exec` does. */
+  execAsync: (file: string, args: readonly string[], options?: ExecOptions) => Promise<ExecResult>;
   readFile: (path: string) => string;
   mode: (path: string) => number | null;
   /** GETs `/` of a host and port (an exposure's doctor check asks whether a served port answers): the status, or null when nothing answered. A fake answers null. */

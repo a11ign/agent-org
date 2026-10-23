@@ -75,3 +75,24 @@ export type PullState = { number: number; state: string };
 
 /** A pull request's state and the branch it was opened from. */
 export type BranchedPullState = PullState & { headRefName: string };
+
+// --- runners for a caller that keeps its own policy (A11-160, step 8) ----------------------------------------------------------------
+
+/** {@link RowsRun}, answered as a promise: a program that fails rejects with the same error. */
+export type AsyncRowsRun = (args: readonly string[]) => Promise<string>;
+
+/**
+ * How a caller that keeps its own policy asks for a runner of the code host's program (contract 1.11). Every member is optional and names only what the caller wants different from a plain call: `cwd` is where it runs, `timeoutMs`
+ * how long it may take (ten minutes when absent), `maxBuffer` the most it may print, `withoutGitEnv` takes the variables a hook sets off each call's environment, `echo: false` keeps what the program prints on stderr to the failure's
+ * message (it is let through to this process's own otherwise), and `guard` refuses an argument list before it is run by throwing: it is core's rule (the leak guard, the chairman's read-only allowlist), applied to the calls the operations build.
+ */
+export type RunnerRequest = Readonly<{
+  cwd?: string; timeoutMs?: number; maxBuffer?: number; withoutGitEnv?: boolean; echo?: boolean;
+  guard?: (args: readonly string[]) => void;
+}>;
+
+/** How a program ended: its status (`null` when it could not start or was cut), what it printed, and the spawn error where there was one. */
+export type RunAnswer = Readonly<{ status: number | null; stdout: string; stderr: string; error?: string }>;
+
+/** A runner that never throws, for a caller that reads how the program ended; `options.input` is written to its standard input. */
+export type AnsweringRun = (args: readonly string[], options?: Readonly<{ input?: string }>) => RunAnswer;

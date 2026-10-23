@@ -31,6 +31,7 @@ import { toHtml } from "./board-markdown.ts";
 import { editionDay, editionUrlIfPublished, outsideBoardOn, publishEdition, scheduledRunFindsWorkDone, todaysEditionExists } from "./board-discussion.ts";
 import { productHome, PRODUCT_HOME_SOURCE } from "@a11ign/toolchain/lib/product-home";
 import { HOME_CHECKOUT } from "./project-config.ts";
+import { rows } from "./plugins/rows.ts";
 
 // Module scope, not inside main(): `section5` reads it, and `document()` is exported for the renderer
 // test, which builds a real document without ever calling main().
@@ -1262,19 +1263,14 @@ function publishToDraftRelease(pdf: string) {
   const notes = "The daily board document. Generated from GitHub and git; every figure carries its "
     + "source, and anything unmeasured says so rather than being estimated. The GitHub issue edition is "
     + "the data trail.";
-  const exists = (() => {
-    try {
-      const raw = execFileSync("gh", ["release", "view", tag, "--repo", REPO, "--json", "isDraft"],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-      return JSON.parse(raw);
-    } catch { return null; }
-  })();
+  // The code host's own runner, its stderr kept to the failure's message (it was piped, never let through to the unit's).
+  const run = rows().runnerWith({ echo: false });
+  const exists = rows().draftReleaseOf({ repo: REPO, tag, run });
 
   if (!exists) {
-    execFileSync("gh", ["release", "create", tag, pdf, "--repo", REPO, "--draft",
-      "--title", title, "--notes", notes], { stdio: "pipe" });
+    rows().createDraftRelease({ repo: REPO, tag, file: pdf, title, notes, run });
   } else if (exists.isDraft) {
-    execFileSync("gh", ["release", "upload", tag, pdf, "--repo", REPO, "--clobber"], { stdio: "pipe" });
+    rows().uploadReleaseAsset({ repo: REPO, tag, file: pdf, run });
   } else {
     // REFUSE rather than overwrite. A published release is visible to everyone with the repository; a
     // re-render replacing its asset would change what somebody has already been sent, silently.

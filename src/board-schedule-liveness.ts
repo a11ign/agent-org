@@ -52,6 +52,7 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO, ROOT, gh } from "./board-data.ts";
+import { rows } from "./plugins/rows.ts";
 import { editionDay } from "./board-discussion.ts";
 
 const ISSUE = "20";
@@ -105,8 +106,7 @@ export function missedTodaysWindow({ runDays, today, londonHour, afterHour }: { 
  */
 export function scheduledRunDays(workflowFile: string): string[] | null {
   try {
-    return JSON.parse(gh(["run", "list", "--repo", REPO, "--workflow", workflowFile,
-      "--json", "event,createdAt", "--limit", "100"]))
+    return rows().workflowRunListOf({ repo: REPO, workflow: workflowFile, fields: "event,createdAt", limit: 100, run: gh })
       .filter((r: { event: string; }) => r.event === "schedule")
       .map((r: { createdAt: string; }) => editionDay(new Date(r.createdAt)));
   } catch {
@@ -139,7 +139,7 @@ const GRACE_HOURS = 36;
  */
 export function workflowCreatedAt(workflowFile: string): string | null {
   try {
-    return JSON.parse(gh(["api", `repos/${REPO}/actions/workflows/${workflowFile}`])).created_at ?? null;
+    return rows().workflowCreatedAtOf({ repo: REPO, workflow: workflowFile, run: gh });
   } catch {
     return null;
   }
@@ -159,8 +159,7 @@ export function workflowRunEvents(workflowFile: string): string[] | null {
     // a ghost run (#1253: `queued` forever, zero jobs) carries `event: "schedule"` and proves nothing
     // about whether the schedule ever RAN. The filtering is left to `scheduleNeverFired`, which is the
     // pure function a test can reach; doing it here would hide the decision in the fetcher.
-    return JSON.parse(gh(["run", "list", "--repo", REPO, "--workflow", workflowFile,
-      "--json", "event,status,conclusion", "--limit", "100"]));
+    return rows().workflowRunListOf({ repo: REPO, workflow: workflowFile, fields: "event,status,conclusion", limit: 100, run: gh });
   } catch {
     return null;
   }
@@ -289,8 +288,7 @@ export function hoursSincePreviousRun(run: (args: string[]) => string, now: Date
   if (!workflow) return null;
   let runs: { createdAt?: string; }[];
   try {
-    runs = JSON.parse(run(["run", "list", "--repo", REPO, "--workflow", workflow,
-      "--json", "createdAt", "--limit", "2"]));
+    runs = rows().workflowRunListOf({ repo: REPO, workflow, fields: "createdAt", limit: 2, run });
   } catch {
     return null;
   }
@@ -425,8 +423,7 @@ const summaryExists = (day: string) => existsSync(path.join(ROOT, "docs/board/su
  */
 function commentBodies(issue: string) {
   try {
-    return JSON.parse(gh(["issue", "view", issue, "--repo", REPO, "--json", "comments"]))
-      .comments.map((c: { body: string; }) => c.body);
+    return rows().commentBodiesOfIssue({ repo: REPO, number: issue, run: gh });
   } catch {
     // CANNOT ASK IS NOT ALIVE, and this is the whole reason the third exit code exists. A swallowed API
     // failure returning "no comments found" would report the editions as STOPPED on a network blip -- and
@@ -443,16 +440,15 @@ function commentBodies(issue: string) {
  */
 function postOnce(issue: string, verdict: { code: number; headline: string; detail: string; }) {
   const marker = `board editions: ${verdict.headline}`;
-  const existing = gh(["issue", "view", issue, "--repo", REPO, "--json", "comments", "--jq",
-    ".comments[].body"]);
-  if (existing.includes(marker)) {
+  const existing = rows().commentBodiesOfIssue({ repo: REPO, number: issue, run: gh });
+  if (existing.some((body) => body.includes(marker))) {
     console.error("(already reported for this spell; not commenting again)");
     return;
   }
-  gh(["issue", "comment", issue, "--repo", REPO, "--body",
+  rows().commentOnIssue({ repo: REPO, issue, run: gh, body:
     `**${marker}**\n\n${verdict.detail}\n\n---\n\nReported by \`pnpm run board:liveness\`, which runs on `
     + "push rather than on a schedule: a watchdog that is itself scheduled is disabled by the same "
-    + "inactivity it exists to detect."]);
+    + "inactivity it exists to detect." });
 }
 
 function main() {

@@ -1,15 +1,21 @@
-// a11ign/a11ign#4184 (#4055 next wave, item 5): the headless pilot's script, against a FAKE `claude` and a STUB `gh`. No model, no network, no org write.
+// a11ign/a11ign#4184 (#4055 next wave, item 5): the headless pilot's script, against a FAKE `claude` and the FAKE CODE HOST. No model, no network, no org write.
+// Since A11-160 (step 8) the pilot reads its rows through the code host's `rowSnapshotOf`, so the rows are SEEDED in the fake's world and not answered by a stubbed `gh`. The read-only guarantee stays provable: the pilot hands the operation
+// a `run` with `assertGhRead` around it, the fixture records that `run`, and the cases call it with writes (refused before the program) and reads (passed to the injected program).
 // Run with `AGENT_ORG_HOST=<checkout>/.agent-org/host.json npx rstest run --config scripts/rstest/rstest.config.ts src/trace/headless-pilot.test.ts`.
 // The git side is real (a local bare `origin` and a clone), so the throwaway worktree is a real worktree and "it does not exist afterwards" is read off the disk.
-// no-token: gh -- `gh` is an injected stub that fails the run on any write; wake.ts is imported for `addressed` only and its gh readers are never called here
+// no-token: gh -- the rows come from the fake code host; the `gh` handed to the pilot is a stub that fails the run on any write and is reached only through the guarded `run`; wake.ts is imported for `addressed` only and its gh readers are never called here
 // Every claim carries a positive control (the same input made valid passes) and a negative one (the input that must be refused or must fail does), so none is an emptiness assertion.
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { REPO } from "../project-identity.ts";
 import { agentArgs, profileFor } from "../worker-profile.ts";
 import { addressed } from "../wake/fyi-queue.ts";
 import {
@@ -59,6 +65,7 @@ process.stdin.on("end", () => {
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 const roots: string[] = [];
+afterEach(() => forgetActivation());
 after(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); }); // the private-tmp guard fails a file that leaves a fixture behind
 
 function fixture(issues: Record<number, ReturnType<typeof issue>>) {
@@ -77,19 +84,29 @@ function fixture(issues: Record<number, ReturnType<typeof issue>>) {
   chmodSync(join(bin, "claude"), 0o755);
   const ghCalls: string[][] = [];
   const gitCalls: string[][] = [];
+  // The code host's rows are the fake's: the row facts are SEEDED, and each ask of `rowSnapshotOf` is noted with the `run` the pilot handed it (the guarded one).
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  for (const [number, seeded] of Object.entries(issues)) {
+    host.rowsWorld.rows.set(Number(number), fakeRow(host.rowsWorld, Number(number), { state: seeded.state as "OPEN" | "CLOSED", title: seeded.title, body: seeded.body, labels: seeded.labels.map((label) => label.name) }));
+  }
+  const snapshotAsks: { repo: string; number: number; run: (args: string[]) => string }[] = [];
+  const snapshotOf = host.rows!.rowSnapshotOf;
+  host.rows!.rowSnapshotOf = (request) => { snapshotAsks.push(request); return snapshotOf(request); };
+  substituteCodeHost(host);
+  // The program the pilot is given: it FAILS THE RUN on anything but a read, whatever the script's own guard did before it, and the fake never starts it.
   const ghStub = (args: string[]) => {
     ghCalls.push(args);
-    // the stub FAILS THE RUN on anything but a read, whatever the script's own guard did before it
     const isWriteCall = !(args[0] === "issue" && args[1] === "view") && !(args[0] === "api" && !args.includes("-X"));
     if (isWriteCall) throw new Error(`STUB gh: a write reached the org: gh ${args.join(" ")}`);
-    return JSON.stringify(issues[Number(args[2])] ?? (() => { throw new Error(`no such issue ${args[2]}`); })());
+    return "";
   };
   const git = (args: string[]) => { gitCalls.push(args); return execFileSync("git", args, { env: sandboxGitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); };
   const deps = { gh: ghStub, git, claudeBin: join(bin, "claude"), scratch: join(root, "scratch"), checkout, recordDir: join(root, "records"), configDir: join(root, "claude-config"), out: () => {} };
   process.env.FAKE_DIR = root;
   process.env.CLAUDE_CONFIG_DIR = deps.configDir;
   const launches = () => (existsSync(join(root, "calls.jsonl")) ? readFileSync(join(root, "calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []);
-  return { root, deps, ghStub, ghCalls, gitCalls, launches, worktree: join(deps.scratch, `wt-${EVEN_ROW}`) };
+  return { root, deps, ghStub, ghCalls, snapshotAsks, gitCalls, launches, worktree: join(deps.scratch, `wt-${EVEN_ROW}`) };
 }
 
 const validIssues = () => ({ [NAMED_ON]: issue(NAMED_ON, { body: `Pilot rows.\nPilot-rows: ${EVEN_ROW}, 4302\n` }), [EVEN_ROW]: issue(EVEN_ROW) });
@@ -230,7 +247,16 @@ test("gh is only ever read: the stub saw reads, git never pushed, and the worker
   const f = fixture(validIssues());
   play("success", "pass");
   await runPilot(options(), f.deps);
-  assert.ok(f.ghCalls.length >= 2, "positive control: gh WAS called, so 'only reads' is not vacuous");
+  assert.deepEqual(f.snapshotAsks.map((ask) => [ask.repo, ask.number]), [[REPO, EVEN_ROW], [REPO, NAMED_ON]], "positive control: the rows WERE read through the code host, so 'only reads' is not vacuous");
+  // The `run` the pilot handed each read has `assertGhRead` around it: a write is refused BEFORE the program, a read goes through to it.
+  for (const ask of f.snapshotAsks) {
+    for (const write of [["issue", "edit", "1", "--add-label", "x"], ["issue", "comment", "1", "-b", "x"], ["pr", "create"], ["api", "-X", "POST", "repos/a/b/issues"], ["api", "repos/a/b/issues", "-f", "title=x"]]) {
+      assert.throws(() => ask.run(write), /read-only against the org/, `gh ${write.join(" ")}`);
+    }
+  }
+  assert.equal(f.ghCalls.length, 0, "no refused write reached the program");
+  f.snapshotAsks[0].run(["issue", "view", "1", "--json", "body"]);
+  assert.deepEqual(f.ghCalls, [["issue", "view", "1", "--json", "body"]], "CONTROL: a read passes the guard and reaches the program");
   for (const call of f.ghCalls) assert.ok(call[0] === "issue" && call[1] === "view", `non-read: gh ${call.join(" ")}`);
   assert.ok(f.gitCalls.length > 0 && f.gitCalls.every((c) => !c.includes("push")), "the script itself never pushes");
   const [launch] = f.launches();

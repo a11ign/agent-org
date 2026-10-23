@@ -8,17 +8,22 @@
 //
 // **DONE-WHEN 4 IS A SCAN, AND THE SCAN HAS ITS POSITIVE CONTROL:** `scanProblems` is run over the real file (expecting none) and over synthetic sources that each
 // break one rule (expecting that rule), so a scan that finds nothing in everything fails by name.
+//
+// A11-160, step 8: the readers the command builds read GitHub through the code host's operations, so the cases that send run on the fake code host's world (`seedWorld`: a row, a pull request that merged, a run, two rows waiting,
+// a comment), not on a `gh` that answers argument lists; a read the host refuses is `world.failures`. That every reader's argument list passes this command's read-only guard is a property of the plugin's words and is held
+// in `plugins/github/rows/messaging-rows.test.ts`; the guard itself, the wiring of the default runners and the scan of this file stay here.
 
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { completionPath, writeCompletion } from "../lib/tick-completion.ts";
 import { testEach } from "../lib/test-each.ts";
 import { createFakeProvider } from "./fake-provider.ts";
+import { fakeRow, fakeRowPull, forgetActivation, messagingHost, noGh, type FakeRowsWorld } from "../plugins/fakes/messaging-world.test.support.ts";
 import { readLedgerLines } from "./ledger.ts";
 import { EXIT, assertReadOnlyGh, assertReadOnlySystemctl, main } from "./reply-cli.ts";
 import { defaultLedgerPath } from "./state.ts";
@@ -33,6 +38,7 @@ const SOURCE = fileURLToPath(new URL("./reply-cli.ts", import.meta.url));
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-reply-cli-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 let nextCase = 0;
 
 /** @param {string} path @param {string} content */
@@ -56,18 +62,18 @@ function project({ messaging = true }: { messaging?: boolean; } = {}) {
   return { root, home, ledgerPath: defaultLedgerPath(home) };
 }
 
-/** `gh` as the readers call it, over a pull request that merged. Every argv goes through the command's own guard first, as the real runner does. @param {string[]} argv */
-async function fixtureGh(argv: string[]) {
-  assertReadOnlyGh(argv);
-  if (argv[0] === "pr") return JSON.stringify({ reviewDecision: "APPROVED" });
-  const path = argv[1];
-  if (path.startsWith(`repos/${REPO}/pulls/`)) return JSON.stringify({ number: 2881, state: "closed", merged_at: "2026-10-02T13:00:00Z" });
-  if (path.startsWith(`repos/${REPO}/pulls?`)) return JSON.stringify([{ merged_at: "2026-10-02T11:00:00Z" }]);
-  if (path.startsWith(`repos/${REPO}/issues?`)) return JSON.stringify([{ number: 1, labels: [{ name: "ready" }] }, { number: 2, labels: [{ name: "ready" }] }]);
-  if (path.startsWith(`repos/${REPO}/issues/comments/`)) return JSON.stringify({ body: "Ruled: hold.", html_url: "https://github.com/x/y#c" });
-  if (path.startsWith(`repos/${REPO}/issues/`)) return JSON.stringify({ number: 3071, state: "open", labels: [{ name: "ready" }] });
-  if (path.startsWith(`repos/${REPO}/actions/runs/`)) return JSON.stringify({ conclusion: "success", status: "completed" });
-  throw new Error(`fixture gh: unexpected ${argv.join(" ")}`);
+/** What the fake GitHub holds: row 3071 (open, with comment 5), two rows waiting, pull request 2881 merged and approved, and run 36891064128 concluded in success. */
+function seedWorld(world: FakeRowsWorld): void {
+  world.rows.set(3071, fakeRow(world, 3071, { labels: ["lane:any"], comments: [{ id: 5, body: "Ruled: hold.", createdAt: "2026-10-02T09:00:00Z" }] }));
+  for (const number of [1, 2]) world.rows.set(number, fakeRow(world, number, { labels: ["ready"] }));
+  world.pulls.set(2881, fakeRowPull(2881, { merged: true, mergedAt: "2026-10-02T11:00:00Z", reviewDecision: "APPROVED" }));
+  world.reports.messaging.runs.set(36891064128, { status: "completed", conclusion: "success" });
+}
+
+/** Row #3542 is closed, and there is no pull request of that number: the pull request read of it is a 404, as GitHub answers for an issue. */
+function closedRowWorld(world: FakeRowsWorld): void {
+  seedWorld(world);
+  world.rows.set(3542, fakeRow(world, 3542, { state: "CLOSED" }));
 }
 
 /** @param {string[]} argv @returns {Promise<string>} */
@@ -79,21 +85,22 @@ async function fixtureSystemctl(argv: string[]): Promise<string> {
 /**
  * Runs the command with everything injected and collects what it said.
  * @param {string[]} argv
- * @param {{messaging?: boolean, env?: Record<string, string | undefined>, stdin?: string, gh?: typeof fixtureGh, provider?: ReturnType<typeof createFakeProvider>,
+ * @param {{messaging?: boolean, env?: Record<string, string | undefined>, stdin?: string, seed?: (world: FakeRowsWorld) => void, provider?: ReturnType<typeof createFakeProvider>,
  *   providers?: Record<string, any>, fetch?: typeof fetch, home?: string, root?: string, wakeLedgerPath?: () => Promise<string>, inbound?: string[]}} [options] `inbound` seeds the ledger with a message from the chairman
  *   under each ref, which is what `--to` is checked against (`ledger` in the result is what the command wrote AFTER those); with `fetch` given and no `providers`, the command builds the
  *   REAL Telegram provider, which is how the secret-file wiring is exercised; otherwise it is handed `provider`
  */
-async function run(argv: string[], { messaging = true, env = { GH_CONFIG_DIR: "/workers/gh" }, stdin = "", gh = fixtureGh, provider = createFakeProvider(), providers, fetch, inbound = [], ...where }: {
-    messaging?: boolean; env?: Record<string, string | undefined>; stdin?: string; gh?: typeof fixtureGh; provider?: ReturnType<typeof createFakeProvider>;
+async function run(argv: string[], { messaging = true, env = { GH_CONFIG_DIR: "/workers/gh" }, stdin = "", seed = seedWorld, provider = createFakeProvider(), providers, fetch, inbound = [], ...where }: {
+    messaging?: boolean; env?: Record<string, string | undefined>; stdin?: string; seed?: (world: FakeRowsWorld) => void; provider?: ReturnType<typeof createFakeProvider>;
     providers?: Record<string, any>; fetch?: typeof fetch; home?: string; root?: string; wakeLedgerPath?: () => Promise<string>; inbound?: string[];
 } = {}) {
   const fixture = project({ messaging });
+  messagingHost(REPO, seed);
   if (inbound.length > 0) writePrivate(fixture.ledgerPath, inbound.map((messageRef) => `${JSON.stringify({ direction: "in", origin: "converse", messageRef, ackRef: "0", ts: "2026-10-02T14:00:00.000Z" })}\n`).join(""));
   const [root, home] = [where.root ?? fixture.root, where.home ?? fixture.home];
   const [out, err] = [/** @type {string[]} */ ([]), /** @type {string[]} */ ([])];
   const code = await main(argv, {
-    root, home, env, now: () => NOW, gh, systemctl: fixtureSystemctl, readStdin: async () => stdin, ...(where.wakeLedgerPath === undefined ? {} : { wakeLedgerPath: where.wakeLedgerPath }),
+    root, home, env, now: () => NOW, gh: noGh, systemctl: fixtureSystemctl, readStdin: async () => stdin, ...(where.wakeLedgerPath === undefined ? {} : { wakeLedgerPath: where.wakeLedgerPath }),
     ...(fetch === undefined ? { providers: providers ?? { telegram: () => provider } } : { fetch }),
     out: (line) => out.push(line), err: (line) => err.push(line),
   });
@@ -164,11 +171,11 @@ describe("done-when 3: a refused reply exits 2, names the placeholder or the cla
   }
 
   test("a read that fails prints the placeholder AS WRITTEN and the sendable text; exit 2, nothing sent, no ledger line", async () => {
-    const gh = async (/** @type {string[]} */ argv: string[]) => {
-      if (argv[1]?.startsWith(`repos/${REPO}/pulls/`)) throw new Error("HTTP 502");
-      return fixtureGh(argv);
+    const seed = (world: FakeRowsWorld) => {
+      seedWorld(world);
+      world.failures.set("pullReviewDecisionAsync", new Error("HTTP 502"));
     };
-    const { code, err, provider, ledger } = await run(["{{pr:2881.state}} and {{ready.count}}"], { gh });
+    const { code, err, provider, ledger } = await run(["{{pr:2881.state}} and {{ready.count}}"], { seed });
     assert.equal(code, EXIT.refused);
     assert.match(err, /REFUSED \{\{pr:2881\.state\}\}: .*HTTP 502/);
     assert.doesNotMatch(err, /REFUSED \{\{ready\.count\}\}/);
@@ -423,7 +430,7 @@ const SHARED_HELPERS = ["defaultLedgerPath", "accountIsDeclared", "trackerRepo",
 
 describe("done-when 4: the command reaches no provider but the configured one, and no reader but `createGhReaders`", () => {
   const ALLOWED_IMPORTS = new Set(["node:child_process", "node:fs", "node:os", "node:path", "node:url", "node:util", "../lib/tick-completion.ts", "./config.ts", "./ledger.ts", "./placeholders.ts",
-    "./plugin.ts", "./reply.ts", "./secret.ts", "./state.ts"]);
+    "./plugin.ts", "./reply.ts", "./secret.ts", "./state.ts", "../plugins/contracts/code-host-rows.ts", "../plugins/contracts/code-host-rows-facts.ts", "../plugins/rows.ts"]);
 
   /** @param {string} source @returns {string[]} what breaks the done-when, one string per rule broken */
   function scanProblems(source: string): string[] {
@@ -439,7 +446,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
     if (/\b(?:spawn|spawnSync|exec|execSync|execFileSync)\(/.test(code)) problems.push("runs a command outside the guarded runners");
     const execFileCalls = code.match(/\bexecFileAsync\(/g) ?? [];
     if (execFileCalls.length !== 1) problems.push(`runs ${execFileCalls.length} execFile calls, not the one inside guardedRunner`);
-    for (const runner of ['guardedRunner("gh", assertReadOnlyGh)', 'guardedRunner("systemctl", assertReadOnlySystemctl)']) {
+    for (const runner of ["asyncRunnerWith({ timeoutMs: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, echo: false, guard: assertReadOnlyGh })", 'guardedRunner("systemctl", assertReadOnlySystemctl)']) {
       if (!code.includes(runner)) problems.push(`the default runner ${runner} is not wired`);
     }
     return problems;
@@ -459,7 +466,7 @@ describe("done-when 4: the command reaches no provider but the configured one, a
       ["a local copy of a shared helper", `${real}\nfunction trackerRepo(root) { return root; }\n`, /defines trackerRepo itself/],
       ["its own network call", `${real}\nawait fetch("https://example.com");\n`, /calls the network itself/],
       ["its own command", `${real}\nexecSync("gh pr merge 1");\n`, /runs a command outside/],
-      ["an unguarded gh", real.replace('guardedRunner("gh", assertReadOnlyGh)', 'guardedRunner("gh", () => {})'), /default runner guardedRunner\("gh"/],
+      ["an unguarded gh", real.replace("guard: assertReadOnlyGh", "guard: () => {}"), /default runner asyncRunnerWith\(\{ timeoutMs: GH_TIMEOUT_MS/],
     ];
     for (const [name, source, expected] of mutations) {
       assert.ok(scanProblems(source).some((problem) => expected.test(problem)), `${name} was not found: ${JSON.stringify(scanProblems(source))}`);
@@ -513,37 +520,29 @@ describe("state.ts is a leaf: nothing it loads resolves the checkout or reads th
 });
 
 describe("#3565 a refusal for a '#N' prints the corrected text with the row's values, and pasting it sends", () => {
-  /** `gh` over a row #3542 that is closed; the pull request read of the same number is a 404, as GitHub answers for an issue. @param {string[]} argv */
-  async function closedRowGh(argv: string[]) {
-    assertReadOnlyGh(argv);
-    if (argv[1] === `repos/${REPO}/issues/3542`) return JSON.stringify({ number: 3542, state: "closed", labels: [] });
-    if (argv[1] === `repos/${REPO}/pulls/3542` || argv[0] === "pr") throw new Error("HTTP 404");
-    return fixtureGh(argv);
-  }
-
   test("'#3542 is closed' exits 2 with the placeholders named and the corrected text printed, nothing sent or written; that text exits 0 and says it", async () => {
-    const refused = await run(["#3542 is closed"], { gh: closedRowGh });
+    const refused = await run(["#3542 is closed"], { seed: closedRowWorld });
     assert.equal(refused.code, EXIT.refused);
     assert.match(refused.err, /REFUSED \(free text\): "#3542" is a row or pull request number outside a placeholder \(write #\{\{issue:3542\.number\}\}/);
     assert.match(refused.err, /corrected, send this instead.*: #\{\{issue:3542\.number\}\} is \{\{issue:3542\.state\}\}$/m);
     assert.deepEqual([refused.provider.sent, refused.ledger], [[], []]);
 
-    const pasted = await run(["#{{issue:3542.number}} is {{issue:3542.state}}"], { gh: closedRowGh });
+    const pasted = await run(["#{{issue:3542.number}} is {{issue:3542.state}}"], { seed: closedRowWorld });
     assert.equal(pasted.code, EXIT.ok, pasted.err);
     assert.deepEqual(pasted.provider.sent.map(({ text }) => text), [`#3542 is closed\n\n${STAMP}`]);
   });
 
   test("`--dry-run` shows the same corrected text, and the corrected text probes clean", async () => {
-    const probe = await run(["--dry-run", "#3542 is closed"], { gh: closedRowGh });
+    const probe = await run(["--dry-run", "#3542 is closed"], { seed: closedRowWorld });
     assert.equal(probe.code, EXIT.refused);
     assert.match(probe.err, /corrected, send this instead.*: #\{\{issue:3542\.number\}\} is \{\{issue:3542\.state\}\}$/m);
-    const clean = await run(["--dry-run", "#{{issue:3542.number}} is {{issue:3542.state}}"], { gh: closedRowGh });
+    const clean = await run(["--dry-run", "#{{issue:3542.number}} is {{issue:3542.state}}"], { seed: closedRowWorld });
     assert.equal(clean.code, EXIT.ok, clean.err);
     assert.match(clean.out, /would send:\n#3542 is closed/);
   });
 
   test("a state the row does not read is refused, names what the reader returned, and prints no corrected text", async () => {
-    const { code, err, provider } = await run(["#3542 is merged"], { gh: closedRowGh });
+    const { code, err, provider } = await run(["#3542 is merged"], { seed: closedRowWorld });
     assert.equal(code, EXIT.refused);
     assert.match(err, /the reader returned "closed" for #3542, not "merged"/);
     assert.doesNotMatch(err, /corrected, send this instead/);

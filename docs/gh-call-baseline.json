@@ -1,5 +1,5 @@
 {
-  "about": "The most `gh` call sites each file outside `plugins/github/` may hold, written once from docs/gh-call-inventory.json (agent-org#826) and widened by A11-160, which moves every call into `plugins/github`: the scan reads `src/`, `scripts/` and `plugins/`, and every shell script of `host/`, `src/` and `plugins/` (a shell script's `spawns` is the number of times it runs `gh` as a command word). It only goes DOWN: lower an entry by hand when a file sheds calls. A rise is refused by src/packaging/gh-call-ratchet.test.ts, and a call to GitHub goes into `plugins/github/`, behind the codeHost contract (`src/plugins/contracts/code-host.ts`). The gate (`src/work-gate/`) moved in step 6 of A11-160; the last step empties `files`: the `src/ticket-port/` exemption is already gone (step 4 moved its calls into the plugin), so a call there is refused like any other outside the plugin.",
+  "about": "The most `gh` call sites each file outside `plugins/github/` may hold, written once from docs/gh-call-inventory.json (agent-org#826) and widened by A11-160, which moves every call into `plugins/github`: the scan reads `src/`, `scripts/` and `plugins/`, and every shell script of `host/`, `src/` and `plugins/` (a shell script's `spawns` is the number of times it runs `gh` as a command word). It only goes DOWN: lower an entry by hand when a file sheds calls. A rise is refused by src/packaging/gh-call-ratchet.test.ts, and a call to GitHub goes into `plugins/github/`, behind the codeHost contract (`src/plugins/contracts/code-host.ts`). The gate (`src/work-gate/`) moved in step 6 of A11-160, wake, the claim and the filing of rows in step 7, and the board, the health and retro readings, the DORA reader, the trace and the chairman's watch in step 8; the last step empties `files`: the `src/ticket-port/` exemption is already gone (step 4 moved its calls into the plugin), so a call there is refused like any other outside the plugin.",
   "phases": {
     "org-health": {
       "about": "The `gh` spawns of one org-health pass on the org-health fixture with a stub gh (agent-org#1225, src/packaging/tick-budget.test.ts). It only goes DOWN: lower it by hand when the phase sheds a read. A rise is refused by that test.",
@@ -30,42 +30,6 @@
     "src/blast-radius.ts": {
       "spawns": 1,
       "calls": 2
-    },
-    "src/board-data.ts": {
-      "spawns": 2,
-      "calls": 3
-    },
-    "src/board-discussion.ts": {
-      "spawns": 0,
-      "calls": 1
-    },
-    "src/board-document.ts": {
-      "spawns": 3,
-      "calls": 3
-    },
-    "src/board-report.ts": {
-      "spawns": 0,
-      "calls": 5
-    },
-    "src/board-schedule-liveness.ts": {
-      "spawns": 0,
-      "calls": 7
-    },
-    "src/board-snapshot-scope.ts": {
-      "spawns": 0,
-      "calls": 1
-    },
-    "src/board-snapshot.ts": {
-      "spawns": 5,
-      "calls": 1
-    },
-    "src/board-summary-check.ts": {
-      "spawns": 0,
-      "calls": 2
-    },
-    "src/board-truth-audit.ts": {
-      "spawns": 1,
-      "calls": 11
     },
     "src/branch-inventory-report.ts": {
       "spawns": 3,
@@ -103,10 +67,6 @@
       "spawns": 1,
       "calls": 2
     },
-    "src/dora.ts": {
-      "spawns": 2,
-      "calls": 6
-    },
     "src/fleet-gated-nightly.ts": {
       "spawns": 0,
       "calls": 2
@@ -139,38 +99,6 @@
       "spawns": 1,
       "calls": 0
     },
-    "src/messaging/github-writer.ts": {
-      "spawns": 1,
-      "calls": 5
-    },
-    "src/messaging/placeholders.ts": {
-      "spawns": 0,
-      "calls": 2
-    },
-    "src/messaging/reply-cli.ts": {
-      "spawns": 1,
-      "calls": 0
-    },
-    "src/messaging/watch-list.ts": {
-      "spawns": 1,
-      "calls": 0
-    },
-    "src/messaging/watch.ts": {
-      "spawns": 1,
-      "calls": 3
-    },
-    "src/org-health/sweep-readings.ts": {
-      "spawns": 0,
-      "calls": 5
-    },
-    "src/org-retro/journal-stats-and-verdicts.ts": {
-      "spawns": 0,
-      "calls": 1
-    },
-    "src/org-retro/retro-window-and-journal-patterns.ts": {
-      "spawns": 1,
-      "calls": 2
-    },
     "src/org-watch.ts": {
       "spawns": 1,
       "calls": 4
@@ -184,10 +112,6 @@
       "calls": 11
     },
     "src/provider-low-confidence.ts": {
-      "spawns": 1,
-      "calls": 1
-    },
-    "src/prune-tmp.ts": {
       "spawns": 1,
       "calls": 1
     },
@@ -236,26 +160,6 @@
       "calls": 2
     },
     "src/tick-snapshot.ts": {
-      "spawns": 1,
-      "calls": 1
-    },
-    "src/trace/freshness.ts": {
-      "spawns": 1,
-      "calls": 1
-    },
-    "src/trace/haiku-tier-report.ts": {
-      "spawns": 1,
-      "calls": 0
-    },
-    "src/trace/headless-pilot.ts": {
-      "spawns": 1,
-      "calls": 1
-    },
-    "src/trace/publish.ts": {
-      "spawns": 1,
-      "calls": 1
-    },
-    "src/trace/trace.ts": {
       "spawns": 1,
       "calls": 1
     },

@@ -2,7 +2,7 @@
 // module: the seams a plugin runs on a real machine -- programs, file modes, a probe of a port, and where the host keeps what a code host renders (A11-159, A11-160)
 //
 // Split from `active.ts` so the code host row mode loads on its own (`code-host-slot.ts`) can use them without loading the activation, whose graph holds the gate.
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -23,10 +23,33 @@ export function realExec(file: string, args: readonly string[], options: ExecOpt
   const env = { ...process.env, ...options.env };
   for (const name of options.withoutEnv ?? []) delete env[name];
   const result = options.inherit === true
-    ? spawnSync(file, [...args], { stdio: "inherit", encoding: "utf8", env })
-    : spawnSync(file, [...args], { encoding: "utf8", timeout, env, maxBuffer: options.maxBuffer ?? EXEC_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"], ...(options.killSignal === undefined ? {} : { killSignal: options.killSignal }) });
+    ? spawnSync(file, [...args], { stdio: "inherit", encoding: "utf8", env, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) })
+    : spawnSync(file, [...args], { encoding: "utf8", timeout, env, maxBuffer: options.maxBuffer ?? EXEC_MAX_BUFFER, stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"], ...(options.input === undefined ? {} : { input: options.input }),
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }), ...(options.killSignal === undefined ? {} : { killSignal: options.killSignal }) });
   if (result.error !== undefined) return { status: null, stdout: "", stderr: result.error.message, spawnError: result.error.message, signal: result.signal };
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", signal: result.signal };
+}
+
+/**
+ * {@link realExec} without holding this process still: the program runs under `execFile`, so the event loop goes on while it does. It answers as `realExec` does and never rejects: a program that cannot start answers no status and
+ * the reason in `stderr` and `spawnError`; one cut at its bound answers `spawnError` naming `ETIMEDOUT`, and one that printed more than `maxBuffer` names `ENOBUFS`.
+ */
+export function realExecAsync(file: string, args: readonly string[], options: ExecOptions = {}): Promise<ExecResult> {
+  const env = { ...process.env, ...options.env };
+  for (const name of options.withoutEnv ?? []) delete env[name];
+  return new Promise((done) => {
+    execFile(file, [...args], { encoding: "utf8", timeout: options.timeoutMs ?? DEFAULT_EXEC_MS, env, maxBuffer: options.maxBuffer ?? EXEC_MAX_BUFFER, ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.killSignal === undefined ? {} : { killSignal: options.killSignal }) }, (error, stdout, stderr) => {
+      if (error === null) return done({ status: 0, stdout, stderr, signal: null });
+      const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null };
+      if (typeof failure.code === "number") return done({ status: failure.code, stdout, stderr, signal: failure.signal ?? null });
+      // Node kills a child it ran out of patience with (`killed`: its bound) or out of room for (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`); a child stopped by a signal from outside has neither a code nor a spawn error.
+      const code = failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "ENOBUFS" : failure.killed === true ? "ETIMEDOUT" : undefined;
+      if (code === undefined && failure.signal != null) return done({ status: null, stdout, stderr, signal: failure.signal });
+      const spawnError = code === undefined ? failure.message : `spawn ${file} ${code}`;
+      done({ status: null, stdout, stderr: spawnError, spawnError, signal: failure.signal ?? null });
+    });
+  });
 }
 
 /** A file's permission bits, or null when it cannot be read. */

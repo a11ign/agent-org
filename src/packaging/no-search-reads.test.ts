@@ -426,7 +426,7 @@ test("POSITIVE CONTROL: the converted readers answer while every search argv is 
   assert.ok(calls.length >= 1 && calls.every((args) => !args.includes("--search") && !args.includes("--label")), "and none of its calls was a search");
   assert.deepEqual(readClosedRows(SINCE_MS, SINCE_MS + 3_600_000, (args) => run(args)).length, 0, "the haiku report's closed rows answered (no closed row in the fake is in range)");
   assert.equal(readMergedSince("a11ign/a11ign", SINCE_MS, (args) => JSON.parse(run(args)))?.length, 1, "the retrospective's merged list answered: only the row MERGED in the window");
-  assert.deepEqual(fetchReadyIssueNumbers({ run: (_cmd, args) => run(args) }), [3, 2, 1], "the board snapshot's ready list answered, from the by-label connection");
+  assert.deepEqual(fetchReadyIssueNumbers({ run }), [3, 2, 1], "the board snapshot's ready list answered, from the by-label connection");
   assert.deepEqual(ghReadyReader({ key: "", repo: "a11ign/a11ign" }, run).listRows().map((row) => row.number), [3, 2, 1], "and the untiered count's");
 });
 

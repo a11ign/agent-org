@@ -22,7 +22,7 @@ import type { Catalog, CodeHostPolicy, LoadedPlugin, PluginDeps, ReviewerHelpers
 import { gateHelpers } from "./reviewing-gate.ts";
 
 export { coreRowsHelpers, loadedCodeHost } from "./code-host-slot.ts";
-export { realExec, realMode, realPlace, realProbe } from "./real-seams.ts";
+export { realExec, realExecAsync, realMode, realPlace, realProbe } from "./real-seams.ts";
 
 export { PluginActivationRefusal };
 

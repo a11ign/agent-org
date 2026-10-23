@@ -34,13 +34,13 @@
 // THE TICK SUPPLIES IT (#4045): `work-gate/org-health.ts` passes `boardTruth` to `org-health` from the rows the tick already read, and `postDaysTable` (below) comments
 // the day's table on #928 once per edition day.
 // A LEAF, as `org-health.ts` (which imports it) is: relative imports of leaves only, never `close-rows-for-merged-pr.ts`, `row-claim.ts` or anything that reaches `wake.ts`.
-import { execFileSync } from "node:child_process";
 import { STATE_LABELS, CLAIM_LABEL, CLAIM_RECORD_MARKER, STARTED_LABEL, stateLabelFindings, rowsBeingFiled } from "./claim-labels.ts";
 import { conditionHolds, declaredWaitsOf, waitItemOf } from "./wait-condition.ts";
 import { notBeforeDate, notBeforeIso } from "./waiting-condition.ts";
 import { ANSWER_PREFIX, BACKLOG_LABEL, LANE_ANY_LABEL, LANE_PREFIX, NEEDS_CHAIRMAN_LABEL, SESSION_PREFIX } from "./project-vocabulary.ts";
 import { readAgents, listingIsComplete } from "./herdr-agents.ts";
 import { homeProjectDeclaration } from "./project-config.ts";
+import { rows } from "./plugins/rows.ts";
 import { declaredRegionFiles } from "./region-paths.ts";
 import { TRACKER, githubTicketAdapter } from "./ticket-port/github-adapter.ts";
 import type { TicketItem } from "./ticket-port/port.ts";
@@ -692,8 +692,8 @@ export function boardTruthTable({ findings, unread, filing = 0, merging = 0, not
   return [...head, "", "| row | question | field to fix | what disagrees | to |", "|---|---|---|---|---|", ...rows].join("\n");
 }
 
-/** @param {string[]} args @returns {string} gh's stdout */
-const gh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+/** @param {string[]} args @returns {string} gh's stdout, started by the code host with the 256 MiB this audit has always allowed */
+const gh = (args: string[]): string => rows().runnerWith({ maxBuffer: 256 * 1024 * 1024 })(args);
 
 /**
  * THE READS THE NINE QUESTIONS NEED; one that fails is `null` (UNREAD), never an empty list. Live sessions come from `herdr`'s workspace list, and a partial listing is
@@ -709,11 +709,10 @@ const gh = (args: string[]): string => execFileSync("gh", args, { encoding: "utf
  * @returns {BoardFacts} `openRows` is not guarded: a refused open-row read throws, because there is no board to read without it
  */
 export function readBoardFacts(repo: string, { run = gh, agents = readAgents, now = Date.now(), openRows: given, waitFacts = null, trackers = declaredTrackers() }: { run?: (args: string[]) => string; agents?: typeof readAgents; now?: number; openRows?: BoardRow[]; waitFacts?: BoardFacts["waitFacts"]; trackers?: DeclaredTracker[]; } = {}): BoardFacts {
-  const json = (args: string[]) => JSON.parse(run([...args, "--repo", repo]));
-  const orUnread = (args: string[]) => { try { return json(args); } catch { return null; } };
-  const openRows = given ?? json(["issue", "list", "--state", "open", "--limit", "1000", "--json", OPEN_ROW_FIELDS]);
-  const closedRows = orUnread(["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
-  const mergedPrs = orUnread(["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body,mergedAt"]);
+  const orUnread = <T>(read: () => T): T | null => { try { return read(); } catch { return null; } };
+  const openRows = given ?? rows().rowsListedIn({ repo, state: "open", limit: OPEN_ROWS_LIMIT, fields: OPEN_ROW_FIELDS, run });
+  const closedRows = orUnread(() => rows().rowsListedIn({ repo, state: "closed", limit: CLOSED_ROWS_LIMIT, fields: CLOSED_ROW_FIELDS, run }));
+  const mergedPrs = orUnread(() => rows().pullsListedIn({ repo, state: "merged", limit: MERGED_PRS_LIMIT, fields: MERGED_PR_FIELDS, run }));
   const listed = agents();
   const liveSessions = listed !== null && listingIsComplete(listed) ? listed.map((a) => a.label) : null;
   const roadmaps = readRoadmaps(repo, openRows, run);
@@ -733,31 +732,34 @@ export function readBoardFacts(repo: string, { run = gh, agents = readAgents, no
  * @param {{ repo: string, run: (args: string[]) => string, now: number }} input @returns {BoardFacts | null} facts for `proseAudit` alone: only `openRows` and `proseEvidence` mean anything
  */
 export function readProseFacts({ repo, run, now }: { repo: string; run: (args: string[]) => string; now: number; }): BoardFacts | null {
-  const lines = (args: string[]) => run(["api", "--paginate", ...args]).split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
   const since = new Date(now - DAY_MS).toISOString().replace(/\.\d+Z$/, "Z");
   try {
-    const comments = lines([`repos/${repo}/issues/comments?since=${since}&per_page=100`, "--jq", `.[] | select(.user.login | startswith("a11ign-"))
-      | {number: (.issue_url | split("/") | last | tonumber), author: {login: .user.login}, body: .body, createdAt: .created_at, url: .html_url}`]);
+    const comments = rows().orgCommentsSinceOf({ repo, since, loginPrefix: "a11ign-", run });
     const byRow = new Map();
     for (const c of comments) byRow.set(c.number, [...(byRow.get(c.number) ?? []), c]);
     const openRows = [...byRow].map(([number, rowComments]) => ({ number, labels: [], comments: rowComments }));
     const facts: BoardFacts = { now, openRows, closedRows: null, mergedPrs: null, liveSessions: null, waitFacts: null };
     const askable = commentsToJudge(facts).some(({ text }) => handoffsIn(text).length > 0 || readingWithoutField(text));
     if (!askable) return { ...facts, proseEvidence: { rows: [], labelEvents: [] } };
-    const issues = lines([`repos/${repo}/issues?state=all&since=${since}&per_page=100`, "--jq", ".[] | select(.pull_request | not) | {number: .number, state: .state, author: .user.login, createdAt: .created_at, text: (.title + \"\\n\" + (.body // \"\"))}"]);
+    const issues = rows().issuesSinceOf({ repo, since, run });
     const closed = new Set(issues.filter((issue) => issue.state === "closed").map((issue) => issue.number));
     const stated = { ...facts, openRows: openRows.map((row) => closed.has(row.number) ? { ...row, state: "CLOSED" } : row) };
-    const rows = issues.map(({ author, createdAt, text }) => ({ author, createdAt, text }));
+    const issueRows = issues.map(({ author, createdAt, text }) => ({ author, createdAt, text }));
     const needing = [...new Set(commentsToJudge(stated).filter(({ text }) => handoffsIn(text).length > 0).map(({ row }) => row.number))];
-    const labelEvents = needing.flatMap((n) => lines([`repos/${repo}/issues/${n}/events?per_page=100`, "--jq",
-      `.[] | select(.event == "labeled") | {number: ${n}, label: .label.name, actor: .actor.login, createdAt: .created_at}`]));
-    return { ...stated, proseEvidence: { rows, labelEvents } };
+    const labelEvents = needing.flatMap((n) => rows().labeledEventsOfRow({ repo, number: n, run }));
+    return { ...stated, proseEvidence: { rows: issueRows, labelEvents } };
   } catch {
     return null;
   }
 }
 
 const OPEN_ROW_FIELDS = "number,title,body,labels,state,comments,subIssuesSummary,createdAt,blockedBy";
+/** What the audit asks of the tracker: the open rows it judges, the newest closed rows (no body: 2.4 MB of the 2.5 MB the read measured) and the newest merged pull requests. */
+const OPEN_ROWS_LIMIT = 1000;
+const CLOSED_ROWS_LIMIT = 500;
+const CLOSED_ROW_FIELDS = "number,title,state,stateReason";
+const MERGED_PRS_LIMIT = 200;
+const MERGED_PR_FIELDS = "number,body,mergedAt";
 
 /** The declared trackers with the code repository of the same key beside each. Read on use, so a file that never reads a second tracker never needs the declaration. @returns {DeclaredTracker[]} */
 function declaredTrackers(): DeclaredTracker[] {
@@ -770,16 +772,15 @@ function declaredTrackers(): DeclaredTracker[] {
  * @param {DeclaredTracker} tracker @param {{ run: (args: string[]) => string, now: number, liveSessions: string[] | null }} io @returns {OtherTracker}
  */
 function readOtherTracker({ key, repo, codeRepo }: DeclaredTracker, { run, now, liveSessions }: { run: (args: string[]) => string; now: number; liveSessions: string[] | null; }): OtherTracker {
-  const json = (aimed: string, args: string[]) => JSON.parse(run([...args, "--repo", aimed]));
-  const orUnread = (aimed: string, args: string[]) => { try { return json(aimed, args); } catch { return null; } };
+  const orUnread = <T>(read: () => T): T | null => { try { return read(); } catch { return null; } };
   let openRows: BoardRow[];
   try {
-    openRows = json(repo, ["issue", "list", "--state", "open", "--limit", "1000", "--json", OPEN_ROW_FIELDS]);
+    openRows = rows().rowsListedIn({ repo, state: "open", limit: OPEN_ROWS_LIMIT, fields: OPEN_ROW_FIELDS, run });
   } catch (error) {
     return { key, repo, facts: null, why: (error instanceof Error ? error.message : String(error)).split("\n")[0] };
   }
-  const closedRows = orUnread(repo, ["issue", "list", "--state", "closed", "--limit", "500", "--json", "number,title,state,stateReason"]);
-  const mergedPrs = codeRepo === undefined ? null : orUnread(codeRepo, ["pr", "list", "--state", "merged", "--limit", "200", "--json", "number,body,mergedAt"]);
+  const closedRows = orUnread(() => rows().rowsListedIn({ repo, state: "closed", limit: CLOSED_ROWS_LIMIT, fields: CLOSED_ROW_FIELDS, run }));
+  const mergedPrs = codeRepo === undefined ? null : orUnread(() => rows().pullsListedIn({ repo: codeRepo, state: "merged", limit: MERGED_PRS_LIMIT, fields: MERGED_PR_FIELDS, run }));
   return { key, repo, facts: { now, repo, openRows, closedRows, mergedPrs, liveSessions, waitFacts: null, roadmaps: readRoadmaps(repo, openRows, run) } };
 }
 
@@ -809,15 +810,10 @@ function roadmapNodeOf(issue: any): RoadmapNode {
  * @param {string} repo `owner/name` @param {BoardRow[]} openRows @param {(args: string[]) => string} run @returns {RowRoadmaps | null}
  */
 function readRoadmaps(repo: string, openRows: BoardRow[], run: (args: string[]) => string): RowRoadmaps | null {
-  const [owner, name] = repo.split("/");
   const found: RowRoadmaps = {};
   try {
     for (let from = 0; from < openRows.length; from += ROADMAP_ROWS_PER_REQUEST) {
-      const aliases = openRows.slice(from, from + ROADMAP_ROWS_PER_REQUEST).map((row) =>
-        `r${row.number}: issue(number: ${row.number}) { ...F parent { ...F parent { ...F } } }`).join("\n");
-      const query = `fragment F on Issue { ${ROADMAP_ISSUE_FIELDS} }\nquery($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n${aliases}\n} }`;
-      const answer = JSON.parse(run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`]))?.data?.repository;
-      if (typeof answer !== "object" || answer === null || Array.isArray(answer)) throw new Error("roadmap read: no repository in the answer");
+      const answer = rows().roadmapFactsOf({ repo, numbers: openRows.slice(from, from + ROADMAP_ROWS_PER_REQUEST).map((row) => row.number), run });
       for (const row of openRows.slice(from, from + ROADMAP_ROWS_PER_REQUEST)) {
         if (answer[`r${row.number}`]) found[row.number] = roadmapNodeOf(answer[`r${row.number}`]);
       }
@@ -876,7 +872,7 @@ function authorOfComment(url: string, run: (args: string[]) => string): string |
   const match = COMMENT_URL.exec(url);
   if (match === null) return null;
   const [, owner, name, id] = match;
-  return run(["api", `repos/${owner}/${name}/issues/comments/${id}`, "--jq", ".user.login"]).trim() || null;
+  return rows().commentAuthorOf({ repo: `${owner}/${name}`, id, run }) || null;
 }
 
 /** The record the day's table is posted on (#4045). A row the org owns, not a pull request: it is `ceo`'s and the chairman's reading place. */
@@ -899,14 +895,13 @@ const lookBackFrom = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 
 export function postDaysTable({ audit, day, repo, run = gh, now = Date.now(), readProse = readProseFacts }: { audit: { findings: Finding[]; unread: string[]; } | null; day: string; repo: string; run?: (args: string[]) => string; now?: number; readProse?: typeof readProseFacts; }): "posted" | "already-posted" | "unread" | "no-audit" {
   if (audit === null) return "no-audit";
   if (audit.unread.length > 0) return "unread";
-  const path = `repos/${repo}/issues/${TABLE_ROW}/comments?per_page=100&since=${lookBackFrom(day)}`;
-  const ids = run(["api", "--paginate", path, "--jq", `.[] | select(.body | startswith("${tableHeading(day)}")) | .id`]).trim();
+  const ids = rows().headedCommentIdsText({ repo, row: TABLE_ROW, since: lookBackFrom(day), heading: tableHeading(day), run }).trim();
   if (ids !== "") return "already-posted";
   const prose = readProse({ repo, run, now });
   if (prose === null) return "unread";
   const comments = proseAudit(prose);
   if (comments.unread.length > 0) return "unread";
   const whole = { ...audit, findings: [...audit.findings, ...comments.findings] };
-  run(["issue", "comment", TABLE_ROW, "--repo", repo, "--body", `${boardTruthTable(whole, day)}\n\n_Read by the work-gate tick, once per edition day (${homeProjectDeclaration().tracker[0].repo}#4045)._`]);
+  rows().commentOnIssue({ repo, issue: TABLE_ROW, run, body: `${boardTruthTable(whole, day)}\n\n_Read by the work-gate tick, once per edition day (${homeProjectDeclaration().tracker[0].repo}#4045)._` });
   return "posted";
 }

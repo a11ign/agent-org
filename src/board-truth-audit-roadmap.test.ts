@@ -1,12 +1,21 @@
-// no-token: gh -- `board-truth-audit.ts` reaches `gh` only through the `run` `readBoardFacts` is given; every call this file makes is an injected fake, and the live read was run by hand and is pasted on the pull request (a11ign/agent-org#517)
+// no-token: gh -- `board-truth-audit.ts` reaches `gh` only through the code host's rows; every call this file makes is the fake code host, and the live read was run by hand and is pasted on the pull request (a11ign/agent-org#517)
 // a11ign/agent-org#517: the board-truth audit flags an open row under a roadmap epic whose own `Roadmap` value is absent or another one. Fixtures only: nothing here reaches GitHub.
+//
+// A11-160, STEP 8: THE READER'S CASES RUN ON THE FAKE CODE HOST (`roadmapFactsOf`): the world holds each row's project items and its parent as the facts they are (`world.reports.board.roadmaps`), and `readBoardFacts` is asked what
+// it makes of them. The aliased GraphQL document, the owner and name variables and the refusal of an answer with no repository are the plugin's, held in `plugins/github/rows/board-rows.test.ts`.
 //
 // POSITIVE CONTROL: a row with no value and a row with the wrong value are each FOUND, and a row with the right value is not, in one audit, so an empty answer is a reading and not an unwired
 // question. Every `agrees` case below differs from its `disagrees` twin by ONE fact (the value, the project, the level of the epic).
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { QUESTIONS, boardTruthAudit, boardTruthTable, readBoardFacts } from "./board-truth-audit.ts";
 import type { BoardFacts, RoadmapNode, RoadmapItem } from "./board-truth-audit.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-10T12:00:00Z");
 const DAY = "2026-10-10";
@@ -101,58 +110,57 @@ test("a keyed tracker is asked too, and its finding carries its key", () => {
 
 // ----- the reader: `readBoardFacts` asks once per 50 rows and reads the answer into the nodes above
 
-/** a GraphQL `Issue` node as the aliased query returns it */
-const issue = (number: number, repo: string, items: { project: number, value?: any }[], parent: any = null) => ({
-  number, repository: { nameWithOwner: repo }, parent,
-  projectItems: { totalCount: items.length, nodes: items.map(({ project, value }) => ({ project: { number: project, owner: { login: "a11ign" } }, value: value ?? null })) },
-});
-const answerFor = (nodes: Record<string, any>) => JSON.stringify({ data: { repository: nodes } });
-/** a fake `run` that answers the rows list, the closed and merged reads empty, and the aliased query with `graphql` */
-const answers = (rows: number[], graphql: (query: string) => string) => (args: string[]) => {
-  if (args[0] === "api") return graphql(args.find((a) => a.startsWith("query=")) ?? "");
-  if (args.includes("open")) return JSON.stringify(rows.map((number) => ({ number, title: `row ${number}`, labels: [{ name: "ready" }] })));
-  return "[]";
-};
-const read = (run: (args: string[]) => string) => readBoardFacts("a11ign/agent-org", { run, agents: () => null, now: NOW, trackers: [] });
+/** The fake code host serving `a11ign/agent-org`, holding the open rows `numbers` (each is `ready`). `calls` is every operation of its rows that was called, with the request. */
+function tracker(numbers: number[]) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = "a11ign/agent-org";
+  for (const number of numbers) host.rowsWorld.rows.set(number, fakeRow(host.rowsWorld, number, { title: `row ${number}`, labels: ["ready"] }));
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { world: host.rowsWorld, roadmaps: host.rowsWorld.reports.board.roadmaps, calls: watched.calls };
+}
+const read = () => readBoardFacts("a11ign/agent-org", { agents: () => null, now: NOW, trackers: [] });
+/** a project item of a row on project `project` of a11ign, with the `Roadmap` value it carries */
+const onProject = (project: number, value: string | null = null) => ({ owner: "a11ign", project, value });
 
 test("readBoardFacts: the rows' values and their parents' are read, a parent in another repository is named whole, and a text value is read", () => {
-  const run = answers([1, 2, 3], () => answerFor({
-    r1: issue(1, "a11ign/agent-org", [{ project: 2 }], issue(4437, "a11ign/a11ign", [{ project: 2, value: { name: SELF_HEALING } }])),
-    r2: issue(2, "a11ign/agent-org", [{ project: 2, value: { name: SPEND } }], issue(4437, "a11ign/a11ign", [{ project: 2, value: { name: SELF_HEALING } }])),
-    r3: issue(3, "a11ign/agent-org", [{ project: 1, value: { text: "free text" } }]),
-  }));
-  const read1 = read(run);
-  assert.deepEqual(read1.roadmaps?.[3], { ref: "a11ign/agent-org#3", items: [{ project: P1, value: "free text" }], parent: null });
+  const t = tracker([1, 2, 3]);
+  t.roadmaps.set(4437, { items: [onProject(2, SELF_HEALING)], parent: null, repo: "a11ign/a11ign" });
+  t.roadmaps.set(1, { items: [onProject(2)], parent: 4437 });
+  t.roadmaps.set(2, { items: [onProject(2, SPEND)], parent: 4437 });
+  t.roadmaps.set(3, { items: [onProject(1, "free text")], parent: null });
+  const read1 = read();
   assert.deepEqual(read1.roadmaps?.[1].parent, { ref: "a11ign/a11ign#4437", items: [{ project: P2, value: SELF_HEALING }], parent: null });
+  assert.deepEqual(read1.roadmaps?.[1].items, [{ project: P2, value: null }]);
+  assert.deepEqual(read1.roadmaps?.[3], { ref: "a11ign/agent-org#3", items: [{ project: P1, value: "free text" }], parent: null }, "a value that is text is read as the text");
   const audit = boardTruthAudit({ ...read1, closedRows: [], mergedPrs: [], liveSessions: [], waitFacts: { items: {} } });
   assert.deepEqual(audit.findings.filter((f) => f.question === QUESTIONS.ROADMAP).map((f) => f.number), [1, 2], "read through the real reader, the same two rows are found");
   assert.deepEqual(audit.unread, []);
 });
 
-test("readBoardFacts: the rows are asked 50 to a request, by alias, and the request names the field", () => {
-  const queries: string[] = [];
+test("readBoardFacts: the rows are asked 50 to a request, and every row's answer is read", () => {
   const rows = Array.from({ length: 120 }, (_, i) => i + 1);
-  const run = answers(rows, (query) => {
-    queries.push(query);
-    return answerFor(Object.fromEntries([...query.matchAll(/\br(\d+): issue/g)].map((m) => [`r${m[1]}`, issue(Number(m[1]), "a11ign/agent-org", [])])));
-  });
-  const read2 = read(run);
-  assert.deepEqual(queries.map((q) => [...q.matchAll(/\br\d+: issue/g)].length), [50, 50, 20]);
-  assert.match(queries[0], /fieldValueByName\(name: "Roadmap"\)/);
+  const t = tracker(rows);
+  const read2 = read();
+  assert.deepEqual(t.calls.filter((c) => c.op === "roadmapFactsOf").map((c) => c.request.numbers.length), [50, 50, 20]);
+  assert.deepEqual(t.calls.filter((c) => c.op === "roadmapFactsOf").flatMap((c) => c.request.numbers).sort((a: number, b: number) => a - b), rows, "each row once");
   assert.equal(Object.keys(read2.roadmaps ?? {}).length, 120);
-  assert.equal(queries.length, 3, "no request per row");
 });
 
-test("readBoardFacts: a refused, misshapen or cut-short read is UNREAD (null), never an empty map that every row agrees with", () => {
-  const refused = read(answers([1], () => { throw new Error("HTTP 502"); }));
+test("readBoardFacts: a refused or cut-short read is UNREAD (null), never an empty map that every row agrees with", () => {
+  const refusing = tracker([1]);
+  refusing.world.failures.set("roadmapFactsOf", new Error("HTTP 502"));
+  const refused = read();
   assert.equal(refused.roadmaps, null);
   assert.deepEqual(boardTruthAudit({ ...refused, closedRows: [], mergedPrs: [], liveSessions: [], waitFacts: { items: {} } }).unread, [QUESTIONS.ROADMAP]);
-  assert.equal(read(answers([1], () => "[]")).roadmaps, null, "no `data.repository` in the answer");
-  assert.equal(read(answers([1], () => JSON.stringify({ data: { repository: null } }))).roadmaps, null);
-  const cut = issue(1, "a11ign/agent-org", [{ project: 2 }]);
-  cut.projectItems.totalCount = 21;
-  assert.equal(read(answers([1], () => answerFor({ r1: cut }))).roadmaps, null, "items beyond the page are not read as absent");
-  const unknownRow = read(answers([1, 2], () => answerFor({ r1: issue(1, "a11ign/agent-org", []), r2: null })));
-  assert.deepEqual(Object.keys(unknownRow.roadmaps ?? {}), ["1"], "a row the answer does not hold has no entry");
+  const cutShort = tracker([1]);
+  cutShort.roadmaps.set(1, { items: Array.from({ length: 21 }, (_, i) => onProject(i + 1)), parent: null });
+  assert.equal(read().roadmaps, null, "items beyond the page are not read as absent: 21 items, 20 asked");
+  const whole = tracker([1]);
+  whole.roadmaps.set(1, { items: Array.from({ length: 20 }, (_, i) => onProject(i + 1)), parent: null });
+  assert.notEqual(read().roadmaps, null, "CONTROL: twenty items are the whole of the row");
+  tracker([1]);
+  const unknownRow = readBoardFacts("a11ign/agent-org", { agents: () => null, now: NOW, trackers: [], openRows: [row(1), row(2)] });
+  assert.deepEqual(Object.keys(unknownRow.roadmaps ?? {}), ["1"], "a row the answer does not hold (#2) has no entry");
   assert.deepEqual(boardTruthAudit({ ...unknownRow, closedRows: [], mergedPrs: [], liveSessions: [], waitFacts: { items: {} } }).unread, [QUESTIONS.ROADMAP]);
 });

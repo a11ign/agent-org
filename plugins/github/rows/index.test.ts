@@ -86,7 +86,7 @@ test("the rows hold the contract's operations and values, and the values are the
   assert.equal(rows.projectItemsPage, 100);
   assert.deepEqual(rows.corePoolProbe, ["api", "user", "-i"]);
   assert.match(rows.openItemsQuery, /rateLimit \{ limit remaining resetAt \}/);
-  assert.deepEqual(Object.entries(rows).filter(([, value]) => typeof value !== "function").map(([name]) => name).sort(), ["acts", "corePoolProbe", "openItemsQuery", "projectItemsPage", "sincePageSize", "tracker"]);
+  assert.deepEqual(Object.entries(rows).filter(([, value]) => typeof value !== "function").map(([name]) => name).sort(), ["acts", "command", "corePoolProbe", "openItemsQuery", "projectItemsPage", "sincePageSize", "tracker"]);
 });
 
 // --- 4. the runners the plugin gives an operation whose caller hands none (A11-160, step 5) -----------------------------------------------------------

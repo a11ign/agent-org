@@ -1,6 +1,6 @@
 // no-token: REPO
-// This file imports board-report.ts, whose closure reads REPO from board-data.ts, which spawns `gh`. Nothing here calls it: `render` takes an
-// injected fact set, instant and version reader, and `readToolVersionLine` an injected git, so no git runs and no clock is read (#3468).
+// This file imports board-report.ts, whose closure reads REPO from board-data.ts. Nothing here reads GitHub: `render` takes an injected fact set, instant and version reader, and `readToolVersionLine` an injected git, so no git
+// runs and no clock is read (#3468). It stubs no answer of GitHub's, so A11-160 (step 8) left its cases as they were.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

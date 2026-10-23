@@ -68,7 +68,9 @@ test("rows by label, claimed rows, a window since a time, and the pure helpers a
   assert.deepEqual(rows.readRowsByLabel({ label: "in-progress", state: "CLOSED", select: "number", run: refused }).map((node) => node.number), [2]);
   assert.deepEqual(rows.readClaimedRows({ run: refused }).map((row) => row.number), [1]);
   const since = rows.readRowsSince({ ask: { kind: "issues", states: ["OPEN"], orderBy: "CREATED_AT", repo: SCOPE, select: "number", since: "2026-10-02T00:00:00Z" }, run: refused });
-  assert.deepEqual(since.map((node) => node.number), [3, 2]);
+  assert.deepEqual(since.map((node) => node.number), [3], "row 2 is closed, and the window asks for the open ones");
+  assert.deepEqual(rows.readRowsSince({ ask: { kind: "issues", states: ["OPEN", "CLOSED"], orderBy: "CREATED_AT", repo: SCOPE, select: "number", since: "2026-10-02T00:00:00Z" }, run: refused }).map((node) => node.number), [3, 2]);
+  assert.deepEqual(rows.readRowsSince({ ask: { kind: "issues", states: ["OPEN", "CLOSED"], label: "in-progress", orderBy: "CREATED_AT", repo: SCOPE, select: "number", newest: 5 }, run: refused }).map((node) => node.number), [2, 1], "by label, newest first");
   assert.deepEqual(rows.readRowsSince({ ask: { kind: "issues", states: ["OPEN"], orderBy: "CREATED_AT", repo: SCOPE, select: "number", newest: 1 }, run: refused }).map((node) => node.number), [3]);
   assert.equal(rows.readUnlessRefused({ what: "x", run: refused, read: () => 7 }), 7);
   assert.ok(rows.isSinceRead(rows.sincePageArgs({ kind: "issues", states: ["OPEN"], orderBy: "CREATED_AT", repo: SCOPE, select: "number", newest: 1 }, null)));

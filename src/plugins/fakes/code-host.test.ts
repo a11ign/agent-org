@@ -23,7 +23,7 @@ function seeded() {
 }
 
 /**
- * The checks of the optional `rows` group that need a `run` to refuse: the fake's rows act on its own state and ignore `run`, so they are skipped with their reason and never counted as passed (contract 1.10).
+ * The checks of the optional `rows` group that need a `run` to refuse: the fake's rows act on its own state and ignore `run`, so they are skipped with their reason and never counted as passed (contract 1.11).
  * The other two checks of the group run on the fake's rows and pass.
  */
 const ROWS_CHECKS = [
@@ -35,6 +35,8 @@ const ROWS_CHECKS = [
   "a read the rows could not make for the filing of rows throws or answers null, never an empty answer", "a write the rows could not make for the filing of rows throws, so no caller reads it as done",
   "a read the rows could not make for the claim's rules throws or answers null, never an empty answer", "a write the rows could not make for the claim's rules throws, so no caller reads it as done",
   "a read the rows could not make for the other claim and row files throws or answers null, never an empty answer", "a write the rows could not make for the other claim and row files throws, so no caller reads it as done",
+  "a read the rows could not make for the board, the health and retro readings, the DORA reader and the trace throws, never an empty answer", "a write the rows could not make for the board throws, so no caller reads it as done",
+  "an async read or write the rows could not make rejects, so no caller reads it as done",
 ];
 const ROWS_PASSED = ["the rows are the operations row mode asks of the code host", "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect",
   "the rows' rules for arming answer as the callers that arm and guard expect"];

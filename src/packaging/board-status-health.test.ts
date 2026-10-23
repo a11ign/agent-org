@@ -101,9 +101,13 @@ test("#1219: the Status vocabulary is INJECTED, so a renamed column fails loudly
  * Read from the query constant with comments stripped, because a comment explaining that `state` is
  * fetched would satisfy a plain search — the shape three separate files needed `stripComments` for
  * tonight.
+ *
+ * A11-160, STEP 8: THE QUERY IS THE GITHUB PLUGIN'S NOW (`ITEMS_QUERY` in `plugins/github/rows/board-rows.ts`, which
+ * `board-snapshot.ts` reaches through the code host's `boardItemsPageOf`), so that is the file read. The GraphQL
+ * document has always been GitHub's language, and the plugin is where it lives.
  */
 test("#1219: the board query REQUESTS state -- fixtures cannot witness what the query asks for", () => {
-  const source = readFileSync(new URL("../board-snapshot.ts", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../../plugins/github/rows/board-rows.ts", import.meta.url), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   const selection = /content\s*\{[^}]*on Issue\s*\{([^}]*)\}/.exec(source);
   assert.ok(selection, "the Issue selection set moved or was renamed -- update this to find it, not to pass");

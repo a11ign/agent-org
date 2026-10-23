@@ -7,17 +7,21 @@
 // **THE POSITIVE CONTROLS ARE THE POINT OF THE SHAPE.** Every "refused" case asserts the provider's `sent` is still empty, and the cases that expect a
 // send assert it holds exactly what was said: a checker that refuses everything fails the second kind, and one that allows everything fails the first.
 // The rules table at the end runs both sides of every pattern, so a pattern broken either way fails by name.
+//
+// A11-160, step 8: the cases of `createGhReaders` (the real reads) run on the fake code host's world, not on a stubbed `gh`; the paths and argument lists those reads build are held in `plugins/github/rows/messaging-rows.test.ts`.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, test } from "node:test";
+import { after, afterEach, describe, test } from "node:test";
 
 import { createFakeProvider } from "./fake-provider.ts";
 import { createLedger, deliveredTimestamps, foldLedger, readLedgerLines } from "./ledger.ts";
 import { MASK, QUOTE_LIMIT, createGhReaders, describeAge, parsePlaceholders } from "./placeholders.ts";
 import { createReply, prepareReply } from "./reply.ts";
+import { forgetActivation } from "../plugins/active.ts";
+import { fakeRow, fakeRowPull, messagingHost, noGh } from "../plugins/fakes/messaging-world.test.support.ts";
 
 const NOW = Date.parse("2026-10-02T14:05:30Z");
 const STAMP = "as of 14:05Z";
@@ -27,6 +31,7 @@ const HOUR = 60 * MINUTE;
 
 const scratch = mkdtempSync(join(tmpdir(), "messaging-reply-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 let nextLedger = 0;
 
 /**
@@ -398,98 +403,83 @@ describe("the free-text rules, each side of each pattern", () => {
   });
 });
 
-const API = (/** @type {string} */ path: string) => `api ${path}`;
-/** @param {Record<string, unknown>} routes `gh`'s argv joined by a space -> the JSON it prints; an unrouted command throws, so an extra call is a failure */
-function ghFor(routes: Record<string, unknown>) {
-  /** @type {string[]} */
-  const asked: string[] = [];
-  const gh = async (/** @type {string[]} */ argv: string[]) => {
-    asked.push(argv.join(" "));
-    const answer = routes[argv.join(" ")];
-    if (answer === undefined) throw new Error(`no route for: gh ${argv.join(" ")}`);
-    return JSON.stringify(answer);
-  };
-  return { gh, asked };
-}
+// A11-160, step 8: `createGhReaders` reads GitHub through the code host's `restGetAsync` and `pullReviewDecisionAsync`, so these cases run on the fake code host's world (seeded below), and the `gh` they hand the readers is
+// one that fails the case if it is ever run. The paths and argument lists the reads build are held beside the operations (`plugins/github/rows/messaging-rows.test.ts`).
+/** The fake code host in place, its tracker `REPO`; its world is what the readers read. */
+const codeHost = () => messagingHost(REPO).world;
 const systemctlOf = (/** @type {string} */ output: string) => async () => output;
 const noSystemctl = systemctlOf("");
+const readersOver = () => createGhReaders({ gh: noGh, systemctl: noSystemctl, repo: REPO });
 
-describe("createGhReaders: the real reads, over a fake gh and a fake systemctl", () => {
+describe("createGhReaders: the real reads, over the fake code host and a fake systemctl", () => {
   test("issue: its state and label names; a PULL REQUEST number is refused with the remedy (the issues endpoint answers for both)", async () => {
-    const { gh } = ghFor({
-      [API(`repos/${REPO}/issues/10`)]: { number: 10, state: "open", labels: [{ name: "ready" }, { name: "lane:any" }] },
-      [API(`repos/${REPO}/issues/11`)]: { number: 11, state: "open", labels: [], pull_request: {} },
-    });
-    const readers = createGhReaders({ gh, systemctl: noSystemctl, repo: REPO });
+    const world = codeHost();
+    world.rows.set(10, fakeRow(world, 10, { labels: ["ready", "lane:any"] }));
+    world.pulls.set(11, fakeRowPull(11));
+    const readers = readersOver();
     assert.deepEqual(await readers.issue(10), { number: 10, state: "open", labels: ["ready", "lane:any"] });
     await assert.rejects(() => readers.issue(11), /ask for \{\{pr:11\.state\}\}/);
   });
 
   test("pr: merged reads 'merged' (not 'closed'), and an EMPTY reviewDecision reads 'none'", async () => {
-    const { gh } = ghFor({
-      [API(`repos/${REPO}/pulls/1`)]: { number: 1, state: "closed", merged_at: "2026-10-02T10:00:00Z" },
-      [`pr view 1 --repo ${REPO} --json reviewDecision`]: { reviewDecision: "APPROVED" },
-      [API(`repos/${REPO}/pulls/2`)]: { number: 2, state: "open", merged_at: null },
-      [`pr view 2 --repo ${REPO} --json reviewDecision`]: { reviewDecision: "" },
-    });
-    const readers = createGhReaders({ gh, systemctl: noSystemctl, repo: REPO });
+    const world = codeHost();
+    world.pulls.set(1, fakeRowPull(1, { merged: true, mergedAt: "2026-10-02T10:00:00Z", reviewDecision: "APPROVED" }));
+    world.pulls.set(2, fakeRowPull(2, { reviewDecision: "" }));
+    const readers = readersOver();
     assert.deepEqual(await readers.pr(1), { number: 1, state: "merged", review: "APPROVED" });
     assert.deepEqual(await readers.pr(2), { number: 2, state: "open", review: "none" });
   });
 
   test("run: the status and the conclusion; a run still going has a null conclusion, which `{{run:N.conclusion}}` refuses to render (placeholders.test.ts)", async () => {
-    const { gh } = ghFor({
-      [API(`repos/${REPO}/actions/runs/5`)]: { conclusion: "success", status: "completed" },
-      [API(`repos/${REPO}/actions/runs/6`)]: { conclusion: null, status: "in_progress" },
-    });
-    const readers = createGhReaders({ gh, systemctl: noSystemctl, repo: REPO });
+    const world = codeHost();
+    world.reports.messaging.runs.set(5, { conclusion: "success", status: "completed" });
+    world.reports.messaging.runs.set(6, { conclusion: null, status: "in_progress" });
+    const readers = readersOver();
     assert.deepEqual(await readers.run(5), { status: "completed", conclusion: "success" });
     assert.deepEqual(await readers.run(6), { status: "in_progress", conclusion: null });
   });
 
 });
 
-describe("createGhReaders: the real reads, over a fake gh and a fake systemctl", () => {
+describe("createGhReaders: the real reads, over the fake code host and a fake systemctl", () => {
   test("ready counts the rows the watcher counts as waiting, and the last merge is the newest merged_at", async () => {
-    const { gh } = ghFor({
-      [API(`repos/${REPO}/issues?labels=ready&state=open&per_page=100`)]: [
-        { number: 1, labels: [{ name: "ready" }] }, { number: 2, labels: [{ name: "ready" }, { name: "hold" }] }, { number: 3, labels: [{ name: "ready" }], pull_request: {} },
-      ],
-      [API(`repos/${REPO}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=30`)]: [
-        { merged_at: "2026-10-02T10:00:00Z" }, { merged_at: null }, { merged_at: "2026-10-02T11:00:00Z" },
-      ],
-    });
-    const readers = createGhReaders({ gh, systemctl: noSystemctl, repo: REPO });
-    assert.deepEqual(await readers.ready(), { count: 1 });
+    const world = codeHost();
+    world.rows.set(1, fakeRow(world, 1, { labels: ["ready"] }));
+    world.rows.set(2, fakeRow(world, 2, { labels: ["ready", "hold"] }));
+    world.pulls.set(3, fakeRowPull(3, { labels: ["ready"] }));
+    world.pulls.set(20, fakeRowPull(20, { merged: true, mergedAt: "2026-10-02T10:00:00Z" }));
+    world.pulls.set(21, fakeRowPull(21, { closedAt: "2026-10-02T12:00:00Z" }));
+    world.pulls.set(22, fakeRowPull(22, { merged: true, mergedAt: "2026-10-02T11:00:00Z" }));
+    const readers = readersOver();
+    assert.deepEqual(await readers.ready(), { count: 1 }, "an open row labelled ready and not held; a pull request labelled ready is not a row");
     assert.deepEqual(await readers.lastMerge(), { at: Date.parse("2026-10-02T11:00:00Z") });
   });
 
   test("unit: ActiveState; a unit systemd does not know THROWS (its show prints ActiveState=inactive for a name it never heard of)", async () => {
-    const known = createGhReaders({ gh: ghFor({}).gh, systemctl: systemctlOf("ActiveState=active\nLoadState=loaded\n"), repo: REPO });
+    const known = createGhReaders({ gh: noGh, systemctl: systemctlOf("ActiveState=active\nLoadState=loaded\n"), repo: REPO });
     assert.deepEqual(await known.unit("work-tick"), { state: "active" });
-    const unknown = createGhReaders({ gh: ghFor({}).gh, systemctl: systemctlOf("ActiveState=inactive\nLoadState=not-found\n"), repo: REPO });
+    const unknown = createGhReaders({ gh: noGh, systemctl: systemctlOf("ActiveState=inactive\nLoadState=not-found\n"), repo: REPO });
     await assert.rejects(() => unknown.unit("nonesuch"), /no unit named nonesuch/);
   });
 
   test("unit: only `--user show <name> -p ...` is ever asked of systemctl", async () => {
     /** @type {string[][]} */
     const argvs: string[][] = [];
-    const readers = createGhReaders({ gh: ghFor({}).gh, systemctl: async (argv) => { argvs.push(argv); return "ActiveState=active\nLoadState=loaded"; }, repo: REPO });
+    const readers = createGhReaders({ gh: noGh, systemctl: async (argv) => { argvs.push(argv); return "ActiveState=active\nLoadState=loaded"; }, repo: REPO });
     await readers.unit("work-tick");
     assert.deepEqual(argvs, [["--user", "show", "work-tick", "-p", "ActiveState,LoadState"]]);
   });
 
   test("end to end over the real readers: a reply through createGhReaders says what the fake GitHub says, and a GitHub that fails refuses it", async () => {
-    const routes = {
-      [API(`repos/${REPO}/pulls/2881`)]: { number: 2881, state: "closed", merged_at: "2026-10-02T10:00:00Z" },
-      [`pr view 2881 --repo ${REPO} --json reviewDecision`]: { reviewDecision: "APPROVED" },
-    };
+    const world = codeHost();
+    world.pulls.set(2881, fakeRowPull(2881, { merged: true, mergedAt: "2026-10-02T10:00:00Z", reviewDecision: "APPROVED" }));
     const provider = createFakeProvider();
     const ledger = createLedger({ path: join(scratch, "e2e.jsonl"), now: () => NOW });
-    const reply = createReply({ send: (m) => provider.send(m), ledger, readers: createGhReaders({ gh: ghFor(routes).gh, systemctl: noSystemctl, repo: REPO }), now: () => NOW });
+    const reply = createReply({ send: (m) => provider.send(m), ledger, readers: readersOver(), now: () => NOW });
     assert.equal((await reply.send(PLACEHOLDERS_ONLY.replace("; {{ready.count}} ready", ""))).outcome, "sent");
     assert.equal(provider.sent[0].text, `#2881 is merged, review APPROVED.\n\n${STAMP}`);
-    const down = createReply({ send: (m) => provider.send(m), ledger, readers: createGhReaders({ gh: ghFor({}).gh, systemctl: noSystemctl, repo: REPO }), now: () => NOW });
+    world.failures.set("restGetAsync", new Error("HTTP 502"));
+    const down = createReply({ send: (m) => provider.send(m), ledger, readers: readersOver(), now: () => NOW });
     assert.equal((await down.send("{{pr:2881.state}}")).outcome, "refused");
     assert.equal(provider.sent.length, 1);
   });

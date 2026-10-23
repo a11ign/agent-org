@@ -71,7 +71,9 @@ import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { readAgents } from "../herdr-agents.ts";
 import { completionPath } from "../lib/tick-completion.ts";
 import { isBrokenRed } from "../red-pr.ts";
-import { asListJson, foldPage, parsePage, sincePageArgs, sincePageSize, type SinceRead } from "../ticket-port/rows-since.ts"; // #5076: the label and merged lists are connections, never a search
+import type { AsyncRowsRun } from "../plugins/contracts/code-host-rows-facts.ts";
+import { rows } from "../plugins/rows.ts";
+import { sincePageSize, type SinceRead } from "../ticket-port/rows-since.ts"; // #5076: the label and merged lists are connections, never a search
 
 const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 60_000;
@@ -128,11 +130,8 @@ export function assertReadOnlyGh(argv: readonly string[]) {
   if (stray !== undefined) throw new Error(`chairman-watch reads only: \`gh ${verb} ${stray}\` is not an allowed flag`);
 }
 
-/** What `gh` printed; the environment (and so the account) is the process's own */
-async function runGh(argv: readonly string[]): Promise<string> {
-  const { stdout } = await execFileAsync("gh", [...argv], { timeout: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, encoding: "utf8" });
-  return stdout;
-}
+/** What `gh` printed, started by the code host (A11-160, step 8); the environment (and so the account) is the process's own. Asked when the first call is made, not when the reader is. */
+const runGh: AsyncRowsRun = (argv) => rows().asyncRunnerWith({ timeoutMs: GH_TIMEOUT_MS, maxBuffer: GH_MAX_BUFFER, echo: false })(argv);
 
 /** `systemctl <argv>`: only ever `--user show`, which `createReaders` builds and nothing else reaches */
 async function runSystemctl(argv: string[]): Promise<string> {
@@ -143,28 +142,14 @@ async function runSystemctl(argv: string[]): Promise<string> {
 /**
  * The real reader, over `gh`. `run` is injected so a test owns it, and every command it is given has been through `assertReadOnlyGh`.
  */
-export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]) => Promise<string>; } = {}) {
-  async function list(argv: string[]): Promise<any[]> {
+export function createGhReader({ run = runGh }: { run?: AsyncRowsRun; } = {}) {
+  /** Every argument list an operation builds goes through the read-only check before a process is started. */
+  const readOnly: AsyncRowsRun = async (argv) => {
     assertReadOnlyGh(argv);
-    return JSON.parse(await run(argv));
-  }
-  async function view(argv: string[]): Promise<any> {
-    assertReadOnlyGh(argv);
-    return JSON.parse(await run(argv));
-  }
-  /** Every page of a connection read, each argv through the read-only check, in the shape `gh <kind> list --json` gave. */
-  async function connection(ask: SinceRead): Promise<any[]> {
-    let rows: any[] = [];
-    let after: string | null = null;
-    for (let pagesRead = 1; ; pagesRead += 1) {
-      const argv = sincePageArgs(ask, after);
-      assertReadOnlyGh(argv);
-      const folded = foldPage({ ask, rows, page: parsePage(await run(argv), ask), pagesRead });
-      rows = folded.rows;
-      if (folded.next === null) return rows.map(asListJson);
-      after = folded.next;
-    }
-  }
+    return run(argv);
+  };
+  /** Every page of a connection read through the code host's reader, each argv through the read-only check, in the shape `gh <kind> list --json` gave. */
+  const connection = (ask: SinceRead): Promise<any[]> => rows().readRowsSinceAsync({ ask, run: readOnly });
   return {
     async issuesLabelled({ repo, label, comments = false, limit = 100 }: { repo: string; label: string; comments?: boolean; limit?: number; }) {
       // The oldest hundred comments, as `gh issue list --json comments` gave (see requests.ts); the fields are what `RowComment` reads.
@@ -173,8 +158,7 @@ export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]
     },
     /** All of one row's comments: the list returns only the oldest hundred (see requests.ts). */
     async issueComments({ repo, number }: { repo: string; number: number; }) {
-      const row = await view(["issue", "view", String(number), "-R", repo, "--json", "comments"]);
-      return Array.isArray(row?.comments) ? row.comments : [];
+      return rows().issueCommentsAsync({ repo, number, run: readOnly });
     },
     async mergedPullsSince({ repo, sinceMs, limit = 100 }: { repo: string; sinceMs: number; limit?: number; }) {
       // A connection cannot filter by `mergedAt`, so the merged pull requests are read newest-UPDATED first back to `since` (a merge is an update, so none is missed) and
@@ -190,11 +174,11 @@ export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]
      * does not count here, as it counts nowhere else; this org posts none (`pr-review-verdict.sh` posts `success` whatever the verdict).
      */
     async redPulls({ repo, limit = 100 }: { repo: string; limit?: number; }) {
-      return (await list(["pr", "list", "-R", repo, "--state", "open", "--json", "number,labels,statusCheckRollup", "--limit", String(limit)])).filter(isBrokenRed);
+      return (await rows().openPullChecksAsync({ repo, limit, run: readOnly })).filter(isBrokenRed);
     },
     /** One REST GET, on the CORE pool (the lists above spend GraphQL): what the stall and incident readers use. */
-    api(path: string) {
-      return view(["api", path]);
+    async api(path: string) {
+      return rows().restGetAsync({ path, run: readOnly });
     },
   };
 }

@@ -645,7 +645,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
   const firstBoard = board.owner === PROJECT_OWNER && board.number === PROJECT_NUMBER;
   try {
     // #1275: the snapshot covers the one item this edit touches, not the whole board.
-    if (firstBoard) snapshot(edit, { run, log, excludeIssueNumber: issueNumber, touches: issueNumber });
+    if (firstBoard) snapshot(edit, { run: claimGh, log, excludeIssueNumber: issueNumber, touches: issueNumber });
     else edit();
     return { moved: true };
   } catch (error) {

@@ -1,4 +1,4 @@
-// no-token: gh -- `org-retro.ts` calls `gh`, `journalctl` and reads transcripts only inside `readAll`, which every test here replaces with a fixture seam; nothing imported reaches the real one
+// no-token: gh -- `org-retro.ts` calls `gh`, `journalctl` and reads transcripts only inside `readAll`, which every test here replaces with a fixture seam, except the idle-claimed-hours reads, which run on the fake code host's rows and pull requests (A11-160, step 8); nothing imported reaches the real one
 /**
  * `packages/agent-org/src/org-retro.ts` and its wiring in `work-gate.ts`, #2938: THE DAILY RETROSPECTIVE. Once per UTC date the gate hands `ceo`
  * the last 24 hours' numbers, already computed, and `ceo` is ordered to find the CLASS behind each number that worsened.
@@ -10,7 +10,7 @@
  * counted from `a11ign-work-tick.service`'s journal in #2845). It must report a stall AND a non-zero idle-minute figure; every "not offered / not counted"
  * below is only worth anything because that window IS read as a stall through the same entry.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -25,8 +25,13 @@ import { HOLD_RED_JOBS } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { PROFILES } from "../worker-profile.ts";
 import { HOME_CHECKOUT, HOST_ENV } from "../project-config.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { connectionOf, readsRowsByLabel, readsRowsSince, sinceAnswer } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { holdRepository, withRepositoryReads } from "../plugins/fakes/code-host-health.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
+
+afterEach(() => forgetActivation());
 
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-02T00:00:00Z");
@@ -530,7 +535,7 @@ test("a manual run of the CLI reads the previous line and writes nothing", () =>
 
 // --- #4957: WORKER-HOURS IDLE ON A CLAIMED ROW, on every declared tracker -------------------------------------------------------------------------
 
-/** A project with TWO trackers and one code repository, and a fake `gh` over it: six of the holders sit on the second tracker, so a read of the home tracker alone reads 60. */
+/** A project with TWO trackers and one code repository, and the fake code host over it: six of the holders sit on the second tracker, so a read of the home tracker alone reads 60. */
 const TWO_TRACKERS = { tracker: [{ key: "a11ign", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }], code: [{ key: "a11ign", repo: "a11ign/a11ign" }] } as never;
 const claimedRow = (number: number, session: string, claimedAt: number) => ({ number, labels: [{ name: "claimed" }, { name: `session:${session}` }],
   comments: Number.isNaN(claimedAt) ? [] : [{ body: "<!-- row-claim: claim record -->\nClaim record -- claimed by", createdAt: new Date(claimedAt).toISOString() }] });
@@ -543,22 +548,24 @@ function idleReading({ holders, prs = [], declare = {}, ledger = "" }: { holders
     writeFileSync(join(stateDir, "worker-state", `${session}.json`), JSON.stringify({ session, state: "waiting-ci", at: declaredAt, pr: { number: 1 } }));
   }
   writeFileSync(join(stateDir, "wake-ledger"), ledger);
+  codeHostOf({ holders, prs });
+  return readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS });
+}
+
+/**
+ * The fake code host over the two trackers (A11-160, step 8): each holder is an open row of its tracker carrying the claim label and its `session:` label, with the claim record among its comments (an undated claim has none);
+ * the project's code repository (the first tracker's) holds the open pull requests, each labelled with its holder's session, and no merged one.
+ */
+function codeHostOf({ holders, prs }: { holders: { tracker: number; row: number; session: string; claimedAt: number }[]; prs: { session: string }[] }) {
+  const host = withRepositoryReads(createFakeCodeHost());
   const repos = ["a11ign/a11ign", "a11ign/agent-org"];
-  const read = (args: string[]) => {
-    // #5076: the claimed rows are `issues(labels:)` and the merged list `pullRequests(states: MERGED)`, both connections; the open lists are plain `gh` lists.
-    const byLabel = readsRowsByLabel(args);
-    const repoOf = (): string => `${args.find((a) => a.startsWith("owner="))?.slice("owner=".length)}/${args.find((a) => a.startsWith("name="))?.slice("name=".length)}`;
-    if (byLabel !== null) {
-      const here = holders.filter((h) => repos[h.tracker] === repoOf());
-      return JSON.parse(connectionOf(here.map((h) => ({ number: h.row, comments: claimedRow(h.row, h.session, h.claimedAt).comments }))));
-    }
-    if (readsRowsSince(args) !== null) return JSON.parse(sinceAnswer(args, []));
-    const repo = args[args.indexOf("-R") + 1];
-    if (args[0] === "pr") return prs.map((p, i) => ({ number: i + 1, body: "", headRefName: `b${i}`, labels: [{ name: `session:${p.session}` }] }));
-    const here = holders.filter((h) => repos[h.tracker] === repo);
-    return here.map((h) => ({ number: h.row, labels: claimedRow(h.row, h.session, h.claimedAt).labels }));
-  };
-  return readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS, read });
+  repos.forEach((repo, tracker) => holdRepository(host.rowsWorld, repo, {
+    rows: holders.filter((h) => h.tracker === tracker).map((h) => fakeRow(host.rowsWorld, h.row, { labels: ["in-progress", `session:${h.session}`],
+      comments: claimedRow(h.row, h.session, h.claimedAt).comments.map((c, id) => ({ id: id + 1, ...c })) })),
+    pulls: tracker === 0 ? prs.map((p, i) => ({ number: i + 1, body: "", headRefName: `b${i}`, labels: [`session:${p.session}`], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [] })) : [],
+  }));
+  substituteCodeHost(host);
+  return host;
 }
 
 test("POSITIVE CONTROL: twelve keyed holders idle ten hours across two trackers read 120, and a holder with a fresh declaration reads 0", () => {
@@ -591,9 +598,15 @@ test("a claim older than the window counts only the window, and an undated claim
 
 test("a refused list is unknown, never 0, and the number is in the report and the readings line", () => {
   const stateDir = tmpDir("org-retro-idle-");
-  assert.equal(readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS, read: () => null }), null, "no tracker list");
-  assert.equal(readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS, read: (args) => (args[0] === "pr" || readsRowsSince(args) !== null ? null
-    : readsRowsByLabel(args) !== null ? JSON.parse(connectionOf([])) : []) }), null, "no pull-request list");
+  substituteCodeHost(createFakeCodeHost());
+  assert.equal(readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS }), null, "no tracker list: the code host holds neither tracker");
+  const noPullRequests = codeHostOf({ holders: [], prs: [] });
+  assert.notEqual(readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS }), null, "CONTROL: held, empty trackers and no pull requests read as 0");
+  noPullRequests.rowsWorld.failures.set("openPullsNamingRowsOf", new Error("HTTP 502"));
+  assert.equal(readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS }), null, "no open pull-request list");
+  noPullRequests.rowsWorld.failures.clear();
+  noPullRequests.rowsWorld.failures.set("readRowsSince", new Error("HTTP 502"));
+  assert.equal(readIdleClaimedHours({ now: NOW, stateDir, declaration: TWO_TRACKERS }), null, "no merged-pull-request list");
   const reading = { hours: 120, claims: 12, idleClaims: 12, undated: [] };
   const base = { merged: [], openPrs: [], journal: "", ledger: "", turns: [], handFixes: HAND_FIXES_ONE, readings: parseReadings("") };
   const report = buildReport({ ...base, idleClaimedHours: reading }, NOW);

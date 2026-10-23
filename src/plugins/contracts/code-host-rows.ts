@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's optional `rows` group, version 1.10 -- row mode's GitHub operations (A11-160, steps 4 to 7)
+// module: the code host contract's optional `rows` group, version 1.11 -- row mode's GitHub operations (A11-160, steps 4 to 8)
 //
 // A TYPE FILE: it imports nothing at run time. ROW MODE USES GITHUB AS ITS TRACKER (rows are issues, `TicketPort` is implemented over them), its queue (project items and labels) and its code host, and a plugin
 // serves one concern, so row mode's operations are an OPTIONAL member group of the code host contract rather than a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
@@ -13,12 +13,15 @@
 // 1.8 (step 5): the callers that arm, guard and queue a merge moved (`arm-pr`, `auto-arm-sweep`, `merge-guard`, `merge-queue`, `pr-armed-state`), and what they asked of GitHub is a named operation now. `run` is OPTIONAL on
 // them and on the arming operations of 1.7 they use: a caller that has not moved hands its own, and one that has hands none, so the code host runs `gh` itself (`ownRun` is the plugin's, for the callers still to move).
 //
+// 1.11 (step 8): the board's reads and posts, the health and retro readings, the DORA reader, the trace's reads and the chairman's watch and answers moved (see the sections at the end of the group). A caller that RUNS `gh` itself and keeps
+// its own policy (a bound, a buffer, a directory, a refusal of some argument lists) asks the code host for a runner with that policy (`runnerWith`, `asyncRunnerWith`): the process is the code host's.
+//
 // 1.10 (step 7): wake, the claim and the filing of rows moved (see the three sections at the end of the group), and what they asked of GitHub is a named operation now, on the `run` each caller hands it where it has one.
 //
 // 1.9 (step 6): the work gate moved (`src/work-gate/`), and what it asked of GitHub is a named operation now, on the `run` the gate hands each: the gate's EXECUTOR (the tick's memo, its budget, the bound on a call, the
 // repository a call is aimed at) stays core's, and the process it starts is the plugin's (`gateRun`, `runTogether`).
 import type { Pool as PoolReading } from "../../api-pool.ts";
-import type { BlockerRead, BranchedPullState, ClosingPullRead, CommandRun, CrossReferencingPull, LabelEvent, LabelEventRead, MarkedComment, MilestoneRead, OpenPullFiles, OpenPullReview, PullCommit, PullState, RestCommentsRead, RestRow, RestRowRead, RoadmapFieldRead, RoadmapItemRead, RowFacts, RowShapeFacts, TierFacts } from "./code-host-rows-facts.ts";
+import type { AnsweringRun, AsyncRowsRun, BlockerRead, BranchedPullState, ClosingPullRead, CommandRun, CrossReferencingPull, LabelEvent, LabelEventRead, MarkedComment, MilestoneRead, OpenPullFiles, OpenPullReview, PullCommit, PullState, RestCommentsRead, RestRow, RestRowRead, RoadmapFieldRead, RoadmapItemRead, RowFacts, RowShapeFacts, RunAnswer, RunnerRequest, TierFacts } from "./code-host-rows-facts.ts";
 import type { ApiBudget, BlockerWriter, OpenItemsReader, PortEvent, TicketPort } from "../../ticket-port/port.ts";
 
 /** One `gh` command line in, its text out, throwing as the command fails. The caller's: see the head of this file. */
@@ -329,7 +332,7 @@ export interface CodeHostRows {
   fileAtTextOf(repo: string, path: string, ref: string, run: RowsRun): string;
   defaultBranchFileTextOf(repo: string, path: string, run: RowsRun): string;
 
-  commentOnIssue(request: { repo: string; issue: number; body: string; run: RowsRun }): void;
+  commentOnIssue(request: { repo: string; issue: number | string; body: string; run: RowsRun }): void;
 
   openIncidentsOf(repo: string, run: RowsRun): OpenIncidentRead[] | null;
 
@@ -375,6 +378,8 @@ export interface CodeHostRows {
   /** Folds one page into the rows so far; `next` is the cursor of the page still to read, or `null` when the read is whole. Throws the helpers' `WindowCutShort` when the window is too long. */
   foldPage(request: { ask: SinceRead; rows: any[]; page: Page; pagesRead: number }): { rows: any[]; next: string | null };
   readRowsSince(request: { ask: SinceRead; run: RowsRun; log?: (line: string) => void }): any[];
+  /** {@link CodeHostRows.readRowsSince} for a caller that holds an ASYNC `run` (the chairman's watch, contract 1.11): every page through that run, the rows in the shape `gh <kind> list --json` gave. REJECTS as the run does, and as the window is cut short. */
+  readRowsSinceAsync(request: { ask: SinceRead; run: AsyncRowsRun }): Promise<any[]>;
   /** A node in the shape `gh <kind> list --json` gave: a connection property (`{ nodes: [...] }`) is its array. */
   asListJson(node: Record<string, unknown>): Record<string, unknown>;
   /** The pull requests merged, with the fields asked, in `gh pr list --json` shape. */
@@ -676,4 +681,116 @@ export interface CodeHostRows {
   openRestListingOf(request: { repo: string; kind: "issues" | "pulls"; run?: RowsRun }): object[];
   /** A row's body in `repo`. THROWS when the read is refused or is not JSON. */
   rowBodyIn(request: { repo: string; number: number; run?: RowsRun }): string;
+
+  // --- runners for a caller that keeps its own policy (contract 1.11, A11-160 step 8) ---
+  /** The program the code host starts, as the name core's leak guard judges argument lists under (`assertNoLeakInArgv`). */
+  readonly command: string;
+  /** `gh`, as the process's own account, with the policy `request` names; the text it printed, THROWING as the program fails. A fake has no program, and its runner throws. */
+  runnerWith(request?: RunnerRequest): RowsRun;
+  /** {@link CodeHostRows.runnerWith}, answered as a promise. A fake's runner rejects. */
+  asyncRunnerWith(request?: RunnerRequest): AsyncRowsRun;
+
+  // --- the trace (contract 1.11, A11-160 step 8) ---
+  /** Comments on row `number` of `repo` with `body`, handed over on standard input and not in an argument list. The code host starts the program itself, cut at `timeoutMs`. THROWS when the program fails, with what it printed. */
+  commentOnRowByInput(request: { repo: string; number: string | number; body: string; timeoutMs: number }): void;
+  /** A row's number, state, title, body and labels as a read-only script reads it. THROWS when the read is refused or is not JSON. */
+  rowSnapshotOf(request: { repo: string; number: number; run: RowsRun }): { number: number; state: string; title: string; body: string; labels: { name: string }[] };
+  /** The text of `gh api <args>`: the arguments after the verb, built by the caller (a path and its parameters). THROWS as the run does. */
+  apiTextOf(request: { args: readonly string[]; run: RowsRun }): string;
+  /** One GET of REST `path`, with its response headers, conditional on `etag` when one is given. Never throws: how the call ended, for a caller that reads the status line itself. */
+  conditionalGetOf(request: { path: string; etag: string | null; maxBuffer: number }): RunAnswer;
+
+  // --- the chairman's watch and answers (contract 1.11, A11-160 step 8). Each takes the ASYNC `run` the watcher holds. ---
+  /** A row as the chairman's answers read it: its state, its labels and every comment (body, time, the commenter's association). A row that is not `owner/name` and a positive number is a TypeError. REJECTS as the run does. */
+  readRowAsync(request: { repo: string; number: number; run: AsyncRowsRun }): Promise<{ state: string; labels: string[]; comments: { body: string; createdAt: string; authorAssociation: string }[] }>;
+  commentOnRowAsync(request: { repo: string; number: number; body: string; run: AsyncRowsRun }): Promise<void>;
+  /** Takes `label` off a row; a label that is already absent is done (GitHub's `Label does not exist`), and any other refusal rejects. */
+  removeLabelAsync(request: { repo: string; number: number; label: string; run: AsyncRowsRun }): Promise<void>;
+  addLabelAsync(request: { repo: string; number: number; label: string; run: AsyncRowsRun }): Promise<void>;
+  /** Every comment of row `number` of `repo` (the list returns the oldest hundred), as a list; none where the answer carries no list. */
+  issueCommentsAsync(request: { repo: string; number: number; run: AsyncRowsRun }): Promise<any[]>;
+  /** The newest `limit` open pull requests of `repo` with their labels and check rollup. */
+  openPullChecksAsync(request: { repo: string; limit: number; run: AsyncRowsRun }): Promise<any[]>;
+  /** One GET of REST `path`, parsed. */
+  restGetAsync(request: { path: string; run: AsyncRowsRun }): Promise<any>;
+  /** A pull request's review decision (`""` where the base requires none), or `null` for an answer that carries none. */
+  pullReviewDecisionAsync(request: { repo: string; number: number; run: AsyncRowsRun }): Promise<string | null>;
+
+  // --- the org-health sweep readings and the retro (contract 1.11, A11-160 step 8). Each takes the `run` its caller hands it and THROWS when the read is refused or is not JSON where JSON is read. ---
+  /** The repositories a team reaches, one per line: `<owner/name>` and the five permission flags (admin, maintain, push, triage, pull), tab-separated; every page. */
+  teamRepositoriesTextOf(request: { org: string; team: string; run: RowsRun }): string;
+  /** The latest `merged_at` among the newest-updated `window` closed pull requests of `repo`, printed raw (`null` for none). */
+  lastMergeTextOf(request: { repo: string; window: number; run: RowsRun }): string;
+  /** The newest `window` runs of the release workflow on `main`: `{ id, event, status, conclusion, sha, createdAt, updatedAt, url }` of each. */
+  releaseRunsOf(request: { repo: string; window: number; run: RowsRun }): any;
+  /** The jobs of a run of the release workflow: `named` is `{ name, conclusion }` of each, `failed` the failed jobs with the names of their failed steps. */
+  releaseJobsOf(request: { repo: string; runId: number; window: number; shape: "named" | "failed"; run: RowsRun }): any;
+  /** The names of the files in `.changeset/` on `main`. */
+  changesetNamesOf(request: { repo: string; run: RowsRun }): any;
+  /** The newest `limit` open rows of `repo` with their number and labels. */
+  openRowLabelsOf(request: { repo: string; limit: number; run: RowsRun }): any[];
+  /** The newest `limit` open pull requests of `repo` with number, body, branch and labels. */
+  openPullsNamingRowsOf(request: { repo: string; limit: number; run: RowsRun }): any[];
+
+  // --- the DORA reader (contract 1.11, A11-160 step 8). Each takes the `run` the reader hands it (which carries its read budget) and THROWS when the read is refused or is not JSON. ---
+  /** The commit a tag or sha names, as `<sha> <parent shas, comma-joined>`. */
+  commitAndParentsTextOf(request: { repo: string; ref: string; run: RowsRun }): string;
+  /** Every release of `repo`, drafts included, out of the pages. */
+  releasesOf(request: { repo: string; run: RowsRun }): any[];
+  /** Whether `repo` has issues enabled. */
+  hasIssuesEnabled(request: { repo: string; run: RowsRun }): boolean;
+  /** The pages of the comparison `base...head`: the status once, and the commits of `head` that `base` lacks. */
+  compareRangeOf(request: { repo: string; base: string; head: string; run: RowsRun }): any[];
+  /** The merge commit of pull request `number` of `repo`, and when it merged. */
+  pullMergeOf(request: { repo: string; number: number; run: RowsRun }): { mergeCommit?: { oid?: string } | null; mergedAt?: string | null };
+
+  // --- the board's reads and posts (contract 1.11, A11-160 step 8). Each takes the `run` the board hands it (behind the leak guard and the buffer it has always had) and THROWS when the read is refused or is not JSON. ---
+  /** One page of the repository's issues, from the cursor `after` or the first: GraphQL's response, whose shape is the caller's to check. */
+  issuePageOf(request: { repo: string; after: string | null; run: RowsRun }): any;
+  /** Every milestone of `repo`, open and closed. */
+  allMilestonesOf(request: { repo: string; run: RowsRun }): any[];
+  /** The repository's id and its Discussion categories (id and slug of each): the response's `data`. */
+  discussionCategoriesOf(request: { owner: string; name: string; run: RowsRun }): any;
+  /** The newest hundred Discussions of a category (id, title, url of each): the response's `data`. */
+  discussionEditionsOf(request: { owner: string; name: string; categoryId: string; run: RowsRun }): any;
+  /** Creates a Discussion: the response's `data` (`createDiscussion.discussion.url`). */
+  createDiscussion(request: { repositoryId: string; categoryId: string; title: string; body: string; run: RowsRun }): any;
+  /** Replaces the body of a Discussion: the response's `data`. */
+  updateDiscussion(request: { discussionId: string; body: string; run: RowsRun }): any;
+  /** Whether `tag` has a release and whether it is a draft; `null` when there is none or it cannot be read. */
+  draftReleaseOf(request: { repo: string; tag: string; run: RowsRun }): { isDraft: boolean } | null;
+  /** Creates a DRAFT release for `tag` with `file` attached. */
+  createDraftRelease(request: { repo: string; tag: string; file: string; title: string; notes: string; run: RowsRun }): void;
+  /** Uploads `file` to the release of `tag`, replacing an asset of the same name. */
+  uploadReleaseAsset(request: { repo: string; tag: string; file: string; run: RowsRun }): void;
+  /** The newest `limit` rows of `repo` in `state` with the JSON fields `fields` names. */
+  rowsListedIn(request: { repo: string; state: "open" | "closed"; limit: number; fields: string; run: RowsRun }): any[];
+  /** The newest `limit` pull requests of `repo` in `state` with the JSON fields `fields` names. */
+  pullsListedIn(request: { repo: string; state: "open" | "merged"; limit: number; fields: string; run: RowsRun }): any[];
+  /** Every row of `repo` (pull requests left out) updated since `since`, one JSON object per line: `{ number, state, createdAt, closedAt, labels }`; paged, not capped. */
+  windowRowsTextOf(request: { repo: string; since: string; run: RowsRun }): string;
+  /** How many comments of row `issue` since `since` open with `title`, summed over the pages. */
+  editionCommentCountOf(request: { repo: string; issue: string; since: string; title: string; run: RowsRun }): number;
+  /** The bodies of the comments on row `number` of `repo`. */
+  commentBodiesOfIssue(request: { repo: string; number: string | number; run: RowsRun }): string[];
+  /** The newest `limit` runs of a workflow with the JSON fields `fields` names. */
+  workflowRunListOf(request: { repo: string; workflow: string; fields: string; limit: number; run: RowsRun }): any[];
+  /** When a workflow was first registered, or `null` when GitHub gave none. */
+  workflowCreatedAtOf(request: { repo: string; workflow: string; run: RowsRun }): string | null;
+  /** One page of the project's items, from the cursor or the first, as the text GitHub answered. The failed process's stdout carries GraphQL's own error. */
+  boardItemsPageOf(request: { owner: string; number: number; cursor: string | null; run: RowsRun }): string;
+  /** One issue's item on the project, and the project itself, as the text GitHub answered. */
+  touchedItemTextOf(request: { owner: string; repo: string; project: number; issue: number; run: RowsRun }): string;
+  /** The `Roadmap` facts of the rows `numbers`, ONE aliased request: the response's `data.repository`, an object keyed `r<number>`. THROWS also when it has no repository. */
+  roadmapFactsOf(request: { repo: string; numbers: readonly number[]; run: RowsRun }): Record<string, any>;
+  /** The login that posted comment `id` of `repo`. */
+  commentAuthorOf(request: { repo: string; id: string; run: RowsRun }): string;
+  /** The ids of the comments of row `row` since `since` that open with `heading`, one per line. */
+  headedCommentIdsText(request: { repo: string; row: string; since: string; heading: string; run: RowsRun }): string;
+  /** Every comment of `repo` since `since` by a login that starts with `loginPrefix`: `{ number, author: { login }, body, createdAt, url }`. */
+  orgCommentsSinceOf(request: { repo: string; since: string; loginPrefix: string; run: RowsRun }): any[];
+  /** Every issue of `repo` (pull requests left out) updated since `since`: `{ number, state, author, createdAt, text }`, the text being the title and the body. */
+  issuesSinceOf(request: { repo: string; since: string; run: RowsRun }): any[];
+  /** The `labeled` events of row `number`: `{ number, label, actor, createdAt }`. */
+  labeledEventsOfRow(request: { repo: string; number: number; run: RowsRun }): any[];
 }

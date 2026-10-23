@@ -18,7 +18,7 @@ const SPAWN_CODE = /\b(E[A-Z]+)\b/;
  * not start has the spawn error for its message and no stderr of its own (`refusalOf` then names the signal that stopped it), and carries `code` (`ETIMEDOUT` for a call that hit the bound, which is a refusal every
  * reader already turns into `null` for ITS lane) and `signal`. One stopped by a signal with no spawn error (an out-of-memory kill) says which command failed.
  */
-function failureOf(args: readonly string[], result: ExecResult): GhFailure {
+export function failureOf(args: readonly string[], result: ExecResult): GhFailure {
   if (result.status !== null) return new GhFailure(args, result);
   if (result.spawnError === undefined) return Object.assign(new GhFailure(args, { ...result, status: 1 }), { status: null, signal: result.signal });
   const code = SPAWN_CODE.exec(result.spawnError)?.[1];
@@ -26,7 +26,7 @@ function failureOf(args: readonly string[], result: ExecResult): GhFailure {
 }
 
 /** Whether `stderr` is gh's own: not the spawn error `realExec` puts there when a program was cut or could not start. */
-const printedByGh = (result: ExecResult): boolean => result.spawnError === undefined && result.stderr !== "";
+export const printedByGh = (result: ExecResult): boolean => result.spawnError === undefined && result.stderr !== "";
 
 /**
  * `gh`, run to completion or cut at `timeoutMs` and killed with SIGKILL (a `gh` that has hung is not one that answers a polite request). A call that does not succeed throws {@link failureOf}. What gh prints on stderr

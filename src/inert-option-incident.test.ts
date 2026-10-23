@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh` or file outside a temp directory is touched; the pull requests, consumer files, lists and clock are fixtures (agent-org#839)
+// no-token: none -- no `gh` or file outside a temp directory is touched; the pull requests are the fake code host's, the consumer files and the clock are fixtures (agent-org#839; A11-160, step 8)
 // agent-org#839 (class `closed-on-merge-not-outcome`): an option a merged pull request declared as a consumer's to set, with no matching value in the consumer's file two hours after the
 // merge, is a ledger incident. EVERY "NO INCIDENT" HAS A TWIN: the same fixture with ONE thing changed that DOES produce one, so a detector that never fires turns the twins red and one that
 // always fires turns the controls red. The mutations, both directions, are in the pull request.
@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { FAILURE_LEDGER_FILE, parseFailureLedger, recordFailures } from "./failure-ledger.ts";
 import {
   CLOSED_ON_MERGE_NOT_OUTCOME, INERT_OPTION_MINUTES, inertOptionEvents, inertOptionIncidents, inertOptionSummary, type ConsumerFileReader, type MergedOptionPr,
@@ -14,7 +14,9 @@ import {
 import { buildReport } from "./org-retro/journal-stats-and-verdicts.ts";
 import { readInertOptions } from "./org-retro/retro-window-and-journal-patterns.ts";
 import { renderReport } from "./org-retro.ts";
-import { readsRowsSince, sinceAnswer } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { holdRepository, withRepositoryReads } from "./plugins/fakes/code-host-health.ts";
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-11T12:00:00Z");
@@ -132,8 +134,19 @@ test("the summary is null for a read nobody made, and names the file, key, wante
 // ---- the live read, over fakes ----
 
 const declaration = { code: [{ repo: "a11ign/agent-org" }] } as any;
-// #5076: the merged list is the `pullRequests` connection (it was `pr list --search merged:>=`); any other call is refused, as the old fake refused a non-merged list.
-const listing = (prs: any[]) => (args: string[]) => (readsRowsSince(args) !== null ? JSON.parse(sinceAnswer(args, prs.map((pr) => ({ updatedAt: pr.mergedAt, ...pr })))) : null);
+// A11-160 (step 8): the merged list is the fake code host's pull requests of the declared repository, each with the files it changed, the commit it merged at and the time it merged; a repository the host holds
+// nothing of is a refused read.
+type Merged = { number: number; body?: string; mergedAt: string; mergeCommit?: { oid: string } | null; files?: { path: string }[] };
+afterEach(() => forgetActivation());
+function codeHost(prs?: Merged[]) {
+  const host = withRepositoryReads(createFakeCodeHost());
+  substituteCodeHost(host);
+  if (prs !== undefined) {
+    holdRepository(host.rowsWorld, "a11ign/agent-org", { pulls: prs.map((merged) => ({ number: merged.number, body: merged.body ?? "", headRefName: `agent/p-${merged.number}`, labels: [], isDraft: false, armed: false, merged: true, mergedAt: merged.mergedAt,
+      createdAt: merged.mergedAt, comments: [], files: (merged.files ?? []).map((file) => file.path), ...(merged.mergeCommit == null ? {} : { mergeCommit: merged.mergeCommit.oid }) })) });
+  }
+  return host;
+}
 
 test("the live read reads the acceptance file AT THE MERGE COMMIT, never the default branch's current one, and reports through the retro", () => {
   const OID = "a".repeat(40);
@@ -148,7 +161,8 @@ test("the live read reads the acceptance file AT THE MERGE COMMIT, never the def
     { number: 782, body: "Closes: none -- the switch is #4904", mergedAt: ago(200), mergeCommit: { oid: OID }, files: [{ path: "src/a.ts" }, { path: ".acceptance/agent~x-1.md" }] },
     { number: 783, body: "", mergedAt: ago(200), mergeCommit: { oid: "b".repeat(40) }, files: [{ path: "src/b.ts" }] },
   ];
-  const reading = readInertOptions({ now: NOW, declaration, read: listing(prs), readFile, readAcceptance });
+  codeHost(prs);
+  const reading = readInertOptions({ now: NOW, declaration, readFile, readAcceptance });
   assert.deepEqual(asked, [`a11ign/agent-org:.acceptance/agent~x-1.md@${OID}`]);
   assert.deepEqual(reading?.incidents.map(({ ref }) => ref), ["a11ign/agent-org#782:routing.question"]);
   const report = buildReport({ merged: null, openPrs: null, journal: null, ledger: null, turns: null, handFixes: null, inertOptions: reading }, NOW);
@@ -166,15 +180,21 @@ test("the default acceptance reader asks for the file at the merge commit, and a
   const prs = [{ number: 5, mergedAt: ago(200), mergeCommit: { oid: OID }, files: [{ path: ".acceptance/agent~x-1.md" }] },
     { number: 6, mergedAt: ago(200), mergeCommit: null, files: [{ path: ".acceptance/agent~y-2.md" }] },
     { number: 7, mergedAt: ago(200), mergeCommit: { oid: "../x" }, files: [{ path: ".acceptance/agent~z-3.md" }] }];
-  const reading = readInertOptions({ now: NOW, declaration, read: listing(prs), readFile });
+  codeHost(prs);
+  const reading = readInertOptions({ now: NOW, declaration, readFile });
   assert.deepEqual(asked, [`a11ign/agent-org:.acceptance/agent~x-1.md@${OID}`, `${CONSUMER}:${FILE}@undefined`]);
   assert.deepEqual(reading?.incidents.map(({ ref }) => ref), ["a11ign/agent-org#5:routing.question"]);
   assert.deepEqual(reading?.unknown.map(({ ref }) => ref), ["a11ign/agent-org#6", "a11ign/agent-org#7"]);
 });
 
 test("a refused list is `unknown` in the report and never 0 (twin: a listed empty window is 0)", () => {
-  assert.equal(readInertOptions({ now: NOW, declaration, read: () => null, readFile: () => null }), null);
-  const none = readInertOptions({ now: NOW, declaration, read: listing([]), readFile: () => null });
+  codeHost();
+  assert.equal(readInertOptions({ now: NOW, declaration, readFile: () => null }), null, "a code host that holds nothing of the repository cannot be asked");
+  const refusing = codeHost([]);
+  refusing.rowsWorld.failures.set("readRowsSince", new Error("HTTP 502"));
+  assert.equal(readInertOptions({ now: NOW, declaration, readFile: () => null }), null, "and one that refuses the read answers no list");
+  codeHost([]);
+  const none = readInertOptions({ now: NOW, declaration, readFile: () => null });
   assert.deepEqual(none, { incidents: [], unknown: [] });
   const text = renderReport(buildReport({ merged: null, openPrs: null, journal: null, ledger: null, turns: null, handFixes: null, inertOptions: null }, NOW));
   assert.match(text, /Merged options a consumer has not set.*: unknown/);

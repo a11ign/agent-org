@@ -31,7 +31,7 @@
  * total, and the two that do count (the `rv-*` blind-spot control) compare two sets over the SAME fixture
  * in the same moment.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -44,6 +44,26 @@ import {
 } from "../prune-tmp.ts";
 import { claimRefusal, recordRemoval, REMOVAL_LOG_ENV } from "../worktree-removal.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
+
+afterEach(() => forgetActivation());
+
+// A11-160, step 8: the open pull requests are the CODE HOST's listing (`openPullListArgs` of its rows), run through the `run` this tool is handed. The cases that decide what an open set AUTHORISES run on the fake code host's
+// pull requests; the ones that hand the reader a text no pull request renders (not JSON, an object, a number as a string) or a program that fails stay at the seam, with a `run` that returns a string.
+
+/**
+ * The fake code host in place with the pull requests `open` open, and the `run` that answers the listing it is asked for. A fake has no program, so its own listing (the limit second, the fields third) is answered
+ * from its world by the fake's own read, cut at the limit as `--limit` cuts it.
+ */
+function listingOf(open: number[]) {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  for (const number of open) fakePull(host.rowsWorld, number);
+  const run = (args: string[]): string => JSON.stringify((host.rows!.openPullFieldsOf({ repo: host.rowsWorld.repo, fields: args[2], run: () => "" }) as unknown[]).slice(0, Number(args[1])));
+  return { run, host };
+}
 
 // #2782: EVERY REMOVAL WRITES A LINE AND READS THE ROW'S CLAIM, and a fixture must do neither to the host. The tests that ARE about
 // either pass their own `claim` and `record` and read the log they pointed this at.
@@ -291,20 +311,29 @@ test("an `rv-*` glob sees a fraction of what the classifier does -- the row's ow
 
 test("openPullRequests answers `unknown` for every way of failing to read the list, never a short one", () => {
   // ABSENCE FROM THIS SET AUTHORISES A REMOVAL, so a listing that came back short must not look empty.
+  // At the seam: the program fails, or answers a text no pull request renders.
   assert.equal(openPullRequests({ run: () => { throw new Error("gh: command not found"); } }), "unknown");
   assert.equal(openPullRequests({ run: () => "not json" }), "unknown");
   assert.equal(openPullRequests({ run: () => '{"number":1}' }), "unknown", "an object is not a listing");
   assert.equal(openPullRequests({ run: () => '[{"number":"2049"}]' }), "unknown", "a non-integer number");
   // Truncation: a listing that comes back AT the limit has been cut off, and the entries beyond it would
-  // read as closed. The limit is discovered from the argv the function itself passes, not restated here.
+  // read as closed. The limit is discovered from the argument list the function itself passes, not restated here.
   let limit = 0;
-  openPullRequests({ run: (_cmd, args) => { limit = Number(args[args.indexOf("--limit") + 1]); return "[]"; } });
+  listingOf([]);
+  openPullRequests({ run: (args) => { limit = Number(args[1]); return "[]"; } });
   assert.ok(limit >= 300, "the limit must sit far above any plausible open count");
-  const full = JSON.stringify(Array.from({ length: limit }, (_u, i) => ({ number: i + 1 })));
-  assert.equal(openPullRequests({ run: () => full }), "unknown", "a listing at the limit is truncated");
+  // On the fake's pull requests: as many open as the limit is a listing at the limit.
+  const atTheLimit = listingOf(Array.from({ length: limit }, (_u, i) => i + 1));
+  assert.equal(openPullRequests({ run: atTheLimit.run }), "unknown", "a listing at the limit is truncated");
+  atTheLimit.host.rowsWorld.pulls.delete(limit);
+  assert.equal((openPullRequests({ run: atTheLimit.run }) as Set<number>).size, limit - 1, "CONTROL: one under the limit is a complete read");
   // The positive control for all of the above: a real, short listing IS read, and an empty one is an answer.
-  assert.deepEqual(openPullRequests({ run: () => '[{"number":2049},{"number":2166}]' }), new Set([2049, 2166]));
-  assert.deepEqual(openPullRequests({ run: () => "[]" }), new Set());
+  assert.deepEqual(openPullRequests({ run: listingOf([2049, 2166]).run }), new Set([2049, 2166]));
+  assert.deepEqual(openPullRequests({ run: listingOf([]).run }), new Set());
+  // A merged pull request is not open.
+  const merged = listingOf([2049, 2166]);
+  merged.host.rowsWorld.pulls.get(2166)!.merged = true;
+  assert.deepEqual(openPullRequests({ run: merged.run }), new Set([2049]));
 });
 
 test("processStrings answers `unknown` when /proc cannot be listed, not an empty set", () => {
@@ -352,7 +381,7 @@ test("pruneTmp's dry run removes NOTHING and its --apply removes only what it cl
   for (const path of [dead, live, closed, open]) age(path, 100);
   const deps = {
     env: { CLAUDE_CODE_SESSION_ID: LIVE_SESSION }, procRoot: join(root, "no-proc-here"),
-    run: () => '[{"number":2049}]',
+    run: listingOf([2049]).run,
   };
   // `procRoot` above points at nothing on purpose for ONE assertion -- that an unreadable /proc refuses
   // everything rather than sweeping it. This is the "could not look" arm, run end to end.

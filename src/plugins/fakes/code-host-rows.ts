@@ -10,7 +10,7 @@
 // `out-of-release`, `answer:<session>` and `lane:<owner>`, as ADR 0046 spells them. A project that spells its labels otherwise is the plugin's to map.
 import type { ApiBudget, Decision, ItemEvent, ItemRef, OpenItemSummary, PortEvent, StateChange, TicketFlag, TicketItem, TicketState } from "../../ticket-port/port.ts";
 import type { Pool } from "../../api-pool.ts";
-import type { ApprovalReview, ClosingIssue, CodeHostRows, GithubTicketAdapter, GuardCheckRun, QueueEntry, QueuePull } from "../contracts/code-host-rows.ts";
+import type { ApprovalReview, ClosingIssue, CodeHostRows, GithubTicketAdapter, GuardCheckRun, QueueEntry, QueuePull, SinceRead } from "../contracts/code-host-rows.ts";
 import { ciOperations, emptyCi, type FakeCi } from "./code-host-ci.ts";
 import { mergeOperations } from "./code-host-merge.ts";
 import { emptyGate, gateOperations, type FakeGate } from "./code-host-gate.ts";
@@ -19,15 +19,19 @@ import { emptyFiling, filingOperations, type FakeFiling } from "./code-host-fili
 import { emptyMisc, miscOperations, type FakeMisc } from "./code-host-misc.ts";
 import { emptyRules, rulesOperations, type FakeRules } from "./code-host-rules.ts";
 import { emptyWake, wakeOperations, type FakeWake } from "./code-host-wake.ts";
+import { emptyReports, reportOperations, type FakeReports } from "./code-host-reports.ts";
 
 /** A row (an issue) as the fake holds it. */
 export type FakeRow = {
   number: number; title: string; body: string; state: "OPEN" | "CLOSED"; labels: string[]; createdAt: string; closedAt: string | null;
-  comments: { id: number; body: string; createdAt: string; /** The login that wrote it, where a test needs one (the gate tells the chairman's comment from another's). */ author?: string }[]; blockedBy: number[]; onBoard: boolean; boardStatus: string | null;
+  comments: { id: number; body: string; createdAt: string; /** The login that wrote it, where a test needs one (the gate tells the chairman's comment from another's). */ author?: string; /** GitHub's word for what the commenter is to the repository (`OWNER`, `MEMBER`, `NONE`), where a test needs one (the chairman's answers trust an owner's). */ association?: string }[]; blockedBy: number[]; onBoard: boolean; boardStatus: string | null;
   /** Set when the blocked-by edges cannot be read whole (a page was cut): the code host answers `null` for the blockers, never an empty list. */
   blockedByUnread?: boolean;
   /** When it was last updated; absent is when it was created. */
   updatedAt?: string;
+  /** The milestone it carries, as the board's issue listing reads it; and the login that filed it (the truth audit reads who opened what). */
+  milestone?: { number: number; title: string; description: string | null; dueOn: string | null } | null;
+  openedBy?: string;
 };
 
 /**
@@ -39,6 +43,8 @@ export type FakeRowPull = {
   title?: string; author?: string | null; baseRefName?: string; headRefOid?: string; mergeStateStatus?: string; mergeable?: string; isCrossRepository?: boolean; reviewDecision?: string | null;
   /** Set when the pull request was closed without merging. */
   closedAt?: string | null;
+  /** When it was last updated (a comment after a merge moves it); absent is when it merged, was closed, or was created. */
+  updatedAt?: string;
   /** The check runs of the head commit, as the merge guard reads them; the sweep counts them. */
   checkRuns?: GuardCheckRun[];
   /** The checks as the merge queue's dispatcher reads them off the pull request. */
@@ -101,6 +107,8 @@ export type FakeRowsWorld = {
   filing: FakeFiling;
   rules: FakeRules;
   misc: FakeMisc;
+  /** What the board, the health and retro readings, the DORA reader, the trace and the chairman's watch read beyond that (A11-160, step 8): `code-host-reports.ts`. */
+  reports: FakeReports;
   /** The next number a created row gets, and the next id a comment gets. */
   nextNumber: number;
   nextCommentId: number;
@@ -109,7 +117,7 @@ export type FakeRowsWorld = {
 };
 
 export function emptyRowsWorld(repo: string = "fake/tracker"): FakeRowsWorld {
-  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, gate: emptyGate(), wake: emptyWake(), claim: emptyClaim(), filing: emptyFiling(), rules: emptyRules(), misc: emptyMisc(), nextNumber: 1, nextCommentId: 1, now: Date.now };
+  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, gate: emptyGate(), wake: emptyWake(), claim: emptyClaim(), filing: emptyFiling(), rules: emptyRules(), misc: emptyMisc(), reports: emptyReports(), nextNumber: 1, nextCommentId: 1, now: Date.now };
 }
 
 const STATES: readonly TicketState[] = ["backlog", "ready", "in-progress", "parked"];
@@ -266,7 +274,7 @@ function trackerOperations(world: FakeRowsWorld): Pick<CodeHostRows, "ticketAdap
     },
     closeRowWithComment: ({ row, comment: text }) => closeWith(world, row, text),
     commentsSince: ({ since }) => [...world.rows.values()].flatMap((row) => row.comments.filter((c) => Date.parse(c.createdAt) >= since).map((c) => ({ body: c.body, created_at: c.createdAt, issue_url: `https://api.github.com/repos/${world.repo}/issues/${row.number}` }))),
-    commentOnIssue: ({ issue, body }) => comment(issue, body),
+    commentOnIssue: ({ issue, body }) => comment(Number(issue), body),
     ensureTriageLabel: ({ label }) => { if (!world.labelsCreated.includes(label)) world.labelsCreated.push(label); },
     isIssueOnBoard: (number) => rowOf(world, number).onBoard,
     boardItemOf: (number) => (rowOf(world, number).onBoard ? { project: { number: 1 }, fieldValueByName: { name: rowOf(world, number).boardStatus } } : undefined),
@@ -283,9 +291,30 @@ function trackerOperations(world: FakeRowsWorld): Pick<CodeHostRows, "ticketAdap
   };
 }
 
+/** A node in the shape `gh <kind> list --json` gave: a connection property (`{ nodes: [...] }`) is its array. */
+const asListJsonOf = (node: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(node).map(([key, value]) => {
+  const nodes = (value as { nodes?: unknown } | null)?.nodes;
+  return [key, Array.isArray(nodes) ? nodes : value] as const;
+}));
+
+/**
+ * The window of a connection read, as the connection states it: the world's rows or pull requests whose state is among `ask.states` and that carry `ask.label` (when it names one), newest first by the field `ask.orderBy`
+ * names, from `ask.since` on or the `ask.newest` of them. A pull request is `MERGED` when it merged, `CLOSED` when it was closed without merging, else `OPEN`.
+ */
+function sinceRows(world: FakeRowsWorld, ask: SinceRead): any[] {
+  const field = ask.orderBy === "CREATED_AT" ? "createdAt" : "updatedAt";
+  const nodes: any[] = ask.kind === "issues" ? [...world.rows.values()].map(nodeOf) : [...world.pulls.values()].map((pull) => ({ ...projected(pull, "number,body,headRefName,labels,isDraft"),
+    state: pull.merged ? "MERGED" : pull.closedAt != null ? "CLOSED" : "OPEN", createdAt: pull.createdAt, updatedAt: pull.updatedAt ?? pull.mergedAt ?? pull.closedAt ?? pull.createdAt, mergedAt: pull.mergedAt, closedAt: pull.closedAt ?? null }));
+  const from = ask.since === undefined ? 0 : Date.parse(ask.since);
+  const names = (node: any): string[] => (Array.isArray(node.labels) ? node.labels : node.labels?.nodes ?? []).map((label: { name: string }) => label.name);
+  const inWindow = nodes.filter((node) => (ask.states as readonly string[]).includes(node.state) && (ask.label === undefined || names(node).includes(ask.label)) && Date.parse(String(node[field])) >= from)
+    .sort((a, b) => Date.parse(String(b[field])) - Date.parse(String(a[field])));
+  return ask.newest === undefined ? inWindow : inWindow.slice(0, ask.newest);
+}
+
 /** The reads of rows by label and of windows of rows and pull requests. */
 function listOperations(world: FakeRowsWorld): Pick<CodeHostRows, "forgetRefusedReads" | "isRowsByLabelRead" | "readUnlessRefused" | "readRowsByLabel" | "readClaimedRows" | "sincePageArgs" | "isSinceRead" | "parsePage"
-  | "foldPage" | "readRowsSince" | "asListJson" | "readMergedPullRequests"> {
+  | "foldPage" | "readRowsSince" | "readRowsSinceAsync" | "asListJson" | "readMergedPullRequests"> {
   return {
     forgetRefusedReads: () => undefined,
     isRowsByLabelRead: (args) => args[0] === "fake-rows-by-label",
@@ -304,16 +333,9 @@ function listOperations(world: FakeRowsWorld): Pick<CodeHostRows, "forgetRefused
       return { nodes: parsed.nodes, hasNextPage: parsed.hasNextPage === true, endCursor: parsed.endCursor ?? null };
     },
     foldPage: unmodeled("foldPage"),
-    readRowsSince: ({ ask }) => {
-      const from = ask.since === undefined ? 0 : Date.parse(ask.since);
-      const rows = ask.kind === "issues" ? [...world.rows.values()].map(nodeOf) : [...world.pulls.values()].map((pull) => ({ ...projected(pull, "number,body,headRefName,labels,isDraft,state"), createdAt: pull.createdAt, updatedAt: pull.mergedAt ?? pull.createdAt, mergedAt: pull.mergedAt }));
-      const inWindow = rows.filter((row) => Date.parse(String(row.createdAt)) >= from).sort((a, b) => Date.parse(String(b.createdAt)) - Date.parse(String(a.createdAt)));
-      return ask.newest === undefined ? inWindow : inWindow.slice(0, ask.newest);
-    },
-    asListJson: (node) => Object.fromEntries(Object.entries(node).map(([key, value]) => {
-      const nodes = (value as { nodes?: unknown } | null)?.nodes;
-      return [key, Array.isArray(nodes) ? nodes : value] as const;
-    })),
+    readRowsSince: ({ ask }) => sinceRows(world, ask),
+    readRowsSinceAsync: async ({ ask }) => sinceRows(world, ask).map(asListJsonOf),
+    asListJson: asListJsonOf,
     readMergedPullRequests: ({ window }) => {
       const merged = [...world.pulls.values()].filter((pull) => pull.merged && pull.mergedAt !== null);
       const kept = "newest" in window ? merged.slice(0, window.newest) : merged.filter((pull) => Date.parse(pull.mergedAt!) >= Date.parse(window.since));
@@ -398,6 +420,7 @@ export function createFakeRows(world: FakeRowsWorld = emptyRowsWorld()): CodeHos
     ...filingOperations(world),
     ...rulesOperations(world),
     ...miscOperations(world),
+    ...reportOperations(world),
     latestApprovals,
     approvalFactsOf: unmodeled("approvalFactsOf"),
     reviewsOf: unmodeled("reviewsOf"),

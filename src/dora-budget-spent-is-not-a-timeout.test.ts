@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is a script written into a temp directory and put first on PATH; the clone is a throwaway git repository in a temporary directory (a11ign/agent-org#754)
+// no-token: none -- the DORA reader runs on the fake code host's world and the clone is a throwaway git repository in a temporary directory; nothing here starts `gh` (a11ign/agent-org#754; A11-160, step 8)
 /**
  * `src/dora.ts`, a11ign/agent-org#754: THE RETRO SAYS WHICH LIMIT ENDED A READ, AND READS THE TAG COMMITS FROM THE CLONE.
  *
@@ -6,27 +6,28 @@
  * release list, then 409 `commits/<tag>` calls (218 s together), then `gh pr list` with the 17 s of the 240 s budget that were left, which is less than the 24 s it takes. The
  * words `hit its time limit` were the same for that, for a call that ran its own 90 s, and for one never started, so the reader could not tell a slow `gh pr list` from a spent budget.
  *
- * PART ONE: THE WORDS. Through the real `readRepository`, the real `run` and the real `githubReaders`, with a `gh` script in a temp directory. Each `commits/<tag>` call costs
- * `COMMIT_MS` of a FAKE clock (`Date.now` counts the calls the script has logged), so a budget is about the count of tags and not about how fast this machine spawns. A call that
- * runs past its limit is a real `sleep` the real timeout kills.
+ * PART ONE (the fixture): through the real `readRepository` and the real `githubReaders` over the fake code host's world, a repository that releases on every merge asks the code host for each tag's commit once when no clone
+ * answers. THE WORDS (which limit ended a call: `was not started: ... budget is spent`, `timed out after N s`, `... all that was left of this repository's read budget`) are said by the budget that wraps the code host's
+ * runner, and the fake has no runner: since A11-160 (step 8) those cases are held beside the operations over the plugin's own runner (`plugins/github/rows/dora-rows.test.ts`, moved from this file).
  * PART TWO: THE TAGS. At least `MIN_TAGS` tags in a real clone, half of them annotated; the reader that stands for `gh api .../commits/<tag>` is a spy. POSITIVE CONTROL: the same
  * fixture with no clone declared calls the spy once per tag, so a zero is not a spy that was never wired.
  */
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { removeAll, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { githubReaders, readRepository, tagReleasesFrom } from "./dora.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 
 type Any = any;
 
 const MIN_TAGS = 100;
 const TAGS = 120;
-const COMMIT_MS = 1_000;
 const MS_PER_MINUTE = 60_000;
 const NOW = Date.parse("2026-10-06T00:00:00Z");
 const FIRST_RELEASE_AT = Date.parse("2026-10-05T00:00:00Z");
@@ -38,75 +39,30 @@ const scratch = tmpDirForFile("dora-budget-");
 const releaseRows = (count: number) => Array.from({ length: count }, (_, index) => ({ tag_name: `v${index}`, published_at: new Date(FIRST_RELEASE_AT + index * MS_PER_MINUTE).toISOString(), draft: false }));
 
 // ---------------------------------------------------------------------------------------------------------------------
-// PART ONE: which limit ended the call
+// PART ONE: the fixture
 
-const log = join(scratch, "calls.log");
-const bin = join(scratch, "bin");
-execFileSync("mkdir", ["-p", bin]);
-/** A `gh` that lists the releases from a file, answers a `commits/<tag>` at once, and takes `$FAKE_PR_SLEEP` seconds over the merged list (`api graphql`, #5076: it was `pr list --search`); every call is one line of the log. */
-writeFileSync(join(bin, "gh"), `#!/bin/sh
-echo "$*" >> "${log}"
-case "$1 $2" in
-  "api repos/a11ign/frequent/releases") cat "${scratch}/releases.json";;
-  "api repos/a11ign/frequent/commits/"*) echo "${SHA} ${PARENT}";;
-  "api graphql") exec sleep "\${FAKE_PR_SLEEP:-0}";;
-  "repo view") echo '{"hasIssuesEnabled":false}';;
-esac
-`);
-chmodSync(join(bin, "gh"), 0o755);
-process.env.PATH = `${bin}:${process.env.PATH}`;
+afterEach(() => forgetActivation());
 
-const callsLogged = () => readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
-const realNow = Date.now;
-afterEach(() => { Date.now = realNow; delete process.env.FAKE_PR_SLEEP; });
-
-/** `tags` releases, each resolved by its own `commits/<tag>` call that costs `COMMIT_MS` of the fake clock; no clone is declared, so nothing else answers them. */
-function readWith({ tags, budgetMs, timeoutMs, prSleep = 0 }: { tags: number; budgetMs: number; timeoutMs: number; prSleep?: number }) {
-  writeFileSync(log, "");
-  writeFileSync(join(scratch, "releases.json"), JSON.stringify([releaseRows(tags)]));
-  process.env.FAKE_PR_SLEEP = String(prSleep);
-  Date.now = () => NOW + COMMIT_MS * callsLogged().filter((line) => line.includes("/commits/")).length;
-  const reading = readRepository({ repository: REPOSITORY as Any, readers: githubReaders, now: NOW, limits: { timeoutMs, repositoryMs: budgetMs }, clones: { clones: {} } }) as Any;
-  return { reading, calls: callsLogged() };
+/** The fake code host in place with `tags` published releases of `REPOSITORY`, each tag a commit of its own; `asked` is every ref the code host was asked the commit of. */
+function frequentRepository(tags: number) {
+  const host = createFakeCodeHost();
+  const dora = host.rowsWorld.reports.dora;
+  dora.releases.set(REPOSITORY.repo, releaseRows(tags));
+  dora.issuesEnabled.set(REPOSITORY.repo, false);
+  for (let index = 0; index < tags; index += 1) dora.commits.set(`${REPOSITORY.repo}@v${index}`, { sha: SHA, parents: [PARENT] });
+  const asked: string[] = [];
+  const read = host.rows!.commitAndParentsTextOf;
+  host.rows!.commitAndParentsTextOf = (request) => { asked.push(request.ref); return read(request); };
+  substituteCodeHost(host);
+  return { asked };
 }
-
-const NOT_STARTED = /^its merged pull requests could not be read \(gh api graphql was not started: this repository's read budget is spent\)$/;
 
 test("the fixture is a repository that releases on every merge: at least 100 tags, each of them a call of its own when no clone answers", () => {
   assert.ok(TAGS >= MIN_TAGS);
-  const { calls } = readWith({ tags: TAGS, budgetMs: 10 * TAGS * COMMIT_MS, timeoutMs: 5_000 });
-  assert.equal(calls.filter((line) => line.includes("/commits/")).length, TAGS);
-});
-
-test("a budget spent by the tag reads says `was not started: ... budget is spent` for the pull request list, for every metric it ended, and the list was never asked", () => {
-  const { reading, calls } = readWith({ tags: TAGS, budgetMs: TAGS * COMMIT_MS, timeoutMs: 5_000 });
+  const { asked } = frequentRepository(TAGS);
+  const reading = readRepository({ repository: REPOSITORY as Any, readers: githubReaders, now: NOW, clones: { clones: {} } }) as Any;
   assert.equal(reading.status, "read");
-  assert.match(reading.reasons.leadTime, NOT_STARTED);
-  assert.ok(!calls.some((line) => line.startsWith("api graphql")), "the control: the merged list (`gh api graphql`) really was not started");
-  assert.equal(calls.filter((line) => line.includes("/commits/")).length, TAGS, "the control: the tag reads are what spent it");
-  assert.doesNotMatch(reading.reasons.leadTime, /timed out/);
-});
-
-test("a merged-list read (`gh api graphql`) that runs past its OWN limit says `timed out after N s`, and not a word of the budget", () => {
-  const { reading, calls } = readWith({ tags: 3, budgetMs: 10 * TAGS * COMMIT_MS, timeoutMs: 1_000, prSleep: 5 });
-  assert.ok(calls.some((line) => line.startsWith("api graphql")), "the control: the list was started");
-  assert.match(reading.reasons.leadTime, /^its merged pull requests could not be read \(gh api graphql timed out after 1 s\)$/);
-  assert.doesNotMatch(reading.reasons.leadTime, /budget/);
-});
-
-test("a merged-list read given only what was left of the budget says so, with its own limit beside it: neither of the two words above", () => {
-  const { reading } = readWith({ tags: 3, budgetMs: 3 * COMMIT_MS + 1_000, timeoutMs: 5_000, prSleep: 8 });
-  const reason: string = reading.reasons.leadTime;
-  assert.match(reason, /\(gh api graphql timed out after 1 s, all that was left of this repository's read budget \(a call's own limit is 5 s\)\)$/);
-  assert.doesNotMatch(reason, NOT_STARTED);
-});
-
-test("the three are three different strings, and none says only `hit its time limit`", () => {
-  const spent = readWith({ tags: 3, budgetMs: 3 * COMMIT_MS, timeoutMs: 5_000 }).reading.reasons.leadTime;
-  const own = readWith({ tags: 3, budgetMs: 100 * COMMIT_MS, timeoutMs: 1_000, prSleep: 5 }).reading.reasons.leadTime;
-  const left = readWith({ tags: 3, budgetMs: 3 * COMMIT_MS + 1_000, timeoutMs: 5_000, prSleep: 8 }).reading.reasons.leadTime;
-  assert.equal(new Set([spent, own, left]).size, 3);
-  for (const reason of [spent, own, left]) assert.doesNotMatch(reason, /hit its time limit/);
+  assert.deepEqual(asked, releaseRows(TAGS).map((row) => row.tag_name), "the commit of every tag is asked of the code host, once, in the order the releases are listed");
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

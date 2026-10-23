@@ -16,6 +16,7 @@
 // `run` IS HANDED IN and nothing here spawns `gh`. The page builder and the page parser are
 // exported on their own for a caller whose `run` is asynchronous (`messaging/watch.ts`): it pages by the same two functions and the same `foldPage`.
 import type { Page, RowsHelpers, RowsRun as Run, SinceRead } from "../../../src/plugins/contracts/code-host-rows.ts";
+import type { AsyncRowsRun as AsyncRun } from "../../../src/plugins/contracts/code-host-rows-facts.ts";
 import { type Pool, readUnlessRefused } from "./rows-by-label.ts";
 
 /** The error a window longer than its pages throws: core's class (`RowsHelpers.WindowCutShort`), so a caller's `instanceof` finds it. */
@@ -101,6 +102,21 @@ export function readRowsSince({ ask, run, log }: { ask: SinceRead; run: Run; log
       after = folded.next;
     }
   } });
+}
+
+/**
+ * {@link readRowsSince} for a caller that holds an ASYNC `run` (the chairman's watch, A11-160 step 8): every page through that run, the rows in the shape `gh <kind> list --json` gave. It keeps no memory of refusals (the watch
+ * reads once a tick, in a process of its own) and a caller's `guard` on the run applies to each page's argument list.
+ */
+export async function readRowsSinceAsync({ ask, run }: { ask: SinceRead; run: AsyncRun }, { WindowCutShort }: { WindowCutShort: CutShort }): Promise<any[]> {
+  let rows: any[] = [];
+  let after: string | null = null;
+  for (let pagesRead = 1; ; pagesRead += 1) {
+    const folded = foldPage({ ask, rows, page: parsePage(await run(sincePageArgs(ask, after)), ask), pagesRead }, WindowCutShort);
+    rows = folded.rows;
+    if (folded.next === null) return rows.map(asListJson);
+    after = folded.next;
+  }
 }
 
 /**

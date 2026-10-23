@@ -1,4 +1,4 @@
-// no-token: gh -- pure: the four readings are functions of values handed in, `readLastMergedAt` is given a fake `run`, and the one process test below puts a stub `gh` on PATH under a scratch HOME; nothing here reaches the real one
+// no-token: gh -- pure: the four readings are functions of values handed in, the last-merge readings run on the fake code host's pull requests (A11-160, step 8), and the one process test below puts a stub `gh` on PATH under a scratch HOME; nothing here reaches the real one
 /**
  * `packages/agent-org/src/org-health.ts` and its wiring in `work-gate.ts`, #2936: THE GATE ASKS HOW THE ORG IS DOING, AND WAKES `ceo` WITH THE EVIDENCE
  * WHEN NOTHING LANDS OR A RED PR AGES.
@@ -12,7 +12,7 @@
  * its own account has commented on. Both are OFFERED, through the same entry every "is NOT offered" below goes through. Every clear and every unknown is only worth
  * anything because these two trip.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync, cpSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -43,6 +43,9 @@ process.chdir(PROJECT);
 
 const { NO_MERGE_HOURS, RED_PR_MINUTES, REFUSED_TICKS, PRIMARY_STALE_MINUTES, SIGNALS, noMergeReading } = await import("../org-health/thresholds.ts");
 const { redPrReading, refusedRowReading, primaryReading } = await import("../org-health/overdue-readings.ts");
+const { forgetActivation, substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+const { watchedRows } = await import("../plugins/fakes/watched-rows.test.support.ts");
 const { primaryStandingSince, readLastMergedAt, readLatestMerge } = await import("../org-health/sweep-readings.ts");
 const { orgHealthReadings, orgHealthOrders, orgHealthTick } = await import("../org-health/fleet-build-readings.ts");
 const { CAUSES, JUDGMENT_CAUSES, START_CAUSES } = await import("../cause-declaration.ts");
@@ -58,6 +61,18 @@ const STUB_MODE = 0o755;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 3_600_000;
 const NOW = Date.parse("2026-10-01T12:00:00Z");
+
+afterEach(() => forgetActivation());
+/** The fake code host with its rows watched, put where core finds it; the `run` the readings are handed is never used by it. */
+function watched() {
+  const watchedHost = watchedRows(createFakeCodeHost());
+  substituteCodeHost(watchedHost.host);
+  return { host: watchedHost.host as typeof watchedHost.host & { rowsWorld: ReturnType<typeof createFakeCodeHost>["rowsWorld"] }, calls: watchedHost.calls };
+}
+const unusedRun = (args: string[]): string => { throw new Error(`the code host answers this, not a gh: ${args.join(" ")}`); };
+const pullOf = (number: number, over: object) => ({ number, body: "", headRefName: `agent/p-${number}`, labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-09-30T00:00:00Z", comments: [], ...over });
+const mergedPull = (number: number, mergedAt: string) => pullOf(number, { merged: true, mergedAt });
+const closedPull = (number: number) => pullOf(number, { closedAt: "2026-09-30T01:00:00Z" });
 
 const WORK = { greenPrs: 1, claimableRows: 0 };
 const NO_WORK = { greenPrs: 0, claimableRows: 0 };
@@ -220,28 +235,31 @@ test("primary: the age is the OLDEST of the oldest missing commit and the oldest
 
 // --- the last merge, read -------------------------------------------------------------------------------------------
 
-test("readLastMergedAt: the latest merged_at, ONE call; a refusal, `null` and nonsense are all null -- never a long time ago", () => {
-  const calls: string[][] = [];
-  const answers = (out: string) => (args: string[]) => { calls.push(args); return out; };
-  assert.equal(readLastMergedAt(answers("2026-10-01T07:25:01Z\n"), "a11ign/a11ign"), Date.parse("2026-10-01T07:25:01Z"));
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].join(" "), /repos\/a11ign\/a11ign\/pulls\?state=closed&sort=updated&direction=desc/);
-  assert.equal(readLastMergedAt(answers("null\n"), "a/b"), null, "no merged PR among the newest-updated");
-  assert.equal(readLastMergedAt(answers("not a date"), "a/b"), null);
-  assert.equal(readLastMergedAt(() => { throw new Error("HTTP 403"); }, "a/b"), null);
+test("readLastMergedAt: the latest merged_at, ONE call; a refusal, no merged PR and nonsense are all null -- never a long time ago", () => {
+  const { host, calls } = watched();
+  host.rowsWorld.reports.health.foreignPulls.set("a11ign/a11ign", [mergedPull(1, "2026-09-30T19:02:50Z"), mergedPull(2, "2026-10-01T07:25:01Z"), mergedPull(3, "2026-10-01T06:00:00Z")]);
+  assert.equal(readLastMergedAt(unusedRun, "a11ign/a11ign"), Date.parse("2026-10-01T07:25:01Z"));
+  assert.deepEqual(calls.map((call) => [call.op, call.request.repo]), [["lastMergeTextOf", "a11ign/a11ign"]], "ONE call, aimed at the repository");
+  host.rowsWorld.reports.health.foreignPulls.set("a/b", [closedPull(4)]);
+  assert.equal(readLastMergedAt(unusedRun, "a/b"), null, "no merged PR among the newest-updated");
+  host.rowsWorld.reports.health.foreignPulls.set("a/c", [mergedPull(5, "not a date")]);
+  assert.equal(readLastMergedAt(unusedRun, "a/c"), null);
+  host.rowsWorld.failures.set("lastMergeTextOf", new Error("HTTP 403"));
+  assert.equal(readLastMergedAt(unusedRun, "a11ign/a11ign"), null, "CONTROL: the read that answered above, refused, is unknown");
 });
 
 // --- (#4047) the org's latest merge, across the project and agent-org ------------------------------------------------
 
 const PROJECT_REPO = "a11ign/a11ign";
 const TOOL_REPO = "a11ign/agent-org";
-/** A fake `gh`: each repository answers with its own newest `merged_at` (raw, as `--jq` prints it), `"refused"` throws, and every call is kept. */
-const mergesOf = (byRepo: Record<string, string>, calls: string[] = []) => (args: string[]) => {
-  const repo = /repos\/([^/]+\/[^/]+)\/pulls/.exec(args.join(" "))?.[1] ?? "";
-  calls.push(repo);
-  if (byRepo[repo] === "refused") throw new Error("HTTP 403");
-  return `${byRepo[repo]}\n`;
-};
+/** The fake code host in place holding, per repository, one merged pull request merged at the time given; `"null"` is a repository whose newest-updated pull requests merged none, `"refused"` one the host holds nothing of, which is a refused read. */
+function mergesOf(byRepo: Record<string, string>) {
+  const { host, calls } = watched();
+  for (const [repo, at] of Object.entries(byRepo)) {
+    if (at !== "refused") host.rowsWorld.reports.health.foreignPulls.set(repo, [at === "null" ? closedPull(1) : mergedPull(1, at)]);
+  }
+  return { run: unusedRun, calls: () => calls.map((call) => call.request.repo as string) };
+}
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
 const CLAIMABLE = { greenPrs: 0, claimableRows: 1 };
 /** The reading the tick makes of a last merge `readLatestMerge` found: the facts the gate builds, handed to the same decider. */
@@ -249,24 +267,24 @@ const readingOf = (last: { at: number, repo: string } | null) =>
   noMergeReading({ now: NOW, lastMergedAt: last?.at ?? null, lastMergedIn: last?.repo ?? null, work: CLAIMABLE });
 
 test("#4047: a project merge at T-7h and an agent-org merge at T-10min is a last merge of T-10min, so a claimable row does not trip", () => {
-  const calls: string[] = [];
-  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(10 * MINUTE_MS) }, calls), [PROJECT_REPO, TOOL_REPO]);
+  const merges = mergesOf({ [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(10 * MINUTE_MS) });
+  const last = readLatestMerge(merges.run, [PROJECT_REPO, TOOL_REPO]);
   assert.deepEqual(last, { at: NOW - 10 * MINUTE_MS, repo: TOOL_REPO });
-  assert.deepEqual(calls, [PROJECT_REPO, TOOL_REPO], "ONE call per repository");
+  assert.deepEqual(merges.calls(), [PROJECT_REPO, TOOL_REPO], "ONE call per repository");
   assert.equal(readingOf(last).status, "clear");
 });
 
 test("#4047: the reverse order picks the project's merge, and the detail of a trip names the repository of the last merge", () => {
-  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(20 * MINUTE_MS), [TOOL_REPO]: ago(7 * HOUR_MS) }), [PROJECT_REPO, TOOL_REPO]);
+  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(20 * MINUTE_MS), [TOOL_REPO]: ago(7 * HOUR_MS) }).run, [PROJECT_REPO, TOOL_REPO]);
   assert.deepEqual(last, { at: NOW - 20 * MINUTE_MS, repo: PROJECT_REPO });
   assert.equal(readingOf(last).status, "clear");
-  const old = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(5 * HOUR_MS), [TOOL_REPO]: ago(4 * HOUR_MS) }), [PROJECT_REPO, TOOL_REPO]);
+  const old = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(5 * HOUR_MS), [TOOL_REPO]: ago(4 * HOUR_MS) }).run, [PROJECT_REPO, TOOL_REPO]);
   assert.match(readingOf(old).detail, new RegExp(`\\(.* in ${TOOL_REPO}\\)`), "the later of the two is named");
   assert.doesNotMatch(noMergeReading({ now: NOW, lastMergedAt: NOW - 4 * HOUR_MS, work: CLAIMABLE }).detail, / in /, "a caller that names none says none");
 });
 
 test("#4047 POSITIVE CONTROL: both repositories' merges older than 3 h with a claimable row still trips", () => {
-  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(4 * HOUR_MS) }), [PROJECT_REPO, TOOL_REPO]);
+  const last = readLatestMerge(mergesOf({ [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(4 * HOUR_MS) }).run, [PROJECT_REPO, TOOL_REPO]);
   const reading = readingOf(last);
   assert.equal(reading.status, "tripped");
   assert.equal(reading.firstTrippedAt, NOW - 4 * HOUR_MS + 3 * HOUR_MS, "the gap runs from the NEWER merge");
@@ -276,14 +294,14 @@ test("#4047: a refused read of EITHER repository is unknown, never the other's t
   const fresh = ago(10 * MINUTE_MS);
   for (const refused of [PROJECT_REPO, TOOL_REPO]) {
     const answers = { [PROJECT_REPO]: ago(7 * HOUR_MS), [TOOL_REPO]: ago(7 * HOUR_MS), [refused]: "refused" };
-    assert.equal(readLatestMerge(mergesOf(answers), [PROJECT_REPO, TOOL_REPO]), null, `${refused} refused`);
+    assert.equal(readLatestMerge(mergesOf(answers).run, [PROJECT_REPO, TOOL_REPO]), null, `${refused} refused`);
     assert.equal(readingOf(null).status, "unknown");
   }
-  assert.equal(readLatestMerge(mergesOf({ [PROJECT_REPO]: "not a date", [TOOL_REPO]: fresh }), [PROJECT_REPO, TOOL_REPO]), null, "unparseable is a refusal too");
-  assert.deepEqual(readLatestMerge(mergesOf({ [PROJECT_REPO]: "null", [TOOL_REPO]: fresh }), [PROJECT_REPO, TOOL_REPO]), { at: NOW - 10 * MINUTE_MS, repo: TOOL_REPO },
+  assert.equal(readLatestMerge(mergesOf({ [PROJECT_REPO]: "not a date", [TOOL_REPO]: fresh }).run, [PROJECT_REPO, TOOL_REPO]), null, "unparseable is a refusal too");
+  assert.deepEqual(readLatestMerge(mergesOf({ [PROJECT_REPO]: "null", [TOOL_REPO]: fresh }).run, [PROJECT_REPO, TOOL_REPO]), { at: NOW - 10 * MINUTE_MS, repo: TOOL_REPO },
     "an empty repository says nothing about the others");
-  assert.equal(readLatestMerge(mergesOf({ [PROJECT_REPO]: "null", [TOOL_REPO]: "null" }), [PROJECT_REPO, TOOL_REPO]), null);
-  assert.equal(readLatestMerge(mergesOf({}), []), null, "no repository to ask is no answer");
+  assert.equal(readLatestMerge(mergesOf({ [PROJECT_REPO]: "null", [TOOL_REPO]: "null" }).run, [PROJECT_REPO, TOOL_REPO]), null);
+  assert.equal(readLatestMerge(mergesOf({}).run, []), null, "no repository to ask is no answer");
 });
 
 test("#4047: the tick's default reads every declared code repository through readLatestMerge, and hands its repository on", () => {
@@ -334,11 +352,14 @@ test("`org-health` is declared once: in CAUSES and JUDGMENT_CAUSES, NOT a START 
 
 // --- POSITIVE CONTROL, replayed from the record ---------------------------------------------------------------------
 
-/** What `gh api ... --jq '[.[] | select(.merged_at != null) | .merged_at] | max'` prints over this list: the latest merged_at, or `null`. */
-const jqLatestMerge = (list: { merged_at: string | null }[]) => () =>
-  list.map((p) => p.merged_at).filter((t): t is string => t !== null).sort().at(-1) ?? "null";
+/** The latest merge of the list as the last-merge reading reads it: the list is the repository's pull requests on the fake code host, the closed unmerged one among them. */
+const lastMergedAtOf = (list: { number: number; merged_at: string | null }[]) => {
+  const { host } = watched();
+  host.rowsWorld.reports.health.foreignPulls.set("a11ign/a11ign", list.map((p) => (p.merged_at === null ? closedPull(p.number) : mergedPull(p.number, p.merged_at))));
+  return readLastMergedAt(unusedRun, "a11ign/a11ign");
+};
 
-// The pull requests merged around the idle window, newest-updated first, as `gh pr list --state merged` returned them (2026-10-01), plus one closed unmerged.
+// The pull requests merged around the idle window, newest-updated first, as the pull request list returned them (2026-10-01), plus one closed unmerged.
 const MERGES_AROUND_THE_IDLE_WINDOW = [
   { number: 2844, merged_at: "2026-10-01T07:25:01Z" }, { number: 2843, merged_at: "2026-10-01T07:31:41Z" },
   { number: 2839, merged_at: "2026-09-30T19:02:50Z" }, { number: 2838, merged_at: "2026-09-30T18:10:16Z" }, { number: 2837, merged_at: null },
@@ -346,14 +367,14 @@ const MERGES_AROUND_THE_IDLE_WINDOW = [
 
 test("POSITIVE CONTROL: at 05:30Z on 2026-10-01 the merge list says 10 h since #2839, a green PR waits, and the gap is OFFERED to ceo", () => {
   const before = MERGES_AROUND_THE_IDLE_WINDOW.filter((p) => p.merged_at === null || p.merged_at < "2026-10-01T05:30:00Z");
-  const lastMergedAt = readLastMergedAt(jqLatestMerge(before), "a11ign/a11ign");
+  const lastMergedAt = lastMergedAtOf(before);
   assert.equal(lastMergedAt, Date.parse("2026-09-30T19:02:50Z"));
   const orders = orgHealthTick({ ...quiet(), now: Date.parse("2026-10-01T05:30:00Z"), lastMergedAt, work: WORK } as never, { readRefusals: () => [], log: () => undefined }) as Order[];
   assert.equal(orders.length, 1);
   assert.equal(orders[0].session, "ceo");
   assert.match(orders[0].prompt, /10 h since the last merge \(2026-09-30T19:02:50Z\); 1 green unheld PR\(s\)/);
   assert.match(orders[0].prompt, /It first tripped at 2026-09-30T22:02:50Z/, "three hours after #2839");
-  const after = readLastMergedAt(jqLatestMerge(MERGES_AROUND_THE_IDLE_WINDOW), "a11ign/a11ign");
+  const after = lastMergedAtOf(MERGES_AROUND_THE_IDLE_WINDOW);
   assert.deepEqual(orgHealthTick({ ...quiet(), now: Date.parse("2026-10-01T07:40:00Z"), lastMergedAt: after, work: WORK } as never, { readRefusals: () => [], log: () => undefined }), [],
     "the control: the same org after #2843 landed is healthy and is not offered");
 });
@@ -447,12 +468,14 @@ const EXEMPT: Record<string, string> = {
   "org-retro/retro-window-and-journal-patterns.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
   "plugins/contracts/code-host-rows.ts": "its `QueuePull` type names the rollup field so the merge queue's dispatcher (`merge-queue.ts`, exempt above) can read it off the code host's open pull requests; it reads no verdict and counts no red PR (A11-160)",
   "plugins/fakes/code-host-rows.ts": "the fake world's pull request carries the rollup a test seeded (`rollup`, typed as `QueuePull[\"statusCheckRollup\"]`) for the merge queue's dispatcher; it reads no verdict and counts no red PR (A11-160)",
+  "plugins/fakes/code-host-messaging.ts": "the fake code host hands the messaging reads of the open pull requests the rollup a test seeded (`statusCheckRollup: pull.rollup`); it reads no verdict and counts no red PR (A11-160, step 8)",
   "plugins/fakes/code-host-merge.ts": "the fake code host hands the dispatcher the rollup a test seeded on a pull request (`QueuePull.statusCheckRollup`); it reads no verdict and counts no red PR (A11-160)",
   "work-gate/tick/tick-decisions-and-flags.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",
 };
 // 3 before a11ign#5152 split `work-gate.ts`: its readers of the rollup were ONE file, which imported the decider for `redPrFacts`; they are four modules now.
 // Fourteen (A11-160 step 5 adds the contract's `QueuePull` type and the fake that serves it, in two files): the readers of the rollup now sit in `work-gate/`, `org-health/` and `org-retro/` files, and four of them read pending or shadow state, not red.
-const EXEMPT_CEILING = 14;
+// Fifteen (A11-160 step 8: the fake code host's messaging reads carry the seeded rollup of an open pull request, a second fake file beside the merge queue's).
+const EXEMPT_CEILING = 15;
 
 /** Code with every `//`, `/* *\/` comment removed, so a header that NAMES `statusCheckRollup` does not enlist its file. */
 const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");

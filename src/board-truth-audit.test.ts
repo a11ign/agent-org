@@ -1,11 +1,15 @@
-// no-token: gh -- `board-truth-audit.ts` reaches `gh` and `herdr` only through the readers `readBoardFacts` is given; every one this file calls is an injected fake, and the live read was run by hand and is pasted on the pull request (a11ign/a11ign#4043)
+// no-token: gh -- `board-truth-audit.ts` reaches `gh` only through the code host's rows and `herdr` only through the reader `readBoardFacts` is given; every one this file calls is the fake code host or an injected fake, and the live read was run by hand and is pasted on the pull request (a11ign/a11ign#4043)
 // a11ign/a11ign#4043: the board is read against reality, and every row whose state disagrees is named with the field to fix. Fixtures only: nothing here reaches GitHub or herdr.
+//
+// A11-160, STEP 8: THE AUDIT'S READS ARE THE CODE HOST'S ROWS NOW (`rowsListedIn`, `pullsListedIn`, `roadmapFactsOf`, `commentAuthorOf`, `headedCommentIdsText`, `commentOnIssue`, and the ticket port for an epic's children), so the cases
+// that used to hand `readBoardFacts` and `postDaysTable` a `run` answering `gh` argument lists seed the fake code host's world instead (rows, pull requests, comments, the `Roadmap` of a row) and assert what the audit DECIDES of
+// them. What the argument lists and the `--jq` filters say (the aliased `Roadmap` query, the 50-to-a-request alias count, the paths of the day's comment read) is the plugin's and is held in `plugins/github/rows/board-rows.test.ts`.
 //
 // POSITIVE AND NEGATIVE CONTROL PER QUESTION: each `disagrees` test has an `agrees` twin that differs by ONE fact, so a question that always fires is red in the twin and one that
 // never fires is red in the first. The chairman's two cases are fixtures: #2899 (an epic, 13 of 13 children closed, open) and the #3425 shape (`ready` carrying `no-code-left`).
 // `emptiness` is the control for every `[]` here: the same audit finds each of the eight rows in `BOARD` below (and a ninth, #517, for `roadmap-value`), so an empty result is a reading and not an unwired reader.
 import assert from "node:assert/strict";
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -18,11 +22,31 @@ import { SIGNALS } from "./org-health/thresholds.ts";
 import { STALL_UNTOLD_RELEASE_MS } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { boardRowsOf, boardTruthFact, boardTruthNow, orgHealthNow } from "./work-gate/org-health.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRow, type FakeRowPull, type FakeRowsWorld } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
+
+/** The fake code host in place, serving the tracker `repo`, with the clock at `NOW`; `watched.calls` is every operation of its rows that was called, with the request. */
+function tracker(repo = "a/b") {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = repo;
+  host.rowsWorld.now = () => NOW;
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { world: host.rowsWorld, host: watched.host, calls: watched.calls };
+}
+type Tracker = ReturnType<typeof tracker>;
+/** A row of the world, open, with the labels given. */
+const held = (world: FakeRowsWorld, number: number, labels: string[], over: Partial<FakeRow> = {}) => { world.rows.set(number, fakeRow(world, number, { labels, ...over })); };
+/** The rows a test passes the audit (`labels` as the gate's page states them: objects, or names), held by the tracker as well, so the code host can answer the `Roadmap` of each. */
+const holdAll = (world: FakeRowsWorld, rows: { number: number; labels?: (string | { name: string })[] }[]) => rows.forEach((r) => held(world, r.number, (r.labels ?? []).map((l) => (typeof l === "string" ? l : l.name))));
+const mergedPull = (number: number, body: string, mergedAt: string | null = null): FakeRowPull => ({ number, body, headRefName: `agent/pr-${number}`, labels: [], isDraft: false, armed: false, merged: true, mergedAt, createdAt: "2026-10-08T00:00:00Z", comments: [] });
+const requestsOf = (t: Tracker, op: string) => t.calls.filter((c) => c.op === op).map((c) => c.request);
 
 const NOW = Date.parse("2026-10-08T12:00:00Z");
-/** The aliased `Roadmap` read (a11ign/agent-org#517) as a fake `gh` answers it: every row asked for comes back boarded nowhere and under no epic, so the question is READ and finds nothing. `board-truth-audit-roadmap.test.ts` holds the question's own cases. */
-const roadmapRead = (args: string[]) => JSON.stringify({ data: { repository: Object.fromEntries([...String(args.find((a) => a.startsWith("query=")) ?? "").matchAll(/\br(\d+): issue/g)]
-  .map(([, n]) => [`r${n}`, { number: Number(n), repository: { nameWithOwner: "a/b" }, parent: null, projectItems: { totalCount: 0, nodes: [] } }])) } });
 const MINUTE = 60_000;
 const DAY = "2026-10-08";
 
@@ -195,12 +219,16 @@ test("#4116: the table says `N merging, not judged` beside the count only when N
 });
 
 test("#4116: every merged-PR read asks for `mergedAt`, the first tracker's and the code repository's", () => {
-  const asked: any[] = [];
-  const run = (args: string[]) => { if (args[0] === "pr") asked.push(args); return "[]"; };
+  const t = tracker("a/b");
   const trackers = [{ key: "", repo: "a/b" }, { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" }];
-  readBoardFacts("a/b", { run, agents: () => null, now: NOW, trackers });
-  assert.deepEqual(asked.map((a) => a.at(-1)), ["a/b", "a/org-code"], "CONTROL: both merged-PR reads were made");
-  assert.ok(asked.every((a) => /(^|,)mergedAt(,|$)/.test(a[a.indexOf("--json") + 1])));
+  t.world.pulls.set(900, mergedPull(900, "Closes #10", "2026-10-08T11:00:00Z"));
+  t.world.reports.board.pullsByRepo.set("a/org-code", [mergedPull(380, "Closes #7", "2026-10-08T11:30:00Z")]);
+  const read = readBoardFacts("a/b", { agents: () => null, now: NOW, trackers });
+  const asked = requestsOf(t, "pullsListedIn");
+  assert.deepEqual(asked.map((a) => a.repo), ["a/b", "a/org-code"], "CONTROL: both merged-PR reads were made");
+  assert.ok(asked.every((a) => /(^|,)mergedAt(,|$)/.test(a.fields)));
+  assert.deepEqual(read.mergedPrs, [{ number: 900, body: "Closes #10", mergedAt: "2026-10-08T11:00:00Z" }], "and the answer carries it");
+  assert.deepEqual(read.others?.[0].facts?.mergedPrs, [{ number: 380, body: "Closes #7", mergedAt: "2026-10-08T11:30:00Z" }], "the code repository's too");
 });
 
 test("(5) #4048: a row with no state label created 13 s ago is NOT found and is counted as filing; the same row 10 minutes old IS found and is not", () => {
@@ -398,25 +426,26 @@ test("org-health: the reading is in the tick only when asked for, and its order 
 });
 
 test("the reader: a failed closed-row or merged-PR read is UNREAD (null), a partial herdr listing is UNREAD, and the open rows are read with the repo named", () => {
-  const calls: any[] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "api") return roadmapRead(args);
-    if (args[1] === "list" && args.includes("closed")) throw new Error("HTTP 502");
-    return JSON.stringify(args[0] === "pr" ? [{ number: 900, body: "Closes #10" }] : [{ number: 10, labels: [{ name: "ready" }] }]);
-  };
+  const t = tracker("a/b");
+  held(t.world, 10, ["ready"]);
+  t.world.pulls.set(900, mergedPull(900, "Closes #10", "2026-10-08T11:00:00Z"));
+  t.world.failures.set("rowsListedIn closed", new Error("HTTP 502"));
   const standing = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }];
-  const read = readBoardFacts("a/b", { run, agents: () => standing, now: NOW, trackers: [] });
+  const read = readBoardFacts("a/b", { agents: () => standing, now: NOW, trackers: [] });
   assert.equal(read.closedRows, null);
-  assert.deepEqual(read.mergedPrs, [{ number: 900, body: "Closes #10" }]);
+  assert.deepEqual(read.mergedPrs, [{ number: 900, body: "Closes #10", mergedAt: "2026-10-08T11:00:00Z" }]);
   assert.equal(read.repo, "a/b", "the tracker's own repository is what a qualified Closes is matched against (#1280)");
   assert.deepEqual(read.liveSessions, ["ceo", "orchestrator", "worker-11"]);
   assert.equal(read.waitFacts, null, "the wait facts are the tick's, so they are unread here");
-  assert.ok(calls.filter((args) => args[0] !== "api").every((args) => args.slice(-2).join(" ") === "--repo a/b"));
+  assert.deepEqual(read.openRows.map((r: any) => [r.number, r.labels]), [[10, [{ name: "ready" }]]], "CONTROL: the open row was read");
+  const listings = [...requestsOf(t, "rowsListedIn"), ...requestsOf(t, "pullsListedIn")];
+  assert.deepEqual(listings.map((l) => l.state), ["open", "closed", "merged"]);
+  assert.ok(listings.every((l) => l.repo === "a/b"));
   assert.deepEqual(Object.keys(read.roadmaps ?? {}), ["10"], "the one `Roadmap` read is aliased by row, and its answer is read");
-  assert.equal(readBoardFacts("a/b", { run, agents: () => [{ label: "worker-11", status: "working" }], now: NOW, trackers: [] }).liveSessions, null, "no standing pane is not a listing of the org");
-  assert.equal(readBoardFacts("a/b", { run, agents: () => null, now: NOW, trackers: [] }).liveSessions, null);
-  assert.throws(() => readBoardFacts("a/b", { run: () => { throw new Error("HTTP 502"); }, agents: () => null }), /502/);
+  assert.equal(readBoardFacts("a/b", { agents: () => [{ label: "worker-11", status: "working" }], now: NOW, trackers: [] }).liveSessions, null, "no standing pane is not a listing of the org");
+  assert.equal(readBoardFacts("a/b", { agents: () => null, now: NOW, trackers: [] }).liveSessions, null);
+  t.world.failures.set("rowsListedIn", new Error("HTTP 502"));
+  assert.throws(() => readBoardFacts("a/b", { agents: () => null }), /502/);
 });
 
 // --- #4045: the tick passes `boardTruth`, and one table a day is posted on #928 ---------------------------------------------------
@@ -439,11 +468,12 @@ function tick(openRowsRead: any[] | null, io: Record<string, any> = {}) {
 }
 /** @param {any[]} orders */
 const boardTruthOrders = (orders: any[]) => orders.filter((o) => o.subject === SIGNALS.BOARD_TRUTH);
-const wire = (over: any = {}) => ({ repo: "a/b", run: (args: string[]) => args[0] === "api" ? roadmapRead(args) : "[]", agents: () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }], post: () => "posted", log: () => {}, ...over });
+const wire = (over: any = {}) => ({ repo: "a/b", agents: () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }], post: () => "posted", log: () => {}, ...over });
 /** The tick's row as `readOpenRows` returns it: labels are objects, and there is no `state` and no `comments`. */
 const tickRow = (number: number, labels: string[], more: Record<string, any> = {}) => ({ number, title: `row ${number}`, body: "", labels: labels.map((name) => ({ name })), ...more });
 
 test("tick: rows that disagree pass a boardTruth that trips, rows that agree pass one that is clear, a refused open-row read passes null (unknown), and a caller that does not ask gets none", () => {
+  holdAll(tracker().world, [tickRow(13, ["lane:any"]), tickRow(10, ["ready"])]);
   const real = (over: any = {}) => ({ readBoardTruth: (input: any) => boardTruthNow(input, wire(over)) });
   const trips = boardTruthOrders(tick([tickRow(13, ["lane:any"])], real()));
   assert.deepEqual(trips.map((o) => o.session).sort(), ["ceo", "product-manager"]);
@@ -461,6 +491,7 @@ test("tick: rows that disagree pass a boardTruth that trips, rows that agree pas
 
 test("tick: the wait facts the gate built are PASSED, so wait-already-true is read and a wait already true is found", () => {
   const parked = tickRow(12, ["parked"], { body: "Waiting-for: closed #50" });
+  holdAll(tracker().world, [parked]);
   const viaTick = (state: string) => boardTruthOrders(tick([parked], { readBoardTruth: (input: any) => boardTruthNow(input, wire()),
     readWaits: () => ({ facts: { items: { "#50": { state, labels: [] } } }, stale: [], bare: [], manual: [], umbrella: [] }) }));
   assert.match(viaTick("closed")[0].prompt, /#12 \| wait-already-true/, "the facts the tick's own wait pass built reach the audit");
@@ -475,15 +506,16 @@ test("tick: the wait facts the gate built are PASSED, so wait-already-true is re
 });
 
 test("tick: the open rows are the tick's own (no second open-list read), and a claimed row is judged only when its comments came with the page", () => {
-  const calls: any[] = [];
-  const run = (args: string[]) => { calls.push(args); return "[]"; };
-  boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: null, now: NOW }, wire({ run }));
+  const t = tracker("a/b");
+  holdAll(t.world, [tickRow(10, ["ready"])]);
+  boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: null, now: NOW }, wire());
   // the tick's own repository only: a second declared tracker (the ambient project's) is read beside it and has its own open-list read
-  const lists = calls.filter((args) => args[0] !== "api" && args.at(-1) === "a/b");
-  assert.equal(calls.filter((args) => args[0] === "api").length, 1, "and ONE aliased `Roadmap` read for the 10 rows, not a request per row");
-  assert.ok(lists.length > 0 && lists.every((args) => args.includes("--state") && ["closed", "merged"].includes(args[args.indexOf("--state") + 1])), JSON.stringify(calls));
-  const closedRead = calls.find((args) => args.includes("closed"));
-  assert.ok(closedRead && !/body/.test(closedRead[closedRead.indexOf("--json") + 1]), "the closed rows ask for no body");
+  const lists = [...requestsOf(t, "rowsListedIn"), ...requestsOf(t, "pullsListedIn")].filter((request) => request.repo === "a/b");
+  assert.equal(requestsOf(t, "roadmapFactsOf").filter((request) => request.repo === "a/b").length, 1, "and ONE aliased `Roadmap` read for the 10 rows, not a request per row");
+  assert.deepEqual(requestsOf(t, "roadmapFactsOf")[0].numbers, [10]);
+  assert.ok(lists.length > 0 && lists.every((request) => ["closed", "merged"].includes(request.state)), JSON.stringify(lists));
+  const closedRead = lists.find((request) => request.state === "closed");
+  assert.ok(closedRead && !/body/.test(closedRead.fields), "the closed rows ask for no body");
   const claimed = tickRow(11, ["in-progress", "session:worker-99"]);
   const judged = (page: any) => boardTruthNow({ openRowsRead: [claimed], claimedComments: page, waitFacts: null, now: NOW }, wire());
   assert.deepEqual(judged([{ number: 11, comments: [claimRecord(11, 600)] }]).findings.map((f) => f.number), [11], "a stale record and no live holder is found");
@@ -496,44 +528,40 @@ test("tick: the open rows are the tick's own (no second open-list read), and a c
 });
 
 test("the poster: a table is posted once per edition day -- count first, `0 disagree` stated -- and a second tick, a restart or a second host posts nothing", () => {
-  const posted: any[] = [];
-  let onRecord = "";
-  const run = (args: string[]) => {
-    if (args[0] === "api") return onRecord;
-    posted.push(args);
-    onRecord = "4242\n";
-    return "";
-  };
+  const t = tracker("a/b");
+  held(t.world, Number(TABLE_ROW), ["meta"]);
+  const record = () => t.world.rows.get(Number(TABLE_ROW))!.comments;
   const clear = boardTruthAudit(facts({ openRows: [row(10, ["ready"])] }));
-  assert.equal(postDaysTable({ audit: clear, day: DAY, repo: "a/b", run }), "posted");
-  assert.equal(posted.length, 1);
-  assert.deepEqual(posted[0].slice(0, 4), ["issue", "comment", TABLE_ROW, "--repo"]);
-  const body = posted[0][posted[0].indexOf("--body") + 1];
-  assert.match(body, /^### Board against reality, 2026-10-08\n\n\*\*0 disagree\*\*/);
-  assert.equal(postDaysTable({ audit: clear, day: DAY, repo: "a/b", run }), "already-posted");
-  assert.equal(posted.length, 1, "the second tick of the day posts nothing");
-  onRecord = "";
-  assert.equal(postDaysTable({ audit: clear, day: "2026-10-09", repo: "a/b", run }), "posted");
-  assert.equal(posted.length, 2, "the twin: the next edition day is a new table");
+  assert.equal(postDaysTable({ audit: clear, day: DAY, repo: "a/b" }), "posted");
+  assert.equal(record().length, 1);
+  assert.match(record()[0].body, /^### Board against reality, 2026-10-08\n\n\*\*0 disagree\*\*/);
+  assert.deepEqual(requestsOf(t, "commentOnIssue").map((request) => [request.repo, request.issue]), [["a/b", TABLE_ROW]], "posted on the record row of the tracker");
+  assert.equal(postDaysTable({ audit: clear, day: DAY, repo: "a/b" }), "already-posted");
+  assert.equal(record().length, 1, "the second tick of the day posts nothing");
+  assert.equal(postDaysTable({ audit: clear, day: "2026-10-09", repo: "a/b" }), "posted");
+  assert.equal(record().length, 2, "the twin: the next edition day is a new table");
 });
 
 test("the poster asks the record by the day's own heading, and posts nothing it could not decide on", () => {
-  const asked: any[] = [];
-  const run = (args: string[]) => { asked.push(args); return ""; };
-  postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run });
-  assert.match(asked[0].join(" "), /repos\/a\/b\/issues\/928\/comments\?per_page=100&since=2026-10-07T00:00:00Z/);
-  assert.match(asked[0].join(" "), /startswith\("### Board against reality, 2026-10-08"\)/);
-  const calls: any[] = [];
-  const quiet = (args: string[]) => { calls.push(args); return ""; };
-  assert.equal(postDaysTable({ audit: null, day: DAY, repo: "a/b", run: quiet }), "no-audit");
-  assert.equal(postDaysTable({ audit: boardTruthAudit(facts({ closedRows: null })), day: DAY, repo: "a/b", run: quiet }), "unread", "a table carrying NOT READ would stand for the day");
-  assert.deepEqual(calls, [] as any[], "neither asked nor posted");
-  const refusedAsk = (args: string[]) => { calls.push(args); throw new Error("HTTP 403"); };
-  assert.throws(() => postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b", run: refusedAsk }), /403/);
-  assert.equal(calls.length, 1, "a record that could not be asked is not posted to: it might be there already");
+  const t = tracker("a/b");
+  held(t.world, Number(TABLE_ROW), ["meta"]);
+  postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b" });
+  assert.deepEqual(requestsOf(t, "headedCommentIdsText").map(({ repo, row: asked, since, heading }) => ({ repo, row: asked, since, heading })),
+    [{ repo: "a/b", row: TABLE_ROW, since: "2026-10-07T00:00:00Z", heading: "### Board against reality, 2026-10-08" }], "one page of the record from the day before, by the day's heading");
+  const quiet = tracker("a/b");
+  assert.equal(postDaysTable({ audit: null, day: DAY, repo: "a/b" }), "no-audit");
+  assert.equal(postDaysTable({ audit: boardTruthAudit(facts({ closedRows: null })), day: DAY, repo: "a/b" }), "unread", "a table carrying NOT READ would stand for the day");
+  assert.deepEqual(quiet.calls, [], "neither asked nor posted");
+  const refused = tracker("a/b");
+  held(refused.world, Number(TABLE_ROW), ["meta"]);
+  refused.world.failures.set("headedCommentIdsText", new Error("HTTP 403"));
+  assert.throws(() => postDaysTable({ audit: boardTruthAudit(facts({})), day: DAY, repo: "a/b" }), /403/);
+  assert.deepEqual(refused.calls.map((c) => c.op), ["headedCommentIdsText"], "a record that could not be asked is not posted to: it might be there already");
+  assert.deepEqual(refused.world.rows.get(Number(TABLE_ROW))!.comments, []);
 });
 
 test("the tick posts through boardTruthNow once, a failed post never stops the tick, and the gate really passes it", () => {
+  holdAll(tracker().world, [tickRow(10, ["ready"]), tickRow(13, [])]);
   const posts: any[] = [];
   const post = (input: any) => { posts.push(input.day); return "posted"; };
   const audit = boardTruthNow({ openRowsRead: [tickRow(10, ["ready"])], waitFacts: { items: {} }, now: Date.parse("2026-10-08T23:30:00Z") }, wire({ post }));
@@ -601,28 +629,37 @@ test("(5) a parked row read without its blockedBy edges is UNREAD, never agreein
 });
 
 test("the standalone read asks for blockedBy, so the seventh question is read there too", () => {
-  const asked: any[] = [];
-  readBoardFacts("a/b", { run: (args) => { asked.push(args.join(" ")); return "[]"; }, agents: () => [] });
-  assert.ok(asked.some((a) => /issue list --state open .*blockedBy/.test(a)));
+  const t = tracker("a/b");
+  held(t.world, 3449, ["parked", "lane:any"], { body: "lifts once the aged-backlog order is settled", blockedBy: [] });
+  const read = readBoardFacts("a/b", { agents: () => [] });
+  const open = requestsOf(t, "rowsListedIn").find((request) => request.state === "open");
+  assert.ok(/(^|,)blockedBy(,|$)/.test(open.fields), `the open rows are asked for blockedBy: ${open.fields}`);
+  assert.deepEqual(boardTruthAudit({ ...read, closedRows: [], mergedPrs: [], liveSessions: [], waitFacts: { items: {} } }).findings.filter((f) => f.question === QUESTIONS.PARKED_BARE).map((f) => f.number), [3449],
+    "and the edges it came back with are read: a parked row with none is a finding, not an unread question");
 });
 
 // --- #4080 (row 2 of #4056): the audit reads EVERY declared tracker --------------------------------------------------------------
 
 const HOME_TRACKER = { key: "", repo: "a/home" };
 const ORG_TRACKER = { key: "agent-org", repo: "a/org", codeRepo: "a/org-code" };
-/** A `gh` fake answering by the `--repo` it is aimed at: `rowsOf` maps a repository to the open rows it holds, and a repository in `refuse` throws on every read. */
-const fakeGh = (rowsOf: Record<string, any[]>, refuse: string[] = []) => (args: string[]) => {
-  if (args[0] === "api") return roadmapRead(args);
-  const repo = args[args.indexOf("--repo") + 1];
-  if (refuse.includes(repo)) throw new Error(`HTTP 502 from ${repo}`);
-  if (args[0] === "pr") return "[]";
-  return JSON.stringify(args.includes("open") ? (rowsOf[repo] ?? []) : []);
-};
+/** The fake code host with each tracker's open rows (`rowsOf` maps a repository to them: the home tracker's are the world's, another's are held in its repository), and a repository in `refuse` refusing every read. */
+function trackersHolding(rowsOf: Record<string, any[]>, refuse: string[] = []): Tracker {
+  const t = tracker("a/home");
+  for (const [repo, rows] of Object.entries(rowsOf)) {
+    for (const r of rows) {
+      const made = fakeRow(t.world, r.number, { title: r.title, body: r.body, labels: r.labels, state: r.state, createdAt: "2026-10-01T00:00:00Z" });
+      if (repo === "a/home") t.world.rows.set(r.number, made); else t.world.foreignRows.set(`${repo}#${r.number}`, made);
+    }
+  }
+  for (const repo of refuse) t.world.reports.board.refusals.set(repo, new Error(`HTTP 502 from ${repo}`));
+  return t;
+}
 /** A complete herdr listing (standing panes present), so the live sessions are READ and a test of another question is not muddied by that one being unread. */
 const ORG_SEATS = [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }, { label: "worker-11", status: "working" }];
-const twoTrackers = (rowsOf: Record<string, any[]>, refuse = ([] as string[])) =>
-  readBoardFacts("a/home", { run: fakeGh(rowsOf, refuse), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER],
-    openRows: rowsOf["a/home"] ?? [], waitFacts: { items: {} } });
+const twoTrackers = (rowsOf: Record<string, any[]>, refuse = ([] as string[])) => {
+  trackersHolding(rowsOf, refuse);
+  return readBoardFacts("a/home", { agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER, ORG_TRACKER], openRows: rowsOf["a/home"] ?? [], waitFacts: { items: {} } });
+};
 
 test("#4080 CONTROL: with ONE declared tracker the table is the one it always printed (a recorded snapshot), and no other tracker is asked", () => {
   const audit = boardTruthAudit(facts({ openRows: [row(10, ["ready"], { body: "the work" }), row(13, []), row(12, ["parked"], { body: "Waiting-for: closed #50" })],
@@ -632,9 +669,9 @@ test("#4080 CONTROL: with ONE declared tracker the table is the one it always pr
     + "| #10 | closing-pr-merged | state (open) | merged PR #900 says `Closes #10` | product-manager |\n"
     + "| #12 | wait-already-true | `Waiting-for: closed #50` line | the condition is already true, so the row waits on nothing | product-manager |\n"
     + "| #13 | state-label | labels | carries none of ready, in-progress, backlog, parked, epic, blocked | product-manager |");
-  const asked: any[] = [];
-  readBoardFacts("a/home", { run: (args) => { asked.push(args[args.indexOf("--repo") + 1]); return "[]"; }, agents: () => [], trackers: [HOME_TRACKER] });
-  assert.deepEqual([...new Set(asked)], ["a/home"]);
+  const t = trackersHolding({ "a/home": [row(10, ["ready"])], "a/org": [row(7, [])] });
+  readBoardFacts("a/home", { agents: () => [], trackers: [HOME_TRACKER] });
+  assert.deepEqual([...new Set(t.calls.map((call) => call.request.repo ?? call.request.scope))], ["a/home"]);
 });
 
 test("#4080: a row that exists ONLY in the second tracker is audited, and the table names it `agent-org#7`", () => {
@@ -665,8 +702,9 @@ test("#4080: the wait facts are the gate's, read for the first tracker only, so 
   assert.deepEqual(audit.unread, []);
   assert.deepEqual(audit.notAsked, ["agent-org: wait-already-true"]);
   assert.match(boardTruthTable(audit, DAY), /\*\*0 disagree\*\* -- NOT ASKED: agent-org: wait-already-true/);
-  const posted = [];
-  assert.equal(postDaysTable({ audit, day: DAY, repo: "a/home", run: (args) => { posted.push(args[0]); return ""; } }), "posted");
+  const record = trackersHolding({ "a/home": [row(Number(TABLE_ROW), ["meta"])] });
+  assert.equal(postDaysTable({ audit, day: DAY, repo: "a/home" }), "posted");
+  assert.equal(record.world.rows.get(Number(TABLE_ROW))!.comments.length, 1);
 });
 
 // ---- the eighth question: a `parked` row whose `Blocked-on:` names the chairman, whatever date it carries (a11ign/a11ign#4201) ----
@@ -762,78 +800,80 @@ test("#881 (5) an epic not asked is not judged, and a failed read is UNREAD, nev
   assert.deepEqual(failed.findings.filter((f) => f.question === CHILD_QUESTIONS.OUTCOME_CLOSED), []);
 });
 
-/** An item's node as the ticket port's item query answers it: its sub-issues are `subIssues`, each in the repository `scopeOf` names (`a/b` when it names none), and every other field the adapter reads is empty. */
-const itemNode881 = (item: any, subIssues: any[], scopeOf: Record<number, string> = {}) => ({
-  number: item.number, title: item.title, body: item.body, state: item.state, createdAt: "2026-10-01T00:00:00Z",
-  labels: { nodes: [] }, projectItems: { nodes: [] }, parent: null, blockedBy: { nodes: [] }, closedByPullRequestsReferences: { nodes: [] }, timelineItems: { nodes: [] },
-  subIssues: { nodes: subIssues.map((c) => ({ number: c.number, repository: { nameWithOwner: scopeOf[c.number] ?? "a/b" } })) },
-});
-/** The value of one `gh` argument, such as `owner=a` (a11ign/agent-org#1564). */
-const argOf881 = (args: string[], name: string) => args.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
-/** A `gh` fake for the children read through the ticket port: EPIC_881's item answers its children as sub-issues, each child answers its own node only when it is asked of the repository it lives in (`scopeOf`, `a/b` when it names none) and is not `refused`, a comment answers its author, and anything else is the roadmap read. */
-const epicRun881 = (children: any[], authors: Record<string, string> = {}, asked: string[] = [], scopeOf: Record<number, string> = {}, refused: number[] = []) => (args: string[]) => {
-  asked.push(args.join(" "));
-  const query = String(args.find((a) => a.startsWith("query=")) ?? "");
-  const number = Number(argOf881(args, "number"));
-  const repo = `${argOf881(args, "owner")}/${argOf881(args, "name")}`;
-  if (query.includes("subIssues(first: 50)")) {
-    if (number === EPIC_881.number) return JSON.stringify({ data: { repository: { issue: itemNode881(EPIC_881, children, scopeOf) } } });
-    const child = children.find((c) => c.number === number);
-    const answers = child !== undefined && !refused.includes(number) && repo === (scopeOf[number] ?? "a/b");
-    return JSON.stringify({ data: { repository: { issue: answers ? itemNode881(child, []) : null } } });
+/**
+ * The fake code host with EPIC_881 and its children held as rows: the epic names `children` as its sub-issues, each in the repository `scopeOf` gives it (`a/b` when it gives none), and a comment is held on the row it
+ * was posted on with its author (`authors` maps a comment's id to its login). The fake's ticket port holds no sub-issues of its own, so the epic's children are added to the items it reads, and the repositories the port was
+ * asked for are recorded (`scopes`): a child read through the port of ANOTHER repository is not found, as the real port's is not. `refused` are the children the port cannot return (it answers `null` for them).
+ */
+function epicTracker881(children: any[], authors: Record<string, string> = {}, scopeOf: Record<number, string> = {}, refused: number[] = []) {
+  const t = tracker("a/b");
+  held(t.world, EPIC_881.number, ["epic", "out-of-release", "lane:any"], { title: EPIC_881.title, body: EPIC_881.body });
+  for (const child of children) held(t.world, child.number, [], { title: child.title, body: child.body, state: "CLOSED", closedAt: "2026-10-07T00:00:00Z" });
+  for (const [id, login] of Object.entries(authors)) {
+    const home = t.world.rows.get(Number(id) / 10) ?? t.world.rows.get(EPIC_881.number)!;
+    home.comments.push({ id: Number(id), body: "the ruling", createdAt: "2026-10-07T00:00:00Z", author: login });
   }
-  const comment = /^repos\/a\/b\/issues\/comments\/(\d+)$/.exec(args[1] ?? "");
-  if (args[0] === "api" && comment) return `${authors[comment[1]] ?? ""}\n`;
-  if (args[0] === "issue" || args[0] === "pr") return "[]";
-  return roadmapRead(args);
+  const scopes: string[] = [];
+  const adapter = t.host.rows!.ticketAdapter;
+  t.host.rows!.ticketAdapter = (request) => {
+    scopes.push(request.scope);
+    const base = adapter(request);
+    return { ...base, readItem(ref) {
+      if (refused.includes(ref.id)) return null;
+      const item = base.readItem(ref);
+      if (item === null || ref.id !== EPIC_881.number) return item;
+      return { ...item, relations: { ...item.relations, children: children.map((c) => ({ tracker: "github" as const, scope: scopeOf[c.number] ?? "a/b", id: c.number })) } };
+    } };
+  };
+  return { ...t, scopes };
+}
+const readEpics881 = (children: any[], authors: Record<string, string> = {}, openRows: any[] = [EPIC_881]) => {
+  const t = epicTracker881(children, authors);
+  return { t, epicChildren: readBoardFacts("a/b", { agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows, waitFacts: { items: {} } }).epicChildren };
 };
-const readEpics881 = (children: any[], authors: Record<string, string> = {}, asked: string[] = [], openRows: any[] = [EPIC_881]) =>
-  readBoardFacts("a/b", { run: epicRun881(children, authors, asked), agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows, waitFacts: { items: {} } }).epicChildren;
 
 test("#881 (6) the reader: a ruling is verified by its comment's author, and a build row's ruling line is never read", () => {
-  const asked: string[] = [];
   const buildRuled = { ...BUILD_881, body: `Chairman-ruling: ${COMMENT_881(903)}\n\n${BUILD_881.body}` };
-  const epicChildren = readEpics881([{ ...SPIKE_881, body: `Chairman-ruling: ${COMMENT_881(901)}` }, DOCS_881, buildRuled], { "9010": "DanBeckDev" }, asked);
+  const { t, epicChildren } = readEpics881([{ ...SPIKE_881, body: `Chairman-ruling: ${COMMENT_881(901)}` }, DOCS_881, buildRuled], { "9010": "DanBeckDev" });
   assert.deepEqual(epicChildren?.byEpic[900].map((c) => c.number), [901, 902, 903]);
   assert.deepEqual(epicChildren?.rulings, { [COMMENT_881(901)]: "DanBeckDev" });
-  assert.deepEqual(asked.filter((a) => a.includes("comments/")), ["api repos/a/b/issues/comments/9010 --jq .user.login"]);
+  assert.deepEqual(requestsOf(t, "commentAuthorOf").map(({ repo, id }) => [repo, id]), [["a/b", "9010"]], "the one comment a non-build child names is asked, and the build row's is not");
   assert.deepEqual(outcomesOf881(childFacts881(epicChildren?.byEpic[900] ?? [], epicChildren?.rulings ?? {})).map((f) => f.field), ["`Chairman-ruling:` line on #902"]);
 });
 
 test("#881 (7) the reader asks only an all-closed open epic, and a refused or cut-short read is null (UNREAD), never an empty list", () => {
-  const asked: string[] = [];
-  assert.deepEqual(readEpics881([], {}, asked, [row(905, ["epic"], { subIssuesSummary: { total: 3, completed: 2 } })]), { byEpic: {}, rulings: {} });
-  assert.ok(!asked.some((a) => a.includes("subIssues")), "an epic with an open child is not read");
-  const refused = (args: string[]) => { if (String(args.find((a) => a.startsWith("query="))).includes("subIssues")) throw new Error("HTTP 502"); return epicRun881([])(args); };
-  assert.equal(readBoardFacts("a/b", { run: refused, agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows: [EPIC_881], waitFacts: { items: {} } }).epicChildren, null);
+  const open = readEpics881([], {}, [row(905, ["epic"], { subIssuesSummary: { total: 3, completed: 2 } })]);
+  assert.deepEqual(open.epicChildren, { byEpic: {}, rulings: {} });
+  assert.deepEqual(open.t.calls.filter((c) => c.op === "ticketAdapter").map((c) => c.request.scope), ["a/b"], "an epic with an open child is not read: only the port is made");
+  const refused = epicTracker881([]);
+  const readItem = refused.host.rows!.ticketAdapter;
+  refused.host.rows!.ticketAdapter = (request) => ({ ...readItem(request), readItem() { throw new Error("HTTP 502"); } });
+  assert.equal(readBoardFacts("a/b", { agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows: [EPIC_881], waitFacts: { items: {} } }).epicChildren, null);
   const fifty = Array.from({ length: 50 }, (_, i) => row(1000 + i, [], { title: "Build the rest", state: "CLOSED", body: "" }));
-  assert.equal(readEpics881(fifty), null, "a list of exactly the port's cap may be cut short, so it is UNREAD");
-  assert.notEqual(readEpics881(fifty.slice(0, 49)), null, "one fewer than the cap is a whole list");
+  assert.equal(readEpics881(fifty).epicChildren, null, "a list of exactly the port's cap may be cut short, so it is UNREAD");
+  assert.notEqual(readEpics881(fifty.slice(0, 49)).epicChildren, null, "one fewer than the cap is a whole list");
   const ruledSpike = { ...SPIKE_881, body: `Chairman-ruling: ${COMMENT_881(901)}` };
-  const noAuthor = (args: string[]) => {
-    if (args[0] === "api" && args[1]?.startsWith("repos/a/b/issues/comments/")) throw new Error("HTTP 404");
-    return epicRun881([ruledSpike])(args);
-  };
-  assert.equal(readBoardFacts("a/b", { run: noAuthor, agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows: [EPIC_881], waitFacts: { items: {} } }).epicChildren, null, "a ruling that cannot be read is UNREAD too");
+  assert.equal(readEpics881([ruledSpike]).epicChildren, null, "a ruling that cannot be read (its comment is nowhere) is UNREAD too");
+  assert.notEqual(readEpics881([ruledSpike], { "9010": "DanBeckDev" }).epicChildren, null, "CONTROL: the same child with its comment readable is read");
 });
 
 // --- #1564: an epic's children are read in their own repository, and an UNREAD question names its cause ------------------------
 
-const boardOf1564 = (run: (args: string[]) => string) => readBoardFacts("a/b", { run, agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows: [EPIC_881], waitFacts: { items: {} } });
+const boardOf1564 = (t: Tracker) => readBoardFacts("a/b", { agents: () => ORG_SEATS, now: NOW, trackers: [HOME_TRACKER], openRows: [EPIC_881], waitFacts: { items: {} } });
 
 test("#1564 (1) POSITIVE CONTROL: an all-closed epic in a/b whose children are in a/c is read, and each child is asked of a/c", () => {
-  const asked: string[] = [];
-  const board = boardOf1564(epicRun881([SPIKE_881, DOCS_881], {}, asked, { 901: "a/c", 902: "a/c" }));
+  const t = epicTracker881([SPIKE_881, DOCS_881], {}, { 901: "a/c", 902: "a/c" });
+  const board = boardOf1564(t);
   assert.ok(board.epicChildren !== null, "a child in another repository is read, not UNREAD");
   assert.deepEqual(board.epicChildren?.byEpic[900].map((c) => c.number), [901, 902]);
-  assert.ok(asked.some((a) => a.includes("owner=a") && a.includes("name=c") && a.includes("number=901")), "the child is asked of its own repository");
+  assert.deepEqual(t.scopes.filter((scope) => scope === "a/c"), ["a/c", "a/c"], "each child is asked of its own repository");
   const audit = boardTruthAudit(board);
   assert.deepEqual(audit.findings.filter((f) => f.question === CHILD_QUESTIONS.OUTCOME_CLOSED).map((f) => f.field), ["`Chairman-ruling:` line on #901", "`Chairman-ruling:` line on #902"]);
   assert.ok(!audit.unread.some((u) => u.startsWith(CHILD_QUESTIONS.OUTCOME_CLOSED)), "the question is asked, so it is not unread");
 });
 
 test("#1564 (2) NEGATIVE CONTROL: a child whose read is refused still leaves the epic UNREAD, and the question names that child", () => {
-  const board = boardOf1564(epicRun881([SPIKE_881, DOCS_881], {}, [], { 901: "a/c", 902: "a/c" }, [902]));
+  const board = boardOf1564(epicTracker881([SPIKE_881, DOCS_881], {}, { 901: "a/c", 902: "a/c" }, [902]));
   assert.equal(board.epicChildren, null);
   assert.equal(board.epicChildrenWhy, "a child of #900, a/c#902, was not returned by the ticket port");
   const audit = boardTruthAudit(board);
@@ -843,9 +883,9 @@ test("#1564 (2) NEGATIVE CONTROL: a child whose read is refused still leaves the
 });
 
 test("#1564 (3) NEGATIVE CONTROL: children all in the epic's own repository are read as before, and nothing is named", () => {
-  const asked: string[] = [];
-  const board = boardOf1564(epicRun881([SPIKE_881, DOCS_881], {}, asked));
+  const t = epicTracker881([SPIKE_881, DOCS_881]);
+  const board = boardOf1564(t);
   assert.deepEqual(board.epicChildren?.byEpic[900].map((c) => c.number), [901, 902]);
   assert.equal(board.epicChildrenWhy, undefined);
-  assert.ok(asked.some((a) => a.includes("owner=a") && a.includes("name=b") && a.includes("number=901")), "a child in a/b is asked of a/b");
+  assert.ok(t.scopes.every((scope) => scope === "a/b"), "a child in a/b is asked of a/b");
 });

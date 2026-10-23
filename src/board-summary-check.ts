@@ -40,6 +40,7 @@ import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { execFileSync } from "node:child_process";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { REPO, ROOT, gh, git, REPORTED_KINDS } from "./board-data.ts";
+import { rows } from "./plugins/rows.ts";
 import { editionDay } from "./board-discussion.ts";
 
 const ISSUE = "20";
@@ -523,13 +524,12 @@ export function statedWritingTime(text: string, now: Date | string): { stated: s
  */
 export function postAbsence({ day, issue, reminder, run = gh }: { day: string; issue: string; reminder: boolean; run?: (args: string[]) => string; }): boolean {
   const marker = `no summary for ${day}`;
-  const existing = run(["issue", "view", issue, "--repo", REPO, "--json", "comments",
-    "--jq", ".comments[].body"]);
-  if (existing.includes(marker)) {
+  const existing = rows().commentBodiesOfIssue({ repo: REPO, number: issue, run });
+  if (existing.some((body) => body.includes(marker))) {
     console.error("(already reported for this date; not commenting again)");
     return false;
   }
-  run(["issue", "comment", issue, "--repo", REPO, "--body",
+  rows().commentOnIssue({ repo: REPO, issue, run, body:
     `**There is ${marker} (${day}), so today's 08:00 edition will refuse and no document will be `
     + "published.**\n\nThe summary is written by hand, by design: a summary a machine assembled from the "
     + "sections below it is what the board explicitly forbade, so there is no fallback and this warning "
@@ -539,7 +539,7 @@ export function postAbsence({ day, issue, reminder, run = gh }: { day: string; i
     + "changed since yesterday, what must the board decide today. **Do not restate a count the document "
     + "computes** — it goes stale between writing the summary and rendering the edition, which happened "
     + `on the first day.\n\n*Posted automatically at ${reminder ? "07:15" : "07:45"} London by the summary `
-    + "check. It generates no summary text.*"]);
+    + "check. It generates no summary text.*" });
   console.error(`reported on https://github.com/${REPO}/issues/${issue}`);
   return true;
 }

@@ -36,6 +36,8 @@ import { createGhReaders, parsePlaceholders, readPlaceholders } from "./placehol
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import type { Readers } from "./placeholders.ts";
 import { assertReadOnlyGh, assertReadOnlySystemctl } from "./reply-cli.ts";
+import type { AsyncRowsRun } from "../plugins/contracts/code-host-rows-facts.ts";
+import { rows } from "../plugins/rows.ts";
 import { checkMessage } from "./record.ts";
 import { accountIsDeclared, defaultLedgerPath, trackerRepo } from "./state.ts";
 
@@ -169,6 +171,9 @@ export function createWatchList({ ledger, readers, now }: Ports) {
   };
 }
 
+/** `gh`, as the code host starts it, behind the read-only check: asked when the first call is made, not when the runner is. */
+const guardedGh: AsyncRowsRun = (argv) => rows().asyncRunnerWith({ timeoutMs: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER, echo: false, guard: assertReadOnlyGh })(argv);
+
 /** Returns a runner that refuses every argv a reader does not build */
 function guardedRunner(file: string, assertRead: (argv: readonly string[]) => void): (argv: string[]) => Promise<string> {
   return async (argv) => {
@@ -201,7 +206,7 @@ export async function hostFiles({ root, err }: { root: string; err: (line: strin
  * Returns the real reads, over `gh` and `systemctl` runners that make no write
  */
 export function createWatchReaders(repo: string, now: () => number = Date.now, files: { fleet?: { statePath: string; capturesPath: string; }; gateRecordPath?: string; } = {}): Readers {
-  return createGhReaders({ gh: guardedRunner("gh", assertReadOnlyGh), systemctl: guardedRunner("systemctl", assertReadOnlySystemctl), repo, now, ...files });
+  return createGhReaders({ gh: guardedGh, systemctl: guardedRunner("systemctl", assertReadOnlySystemctl), repo, now, ...files });
 }
 
 /** What a caller may leave out. A spread and not parameter defaults, as `record.ts` does. */

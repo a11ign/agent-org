@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh` or file outside a temp directory is touched; the pull requests, the acceptance file and the clock are fixtures (a11ign/agent-org#1081)
+// no-token: none -- no `gh` or file outside a temp directory is touched; the pull requests are the fake code host's, the acceptance file and the clock are fixtures (a11ign/agent-org#1081; A11-160, step 8)
 // #1081: the daily retrospective's reads walk the merged pull requests only above a per-repository mark, and cache the acceptance files by merge commit, in the state entry.
 //
 // THE POSITIVE CONTROL is the first tick (no state entry): every merged list is read in full, the acceptance file is read once, and the memory is written.
@@ -8,10 +8,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { freshRetroReads, readInertOptions, readMergedRowOpen } from "../org-retro/retro-window-and-journal-patterns.ts";
 import { keepRetroReads, readRetroReads, resetRetroTally, retroReadsLine, RETRO_READS_FILE } from "../org-retro.ts";
-import { connectionOf, readsRowsByLabel, readsRowsSince, sinceAnswer, type FakeRow } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { holdRepository, withRepositoryReads } from "../plugins/fakes/code-host-health.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
+
+afterEach(() => forgetActivation());
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-10-10T12:00:00Z");
@@ -25,25 +30,25 @@ const NAMING_KEY = `${CODE}|number body headRefName`;
 const INERT_KEY = `${CODE}|number body mergeCommit{oid} files(first:100){nodes{path}}`;
 
 /** A merged pull request of `CODE` that closes row 4001 of the tracker, merged `minutes` ago; `updated` is its last update (the walk's clock), newer after an edit. */
-const merged = (number: number, { minutes = 60, body = `Closes ${TRACKER}#4001`, updated = minutes }: { minutes?: number; body?: string; updated?: number; } = {}) => ({
+const merged = (number: number, { minutes = 60, body = `Closes ${TRACKER}#4001`, updated = minutes }: { minutes?: number; body?: string; updated?: number; } = {}): Merged => ({
   number, body, headRefName: "agent/the-thing-4001", mergedAt: ago(minutes), updatedAt: ago(updated), mergeCommit: { oid: SHA }, files: [{ path: ACCEPTANCE }],
 });
 
-/** A `gh` for the tick: the merged pull requests answered newest-updated first, as the connection orders them; every other list empty. It counts the pages it serves and the lists it is asked. */
-function forge(merged: FakeRow[]) {
-  const pages: { select: string; after: string | null; }[] = [];
-  let lists = 0;
-  const read = (args: string[]): any[] | null => {
-    const since = readsRowsSince(args);
-    if (since !== null) {
-      pages.push({ select: since.kind, after: since.after });
-      return JSON.parse(sinceAnswer(args, [...merged].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))));
-    }
-    if (readsRowsByLabel(args) !== null) return JSON.parse(connectionOf([]));
-    lists += 1;
-    return [];
-  };
-  return { read, pages, lists: () => lists };
+type Merged = { number: number; body: string; headRefName: string; mergedAt: string; updatedAt: string; mergeCommit: { oid: string }; files: { path: string }[] };
+
+/**
+ * The fake code host for the tick (A11-160, step 8): `CODE` holds the merged pull requests, which the host answers newest-updated first, as the connection orders them; the tracker holds no row. It counts the walks it is
+ * asked: `walks` is the `since` of each merged-list read, so "read in full" is a walk from the start of the look-back and "walked above the mark" is a walk from the mark. How the plugin pages a walk is held beside the
+ * operation (`plugins/github/rows/health-rows.test.ts`).
+ */
+function forge(merged: Merged[]) {
+  const watched = watchedRows(withRepositoryReads(createFakeCodeHost()));
+  substituteCodeHost(watched.host);
+  const world = (watched.host as unknown as { rowsWorld: ReturnType<typeof createFakeCodeHost>["rowsWorld"] }).rowsWorld;
+  holdRepository(world, TRACKER);
+  holdRepository(world, CODE, { pulls: merged.map((pr) => ({ number: pr.number, body: pr.body, headRefName: pr.headRefName, labels: [], isDraft: false, armed: false, merged: true, mergedAt: pr.mergedAt, createdAt: pr.mergedAt,
+    updatedAt: pr.updatedAt, comments: [], files: pr.files.map((file) => file.path), mergeCommit: pr.mergeCommit.oid })) });
+  return { walks: () => watched.calls.filter((call) => call.op === "readRowsSince").map((call) => String(call.request.ask.since)) };
 }
 
 /** The acceptance file's text, counted: every call is an acceptance read the memory did not answer. */
@@ -60,9 +65,9 @@ function acceptanceReads() {
 function tick(dir: string, gh: ReturnType<typeof forge>, acceptance: ReturnType<typeof acceptanceReads>) {
   const memory = readRetroReads(dir);
   resetRetroTally();
-  const rows = readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: gh.read, memory });
-  const again = readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: gh.read, memory });
-  const inert = readInertOptions({ now: NOW, declaration: DECLARATION, read: gh.read, readFile: () => "", readAcceptance: acceptance.readAcceptance, recorded: [], memory });
+  const rows = readMergedRowOpen({ now: NOW, declaration: DECLARATION, memory });
+  const again = readMergedRowOpen({ now: NOW, declaration: DECLARATION, memory });
+  const inert = readInertOptions({ now: NOW, declaration: DECLARATION, readFile: () => "", readAcceptance: acceptance.readAcceptance, recorded: [], memory });
   keepRetroReads(dir, memory);
   return { memory, rows, again, inert };
 }
@@ -76,7 +81,8 @@ test("the first tick reads every merged list in full, reads each acceptance file
 
     assert.equal(memory.unreadable, true, "no state entry: the tick says so");
     assert.deepEqual(memory.fullReads, [CODE, CODE], "each merged list is read in full, and named");
-    assert.deepEqual(gh.pages.map((page) => page.after), [null, null], "one page of each merged list, the first page of a full read");
+    const WINDOW_START = new Date(NOW - 7 * 24 * 60 * MIN).toISOString();
+    assert.deepEqual(gh.walks(), [WINDOW_START, WINDOW_START], "one walk of each merged list, from the start of the look-back: a full read");
     assert.deepEqual(acceptance.reads, [`${CODE}|${ACCEPTANCE}|${SHA}`], "one acceptance read for the one merged file, at its merge commit");
     assert.deepEqual(again, rows, "the second read in the tick answers from the mark");
     assert.notEqual(inert, null);
@@ -103,7 +109,7 @@ test("the second tick over the same fixture reads one page per merged list and n
     assert.equal(two.memory.unreadable, false, "the state entry is read");
     assert.deepEqual(two.memory.fullReads, [], "no mark is missing, so nothing is read in full");
     assert.deepEqual(secondAcceptance.reads, [], "zero acceptance contents reads");
-    assert.deepEqual(second.pages.map((page) => page.after), [null, null], "one top page per merged list: the mark stops the walk there");
+    assert.deepEqual(second.walks(), [ago(60), ago(60)], "one walk per merged list, from the mark (the newest update the first tick saw): the mark stops the walk there");
     assert.deepEqual(two.rows, one.rows, "same naming readings");
     assert.deepEqual(two.inert, one.inert, "same inert readings");
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -130,7 +136,7 @@ test("an unreadable state entry is read in full and named in the line", () => {
     const memory = readRetroReads(dir);
     assert.equal(memory.unreadable, true);
     const gh = forge([merged(7)]);
-    readMergedRowOpen({ now: NOW, declaration: DECLARATION, read: gh.read, memory });
+    readMergedRowOpen({ now: NOW, declaration: DECLARATION, memory });
     assert.deepEqual(memory.fullReads, [CODE]);
     assert.match(retroReadsLine(memory), /; the state entry is missing or unreadable, so the merged lists and acceptance contents are read in full; read in full, the mark missing or unreadable: o\/code$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }

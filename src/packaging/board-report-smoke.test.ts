@@ -1,6 +1,6 @@
 // no-token: REPO
-// This file imports board-report.ts, whose closure reads REPO from board-data.ts, which spawns `gh`. Every test here
-// renders from an injected fact set and, since #1442, an injected instant; nothing here calls or spawns it.
+// This file imports board-report.ts, whose closure reads REPO from board-data.ts (whose `gh` is the code host's runner since A11-160, step 8). Every test here
+// renders from an injected fact set and, since #1442, an injected instant; nothing here reads GitHub or spawns `gh`, so step 8 left its cases as they were.
 /**
  * Guard triage 4 of 6 (#906): the board's content/style guards retire with the org shape they policed.
  * What survives is this — that the board report renders at all — because a render failure is a defect a
