@@ -23,6 +23,7 @@
 // reader of the row -- a bypass flag here would just be a second, unrecorded way to the same effect.
 import { waitingOn, todayIso } from "../waiting-condition.ts";
 import { lookup, gh } from "../merge-guard/lookups.ts";
+import { rows } from "../plugins/rows.ts";
 import { REPO } from "../project-identity.ts";
 
 /**
@@ -33,10 +34,7 @@ import { REPO } from "../project-identity.ts";
  * @returns {{blockedBy?: {nodes?: {number?: number, state?: string}[]}} | null} `null` on a failed lookup
  */
 export function lookupBlockedByEdge(issueNumber: number, { run = gh, repo = REPO }: { run?: typeof gh; repo?: string; } = {}): { blockedBy?: { nodes?: { number?: number; state?: string; }[]; }; } | null {
-  return lookup(() => {
-    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "blockedBy"]);
-    return JSON.parse(raw);
-  });
+  return lookup(() => rows().blockedByOf({ repo, number: issueNumber, run }));
 }
 
 /**

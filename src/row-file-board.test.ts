@@ -1,8 +1,8 @@
 // no-token: gh
 //
-// Imports `row-file.ts`, which spawns `gh`; true of the IMPORT and false of the CALL. Every dependency
-// below is injected (`run`, the board and label readers, `moveStatus`, `ensureLabels`, the lanes), so no
-// test lets a real spawn happen -- the same arrangement as `packaging/row-file.test.ts`.
+// Imports `row-file.ts`, which spawns `gh`; true of the IMPORT and false of the CALL. The row, its board item, its body and its labels are the fake code host's world (A11-160, step 7), and the
+// readers and writers that are another step's (`fetchLabels`, the home repository's labels, `moveStatus` for the home tracker) are injected, so no test lets a real spawn happen -- the same
+// arrangement as `packaging/row-file.test.ts`. What an operation SENDS to GitHub is `plugins/github/rows/filing-rows.test.ts`'s, and how the board is read is `project-membership.test.ts`'s.
 /**
  * #3330: `row-file --board=<n> --lane=<owner>` boards a row that ALREADY EXISTS (a11ign/a11ign#3328's sweep
  * of `regression` rows filed under `github.token`, which cannot resolve Project 1) and leaves a boarded
@@ -12,14 +12,20 @@
  * hand-written second fixture: `item-add` puts it on the board, `moveStatus` sets the Status, and
  * `gh issue edit --add-label` adds to the labels it already had.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { boardArgvRefusal, boardFromArgv, createIssue, moveTrackerStatus } from "./row-file/roadmap-and-milestone-checks.ts";
+import { boardArgvRefusal, boardFromArgv, createIssue, ensureLabelsOn, moveTrackerStatus } from "./row-file/roadmap-and-milestone-checks.ts";
 import { boardRow } from "./row-file.ts";
-import { fetchIssueBoardStatus, unverifiedFilingFields } from "./row-file/title-kind-and-label-refusals.ts";
+import { unverifiedFilingFields } from "./row-file/title-kind-and-label-refusals.ts";
 import { PROJECT_NUMBER } from "./board-snapshot-scope.ts";
 import { CLAIM_LABEL } from "./claim-labels.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { REPO } from "./project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow as worldRow, type FakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 /** Region says the deliverable is not a commit, so the body passes the filing rule in any checkout. */
 const CLAIMABLE_BODY = "## Region\n\nits deliverable is not a commit\n\n"
@@ -38,37 +44,38 @@ function fakeRow(options: {
   unreadableBoard?: boolean;
   statusMoveFails?: boolean;
 } = {}) {
-  const row = { labels: [...(options.labels ?? ["regression", "out-of-release"])],
-    status: options.status === undefined ? null : options.status, onBoard: options.status != null,
-    writes: [] as string[] };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  const held = worldRow(world, 3329, { labels: [...(options.labels ?? ["regression", "out-of-release"])], body: options.body ?? CLAIMABLE_BODY, onBoard: options.status != null, boardStatus: options.status ?? null });
+  world.rows.set(3329, held);
+  substituteCodeHost(host);
+  const row = { get labels() { return held.labels; }, get status() { return held.boardStatus; }, writes: [] as string[] };
+  // The order of the writes is what these tests assert, so the writes that reach the code host are recorded as they are made.
+  const code = host.rows!;
+  const addToProject = code.addRowToProject;
+  code.addRowToProject = (request) => { row.writes.push("item-add"); addToProject(request); };
+  const addLabels = code.addLabelsToRowIn;
+  code.addLabelsToRowIn = (request) => { row.writes.push("labels"); addLabels(request); };
+  const setLabels = code.setRowLabels;
+  code.setRowLabels = (request) => { row.writes.push("label-set"); setLabels(request); };
   const deps = {
-    run: (_cmd: string, args: string[]) => {
-      if (args[0] === "project" && args[1] === "item-add") { row.writes.push("item-add"); row.onBoard = true; return ""; }
-      if (args[0] === "issue" && args[1] === "edit") {
-        row.writes.push("labels");
-        const added = args.flatMap((a, i) => (args[i - 1] === "--add-label" ? [a] : []));
-        row.labels.push(...added.filter((label) => !row.labels.includes(label))); // adding a label the row has is a no-op, as on GitHub
-        return "";
-      }
-      if (args[0] === "api" && args.includes("PUT")) { row.writes.push("label-set"); return ""; }
-      if (args.includes("body")) return options.body ?? CLAIMABLE_BODY;
-      return "";
-    },
+    run: (): string => { throw new Error("the fake code host acts on its own state: no gh is run"); },
     fetchBoardStatus: () => {
       if (options.unreadableBoard) throw new Error("HTTP 502");
-      return row.onBoard ? row.status : null;
+      return held.onBoard ? held.boardStatus : null;
     },
-    fetchLabels: () => ({ number: 3329, title: "a regression", state: options.state ?? "OPEN", labels: [...row.labels] }),
+    fetchLabels: () => ({ number: 3329, title: "a regression", state: options.state ?? "OPEN", labels: [...held.labels] }),
     moveStatus: (_n: number, status: string) => {
       if (options.statusMoveFails) return { moved: false as const, reason: "GraphQL 500" };
       row.writes.push(`status:${status}`);
-      row.status = status;
+      held.boardStatus = status;
       return { moved: true as const };
     },
     ensureLabels: () => {},
     loadLanesConfig: LANES,
   };
-  return { row, deps };
+  return { row, deps, world };
 }
 
 /** Runs `boardRow` and returns its exit code with what it printed. */
@@ -186,43 +193,15 @@ test("#3330: `--board=` takes no flag but --lane= and --session=, and a malforme
   assert.match(stray.err, /FILES NOTHING/);
 });
 
-// --- fetchIssueBoardStatus pages (reviewer-agent-org-121's blocker on de971e06) ---
+// --- the board is read page by page, by its owner and number: `plugins/github/rows/project-membership.test.ts` (#3330, #4078) ---
 
-const node = (number: number, status = "Ready") => ({ project: { number }, fieldValueByName: { name: status } });
-// Like GitHub, a LAST page still carries an `endCursor`; only `hasNextPage` says it is the last.
-const pageOf = (nodes: unknown[], hasNextPage: boolean) => JSON.stringify({ data: { repository: { issue: {
-  projectItems: { pageInfo: { hasNextPage, endCursor: hasNextPage ? "c1" : "last" }, nodes } } } } });
-const tenElsewhere = Array.from({ length: 10 }, (_, i) => node(100 + i, "Done"));
-
-test("#3330 BLOCKER: Project 1 AFTER ten other project items is found on the next page, not read as off-board", () => {
-  const afters: string[] = [];
-  const run = (_cmd: string, args: string[]) => {
-    const query = args[args.length - 1];
-    afters.push(/after: "([^"]+)"/.exec(query)?.[1] ?? "");
-    return afters.length === 1 ? pageOf(tenElsewhere, true) : pageOf([node(1, "In progress")], false);
-  };
-  assert.equal(fetchIssueBoardStatus(3329, { run }), "In progress");
-  assert.deepEqual(afters, ["", "c1"], "the second request carries the first page's cursor");
-});
-
-test("#3330 BLOCKER: boardRow leaves such a row alone -- no item-add, so no duplicate Project 1 item", () => {
-  const { row, deps } = fakeRow();
-  const pages = [pageOf(tenElsewhere, true), pageOf([node(1)], false)];
-  const run = deps.run;
-  const paged = { ...deps, fetchBoardStatus: fetchIssueBoardStatus, run: (cmd: string, args: string[]) =>
-    (args[0] === "api" && args[1] === "graphql" ? pages.shift() ?? "" : run(cmd, args)) };
-  const r = board(["--board=3329", "--lane=any"], paged as never);
+test("#3330 BLOCKER: boardRow leaves a row that is on the board alone -- no item-add, so no duplicate Project 1 item -- with the default reader of the Status", () => {
+  const { row, deps } = fakeRow({ status: "Ready" });
+  const { fetchBoardStatus: _injected, ...withDefaultReader } = deps;
+  const r = board(["--board=3329", "--lane=any"], withDefaultReader as never);
   assert.equal(r.code, 0, r.err);
   assert.deepEqual(row.writes, []);
-  assert.match(r.out, /already boarded/);
-});
-
-test("#3330: absent from EVERY page is null; a page that says there is more but gives no cursor throws", () => {
-  const pages = [pageOf(tenElsewhere, true), pageOf([node(7)], false)];
-  assert.equal(fetchIssueBoardStatus(3329, { run: () => pages.shift() ?? "" }), null);
-  const noCursor = JSON.stringify({ data: { repository: { issue: { projectItems: {
-    pageInfo: { hasNextPage: true, endCursor: null }, nodes: tenElsewhere } } } } });
-  assert.throws(() => fetchIssueBoardStatus(3329, { run: () => noCursor }), /no cursor/);
+  assert.match(r.out, /already boarded .*Status "Ready"/);
 });
 
 // --- #4078: a row is filed in the tracker its Region names, and boarded on THAT tracker's board ---
@@ -245,74 +224,77 @@ const OUT_OF_RELEASE_FLAGS = ["--label", "out-of-release"];
 const CI_RESET = ["--milestone", "CI reset"];
 
 /**
- * A fake GitHub that is a small state machine, so each assertion reads what the filing WROTE: `item-add` puts the issue on the board it
- * names, `item-edit` sets that board's Status, label creates and edits are recorded per repository, and the GraphQL read-back answers from
- * the boards the issue is really on. Every gh call lands in `calls`; `createIssue` is given the DEFAULT `moveStatus`, `ensureLabels`,
- * `fetchLabels` and `fetchBoardStatus`, so what runs is the code a real filing runs.
+ * The fake code host seen as a small state machine, so each assertion reads what the filing WROTE: adding the issue to a board puts it on the board that names it, setting a Status sets that board's Status, label creates and
+ * edits are recorded per repository, and the row `spawnGh` files is the row in the world of the repository it names. What the filing asks of the code host is recorded in `gh` by the operations it makes; `createIssue`
+ * is given the DEFAULT `moveStatus` of a non-home tracker, `ensureLabels` of a non-home repository and `fetchBoardStatus`, so what runs is the code a real filing runs. The home repository's labels and Status are the claim's
+ * (`row-claim.ts`), so they are injected here.
  */
 function fakeGitHub(options: { itemAddLandsOn?: { owner: string; number: number } } = {}) {
-  const gh = { calls: [] as string[][], spawned: [] as string[][], boards: new Map<string, { repo: string; status: string | null }>(),
-    ensured: [] as string[], edits: [] as string[][], milestoneReads: [] as string[] };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = HOME_TRACKER.repo;
+  substituteCodeHost(host);
+  const gh = { calls: [] as string[], spawned: [] as string[][], boards: new Map<string, { repo: string; status: string | null }>(),
+    ensured: [] as string[], edits: [] as { repo: string; labels: string[] }[], milestoneReads: [] as string[], itemAdds: [] as { number: number; owner: string }[],
+    statusMoves: [] as number[], reposNamedByWrites: [] as string[] };
   const boardKey = (owner: string, number: string | number) => `${owner}/${number}`;
   const repoOfUrl = (url: string) => /github\.com\/([^/]+\/[^/]+)\//.exec(url)?.[1] ?? "";
-  const created = new Map<string, string[]>();
-  const milestoneIn = new Map<string, string>();
-  const labelsIn = (repo: string) => [...(created.get(repo) ?? []), ...gh.edits.filter((e) => e[e.indexOf("--repo") + 1] === repo)
-    .flatMap((e) => e.flatMap((a, i) => (e[i - 1] === "--add-label" ? [a] : [])))];
+  const filedIn = new Map<string, FakeRow>();
+  const labelsIn = (repo: string): string[] => [...(filedIn.get(repo)?.labels ?? [])];
+  const code = host.rows!;
+  const addToProject = code.addRowToProject;
+  code.addRowToProject = (request) => {
+    gh.calls.push("addRowToProject");
+    gh.itemAdds.push({ number: request.projectNumber, owner: request.owner });
+    gh.reposNamedByWrites.push(repoOfUrl(request.url));
+    const landed = options.itemAddLandsOn ?? { owner: request.owner, number: request.projectNumber };
+    gh.boards.set(boardKey(landed.owner, landed.number), { repo: repoOfUrl(request.url), status: null });
+    addToProject(request);
+  };
+  const setStatus = code.setProjectStatus;
+  code.setProjectStatus = (request) => {
+    gh.calls.push("setProjectStatus");
+    gh.statusMoves.push(request.projectNumber);
+    gh.reposNamedByWrites.push(repoOfUrl(request.url));
+    const found = gh.boards.get(boardKey(request.owner, request.projectNumber));
+    if (found === undefined) throw new Error("is not an item in project");
+    found.status = request.status;
+    setStatus(request);
+  };
+  const ensureLabel = code.ensureLabelIn;
+  code.ensureLabelIn = (request) => { gh.calls.push("ensureLabelIn"); gh.ensured.push(`${request.repo}:${request.name}`); gh.reposNamedByWrites.push(request.repo); ensureLabel(request); };
+  const addLabels = code.addLabelsToRowIn;
+  code.addLabelsToRowIn = (request) => { gh.calls.push("addLabelsToRowIn"); gh.edits.push({ repo: request.repo, labels: request.labels }); gh.reposNamedByWrites.push(request.repo); addLabels(request); };
   const run = (_cmd: string, args: string[]): string => {
-    gh.calls.push(args);
-    const flag = (name: string) => args[args.indexOf(name) + 1];
+    gh.calls.push(args.join(" "));
     if (readsRowsByLabel(args) !== null) return connectionOf([]); // #5039: the claimed rows' by-label read (the sweep window's, the blast radius's) -- none held
-    if (args[0] === "issue" && args[1] === "list") return "[]"; // #4294: the duplicate-title read -- no open row has the title
-    if (args[0] === "project" && args[1] === "item-add") {
-      const landed = options.itemAddLandsOn ?? { owner: flag("--owner"), number: Number(args[2]) };
-      gh.boards.set(boardKey(landed.owner, landed.number), { repo: repoOfUrl(flag("--url")), status: null });
-      return "";
-    }
-    if (args[0] === "project" && args[1] === "item-edit") {
-      const board = gh.boards.get(boardKey(flag("--owner"), args[2]));
-      if (board === undefined) throw new Error("is not an item in project");
-      board.status = flag("--value");
-      return "";
-    }
-    if (args[0] === "label" && args[1] === "create") { gh.ensured.push(`${flag("--repo")}:${args[2]}`); return ""; }
-    if (args[0] === "issue" && args[1] === "edit") { gh.edits.push(args); return ""; }
-    if (args[0] === "api" && args[1] === "graphql") return graphql(args[args.length - 1]);
-    // agent-org#1302: the read-back of a row's labels and state is REST, `gh api repos/<repo>/issues/<n>`, whose state is lower case
-    if (args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "")) {
-      const [, owner, repoName] = args[1].split("/");
-      return JSON.stringify({ number: 900, title: "t", state: "open", labels: labelsIn(`${owner}/${repoName}`).map((label) => ({ name: label })) });
-    }
-    if (args[0] === "issue" && args[1] === "view" && args.includes("body")) return "## Region\n\nFiled-by: worker-4078\n";
-    if (args[0] === "issue" && args[1] === "view" && args.includes("milestone")) return milestoneIn.get(flag("--repo")) ?? "";
-    if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ number: 900, title: "t", state: "OPEN", labels: labelsIn(flag("--repo")).map((name) => ({ name })) });
-    }
     return "";
   };
-  const graphql = (query: string) => {
-    const repo = `${/owner: "([^"]+)"/.exec(query)?.[1]}/${/name: "([^"]+)"/.exec(query)?.[1]}`;
-    const nodes = [...gh.boards.entries()].filter(([, board]) => board.repo === repo).map(([key, board]) => {
-      const [owner, number] = key.split("/");
-      return { project: { number: Number(number), owner: { login: owner } }, fieldValueByName: board.status === null ? null : { name: board.status } };
-    });
-    return JSON.stringify({ data: { repository: { issue: { projectItems: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } } });
-  };
   /** The home tracker's move is `moveProjectStatus`, whose board snapshot reads GitHub; another tracker's runs the REAL `moveTrackerStatus`. */
-  const moveStatus = (n: number, status: string, options: { run: typeof run; tracker: typeof HOME_TRACKER }) => {
-    if (options.tracker.board.number !== HOME_TRACKER.board.number) return moveTrackerStatus(n, status, options);
-    const board = gh.boards.get(`${options.tracker.board.owner}/${options.tracker.board.number}`);
-    if (board === undefined) return { moved: false as const, reason: "not on the board", notOnBoard: true };
-    board.status = status;
+  const moveStatus = (n: number, status: string, moving: { run: typeof run; tracker: typeof HOME_TRACKER }) => {
+    if (moving.tracker.board.number !== HOME_TRACKER.board.number) return moveTrackerStatus(n, status, moving);
+    const found = gh.boards.get(`${moving.tracker.board.owner}/${moving.tracker.board.number}`);
+    if (found === undefined) return { moved: false as const, reason: "not on the board", notOnBoard: true };
+    found.status = status;
+    world.rows.get(900)!.boardStatus = status;
     return { moved: true as const };
   };
   const deps = (extra: Record<string, unknown> = {}) => ({ run, moveStatus, spawnGh: (argv: string[]) => {
     gh.spawned.push(argv);
     const repo = argv.includes("--repo") ? argv[argv.indexOf("--repo") + 1] : HOME_TRACKER.repo;
-    created.set(repo, argv.flatMap((a, i) => (argv[i - 1] === "--label" ? [a] : [])));
-    milestoneIn.set(repo, argv[argv.indexOf("--milestone") + 1] ?? "");
+    const row = worldRow(world, 900, { labels: argv.flatMap((a, i) => (argv[i - 1] === "--label" ? [a] : [])), body: "## Region\n\nFiled-by: worker-4078\n" });
+    filedIn.set(repo, row);
+    world.rows.set(900, row);
+    if (repo !== world.repo) world.foreignRows.set(`${repo}#900`, row);
+    world.filing.rowMilestones.set(`${repo}#900`, argv[argv.indexOf("--milestone") + 1] ?? "");
     return `https://github.com/${repo}/issues/900`;
   }, loadLanesConfig: () => ({ lanes: [] }), ...extra,
+    fetchLabels: (_number: number, labelsOf: { repo?: string } = {}) => ({ number: 900, title: "t", state: "OPEN" as const, labels: labelsIn(labelsOf.repo ?? HOME_TRACKER.repo) }),
+    ensureLabels: (labels: string[], ensuring: { repo?: string } = {}) => {
+      const repo = ensuring.repo ?? HOME_TRACKER.repo;
+      if (repo === HOME_TRACKER.repo) { for (const label of labels) gh.ensured.push(`${repo}:${label}`); return; } // the home repository's create is the claim's (`row-claim.ts`)
+      ensureLabelsOn(labels, { run, repo });
+    },
     milestones: ({ repo }: { repo: string }) => { gh.milestoneReads.push(`repos/${repo}/milestones`); return ["CI reset"]; } });
   return { gh, deps, labelsIn };
 }
@@ -323,7 +305,6 @@ function fileRow(argv: string[], declaration: typeof TWO_TRACKERS | typeof ONE_T
   return { code, out, err, ...github };
 }
 const filing = (body: string, ...more: string[]) => ["--title", "a row", "--body", body, "--session=worker-4078", ...more];
-const touched = (gh: ReturnType<typeof fakeGitHub>["gh"], verb: string) => gh.calls.filter((a) => a.slice(0, 2).join(" ") === verb);
 
 test("#4078 ACCEPTANCE: an ORG row (a Region of only agent-org paths) is filed in the agent-org tracker -- `gh issue create`, the label writes and the "
   + "read-back all name a11ign/agent-org, and the URL printed is that repository's", () => {
@@ -334,9 +315,9 @@ test("#4078 ACCEPTANCE: an ORG row (a Region of only agent-org paths) is filed i
   assert.equal(argv[argv.indexOf("--repo") + 1], ORG_TRACKER.repo, "gh is told the repository, or it files where the checkout's remote points");
   assert.ok(!argv.some((a) => a.startsWith("--tracker")), "our own flag never reaches gh");
   assert.match(r.out, /^https:\/\/github\.com\/a11ign\/agent-org\/issues\/900\n$/);
-  assert.deepEqual(r.gh.edits.map((e) => e[e.indexOf("--repo") + 1]), [ORG_TRACKER.repo]);
+  assert.deepEqual(r.gh.edits.map((e) => e.repo), [ORG_TRACKER.repo]);
   // #4601: the blast-radius check READS both trackers' open rows and every code repository's pull requests, so only the calls that WRITE count here.
-  const everyRepoNamed = r.gh.calls.filter((a) => !["list", "view"].includes(a[1])).flatMap((a) => (a.includes("--repo") ? [a[a.indexOf("--repo") + 1]] : []));
+  const everyRepoNamed = r.gh.reposNamedByWrites;
   assert.ok(everyRepoNamed.length > 0 && everyRepoNamed.every((repo) => repo === ORG_TRACKER.repo), `repositories named: ${everyRepoNamed}`);
 });
 
@@ -353,26 +334,17 @@ test("#4078 ACCEPTANCE: the row is added to THAT tracker's board -- `gh project 
   + "and the Status move and the read-back use the same board, never the home one", () => {
   const r = fileRow(filing(ORG_ROW, ...OUT_OF_RELEASE_FLAGS, "--ready"), TWO_TRACKERS);
   assert.equal(r.code, 0, r.err);
-  assert.deepEqual(touched(r.gh, "project item-add").map((a) => a.slice(2, 5)), [["7", "--owner", "a11ign"]]);
-  assert.deepEqual(touched(r.gh, "project item-edit").map((a) => a[2]), ["7"]);
+  assert.deepEqual(r.gh.itemAdds, [{ number: 7, owner: "a11ign" }]);
+  assert.deepEqual(r.gh.statusMoves, [7]);
   assert.deepEqual([...r.gh.boards.entries()], [["a11ign/7", { repo: "a11ign/agent-org", status: "Ready" }]], "on board 7 only, in Ready");
 });
 
 test("#4078 ACCEPTANCE: a read-back of the OTHER board does not satisfy it -- an item-add that landed on board 1 leaves the filing UNCONFIRMED (exit 2)", () => {
   // The Status move is told it succeeded, so the read-back is the only thing standing between the filing and a false "filed and boarded".
   const r = fileRow(filing(ORG_ROW, ...OUT_OF_RELEASE_FLAGS), TWO_TRACKERS, fakeGitHub({ itemAddLandsOn: { owner: "a11ign", number: 1 } }),
-    { moveStatus: () => ({ moved: true }) });
+    { moveStatus: () => ({ moved: true }), fetchBoardStatus: () => null });
   assert.equal(r.code, 2);
   assert.match(r.err, /missing: Project 7 membership/, "it names the board it asked, not the one the item is on");
-});
-
-test("#4078: the board is its owner AND its number -- another owner's Project 7 is not this tracker's", () => {
-  const node = (login: string) => ({ project: { number: 7, owner: { login } }, fieldValueByName: { name: "Ready" } });
-  const read = (login: string, tracker: typeof ORG_TRACKER) => fetchIssueBoardStatus(900, { tracker, run: () => JSON.stringify({ data: {
-    repository: { issue: { projectItems: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [node(login)] } } } } }) });
-  assert.equal(read("a11ign", ORG_TRACKER), "Ready");
-  assert.equal(read("someone-else", ORG_TRACKER), null);
-  assert.equal(read("a11ign", { ...ORG_TRACKER, board: { owner: "a11ign", number: 8 } }), null, "the same owner's other board");
 });
 
 test("#4078 ACCEPTANCE: the labels the filing writes (out-of-release, backlog/ready, lane:*) are ensured on the TARGET repository, and not on the first", () => {

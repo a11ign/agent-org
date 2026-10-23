@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` call is an injected `run`; nothing here reaches the network (a11ign/a11ign#4793)
+// no-token: none -- the fake code host's rows hold the world in memory; nothing here reaches `gh` or the network (a11ign/a11ign#4793)
 /**
  * a11ign/a11ign#4793: THE CLAIM HONOURS THE CHAIRMAN'S YIELD, SO THE ROW THE GATE OFFERS IS THE ROW THE CLAIM ACCEPTS.
  *
@@ -11,7 +11,7 @@
  * beside their unlabelled twin, so the refusal read there is the refusal that a plain row still gets. The emptiness of `walked` for a plain row is read
  * against (1) and (2), which are non-empty for the same Region.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -19,7 +19,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation } from "./plugins/active.ts";
+import { type WatchedCall } from "./plugins/fakes/watched-rows.test.support.ts";
+import { holdYieldWorld, type YieldWorld } from "./plugins/fakes/yield-world.test.support.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE, as `claimed-region-overlap.test.ts` does it: the host file first, the tool imported after it.
 const SCRATCH = mkdtempSync(join(tmpdir(), "row-claim-chairman-yield-"));
@@ -51,54 +53,21 @@ const SHARED = "agent-org:src/row-claim.ts";
 const TEMPLATE = "\n## Acceptance\n\n```bash\ntrue\n```\n\n## Open-check\n\n```\n$ true\n```\n";
 const bodyOf = (...files: string[]) => `## Region\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n${TEMPLATE}`;
 
-type World = {
-  /** rows carrying the label, with who added it last (`null`: the history cannot be read) */
-  labelled?: Record<number, string | null>;
-  claimed?: { number: number; files: string[]; }[];
-  prs?: { number: number; path: string; closes?: number; }[];
-  blockedBy?: number[];
-  claimedUnreadable?: boolean;
+type World = YieldWorld;
+
+/** The fake code host holding `world` (A11-160, step 7), watched: the calls are the operations the claim asked of it, with their requests, in order. */
+const fakeGh = (world: World): WatchedCall[] => holdYieldWorld(world, { asker: ASKER, tracker: TRACKER, otherRepo: AGENT_ORG.repo, bodyOf, askerFiles: SHARED });
+
+/** The claim's `run`: for `git` and the board snapshot, so a `gh` through it is a loud mistake. */
+const noGh = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+
+afterEach(() => forgetActivation());
+
+const verdict = (world: World, calls?: WatchedCall[][]) => {
+  const watched = fakeGh(world);
+  calls?.push(watched);
+  return sessionEligibility(ASKER, `worker-${ASKER}`, { repo: TRACKER, repos: [AGENT_ORG] });
 };
-
-/** One `gh`, routed the way `claimed-region-overlap.test.ts` routes it, plus the two reads the yield adds. `calls` is every argv it was asked. */
-function fakeGh(world: World, calls: string[][] = []) {
-  return (_cmd: string, args: string[]): string => {
-    calls.push(args);
-    if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ number: ASKER, title: "A row", body: bodyOf(SHARED), state: "OPEN", labels: [{ name: "ready" }],
-        blockedBy: { nodes: (world.blockedBy ?? []).map((number) => ({ number, state: "OPEN" })) } });
-    }
-    const byLabel = readsRowsByLabel(args);
-    if (byLabel?.label === "priority:chairman") {
-      return connectionOf(Object.keys(world.labelled ?? {}).map((number) => ({ number: Number(number), labels: [{ name: "priority:chairman" }] })));
-    }
-    if (byLabel?.label === "in-progress") {
-      if (world.claimedUnreadable) throw new Error("HTTP 502");
-      return connectionOf((world.claimed ?? []).map((row) => ({ number: row.number, labels: [{ name: "in-progress" }], body: bodyOf(...row.files),
-        blockedBy: { nodes: [] } })));
-    }
-    // agent-org#1302: the asker's labels and state are read over REST
-    if (args[0] === "api" && args[1] === `repos/${TRACKER}/issues/${ASKER}`) return JSON.stringify({ number: ASKER, title: "A row", labels: [{ name: "ready" }], state: "open" });
-    if (args[0] === "api") return history(world, args);
-    if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify(args.includes(AGENT_ORG.repo) ? (world.prs ?? []).map((pr) => ({ number: pr.number, changedFiles: 1, files: [{ path: pr.path }],
-        body: pr.closes === undefined ? "" : `Closes ${TRACKER}#${pr.closes}\n` })) : []);
-    }
-    return "[]";
-  };
-}
-
-/** The tracker's own `issues/<n>/events` answer: the login that added the label last, or a refusal. */
-function history(world: World, args: string[]): string {
-  const asked = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/events$/.exec(args[1] ?? "");
-  if (asked === null) return "[]";
-  assert.equal(asked[1], TRACKER, "the placeholder is filled with the TRACKER, never left for `gh` to fill from the working directory");
-  const actor = (world.labelled ?? {})[Number(asked[2])];
-  if (actor === null || actor === undefined) throw new Error("HTTP 502");
-  return `${actor}\n`;
-}
-
-const verdict = (world: World, calls?: string[][]) => sessionEligibility(ASKER, `worker-${ASKER}`, { run: fakeGh(world, calls), repo: TRACKER, repos: [AGENT_ORG] });
 
 // --- (1) a chairman row over a plain claimed row ------------------------------------------------------------------------------------
 
@@ -179,32 +148,38 @@ test("(7) a history that cannot be read FAILS CLOSED: the row is refused, and sa
 // --- (8) a claim that overlaps nothing asks nothing new --------------------------------------------------------------------------------
 
 test("(8) with no overlap the claim does not read the chairman's rows at all", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const { reason } = verdict({ labelled: { [ASKER]: CHAIRMAN }, claimed: [{ number: HOLDER, files: ["agent-org:src/elsewhere.ts"] }] }, calls);
   assert.equal(reason, null);
-  // The claimed rows are now an `api graphql` read too (#5039), so it is told apart by the label it asks for: only the chairman's rows and the label history are not wanted.
-  assert.deepEqual(calls.filter((args) => readsRowsByLabel(args)?.label === "priority:chairman" || (args[0] === "api" && readsRowsByLabel(args) === null)), []);
-  const overlapping = [] as string[][];
+  // The claimed rows are read by label too (#5039), so it is told apart by the label it asks for: only the chairman's rows and the label history are not wanted.
+  const asksChairman = (call: WatchedCall) => call.op === "newestLabellerOf" || (call.op === "readRowsByLabel" && call.request.label === "priority:chairman");
+  assert.deepEqual(calls[0].filter(asksChairman), []);
+  const overlapping = [] as WatchedCall[][];
   verdict({ labelled: { [ASKER]: CHAIRMAN }, claimed: [{ number: HOLDER, files: [SHARED] }] }, overlapping);
-  assert.ok(overlapping.some((args) => readsRowsByLabel(args)?.label === "priority:chairman"), "the control: an overlap DOES ask, so the emptiness above is a reading");
+  assert.ok(overlapping[0].some(asksChairman), "the control: an overlap DOES ask, so the emptiness above is a reading");
 });
 
 test("(8) `sessionEligibilityReason` is the same verdict as `sessionEligibility`'s reason", () => {
   const world: World = { labelled: { [ASKER]: CHAIRMAN }, claimed: [{ number: HOLDER, files: [SHARED] }] };
-  assert.equal(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { run: fakeGh(world), repo: TRACKER, repos: [AGENT_ORG] }), null);
-  assert.notEqual(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { run: fakeGh({ claimed: world.claimed }), repo: TRACKER, repos: [AGENT_ORG] }), null);
+  fakeGh(world);
+  assert.equal(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { repo: TRACKER, repos: [AGENT_ORG] }), null);
+  fakeGh({ claimed: world.claimed });
+  assert.notEqual(sessionEligibilityReason(ASKER, `worker-${ASKER}`, { repo: TRACKER, repos: [AGENT_ORG] }), null);
 });
 
 // --- (9) THE CLAIM ITSELF: the seam above is driven, and so is the call site that says so on the row ------------------------------------
 
-const claimWith = (world: World, calls: string[][]) => claimRow(ASKER, `worker-${ASKER}`, {
-  run: fakeGh(world, calls), moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
-  tracker: { key: "", repo: TRACKER },
-} as never);
-const commentsOn = (calls: string[][]) => calls.filter((args) => args[0] === "issue" && args[1] === "comment").map((args) => args[args.indexOf("--body") + 1]);
+const claimWith = (world: World, calls: WatchedCall[][]) => {
+  calls.push(fakeGh(world));
+  return claimRow(ASKER, `worker-${ASKER}`, {
+    run: noGh as never, moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
+    tracker: { key: "", repo: TRACKER },
+  } as never);
+};
+const commentsOn = (calls: WatchedCall[][]) => calls[0].filter((call) => call.op === "postRowComment").map((call) => call.request.body as string);
 
 test("(9) a chairman row's claim goes ahead and leaves a comment naming the holder it walked past", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const result = claimWith({ labelled: { [ASKER]: CHAIRMAN }, claimed: [{ number: HOLDER, files: [SHARED] }] }, calls) as { claimed: boolean; };
   assert.equal(result.claimed, true);
   const notes = commentsOn(calls).filter((body) => /B4 yielded/.test(body));
@@ -213,7 +188,7 @@ test("(9) a chairman row's claim goes ahead and leaves a comment naming the hold
 });
 
 test("(9) the control: a plain row is NOT claimed over the same holder, and no note is written", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const result = claimWith({ claimed: [{ number: HOLDER, files: [SHARED] }] }, calls) as { claimed: boolean; reason?: string; };
   assert.equal(result.claimed, false);
   assert.match(result.reason ?? "", new RegExp(`overlaps the Region of #${HOLDER}`));

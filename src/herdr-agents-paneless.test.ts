@@ -111,7 +111,7 @@ test("(2) an order addressed to a PANELESS worker with an open row is dropped at
     const holder = (ref: number) => (ref === 5470 ? { open: true, sessions: ["worker-5470"] } : null);
     const posts: string[][] = [];
     const tick = (now: number) => dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder,
-      post: (args) => { posts.push(args); }, queuePath, paused: false, now });
+      post: (args) => { posts.push(args); return ""; }, queuePath, paused: false, now });
 
     const first = tick(NOW);
     assert.deepEqual(first.kept.map((h) => h.id), [order.id], "the first tick that sees it starts the clock and keeps it");
@@ -166,8 +166,8 @@ test("(3) a LIVE agent with `unknown` status and a readable pane is NOT treated 
     const agents = readAgents(run)!;
     assert.equal(agents.find((a) => a.label === "worker-5471")?.paneless, undefined);
     const holder = (ref: number) => (ref === 5471 ? { open: true, sessions: ["worker-5471"] } : null);
-    const later = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: () => {}, queuePath, paused: false, now: NOW });
-    const bound = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: () => {}, queuePath, paused: false, now: NOW + UNKNOWN_SESSION_MS });
+    const later = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: () => "", queuePath, paused: false, now: NOW });
+    const bound = dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder, post: () => "", queuePath, paused: false, now: NOW + UNKNOWN_SESSION_MS });
     assert.deepEqual([later.kept.map((h) => h.id), bound.kept.map((h) => h.id), bound.lines], [[order.id], [order.id], []], "kept, and not dropped, past the bound");
   } finally {
     rmSync(dir, { recursive: true, force: true });

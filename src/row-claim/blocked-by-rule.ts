@@ -21,6 +21,7 @@
 // that fires on assertion alone, which is exactly what this row exists to prevent.
 import { REPO } from "../project-identity.ts";
 import { lookup } from "../merge-guard/lookups.ts";
+import { rows } from "../plugins/rows.ts";
 
 /** The literal header a measurement comment must start its claim with -- a marker, not a sentence this
  * code parses for meaning, so the check stays "does the shape exist" rather than "is the claim true". */
@@ -68,12 +69,7 @@ export function findMeasurementComment(comments: readonly string[]): string | nu
  * @returns {string[] | null}
  */
 export function lookupOwnPrComments(prNumber: number, { run, repo = REPO }: { run: (args: string[]) => string; repo?: string; }): string[] | null {
-  return lookup(() => {
-    const raw = run(["pr", "view", String(prNumber), "--repo", repo, "--json", "comments"]);
-    /** @type {{ comments: { body: string }[] }} */
-    const parsed: { comments: { body: string; }[]; } = JSON.parse(raw);
-    return parsed.comments.map((c) => c.body);
-  });
+  return lookup(() => rows().readPullComments({ repo, number: prNumber, run }).map((comment) => comment.body));
 }
 
 /**
@@ -82,12 +78,7 @@ export function lookupOwnPrComments(prNumber: number, { run, repo = REPO }: { ru
  * @returns {string | null}
  */
 export function lookupIssueOpenState(issueNumber: number, { run, repo = REPO }: { run: (args: string[]) => string; repo?: string; }): string | null {
-  return lookup(() => {
-    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "state"]);
-    /** @type {{ state: string }} */
-    const parsed: { state: string; } = JSON.parse(raw);
-    return parsed.state;
-  });
+  return lookup(() => rows().stateOfRow(repo, issueNumber, run));
 }
 
 /**

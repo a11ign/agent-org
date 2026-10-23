@@ -113,7 +113,7 @@ test("#484 NEGATIVE CONTROL: the source test reports a port file that spawns `gh
 // --- 3. the delegates ----------------------------------------------------------------------------------------------------------------
 
 /**
- * The members of the rows a core file reaches: `delegates("<operation>", ...)` for operations, and `rows().<member>` for a value or a call made by hand. The files are this directory's (the ticket port's
+ * The members of the rows a core file reaches: `delegates("<operation>", ...)` for operations, and `rows().<member>` for a value or a call made by hand, `const { <member>, ... } = rows()` for several, and `<name>.<member>` where `const <name> = rows()`. The files are this directory's (the ticket port's
  * own delegates) and, since step 5 of A11-160 moved the callers that arm, guard and queue a merge, the files of `src/` that ask the code host for what those callers need (`arm-pr.ts`, `merge-guard.ts`, ...):
  * every non-test file under `src/`, because an operation is as reachable from a caller as from a delegate beside the port.
  */
@@ -122,8 +122,13 @@ function delegatedOperations(): Set<string> {
   const sourceRoot = join(HERE, "..");
   for (const file of readdirSync(sourceRoot, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.includes("node_modules") && !f.startsWith("packaging/"))) {
     const source = readFileSync(join(sourceRoot, file), "utf8");
-    for (const match of source.matchAll(/\bdelegates?\(([^)]*)\)|\b(?:rows|codeHostRows)\(\)\.(\w+)/g)) {
+    const importsRows = /import \{[^}]*\brows\b[^}]*\} from "[^"]*plugins\/rows\.ts"/.test(source);
+    for (const alias of importsRows ? source.matchAll(/\bconst (\w+) = (?:rows|codeHostRows)\(\)(?!\.)/g) : []) {
+      for (const member of source.matchAll(new RegExp(`(?<![.\\w])${alias[1]}\\.(\\w+)`, "g"))) found.add(member[1]!);
+    }
+    for (const match of source.matchAll(/\bdelegates?\(([^)]*)\)|\b(?:rows|codeHostRows)\(\)\.(\w+)|\{([^{}]*)\}\s*=\s*(?:rows|codeHostRows)\(\)(?!\.)/g)) {
       if (match[2] !== undefined) found.add(match[2]);
+      else if (match[3] !== undefined) for (const member of match[3].split(",")) found.add(member.split(":")[0]!.trim());
       else for (const name of match[1]!.matchAll(/"(\w+)"/g)) found.add(name[1]!);
     }
   }

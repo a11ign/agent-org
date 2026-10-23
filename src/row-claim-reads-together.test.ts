@@ -1,4 +1,4 @@
-// no-token: gh -- `gh` is never reached: every read is handed a fake `run` and a fake `batch`.
+// no-token: gh -- `gh` is never reached: the GitHub plugin runs over an injected `exec`, and every batch is a fake.
 /**
  * a11ign/a11ign#3566, slice 4: THE CLAIM'S PRE-WRITE READS WAIT TOGETHER, NOT ONE AFTER THE OTHER.
  *
@@ -14,7 +14,7 @@
  *     rehearsed;
  *   - the import of the batch helper from the gate runs nothing and makes no cycle (condition 4 of the Region).
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -22,6 +22,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { claimRow, CLAIM_LABEL } from "./row-claim.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { fakePluginDeps } from "./plugins/fakes/deps.ts";
+import { createCodeHost } from "../plugins/github/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 type Call = { args: string[], repo: string | undefined };
 type Answer = { stdout: string } | { failed: true, stdout: string, stderr: string, status: number | null, code?: string };
@@ -55,10 +60,25 @@ function ghAnswer(args: string[], options: Options = {}): string {
   return "[]";
 }
 
-/** The `run` a test hands the claim: one call at a time, noted, answering by argv. */
+/**
+ * What a test hands the claim as its `run`: nothing it may reach `gh` through (A11-160, step 7: the claim's `gh` is the code host's). The code host is the GitHub plugin's own over an `exec` that notes each call and
+ * answers by argv, ONE AT A TIME: this file is about WHEN the claim's reads wait, in the command language the plugin builds, so it runs the plugin's operations and not the fake's.
+ */
 function sequentialRun(seen: Call[], options: Options = {}) {
-  return (_cmd: string, args: string[]) => { seen.push({ args, repo: undefined }); return ghAnswer(args, options); };
+  substituteCodeHost(createCodeHost(fakePluginDeps({ exec: (_file, args) => {
+    seen.push({ args: [...args], repo: undefined });
+    try {
+      return { status: 0, stdout: ghAnswer([...args], options), stderr: "" };
+    } catch (error) {
+      const failed = error as { status?: number; stdout?: string; stderr?: string };
+      return { status: failed.status ?? 1, stdout: failed.stdout ?? "", stderr: failed.stderr ?? "" };
+    }
+  } })));
+  return noGh as never;
 }
+
+/** A `run` that is never to reach `gh`: the claim's `git` and board snapshot only. */
+const noGh = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
 
 /** A batch that answers as `ghAnswer` does and notes every call it was handed, one entry per BATCH. */
 function fakeBatch(batches: Call[][], options: Options = {}) {
@@ -218,5 +238,5 @@ test("THE WIRING: the claim reads its pre-write checks through the gate's seam a
   assert.match(source, /batch = run === defaultRun \? runBatch : undefined/);
   const writer = source.slice(source.indexOf("\nfunction writeRowLabels("), source.indexOf("\nfunction completeClaim("));
   assert.match(writer, /readWithFirstWaveTogether\(/);
-  assert.ok(writer.indexOf("fetchLabels(issueNumber, { run })") < writer.indexOf("readWithFirstWaveTogether("), "the first label read is not part of the rehearsal");
+  assert.ok(writer.indexOf("fetchLabels(issueNumber, { repo })") < writer.indexOf("readWithFirstWaveTogether("), "the first label read is not part of the rehearsal");
 });

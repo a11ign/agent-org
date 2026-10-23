@@ -198,8 +198,14 @@ test("NEGATIVE CONTROL (source, A11-160): no reader the plugin holds for row mod
 
 test("POSITIVE CONTROL (source, #5074): `wake.ts` and `row-file.ts` are walked, and each still lists rows -- with a plain list, which is no search", () => {
   assert.ok(COVERED.includes("wake.ts") && COVERED.includes("row-file.ts"), "the walk sees the two files this row converted");
-  for (const file of ["wake.ts", "row-file.ts"]) {
-    assert.match(moduleSource(file), /\["issue", "list", /, `${file} still names an \`issue list\`, so the guard is looking at a file that lists`);
+  // A11-160 (step 7): both lists are the code host's now, asked by name from the files that wait on a titled row and that check a filing's duplicate title; the plugin's rows hold the `issue list`, which the walk above reads.
+  const asked: Record<string, { by: string; call: RegExp; in: string }> = {
+    "wake/merge-queue-wait.ts": { by: "openRowsOf", call: /rows\(\)\.openRowsOf\(/, in: "gate-pull-reads.ts" },
+    "row-file/issue-body-and-region-checks.ts": { by: "newestOpenRowsText", call: /newestOpenRowsText\(/, in: "filing-rows.ts" },
+  };
+  for (const [file, { by, call, in: plugin }] of Object.entries(asked)) {
+    assert.match(moduleSource(file), call, `${file} asks the code host for its list by name (${by})`);
+    assert.match(readFileSync(join(PLUGIN_ROWS, plugin), "utf8"), /\["issue", "list", /, `${plugin} still names an \`issue list\`, so the guard is looking at a file that lists`);
   }
 });
 

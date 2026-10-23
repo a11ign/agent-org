@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` call is an injected read, or a stub on PATH that records the call and fails; nothing here reaches the network (a11ign/a11ign#4799)
+// no-token: gh -- every `gh` call is the fake code host's read, or a stub on PATH that records the call and fails; nothing here reaches the network (a11ign/a11ign#4799)
 /**
  * a11ign/a11ign#4799: `row-claim check` PREDICTS THE CHAIRMAN'S YIELD, SO ITS PREDICTION AND THE CLAIM STOP DISAGREEING ON THE ROWS THE CHAIRMAN WANTS STARTED.
  *
@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import type { YieldWorld } from "./plugins/fakes/yield-world.test.support.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE, as `row-claim-chairman-yield.test.ts` does it: the host file first, the tool imported after it.
 const SCRATCH = mkdtempSync(join(tmpdir(), "row-claim-check-chairman-yield-"));
@@ -45,6 +45,8 @@ chmodSync(join(STUB_BIN, "gh"), 0o755);
 process.env.PATH = `${STUB_BIN}:${process.env.PATH ?? ""}`;
 
 const { reportB4, sessionEligibility } = await import("./row-claim.ts");
+const { forgetActivation } = await import("./plugins/active.ts");
+const { holdYieldWorld } = await import("./plugins/fakes/yield-world.test.support.ts");
 const { lookupOpenPrFiles, lookupClaimedRegions } = await import("./row-claim/file-overlap-rule.ts");
 const { CHAIRMAN_LOGINS } = await import("./work-gate/vocabulary.ts");
 
@@ -57,54 +59,28 @@ const SHARED = "agent-org:src/row-claim.ts";
 const TEMPLATE = "\n## Acceptance\n\n```bash\ntrue\n```\n\n## Open-check\n\n```\n$ true\n```\n";
 const bodyOf = (...files: string[]) => `## Region\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n${TEMPLATE}`;
 
-type World = {
-  /** rows carrying the label, with who added it last (`null`: the history cannot be read) */
-  labelled?: Record<number, string | null>;
-  claimed?: { number: number; files: string[]; }[];
-  prs?: { number: number; path: string; closes?: number; }[];
-};
+type World = YieldWorld;
 
-/** The claim's `gh`, as `row-claim-chairman-yield.test.ts` routes it. */
-function fakeGh(world: World) {
-  return (_cmd: string, args: string[]): string => {
-    if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ number: ASKER, title: "A row", body: bodyOf(SHARED), state: "OPEN", labels: [{ name: "ready" }], blockedBy: { nodes: [] } });
-    }
-    const byLabel = readsRowsByLabel(args);
-    if (byLabel?.label === "priority:chairman") {
-      return connectionOf(Object.keys(world.labelled ?? {}).map((number) => ({ number: Number(number), labels: [{ name: "priority:chairman" }] })));
-    }
-    if (byLabel?.label === "in-progress") {
-      return connectionOf((world.claimed ?? []).map((row) => ({ number: row.number, labels: [{ name: "in-progress" }], body: bodyOf(...row.files), blockedBy: { nodes: [] } })));
-    }
-    if (args[0] === "api") {
-      const asked = /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/events$/.exec(args[1] ?? "");
-      const actor = asked === null ? undefined : (world.labelled ?? {})[Number(asked[1])];
-      if (actor === null || actor === undefined) throw new Error("HTTP 502");
-      return `${actor}\n`;
-    }
-    if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify(args.includes(AGENT_ORG.repo) ? (world.prs ?? []).map((pr) => ({ number: pr.number, changedFiles: 1, files: [{ path: pr.path }],
-        body: pr.closes === undefined ? "" : `Closes ${TRACKER}#${pr.closes}\n` })) : []);
-    }
-    return "[]";
-  };
-}
+/** The fake code host holding `world` (A11-160, step 7): what the claim and `check` both read. */
+const holdWorld = (world: World): void => { holdYieldWorld(world, { asker: ASKER, tracker: TRACKER, otherRepo: AGENT_ORG.repo, bodyOf, askerFiles: SHARED }); };
 
 /** What the claim says of the world. */
-const claimSays = (world: World) => sessionEligibility(ASKER, `worker-${ASKER}`, { run: fakeGh(world), repo: TRACKER, repos: [AGENT_ORG] });
+const claimSays = (world: World) => {
+  holdWorld(world);
+  return sessionEligibility(ASKER, `worker-${ASKER}`, { repo: TRACKER, repos: [AGENT_ORG] });
+};
 
 /** The rows the chairman labelled, as the gate's reading of the history gives them: `null` actor and a stranger's login are not the chairman's. */
 const chairmanRowsOf = (world: World): ReadonlySet<number> => new Set(Object.entries(world.labelled ?? {}).filter(([, actor]) => actor === CHAIRMAN).map(([number]) => Number(number)));
 
-/** What `check` says of the same world: the REAL reads of the same `gh`, handed over as the injections `reportB4` takes. `null` hands over no chairman read at all. */
+/** What `check` says of the same world: the REAL reads of the same code host, handed over as the injections `reportB4` takes. `null` hands over no chairman read at all. */
 function checkSays(world: World, chairmanRows: ((where?: { repo?: string; }) => ReadonlySet<number> | null) | null = () => chairmanRowsOf(world)): string {
-  const gh = (args: string[]) => fakeGh(world)("gh", args);
+  holdWorld(world);
   const out: string[] = [];
   reportB4(ASKER, {
     write: (text: string) => out.push(text), repo: TRACKER, mine: () => [SHARED],
-    others: () => lookupOpenPrFiles({ run: gh, trackerRepo: TRACKER, repos: [AGENT_ORG] }),
-    claimed: () => lookupClaimedRegions({ run: gh, repo: TRACKER }), sweeps: () => [],
+    others: () => lookupOpenPrFiles({ trackerRepo: TRACKER, repos: [AGENT_ORG] }),
+    claimed: () => lookupClaimedRegions({ repo: TRACKER }), sweeps: () => [],
     ...(chairmanRows === null ? {} : { chairmanRows }),
   });
   return out.join("");
@@ -189,6 +165,7 @@ test("(5) with every read injected and no chairman read, `check` never reaches `
   reportB4(ASKER, { write: (t: string) => out.push(t), repo: TRACKER, mine: () => [SHARED], others: () => [], claimed: () => [{ number: HOLDER, files: [SHARED], blockedBy: [] }], sweeps: () => [] });
   assert.match(out.join(""), REFUSES);
   assert.equal(existsSync(STUB_LOG), false, "nothing reached gh");
+  forgetActivation(); // the real code host: the GitHub plugin over the stub `gh` on PATH
   reportB4(ASKER, { write: () => undefined, repo: TRACKER });
   assert.ok(existsSync(STUB_LOG) && readFileSync(STUB_LOG, "utf8").length > 0, "the control: a `check` that injects nothing DOES reach it, so the absence above is a reading");
 });

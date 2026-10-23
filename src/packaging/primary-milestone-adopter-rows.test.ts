@@ -1,4 +1,4 @@
-// no-token: gh
+// no-token: gh -- the filing runs on the fake code host's rows (A11-160, step 7); the one `run` left answers only the claimed rows' by-label read, which is the blast radius's (another step)
 //
 // #4378 (of #4084): THE PRIMARY MILESTONE HOLDS ADOPTER-FACING ROWS ONLY. `row-file` refuses an ORG row for the milestone whose description carries
 // `Primary: yes`, and `milestoneClockFact` counts only the rows that read as adopter-facing. One rule serves both (`adopterRowKind`): #3820's `rowKind`
@@ -16,7 +16,7 @@
 // DORMANT until a `dora` entry names `adopterFacing`, which is why this change cannot raise a false alarm on its own. `ceo` ruled (#4378, 2026-10-09)
 // that #4356 COUNTS, and how: by declaring the ONE path an outside adopter reads (its findings doc) releasable for `a11ign/a11ign`, NOT by widening the
 // lab's `releasablePaths` (that would make every lab script "product" in #3820's share). `NO_KEY` below carries that path, the lab keeps `src/` only.
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFiledBy } from "../row-file/issue-body-and-region-checks.ts";
 import { createIssue, primaryMilestoneRefusal, primaryMilestoneTitles } from "../row-file/roadmap-and-milestone-checks.ts";
@@ -25,6 +25,11 @@ import { milestoneClockReading } from "../org-health/fleet-build-readings.ts";
 import { parseProjectDeclaration } from "../project-config.ts";
 import { declaredRegionFiles } from "../region-paths.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const PRIMARY = "v3 — Ready for a first outside adopter";
 const SESSION = "product-manager";
@@ -69,8 +74,12 @@ const UNREADABLE_ROWS = [4344, 4357, 4369] as const;
 
 const bodyOf = (region: string) => `## Region\n\n${region}\n## Acceptance\n\n\`\`\`\nnpx tsx --test x\n\`\`\`\n\n## Open-check\n\n\`\`\`\ngh issue view 735 --json state\n\`\`\`\n`;
 
-/** A stub that records creates and answers `gh api …/milestones` through `primaryMilestones`. `titles: null` is a milestone list that cannot be read. */
+/** The fake code host that records creates; the primary milestones come through `primaryMilestones`. `titles: null` is a milestone list that cannot be read. */
 function filing(argv: string[], declaration: never, { titles = [PRIMARY] as string[] | null } = {}) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = "a11ign/a11ign";
+  substituteCodeHost(host);
   let creates = 0;
   let stderr = "";
   const filed = { body: "", milestone: "" };
@@ -79,15 +88,13 @@ function filing(argv: string[], declaration: never, { titles = [PRIMARY] as stri
       creates += 1;
       filed.body = sent[sent.indexOf("--body") + 1];
       filed.milestone = sent[sent.indexOf("--milestone") + 1] ?? "";
-      return `https://github.com/a11ign/a11ign/issues/${5000 + creates}`;
+      const number = 5000 + creates;
+      // the read-back asks for the body (Filed-by) and the milestone of the row it just made
+      world.rows.set(number, fakeRow(world, number, { body: appendFiledBy(filed.body, SESSION) }));
+      world.filing.rowMilestones.set(`${world.repo}#${number}`, filed.milestone);
+      return `https://github.com/a11ign/a11ign/issues/${number}`;
     },
-    // the read-back asks for the body (Filed-by) and the milestone of the row it just made
-    run: (_cmd: string, args: string[]) => {
-      if (readsRowsByLabel(args) !== null) return connectionOf([]); // #5039: the claimed rows' by-label read -- none held
-      if (args[0] === "issue" && args[1] === "list") return "[]";
-      if (args.includes("milestone")) return filed.milestone;
-      return args.includes("body") ? appendFiledBy(filed.body, SESSION) : "";
-    },
+    run: (_cmd: string, args: string[]) => (readsRowsByLabel(args) !== null ? connectionOf([]) : ""), // #5039: the claimed rows' by-label read -- none held
     milestones: () => [PRIMARY, "Out of release", "CI reset"], primaryMilestones: () => titles, declaration,
     loadLanesConfig: () => ({ lanes: [] }), ensureLabels: () => {}, fetchBoardStatus: () => "Backlog",
     fetchLabels: () => ({ number: 0, title: "", labels: ["backlog", "lane:any", ...(filed.milestone === "Out of release" ? ["out-of-release"] : [])] }), moveStatus: () => ({ moved: true as const }),
@@ -166,9 +173,13 @@ test("(unknown, not refused) a milestone list that cannot be read files the row 
 });
 
 test("the primary milestone is read from the DESCRIPTION line, and an unreadable list is null, not empty", () => {
-  const listing = JSON.stringify([{ title: PRIMARY, description: "Outcome 3.\nPrimary: yes\n" }, { title: "Road to version one", description: "Primary: yes is not this one's line, it says Primary: yes inline" }, { title: "Out of release", description: null }]);
-  assert.deepEqual(primaryMilestoneTitles({ run: () => listing, repo: "a11ign/a11ign" }), [PRIMARY]);
-  assert.equal(primaryMilestoneTitles({ run: () => { throw new Error("HTTP 502"); } }), null);
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { filing: held, repo } = host.rowsWorld;
+  held.milestones.set(repo, [{ title: PRIMARY, description: "Outcome 3.\nPrimary: yes\n" }, { title: "Road to version one", description: "Primary: yes is not this one's line, it says Primary: yes inline" }, { title: "Out of release", description: null }]);
+  assert.deepEqual(primaryMilestoneTitles({ repo }), [PRIMARY]);
+  held.milestones.set(repo, new Error("HTTP 502"));
+  assert.equal(primaryMilestoneTitles({ repo }), null);
   assert.equal(primaryMilestoneRefusal(["--milestone", PRIMARY], bodyOf(REGION[4360]), TRACKERS[0], TOOLING_FALSE as never, { primaryMilestones: () => [PRIMARY], run: () => "" }) !== null, true);
 });
 

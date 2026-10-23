@@ -38,6 +38,12 @@ import { forgetRefusedReads, isRowsByLabelRead, readClaimedRows, readRowsByLabel
 import { asListJson, foldPage, isSinceRead, parsePage, readMergedPullRequests, readRowsSince, SINCE_PAGE_SIZE, sincePageArgs } from "./rows-since.ts";
 import { isArmedPull, isCrossRepositoryPull, isMergedPull, openPullRequestsQueryArgs, readOpenPullNodes, readOutsideArmListed, readSweepFacts } from "./sweep-reads.ts";
 import { testsFirstReadsOf } from "./tests-first-reads.ts";
+import { claimRows } from "./claim-rows.ts";
+import { filingRows } from "./filing-rows.ts";
+import { wakeRows, wakeRunnersOf } from "./wake-rows.ts";
+import { miscRowsOf } from "./misc-rows.ts";
+import { withOwnRun } from "./with-own-run.ts";
+import { rulesRows } from "./rules-rows.ts";
 
 /** The values of the rows, and the operations that read the project's declaration: what core hands over as `helpers`, asked when an operation needs it. */
 function projectRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "acts" | "tracker" | "sincePageSize" | "projectItemsPage" | "openItemsQuery" | "corePoolProbe" | "ticketAdapter" | "boardFiledRow" | "isIssueOnBoard" | "boardItemOf"> {
@@ -83,6 +89,8 @@ function listRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "readUnlessRef
  */
 export type RowsRunners = Readonly<{
   own: RowsRun; queue: RowsRun;
+  /** `gh` as the process's own account, cut at the bound given (wake's reports, which read for longer than the usual 30 s). */
+  within?: (timeoutMs: number, options?: { withoutGitEnv?: boolean }) => RowsRun;
   /** The work gate's executor's process (`gateRun`), and a batch of calls started at once (`runTogether`): absent, an operation that asks for one is refused. */
   gate?: (options: GateRunOptions) => AimedRun;
   together?: (request: { calls: BatchCall[]; env: NodeJS.ProcessEnv; callMs: number; graceMs: number; maxBuffer: number }) => BatchAnswer[];
@@ -98,12 +106,9 @@ const NO_BATCH = (): never => {
   throw new Error("this code host's rows were built with no runner of their own, so a batch of calls cannot run");
 };
 
-/** An operation with a `run` in its request, made to use `own` when the caller hands none. */
-const withOwnRun = <Request extends { run: RowsRun }, Result>(operation: (request: Request) => Result, own: RowsRun) =>
-  (request: Omit<Request, "run"> & { run?: RowsRun }): Result => operation({ ...request, run: request.run ?? own } as Request);
 
 /** The operations a moved caller reaches without a `run` of its own, and the 1.7 ones among them that took one. */
-function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows> | keyof typeof gateRows | "gateRun" | "runTogether" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
+function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows> | keyof typeof gateRows | keyof typeof wakeRows | keyof typeof claimRows | keyof typeof filingRows | keyof typeof rulesRows | keyof ReturnType<typeof miscRowsOf> | "gateRun" | "runTogether" | "ownRunWithin" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
   return {
     ownRun: own,
     armedQueryArgs, armedFromApi, armedReason, ejectionQueryArgs, queueEjectionOf, openBlockersOf, settledReason, dequeueByHandCommand, openPullRequestsQueryArgs,
@@ -143,5 +148,5 @@ function gateRowsOf(helpers: () => RowsHelpers, { gate, together }: RowsRunners)
 
 /** The GitHub code host's `rows`. `helpers` is what core owns of row mode, asked when an operation needs it; `runners` are the plugin's own, for the operations whose caller hands none. */
 export function createRows(helpers: () => RowsHelpers, runners: RowsRunners = NO_RUNNERS): CodeHostRows {
-  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners), ...gateRows, ...gateRowsOf(helpers, runners) };
+  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners), ...gateRows, ...gateRowsOf(helpers, runners), ...wakeRows, ...wakeRunnersOf(runners), ...claimRows, ...filingRows, ...rulesRows, ...miscRowsOf(runners.own) };
 }

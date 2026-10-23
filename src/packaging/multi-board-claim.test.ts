@@ -12,7 +12,7 @@
  *   5. The merge-blocking parser and `pr-open` ACCEPT `Closes a11ign/a11ign#7` and REFUSE the malformed cross-repository forms.
  * And the cost the row's closing comment reports: how many `gh` calls a claim's reads spend per declared repository.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { parseProjectDeclaration } from "../project-config.ts";
 import {
@@ -25,6 +25,9 @@ import { declaredRegionFiles, regionCoversIn, splitRegionEntry } from "../region
 import { closesDeclarationReport, closesReferences, extractClosesDeclaration } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { checkBody, checkRegion, main } from "../pr-open.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRowPull } from "../plugins/fakes/code-host-rows.ts";
 
 const FIRST = { key: "", repo: "a11ign/a11ign" };
 const SECOND = { key: "nvda-worker", repo: "a11ign/nvda-worker" };
@@ -67,14 +70,39 @@ function fakeGh({ region, prs, failing = [] }: { region: string; prs: Record<str
   return { calls, run };
 }
 
-const eligibility = (fake: Fake, repos: typeof BOTH) =>
-  sessionEligibilityReason(2617, "worker-2617", { run: (_cmd: string, args: string[]) => fake.run(args), repo: FIRST.repo, repos });
+/**
+ * The fake code host holding what the claim reads (A11-160, step 7): the asking row in its tracker's repository, and the open pull requests of each repository (the first's are the world's own, another's are the rules'
+ * `otherRepos`). A repository in `failing` cannot have its pull requests listed. `calls` are the operations asked, by repository, as the old stub's `gh` argument lists were.
+ */
+function fakeWorld({ region, prs, failing = [], row = { repo: FIRST.repo, number: 2617 } }: { region: string; prs: Record<string, object[]>; failing?: string[]; row?: { repo: string; number: number } }) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = FIRST.repo;
+  const held = fakeRow(world, row.number, { title: "A row", body: region, labels: [] });
+  if (row.repo === FIRST.repo) world.rows.set(row.number, held);
+  else world.foreignRows.set(`${row.repo}#${row.number}`, held);
+  for (const [repo, list] of Object.entries(prs)) {
+    const pulls = new Map((list as ReturnType<typeof ghPr>[]).map((pr): [number, FakeRowPull] => [pr.number, { number: pr.number, body: pr.body, headRefName: `agent/x-${pr.number}`, labels: [], isDraft: false, armed: false,
+      merged: false, mergedAt: null, createdAt: "2026-10-04T00:00:00Z", comments: [], files: pr.files.map((file) => file.path) }]));
+    if (repo === FIRST.repo) for (const [number, pull] of pulls) world.pulls.set(number, pull);
+    else world.rules.otherRepos.set(repo, pulls);
+  }
+  for (const repo of failing) world.rules.listRefused.set(repo, new Error(`HTTP 502 from ${repo}`));
+  return { host, world, calls: world.calls };
+}
+
+const eligibility = (fake: ReturnType<typeof fakeWorld>, repos: typeof BOTH) => {
+  substituteCodeHost(fake.host);
+  return sessionEligibilityReason(2617, "worker-2617", { repo: FIRST.repo, repos });
+};
+
+afterEach(() => forgetActivation());
 
 // --- 1. B4 reads the SECOND repository -------------------------------------------------------------------------------
 
 test("#2617 done-when 1: a claim whose Region overlaps a file changed by an open pull request in the SECOND repository is REFUSED, naming the "
   + "repository and the pull request", () => {
-  const fake = fakeGh({ region: regionBody("nvda-worker:src/capture.ts"), prs: { [SECOND.repo]: [ghPr(7, ["src/capture.ts", "src/other.ts"])] } });
+  const fake = fakeWorld({ region: regionBody("nvda-worker:src/capture.ts"), prs: { [SECOND.repo]: [ghPr(7, ["src/capture.ts", "src/other.ts"])] } });
   const reason = eligibility(fake, BOTH);
   assert.ok(reason, "an overlap that lives only in the second repository must refuse");
   assert.match(reason, /overlaps #7 in a11ign\/nvda-worker, which already touches: src\/capture\.ts\./);
@@ -83,14 +111,14 @@ test("#2617 done-when 1: a claim whose Region overlaps a file changed by an open
 
 test("#2617 POSITIVE CONTROL: the SAME claim with only the first repository declared PASSES -- the refusal above is the second repository's, "
   + "and a reader that refuses everything would have refused this too", () => {
-  const fake = fakeGh({ region: regionBody("nvda-worker:src/capture.ts"), prs: { [SECOND.repo]: [ghPr(7, ["src/capture.ts"])] } });
+  const fake = fakeWorld({ region: regionBody("nvda-worker:src/capture.ts"), prs: { [SECOND.repo]: [ghPr(7, ["src/capture.ts"])] } });
   assert.equal(eligibility(fake, [FIRST]), null);
-  assert.deepEqual(fake.calls.filter((c) => c[0] === "pr").map((c) => c[c.indexOf("--repo") + 1]), [FIRST.repo],
+  assert.deepEqual(fake.calls.filter((c) => c.startsWith("openPullsWithFilesOf ")).map((c) => c.slice("openPullsWithFilesOf ".length)), [FIRST.repo],
     "only the declared repository was read, so the control passes for the right reason");
 });
 
 test("#2617: the first repository's pull requests keep their number as their whole name -- a refusal there reads as it always did", () => {
-  const fake = fakeGh({ region: regionBody("packages/agent-org/src/row-claim.ts"),
+  const fake = fakeWorld({ region: regionBody("packages/agent-org/src/row-claim.ts"),
     prs: { [FIRST.repo]: [ghPr(406, ["packages/agent-org/src/row-claim.ts"])] } });
   const reason = eligibility(fake, BOTH);
   assert.match(reason ?? "", /^overlaps #406, which already touches: packages\/agent-org\/src\/row-claim\.ts\./);
@@ -183,10 +211,10 @@ test("#2617: a failure of the FIRST repository is INCONCLUSIVE too, and says whi
 
 test("#2617 done-when 5: B4's reads cost ONE `gh pr list` per declared code repository, and the rest of a claim's reads do not grow with it", () => {
   const spent = (repos: typeof BOTH) => {
-    const fake = fakeGh({ region: regionBody("scripts/x.mjs"), prs: { [FIRST.repo]: [ghPr(1, ["scripts/y.mjs"])], [SECOND.repo]: [ghPr(2, ["src/y.ts"])] } });
+    const fake = fakeWorld({ region: regionBody("scripts/x.mjs"), prs: { [FIRST.repo]: [ghPr(1, ["scripts/y.mjs"])], [SECOND.repo]: [ghPr(2, ["src/y.ts"])] } });
     eligibility(fake, repos);
-    return { total: fake.calls.length, prLists: fake.calls.filter((c) => c[0] === "pr" && c[1] === "list").length,
-      rowReads: fake.calls.filter((c) => c[0] === "issue").length };
+    return { total: fake.calls.length, prLists: fake.calls.filter((c) => c.startsWith("openPullsWithFilesOf ")).length,
+      rowReads: fake.calls.filter((c) => c.startsWith("bodyAndLabelsOf ") || c.startsWith("blockedByOf ")).length };
   };
   const one = spent([FIRST]);
   const two = spent(BOTH);
@@ -194,8 +222,9 @@ test("#2617 done-when 5: B4's reads cost ONE `gh pr list` per declared code repo
   assert.equal(two.prLists, 2);
   assert.equal(two.total - one.total, 1, "the second repository adds exactly one call");
   assert.equal(two.rowReads, one.rowReads, "the row reads (held rows, `blockedBy`, Region) are the tracker's and do not grow");
-  const region = fakeGh({ region: regionBody("scripts/x.mjs"), prs: {} });
-  lookupMyRegionFiles(2617, { run: region.run, repo: FIRST.repo });
+  const region = fakeWorld({ region: regionBody("scripts/x.mjs"), prs: {} });
+  substituteCodeHost(region.host);
+  lookupMyRegionFiles(2617, { repo: FIRST.repo });
   assert.equal(region.calls.length, 1, "the Region read is one call whatever the repositories");
 });
 
@@ -243,9 +272,10 @@ test("#2617: an undeclared tracker key is REFUSED listing what IS declared -- ne
 });
 
 test("#2617: a row of another tracker is read from THAT tracker -- the same number is a different issue", () => {
-  const fake = fakeGh({ region: regionBody("scripts/x.mjs"), prs: {} });
-  sessionEligibilityReason(7, "worker-agent-org-7", { run: (_cmd: string, args: string[]) => fake.run(args), repo: "a11ign/agent-org", repos: [FIRST] });
-  const rowReads = fake.calls.filter((c) => c[0] === "issue").map((c) => c[c.indexOf("--repo") + 1]);
+  const fake = fakeWorld({ region: regionBody("scripts/x.mjs"), prs: {}, row: { repo: "a11ign/agent-org", number: 7 } });
+  substituteCodeHost(fake.host);
+  sessionEligibilityReason(7, "worker-agent-org-7", { repo: "a11ign/agent-org", repos: [FIRST] });
+  const rowReads = fake.calls.filter((c) => c.startsWith("bodyAndLabelsOf ") || c.startsWith("blockedByOf ")).map((c) => c.split(" ")[1].split("#")[0]);
   assert.ok(rowReads.length > 0);
   assert.deepEqual([...new Set(rowReads)], ["a11ign/agent-org"], "every row read went to the tracker the claim named");
 });
@@ -342,9 +372,9 @@ test("#2617: a pull request of ANOTHER repository that says `Closes #7` closes I
 
 test("#2617: a layer pull request that declares it closes the ASKING row is that row's own work, and does not refuse it", () => {
   const body = "Closes a11ign/a11ign#2617";
-  const fake = fakeGh({ region: regionBody("nvda-worker:src/x.ts"), prs: { [SECOND.repo]: [ghPr(4, ["src/x.ts"], body)] } });
+  const fake = fakeWorld({ region: regionBody("nvda-worker:src/x.ts"), prs: { [SECOND.repo]: [ghPr(4, ["src/x.ts"], body)] } });
   assert.equal(eligibility(fake, BOTH), null, "B4 excludes a row's own pull request across repositories, by declaration");
-  const stranger = fakeGh({ region: regionBody("nvda-worker:src/x.ts"), prs: { [SECOND.repo]: [ghPr(4, ["src/x.ts"], "Closes #2617")] } });
+  const stranger = fakeWorld({ region: regionBody("nvda-worker:src/x.ts"), prs: { [SECOND.repo]: [ghPr(4, ["src/x.ts"], "Closes #2617")] } });
   assert.match(eligibility(stranger, BOTH) ?? "", /overlaps #4 in a11ign\/nvda-worker/,
     "control: a bare `Closes #2617` in the layer repository is ITS #2617, so it is a stranger and still refuses");
 });
@@ -354,34 +384,33 @@ test("#2617: a layer pull request that declares it closes the ASKING row is that
 const KEYED = { key: "agent-org", repo: "a11ign/agent-org" };
 
 test("a11ign/a11ign#4737 item 4: a keyed row's `blockedBy` edge is read from the KEYED repository, and the refusal names it -- `a11ign/agent-org#12`, not a bare `#12`", () => {
-  const reads: string[][] = [];
-  const run = (_cmd: string, args: string[]) => {
-    reads.push(args);
-    if (readsRowsByLabel(args) !== null) return connectionOf([]); // #5039: no other row is claimed
-    if (args[0] === "issue" && args[1] === "view") {
-      return args[args.indexOf("--json") + 1] === "blockedBy"
-        ? JSON.stringify({ blockedBy: { nodes: [{ number: 12, state: "OPEN" }] } })
-        : JSON.stringify({ body: regionBody("agent-org:src/row-claim.ts") });
-    }
-    return "[]";
-  };
-  const keyed = sessionEligibilityReason(575, "worker-agent-org-575", { run, repo: KEYED.repo, repos: [FIRST, KEYED] }) ?? "";
+  const fake = fakeWorld({ region: regionBody("agent-org:src/row-claim.ts"), prs: {}, row: { repo: KEYED.repo, number: 575 } });
+  fake.world.foreignRows.get(`${KEYED.repo}#575`)!.blockedBy = [12];
+  fake.world.foreignRows.set(`${KEYED.repo}#12`, fakeRow(fake.world, 12));
+  substituteCodeHost(fake.host);
+  const keyed = sessionEligibilityReason(575, "worker-agent-org-575", { repo: KEYED.repo, repos: [FIRST, KEYED] }) ?? "";
   assert.match(keyed, /^blocked by still-open a11ign\/agent-org#12:/, "the repository is named, so #12 is not read as the first tracker's row 12");
-  assert.deepEqual([...new Set(reads.filter((a) => a[0] === "issue").map((a) => a[a.indexOf("--repo") + 1]))], [KEYED.repo], "and every row read was the keyed repository's");
-  const first = sessionEligibilityReason(575, "worker-575", { run, repo: FIRST.repo, repos: [FIRST, KEYED] }) ?? "";
+  const rowReads = fake.calls.filter((c) => c.startsWith("bodyAndLabelsOf ") || c.startsWith("blockedByOf ")).map((c) => c.split(" ")[1].split("#")[0]);
+  assert.ok(rowReads.length > 0);
+  assert.deepEqual([...new Set(rowReads)], [KEYED.repo], "and every row read was the keyed repository's");
+  const firstRow = fakeWorld({ region: regionBody("agent-org:src/row-claim.ts"), prs: {}, row: { repo: FIRST.repo, number: 575 } });
+  firstRow.world.rows.get(575)!.blockedBy = [12];
+  firstRow.world.rows.set(12, fakeRow(firstRow.world, 12));
+  substituteCodeHost(firstRow.host);
+  const first = sessionEligibilityReason(575, "worker-575", { repo: FIRST.repo, repos: [FIRST, KEYED] }) ?? "";
   assert.match(first, /^blocked by still-open #12:/, "CONTROL: the first tracker's refusal reads as it always did");
 });
 
 test("a11ign/a11ign#4737 item 4: B4 for a keyed row reads the KEYED repository's open pull requests and the refusal names that repository and pull request", () => {
-  const fake = fakeGh({ region: regionBody("agent-org:src/row-claim.ts"), prs: { [KEYED.repo]: [ghPr(581, ["src/row-claim.ts"])] } });
-  const reason = sessionEligibilityReason(575, "worker-agent-org-575",
-    { run: (_cmd: string, args: string[]) => fake.run(args), repo: KEYED.repo, repos: [FIRST, KEYED] });
+  const fake = fakeWorld({ region: regionBody("agent-org:src/row-claim.ts"), prs: { [KEYED.repo]: [ghPr(581, ["src/row-claim.ts"])] }, row: { repo: KEYED.repo, number: 575 } });
+  substituteCodeHost(fake.host);
+  const reason = sessionEligibilityReason(575, "worker-agent-org-575", { repo: KEYED.repo, repos: [FIRST, KEYED] });
   assert.match(reason ?? "", /overlaps #581 in a11ign\/agent-org, which already touches: src\/row-claim\.ts\./);
-  assert.ok(fake.calls.some((c) => c[0] === "pr" && c[c.indexOf("--repo") + 1] === KEYED.repo), "the keyed repository's pull requests were read");
-  const same = fakeGh({ region: regionBody("agent-org:src/row-claim.ts"), prs: { [FIRST.repo]: [ghPr(581, ["src/row-claim.ts"])] } });
-  assert.equal(sessionEligibilityReason(575, "worker-agent-org-575",
-    { run: (_cmd: string, args: string[]) => same.run(args), repo: KEYED.repo, repos: [FIRST, KEYED] }), null,
-  "CONTROL: the same path touched in the FIRST repository is not the keyed row's file");
+  assert.ok(fake.calls.includes(`openPullsWithFilesOf ${KEYED.repo}`), "the keyed repository's pull requests were read");
+  const same = fakeWorld({ region: regionBody("agent-org:src/row-claim.ts"), prs: { [FIRST.repo]: [ghPr(581, ["src/row-claim.ts"])] }, row: { repo: KEYED.repo, number: 575 } });
+  substituteCodeHost(same.host);
+  assert.equal(sessionEligibilityReason(575, "worker-agent-org-575", { repo: KEYED.repo, repos: [FIRST, KEYED] }), null,
+    "CONTROL: the same path touched in the FIRST repository is not the keyed row's file");
 });
 
 test("a11ign/a11ign#4737 item 3: a keyed claim whose worktree path or branch exists is REFUSED before any write, naming what exists", () => {

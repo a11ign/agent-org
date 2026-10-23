@@ -10,12 +10,17 @@
  * session's ability to claim ANYTHING when the network is down, the identical reasoning
  * `merge-guard.ts`'s `racesAnArmedMerge` states for the same choice made the same way.
  */
-import { test, beforeEach } from "node:test";
+import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { sessionEligibilityReason, claimRow, CLAIM_LABEL } from "../row-claim.ts";
 import { forgetRefusedReads } from "../ticket-port/rows-by-label.ts";
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
+import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 
 /** #1603: the packages/ rows read the project's own tracked `packages/` tree (docs/project-tree-dependency.md, row 1603). Skipped only where that tree is absent. */
 const SKIP_NO_PACKAGES = trackedTopLevelDirs().includes("packages") ? false
@@ -24,6 +29,42 @@ const SKIP_NO_PACKAGES = trackedTopLevelDirs().includes("packages") ? false
 // #5039: a read refused for a rate limit is remembered for the life of the process, and the test below that throws `gh: rate limited` from
 // EVERY call would otherwise refuse the label read of every test after it.
 beforeEach(() => { forgetRefusedReads(); });
+
+// --- the fake code host for the tests that go through `claimRow` (A11-160, step 7) ---------------------------------------------------------------------------------------------
+
+/** `run` for a claim whose `gh` is the code host's: it is for `git` and the board snapshot, which `moveStatus` stands in for. */
+const noGh = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+
+/** The Region the held rows of these tests declare, so a held row with no pull request is IN BUILD. */
+const HELD_BODY = "## Region\n\n```\nscripts/held.mjs\n```\n";
+
+type World = ReturnType<typeof createFakeCodeHost>["rowsWorld"];
+
+/**
+ * The fake code host holding `rows` (a claimed row is `{ number, labels }`; `body` absent is a row whose answer carries no `body` key, so the template check is skipped as it was before #989) and the open pull
+ * requests `pulls`, each closing the rows it names. The host is watched: `calls` are the operations asked, in order.
+ */
+function claimWorld({ rows = [], pulls = [], setup }: { rows?: { number: number; labels?: string[]; body?: string; blockedBy?: number[] }[]; pulls?: { number: number; closes?: number[]; body?: string; files?: string[]; headRefName?: string }[]; setup?: (world: World) => void }) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = REPO;
+  for (const row of rows) {
+    world.rows.set(row.number, fakeRow(world, row.number, { title: "A row", labels: row.labels ?? [], body: row.body ?? "", blockedBy: row.blockedBy ?? [] }));
+    if (row.body === undefined) world.rules.bodyless.add(row.number);
+  }
+  for (const pull of pulls) {
+    world.pulls.set(pull.number, { number: pull.number, body: pull.body ?? "", headRefName: pull.headRefName ?? `agent/x-${pull.number}`, labels: [], isDraft: false, armed: false, merged: false, mergedAt: null,
+      createdAt: "2026-10-04T00:00:00Z", comments: [], files: pull.files ?? [], closes: (pull.closes ?? []).map((number) => ({ number, labels: [] })), headRefOid: "abc" });
+  }
+  setup?.(world);
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  const ops = () => watched.calls.map((call) => call.op);
+  const writes = () => ops().filter((op) => ["setRowLabels", "editRowLabels", "postRowComment"].includes(op));
+  return { world, ops, writes };
+}
+
+afterEach(() => forgetActivation());
 
 /**
  * ONE `run` MOCK ROUTING BY SUBCOMMAND SHAPE, since `sessionEligibilityReason` makes several distinct
@@ -46,20 +87,8 @@ function claimedRowsAnswer(rowsJson: string | undefined, session: string): strin
   return connectionOf(rows.map((row) => ({ labels: [CLAIM_LABEL, `session:${session}`], ...row })));
 }
 
-/** The rows `session` holds, as the label read answers them. */
-const heldRows = (session: string, ...numbers: number[]) => connectionOf(
-  numbers.map((number) => ({ number, labels: [CLAIM_LABEL, `session:${session}`] })));
-
 /** The CLAIMED row's own body (B4 reads its Region); any other issue is a row this session HOLDS (#989). */
 const CLAIMED_ROWS = ["455", "705", "2760"];
-
-/** #2151: a claim's labels are ONE `PUT .../labels` (or, for a back-off or a decline, an `issue edit`), so a
- * test that asks "did the claim write?" must read both -- watching only `issue edit` would call a claim that
- * wrote nothing and a claim that wrote everything the same. */
-function writesLabels(args: string[]): boolean {
-  return (args[0] === "issue" && args[1] === "edit")
-    || (args[0] === "api" && args[1] === "--method" && args[2] === "PUT" && /\/labels$/.test(args[3]));
-}
 
 /** agent-org#1302: `fetchLabels` reads the claimed row over REST, `gh api repos/<repo>/issues/<n>`, whose state is lower case. */
 function isRowLabelRead(args: string[]): boolean {
@@ -130,7 +159,7 @@ function routedRun(routes: Routes) {
 
 test("no other held row, no region overlap: proceeds silently -- the common case", () => {
   const run = routedRun({});
-  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) }), null);
 });
 
 test("#989: an OPEN own PR no longer refuses -- red or green, it is not a row in build", () => {
@@ -142,12 +171,12 @@ test("#989: an OPEN own PR no longer refuses -- red or green, it is not a row in
     graphql: JSON.stringify({ data: { repository: { issue: {
       closedByPullRequestsReferences: { nodes: [{ number: 900, state: "OPEN", headRefOid: "abc" }] } } } } }),
   });
-  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) }), null);
 });
 
 test("#989: a held row with NO PR, declaring files, refuses -- that is what in build means", () => {
   const run = routedRun({ issueList: JSON.stringify([{ number: 472 }]) });
-  const reason = sessionEligibilityReason(455, "worker-judge", { run });
+  const reason = sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) });
   assert.ok(reason, "no PR closes #472 and its Region names a file: somebody owes a commit for it");
   assert.match(reason as string, /#472 is IN BUILD/);
   assert.match(reason as string, /Finish it, or `decline` it/);
@@ -159,7 +188,7 @@ test("#476's own acceptance shape: the same session with that PR MERGED is allow
     graphql: JSON.stringify({ data: { repository: { issue: {
       closedByPullRequestsReferences: { nodes: [{ number: 900, state: "MERGED", headRefOid: "abc" }] } } } } }),
   });
-  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) }), null);
 });
 
 test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to end", { skip: SKIP_NO_PACKAGES }, () => {
@@ -167,7 +196,7 @@ test("#462's own acceptance shape: a CONSTRUCTED region overlap refuses, end to 
     issueViewBody: "Region: `packages/agent-org/src/merge-guard.ts`.",
     prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.ts" }] }]),
   });
-  const reason = sessionEligibilityReason(455, "worker-judge", { run });
+  const reason = sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) });
   assert.ok(reason);
   assert.match(reason as string, /#406/);
 });
@@ -177,12 +206,12 @@ test("#462's own POSITIVE CONTROL: remove the overlap, end to end, and it goes q
     issueViewBody: "Region: `packages/agent-org/src/row-claim.ts`.",
     prList: JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.ts" }] }]),
   });
-  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) }), null);
 });
 
 test("B2 is checked BEFORE B4 -- a row IN BUILD is reported without even asking about files", () => {
   const { run, probe } = prListProbe(routedRun({ issueList: JSON.stringify([{ number: 472 }]) }));
-  const reason = sessionEligibilityReason(455, "worker-judge", { run });
+  const reason = sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) });
   assert.ok(reason);
   assert.equal(probe.asked, false, "B4's lookup is a separate round trip and should not run once B2 has "
     + "already decided to refuse");
@@ -202,7 +231,7 @@ test("#1886's own acceptance shape: an open blockedBy edge on the row being clai
     blockedBy: JSON.stringify({ blockedBy: { nodes: [{ number: 1878, state: "OPEN" },
       { number: 1883, state: "OPEN" }] } }),
   });
-  const reason = sessionEligibilityReason(455, "worker-judge", { run });
+  const reason = sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) });
   assert.ok(reason, "#1852's own reproduction: an open blockedBy edge must refuse, not read as startable");
   for (const pattern of [/#1878/, /#1883/]) assert.match(reason as string, pattern);
 });
@@ -211,14 +240,14 @@ test("#1886's own POSITIVE CONTROL: a CLOSED blockedBy edge is a wait that has c
   const run = routedRun({
     blockedBy: JSON.stringify({ blockedBy: { nodes: [{ number: 1878, state: "CLOSED" }] } }),
   });
-  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null);
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) }), null);
 });
 
 test("the blockedBy-edge check runs BEFORE B4 -- refused without even asking about files", () => {
   const { run, probe } = prListProbe(routedRun({
     blockedBy: JSON.stringify({ blockedBy: { nodes: [{ number: 1878, state: "OPEN" }] } }),
   }));
-  const reason = sessionEligibilityReason(455, "worker-judge", { run });
+  const reason = sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) });
   assert.ok(reason);
   assert.equal(probe.asked, false, "B4's lookup is a separate round trip and should not run once the "
     + "row's own blockedBy edge has already decided to refuse");
@@ -226,27 +255,14 @@ test("the blockedBy-edge check runs BEFORE B4 -- refused without even asking abo
 
 test("MUTATION TARGET: --blocked-by=#N must not silently release a blockedBy-edge refusal -- it is scoped "
   + "to B2 only, a different claim about a different thing", () => {
-  // A custom `run`, not `routedRun`: `claimRow` also calls `fetchLabels` (`--json number,title,labels,state`)
-  // ahead of `sessionEligibilityReason`, which `routedRun` (built for that function alone) does not answer.
-  const run = (cmd: string, args: string[]): string => {
-    if (isRowLabelRead(args)) return restRowAnswer(args);
-    if (args[0] === "issue" && args[1] === "view") {
-      const fields = args[args.indexOf("--json") + 1];
-      if (fields === "blockedBy") {
-        return JSON.stringify({ blockedBy: { nodes: [{ number: 1878, state: "OPEN" }] } });
-      }
-      return JSON.stringify({ number: 1852, title: "A row", labels: [] });
-    }
-    if (readsRowsByLabel(args) !== null) return connectionOf([]);
-    return "[]";
-  };
-  const result = claimRow(1852, "nobody-holds-this-row",
-    { run, moveStatus: () => ({ moved: true }), blockedBy: "#731" });
+  const fake = claimWorld({ rows: [{ number: 1852, blockedBy: [1878] }] });
+  const result = claimRow(1852, "nobody-holds-this-row", { run: noGh as never, moveStatus: () => ({ moved: true }), blockedBy: "#731" });
   assert.equal(result.claimed, false);
   assert.match((result as { reason: string }).reason, /#1878/,
     "the blockedBy-edge refusal must still be the reason -- --blocked-by has no subject here");
   assert.doesNotMatch((result as { reason: string }).reason, /--blocked-by=#731 did not apply/,
     "that message is B2's own override failure text; this refusal was never B2's to release");
+  assert.deepEqual(fake.writes(), []);
 });
 
 // --- #710: the overlap check reads the DECLARED Region section, never every path the row's prose
@@ -262,13 +278,13 @@ test("#710 REGRESSION FIXTURE: #705's real body cites a fixture file in prose th
       + "`docs/` wherever the stranded-branch procedure ends up being written down.\n",
     prList: JSON.stringify([{ number: 698, changedFiles: 1, files: [{ path: "packages/lab/scripts/audit-rule-coverage.ts" }] }]),
   });
-  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }), null,
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) }), null,
     "a file cited as a worked example, outside the Region section, must never be read as an overlap");
 });
 
 test("a failed lookup anywhere fails OPEN, never blocking a claim on a network error", () => {
-  const run = (): string => { throw new Error("gh: rate limited"); };
-  assert.equal(sessionEligibilityReason(455, "worker-judge", { run }),
+  const run = (_cmd: string, _args: string[]): string => { throw new Error("gh: rate limited"); };
+  assert.equal(sessionEligibilityReason(455, "worker-judge", { ghRun: (args) => run("gh", args) }),
     null, "the opposite direction from decideClaim's own lookups -- this protects the session's ability "
     + "to claim ANYTHING, not a verdict about evidence");
 });
@@ -278,64 +294,29 @@ test("a failed lookup anywhere fails OPEN, never blocking a claim on a network e
  * composition function above.
  */
 test("claimRow refuses a genuinely new claim when the session holds a row IN BUILD", () => {
-  let editCalled = false;
-  const run = (cmd: string, args: string[]) => {
-    if (isRowLabelRead(args)) return restRowAnswer(args);
-    if (args[0] === "issue" && args[1] === "view") {
-      // #989 reads the HELD row's body (does its Region name files); `decideClaim` reads the CLAIMED row's.
-      return args.includes("472")
-        ? JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" })
-        : JSON.stringify({ number: 455, title: "A row", labels: [] }); // unclaimed, and no `body` key:
-        // `lookupIssueBody` reads null and #707's template check is skipped, as it was before #989.
-    }
-    if (writesLabels(args)) { editCalled = true; return ""; }
-    if (readsRowsByLabel(args) !== null) return heldRows("worker-judge", 472);
-    if (args[0] === "api" && /\/sub_issues$/.test(args[1] ?? "")) return "[]";
-    if (args[0] === "api" && args[1] === "graphql") {
-      // #989: no PR closes #472, so it is in build -- the claim is refused by the ROW, not by a PR.
-      return JSON.stringify({ data: { repository: { issue: {
-        closedByPullRequestsReferences: { nodes: [] } } } } });
-    }
-    return "[]";
-  };
-  const result = claimRow(455, "worker-judge", { run, moveStatus: () => ({ moved: true }) });
+  // #989 reads the HELD row's body (does its Region name files); the CLAIMED row (#455) is unclaimed and has no `body` key, so #707's template check is skipped, as it was before #989.
+  const fake = claimWorld({ rows: [{ number: 455 }, { number: 472, labels: [CLAIM_LABEL, "session:worker-judge"], body: HELD_BODY }] });
+  const result = claimRow(455, "worker-judge", { run: noGh as never, moveStatus: () => ({ moved: true }) });
   assert.equal(result.claimed, false);
   assert.match((result as { reason: string }).reason, /#472 is IN BUILD/,
     "the refusal names the ROW that is in build, not a PR -- #989's whole point");
-  assert.equal(editCalled, false, "must never write a claim it has already decided to refuse");
+  assert.deepEqual(fake.writes(), [], "must never write a claim it has already decided to refuse");
 });
 
 test("claimRow proceeds normally when eligibility is silent -- unchanged from before B2/B4", () => {
-  let editCalled = false;
-  const run = (cmd: string, args: string[]) => {
-    if (isRowLabelRead(args)) return restRowAnswer(args);
-    if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ number: 461, title: "A row", labels: [] });
-    }
-    if (writesLabels(args)) { editCalled = true; return ""; }
-    if (readsRowsByLabel(args) !== null) return connectionOf([]);
-    return "[]";
-  };
-  const result = claimRow(461, "worker-judge", { run, moveStatus: () => ({ moved: true }) });
+  const fake = claimWorld({ rows: [{ number: 461 }] });
+  const result = claimRow(461, "worker-judge", { run: noGh as never, moveStatus: () => ({ moved: true }) });
   assert.equal(result.claimed, true);
-  assert.ok(editCalled);
+  assert.ok(fake.writes().includes("setRowLabels"));
+  assert.ok(fake.world.rows.get(461)!.labels.includes("session:worker-judge"), "and the row carries the claim");
 });
 
 test("RESUMING a row this session already holds skips eligibility entirely -- not a new front", () => {
-  let listAsked = false;
-  const run = (cmd: string, args: string[]) => {
-    if (isRowLabelRead(args)) return restRowAnswer(args, [{ name: CLAIM_LABEL }, { name: "session:worker-judge" }]);
-    if (readsRowsByLabel(args) !== null || (args[0] === "issue" && args[1] === "list")) { listAsked = true; }
-    if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ number: 461, title: "A row",
-        labels: [{ name: CLAIM_LABEL }, { name: "session:worker-judge" }] });
-    }
-    return "";
-  };
-  const result = claimRow(461, "worker-judge", { run, moveStatus: () => ({ moved: true }) });
+  const fake = claimWorld({ rows: [{ number: 461, labels: [CLAIM_LABEL, "session:worker-judge"] }] });
+  const result = claimRow(461, "worker-judge", { run: noGh as never, moveStatus: () => ({ moved: true }) });
   assert.equal(result.claimed, true);
-  assert.equal(listAsked, false, "resuming a row already yours must not spend a round trip re-checking "
-    + "eligibility for a front that was never new");
+  const listed = fake.ops().filter((op) => ["readClaimedRows", "readRowsByLabel", "openPullsWithFilesOf", "closingPullsOf", "openPullReviewsOf"].includes(op));
+  assert.deepEqual(listed, [], "resuming a row already yours must not spend a round trip re-checking eligibility for a front that was never new");
 });
 
 test("RESUMING a row this session already holds still refuses on the row's own open blockedBy edge", () => {
@@ -344,31 +325,15 @@ test("RESUMING a row this session already holds still refuses on the row's own o
   // resumed-claim path (the one the test just above proves skips B2/B4) never read the edge at all, and
   // `claimRow` returned `claimed: true` against a still-open blocker. This is the same reproduction
   // reviewer gave against #1883, replayed here as a positive assertion rather than a manual repro.
-  let listAsked = false;
-  let editCalled = false;
-  const run = (cmd: string, args: string[]) => {
-    if (isRowLabelRead(args)) return restRowAnswer(args, [{ name: CLAIM_LABEL }, { name: "session:worker-judge" }]);
-    if (readsRowsByLabel(args) !== null) { listAsked = true; return connectionOf([]); }
-    if (args[0] === "issue" && args[1] === "list") { listAsked = true; return "[]"; }
-    if (writesLabels(args)) { editCalled = true; return ""; }
-    if (args[0] === "issue" && args[1] === "view") {
-      const fields = args[args.indexOf("--json") + 1];
-      if (fields === "blockedBy") {
-        return JSON.stringify({ blockedBy: { nodes: [{ number: 999, state: "OPEN" }] } });
-      }
-      return JSON.stringify({ number: 461, title: "A row",
-        labels: [{ name: CLAIM_LABEL }, { name: "session:worker-judge" }] });
-    }
-    return "";
-  };
-  const result = claimRow(461, "worker-judge", { run, moveStatus: () => ({ moved: true }) });
+  const fake = claimWorld({ rows: [{ number: 461, labels: [CLAIM_LABEL, "session:worker-judge"], blockedBy: [999] }] });
+  const result = claimRow(461, "worker-judge", { run: noGh as never, moveStatus: () => ({ moved: true }) });
   assert.equal(result.claimed, false);
   assert.match((result as { reason: string }).reason, /#999/,
     "the row's own open blockedBy edge must refuse a resumed claim exactly as it refuses a new one -- "
     + "it is a property of the row, not of whether this session already holds it");
-  assert.equal(editCalled, false, "must never write a claim it has already decided to refuse");
-  assert.equal(listAsked, false, "the row-owned blockedBy check costs no B2 round trip -- B2/B4's own "
-    + "alreadyMine skip is unaffected by this fix");
+  assert.deepEqual(fake.writes(), [], "must never write a claim it has already decided to refuse");
+  const listed = fake.ops().filter((op) => ["readClaimedRows", "readRowsByLabel", "openPullsWithFilesOf", "closingPullsOf"].includes(op));
+  assert.deepEqual(listed, [], "the row-owned blockedBy check costs no B2 round trip -- B2/B4's own alreadyMine skip is unaffected by this fix");
 });
 
 /**
@@ -381,33 +346,6 @@ test("RESUMING a row this session already holds still refuses on the row's own o
 // #989: `QUALIFYING_MEASUREMENT_COMMENT` went with #741's four tests. The fixture was the comment that
 // released B2 on a red own PR; B2 no longer refuses for that, so nothing in this file can qualify.
 // `row-claim-blocked-by-rule.test.ts` still owns the comment's own grammar, which is unchanged.
-
-/** Routes an `issue view` call by its REQUESTED `--json` field, since #741 asks it of two different
- * issues (the row being claimed, and the `--blocked-by` blocker) with two different field lists. Pulled
- * apart into small named routes, rather than one long `if` chain, to keep complexity below the lint gate. */
-function issueViewRoute(args: string[], routes: { rowLabels?: string, blockerState?: string }): string {
-  const fields = args[args.indexOf("--json") + 1];
-  if (fields === "state") return routes.blockerState ?? JSON.stringify({ state: "OPEN" });
-  return routes.rowLabels ?? JSON.stringify({ number: 700, title: "A row", labels: [] });
-}
-
-function blockedByRun(routes: { rowLabels?: string, blockerState?: string, comments?: string,
-  onEdit?: () => void, onComment?: (body: string) => void }) {
-  return (cmd: string, args: string[]): string => {
-    const shape = args.slice(0, 2).join(" ");
-    if (isRowLabelRead(args)) return restRowAnswer(args);
-    if (writesLabels(args)) { routes.onEdit?.(); return ""; }
-    if (shape === "issue comment") { routes.onComment?.(args[args.length - 1]); return ""; }
-    if (readsRowsByLabel(args) !== null) return heldRows("worker-audit", 472);
-    if (shape === "api graphql") {
-      return JSON.stringify({ data: { repository: { issue: {
-        closedByPullRequestsReferences: { nodes: [{ number: 900, state: "OPEN", headRefOid: "abc" }] } } } } });
-    }
-    if (shape === "pr view") return routes.comments ?? JSON.stringify({ comments: [] });
-    if (shape === "issue view") return issueViewRoute(args, routes);
-    return "[]";
-  };
-}
 
 /**
  * #741's OVERRIDE HAS NO SUBJECT AFTER #989, and that is a capability question rather than a rename.
@@ -422,34 +360,19 @@ function blockedByRun(routes: { rowLabels?: string, blockerState?: string, comme
  * is keep four tests passing about a path nobody can reach.
  */
 test("#989: #741's own case needs no flag now -- an open, RED own PR does not refuse at all", () => {
-  let editCalled = false;
-  const run = blockedByRun({ onEdit: () => { editCalled = true; } });
-  const result = claimRow(700, "worker-audit", { run, moveStatus: () => ({ moved: true }) });
+  // The held row #472 has an open pull request that closes it: an open PR means the commit is PROPOSED, so it is not a row in build.
+  const fake = claimWorld({ rows: [{ number: 700 }, { number: 472, labels: [CLAIM_LABEL, "session:worker-audit"], body: HELD_BODY }], pulls: [{ number: 900, closes: [472] }] });
+  const result = claimRow(700, "worker-audit", { run: noGh as never, moveStatus: () => ({ moved: true }) });
   assert.equal(result.claimed, true, "the session's own PR is OPEN and that is no longer a refusal");
-  assert.ok(editCalled);
+  assert.ok(fake.writes().includes("setRowLabels"));
 });
 
 test("#989: --blocked-by cannot excuse a row IN BUILD, and says why rather than being ignored", () => {
   // A row in build has no PR, so there is nowhere for #741's measurement comment to live. The refusal
   // names that instead of silently declining to apply -- a flag that is quietly dropped and a flag that
   // was never given produce the same output, which is the shape this repo has the longest record of.
-  const run = (cmd: string, args: string[]): string => {
-    const shape = args.slice(0, 2).join(" ");
-    if (isRowLabelRead(args)) return restRowAnswer(args);
-    if (readsRowsByLabel(args) !== null) return heldRows("worker-audit", 472);
-    if (shape === "api graphql") {
-      return JSON.stringify({ data: { repository: { issue: {
-        closedByPullRequestsReferences: { nodes: [] } } } } });
-    }
-    if (shape === "issue view") {
-      return args.includes("472")
-        ? JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" })
-        : JSON.stringify({ number: 700, title: "A row", labels: [] }); // no `body`: #707 is not this test
-    }
-    return "[]";
-  };
-  const result = claimRow(700, "worker-audit",
-    { run, moveStatus: () => ({ moved: true }), blockedBy: "#731" });
+  claimWorld({ rows: [{ number: 700 }, { number: 472, labels: [CLAIM_LABEL, "session:worker-audit"], body: HELD_BODY }] });
+  const result = claimRow(700, "worker-audit", { run: noGh as never, moveStatus: () => ({ moved: true }), blockedBy: "#731" });
   assert.equal(result.claimed, false);
   const reason = (result as { reason: string }).reason;
   assert.match(reason, /#472 is IN BUILD/);
@@ -464,23 +387,8 @@ test("MUTATION TARGET: --blocked-by given while the refusal is B4 (file overlap)
   + "-- the override is specific to the claimant's own PR being unhealthy", { skip: SKIP_NO_PACKAGES }, () => {
   const body = "## Region\n\n`packages/agent-org/src/merge-guard.ts`.\n\n## Acceptance\n\nSomething checkable.\n\n"
     + "## Open-check\n\nSomething runnable.\n";
-  const run = (cmd: string, args: string[]): string => {
-    if (isRowLabelRead(args)) return restRowAnswer(args);
-    // `issue view` is asked for two different `--json` shapes here (labels, then `body` for both #707's
-    // template check and B4's own region lookup) -- routed by the requested field, since answering both
-    // with the same object is what silently skipped B4 entirely the first time this test was written.
-    if (args[0] === "issue" && args[1] === "view") {
-      const fields = args[args.indexOf("--json") + 1];
-      if (fields.split(",").includes("body")) return JSON.stringify({ body });
-      return JSON.stringify({ number: 700, title: "A row", labels: [] });
-    }
-    if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 406, changedFiles: 1, files: [{ path: "packages/agent-org/src/merge-guard.ts" }] }]);
-    }
-    if (readsRowsByLabel(args) !== null) return connectionOf([]);
-    return "[]";
-  };
-  const result = claimRow(700, "worker-judge", { run, moveStatus: () => ({ moved: true }), blockedBy: "#731" });
+  claimWorld({ rows: [{ number: 700, body }], pulls: [{ number: 406, files: ["packages/agent-org/src/merge-guard.ts"] }] });
+  const result = claimRow(700, "worker-judge", { run: noGh as never, moveStatus: () => ({ moved: true }), blockedBy: "#731" });
   assert.equal(result.claimed, false);
   assert.match((result as { reason: string }).reason, /#406/);
   assert.doesNotMatch((result as { reason: string }).reason, /blocked-by/i);
@@ -519,7 +427,7 @@ test("#2126 (1): the session's own open PR reading CHANGES_REQUESTED refuses a f
     graphql: heldWithOpenPr,
     prReviews: openPrReviews("CHANGES_REQUESTED"),
   });
-  const reason = sessionEligibilityReason(455, "worker-tooling", { run });
+  const reason = sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) });
   assert.ok(reason, "#2126's own live shape: a refusal nobody has answered, end to end");
   assert.match(reason as string, /#900/, "the refusal names the pull request, where the work is");
   assert.match(reason as string, /#472/, "and the row it belongs to");
@@ -533,7 +441,7 @@ test("#2126 (2): the same session with that PR reading APPROVED is ALLOWED -- #9
     graphql: heldWithOpenPr,
     prReviews: openPrReviews("APPROVED"),
   });
-  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null);
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) }), null);
 });
 
 test("#2126 (2): REVIEW_REQUIRED is a pull request waiting on its REVIEWER, and is ALLOWED", () => {
@@ -543,7 +451,7 @@ test("#2126 (2): REVIEW_REQUIRED is a pull request waiting on its REVIEWER, and 
     graphql: heldWithOpenPr,
     prReviews: openPrReviews("REVIEW_REQUIRED"),
   });
-  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) }), null,
     "an engineer does not wait on review -- ceo's ruling of 2026-09-11, unchanged by this clause");
 });
 
@@ -558,7 +466,7 @@ test("#2126 (3): four bot merge commits and no author commit do NOT clear the re
     graphql: heldWithOpenPr,
     prReviews: openPrReviews("CHANGES_REQUESTED", [verdict("CHANGES_REQUESTED", VERDICT_HEAD, "reviewer")]),
   });
-  const reason = sessionEligibilityReason(455, "worker-tooling", { run });
+  const reason = sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) });
   assert.ok(reason, "the refusal outlived four head moves that no author made");
   assert.match(reason as string, /#900/);
   assert.match(reason as string, /BOT MERGE DOES NOT LIFT THIS/,
@@ -578,7 +486,7 @@ test("#2126 (4): contradictory verdicts at the SAME head are not refused -- they
   });
   const run = (cmd: string, args: string[]) => { calls.push(args); return base(cmd, args); };
 
-  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) }), null,
     "#2105's real shape: an APPROVED and a CHANGES_REQUESTED on the identical commit, 57 seconds apart. "
     + "A guard with no exit for a dispute converts a review disagreement into a stalled engineer");
 
@@ -602,7 +510,7 @@ test("#2126 (4): the escalation is the DISPUTE's doing -- remove one side and th
     prReviews: openPrReviews("CHANGES_REQUESTED", [verdict("CHANGES_REQUESTED", REFUSED_HEAD, "reviewer")]),
   });
   const run = (cmd: string, args: string[]) => { calls.push(args); return base(cmd, args); };
-  assert.ok(sessionEligibilityReason(455, "worker-tooling", { run }));
+  assert.ok(sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) }));
   assert.deepEqual(calls.filter((c) => c[0] === "issue" && (c[1] === "edit" || c[1] === "comment")), [],
     "and a refused claim escalates nothing -- the control for this emptiness is the test directly above");
 });
@@ -623,7 +531,7 @@ test("#2126: the review-health read is ONE `pr list`, whatever the session holds
     if (isReviewDecisionRead) reviewReads += 1;
     return base(cmd, args);
   };
-  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null);
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) }), null);
   assert.equal(reviewReads, 1, "one call, not one per row");
 });
 
@@ -637,7 +545,7 @@ test("#2126: a row IN BUILD is still reported without ANY `pr list` round trip",
     if (args[0] === "pr" && args[1] === "list") prListAsked = true;
     return base(cmd, args);
   };
-  assert.match(String(sessionEligibilityReason(455, "worker-tooling", { run })), /#472 is IN BUILD/);
+  assert.match(String(sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) })), /#472 is IN BUILD/);
   assert.equal(prListAsked, false);
 });
 
@@ -649,7 +557,7 @@ test("#2126: a FAILED review-health read refuses nothing, the way every lookup h
     if (isFailingReviewDecisionRead) throw new Error("gh: 502");
     return base(cmd, args);
   };
-  assert.equal(sessionEligibilityReason(455, "worker-tooling", { run }), null,
+  assert.equal(sessionEligibilityReason(455, "worker-tooling", { ghRun: (args) => run("gh", args) }), null,
     "this clause can only ever CREATE a refusal, so an unanswerable read must not manufacture one");
 });
 
@@ -667,24 +575,20 @@ const splitRoutes = { issueViewBody: splitBody, prList: splitPrList };
 
 test("#2769 sessionEligibilityReason: the `Closes: none` PR from the adopted branch is not a collision; without the branch it is", () => {
   const run = routedRun(splitRoutes);
-  assert.match(sessionEligibilityReason(2760, "worker-2760", { run }) as string, /overlaps #2766/, "CONTROL: a fresh claim still refuses");
-  assert.equal(sessionEligibilityReason(2760, "worker-2760", { run, adoptedBranch: SPLIT_BRANCH }), null);
-  assert.match(sessionEligibilityReason(2760, "worker-2760", { run, adoptedBranch: "agent/other-1" }) as string, /overlaps #2766/);
+  assert.match(sessionEligibilityReason(2760, "worker-2760", { ghRun: (args) => run("gh", args) }) as string, /overlaps #2766/, "CONTROL: a fresh claim still refuses");
+  assert.equal(sessionEligibilityReason(2760, "worker-2760", { ghRun: (args) => run("gh", args), adoptedBranch: SPLIT_BRANCH }), null);
+  assert.match(sessionEligibilityReason(2760, "worker-2760", { ghRun: (args) => run("gh", args), adoptedBranch: "agent/other-1" }) as string, /overlaps #2766/);
 });
 
-/** `routedRun` answers `sessionEligibilityReason`'s reads; `claimRow` first reads the row's labels, which it does not. */
-function splitClaimRun() {
-  const routed = routedRun(splitRoutes);
-  return (cmd: string, args: string[]): string => {
-    if (isRowLabelRead(args)) return restRowAnswer(args);
-    return routed(cmd, args);
-  };
-}
+/** The fake code host holding the row being claimed (its body declares the Region file) and #2766, the open PR on that file from the adopted branch. */
+const splitClaimWorld = () => claimWorld({ rows: [{ number: 2760, body: splitBody }], pulls: [{ number: 2766, files: [SPLIT_REGION_FILE], body: "Closes: none -- Done-when 3 on #2760 is still open", headRefName: SPLIT_BRANCH }] });
 
 test("#2769 claimRow FORWARDS `adoptedBranch` to B4 -- the flag reaches the check that reads it, not only the function that owns it", () => {
-  const refused = claimRow(2760, "worker-2760", { run: splitClaimRun(), moveStatus: () => ({ moved: true }) });
+  splitClaimWorld();
+  const refused = claimRow(2760, "worker-2760", { run: noGh as never, moveStatus: () => ({ moved: true }) });
   assert.equal(refused.claimed, false);
   assert.match((refused as { reason: string }).reason, /overlaps #2766/, "CONTROL: without it the claim is refused by B4");
-  const adopted = claimRow(2760, "worker-2760", { run: splitClaimRun(), moveStatus: () => ({ moved: true }), adoptedBranch: SPLIT_BRANCH });
+  splitClaimWorld();
+  const adopted = claimRow(2760, "worker-2760", { run: noGh as never, moveStatus: () => ({ moved: true }), adoptedBranch: SPLIT_BRANCH });
   assert.doesNotMatch(String((adopted as { reason?: string }).reason ?? ""), /overlaps|B4/, "B4 no longer refuses the adopted branch's own PR");
 });

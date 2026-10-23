@@ -43,6 +43,7 @@ import { SIGNALS } from "./org-health/thresholds.ts";
 import { orderStallReading, panePromptReading } from "./org-health/overdue-readings.ts";
 import { orgHealthOrders } from "./org-health/fleet-build-readings.ts";
 import { REPO } from "./project-identity.ts";
+import { rows } from "./plugins/rows.ts";
 import { roleBriefPath } from "./project-roles.ts";
 import { serveOrdersByRun } from "./serve-by-run.ts";
 import { pauseRefusal, type AccountLimit } from "./account-limit.ts";
@@ -128,9 +129,9 @@ function recordTierEscalation({ row, session, reason }: Escalation, { ledgerPath
 /** The row's title and where its claim put the branch and the worktree, or `null` when the row or its claim record cannot be read. */
 function escalatedClaim(row: number, gh: (args: string[]) => string): { title: string; branch: string; worktree: string; } | null {
   try {
-    const read = JSON.parse(gh(["issue", "view", String(row), "--repo", REPO, "--json", "title,comments"]));
-    const record = claimRecordOf(Array.isArray(read.comments) ? read.comments : []);
-    return record?.branch && record.worktree ? { title: String(read.title ?? ""), branch: record.branch, worktree: record.worktree } : null;
+    const read = rows().titleAndCommentsOf({ repo: REPO, number: row, run: gh });
+    const record = claimRecordOf(read.comments);
+    return record?.branch && record.worktree ? { title: read.title, branch: record.branch, worktree: record.worktree } : null;
   } catch {
     return null;
   }
@@ -158,7 +159,7 @@ function restartOnSonnet(escalation: Escalation, deps: EscalationDeps): { line: 
   const claim = escalatedClaim(row, gh);
   const said = `\`${session}\` started #${row} on Haiku and ${reason}: restarted on Sonnet/high (#4630), the claim, branch and worktree unchanged.`;
   try {
-    post(["issue", "comment", String(row), "--repo", REPO, "--body", `${said} Decision log: \`use: ${ESCALATION_USE}\`, \`via: none\`.`]);
+    rows().postRowComment({ repo: REPO, row, body: `${said} Decision log: \`use: ${ESCALATION_USE}\`, \`via: none\`.`, run: post });
   } catch (err) {
     deps.warn?.(`escalation: the row comment on #${row} could not be posted (${firstLine(err)})`);
   }

@@ -147,7 +147,7 @@ async function semanticDuplicateExit(argv: string[]): Promise<number | null> {
     return null; // a machine with no host declaration declares no provider, and the optional provider is simply absent
   }
   const projectDir = host.projects.find((project) => project.id === host.primary)?.checkout ?? process.cwd(); // `.agent-org/decisions.json` is the primary project's, not a worktree's
-  const check = await duplicateRowCheck({ argv, title, body, repo: chosen.tracker.repo, run: defaultRun, host, projectDir, ledgerPath: stateEntryPath("wake-ledger") });
+  const check = await duplicateRowCheck({ argv, title, body, repo: chosen.tracker.repo, host, projectDir, ledgerPath: stateEntryPath("wake-ledger") });
   for (const warning of check.warnings) process.stderr.write(`${warning}\n`);
   if (check.refusal === null) return null;
   process.stderr.write(`${check.refusal}\n`);

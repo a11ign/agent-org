@@ -8,7 +8,7 @@
  * with the roster they mean and read no host. The CLI reads it (`instanceNow`), which is what the last two tests drive as
  * a PROCESS: an injected seam is exactly what a deleted call goes around.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, chmodSync, readdirSync, copyFileSync } from "node:fs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
@@ -18,6 +18,11 @@ import { join, dirname } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { oneRowReason } from "../row-claim/runner-rule.ts";
 import { claimRow } from "../row-claim.ts";
+import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "../plugins/fakes/watched-rows.test.support.ts";
 import { sparePathsFrom } from "../wake/session-endings.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { copyToolAndProject, importClosure, toolFile } from "./copied-tool-fixture.ts";
@@ -49,36 +54,36 @@ test("#2407 (3) POSITIVE CONTROLS: the same fixture is not refused with no other
 
 // --- THROUGH `claimRow`: NOTHING IS WRITTEN ON A REFUSAL, AND RESUMING IS NOT A NEW ROW ---
 
-/** A `gh` for one row that is `ready`, and (once written to) carries the claiming session's labels. */
-// agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, not `gh issue view`
-const isLabelRead = (args: string[]) => args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "");
+afterEach(() => forgetActivation());
 
-function claimStub(session: string, { alreadyMine = false } = {}) {
-  let labelReads = 0;
-  return (_cmd: string, args: string[]): string => {
-    if (isLabelRead(args)) {
-      labelReads += 1;
-      const mine = [`session:${session}`, "in-progress"];
-      const labels = labelReads === 1 ? ["ready", ...(alreadyMine ? mine : [])] : [...mine, "started", "was-ready"];
-      return JSON.stringify({ number: ROW, title: "A row", state: "open", labels: labels.map((name) => ({ name })) });
-    }
-    // Body and `blockedBy` reads fail: those lookups return null and the claim's checks fail OPEN, which is what lets
-    // this fixture reach the one check under test without a canned answer for each.
-    if (args[1] === "view") throw new Error("simulated: this fixture answers no body and no blockedBy");
-    return "[]";
-  };
+/**
+ * The fake code host holding one row that is `ready` (or already the session's), which carries the claiming session's labels once the claim has written them. Its body and `blockedBy` reads fail: those
+ * lookups return null and the claim's checks fail OPEN, which is what lets this fixture reach the one check under test without a seeded answer for each. `noGh` is the claim's `run`: it is for `git` and the
+ * board snapshot, which `moveStatus` stands in for.
+ */
+function claimFake(session: string, { alreadyMine = false } = {}) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = REPO;
+  world.rows.set(ROW, fakeRow(world, ROW, { title: "A row", labels: alreadyMine ? ["ready", `session:${session}`, "in-progress"] : ["ready"] }));
+  for (const read of ["bodyAndLabelsOf", "blockedByOf"]) world.failures.set(read, new Error("simulated: this fixture answers no body and no blockedBy"));
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return { world, writes: () => watched.calls.filter((call) => ["setRowLabels", "editRowLabels", "postRowComment"].includes(call.op)) };
 }
-const claimAs = (session: string, instance: { spare: boolean; rows: number[] }, alreadyMine = false) =>
-  claimRow(ROW, session, { run: claimStub(session, { alreadyMine }), moveStatus: () => ({ moved: true }), instance });
+const noGh = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+const claimAs = (session: string, instance: { spare: boolean; rows: number[] }, alreadyMine = false) => {
+  claimFake(session, { alreadyMine });
+  return claimRow(ROW, session, { run: noGh as never, moveStatus: () => ({ moved: true }), instance });
+};
 
 test("#2407 (3) ACCEPTANCE: `claimRow` refuses a spare's second row, naming the rule, and NOTHING is written", () => {
-  const writes: string[][] = [];
-  const stub = claimStub("worker-4");
-  const run = (cmd: string, args: string[]) => { if (args[1] === "edit" || args[1] === "comment") writes.push(args); return stub(cmd, args); };
-  const got = claimRow(ROW, "worker-4", { run, moveStatus: () => ({ moved: true }), instance: { spare: true, rows: [2378] } });
+  const fake = claimFake("worker-4");
+  const got = claimRow(ROW, "worker-4", { run: noGh as never, moveStatus: () => ({ moved: true }), instance: { spare: true, rows: [2378] } });
   assert.equal(got.claimed, false);
   assert.match((got as { reason: string }).reason, REFUSAL);
-  assert.deepEqual(writes, [], "a refused claim leaves the row exactly as it found it");
+  assert.deepEqual(fake.writes(), [], "a refused claim leaves the row exactly as it found it");
+  assert.deepEqual(fake.world.rows.get(ROW)!.labels, ["ready"]);
 });
 
 test("#2407 (3) POSITIVE CONTROLS through `claimRow`: a fresh spare claims, a standing role claims, and a spare RESUMING its own row claims", () => {
@@ -86,7 +91,8 @@ test("#2407 (3) POSITIVE CONTROLS through `claimRow`: a fresh spare claims, a st
   assert.equal(claimAs("worker-tooling", { spare: false, rows: [2378] }).claimed, true, "a standing role is not this rule's subject");
   assert.equal(claimAs("worker-4", { spare: true, rows: [2378, ROW] }, true).claimed, true,
     "a row the instance already holds is not a NEW one, so it never reaches the rule -- even when it has held others");
-  assert.equal(claimRow(ROW, "worker-4", { run: claimStub("worker-4"), moveStatus: () => ({ moved: true }) }).claimed, true,
+  claimFake("worker-4");
+  assert.equal(claimRow(ROW, "worker-4", { run: noGh as never, moveStatus: () => ({ moved: true }) }).claimed, true,
     "a caller that does not say is asked about nothing: the CLI is what asks");
 });
 

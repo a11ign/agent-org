@@ -4,8 +4,9 @@ import { PROJECT_NUMBER } from "../board-snapshot.ts";
 import { REPO } from "../project-identity.ts";
 import { DEFECT_LABEL } from "../defect-class-line.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
-import { boardItemOf, projectItemsPage } from "../ticket-port/project-membership.ts";
+import { boardItemOf } from "../ticket-port/project-membership.ts";
 import { adopterRowKind } from "../work-gate/org-health.ts";
+import { rows } from "../plugins/rows.ts";
 import { inLane } from "../lane-ownership.ts";
 import { READY_LABEL, STATE_LABELS } from "../claim-labels.ts";
 import { BACKLOG_LABEL, OUT_OF_RELEASE_LABEL as OUT_OF_RELEASE, OUT_OF_RELEASE_MILESTONE, LANE_PREFIX, LANE_ANY_LABEL, LANES_FILE_PATH } from "../project-vocabulary.ts";
@@ -205,8 +206,8 @@ export function declaresRelease(argv: string[]): boolean {
  */
 export function openMilestones({ run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}): string[] | null {
   try {
-    const raw = run("gh", ["api", `repos/${repo}/milestones`, "--jq", ".[].title"]);
-    const titles = raw.split("\n").map((t) => t.trim()).filter(Boolean);
+    const { argumentsRunOf, milestoneTitlesOf } = rows();
+    const titles = milestoneTitlesOf({ repo, run: argumentsRunOf(run) });
     return titles.length > 0 ? titles : null;
   } catch {
     return null; // CANNOT_ASK on the suggestion, never on the rule
@@ -503,7 +504,7 @@ export function unverifiedFilingFields(after: {
  * @returns {string | null} the Status option name, or `null` if the issue is not on this tracker's Project at all
  */
 export function fetchIssueBoardStatus(issueNumber: number, { run = defaultRun, tracker = homeTracker() }: { run?: typeof defaultRun; tracker?: Tracker; } = {}): string | null {
-  return boardItemOf(issueNumber, (args) => run("gh", args), tracker)?.fieldValueByName?.name ?? null;
+  return boardItemOf(issueNumber, rows().argumentsRunOf(run), tracker)?.fieldValueByName?.name ?? null;
 }
 
 /**
@@ -548,24 +549,8 @@ export function roadmapFromArgv(argv: string[]): string | null {
  * @param {{ repo: string, number: number }} issue @param {typeof defaultRun} run @returns {RoadmapItem[]}
  */
 export function roadmapItemsOf(issue: { repo: string; number: number }, run: typeof defaultRun): RoadmapItem[] {
-  const [owner, name] = issue.repo.split("/");
-  const items: RoadmapItem[] = [];
-  let cursor: string | null = null;
-  do {
-    const after = cursor === null ? "" : `, after: "${cursor}"`;
-    const query = `query { repository(owner: "${owner}", name: "${name}") { issue(number: ${issue.number}) `
-      + `{ projectItems(first: ${projectItemsPage()}${after}) { pageInfo { hasNextPage endCursor } `
-      + `nodes { id project { number owner { ... on Organization { login } ... on User { login } } } fieldValueByName(name: "${ROADMAP_FIELD}") `
-      + `{ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
-    const page: any = JSON.parse(run("gh", ["api", "graphql", "-f", `query=${query}`]))?.data?.repository?.issue?.projectItems;
-    if (!Array.isArray(page?.nodes)) throw new Error(`gh's Project-membership response for ${issue.repo}#${issue.number} did not have the expected shape (is the issue there?)`);
-    for (const node of page.nodes) {
-      items.push({ id: String(node?.id ?? ""), number: Number(node?.project?.number), owner: String(node?.project?.owner?.login ?? ""),
-        value: typeof node?.fieldValueByName?.name === "string" ? node.fieldValueByName.name : null });
-    }
-    cursor = page.pageInfo?.hasNextPage === true ? (page.pageInfo.endCursor ?? null) : null;
-  } while (cursor !== null);
-  return items;
+  const { argumentsRunOf, roadmapItemsOf: itemsOf } = rows();
+  return itemsOf({ repo: issue.repo, number: issue.number, field: ROADMAP_FIELD, run: argumentsRunOf(run) });
 }
 
 /**
@@ -574,13 +559,8 @@ export function roadmapItemsOf(issue: { repo: string; number: number }, run: typ
  * @param {Tracker} tracker @param {typeof defaultRun} run @returns {RoadmapField | null}
  */
 export function roadmapFieldOf(tracker: Tracker, run: typeof defaultRun): RoadmapField | null {
-  const project = `projectV2(number: ${tracker.board.number}) { id field(name: "${ROADMAP_FIELD}") { ... on ProjectV2SingleSelectField { id options { id name } } } }`;
-  const query = `query { repositoryOwner(login: "${tracker.board.owner}") { ... on Organization { ${project} } ... on User { ${project} } } }`;
-  const board: any = JSON.parse(run("gh", ["api", "graphql", "-f", `query=${query}`]))?.data?.repositoryOwner?.projectV2;
-  if (typeof board?.id !== "string") throw new Error(`could not read ${tracker.board.owner}/projects/${tracker.board.number}`);
-  const { id, options } = board.field ?? {};
-  if (typeof id !== "string" || !Array.isArray(options)) return null;
-  return { projectId: board.id, fieldId: id, options: options.map((o: any) => ({ id: String(o.id), name: String(o.name) })) };
+  const { argumentsRunOf, roadmapFieldOf: fieldOf } = rows();
+  return fieldOf({ owner: tracker.board.owner, boardNumber: tracker.board.number, field: ROADMAP_FIELD, run: argumentsRunOf(run) });
 }
 
 /** The epic's value: the one on the row's own board when it has one, else the first value on any project it is boarded to. @param {RoadmapItem[]} items @param {Tracker} tracker @returns {string | null} */

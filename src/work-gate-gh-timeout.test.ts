@@ -83,8 +83,9 @@ test("(3) the cut does not silence a `gh` that answers, and a refusal that is no
 });
 
 test("(4) the bound is the named constant, the one `wake.ts`'s `defaultGh` cuts a `gh` at", () => {
-  const wake = moduleSource("wake.ts");
-  const wakeBound = /const defaultGh = [^;]*?timeout: (\d[\d_]*)/s.exec(wake)?.[1];
-  assert.ok(wakeBound !== undefined, "positive control: `defaultGh`'s bound was found in wake.ts");
-  assert.equal(GH_READ_TIMEOUT_MS, Number(wakeBound.replaceAll("_", "")));
+  // A11-160 (step 7): `defaultGh` is the code host's own runner, which the GitHub plugin cuts at its `GH_TIMEOUT_MS`.
+  assert.match(moduleSource("wake/exit-and-limits.ts"), /export const defaultGh = \(args: string\[\]\) => rows\(\)\.ownRun\(args\);/, "positive control: `defaultGh` is the code host's own runner");
+  const pluginBound = /export const GH_TIMEOUT_MS = (\d[\d_]*)/.exec(readFileSync(new URL("../plugins/github/gh.ts", import.meta.url), "utf8"))?.[1];
+  assert.ok(pluginBound !== undefined, "positive control: the plugin's bound was found in plugins/github/gh.ts");
+  assert.equal(GH_READ_TIMEOUT_MS, Number(pluginBound.replaceAll("_", "")));
 });

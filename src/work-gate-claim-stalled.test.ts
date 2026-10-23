@@ -9,7 +9,7 @@
  * yields no order only because the row with the SAME clock and NO commit yields one; and a second reading with a move after the nudge
  * releases nothing only because the same second reading with none releases. Nothing here is asserted against an empty population.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -43,6 +43,12 @@ import { claimRecordOf } from "./claim-record.ts";
 import { decidedBy } from "./decided-by.ts";
 import { WORKER_STATE_DIR, writeDeclaration, type Declaration } from "./worker-state.ts";
 import { fileURLToPath } from "node:url";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { REPO as TRACKER_REPO } from "./project-identity.ts";
+
+afterEach(() => forgetActivation());
 
 const MIN = 60_000;
 const NOW = Date.parse("2026-09-25T16:00:00Z");
@@ -361,22 +367,16 @@ test("#3407 (1) a nothing-claim round-trips through the REAL writer as a CLAIM w
 
 test("#3407 (1) `claimRow` with no branch and no worktree POSTS the nothing-claim, and a claim naming a branch posts the one it always did", () => {
   const post = (opts: { branch?: string; worktree?: string }) => {
-    const bodies: string[] = [];
-    let reads = 0;
-    const run = (_cmd: string, args: string[]): string => {
-      if (args[1] === "comment") bodies.push(args[args.indexOf("--body") + 1]);
-      // agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, whose state is lower case
-      if (args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "")) {
-        reads += 1;
-        const labels = reads === 1 ? ["ready"] : ["session:worker-3407", "in-progress", "started", "was-ready"];
-        return JSON.stringify({ number: 3407, title: "A row", state: "open", labels: labels.map((name) => ({ name })) });
-      }
-      if (args[1] === "view") throw new Error("simulated: no body and no blockedBy");
-      return "[]";
-    };
-    const got = claimRow(3407, "worker-3407", { run, moveStatus: () => ({ moved: true }), instance: { spare: false, rows: [] }, ...opts });
+    const host = createFakeCodeHost();
+    host.rowsWorld.repo = TRACKER_REPO;
+    const row = fakeRow(host.rowsWorld, 3407, { title: "A row", labels: ["ready"], onBoard: true,
+      body: "## Region\n\nNo file declared here.\n\n## Acceptance\n\n```bash\ntrue\n```\n\n## Open-check\n\nTRUE ALREADY\n" });
+    host.rowsWorld.rows.set(3407, row);
+    substituteCodeHost(host);
+    const noGh = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+    const got = claimRow(3407, "worker-3407", { run: noGh as never, moveStatus: () => ({ moved: true }), instance: { spare: false, rows: [] }, ...opts });
     assert.equal(got.claimed, true);
-    return bodies.filter((b) => b.includes(CLAIM_RECORD_MARKER));
+    return row.comments.map((comment) => comment.body).filter((body) => body.includes(CLAIM_RECORD_MARKER));
   };
   const [none] = post({});
   assert.match(none, /claimed by `worker-3407`/);
@@ -804,29 +804,31 @@ test("#2470 claimFactsFrom reports a row it cannot evaluate rather than throwing
 // THE THREE POSITIVE CONTROLS the row names, each beside the CONTROL that shows its fixture would have caught the defect: the same
 // release WITHOUT `keepWorktree` removes the clean tree and refuses over the dirty one, which is exactly what the row measured.
 
-/** A board fake for `declineRow`: the row's labels, and a recording `run`. */
 /**
- * #2746: REACTIVE, not a fixed response -- `writeDeclineLabels` re-reads the row after its edit to verify
- * the write landed, so a `view` fake that always answers the PRE-decline labels would fail that verify on
- * every one of these releases, which is a real write followed by a real re-read on the live board.
+ * A board for `declineRow`: the fake code host holding the row with these labels (A11-160, step 7: the decline's `gh` is the code host's), and a `run` that is the decline's `git` only, which keeps the calls it was handed.
+ * #2746: the fake is REACTIVE, as `writeDeclineLabels` re-reads the row after its edit to verify the write landed, so a fixed answer would fail that verify on every release.
  */
 function releaseBoard(labels: string[] = ["in-progress", "session:worker-7", "started", "was-ready"]) {
   const calls: string[][] = [];
-  const board = { labels: [...labels] };
-  const run = (_cmd: string, args: string[]) => {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = TRACKER_REPO;
+  const row = fakeRow(host.rowsWorld, 2416, { title: "A row", labels: [...labels], onBoard: true });
+  host.rowsWorld.rows.set(2416, row);
+  const asked: { removed: string[]; added: string[] }[] = [];
+  const watched = Object.fromEntries(Object.entries(host.rows!).map(([name, member]) => typeof member !== "function" ? [name, member]
+    : [name, (...args: unknown[]) => {
+      if (name === "editRowLabels") asked.push({ removed: [...(args[0] as { remove: string[] }).remove], added: [...(args[0] as { add: string[] }).add] });
+      return (member as (...given: unknown[]) => unknown).apply(host.rows, args);
+    }]));
+  substituteCodeHost({ ...host, rows: watched as unknown as typeof host.rows });
+  const run = (cmd: string, args: string[]) => {
+    if (cmd === "gh") throw new Error("a decline reached `gh` through its run: GitHub is the code host's");
     calls.push(args);
-    if (args[1] === "edit") {
-      const changed = (flag: string) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
-      board.labels = [...board.labels.filter((l) => !changed("--remove-label").includes(l)), ...changed("--add-label")];
-      return "";
-    }
-    // agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, whose state is lower case
-    return args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "")
-      ? JSON.stringify({ number: 2416, title: "A row", state: "open", labels: board.labels.map((name) => ({ name })) }) : "";
+    return "";
   };
-  const edits = () => calls.filter((a) => a[1] === "edit").map((a) => ({
-    removed: a.flatMap((x, i) => (x === "--remove-label" ? [a[i + 1]] : [])), added: a.flatMap((x, i) => (x === "--add-label" ? [a[i + 1]] : [])) }));
-  return { run, calls, edits, board };
+  const edits = () => asked;
+  const comments = () => row.comments.map((comment) => comment.body);
+  return { run, calls, edits, comments, row };
 }
 const RECORD = [claimRecordComment({ session: "worker-7", branch: BRANCH, worktree: WT })];
 const NO_STATUS = () => ({ moved: true }) as const;
@@ -845,7 +847,7 @@ test("#2470 (7a) a CLEAN tree with UNPUSHED commits keeps them across the releas
   assert.equal(board.calls.some((a) => a.includes("worktree") && a.includes("remove")), false, "and no `git worktree remove` ran at all");
   assert.deepEqual(board.edits()[0].added, ["ready"], "the row goes back to the pool (it was ready before the claim)");
   assert.ok(board.edits()[0].removed.includes("session:worker-7"), "and the holder's labels come off, which is what makes it a release");
-  assert.ok(board.calls.some((a) => a[1] === "comment" && a.join(" ").includes("released by")), "and the release is RECORDED, so `check` stops naming the tree");
+  assert.ok(board.comments().some((body) => body.includes("released by")), "and the release is RECORDED, so `check` stops naming the tree");
 
   // THE CONTROL: the same release without the flag calls the remover -- which, on a clean tree, deletes it.
   const control: string[] = [];
@@ -859,7 +861,7 @@ test("#3407 releasing a nothing-claim POSTS the release record, so a later claim
     const board = releaseBoard();
     const got = declineRow(2416, "worker-7", { run: board.run as never, fetchComments: () => comments, moveStatus: NO_STATUS as never, recordGone: NOOP_RECORD_GONE });
     assert.equal(got.declined, true);
-    return board.calls.filter((a) => a[1] === "comment" && a.join(" ").includes("released by"));
+    return board.comments().filter((body) => body.includes("released by"));
   };
   assert.equal(release([claimRecordComment({ session: "worker-7", nothing: "the claim named no branch and no worktree" })]).length, 1);
   assert.deepEqual(release([]), [], "CONTROL: a row that recorded nothing at all still has no record to supersede, and none is posted");

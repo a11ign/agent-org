@@ -2197,7 +2197,7 @@ type UnknownSeat = { label: string; status: string; };
 /** One tick of the drop, reading the queue the way the tick does, so a drop made on one tick is not there on the next. */
 function unknownTick(queuePath: string, posts: string[][], agents: UnknownSeat[], now: number, paused = false) {
   return dropUnknownHandoffs(readHandoffs(queuePath), { agents, roster: [], isLead: () => false, holder: () => null,
-    post: (args) => { posts.push(args); }, queuePath, paused, now });
+    post: (args) => { posts.push(args); return ""; }, queuePath, paused, now });
 }
 
 test("an order for a session the org does not know is dropped at the bound, with one line naming it and a comment on the row it carried", () => {

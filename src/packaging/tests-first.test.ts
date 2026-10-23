@@ -20,6 +20,8 @@ import { claimRow, testsFirstClaimReason } from "../row-claim.ts";
 import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
 import type { CodeHostRows, TestsFirstFacts } from "../plugins/contracts/code-host-rows.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { REPO } from "../project-identity.ts";
 
 const ROW = 5109;
 const TEST_PATH = "src/packaging/tests-first.test.ts";
@@ -73,39 +75,35 @@ const BODY_NAMING_NO_TEST = "## Region\nsrc/row-claim.ts\n\n## Acceptance\nnpx r
   + "## Open-check\ngit grep -c Tests-first origin/main -- src/row-claim.ts\n\nTests-first: TBD\n";
 const BODY_NAMING_A_TEST = BODY_NAMING_NO_TEST.replace("Tests-first: TBD", `Tests-first: ${TEST_PATH}`);
 
-/** A `gh` for one `ready` row with this body that records every write. */
-// agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, not `gh issue view`
-const isLabelRead = (args: string[]) => args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "");
+/** A claim has no `run` for GitHub: the code host is the fake's, holding one `ready` row with this body. */
+const noGh = (cmd: string): string => {
+  throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`);
+};
 
-function claimStub(body: string, writes: string[][]) {
-  let labelReads = 0;
-  return (_cmd: string, args: string[]): string => {
-    if (args[1] === "edit" || args[1] === "comment") writes.push(args);
-    if (isLabelRead(args)) {
-      labelReads += 1;
-      const mine = ["session:worker-5109", "in-progress"];
-      const labels = labelReads === 1 ? ["ready"] : [...mine, "started", "was-ready"];
-      return JSON.stringify({ number: ROW, title: "A row", state: "open", labels: labels.map((name) => ({ name })) });
-    }
-    if (args[1] === "view" && args.includes("body,labels")) return JSON.stringify({ body, labels: [{ name: "ready" }] });
-    if (args[1] === "view") throw new Error("simulated: this fixture answers no blockedBy");
-    return "[]";
-  };
+function readyRow(body: string) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  const row = fakeRow(host.rowsWorld, ROW, { title: "A row", labels: ["ready"], body, onBoard: true });
+  host.rowsWorld.rows.set(ROW, row);
+  substituteCodeHost(host);
+  return row;
 }
-const claim = (body: string, testsFirst: boolean, writes: string[][] = []) =>
-  claimRow(ROW, "worker-5109", { run: claimStub(body, writes), moveStatus: () => ({ moved: true }), testsFirst });
+
+const claim = (body: string, testsFirst: boolean) => {
+  const row = readyRow(body);
+  return { result: claimRow(ROW, "worker-5109", { run: noGh as never, moveStatus: () => ({ moved: true }), testsFirst }), row };
+};
 
 test("DONE-WHEN 1a THROUGH `claimRow`: a marked row with no test path is NOT CLAIMED and nothing is written", () => {
-  const writes: string[][] = [];
-  const got = claim(BODY_NAMING_NO_TEST, true, writes);
-  assert.equal(got.claimed, false);
-  assert.match((got as { reason: string }).reason, /Tests-first/);
-  assert.deepEqual(writes, [], "a refused claim leaves the row exactly as it found it");
+  const { result, row } = claim(BODY_NAMING_NO_TEST, true);
+  assert.equal(result.claimed, false);
+  assert.match((result as { reason: string }).reason, /Tests-first/);
+  assert.deepEqual([row.labels, row.comments], [["ready"], []], "a refused claim leaves the row exactly as it found it");
 });
 
 test("DONE-WHEN 1a POSITIVE CONTROLS THROUGH `claimRow`: the same row claims once it names a test, and with the flag off", () => {
-  assert.equal(claim(BODY_NAMING_A_TEST, true).claimed, true, "naming the test file clears the refusal");
-  assert.equal(claim(BODY_NAMING_NO_TEST, false).claimed, true, "flag off: the claim asks nothing new");
+  assert.equal(claim(BODY_NAMING_A_TEST, true).result.claimed, true, "naming the test file clears the refusal");
+  assert.equal(claim(BODY_NAMING_NO_TEST, false).result.claimed, true, "flag off: the claim asks nothing new");
 });
 
 // --- THE GUARD: THE TESTS DO NOT MOVE AFTER THE FIRST COMMIT --------------------------------------------------------------------

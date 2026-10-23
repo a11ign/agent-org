@@ -24,6 +24,7 @@ import { readAgents, listingIsComplete, absentSeats, REFUSAL_EXCERPT, firstLine,
 import { persistentEntries, type PersistentEntry } from "../project-roles.ts";
 import { liveToolVersion } from "../lib/tool-version.ts";
 import { readState as readSelftestState, selftestPaths, worthAChild } from "../messaging/selftest.ts";
+import { rows } from "../plugins/rows.ts";
 import type { SpareCycle } from "./fyi-delivery-and-limits.ts";
 import { SESSIONS_FILE, handoffQueuePath, ledgerPathFrom, queueHandoff } from "./seat-reset.ts";
 import { EXIT, defaultGh, defaultRun, guardedGh, route, rowMention, type RowRef } from "./exit-and-limits.ts";
@@ -433,10 +434,8 @@ function prLabel(pr: { number: number; }): string {
 function inMergeQueue(pr: { number: number; }, { run, warn, repos }: { run: (args: string[]) => string; warn: (line: string) => void; repos?: readonly { key: string; repo: string; }[]; }): boolean {
   const { repo } = pr as { repo?: string; };
   const slug = repo ?? (repos ?? homeProjectDeclaration().code).find((r) => r.key === "")?.repo ?? REPO;
-  const [owner, name] = slug.split("/");
-  const query = `{repository(owner:${JSON.stringify(owner)},name:${JSON.stringify(name)}){pullRequest(number:${pr.number}){mergeQueueEntry{position}}}}`;
   try {
-    return run(["api", "graphql", "-f", `query=${query}`, "--jq", ".data.repository.pullRequest.mergeQueueEntry != null"]).trim() === "true";
+    return rows().isPullQueued({ repo: slug, number: pr.number, run });
   } catch (err) {
     warn(`wake: could not read whether ${slug}#${pr.number} is in the merge queue (${firstLine(err)}) -- reporting the overlap as a refusal, not a wait.`);
     return false;
@@ -454,7 +453,7 @@ function sayOnChairmanRow(row: number, hold: ClaimHold, { run, post, warn }: { r
     if (rowComments(row, marker, run).some((c) => c.marked)) return;
     const headline = hold.waits ? "**Waiting, not refused: this `priority:chairman` row is not started this tick, and will be.**"
       : "**This `priority:chairman` row was NOT started this tick: the claim would refuse it.**";
-    post(["issue", "comment", String(row), "--body", `${marker}\n${headline} ${hold.reason}\n\nThe gate offers the row again every tick and starts a fresh engineer on the first tick the cause is gone. This is written once for this cause.\n`]);
+    rows().commentOnRow({ number: row, body: `${marker}\n${headline} ${hold.reason}\n\nThe gate offers the row again every tick and starts a fresh engineer on the first tick the cause is gone. This is written once for this cause.\n`, run: post });
   } catch (err) {
     warn(`wake: could not write #${row}'s claim ${hold.waits ? "wait" : "refusal"} on the row (${firstLine(err)}) -- the journal line stands and the next tick tries again.`);
   }
@@ -515,9 +514,9 @@ export function sayToolchainRefusal({ run = defaultGh, post = guardedGh, warn = 
     const marker = `<!-- worktree-not-ready:${ref.number}:${createHash("sha256").update(reason).digest("hex").slice(0, 8)} -->`;
     try {
       if (rowComments(ref.number, marker, run).some((c) => c.marked)) return;
-      post(["issue", "comment", String(ref.number), "--body", `${marker}\n**This \`ready\` row was NOT started this tick: its worktree is not ready for a worker.** ${reason}\n\n`
+      rows().commentOnRow({ number: ref.number, run: post, body: `${marker}\n**This \`ready\` row was NOT started this tick: its worktree is not ready for a worker.** ${reason}\n\n`
         + "The wake checks the worktree before it starts a worker in it, and offers the row again every tick; a worker starts on the first tick the check passes. "
-        + "This is written once for this cause."]);
+        + "This is written once for this cause." });
     } catch (err) {
       warn(`wake: could not write #${ref.number}'s worktree refusal on the row (${firstLine(err)}) -- the journal line stands and the next tick tries again.`);
     }
@@ -712,8 +711,7 @@ type RowForTier = { labels: string[]; body: string; title?: string };
 export function readRowForTier(row: number, key = ""): RowForTier {
   const repo = key === "" ? REPO : trackerRepositoryOf(key);
   if (repo === null) throw new Error(`the project declares no tracker "${key}"`);
-  const read = JSON.parse(defaultGh(["issue", "view", String(row), "--repo", repo, "--json", "labels,body,title"]));
-  return { labels: (read.labels as { name: string }[]).map((l) => l.name), body: String(read.body ?? ""), title: String(read.title ?? "") };
+  return rows().labelsBodyTitleOf({ repo, number: row, run: defaultGh });
 }
 
 /**

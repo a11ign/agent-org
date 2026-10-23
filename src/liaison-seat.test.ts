@@ -1,5 +1,5 @@
 // @ts-check
-// no-token: clearContext -- every herdr and gh call is the injected `run` and the roster is a temp-dir fixture; nothing here reaches a pane or a network
+// no-token: clearContext -- every herdr call is the injected `run`, the claim's rows are the fake code host's, and the roster is a temp-dir fixture; nothing here reaches a pane, `gh` or a network
 // A PERSISTENT SEAT IS NEVER CLEARED (a11ign/a11ign#3415, chairman messaging B1): `"persistent": true` on a roster entry is a ROLE
 // fact, and `clearBeforeOrder` keeps (and, over the threshold, `/compact`s) that seat's window instead of wiping it before an order.
 //
@@ -19,8 +19,13 @@ import { COMPACT_THRESHOLD_TOKENS, isPersistentRole, keepsContext } from "./wake
 import { DRAINED_SEEN, PERSISTENT_SEEN, engineerEligibility, route } from "./wake/exit-and-limits.ts";
 import { clearBeforeOrder } from "./wake/merge-queue-wait.ts";
 import { persistentRoles } from "./project-roles.ts";
+import { REPO } from "./project-identity.ts";
 import { clearThenPrompt } from "./prompt-session.ts";
 import { claimRow, persistentReason } from "./row-claim.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
 
 const noSettle = () => {};
 const SEAT = "liaison";
@@ -160,17 +165,22 @@ describe("the seat is never offered a row, and cannot claim one", () => {
   });
 
   test("(4) row-claim refuses it, naming `persistent`, before a single write", () => {
-    const calls = ([] as string[][]);
-    const run = (cmd: string, args: string[]) => {
-      calls.push([cmd, ...args]);
-      // agent-org#1302: the row is read over REST, which answers its state in lower case
-      return JSON.stringify({ number: 3415, title: "t", state: "open", labels: [{ name: "ready" }] });
-    };
-    const got = claimRow(3415, SEAT, { run, persistent: true });
-    assert.equal(got.claimed, false);
-    assert.match(String((got as any).reason), /persistent/);
-    assert.deepEqual(calls.map((c) => c[1]), ["api"], "one read of the row and nothing written");
-    assert.match(calls[0][2], /^repos\/[^/]+\/[^/]+\/issues\/3415$/, "the read is REST, not `issue view`");
+    // The code host's rows hold the row (A11-160, step 7); the claim reads it over REST, and the seat is refused before anything is written.
+    const fake = createFakeCodeHost();
+    fake.rowsWorld.repo = REPO;
+    fake.rowsWorld.rows.set(3415, fakeRow(fake.rowsWorld, 3415, { title: "t", labels: ["ready"] }));
+    const watched = watchedRows(fake);
+    substituteCodeHost(watched.host);
+    try {
+      const got = claimRow(3415, SEAT, { persistent: true });
+      assert.equal(got.claimed, false);
+      assert.match(String((got as any).reason), /persistent/);
+      assert.deepEqual(watched.calls.map((c) => c.op), ["readRestRow"], "one read of the row and nothing written");
+      assert.equal(watched.calls[0].request.number, 3415, "the read is REST, of the row being claimed");
+      assert.deepEqual(fake.rowsWorld.rows.get(3415)!.labels, ["ready"], "and the row is as it was");
+    } finally {
+      forgetActivation();
+    }
   });
 
   test("(4) CONTROL: the refusal is the fact's, not every session's", () => {

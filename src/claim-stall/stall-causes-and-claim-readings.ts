@@ -12,6 +12,8 @@ import type { DeclarationReading } from "../worker-state.ts";
 import { brokenChecks } from "../red-pr.ts";
 import { ownsPr } from "../pr-ownership.ts";
 import type { LabelEvent } from "../claim-provenance.ts";
+import { PluginActivationRefusal } from "../plugins/code-host-slot.ts";
+import { rows } from "../plugins/rows.ts";
 import { hostConfigPath, readHostConfig } from "../host-config.ts";
 import { parseWaits, conditionHolds, isItemWait, type RefFact } from "../wait-condition.ts";
 import { claimRecordOf, type RowComment, type ClaimRecord } from "../claim-record.ts";
@@ -896,26 +898,21 @@ export function sessionLabelAddedAt(events: LabelEvent[] | null, session: string
   return times.length === 0 ? null : Math.max(...times);
 }
 
-/** `gh <args>`, never throwing: a spawn failure or a timeout is `status: null`, which {@link readLabelEvents} turns into `null` and never into "no events". */
-export type GhRun = (args: string[]) => { status: number | null, out: string };
-const ghRun: GhRun = (args) => {
-  const ran = spawnSync("gh", args, { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER });
-  return { status: ran.status, out: ran.stdout ?? "" };
-};
+/** The bound on the one `gh` call that reads a row's label events: a call that hits it is a read that failed, which {@link readLabelEvents} turns into `null` and never into "no events". */
+const LABEL_EVENTS_TIMEOUT_MS = 20_000;
 
 /**
- * A row's label events through `gh api`, or `null` for any read that did not answer in full. One REST call, made only for a claim with a merged pull
- * request of its own after the record, so a quiet org spends none (and the REST core pool, not GraphQL's).
- * @param {number} row @param {string} repo `owner/repo` of the tracker, whose issue numbers the row is @param {GhRun} [run]
+ * A row's label events, or `null` for any read that did not answer in full. One REST call, made only for a claim with a merged pull
+ * request of its own after the record, so a quiet org spends none (and the REST core pool, not GraphQL's). The code host asks (`labelEventsOf`); this
+ * keeps the bound on the call and the rule that a read which will not answer is `null`.
+ * @param {number} row @param {string} repo `owner/repo` of the tracker, whose issue numbers the row is @param {(args: string[]) => string} [run] the caller's own executor, which throws when `gh` refuses
  * @returns {LabelEvent[] | null}
  */
-export function readLabelEvents(row: number, repo: string, run: GhRun = ghRun): LabelEvent[] | null {
-  const ran = run(["api", "--paginate", `repos/${repo}/issues/${row}/events`, "--jq",
-    '.[] | select(.event == "labeled" or .event == "unlabeled") | {event: .event, label: .label.name, at: .created_at}']);
-  if (ran.status !== 0) return null;
+export function readLabelEvents(row: number, repo: string, run?: (args: string[]) => string): LabelEvent[] | null {
   try {
-    return ran.out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l) as LabelEvent);
-  } catch {
+    return rows().labelEventsOf({ repo, row, run: run ?? ((args) => rows().gateRun({ timeoutMs: LABEL_EVENTS_TIMEOUT_MS, capture: true })(args)) });
+  } catch (error) {
+    if (error instanceof PluginActivationRefusal) throw error; // a code host that serves no rows is refused by name, and is not a read that failed
     return null;
   }
 }

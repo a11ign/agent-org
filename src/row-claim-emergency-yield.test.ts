@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` call is an injected `run`; nothing here reaches the network (agent-org#989)
+// no-token: none -- the fake code host's rows hold the world in memory; nothing here reaches `gh` or the network (agent-org#989)
 /**
  * agent-org#989: THE CLAIM HONOURS THE GATE'S `priority:emergency`, AS IT HONOURS THE CHAIRMAN'S ROW (a11ign#4793).
  *
@@ -8,7 +8,7 @@
  *
  * POSITIVE CONTROLS: each refusal differs from the claim in ONE fact (the setter, the incident, the option, the link), so none passes by B4 doing nothing.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -16,7 +16,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows, type WatchedCall } from "./plugins/fakes/watched-rows.test.support.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE, as `row-claim-chairman-yield.test.ts` does it: the host file first, the tool imported after it.
 const SCRATCH = mkdtempSync(join(tmpdir(), "row-claim-emergency-yield-"));
@@ -72,64 +75,53 @@ type World = {
   blockedBy?: number[];
 };
 
-/** One `gh`, routed the way `row-claim-chairman-yield.test.ts` routes it, plus the emergency reads. `calls` is every argv it was asked. */
-function fakeGh(world: World, calls: string[][] = []) {
-  return (_cmd: string, args: string[]): string => {
-    calls.push(args);
-    if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ number: ASKER, title: "A row", body: bodyOf(SHARED), state: "OPEN", labels: [{ name: "ready" }],
-        blockedBy: { nodes: (world.blockedBy ?? []).map((number) => ({ number, state: "OPEN" })) } });
-    }
-    const byLabel = readsRowsByLabel(args);
-    if (byLabel?.label === EMERGENCY_PRIORITY_LABEL) {
-      return connectionOf(Object.entries(world.emergency ?? {}).map(([number, row]) => ({ number: Number(number), body: row.body, labels: [{ name: EMERGENCY_PRIORITY_LABEL }] })));
-    }
-    if (byLabel?.label === CHAIRMAN_PRIORITY_LABEL) {
-      return connectionOf(Object.keys(world.labelled ?? {}).map((number) => ({ number: Number(number), labels: [{ name: CHAIRMAN_PRIORITY_LABEL }] })));
-    }
-    if (byLabel?.label === "in-progress") {
-      return connectionOf((world.claimed ?? []).map((row) => ({ number: row.number, labels: [{ name: "in-progress" }], body: bodyOf(...row.files), blockedBy: { nodes: [] } })));
-    }
-    // agent-org#1302: the asker's labels and state are read over REST
-    if (args[0] === "api" && args[1] === `repos/${TRACKER}/issues/${ASKER}`) return JSON.stringify({ number: ASKER, title: "A row", labels: [{ name: "ready" }], state: "open" });
-    if (args[0] === "api") return apiAnswer(world, args);
-    if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify(args.includes(AGENT_ORG.repo) ? (world.prs ?? []).map((pr) => ({ number: pr.number, changedFiles: 1, files: [{ path: pr.path }],
-        body: pr.closes === undefined ? "" : `Closes ${TRACKER}#${pr.closes}\n` })) : []);
-    }
-    return "[]";
-  };
+/**
+ * The fake code host holding `world` (A11-160, step 7), as `row-claim-chairman-yield.test.ts` holds it, plus the emergency reads: the rows carrying `priority:emergency` with who added it last and their bodies, and
+ * the tracker's incident items. The host is watched: `calls` are the operations the claim asked of it, with their requests, in order.
+ */
+function fakeGh(world: World): WatchedCall[] {
+  const host = createFakeCodeHost();
+  const w = host.rowsWorld;
+  w.repo = TRACKER;
+  const labelled = world.labelled ?? {};
+  const emergency = world.emergency ?? {};
+  const claimed = new Map((world.claimed ?? []).map((row) => [row.number, row]));
+  for (const number of new Set([ASKER, ...Object.keys(labelled).map(Number), ...Object.keys(emergency).map(Number), ...claimed.keys()])) {
+    const row = claimed.get(number);
+    const labels = [...(number === ASKER ? ["ready"] : []), ...(number in labelled ? [CHAIRMAN_PRIORITY_LABEL] : []), ...(number in emergency ? [EMERGENCY_PRIORITY_LABEL] : []), ...(row === undefined ? [] : ["in-progress"])];
+    const body = number in emergency ? emergency[number].body : number === ASKER ? bodyOf(SHARED) : row === undefined ? "" : bodyOf(...row.files);
+    w.rows.set(number, fakeRow(w, number, { title: "A row", labels, body, blockedBy: number === ASKER ? world.blockedBy ?? [] : [] }));
+  }
+  for (const [number, actor] of Object.entries(labelled)) {
+    w.gate.events.set(Number(number), [{ event: "labeled", label: CHAIRMAN_PRIORITY_LABEL, actor, at: "2026-10-10T08:00:00Z" }]);
+  }
+  for (const [number, { actor }] of Object.entries(emergency)) {
+    const events = w.gate.events.get(Number(number));
+    const added = actor === null ? new Error("HTTP 502") : [{ event: "labeled" as const, label: EMERGENCY_PRIORITY_LABEL, actor, at: "2026-10-10T08:00:00Z" }];
+    w.gate.events.set(Number(number), added instanceof Error ? added : [...(Array.isArray(events) ? events : []), ...added]);
+  }
+  for (const [number, item] of Object.entries(world.incidents ?? {})) {
+    w.rows.set(Number(number), fakeRow(w, Number(number), { title: "An incident", labels: item.labels, body: item.body, state: item.state === "open" ? "OPEN" : "CLOSED" }));
+  }
+  w.rules.otherRepos.set(AGENT_ORG.repo, new Map((world.prs ?? []).map((pr) => [pr.number, { number: pr.number, body: pr.closes === undefined ? "" : `Closes ${TRACKER}#${pr.closes}\n`, headRefName: `agent/x-${pr.number}`,
+    labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-10T08:00:00Z", comments: [], files: [pr.path] }])));
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  return watched.calls;
 }
 
-/** The tracker's `issues/<n>/events` (the login that added the label last, or a refusal) and `issues/<n>` (an incident item, or a refusal). */
-function apiAnswer(world: World, args: string[]): string {
-  const events = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/events$/.exec(args[1] ?? "");
-  if (events !== null) {
-    assert.equal(events[1], TRACKER, "the placeholder is filled with the TRACKER, never left for `gh` to fill from the working directory");
-    const number = Number(events[2]);
-    if (args.join(" ").includes(EMERGENCY_PRIORITY_LABEL)) {
-      const actor = world.emergency?.[number]?.actor;
-      if (actor === null || actor === undefined) throw new Error("HTTP 502");
-      return `${actor}\n`;
-    }
-    const actor = (world.labelled ?? {})[number];
-    if (actor === undefined) throw new Error("HTTP 502");
-    return `${actor}\n`;
-  }
-  const item = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)$/.exec(args[1] ?? "");
-  if (item !== null) {
-    const found = (world.incidents ?? {})[Number(item[2])];
-    if (found === undefined) throw new Error("HTTP 502");
-    return JSON.stringify(found);
-  }
-  return "[]";
-}
+/** The claim's `run`: for `git` and the board snapshot, so a `gh` through it is a loud mistake. */
+const noGh = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
 
-const verdict = (world: World, calls?: string[][], option: "on" | "off" | "absent" = "on") => {
+afterEach(() => forgetActivation());
+
+const verdict = (world: World, calls?: WatchedCall[][], option: "on" | "off" | "absent" = "on") => {
   declare(option);
-  return sessionEligibility(ASKER, `worker-${ASKER}`, { run: fakeGh(world, calls), repo: TRACKER, repos: [AGENT_ORG] });
+  calls?.push(fakeGh(world));
+  if (calls === undefined) fakeGh(world);
+  return sessionEligibility(ASKER, `worker-${ASKER}`, { repo: TRACKER, repos: [AGENT_ORG] });
 };
-const readsEmergencyLabel = (calls: string[][]) => calls.filter((args) => readsRowsByLabel(args)?.label === EMERGENCY_PRIORITY_LABEL);
+const readsEmergencyLabel = (calls: WatchedCall[]) => calls.filter((call) => call.op === "readRowsByLabel" && call.request.label === EMERGENCY_PRIORITY_LABEL);
 const honoured = (): World => ({ emergency: { [ASKER]: { actor: CEO, body: emergencyBody() } }, incidents: { [INCIDENT]: OPEN_BLOCKING } });
 
 // --- (a) an honoured emergency row yields over a plain claimed row ---------------------------------------------------------------------
@@ -169,19 +161,19 @@ test("(a) the control: a history that cannot be read FAILS CLOSED -- the row is 
 });
 
 test("(a) the control: with `emergencyPriority.enabled` unset, the honoured row is refused exactly as before, and nothing about the label is read", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const world: World = { ...honoured(), claimed: [{ number: HOLDER, files: [SHARED] }] };
   const { reason, walked } = verdict(world, calls, "absent");
   assert.match(reason ?? "", new RegExp(`overlaps the Region of #${HOLDER}, a row already claimed`));
   assert.deepEqual(walked, []);
-  assert.deepEqual(readsEmergencyLabel(calls), [], "an option that is unset reads nothing");
+  assert.deepEqual(readsEmergencyLabel(calls[0]), [], "an option that is unset reads nothing");
 });
 
 test("(a) the control: with `enabled` set to false the honoured row is refused, and nothing about the label is read", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const { reason } = verdict({ ...honoured(), claimed: [{ number: HOLDER, files: [SHARED] }] }, calls, "off");
   assert.match(reason ?? "", new RegExp(`overlaps the Region of #${HOLDER}`));
-  assert.deepEqual(readsEmergencyLabel(calls), []);
+  assert.deepEqual(readsEmergencyLabel(calls[0]), []);
 });
 
 // --- (b) two priority rows still exclude each other ------------------------------------------------------------------------------------
@@ -215,17 +207,18 @@ test("(c) a chairman row with the emergency option ON and no emergency row gives
 
 // --- (d) the claim itself: the note on the row names the incident --------------------------------------------------------------------
 
-const claimWith = (world: World, calls: string[][], option: "on" | "off" | "absent" = "on") => {
+const claimWith = (world: World, calls: WatchedCall[][], option: "on" | "off" | "absent" = "on") => {
   declare(option);
+  calls.push(fakeGh(world));
   return claimRow(ASKER, `worker-${ASKER}`, {
-    run: fakeGh(world, calls), moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
+    run: noGh as never, moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
     tracker: { key: "", repo: TRACKER },
   } as never);
 };
-const commentsOn = (calls: string[][]) => calls.filter((args) => args[0] === "issue" && args[1] === "comment").map((args) => args[args.indexOf("--body") + 1]);
+const commentsOn = (calls: WatchedCall[][]) => calls[0].filter((call) => call.op === "postRowComment").map((call) => call.request.body as string);
 
 test("(d) an honoured emergency row's claim goes ahead and leaves a note naming the incident and the holder it walked past", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const result = claimWith({ ...honoured(), claimed: [{ number: HOLDER, files: [SHARED] }] }, calls) as { claimed: boolean; };
   assert.equal(result.claimed, true);
   const notes = commentsOn(calls).filter((body) => /B4 yielded to an emergency row/.test(body));
@@ -235,7 +228,7 @@ test("(d) an honoured emergency row's claim goes ahead and leaves a note naming 
 });
 
 test("(d) the control: the same claim with the option unset is NOT claimed, and writes no emergency note", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const result = claimWith({ ...honoured(), claimed: [{ number: HOLDER, files: [SHARED] }] }, calls, "absent") as { claimed: boolean; reason?: string; };
   assert.equal(result.claimed, false);
   assert.match(result.reason ?? "", new RegExp(`overlaps the Region of #${HOLDER}`));
@@ -243,11 +236,11 @@ test("(d) the control: the same claim with the option unset is NOT claimed, and 
 });
 
 test("(d) with no overlap the claim reads no emergency label at all", () => {
-  const calls: string[][] = [];
+  const calls: WatchedCall[][] = [];
   const { reason } = verdict({ ...honoured(), claimed: [{ number: HOLDER, files: ["agent-org:src/elsewhere.ts"] }] }, calls);
   assert.equal(reason, null);
-  assert.deepEqual(readsEmergencyLabel(calls), [], "a claim that overlaps nothing asks nothing new");
-  const overlapping: string[][] = [];
+  assert.deepEqual(readsEmergencyLabel(calls[0]), [], "a claim that overlaps nothing asks nothing new");
+  const overlapping: WatchedCall[][] = [];
   verdict({ ...honoured(), claimed: [{ number: HOLDER, files: [SHARED] }] }, overlapping);
-  assert.ok(readsEmergencyLabel(overlapping).length > 0, "the control: an overlap DOES ask, so the emptiness above is a reading");
+  assert.ok(readsEmergencyLabel(overlapping[0]).length > 0, "the control: an overlap DOES ask, so the emptiness above is a reading");
 });

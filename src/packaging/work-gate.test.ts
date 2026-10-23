@@ -408,9 +408,11 @@ test("#2685 BEFORE: two causes capped for a shared reason still escalate as two,
   assert.equal(stuck.length, 2, "TODAY's shape: every capped cause is its own stuck entry");
   assert.deepEqual(outaged, [], "nothing here recognises them as sharing one cause");
 
-  const calls: string[][] = [];
-  const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
+  const world = seedWorld();
+  for (const number of [101, 102]) world.rows.set(number, fakeRow(world, number));
+  const labelled = escalateStuck(stuck, noGh, () => {});
   assert.deepEqual(labelled, [101, 102], "TWO rows labelled answer:ceo for what may be one shared outage");
+  assert.deepEqual([...world.rows.values()].map((row) => row.labels), [["answer:ceo"], ["answer:ceo"]]);
 });
 
 test("#2685 AFTER: work-gate's shared-outage reading collapses the SAME two causes to ONE signal", () => {
@@ -423,10 +425,11 @@ test("#2685 AFTER: work-gate's shared-outage reading collapses the SAME two caus
   assert.deepEqual(stuck, [], "NEITHER cause reaches escalateStuck's input -- the fix this row is about");
   assert.deepEqual(outaged, CAPPED_CAUSES.map((o) => o.causeKey), "named together, as ONE outage");
 
-  const calls: string[][] = [];
-  const labelled = escalateStuck(stuck, (a: string[]) => { calls.push(a); return ""; }, () => {});
+  const world = seedWorld();
+  for (const number of [101, 102]) world.rows.set(number, fakeRow(world, number));
+  const labelled = escalateStuck(stuck, noGh, () => {});
   assert.deepEqual(labelled, [], "ZERO rows labelled -- collapsed to one outage signal, not two stuck rows");
-  assert.deepEqual(calls, [], "no `gh issue edit` was even attempted for either row");
+  assert.deepEqual([...world.rows.values()].map((row) => row.labels), [[], []], "no label was even attempted for either row");
 });
 
 // --- #1650: a red pull request is work, and nobody was asking about it (2026-09-17) ---

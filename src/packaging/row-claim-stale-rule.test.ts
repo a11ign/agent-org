@@ -432,6 +432,11 @@ test("#3188: the installed layout names the install and never answers 'matches n
     assert.match(unreadable, /CANNOT ASK/);
     assert.match(unreadable, /INSTALLED copy/);
     assert.doesNotMatch(unreadable, /matches no tracked file/, "the refusal this row exists to remove");
+
+    // A11-160: the guard is a leaf and spawns no `gh`, so the question for GitHub is HANDED to it (the code host's `compareShaWithMain`, aimed at `REPOSITORY`). A caller that hands none cannot ask, and says so by name.
+    const unasked = guard.staleRuleReason();
+    assert.match(unasked, /CANNOT ASK.*INSTALLED copy[\s\S]*nothing was given to ask GitHub with/, "named, so a caller that forgot the question is not read as a network outage");
+    assert.equal(guard.REPOSITORY, "a11ign/agent-org", "the repository the caller aims the code host's compare at");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

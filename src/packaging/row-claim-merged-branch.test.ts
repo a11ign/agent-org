@@ -1,4 +1,4 @@
-// no-token: gh -- the injected `run` answers only `git`, in a throwaway repository; a `gh` call throws, which `branchOwnerText` reports as unreadable
+// no-token: gh -- the injected `run` answers only `git`, in a throwaway repository; the row's claim record is read from the fake code host, which holds the row and no claim record
 /**
  * #3745: A LOCAL BRANCH THAT HOLDS NOTHING MAIN LACKS IS NOT A COLLISION. #3566 was offered and refused on 93 ticks in 24 hours by the
  * leftover first-slice branch of its own name; `ceo` deleted it by hand. The refusal is meant to protect work, so it now asks whether
@@ -7,7 +7,7 @@
  * THE FIXTURE IS A REAL REPOSITORY, because the question is git's: a bare origin, a clone, and four local branches, one per cell of
  * {merged, unmerged} x {held by a worktree, free}. A stubbed `run` would have answered the code's own guess.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -15,8 +15,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { claimWithWorktree, claimLineFor, worktreeTargetReason } from "../row-claim.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { REPO } from "../project-identity.ts";
 
 const ROW = 9;
+
+/** The code host holds row 9 with no claim record on it, which is what `branchOwnerText` reads to say who owns a branch. */
+function codeHostHoldingTheRow() {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.rows.set(ROW, fakeRow(host.rowsWorld, ROW, { title: "A row" }));
+  substituteCodeHost(host);
+}
+afterEach(() => forgetActivation());
 const CELLS = {
   mergedFree: `agent/merged-free-${ROW}`,
   mergedHeld: `agent/merged-held-${ROW}`,
@@ -28,6 +41,7 @@ interface Probe { clone: string; dir: string; run: (cmd: string, args: string[])
 
 /** A bare origin holding main (two commits), and a clone with the four branches, its own checkout detached so `main` is not a fifth branch. */
 function makeProbe(): Probe {
+  codeHostHoldingTheRow();
   const dir = mkdtempSync(join(tmpdir(), "merged-branch-"));
   const origin = join(dir, "origin.git");
   const clone = join(dir, "clone");

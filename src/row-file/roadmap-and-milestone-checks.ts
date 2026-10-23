@@ -1,10 +1,10 @@
-import { execFileSync } from "node:child_process";
 import { fleetOrLabAcceptance, untrimmedFleetMention, declarationDisagreement } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { flagValue } from "../lib/cli-flags.ts";
 import { templateFieldsReason } from "../row-claim/template-fields-rule.ts";
 import { moveProjectStatus, fetchLabels as fetchIssueLabels, ensureLabelsExist } from "../row-claim.ts";
 import { PROJECT_NUMBER } from "../board-snapshot.ts";
+import { rows } from "../plugins/rows.ts";
 import { REPO } from "../project-identity.ts";
 import { DEFECT_LABEL } from "../defect-class-line.ts";
 import { declaredRegionFiles, regionPathTokens, splitRegionEntry } from "../region-paths.ts";
@@ -95,14 +95,17 @@ export function setRoadmapValue(issueNumber: number, tracker: Tracker, set: { fi
   try {
     const item = deps.roadmapItems(issue, deps.run).find(onBoard);
     if (item === undefined) return `#${issueNumber} is not an item of ${tracker.board.owner}/projects/${tracker.board.number}`;
-    deps.run("gh", ["project", "item-edit", "--id", item.id, "--project-id", set.field.projectId, "--field-id", set.field.fieldId,
-      "--single-select-option-id", set.option.id]);
+    const code = rows();
+    code.setBoardItemOption({ itemId: item.id, projectId: set.field.projectId, fieldId: set.field.fieldId, optionId: set.option.id, run: code.argumentsRunOf(deps.run) });
     const after = deps.roadmapItems(issue, deps.run).find(onBoard)?.value ?? null;
     return after === set.option.name ? null : `the read-back shows \`${ROADMAP_FIELD}\` = ${after === null ? "no value" : `\`${after}\``}, not \`${set.option.name}\``;
   } catch (error) {
     return (error as Error).message;
   }
 }
+
+/** The longest the filing waits for the `gh issue create`: it had no bound before it moved, and the code host's own 30 s cut would report "nothing was filed" for a create GitHub then applied, so the row would be filed twice. */
+const FILE_ROW_CALL_MS = 600_000;
 
 /**
  * Every argument, unchanged, straight to the real `gh issue create`. Captures stdout (the created issue's
@@ -112,7 +115,8 @@ export function setRoadmapValue(issueNumber: number, tracker: Tracker, set: { fi
  * @returns {string} gh's own stdout, trimmed
  */
 function spawnGhIssueCreate(argv: string[]): string {
-  return execFileSync("gh", ["issue", "create", ...argv], { encoding: "utf8" }).trim();
+  const code = rows();
+  return code.fileRowFromArguments({ argv, run: code.ownRunWithin(FILE_ROW_CALL_MS) });
 }
 
 /**
@@ -264,7 +268,8 @@ const releaseArgvFor = (argv: string[], tracker: Tracker, declaration: { tracker
  */
 export function primaryMilestoneTitles({ run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}): string[] | null {
   try {
-    const listed: { title?: string; description?: string | null; }[] = JSON.parse(run("gh", ["api", `repos/${repo}/milestones`]));
+    const code = rows();
+    const listed = code.milestonesOf({ repo, run: code.argumentsRunOf(run) });
     return listed.filter((milestone) => PRIMARY_MILESTONE_LINE.test(String(milestone.description ?? ""))).map((milestone) => String(milestone.title ?? ""));
   } catch {
     return null; // CANNOT_ASK: `primaryMilestoneRefusal` says so and files, rather than refusing on a read it could not make
@@ -458,7 +463,7 @@ function planIssue(argv: string[], ctx: ReturnType<typeof mergeIssueDeps>, filin
     return 1;
   }
   // #4603: A SESSION HOLDING A CLAIMED SWEEP FILES NO FOLLOW-UP INTO ITS AREA UNTIL THE MERGE, refused before the create call like the duplicate title above -- the one filing path that can read both the session and the sweep.
-  const sweepHeld = sweepFilingAtFiling({ session, body: (body as string), reads: { run: ghRunner(run), repo: tracker.repo, repos: declaration.code } });
+  const sweepHeld = sweepFilingAtFiling({ session, body: (body as string), reads: { run: rows().argumentsRunOf(run), repo: tracker.repo, repos: declaration.code } });
   if (sweepHeld) {
     process.stderr.write(`${sweepHeld}\n`);
     return 1;
@@ -542,8 +547,8 @@ function blastRadiusOf(body: string, run: typeof defaultRun, declaration: Parame
 export function moveTrackerStatus(issueNumber: number, statusName: string, { run = defaultRun, tracker = homeTracker() }: { run?: typeof defaultRun; tracker?: Tracker; } = {}): ReturnType<typeof moveProjectStatus> {
   if (sameTracker(tracker, homeTracker())) return moveProjectStatus(issueNumber, statusName, { run });
   try {
-    run("gh", ["project", "item-edit", String(tracker.board.number), "--owner", tracker.board.owner,
-      "--url", `https://github.com/${tracker.repo}/issues/${issueNumber}`, "--field", "Status", "--value", statusName]);
+    const code = rows();
+    code.setProjectStatus({ owner: tracker.board.owner, projectNumber: tracker.board.number, url: `https://github.com/${tracker.repo}/issues/${issueNumber}`, status: statusName, run: code.argumentsRunOf(run) });
     return { moved: true };
   } catch (error) {
     const message = (error as Error).message;
@@ -559,8 +564,9 @@ export function moveTrackerStatus(issueNumber: number, statusName: string, { run
  * @param {string[]} labels @param {{ run?: typeof defaultRun, repo?: string }} [deps]
  */
 export function ensureLabelsOn(labels: string[], { run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}) {
-  if (repo === REPO) return ensureLabelsExist(labels, { run });
-  for (const label of labels) run("gh", ["label", "create", label, "--repo", repo, "--force"]);
+  if (repo === REPO) return ensureLabelsExist(labels);
+  const code = rows();
+  for (const label of labels) code.ensureLabelIn({ repo, name: label, run: code.argumentsRunOf(run) });
 }
 
 /**
@@ -630,6 +636,8 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
 }): { ok: true; } | { ok: false; message: string; } {
   const { repo } = tracker;
   const { number: boardNumber, owner: boardOwner } = tracker.board;
+  const code = rows();
+  const asked = code.argumentsRunOf(run);
   // #1249: `allLabels` is derived HERE, above the first step that can fail, so every refusal below can
   // name the labels it skipped. An operator cannot derive them -- they come from the Region -- so a
   // message that says "the labels" instead of `backlog`/`lane:any` is one they have to reconstruct.
@@ -637,7 +645,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
   const repairLabels = `gh issue edit ${issueNumber} --repo ${repo} `
     + `${allLabels.map((l) => `--add-label ${l}`).join(" ")}`;
   try {
-    run("gh", ["project", "item-add", String(boardNumber), "--owner", boardOwner, "--url", url]);
+    code.addRowToProject({ owner: boardOwner, projectNumber: boardNumber, url, run: asked });
   } catch (error) {
     // #1249, SECOND RUNG: this one skips TWO steps, not one. item-add is the first of three, and the
     // Status and the labels below both sit behind it -- so an operator who follows this message exactly
@@ -672,8 +680,7 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
     // refuses a label that does not already exist in the repository. `ensureLabels` (row-claim.ts's own
     // `ensureLabelsExist`, reused rather than a second copy) creates it idempotently first.
     ensureLabels(allLabels, { run, repo });
-    run("gh", ["issue", "edit", String(issueNumber), "--repo", repo,
-      ...allLabels.flatMap((l) => ["--add-label", l])]);
+    code.addLabelsToRowIn({ repo, number: issueNumber, labels: allLabels, run: asked });
   } catch (error) {
     return { ok: false, message: `${lead}, boarded with Status "${boarding.status}", `
       + `but ${allLabels.map((l) => `\`${l}\``).join("/")} could not be added -- `
@@ -682,20 +689,18 @@ export function boardAndVerify({ issueNumber, url, boarding, session, laneLabels
 
   let bodyAfter: string | null;
   try {
-    bodyAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "body",
-      "--jq", ".body"]);
+    bodyAfter = code.bodyTextOfRowIn({ repo, number: issueNumber, run: asked });
   } catch {
     bodyAfter = null; // read-back failure reads as "cannot confirm the Filed-by line", not a crash
   }
   let milestoneAfter: string | null;
   try {
-    milestoneAfter = run("gh", ["issue", "view", String(issueNumber), "--repo", repo, "--json", "milestone",
-      "--jq", ".milestone.title // \"\""]).trim() || null;
+    milestoneAfter = code.milestoneTitleOfRow({ repo, number: issueNumber, run: asked }).trim() || null;
   } catch {
     milestoneAfter = null; // unreadable reads as "cannot confirm", which `unverifiedFilingFields` names
   }
   const after = {
-    labels: fetchLabels(issueNumber, { run, repo }).labels,
+    labels: fetchLabels(issueNumber, { repo }).labels,
     body: bodyAfter,
     boardStatus: fetchBoardStatus(issueNumber, { run, tracker }),
     milestone: milestoneAfter,
@@ -940,25 +945,10 @@ export function promotionLabelsSettled(labels: string[]) {
   return labels.some((l) => sameLabel(l, READY_LABEL)) && !labels.some((l) => sameLabel(l, BACKLOG_LABEL));
 }
 
-/**
- * #2111: the one request, as `gh api` arguments. `-f` repeated per label, which is how `gh` builds a JSON
- * array -- and the reason this is a named function rather than an inline argument list is that the test
- * asserts the exact request, the only place the atomicity claim above is checkable from inside the suite.
- * @param {number} issueNumber @param {string[]} labels
- */
-export function labelSetArgs(issueNumber: number, labels: string[]) {
-  return ["api", "--method", "PUT", `repos/${REPO}/issues/${issueNumber}/labels`,
-    ...labels.flatMap((label) => ["-f", `labels[]=${label}`])];
-}
-
-/** THE ONE WRITE of a row's whole label list in this file: one `PUT` that SETS it (see {@link labelSetArgs}). The promotion and the spec review's warning both go through it. */
+/** THE ONE WRITE of a row's whole label list in this file: one request that SETS it (`setRowLabels`). The promotion and the spec review's warning both go through it. */
 function writeLabelSet(run: typeof defaultRun, issueNumber: number, labels: string[]): void {
-  run("gh", labelSetArgs(issueNumber, labels));
-}
-
-/** `run` as the ticket port's adapter takes it (arguments only), so a caller hands it `run` and names no `gh` of its own. */
-function ghRunner(run: typeof defaultRun): (args: string[]) => string {
-  return (args) => run("gh", args);
+  const code = rows();
+  code.setRowLabels({ repo: REPO, number: issueNumber, labels, run: code.argumentsRunOf(run) });
 }
 
 /**
@@ -1011,7 +1001,7 @@ function promoteGate(issueNumber: number, deps: { run: typeof defaultRun; fetchL
 function openUnclaimedGate(issueNumber: number, { run, fetchLabels }: { run: typeof defaultRun; fetchLabels: typeof fetchIssueLabels; }): { refusal: string | null; labels: string[]; } {
   let before: { labels: string[]; state?: string; };
   try {
-    before = fetchLabels(issueNumber, { run });
+    before = fetchLabels(issueNumber);
   } catch (error) {
     return { labels: [], refusal: `row-file: REFUSING to promote -- #${issueNumber}'s labels could not be read, and a `
       + `promotion that cannot see what the row already carries cannot know what to write. `
@@ -1049,9 +1039,10 @@ function claimableBodyRefusal(issueNumber: number, run: typeof defaultRun, specL
   return promoteRefusalReason(body, issueNumber, {}, { record: recordSpecLintRefusals, ...specLint });
 }
 
-/** A row's body, as `gh` prints it. THE ONE READ of it in this file's promotion path: the claimability check and Jev's reading of the spec both go through it. */
+/** A row's body, as the code host prints it. THE ONE READ of it in this file's promotion path: the claimability check and Jev's reading of the spec both go through it. */
 function rowBodyOf(issueNumber: number, run: typeof defaultRun): string {
-  return run("gh", ["issue", "view", String(issueNumber), "--repo", REPO, "--json", "body", "--jq", ".body"]);
+  const code = rows();
+  return code.bodyTextOfRowIn({ repo: REPO, number: issueNumber, run: code.argumentsRunOf(run) });
 }
 
 /**
@@ -1070,7 +1061,7 @@ function verifyPromotion(issueNumber: number, session: string | null, { run, fet
     }): { ok: true; message: string; } | { ok: false; code: number; message: string; } {
   let after: { labels: string[]; boardStatus: string | null; };
   try {
-    after = { labels: fetchLabels(issueNumber, { run }).labels,
+    after = { labels: fetchLabels(issueNumber).labels,
       boardStatus: fetchBoardStatus(issueNumber, { run }) };
   } catch (error) {
     return { ok: false, code: 2, message: `row-file: #${issueNumber}'s promotion was WRITTEN but could not `
@@ -1106,7 +1097,7 @@ function verifyPromotion(issueNumber: number, session: string | null, { run, fet
 function freshLabelsForWrite(issueNumber: number, { run, fetchLabels }: { run: typeof defaultRun; fetchLabels: typeof fetchIssueLabels; }): { refusal: string; } | { refusal: null; labels: string[]; } {
   let labels: string[];
   try {
-    labels = fetchLabels(issueNumber, { run }).labels;
+    labels = fetchLabels(issueNumber).labels;
   } catch (error) {
     return { refusal: `row-file: #${issueNumber}'s Status is now "${READY_STATUS}" but its labels could not `
       + `be read, so the label write DID NOT RUN -- a set write computed from a stale read would carry `
@@ -1299,13 +1290,13 @@ function providerAsk(issueNumber: number, given?: DecisionDeps): Parameters<type
  */
 function raiseSpecReview(issueNumber: number, verdict: { reason: string; score: number; }, deps: Required<Pick<SpecReviewDeps, "run" | "fetchLabels" | "ensureLabels">>): boolean {
   const { run, fetchLabels, ensureLabels } = deps;
-  const have = fetchLabels(issueNumber, { run }).labels;
+  const have = fetchLabels(issueNumber).labels;
   if (have.includes(SPEC_REVIEW_LABEL)) return false;
   const wakeLabel = `${ANSWER_PREFIX}${SPEC_REVIEW_WAKE}`;
   const text = `Jev read #${issueNumber}'s spec at promotion and scored it ${verdict.score} of 5. ${verdict.reason}\n\n`
     + `${SPEC_REVIEW_WAKE}: should the spec be tightened before a worker claims it? The row stays Ready; this is a warning, not a refusal (agent-org#1017).`;
   const refused = answerLabelRefusal({ state: "OPEN", lastComment: { body: text }, session: SPEC_REVIEW_WAKE });
-  githubTicketAdapter({ run: ghRunner(run), scope: REPO })
+  githubTicketAdapter({ run: rows().argumentsRunOf(run), scope: REPO })
     .postDecision({ tracker: TICKET_TRACKER, scope: REPO, id: issueNumber }, { role: "jev", runId: `spec-review-${issueNumber}`, kind: "spec-review", text });
   const wanted = [SPEC_REVIEW_LABEL, ...(refused === null ? [wakeLabel] : [])];
   ensureLabels(wanted);

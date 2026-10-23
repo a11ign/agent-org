@@ -1,4 +1,4 @@
-// no-token: gh -- every read here is a fake `run`; no GitHub call is made, and nothing imported reaches the real `gh`.
+// no-token: none -- the fake code host's rows refuse the read; no GitHub call is made, and nothing imported reaches the real `gh`.
 /**
  * `src/row-claim.ts`, agent-org#1562 (class `claim-refused`): A CLAIM THAT NAMES THE WRONG TRACKER FOR A ROW NUMBER IS REFUSED, AND THE REFUSAL NAMES THE WAY OUT.
  * An undeclared tracker key that IS a declared repository's `owner/repo`, name or owner says which declared key that repository has; a row read that gh answers 404
@@ -13,13 +13,24 @@
  * MUTATIONS, each run by hand with the file copied to the scratchpad and restored byte-identical after: the owner/name match dropped (the owner and repo-name cases go red);
  * the 404 hint always on (the rate-limit control goes red); the 404 hint never on (the 404 cases go red).
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fetchLabels, recordClaimRefusal, trackerFor } from "./row-claim.ts";
 import { CLAIM_REFUSED_KIND } from "./failure-ledger.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
+
+/** The code host refuses the read of a row with what `gh` threw (A11-160, step 7: the read is the code host's; what the claim says of the refusal is what these cases hold). */
+function refuseRead(error: Error): void {
+  const host = createFakeCodeHost();
+  host.rowsWorld.failures.set("readRestRow", error);
+  substituteCodeHost(host);
+}
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "row-claim-tracker-hint-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
@@ -63,10 +74,8 @@ test("#1562 (3) a repository NAME used as the key names the declared key of the 
 });
 
 test("#1562 (4) a 404 on the row read says the number is not in THAT tracker and names the others, and keeps the cause on its first line", () => {
-  const run = (_cmd: string, _args: string[]) => {
-    throw Object.assign(new Error("Command failed: gh api repos/a11ign/a11ign/issues/1538\ngh: Not Found (HTTP 404)"), { status: 1, stderr: "gh: Not Found (HTTP 404)" });
-  };
-  assert.throws(() => fetchLabels(1538, { run, repo: "a11ign/a11ign", declaration: PROJECT }), (error: Error) => {
+  refuseRead(Object.assign(new Error("Command failed: gh api repos/a11ign/a11ign/issues/1538\ngh: Not Found (HTTP 404)"), { status: 1, stderr: "gh: Not Found (HTTP 404)" }));
+  assert.throws(() => fetchLabels(1538, { repo: "a11ign/a11ign", declaration: PROJECT }), (error: Error) => {
     const [first] = error.message.split("\n");
     const hint = error.message.split("\n").find((line) => line.startsWith("#1538 "));
     assert.match(first, /^row-claim: could not read issue #1538 from a11ign\/a11ign -- refusing to guess whether it is claimed \(gh said: gh: Not Found \(HTTP 404\)\)\. Command failed: /, first);
@@ -76,17 +85,13 @@ test("#1562 (4) a 404 on the row read says the number is not in THAT tracker and
 });
 
 test("#1562 (4b) the 404 names no other tracker when none is declared besides this one", () => {
-  const run = (_cmd: string, _args: string[]) => {
-    throw Object.assign(new Error("Command failed: gh api\ngh: Not Found (HTTP 404)"), { status: 1, stderr: "gh: Not Found (HTTP 404)" });
-  };
-  assert.throws(() => fetchLabels(1538, { run, repo: "a11ign/a11ign", declaration: { tracker: [{ key: "", repo: "a11ign/a11ign" }] } }), /no other tracker is declared/);
+  refuseRead(Object.assign(new Error("Command failed: gh api\ngh: Not Found (HTTP 404)"), { status: 1, stderr: "gh: Not Found (HTTP 404)" }));
+  assert.throws(() => fetchLabels(1538, { repo: "a11ign/a11ign", declaration: { tracker: [{ key: "", repo: "a11ign/a11ign" }] } }), /no other tracker is declared/);
 });
 
 test("#1562 (5) CONTROL: a rate-limited read is an outage, not a missing row, and is not hinted as one", () => {
-  const run = (_cmd: string, _args: string[]) => {
-    throw Object.assign(new Error("Command failed: gh api\ngh: API rate limit exceeded for user ID 328832207."), { status: 1, stderr: "gh: API rate limit exceeded for user ID 328832207." });
-  };
-  assert.throws(() => fetchLabels(1538, { run, repo: "a11ign/a11ign", declaration: PROJECT }), (error: Error) => {
+  refuseRead(Object.assign(new Error("Command failed: gh api\ngh: API rate limit exceeded for user ID 328832207."), { status: 1, stderr: "gh: API rate limit exceeded for user ID 328832207." }));
+  assert.throws(() => fetchLabels(1538, { repo: "a11ign/a11ign", declaration: PROJECT }), (error: Error) => {
     assert.match(error.message, /rate limit exceeded/);
     assert.doesNotMatch(error.message, /does not exist in|other declared trackers/, "a rate limit names no missing row");
     return true;
@@ -99,12 +104,10 @@ test("#1562 (6) CONTROL: an undeclared key no declared repository matches gets n
 
 test("#1562 (7) the 404 stays claim-refused: GitHub answers 404 for a token that cannot see a repository too, so it is not a guard working", () => {
   const logPath = join(SCRATCH, "404.ledger");
-  const run = (_cmd: string, _args: string[]) => {
-    throw Object.assign(new Error("Command failed: gh api\ngh: Not Found (HTTP 404)"), { status: 1, stderr: "gh: Not Found (HTTP 404)" });
-  };
+  refuseRead(Object.assign(new Error("Command failed: gh api\ngh: Not Found (HTTP 404)"), { status: 1, stderr: "gh: Not Found (HTTP 404)" }));
   let refusal = "";
   try {
-    fetchLabels(1538, { run, repo: "a11ign/a11ign", declaration: PROJECT });
+    fetchLabels(1538, { repo: "a11ign/a11ign", declaration: PROJECT });
   } catch (error) {
     refusal = (error as Error).message;
   }

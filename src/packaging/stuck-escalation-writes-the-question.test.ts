@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` and `herdr` here is an injected seam (`run`, `ask`); nothing imported reaches the real one
+// no-token: none -- the row's label events, comments and label are the fake code host's (A11-160, step 7), and `herdr` is an injected seam (`ask`); nothing imported reaches `gh`
 /**
  * #3874: AN `answer:ceo` THE TICK PLACED IS A ROW WITH A COMMENT THAT SAYS WHAT IS ASKED.
  *
@@ -11,14 +11,25 @@
  * `labelRemoval` ignore `REASK_AFTER_MS` and "inside the hour" goes red; make it treat a `labeled` last event as a removal and "is ON the row"
  * goes red; drop the marker check and "once" goes red; ignore a pending comment (`commentAwaitsLabel` always false) and both retry tests go red; drop `ask` from `escalationMemory` and the production-wiring test goes red.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { escalateStuck, sessionStateOf, REASK_AFTER_MS } from "../wake/merge-queue-wait.ts";
 import { escalationMemory } from "../wake/ci-class-and-spares.ts";
 import { MAX_DELIVERIES } from "../wake/fyi-delivery-and-limits.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
+/** The `run` the tick is handed: the rows are the fake's, so nothing may reach it. */
+const noRun = (args: string[]): string => { throw new Error(`the fake code host answers every read; nothing may run ${args.join(" ")}`); };
 
 const KEY = "worker-3289/answer-owed/row-3289";
 const STUCK = [`${KEY}: delivered 6 times and the cause is still true`];
+const ROW_NUMBER = 3289;
+const ESCALATION = "answer:ceo";
+/** The marker a re-ask comment carries, which a comment the fixture calls `marked` is given as its body. */
+const REASK_MARKER = `<!-- stuck-reask: ${KEY} -->`;
 const T0 = Date.parse("2026-10-06T17:51:43Z");
 const MIN = 60_000;
 
@@ -33,41 +44,43 @@ type Row = { events: Event[]; comments: { id: number; login: string; at: string;
 const rowOf = (events: Event[] = [], comments: Comment[] = []): Row =>
   ({ events, comments: comments.map(([id, login, at, marked]) => ({ id, login, at, body: "", marked })) });
 
-/** One escalation against a fake row, which `row` lets a second tick share: a posted comment lands on it and a label edit that succeeds adds a `labeled` event. */
+/**
+ * One escalation over a fake code host holding row #3289 as `row` says: its label events and its comments. `row` is what a second tick shares: a posted comment is written back to it and a label that lands adds a
+ * `labeled` event, as the label edit did when the row was a table. `failPost` refuses the asker's comment and `failLabel` the code host's label write.
+ */
 function escalate(stuck: string[], { memory = {}, row = rowOf(), state = "idle", now = T0, failPost = false, failLabel = false }: {
   memory?: Memory; row?: Row; state?: string; now?: number; failPost?: boolean; failLabel?: boolean } = {}) {
-  const calls: string[][] = [];
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.now = () => now;
+  const held = fakeRow(world, ROW_NUMBER, { comments: row.comments.map((c) => ({ id: c.id, body: c.marked && c.body === "" ? REASK_MARKER : c.body, createdAt: c.at, author: c.login })) });
+  world.rows.set(ROW_NUMBER, held);
+  world.gate.events.set(ROW_NUMBER, row.events.map(([event, actor, at]) => ({ event: event as "labeled" | "unlabeled", label: ESCALATION, actor, at })));
+  if (failLabel) world.failures.set("addLabelToRow", new Error("HTTP 502 from gh (label)"));
+  substituteCodeHost(host);
   const posted: { row: number; body: string }[] = [];
   const order: string[] = [];
   const recorded: string[] = [];
   const log: string[] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "issue") {
-      if (failLabel) throw new Error("HTTP 502 from gh (label)");
-      order.push(`label:${args.join(" ")}`);
-      row.events.push(["labeled", "a11ign-ai-workers", new Date(now).toISOString()]);
-    }
-    if (args[0] === "api" && args.some((a) => a.endsWith("/events"))) return row.events.map((e) => JSON.stringify(e)).join("\n");
-    if (args[0] === "api" && args.some((a) => a.endsWith("/comments"))) {
-      const marker = JSON.parse(/contains\((".*")\)/.exec(args.join(" "))![1]);
-      return row.comments.map((c) => JSON.stringify([c.id, c.login, c.at, c.marked || c.body.includes(marker)])).join("\n");
-    }
-    return "";
-  };
   const ask = { post: (rowNumber: number, body: string) => {
     if (failPost) throw new Error("HTTP 502 from gh");
-    posted.push({ row: rowNumber, body }); order.push("comment");
+    posted.push({ row: rowNumber, body }); order.push(held.labels.includes(ESCALATION) ? "label-first" : "comment");
     row.comments.push({ id: 7000 + row.comments.length, login: "a11ign-ai-workers", at: new Date(now).toISOString(), body, marked: false });
+    held.comments.push({ id: 7000 + held.comments.length, body, createdAt: new Date(now).toISOString(), author: "a11ign-ai-workers" });
   }, stateOf: () => state, now: () => now };
-  const labelled = escalateStuck(stuck, run, (l: string) => log.push(l), { ask, record: (k: string) => recorded.push(k), ...memory });
-  const edits = calls.filter((c) => c[0] === "issue" && c[1] === "edit");
-  return { calls, edits, posted, order, recorded, labelled, row, log: log.join("") };
+  const labelled = escalateStuck(stuck, noRun, (l: string) => log.push(l), { ask, record: (k: string) => recorded.push(k), ...memory });
+  /** The label calls that landed: the code host's label write, which adds the label to the row once. */
+  const edits = held.labels.includes(ESCALATION) ? [ESCALATION] : [];
+  if (edits.length > 0) {
+    order.push("label");
+    row.events.push(["labeled", "a11ign-ai-workers", new Date(now).toISOString()]);
+  }
+  return { edits, posted, order, recorded, labelled, row, log: log.join("") };
 }
 
-test("an escalation writes the question: the label call AND exactly one comment naming the cause, the deliveries and that nobody acted", () => {
+test("an escalation writes the question: the label AND exactly one comment naming the cause, the deliveries and that nobody acted", () => {
   const { edits, posted, labelled, recorded } = escalate(STUCK);
-  assert.deepEqual(edits, [["issue", "edit", "3289", "--add-label", "answer:ceo"]], "POSITIVE CONTROL: the label call is made");
+  assert.deepEqual(edits, [ESCALATION], "POSITIVE CONTROL: the label is put on the row");
   assert.deepEqual(labelled, [3289]);
   assert.equal(posted.length, 1);
   assert.equal(posted[0].row, 3289);
@@ -81,7 +94,7 @@ test("an escalation writes the question: the label call AND exactly one comment 
 
 test("the comment is written BEFORE the label, so a label never stands without it", () => {
   const { order } = escalate(STUCK);
-  assert.deepEqual(order, ["comment", "label:issue edit 3289 --add-label answer:ceo"]);
+  assert.deepEqual(order, ["comment", "label"]);
 });
 
 test("a comment that fails is a COULD NOT ESCALATE with no label and no record, so the next tick retries", () => {
@@ -97,8 +110,8 @@ test("a key already escalated makes neither the label call nor a comment (positi
 });
 
 test("a cause that cannot be escalated (target null) makes neither call", () => {
-  const { calls, posted, log } = escalate(["worker-9/some-cause/not-a-subject: delivered 6 times"]);
-  assert.deepEqual([calls, posted], [[], []]);
+  const { edits, posted, log } = escalate(["worker-9/some-cause/not-a-subject: delivered 6 times"]);
+  assert.deepEqual([edits, posted], [[], []]);
   assert.match(log, /cannot be escalated/);
 });
 
@@ -123,7 +136,7 @@ test("a label removed an hour ago with the cause still true is asked again: one 
   assert.match(posted[0].body, /^<!-- stuck-reask: worker-3289\/answer-owed\/row-3289 -->/);
   assert.match(posted[0].body, /removed by @a11ign-ai-leads 61 minutes ago/);
   assert.match(posted[0].body, /their earlier answer is comment 4242/);
-  assert.deepEqual(edits, [["issue", "edit", "3289", "--add-label", "answer:ceo"]]);
+  assert.deepEqual(edits, [ESCALATION]);
   assert.match(log, /ASKED AGAIN #3289 .*61 minutes ago/);
 });
 
@@ -172,7 +185,7 @@ test("a label that fails AFTER the comment landed is retried as the label alone:
 
   const retry = escalate(STUCK, { row: first.row, now: T0 + 2 * MIN });
   assert.deepEqual(retry.posted, [], "the question is already on the row");
-  assert.deepEqual(retry.edits, [["issue", "edit", "3289", "--add-label", "answer:ceo"]]);
+  assert.deepEqual(retry.edits, [ESCALATION]);
   assert.deepEqual(retry.recorded, [KEY]);
 });
 
@@ -188,7 +201,7 @@ test("a re-ask whose label fails is retried as the label alone, with no second c
   assert.match(first.log, /COULD NOT ASK AGAIN #3289/);
   const retry = escalate(STUCK, { memory: { escalated: new Set([KEY]) }, row: first.row });
   assert.deepEqual(retry.posted, []);
-  assert.deepEqual(retry.edits, [["issue", "edit", "3289", "--add-label", "answer:ceo"]]);
+  assert.deepEqual(retry.edits, [ESCALATION]);
   assert.match(retry.log, /ASKED AGAIN #3289/);
 });
 

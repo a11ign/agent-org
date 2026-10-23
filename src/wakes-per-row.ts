@@ -11,15 +11,15 @@
 //     belongs to the row, because it is exactly the wake that carried no news. A reviewer is attributed inside its pull request's own open-to-merge window.
 //   UNMEASURED, NEVER ZERO: a row whose claimant's transcript is unreadable or absent is left out of the mean and the median and listed.
 //
-// A LEAF: it imports nothing from the tool, and `measure` is pure, so the test runs it on fixtures and never reads `~/.claude`.
+// A LEAF but for the code host's rows (the two reads of GitHub go through them), and `measure` is pure, so the test runs it on fixtures and never reads `~/.claude`.
 //
 // GITHUB IS READ THROUGH `gh api` ONLY (the REST pool): `gh pr list` spends GRAPHQL, and a session that reads this with that pool exhausted has read nothing.
-import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sessionOf as sessionOfOrder } from "./token-audit.ts";
+import { rows } from "./plugins/rows.ts";
 
 export const DEFINITIONS = [
   "WAKE: a delivery that starts a model turn in a session -- a transcript `user` record wrapped in `<pasted_content`. /compact, /clear, local-command echoes, the continuation summary and tool results are not wakes.",
@@ -43,7 +43,6 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MS_PER_SECOND = 1000;
 const MIDPOINT_DIVISOR = 2;
 const DECIMALS = 2;
-const GH_MAX_BUFFER = 64 * 1024 * 1024;
 const GH_TIMEOUT_MS = 120 * 1000;
 const SEARCH_PAGE = 100;
 /** a reading with more than this share of its merged rows UNMEASURED prints PARTIAL beside the mean */
@@ -550,7 +549,7 @@ export function renderReading(reading: ReturnType<typeof measure>) {
  * @returns {string}
  */
 function gh(args: string[]): string {
-  return execFileSync("gh", args, { encoding: "utf8", maxBuffer: GH_MAX_BUFFER, timeout: GH_TIMEOUT_MS });
+  return rows().ownRunWithin(GH_TIMEOUT_MS)(args);
 }
 
 /**
@@ -562,7 +561,7 @@ function gh(args: string[]): string {
  * @param {(args: string[]) => any} [ghJson] one `gh api` call, parsed; injected so a test reads no GitHub
  * @returns {Promise<PullRequest[]>}
  */
-export async function readMergedPulls(repo: string, window: { from: number; to: number; }, ghJson: (args: string[]) => any = (args) => JSON.parse(gh(["api", ...args]))): Promise<PullRequest[]> {
+export async function readMergedPulls(repo: string, window: { from: number; to: number; }, ghJson: (args: string[]) => any = (args) => rows().readRestJson({ args, run: gh })): Promise<PullRequest[]> {
   const { listMergedPulls } = await import("./trace/trace.ts"); // at the call, not at load: `trace` and the modules it loads import this one, and a static import back is a cycle that crashed `aggregate.test.mjs` and `map.test.ts` (`NOT_DERIVABLE` read before it was initialised)
   try {
     return listMergedPulls({ repo, window, gh: ghJson });
@@ -579,8 +578,7 @@ export async function readMergedPulls(repo: string, window: { from: number; to: 
  * @returns {number | null}
  */
 export function readClaimedAt(row: number, rowRepo: string): number | null {
-  const out = gh(["api", "--paginate", `repos/${rowRepo}/issues/${row}/comments?per_page=${SEARCH_PAGE}`, "--jq", `.[] | select(.body | startswith("${CLAIM_MARKER}")) | .created_at`]);
-  const first = out.split("\n").find(Boolean);
+  const first = rows().firstCommentTimeStartingWith({ repo: rowRepo, number: row, prefix: CLAIM_MARKER, pageSize: SEARCH_PAGE, run: gh });
   return first ? Date.parse(first) : null;
 }
 

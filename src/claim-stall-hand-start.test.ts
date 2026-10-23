@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` and `git` call here is an injected seam, and the clock is a constant; nothing imported reaches the network or a worktree
+// no-token: none -- every `git` call here is an injected seam, the label events come from the fake code host's rows, and the clock is a constant; nothing imported reaches the network or a worktree
 /**
  * #4789: A HAND-STARTED ENGINEER IS NOT RELEASED FOR THE PREVIOUS HOLDER'S MERGED PULL REQUEST.
  *
@@ -11,12 +11,16 @@
  * as before, and the same fixture with NO `labelEvents` seam is the unfixed reading and releases the first.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { claimRecordComment } from "./row-claim.ts";
 import { claimFactsFrom, readClaim, readLabelEvents, sessionLabelAddedAt, type HostReads, type MergedPr, type Reading } from "./claim-stall/stall-causes-and-claim-readings.ts";
 import { claimStalledOrders } from "./claim-stall.ts";
 import { LIVE_HOST_READS } from "./work-gate/claim-stall-tick.ts";
 import type { LabelEvent } from "./claim-provenance.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const ROW = 4524;
 const SESSION = "worker-4524";
@@ -103,15 +107,17 @@ test("sessionLabelAddedAt: the newest `labeled` event of that session's label; n
   assert.equal(sessionLabelAddedAt(null, SESSION), null);
 });
 
-test("readLabelEvents: lines of events parse, and a failed or malformed read is null (never an empty history)", () => {
-  const line = (e: LabelEvent) => JSON.stringify(e);
-  const calls: string[][] = [];
-  const ok = readLabelEvents(ROW, "a11ign/a11ign", (args) => { calls.push(args); return { status: 0, out: `${line(labelled(0))}\n${line(labelled(START))}\n` }; });
-  assert.deepEqual(ok, [labelled(0), labelled(START)]);
-  assert.ok(calls[0].includes("repos/a11ign/a11ign/issues/4524/events"));
-  assert.equal(readLabelEvents(ROW, "a11ign/a11ign", () => ({ status: 1, out: "" })), null);
-  assert.equal(readLabelEvents(ROW, "a11ign/a11ign", () => ({ status: null, out: "" })), null);
-  assert.equal(readLabelEvents(ROW, "a11ign/a11ign", () => ({ status: 0, out: "not json\n" })), null);
+test("readLabelEvents: the code host's events are the history, and a refused or malformed read is null (never an empty history)", () => {
+  const host = createFakeCodeHost();
+  const { gate } = host.rowsWorld;
+  gate.events.set(ROW, [labelled(0), labelled(START)].map((e) => ({ ...e, actor: null })));
+  substituteCodeHost(host);
+  assert.deepEqual(readLabelEvents(ROW, "a11ign/a11ign"), [labelled(0), labelled(START)]);
+  assert.deepEqual(readLabelEvents(ROW + 1, "a11ign/a11ign"), [], "a row the read WORKED for and that has no event: empty, the twin of the nulls below");
+  gate.events.set(ROW, new Error("HTTP 502"));
+  assert.equal(readLabelEvents(ROW, "a11ign/a11ign"), null, "a history that was refused");
+  host.rowsWorld.failures.set("labelEventsOf", new Error("gh: spawnSync gh ETIMEDOUT"));
+  assert.equal(readLabelEvents(ROW + 1, "a11ign/a11ign"), null, "a call that was cut at its bound");
 });
 
 test("the live tick supplies the seam (without it the fix is inert in production)", () => {

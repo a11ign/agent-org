@@ -1,4 +1,4 @@
-// no-token: gh -- the read is a fake `run`; a real `sh` child stands in for `gh`, and no GitHub call is made.
+// no-token: gh -- the read is the fake code host's, failing with what a real `sh` child stands in for `gh` threw; no GitHub call is made.
 /**
  * `src/row-claim.ts`, agent-org#1246 (a11ign/a11ign#5282, class `claim-refused`): a refused issue read records WHY `gh` failed, on the refusal's first line and so in the
  * failure ledger line. Before this, every refused read read "could not read issue #N" with the cause on the second line, which the ledger never kept.
@@ -10,16 +10,19 @@
  * MUTATIONS, each run by hand and the file restored byte-identical from a copy: the cause removed (the POSITIVE CONTROL tests go red, the NEGATIVE CONTROL stays green);
  * the cause added with stderr empty (the NEGATIVE CONTROL goes red).
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fetchLabels, recordClaimRefusal } from "./row-claim.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 
 const SCRATCH = mkdtempSync(join(tmpdir(), "row-claim-refusal-cause-"));
 after(() => rmSync(SCRATCH, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 const NOW = Date.UTC(2026, 9, 12, 22, 0);
 const REPO = "a11ign/agent-org";
 const RATE = "GraphQL: API rate limit already exceeded";
@@ -29,10 +32,24 @@ const ghThatRefuses = (stderr: string) => (): string => execFileSync("sh",
   ["-c", '[ -n "$GH_STDERR" ] && printf \'%s\\n\' "$GH_STDERR" >&2; exit 1'],
   { encoding: "utf8", env: { ...process.env, GH_STDERR: stderr } });
 
-/** The message a refused read throws, which is the refusal the claim prints. */
-function refusalOf(run: () => string): string {
+/** The error `gh` would have thrown: the failed child's, with its stderr. */
+function thrownBy(run: () => string): unknown {
   try {
-    fetchLabels(1246, { run, repo: REPO });
+    run();
+  } catch (error) {
+    return error;
+  }
+  return assert.fail("the stand-in for gh must fail");
+}
+
+/** The message a refused read throws, which is the refusal the claim prints: the code host's read fails with what the child threw (A11-160, step 7: the read is the code host's, the words are the claim's). */
+function refusalOf(run: () => string): string {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.failures.set("readRestRow", thrownBy(run) as Error);
+  substituteCodeHost(host);
+  try {
+    fetchLabels(1246, { repo: REPO });
   } catch (error) {
     return (error as Error).message;
   }

@@ -6,7 +6,7 @@
  * gate is usually silent (4 open PRs, 23 files, ZERO pairwise overlap, measured 2026-09-08T04:48:51Z), so
  * ITS OWN ACCEPTANCE MUST BE A CONSTRUCTED OVERLAP -- passing by never firing proves nothing.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -44,11 +44,39 @@ process.chdir(PROJECT);
 const { declaredClosedRows, fileOverlapReason, lookupBlockersOf, lookupMyRegionFiles, lookupOpenPrFiles } = await import("../row-claim/file-overlap-rule.ts");
 const { lookupIssueBody } = await import("../row-claim/template-fields-rule.ts");
 const { declaredRegionFiles } = await import("../region-paths.ts");
+const { forgetActivation, substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+const { fakeRow } = await import("../plugins/fakes/code-host-rows.ts");
+
+// THE LOOKUPS ASK THE CODE HOST'S ROWS (A11-160, step 7; they were a stubbed `gh` before). The fake code host answers from a world the test seeds and ignores the `run` it is handed, so the `run` below is one that fails the
+// test if anything reaches it. What the lookups SEND to GitHub (the argument lists, the REST paging, the order of the calls) is asserted by `plugins/github/rows/rules-rows.test.ts`, not here.
+afterEach(() => forgetActivation());
+const unreached = (): string => { throw new Error("a run was made: the code host's rows answer from the world, not from a `gh`"); };
+
+/** The fake code host in place, and its world. */
+function fakeWorld() {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+type World = ReturnType<typeof fakeWorld>;
+
+/** An open pull request of the world, with the files it changes (and what else the lookup reads). */
+function openPull(world: World, number: number, files: string[], over: Record<string, unknown> = {}): void {
+  world.pulls.set(number, { number, body: "", headRefName: "", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [], files, ...over });
+}
+
+/** A row of the world with the body and labels a claim reads. */
+function openRow(world: World, number: number, labels: string[], body = "## Region\n\n```\nsrc/x.ts\n```\n"): void {
+  world.rows.set(number, fakeRow(world, number, { body, labels }));
+}
+
+/** The one repository the lookups read: the world's own. */
+const oneRepository = (world: World) => [{ key: "", repo: world.repo }];
 
 /** An open PR whose list is COMPLETE: its count is its list's length (#1419 compares the two). */
 const pr = (number: number, files: string[]) => ({ number, files, changedFiles: files.length });
-/** These tests are about the lookup's MECHANICS over ONE repository; the declaration now lists two (#2969), and `keyed-repo-review.test.ts` pins that the real lookup reads both. */
-const ONE_REPOSITORY = [{ key: "", repo: "a11ign/a11ign" }];
+/** These tests are about the lookup's MECHANICS over ONE repository (`oneRepository`, below); the declaration now lists two (#2969), and `keyed-repo-review.test.ts` pins that the real lookup reads both. */
 
 // --- fileOverlapReason: THE VERDICT, PURE ---
 
@@ -147,91 +175,93 @@ test("#941: ...and a directory does not overlap a file BESIDE it, or one that me
 // --- lookupMyRegionFiles: #710 -- reads the row's DECLARED Region section, never every path its prose
 // mentions anywhere (that question belongs to row-reachability.ts's STARTABLE check, unchanged) ---
 
+/** A world holding row `number` with `body` and `labels`, and the options a lookup of it is given. */
+function rowWorld(number: number, body: string, labels: string[] = []) {
+  const world = fakeWorld();
+  openRow(world, number, labels, body);
+  return { world, deps: { run: unreached, repo: world.repo } };
+}
+
 test("lookupMyRegionFiles extracts repo-relative paths from the issue body's Region section", () => {
-  const run = () => JSON.stringify({ body: "Region: `packages/agent-org/src/row-claim.ts` and its test under "
-    + "`packages/lab/src/packaging/row-claim.test.ts`." });
-  const files = lookupMyRegionFiles(455, { run });
+  const { deps } = rowWorld(455, "Region: `packages/agent-org/src/row-claim.ts` and its test under "
+    + "`packages/lab/src/packaging/row-claim.test.ts`.");
+  const files = lookupMyRegionFiles(455, deps);
   assert.deepEqual(files, ["packages/agent-org/src/row-claim.ts", "packages/lab/src/packaging/row-claim.test.ts"]);
 });
 
 test("lookupMyRegionFiles: a Region section naming no path returns [], not null -- a real, different " +
   "state from having no Region at all", () => {
-  const run = () => JSON.stringify({ body: "## Region\n\nJust prose, no paths here." });
-  assert.deepEqual(lookupMyRegionFiles(455, { run }), []);
+  const { deps } = rowWorld(455, "## Region\n\nJust prose, no paths here.");
+  assert.deepEqual(lookupMyRegionFiles(455, deps), []);
 });
 
 test("#710 ACCEPTANCE: a body with NO Region section returns null -- CANNOT_ASK, not an empty list and " +
   "not a scan of the whole body's prose", () => {
-  const run = () => JSON.stringify({ body: "Just prose, no Region heading or line anywhere." });
-  assert.equal(lookupMyRegionFiles(455, { run }), null);
+  const { deps } = rowWorld(455, "Just prose, no Region heading or line anywhere.");
+  assert.equal(lookupMyRegionFiles(455, deps), null);
 });
 
 test("#710 REGRESSION FIXTURE: #705-vs-#698's real shape -- a file cited in prose as a worked example, " +
   "outside the Region section, is never returned", () => {
-  const run = () => JSON.stringify({ body:
-    "Rescuing `packages/lab/scripts/audit-rule-coverage.ts` from `lead/inventory-bootstrap`.\n\n"
-    + "## Region\n\n`scripts/` for the helper, `packages/lab/src/packaging/` for its test." });
-  assert.deepEqual(lookupMyRegionFiles(455, { run }), []);
+  const { deps } = rowWorld(455, "Rescuing `packages/lab/scripts/audit-rule-coverage.ts` from `lead/inventory-bootstrap`.\n\n"
+    + "## Region\n\n`scripts/` for the helper, `packages/lab/src/packaging/` for its test.");
+  assert.deepEqual(lookupMyRegionFiles(455, deps), []);
 });
 
 test("lookupMyRegionFiles returns null, never [], on a failed lookup", () => {
-  const run = (): string => { throw new Error("gh: authentication required"); };
-  assert.equal(lookupMyRegionFiles(455, { run }), null);
+  const { world, deps } = rowWorld(455, "## Region\n\n`src/x.ts`");
+  world.failures.set("bodyAndLabelsOf", new Error("gh: authentication required"));
+  assert.equal(lookupMyRegionFiles(455, deps), null);
 });
 
 // --- lookupMyRegionFiles and `no-code-left`: #727 -- the ASKING side reads the label the reservation side already reads (#3541) ---
 
-/** A row as `gh issue view <n> --json body,labels` answers it: the Region names `src/x.ts` and the labels are the caller's. */
-const rowWith = (labels: string[]) => JSON.stringify({ body: "## Region\n\n```\nsrc/x.ts\n```\n", labels: labels.map((name) => ({ name })) });
+/** A row whose Region names `src/x.ts` and whose labels are the caller's. */
+const REGION_X = "## Region\n\n```\nsrc/x.ts\n```\n";
 
 test("#727 positive control: a row whose Region names src/x.ts and which carries `no-code-left` asks for NO files -- [], not null", () => {
-  const run = () => rowWith(["in-progress", "no-code-left"]);
-  assert.deepEqual(lookupMyRegionFiles(4764, { run }), []);
+  const { deps } = rowWorld(4764, REGION_X, ["in-progress", "no-code-left"]);
+  assert.deepEqual(lookupMyRegionFiles(4764, deps), []);
 });
 
 test("#727 negative control: the same row WITHOUT the label still asks for src/x.ts, so the label is what cleared it", () => {
-  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => rowWith(["in-progress"]) }), ["src/x.ts"]);
-  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => rowWith([]) }), ["src/x.ts"]);
-  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => JSON.stringify({ body: JSON.parse(rowWith([])).body }) }), ["src/x.ts"],
-    "an answer carrying no `labels` field reads as unlabelled, never as a failed lookup");
+  assert.deepEqual(lookupMyRegionFiles(4764, rowWorld(4764, REGION_X, ["in-progress"]).deps), ["src/x.ts"]);
+  assert.deepEqual(lookupMyRegionFiles(4764, rowWorld(4764, REGION_X, []).deps), ["src/x.ts"], "a row carrying no labels at all reads as unlabelled, never as a failed lookup");
 });
 
-test("#727: the label rides the SAME call as the body -- one `gh issue view`, asking for both fields", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => { calls.push(args); return rowWith(["no-code-left"]); };
-  lookupMyRegionFiles(4764, { run, repo: "a11ign/agent-org" });
-  assert.deepEqual(calls, [["issue", "view", "4764", "--repo", "a11ign/agent-org", "--json", "body,labels"]]);
-});
-
-test("#732: the asking side's Region read and the template check's body read ask ONE argv, so the claim's batch serves both from one call", () => {
-  const regionAsk: string[][] = [];
-  const bodyAsk: string[][] = [];
-  lookupMyRegionFiles(4764, { run: (args) => { regionAsk.push(args); return rowWith([]); }, repo: "a11ign/agent-org" });
-  lookupIssueBody(4764, { run: (args) => { bodyAsk.push(args); return rowWith([]); }, repo: "a11ign/agent-org" });
-  assert.deepEqual(bodyAsk, regionAsk);
-  assert.deepEqual(bodyAsk, [["issue", "view", "4764", "--repo", "a11ign/agent-org", "--json", "body,labels"]]);
+test("#727/#732: the label rides the SAME read as the body, and the template check's body read is that one read -- so the claim's batch serves both from one call", () => {
+  const { world, deps } = rowWorld(4764, REGION_X, ["no-code-left"]);
+  lookupMyRegionFiles(4764, deps);
+  const regionAsk = world.calls.splice(0);
+  lookupIssueBody(4764, deps);
+  const bodyAsk = world.calls.splice(0);
+  assert.deepEqual(regionAsk, [`bodyAndLabelsOf ${world.repo}#4764`], "one read of the row, asking for the body and the labels together");
+  assert.deepEqual(bodyAsk, regionAsk, "the Region read and the body read ask the code host the same one question (the argument list it sends is `rules-rows.test.ts`'s)");
 });
 
 test("#732: lookupIssueBody still reads the body out of a `body,labels` answer, and an answer with no `body` still fails loud (null, never \"\")", () => {
-  assert.equal(lookupIssueBody(4764, { run: () => rowWith(["no-code-left"]) }), JSON.parse(rowWith([])).body);
-  assert.equal(lookupIssueBody(4764, { run: () => JSON.stringify({ labels: [] }) }), null, "a mock that answers with no body is asked-the-wrong-question, not an empty row");
-  assert.equal(lookupIssueBody(4764, { run: () => JSON.stringify({ body: "" }) }), "", "a genuinely empty body is still a real answer");
+  assert.equal(lookupIssueBody(4764, rowWorld(4764, REGION_X, ["no-code-left"]).deps), REGION_X);
+  const bodyless = rowWorld(4764, REGION_X);
+  bodyless.world.rules.bodyless.add(4764);
+  assert.equal(lookupIssueBody(4764, bodyless.deps), null, "an answer with no body is asked-the-wrong-question, not an empty row");
+  assert.equal(lookupIssueBody(4764, rowWorld(4764, "").deps), "", "a genuinely empty body is still a real answer");
 });
 
 test("#727: a failed lookup is still null, labelled row or not -- a label nobody could read clears nothing", () => {
-  const run = (): string => { throw new Error("gh: authentication required"); };
-  assert.equal(lookupMyRegionFiles(4764, { run }), null);
-  assert.equal(lookupMyRegionFiles(4764, { run: () => "not json" }), null);
+  const { world, deps } = rowWorld(4764, REGION_X, ["no-code-left"]);
+  world.failures.set("bodyAndLabelsOf", new Error("gh: authentication required"));
+  assert.equal(lookupMyRegionFiles(4764, deps), null);
+  assert.equal(lookupMyRegionFiles(404, deps), null, "a row that cannot be read is null as well");
 });
 
 test("#727: the label is an exact name -- `no-code-left-yet` or a different case clears nothing", () => {
-  assert.deepEqual(lookupMyRegionFiles(4764, { run: () => rowWith(["no-code-left-yet", "No-Code-Left"]) }), ["src/x.ts"]);
+  assert.deepEqual(lookupMyRegionFiles(4764, rowWorld(4764, REGION_X, ["no-code-left-yet", "No-Code-Left"]).deps), ["src/x.ts"]);
 });
 
 test("#727 ACCEPTANCE, END TO END: a labelled row is not refused against an unrelated open PR on the files its build edited; the unlabelled row is", () => {
   const open = [pr(723, ["src/x.ts", "src/y.ts"])];
-  const labelled = lookupMyRegionFiles(4764, { run: () => rowWith(["no-code-left"]) }) as string[];
-  const unlabelled = lookupMyRegionFiles(4764, { run: () => rowWith([]) }) as string[];
+  const labelled = lookupMyRegionFiles(4764, rowWorld(4764, REGION_X, ["no-code-left"]).deps) as string[];
+  const unlabelled = lookupMyRegionFiles(4764, rowWorld(4764, REGION_X, []).deps) as string[];
   assert.equal(fileOverlapReason(labelled, open, { rowNumber: 4764 }).reason, null);
   assert.match(fileOverlapReason(unlabelled, open, { rowNumber: 4764 }).reason as string, /#723/,
     "control: the same PR does refuse the row that has not said it holds no code");
@@ -239,21 +269,15 @@ test("#727 ACCEPTANCE, END TO END: a labelled row is not refused against an unre
 
 // --- lookupOpenPrFiles: one bulk call, never a loop of per-PR lookups ---
 
-test("lookupOpenPrFiles reads every open PR's files AND their count in one call, and pages nothing when lists are complete", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify([
-      { number: 406, changedFiles: 2, files: [{ path: "packages/agent-org/src/merge-guard.ts" }, { path: "CLAUDE.md" }] },
-      { number: 472, changedFiles: 1, files: [{ path: "packages/lab/src/gates/corpus-snapshot-scope.test.ts" }] },
-    ]);
-  };
-  const files = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY });
-  assert.deepEqual(calls, [["pr", "list", "--repo", "a11ign/a11ign", "--state", "open",
-    "--json", "number,changedFiles,files,body,labels,headRefName"]], "one bulk call, and no REST page for a complete list");
+test("lookupOpenPrFiles reads every open PR's files AND their count in one read, and pages nothing when lists are complete", () => {
+  const world = fakeWorld();
+  openPull(world, 406, ["packages/agent-org/src/merge-guard.ts", "CLAUDE.md"]);
+  openPull(world, 472, ["packages/lab/src/gates/corpus-snapshot-scope.test.ts"]);
+  const files = lookupOpenPrFiles({ run: unreached, log: () => {}, repos: oneRepository(world), trackerRepo: world.repo });
+  assert.deepEqual(world.calls, [`openPullsWithFilesOf ${world.repo}`], "one bulk read, and no REST page for a complete list");
   assert.deepEqual(files, [
     // #2101: `closes` is `[]` for a body that declares nothing -- and for no body at all, which is what
-    // these two fixtures have. It is another FIELD on this one call, never another call.
+    // these two fixtures have. It is another FIELD on this one read, never another read.
     // #2493: `held` is false for a PR with no `hold:` label, and for one whose `labels` came back absent.
     { ...pr(406, ["packages/agent-org/src/merge-guard.ts", "CLAUDE.md"]), closes: [], held: false },
     { ...pr(472, ["packages/lab/src/gates/corpus-snapshot-scope.test.ts"]), closes: [], held: false },
@@ -261,8 +285,9 @@ test("lookupOpenPrFiles reads every open PR's files AND their count in one call,
 });
 
 test("lookupOpenPrFiles returns null, never [], on a failed lookup", () => {
-  const run = (): string => { throw new Error("network error"); };
-  assert.equal(lookupOpenPrFiles({ run, repos: ONE_REPOSITORY }), null);
+  const world = fakeWorld();
+  world.failures.set("openPullsWithFilesOf", new Error("network error"));
+  assert.equal(lookupOpenPrFiles({ run: unreached, repos: oneRepository(world), trackerRepo: world.repo }), null);
 });
 
 // --- #1419: a PR's list is compared with its OWN count before it is compared with the Region ---
@@ -323,20 +348,12 @@ test("#1419 a list with NO count is not comparable either -- the count is what m
 });
 
 test("#1419 THE LOOKUP PAGES A SHORT LIST through REST, once and only for that PR, and the overlap is then found", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "pr") {
-      return JSON.stringify([
-        { number: 1412, changedFiles: 113, files: CHANGESETS_100.map((path) => ({ path })) },
-        { number: 1426, changedFiles: 2, files: [{ path: "packages/guards/src/walk-scope.ts" }, { path: "packages/lab/src/packaging/declared-walk-scope.test.ts" }] },
-      ]);
-    }
-    return [...CHANGESETS_100, ...REAL_13].join("\n") + "\n";
-  };
-  const others = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY });
-  const rest = calls.filter((args) => args[0] === "api");
-  assert.deepEqual(rest, [["api", "--paginate", "repos/a11ign/a11ign/pulls/1412/files?per_page=100", "--jq", ".[].filename"]],
+  const world = fakeWorld();
+  openPull(world, 1412, [...CHANGESETS_100, ...REAL_13]);
+  world.rules.listings.set(1412, { listed: CHANGESETS_100, changedFiles: 113 });
+  openPull(world, 1426, ["packages/guards/src/walk-scope.ts", "packages/lab/src/packaging/declared-walk-scope.test.ts"]);
+  const others = lookupOpenPrFiles({ run: unreached, log: () => {}, repos: oneRepository(world), trackerRepo: world.repo });
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("pullFilePathsOf")), [`pullFilePathsOf ${world.repo}#1412`],
     "exactly one REST page-through, for the short PR only");
   assert.equal(others?.find((o) => o.number === 1412)?.files.length, 113);
   assert.match(fileOverlapReason(["packages/cli/package.json"], others ?? []).reason as string, /overlaps #1412, which already touches: packages\/cli\/package\.json/,
@@ -345,11 +362,11 @@ test("#1419 THE LOOKUP PAGES A SHORT LIST through REST, once and only for that P
 
 test("#1419 a FAILED page keeps the short list and says so -- the rule then refuses it; the whole read never becomes null", () => {
   const said: string[] = [];
-  const run = (args: string[]) => {
-    if (args[0] === "pr") return JSON.stringify([{ number: 1412, changedFiles: 113, files: CHANGESETS_100.map((path) => ({ path })) }]);
-    throw new Error("HTTP 502");
-  };
-  const others = lookupOpenPrFiles({ run, log: (line) => said.push(line), repos: ONE_REPOSITORY });
+  const world = fakeWorld();
+  openPull(world, 1412, [...CHANGESETS_100, ...REAL_13]);
+  world.rules.listings.set(1412, { listed: CHANGESETS_100, changedFiles: 113 });
+  world.rules.pagedFilesRefused.set(1412, new Error("HTTP 502"));
+  const others = lookupOpenPrFiles({ run: unreached, log: (line) => said.push(line), repos: oneRepository(world), trackerRepo: world.repo });
   assert.notEqual(others, null, "a null read skips B4 entirely, which is this row's defect by another door");
   assert.equal(others?.[0].files.length, 100);
   assert.match(said.join("\n"), /could not page #1412's files past 100 \(HTTP 502\)/);
@@ -443,19 +460,13 @@ test("#2101 A BARE MENTION IS NEVER A CLOSURE -- `See #2076 for context` in a PR
   assert.match(reason as string, /overlaps #2077/);
 });
 
-test("#2101 THE LOOKUP READS `body` ON THE CALL IT ALREADY MAKES, never a second one, and hands the rule " +
+test("#2101 THE LOOKUP READS `body` ON THE READ IT ALREADY MAKES, never a second one, and hands the rule " +
   "the declared rows", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify([
-      { number: 2077, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes #2076\n" },
-      { number: 2084, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes: none -- unrelated" },
-    ]);
-  };
-  const others = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY });
-  assert.equal(calls.length, 1, "one `gh pr list`, `body` among its fields");
-  assert.ok(calls[0].join(" ").includes("number,changedFiles,files,body"));
+  const world = fakeWorld();
+  openPull(world, 2077, [REGION_FILE], { body: "Closes #2076\n" });
+  openPull(world, 2084, [REGION_FILE], { body: "Closes: none -- unrelated" });
+  const others = lookupOpenPrFiles({ run: unreached, log: () => {}, repos: oneRepository(world), trackerRepo: world.repo });
+  assert.deepEqual(world.calls, [`openPullsWithFilesOf ${world.repo}`], "one read of the open pull requests, `body` among what it returns");
   assert.deepEqual(others?.map((o) => o.closes), [[2076], []]);
   assert.match(fileOverlapReason([REGION_FILE], others ?? [], { rowNumber: 2076 }).reason as string,
     /overlaps #2084/, "its own #2077 is excluded; #2084, which declares nothing, is not");
@@ -552,48 +563,46 @@ test("#2493 no extra call: `blockersOf` is asked only for a held PR that OVERLAP
 });
 
 test("#2493 lookupOpenPrFiles reads `held` from a `hold:<session>` label and from no other", () => {
-  const run = () => JSON.stringify([
-    { number: 1, changedFiles: 1, files: [{ path: "a" }], labels: [{ name: "hold:product-manager" }] },
-    { number: 2, changedFiles: 1, files: [{ path: "b" }], labels: [{ name: "session:worker-1" }] },
-    { number: 3, changedFiles: 1, files: [{ path: "c" }], labels: [] },
-  ]);
-  assert.deepEqual(lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY })?.map((p) => [p.number, p.held]),
+  const world = fakeWorld();
+  openPull(world, 1, ["a"], { labels: ["hold:product-manager"] });
+  openPull(world, 2, ["b"], { labels: ["session:worker-1"] });
+  openPull(world, 3, ["c"], { labels: [] });
+  assert.deepEqual(lookupOpenPrFiles({ run: unreached, log: () => {}, repos: oneRepository(world), trackerRepo: world.repo })?.map((p) => [p.number, p.held]),
     [[1, true], [2, false], [3, false]]);
 });
 
 test("#2493 lookupBlockersOf reads GitHub's `blockedBy` edge for one row, and a failed read is null", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify({ blockedBy: { nodes: [{ number: 2399, state: "OPEN" }, { number: 7, state: "CLOSED" }] } });
-  };
-  assert.deepEqual(lookupBlockersOf({ run })(2359), [2399, 7]);
-  assert.deepEqual(calls, [["issue", "view", "2359", "--repo", "a11ign/a11ign", "--json", "blockedBy"]]);
-  assert.equal(lookupBlockersOf({ run: () => { throw new Error("boom"); } })(2359), null);
-  assert.deepEqual(lookupBlockersOf({ run: () => JSON.stringify({ blockedBy: { nodes: [] } }) })(2359), []);
+  const world = fakeWorld();
+  world.rows.set(2359, fakeRow(world, 2359, { blockedBy: [2399, 7] }));
+  world.rows.set(2399, fakeRow(world, 2399));
+  world.rows.set(7, fakeRow(world, 7, { state: "CLOSED" }));
+  world.rows.set(2360, fakeRow(world, 2360));
+  const deps = { run: unreached, repo: world.repo };
+  assert.deepEqual(lookupBlockersOf(deps)(2359), [2399, 7]);
+  assert.deepEqual(world.calls, [`blockedByOf ${world.repo}#2359`]);
+  world.failures.set("blockedByOf", new Error("boom"));
+  assert.equal(lookupBlockersOf(deps)(2359), null);
+  world.failures.clear();
+  assert.deepEqual(lookupBlockersOf(deps)(2360), []);
 });
 
 test("#2493 END TO END through the claim's own lookup: a held PR waiting on the row is excluded with NO `blockersOf` " +
-  "passed, and `gh issue view` is spent only on a held PR that overlaps", () => {
-  const calls: string[][] = [];
-  const edgesOf: Record<string, number[]> = { "2359": [ASKING], "2400": [] };
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "issue") return JSON.stringify({ blockedBy: { nodes: (edgesOf[args[2]] ?? []).map((number) => ({ number, state: "OPEN" })) } });
-    return JSON.stringify([
-      { number: 2376, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes #2359", labels: [{ name: "hold:product-manager" }] },
-      { number: 2377, changedFiles: 1, files: [{ path: "elsewhere.md" }], body: "Closes #2400", labels: [{ name: "hold:product-manager" }] },
-      { number: 2378, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes #2401", labels: [] },
-    ]);
-  };
-  const prs = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY }) ?? [];
-  assert.deepEqual(calls.map((c) => c[0]), ["pr"], "the lookup itself makes no per-row call");
+  "passed, and the blocked-by read is spent only on a held PR that overlaps", () => {
+  const world = fakeWorld();
+  world.rows.set(2359, fakeRow(world, 2359, { blockedBy: [ASKING] }));
+  world.rows.set(2400, fakeRow(world, 2400));
+  world.rows.set(ASKING, fakeRow(world, ASKING));
+  openPull(world, 2376, [REGION_FILE], { body: "Closes #2359", labels: ["hold:product-manager"] });
+  openPull(world, 2377, ["elsewhere.md"], { body: "Closes #2400", labels: ["hold:product-manager"] });
+  openPull(world, 2378, [REGION_FILE], { body: "Closes #2401", labels: [] });
+  const prs = lookupOpenPrFiles({ run: unreached, log: () => {}, repos: oneRepository(world), trackerRepo: world.repo }) ?? [];
+  assert.deepEqual(world.calls, [`openPullsWithFilesOf ${world.repo}`], "the lookup itself makes no per-row read");
   assert.match(fileOverlapReason([REGION_FILE], prs, { rowNumber: ASKING }).reason as string, /overlaps #2378/,
     "the held PR waiting on the row is skipped; the UNHELD one on the same file still refuses");
-  assert.deepEqual(calls.filter((c) => c[0] === "issue").map((c) => c[2]), ["2359"],
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("blockedByOf")), [`blockedByOf ${world.repo}#2359`],
     "asked about #2376's closed row only: #2377 does not overlap and #2378 is not held");
   // The control: the same PRs with the edge absent refuse on #2376 first.
-  edgesOf["2359"] = [];
+  world.rows.get(2359)!.blockedBy = [];
   assert.match(fileOverlapReason([REGION_FILE], prs, { rowNumber: ASKING }).reason as string, /overlaps #2376/);
 });
 
@@ -641,18 +650,12 @@ test("#2769 the adopted PR is excluded BEFORE #1419's comparability refusal -- a
   assert.equal(fileOverlapReason([REGION_FILE], [truncated], { rowNumber: 2760, adoptedBranch: ADOPTED }).reason, null);
 });
 
-test("#2769 THE LOOKUP READS `headRefName` ON THE CALL IT ALREADY MAKES and hands the rule `branch`, absent when not read", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify([
-      { number: 2766, changedFiles: 1, files: [{ path: REGION_FILE }], body: "Closes: none -- Done-when 3 is still open", headRefName: ADOPTED },
-      { number: 2790, changedFiles: 1, files: [{ path: REGION_FILE }], body: "" },
-    ]);
-  };
-  const others = lookupOpenPrFiles({ run, log: () => {}, repos: ONE_REPOSITORY }) ?? [];
-  assert.equal(calls.length, 1, "one `gh pr list`, `headRefName` among its fields");
-  assert.ok(calls[0].join(" ").includes("headRefName"));
+test("#2769 THE LOOKUP READS `headRefName` ON THE READ IT ALREADY MAKES and hands the rule `branch`, absent when not read", () => {
+  const world = fakeWorld();
+  openPull(world, 2766, [REGION_FILE], { body: "Closes: none -- Done-when 3 is still open", headRefName: ADOPTED });
+  openPull(world, 2790, [REGION_FILE], { body: "" });
+  const others = lookupOpenPrFiles({ run: unreached, log: () => {}, repos: oneRepository(world), trackerRepo: world.repo }) ?? [];
+  assert.equal(world.calls.length, 1, "one read of the open pull requests, `headRefName` among what it returns");
   assert.deepEqual(others.map((o) => o.branch), [ADOPTED, undefined]);
   assert.match(fileOverlapReason([REGION_FILE], others, { rowNumber: 2760, adoptedBranch: ADOPTED }).reason as string, /overlaps #2790/,
     "END TO END from the lookup's own shape: #2766 is skipped by branch, the branchless #2790 is not");

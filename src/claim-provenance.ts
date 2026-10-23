@@ -27,19 +27,16 @@
 // reported as UNATTRIBUTABLE and named, never skipped -- and it is a real population rather than a
 // synthetic one, because a row claimed by hand (#673's shape: `gh issue edit --add-label` with no
 // `session:` label at all) leaves no event to find.
-import { execFileSync } from "node:child_process";
 import { REPO } from "./project-identity.ts";
-import { sandboxGitEnv } from "./lib/git-env.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
+import { rows } from "./plugins/rows.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
 
-// `maxBuffer` is RAISED because the projected event log is a few hundred KB today and grows with the
-// repository; the default 1 MB is a cliff that would turn a complete read into a thrown ENOBUFS on some
-// future Tuesday, and a check that dies as its population grows is a check that stops running when it
-// matters most.
-const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+// THE AUDIT'S READS ARE BOUNDED BY MINUTES, NOT SECONDS: the repository's whole event log is 57 pages of `gh api --paginate`, so a bound meant for a single read would turn a complete read into a cut one on some
+// future Tuesday, and a check that dies as its population grows is a check that stops running when it matters most. The process is the code host's (`gateRun`); the bound is the audit's.
+const CALL_MS = 10 * 60_000;
 
-const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string =>
-  execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv(), maxBuffer: MAX_OUTPUT_BYTES });
+const defaultRun: RowsRun = (args) => rows().gateRun({ timeoutMs: CALL_MS, capture: false })(args);
 
 // GITHUB'S GRAPHQL TIMELINE IS THE OBVIOUS SOURCE HERE AND IT CANNOT BE TRUSTED FOR A POPULATION.
 //
@@ -62,17 +59,8 @@ const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string 
 // most-repeated defect, and the GraphQL form is its worst version: the bound was on the count, so the
 // count could not report it.
 const CLOSED_ROW_LIMIT = 1000;
-const EVENTS_PATH = `repos/${REPO}/issues/events?per_page=100`;
-
-// EVERY EVENT EMBEDS THE WHOLE ISSUE, BODY INCLUDED -- 57 pages of it is tens of megabytes, past
-// `execFileSync`'s buffer and past any reason to move it. `--jq` runs inside `gh`, so what crosses the
-// pipe is four fields per label event. The `select` is a PROJECTION, not a filter on the population:
-// every page is still fetched and every page is still walked.
-// ONE COMPACT OBJECT PER LINE, not one array: `--slurp` and `--jq` cannot be combined, so `--paginate`
-// concatenates each page's jq output and a per-page ARRAY would produce 57 arrays back to back, which is
-// not a JSON document. Line-delimited survives concatenation by construction.
-const EVENTS_JQ = '.[] | select(.event == "labeled" or .event == "unlabeled")'
-  + ' | { number: .issue.number, event: .event, label: .label.name, at: .created_at }';
+// THE EVENT LOG IS READ AS ONE OBJECT PER LINE, `{ number, event, label, at }` for each label event of the repository (the code host's `labelEventLogTextOf`), because `--slurp` and `--jq` cannot be combined and a
+// per-page ARRAY would produce 57 arrays back to back, which is not a JSON document. Line-delimited survives concatenation by construction; `parseEventLines` reads it.
 
 export type LabelEvent = { event: "labeled" | "unlabeled", label: string, at: string };
 export type ClosedRowEvents = { number: number, title: string, closedAt: string, stateReason?: string, events: LabelEvent[] };
@@ -238,19 +226,13 @@ export type ClosingPr = { number: number, headRefName: string, merged: boolean, 
  * `null` when nothing closed it. A FAILED READ THROWS: returning `null` would report "no PR declared
  * this" -- the most serious of the three verdicts -- on a network error.
  *
- * @param {number} number @param {{ run?: typeof defaultRun }} [deps]
+ * @param {number} number @param {{ run?: RowsRun }} [deps]
  * @returns {ClosingPr | null}
  */
-export function fetchClosingPullRequest(number: number, { run = defaultRun }: { run?: typeof defaultRun; } = {}): ClosingPr | null {
-  // Split HERE rather than importing two more constants: `REPO` is the one fact, and a second spelling of
-  // the same owner/name pair is the "a fact stated twice" shape this repo names as its costliest.
-  const [owner, name] = REPO.split("/");
-  const query = `query{repository(owner:"${owner}",name:"${name}"){issue(number:${number}){`
-    + "timelineItems(last:30,itemTypes:[CLOSED_EVENT]){nodes{... on ClosedEvent{closer{"
-    + "... on PullRequest{number headRefName merged createdAt labels(first:50){nodes{name}}}}}}}}}}";
+export function fetchClosingPullRequest(number: number, { run = defaultRun }: { run?: RowsRun; } = {}): ClosingPr | null {
   let raw: string;
   try {
-    raw = run("gh", ["api", "graphql", "-f", `query=${query}`]);
+    raw = rows().closingTimelineTextOf({ repo: REPO, number, run });
   } catch (cause) {
     throw new Error(`claim-provenance: could not read #${number}'s closing pull request -- refusing to `
       + `report it as undeclared on a failed read. ${(cause as Error).message}`, { cause });
@@ -319,7 +301,7 @@ export function parseEventLines(raw: string): unknown[] {
 
 /**
  * Pure: group the projected repository event log into `issue number -> label events`.
- * @param {unknown[]} events the `EVENTS_JQ` projection
+ * @param {unknown[]} events the event log's lines, parsed
  * @returns {Map<number, LabelEvent[]>}
  */
 export function labelEventsByIssue(events: unknown[]): Map<number, LabelEvent[]> {
@@ -419,16 +401,14 @@ export function claimsWithNoEvent(openIssues: { number: number; labels: string[]
  * `gh` failing THROWS at either -- an empty list here would report every closed row as unattributable at
  * once, turning one broken query into 293 false findings.
  *
- * @param {{ run?: typeof defaultRun, openIssues?: { number: number, labels: string[] }[] }} [deps]
+ * @param {{ run?: RowsRun, openIssues?: { number: number, labels: string[] }[] }} [deps]
  * @returns {ClosedRowEvents[]}
  */
-export function fetchClosedRowEvents({ run = defaultRun, openIssues }: { run?: typeof defaultRun; openIssues?: { number: number; labels: string[]; }[]; } = {}): ClosedRowEvents[] {
+export function fetchClosedRowEvents({ run = defaultRun, openIssues }: { run?: RowsRun; openIssues?: { number: number; labels: string[]; }[]; } = {}): ClosedRowEvents[] {
   let listRaw: string;
   try {
-    listRaw = run("gh", ["issue", "list", "--repo", REPO, "--state", "closed",
-      // `stateReason` ASKED FOR, or `reportableUnattributable` can never see a NOT_PLANNED row (#848): the
-      // first version filtered on a field this listing never requested, and dropped it again below.
-      "--limit", String(CLOSED_ROW_LIMIT), "--json", "number,title,closedAt,stateReason"]);
+    // `stateReason` is ASKED FOR in the listing, or `reportableUnattributable` can never see a NOT_PLANNED row (#848).
+    listRaw = rows().closedRowListingTextOf({ repo: REPO, limit: CLOSED_ROW_LIMIT, run });
   } catch (cause) {
     throw new Error(`claim-provenance: could not list closed rows from ${REPO} -- refusing to audit a `
       + `population it could not read. ${(cause as Error).message}`, { cause });
@@ -437,7 +417,7 @@ export function fetchClosedRowEvents({ run = defaultRun, openIssues }: { run?: t
 
   let eventsRaw: string;
   try {
-    eventsRaw = run("gh", ["api", "--paginate", EVENTS_PATH, "--jq", EVENTS_JQ]);
+    eventsRaw = rows().labelEventLogTextOf({ repo: REPO, run });
   } catch (cause) {
     throw new Error(`claim-provenance: could not read ${REPO}'s issue-event log -- refusing to report `
       + `every closed row as unattributable on a failed read. ${(cause as Error).message}`,

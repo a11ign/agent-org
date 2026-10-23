@@ -6,6 +6,7 @@
 // own guarded `gh`. Imports only leaves, so the gate keeps the property its own header states.
 import { READY_LABEL, CLAIM_LABEL, STARTED_LABEL } from "./claim-labels.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
+import { rows } from "./plugins/rows.ts";
 
 /**
  * #754: which of a row's CURRENT labels a merge-driven close must strip, IN THE SAME ACT as the close --
@@ -54,7 +55,7 @@ export function stripClaimLabelsVia(n: number, labels: string[], repo: string, {
   const toStrip = labelsToStrip(labels);
   if (toStrip.length === 0) return "nothing";
   try {
-    gh(["issue", "edit", String(n), "--repo", repo, ...toStrip.flatMap((l) => ["--remove-label", l])]);
+    rows().removeLabelsFromRow({ repo, number: n, labels: toStrip, run: (args) => String(gh(args)) });
     say(`${logPrefix}: #${n} stripped ${toStrip.join(", ")}.`);
     return "stripped";
   } catch (cause) {

@@ -21,7 +21,7 @@ export type CodeHostProbe = Readonly<{
 }>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
-/** The operations of the optional `rows` group (contract 1.9), as a function each; the other members are values. */
+/** The operations of the optional `rows` group (contract 1.10), as a function each; the other members are values. */
 const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
   "boardFiledRow", "briefChairmanOnPull", "headOfChange", "checkRunsOfHead", "workflowRunsOf", "jobsOfRun", "failedLogOfRun", "stateOfRow", "redRunOfHead", "rerunFailedJobsOf", "closeRowWithComment", "commentsSince", "conditionalGetArgs",
   "pullViewArgs", "pullTextOf", "branchRefTextOf", "addedFilesTextOf", "fileAtTextOf", "defaultBranchFileTextOf", "commentOnIssue", "openIncidentsOf", "readOpenPullHeads", "openPullBodiesOf", "outsideArmListArgs", "readyPullRequest",
@@ -35,7 +35,16 @@ const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", 
   "rowStateAndNewestComment", "rowForPromotion", "issueEventsPage", "closedPullsPage", "tagExistsOn", "newestCommentsOf", "recentlyClosedRowsOf", "commentOnRow", "commentBodiesOfRow", "addLabelToRow", "removeLabelFromRow",
   "setRowBody", "ensureLabel", "fileLabelledRow", "addLabelToRowByApi", "markPullReady", "addRowToProject", "setProjectStatus", "readRequiredContexts", "mainTipOf", "pullsOfBranch", "newestMergedPulls", "openPullListArgs",
   "pullFileNamesOf", "commitShasOf", "compareDiffOf", "failingCheckNamesAt", "checkRunSummariesAt", "mergeGroupRunsOf", "jobsOfMergeGroupRun", "actionsJobOf", "openRowsOf", "labelNamesWithPrefix", "closedClaimedRowsOf",
-  "closedRowsCarryingLabels"] as const satisfies readonly (keyof CodeHostRows)[];
+  "closedRowsCarryingLabels",
+  "titleAndCommentsOf", "labelNamesOfRow", "rowStateOf", "labelsBodyTitleOf", "closeHomeRowWithComment", "fileRowWithLabels", "lastLabelEventOf", "markedCommentsOf", "isPullQueued", "pullStateWordOf", "issueStateAndLabelsOf",
+  "firstCommentTimeStartingWith", "ownRunWithin", "readRestJson",
+  "ensureLabelArgs", "readRestRow", "readRestComments", "setRowLabels", "editRowLabels",
+  "argumentsRunOf", "blockerRowOf", "newestOpenRowsText", "setBoardItemOption", "fileRowFromArguments", "milestonesOf", "milestoneTitlesOf", "addLabelsToRowIn", "bodyTextOfRowIn", "milestoneTitleOfRow",
+  "roadmapItemsOf", "roadmapFieldOf",
+  "blockedByOf", "bodyAndLabelsOf", "rowShapeFactsOf", "rowCarriesLabel", "openPullReviewsOf", "commitsOfPull", "closingPullsOf", "crossReferencingPullsOf", "changedPathsOfPull", "openPullsWithFilesOf", "pullFilePathsOf",
+  "ensureLabelIn", "addLabelToRowIn", "compareShaWithMain",
+  "labelEventsOf", "removeLabelsFromRow", "closingTimelineTextOf", "closedRowListingTextOf", "labelEventLogTextOf", "pullStatesOf", "pullStatesOfBranchIn", "rowFactsIn", "openRestListingOf", "rowBodyIn",
+] as const satisfies readonly (keyof CodeHostRows)[];
 
 const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
@@ -149,11 +158,11 @@ function throws(call: () => unknown): boolean {
 
 /** Rows whose operations act on the `run` their caller hands them (`acts: "through-run"`): only those have a refused `run` to answer. */
 const withRunRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
-  applies: ({ host }) => host.rows?.acts === "through-run", reason: `the code host has no rows that act through the caller's run (contract 1.9), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
+  applies: ({ host }) => host.rows?.acts === "through-run", reason: `the code host has no rows that act through the caller's run (contract 1.10), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
 });
 
 const withRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
-  applies: ({ host }) => host.rows !== undefined, reason: `the code host has no rows, which are optional (contract 1.9), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
+  applies: ({ host }) => host.rows !== undefined, reason: `the code host has no rows, which are optional (contract 1.10), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
 });
 
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
@@ -251,6 +260,102 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
       addLabelToRowByApi: () => rows.addLabelToRowByApi({ repo, number: 1, label: "x", run: refused }), markPullReady: () => rows.markPullReady({ number: 1, run: refused }),
       addRowToProject: () => rows.addRowToProject({ owner: "o", projectNumber: 1, url: "https://github.com/o/r/issues/1", run: refused }),
       setProjectStatus: () => rows.setProjectStatus({ owner: "o", projectNumber: 1, url: "https://github.com/o/r/issues/1", status: "Ready", run: refused }),
+    };
+    for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
+  }),
+  "a read the rows could not make for wake throws or answers null, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const reads: Record<string, () => unknown> = {
+      titleAndCommentsOf: () => rows.titleAndCommentsOf({ repo, number: 1, run: refused }), labelNamesOfRow: () => rows.labelNamesOfRow({ repo, number: 1, run: refused }),
+      rowStateOf: () => rows.rowStateOf({ number: 1, repo, run: refused }), labelsBodyTitleOf: () => rows.labelsBodyTitleOf({ repo, number: 1, run: refused }),
+      lastLabelEventOf: () => rows.lastLabelEventOf({ number: 1, label: "x", run: refused }), markedCommentsOf: () => rows.markedCommentsOf({ number: 1, marker: "m", run: refused }),
+      isPullQueued: () => rows.isPullQueued({ repo, number: 1, run: refused }), pullStateWordOf: () => rows.pullStateWordOf({ repo, number: 1, run: refused }),
+      issueStateAndLabelsOf: () => rows.issueStateAndLabelsOf({ repo, number: 1, run: refused }),
+      firstCommentTimeStartingWith: () => rows.firstCommentTimeStartingWith({ repo, number: 1, prefix: "p", pageSize: 10, run: refused }), readRestJson: () => rows.readRestJson({ args: ["x"], run: refused }),
+    };
+    for (const [name, read] of Object.entries(reads)) expect(throws(read), `${name} must throw when the read is refused: a read that could not be made is never an empty answer`);
+    void repo;
+  }),
+  "a write the rows could not make for wake throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const writes: Record<string, () => unknown> = {
+      closeHomeRowWithComment: () => rows.closeHomeRowWithComment({ number: 1, comment: "c", run: refused }), fileRowWithLabels: () => rows.fileRowWithLabels({ title: "t", body: "b", labels: ["x"], run: refused }),
+    };
+    for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
+    void repo;
+  }),
+  "a read the rows could not make for the claim throws or answers null, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const reads: Record<string, () => unknown> = {
+      readRestRow: () => rows.readRestRow({ repo, number: 1, run: refused }), readRestComments: () => rows.readRestComments({ repo, number: 1, run: refused }),
+    };
+    for (const [name, read] of Object.entries(reads)) expect(throws(read), `${name} must throw when the read is refused: a read that could not be made is never an empty answer`);
+    void repo;
+  }),
+  "a write the rows could not make for the claim throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const writes: Record<string, () => unknown> = {
+      setRowLabels: () => rows.setRowLabels({ repo, number: 1, labels: ["x"], run: refused }),
+      editRowLabels: () => rows.editRowLabels({ repo, number: 1, remove: ["x"], add: [], run: refused }),
+    };
+    for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
+    void repo;
+  }),
+  "a read the rows could not make for the filing of rows throws or answers null, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const reads: Record<string, () => unknown> = {
+      newestOpenRowsText: () => rows.newestOpenRowsText({ repo, limit: 10, run: refused }), milestonesOf: () => rows.milestonesOf({ repo, run: refused }), milestoneTitlesOf: () => rows.milestoneTitlesOf({ repo, run: refused }),
+      bodyTextOfRowIn: () => rows.bodyTextOfRowIn({ repo, number: 1, run: refused }), milestoneTitleOfRow: () => rows.milestoneTitleOfRow({ repo, number: 1, run: refused }),
+      roadmapItemsOf: () => rows.roadmapItemsOf({ repo, number: 1, field: "Roadmap", run: refused }), roadmapFieldOf: () => rows.roadmapFieldOf({ owner: "o", boardNumber: 1, field: "Roadmap", run: refused }),
+    };
+    for (const [name, read] of Object.entries(reads)) expect(throws(read), `${name} must throw when the read is refused: a read that could not be made is never an empty answer`);
+    expect(rows.blockerRowOf({ number: 1, repo, run: refused }) === null, "a blocker that could not be read is null: an unreadable blocker is an unknown, never an umbrella");
+    let seen = undefined as [string, string[]] | undefined;
+    const answer = rows.argumentsRunOf((program, args) => { seen = [program, args]; return "ok"; })(["x", "y"]);
+    expect(answer === "ok" && seen !== undefined && isString(seen[0]) && seen[0] !== "" && JSON.stringify(seen[1]) === '["x","y"]', "the runner made of a program runner must hand it the code host's program and the arguments, unchanged");
+  }),
+  "a write the rows could not make for the filing of rows throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const writes: Record<string, () => unknown> = {
+      setBoardItemOption: () => rows.setBoardItemOption({ itemId: "i", projectId: "p", fieldId: "f", optionId: "o", run: refused }), fileRowFromArguments: () => rows.fileRowFromArguments({ argv: ["--title", "t"], run: refused }),
+      addLabelsToRowIn: () => rows.addLabelsToRowIn({ repo, number: 1, labels: ["x"], run: refused }),
+    };
+    for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
+    void repo;
+  }),
+  "a read the rows could not make for the claim's rules throws or answers null, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const reads: Record<string, () => unknown> = {
+      blockedByOf: () => rows.blockedByOf({ repo, number: 1, run: refused }), bodyAndLabelsOf: () => rows.bodyAndLabelsOf({ repo, number: 1, run: refused }), rowShapeFactsOf: () => rows.rowShapeFactsOf({ repo, number: 1, run: refused }),
+      rowCarriesLabel: () => rows.rowCarriesLabel({ repo, number: 1, label: "x", run: refused }), openPullReviewsOf: () => rows.openPullReviewsOf({ repo, limit: 10, run: refused }),
+      commitsOfPull: () => rows.commitsOfPull({ repo, number: 1, run: refused }), closingPullsOf: () => rows.closingPullsOf({ repo, number: 1, run: refused }),
+      crossReferencingPullsOf: () => rows.crossReferencingPullsOf({ repo, number: 1, run: refused }), changedPathsOfPull: () => rows.changedPathsOfPull({ repo, number: 1, run: refused }),
+      openPullsWithFilesOf: () => rows.openPullsWithFilesOf({ repo, run: refused }), pullFilePathsOf: () => rows.pullFilePathsOf({ repo, number: 1, run: refused }),
+    };
+    for (const [name, read] of Object.entries(reads)) expect(throws(read), `${name} must throw when the read is refused: a read that could not be made is never an empty answer`);
+    expect(rows.compareShaWithMain({ repo, sha: "a".repeat(40), run: refused }) === null, "a compare that could not be made is null: null is never 'nothing changed'");
+  }),
+  "a write the rows could not make for the claim's rules throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const writes: Record<string, () => unknown> = {
+      ensureLabelIn: () => rows.ensureLabelIn({ repo, name: "x", run: refused }), addLabelToRowIn: () => rows.addLabelToRowIn({ repo, number: 1, label: "x", run: refused }),
+    };
+    for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
+  }),
+  "a read the rows could not make for the other claim and row files throws or answers null, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const reads: Record<string, () => unknown> = {
+      labelEventsOf: () => rows.labelEventsOf({ repo, row: 1, run: refused }), closingTimelineTextOf: () => rows.closingTimelineTextOf({ repo, number: 1, run: refused }),
+      closedRowListingTextOf: () => rows.closedRowListingTextOf({ repo, limit: 10, run: refused }), labelEventLogTextOf: () => rows.labelEventLogTextOf({ repo, run: refused }),
+      pullStatesOf: () => rows.pullStatesOf({ repo, limit: 10, run: refused }), pullStatesOfBranchIn: () => rows.pullStatesOfBranchIn({ repo, branch: "b", run: refused }),
+      rowFactsIn: () => rows.rowFactsIn({ repo, number: 1, run: refused }), openRestListingOf: () => rows.openRestListingOf({ repo, kind: "issues", run: refused }), rowBodyIn: () => rows.rowBodyIn({ repo, number: 1, run: refused }),
+    };
+    for (const [name, read] of Object.entries(reads)) expect(throws(read), `${name} must throw when the read is refused: a read that could not be made is never an empty answer`);
+  }),
+  "a write the rows could not make for the other claim and row files throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const writes: Record<string, () => unknown> = {
+      removeLabelsFromRow: () => rows.removeLabelsFromRow({ repo, number: 1, labels: ["x"], run: refused }),
     };
     for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused`);
   }),

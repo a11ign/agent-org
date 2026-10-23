@@ -531,9 +531,19 @@ test("#3883 (7) the follow-ups' wave makes the read once, from the SAME listing 
 test("#3883 (8) ONE COPY: the gate strips through the leaf, the close path re-exports it, and the gate does not import the close path", () => {
   assert.equal(labelsToStripOfCloser, labelsToStripOfLeaf);
   const said: string[] = [];
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = "r/r";
+  world.rows.set(1, fakeRow(world, 1, { state: "CLOSED", labels: ["in-progress", "was-ready"] }));
+  substituteCodeHost(host);
   assert.equal(stripClaimLabelsVia(1, ["answer:x", "was-ready"], "r/r", { gh: () => { throw new Error("must not be called"); }, say: (l) => { said.push(l); } }), "nothing");
+  assert.deepEqual(world.rows.get(1)?.labels, ["in-progress", "was-ready"], "nothing to strip asks the code host for nothing");
   assert.equal(stripClaimLabelsVia(1, ["in-progress"], "r/r", { gh: () => "", say: (l) => { said.push(l); }, logPrefix: "SWEEP" }), "stripped");
   assert.match(said[0], /^SWEEP: #1 stripped in-progress\.$/);
+  assert.deepEqual(world.rows.get(1)?.labels, ["was-ready"], "the claim label is off the row and the record of what it was stays");
+  world.failures.set("removeLabelsFromRow", new Error("HTTP 502"));
+  assert.equal(stripClaimLabelsVia(1, ["in-progress"], "r/r", { gh: () => "", say: (l) => { said.push(l); }, logPrefix: "SWEEP" }), "failed", "a refused edit is reported, never thrown");
+  assert.match(said[1], /^SWEEP: #1 closed but COULD NOT STRIP in-progress -- HTTP 502$/);
   const gate = workGateSource();
   assert.doesNotMatch(gate, /from "\.\/close-rows-for-merged-pr\.ts"/, "its import closure must stay loadable with no roles dir (#2174)");
   assert.match(gate, /import \{ stripClaimLabelsVia \} from "\.\/claim-label-strip\.ts"/);

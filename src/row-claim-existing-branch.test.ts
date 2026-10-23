@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` call is an injected `run`; nothing here reaches the network (a11ign/agent-org#1285)
+// no-token: none -- the claim records are the fake code host's rows; `git` is the real one in a scratch repository; nothing here reaches `gh` or the network (a11ign/agent-org#1285)
 /**
  * a11ign/agent-org#1285: A ROW'S OWN PUSHED BRANCH IS ADOPTED, NOT REFUSED, AFTER THE GATE RELEASED ITS CLAIM. A claim that met an existing
  * local branch of the row refused it, reading only the NEWEST claim record -- a release names no branch -- so the row's own work could never
@@ -11,7 +11,7 @@
  *   - REFUSAL: a branch a tree already stands on is refused even when it is this row's own;
  *   - a claim that LOSES after an adoption removes its tree and KEEPS the branch, whose commits no remote may hold.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -20,6 +20,10 @@ import { resolve } from "node:path";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { testEach } from "./lib/test-each.ts";
 import { claimRecordComment } from "./row-claim.ts";
+import { REPO } from "./project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { claimWithWorktree } from "./row-claim.ts";
 
 const ROW = 1285;
@@ -59,15 +63,23 @@ function seedBranch(fx: ReturnType<typeof repository>, name: string, { push }: {
 }
 
 /**
- * The real `git` of the scratch checkout, and `gh` answering the claim records in `records`, oldest first, as `gh api .../comments` does, one page
- * of them (agent-org#1302: the comments are read over REST now). Nothing else is faked: the branch, the worktree and the origin are the real ones.
+ * The real `git` of the scratch checkout, and the fake code host holding the claim records in `records`, oldest first, as the comments of the rows the branch names (A11-160, step 7: the comments are read
+ * through the code host). Nothing else is faked: the branch, the worktree and the origin are the real ones.
  */
 function runWith(records: string[]) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  for (const number of [ROW, 999]) {
+    host.rowsWorld.rows.set(number, fakeRow(host.rowsWorld, number, { comments: records.map((body, id) => ({ id: id + 1, body, createdAt: "2026-10-04T10:00:00Z" })) }));
+  }
+  substituteCodeHost(host);
   return (cmd: string, args: string[]): string => {
-    if (cmd === "gh") return JSON.stringify([records.map((body) => ({ body }))]);
+    if (cmd === "gh") throw new Error("a claim reached `gh` through its run: GitHub is the code host's");
     return execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
   };
 }
+
+afterEach(() => forgetActivation());
 
 /** Claims row 1285 in `fx`'s checkout on `branch`; `order` records each call that would write. */
 function claimIn(fx: ReturnType<typeof repository>, { branch, records, order = [] as string[], lose = false }: { branch: string; records: string[]; order?: string[]; lose?: boolean }) {

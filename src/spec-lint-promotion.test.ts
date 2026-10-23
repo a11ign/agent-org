@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` call goes through an injected fake `run`; the provider is a fake `fetch`; the ledger is a temp directory
+// no-token: gh -- the row's body and labels are the fake code host's world (A11-160, step 7), so no `gh` runs; the provider is a fake `fetch`; the ledger is a temp directory
 /**
  * agent-org#1017 (a11ign#5117): THE SPEC LINT AT PROMOTION, JEV'S READING OF WHAT WAS PROMOTED, AND THE LOG OF WHAT WAS REFUSED.
  *
@@ -13,7 +13,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
+import { REPO } from "./project-identity.ts";
 import { DECISION_USES, decisionSwitchesPath, decisionLogPathFrom, type DecisionDeps } from "./decision-provider.ts";
 import { FAILURE_LEDGER_FILE, parseFailureLedger } from "./failure-ledger.ts";
 import { parseHostConfig, SHADOW_COPY_MARKER, SHADOW_STATE_DIR_ENV } from "./host-config.ts";
@@ -24,6 +25,11 @@ import { promoteAndReviewRow, promoteRefusalReason, promoteRow, readSpecLintFlag
 import { SPEC_REVIEW_LABEL, SPEC_REVIEW_WAKE, type LintDeps } from "./spec-lint.ts";
 import { freshState } from "./triage-provider.ts";
 import { moduleSource } from "./lib/source-text-reads.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow as worldRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 // --- fixtures -----------------------------------------------------------------------------------------------------------------
 
@@ -81,32 +87,41 @@ async function withStderr<T>(fn: () => Promise<T> | T): Promise<{ result: T; std
   }
 }
 
-/** A row on a fake `gh`: reads its body and labels, records every write in order, and can fail the label write. */
+/** A row in the fake code host's world: it reads its body and labels, records every write in order, and can fail the label write. */
 function fakeRow(options: { body: string | null; labels?: string[]; failLabelWrite?: boolean; status?: string } = { body: body() }) {
-  const row = { labels: [...(options.labels ?? ["backlog", "lane:any"])], status: options.status ?? "Backlog" };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  const held = worldRow(world, ROW, { title: "wire the spec lint", body: options.body ?? "", labels: [...(options.labels ?? ["backlog", "lane:any"])] });
+  world.rows.set(ROW, held);
+  substituteCodeHost(host);
+  const row = { get labels() { return held.labels; }, status: options.status ?? "Backlog" };
   const writes: string[] = [];
   const comments: string[] = [];
   const ensured: string[][] = [];
-  const calls: string[][] = [];
-  const run = (_cmd: string, args: string[]): string => {
-    calls.push(args);
-    if (args[0] === "issue" && args[1] === "view") return options.body ?? "";
-    if (args[0] === "issue" && args[1] === "comment") { writes.push("comment"); comments.push(args[args.indexOf("--body") + 1]); return "https://github.com/a11ign/agent-org/issues/1017#issuecomment-1"; }
-    if (args[0] === "api" && args.includes("PUT")) {
-      if (options.failLabelWrite) throw new Error("HTTP 502: Bad gateway (github.com)");
-      writes.push("labels");
-      row.labels = args.filter((a) => a.startsWith("labels[]=")).map((a) => a.slice("labels[]=".length));
-    }
-    return "";
+  // The order of the writes is what these tests assert, so the two writes that reach the code host are recorded as they are made.
+  const code = host.rows!;
+  const setLabels = code.setRowLabels;
+  code.setRowLabels = (request) => {
+    if (options.failLabelWrite) throw new Error("HTTP 502: Bad gateway (github.com)");
+    writes.push("labels");
+    setLabels(request);
+  };
+  const adapterOf = code.ticketAdapter;
+  code.ticketAdapter = (adapterOptions) => {
+    const adapter = adapterOf(adapterOptions);
+    const post = adapter.postDecision.bind(adapter);
+    adapter.postDecision = (ref, decision) => { writes.push("comment"); comments.push(decision.text); return post(ref, decision); };
+    return adapter;
   };
   const deps = {
-    run,
-    fetchLabels: () => ({ number: ROW, title: "wire the spec lint", state: "OPEN" as const, labels: [...row.labels] }),
+    run: (): string => { throw new Error("the fake code host acts on its own state: no gh is run"); },
+    fetchLabels: () => ({ number: ROW, title: "wire the spec lint", state: "OPEN" as const, labels: [...held.labels] }),
     fetchBoardStatus: () => row.status,
     moveStatus: (_n: number, status: string) => { row.status = status; writes.push(`status:${status}`); return { moved: true as const }; },
     ensureLabels: (labels: string[]) => { ensured.push([...labels]); },
   };
-  return { row, deps, writes, comments, ensured, calls };
+  return { row, deps, writes, comments, ensured };
 }
 
 // --- the provider: a fake network behind the real `decide` ---------------------------------------------------------------------------
@@ -307,7 +322,7 @@ test("2. MUTATION TARGET: a spec Jev scores below 3 stays Ready, carries `spec:r
   assert.match(fake.comments[0], new RegExp(`${SPEC_REVIEW_WAKE}:`), "the comment names the session it asks");
   assert.match(fake.comments[0], /\?/, "and asks something");
   assert.deepEqual(fake.ensured, [[SPEC_REVIEW_LABEL, `answer:${SPEC_REVIEW_WAKE}`]], "both labels were made to exist before they were written");
-  assert.ok(!fake.calls.some((args) => args.includes("--add-label") || args.includes("--remove-label")), "no delta form: the set is one PUT");
+  // That the set is ONE request (no `--add-label` delta form) is the plugin's: `plugins/github/rows/filing-rows.test.ts`.
 });
 
 test("2. TWIN: a spec Jev scores 3 or more is not labelled, and nobody is woken", async () => {
