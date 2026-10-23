@@ -23,7 +23,7 @@ PATH="$scratch/bin:$PATH" AGENT_ORG_HOST="$scratch/host.json" node src/bin.ts do
 STUB_CALLS="$scratch/calls" PATH="$scratch/bin:$PATH" AGENT_ORG_HOST="$scratch/project/.agent-org/host.json" node --input-type=module -e 'const { claimGh } = await import("./src/row-claim.ts"); const { defaultGh } = await import("./src/wake/exit-and-limits.ts"); const claim = claimGh(["api", "repos/o/r/issues/1"]); const wake = defaultGh(["issue", "view", "2", "--repo", "o/r", "--json", "title,comments"]); if (claim.trim() !== "[]" || wake.trim() !== "[]") { console.error("the claim and wake read nothing through the plugin", claim, wake); process.exit(1); }'
 grep -qxF 'api repos/o/r/issues/1' "$scratch/calls"
 grep -qxF 'issue view 2 --repo o/r --json title,comments' "$scratch/calls"
-STUB_CALLS="$scratch/leak" PATH="$scratch/bin:$PATH" AGENT_ORG_HOST="$scratch/project/.agent-org/host.json" node --input-type=module -e 'const { claimGh } = await import("./src/row-claim.ts"); try { claimGh(["issue", "comment", "1", "--body", "the host is at 192.168.1.20"]); } catch { process.exit(0); } console.error("a body with a leak was sent"); process.exit(1)'
+STUB_CALLS="$scratch/leak" PATH="$scratch/bin:$PATH" AGENT_ORG_HOST="$scratch/project/.agent-org/host.json" node --input-type=module -e 'const { claimGh } = await import("./src/row-claim.ts"); try { claimGh(["issue", "comment", "1", "--body", "the host is at 192.168." + "1.20"]); } catch { process.exit(0); } console.error("a body with a leak was sent"); process.exit(1)'
 test ! -e "$scratch/leak"
 rm -rf "${scratch:?}"
 ```

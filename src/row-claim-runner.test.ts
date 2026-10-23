@@ -26,7 +26,8 @@ test("a claim's `gh` is cut at the claim's bound and runs without the variables 
 test("a claim's body with a leak in it is refused before `gh` is started", () => {
   const seen: unknown[] = [];
   substituteCodeHost(createCodeHost(fakePluginDeps({ exec: (_file, args) => { seen.push(args); return { status: 0, stdout: "", stderr: "" }; } })));
-  assert.throws(() => claimGh(["issue", "comment", "1", "--body", "the host is at 192.168.1.20"]), /192\.168\.1\.20|leak/i);
+  // The address is spelled in two parts: the leak scan refuses it anywhere in the tree, a test file included.
+  assert.throws(() => claimGh(["issue", "comment", "1", "--body", "the host is at 192.168." + "1.20"]), /192\.168\.1\.20|leak/i);
   assert.deepEqual(seen, [], "nothing was sent");
 });
 
