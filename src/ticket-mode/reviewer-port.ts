@@ -77,12 +77,12 @@ type Clones = Readonly<Record<string, string>>;
 
 /**
  * How the gate judges a pull request the code host plugin reads for the reviewer (A11-160): the fields it reads by, whether its author is the org's own, and whether its checks have
- * settled green. THROWS the gate's refusal when the gate does not load (`reviewerRefusal`), so a read that needs it refuses before it asks GitHub anything.
+ * settled green, the required ones only (A11-175). THROWS the gate's refusal when the gate does not load (`reviewerRefusal`), so a read that needs it refuses before it asks GitHub anything.
  */
 export function gateReviewJudge(): ReviewJudge {
   const { trust, orders } = reviewerGate();
   const declared = trust.declaredIdentities();
-  return { fields: orders.REVIEW_PULL_FIELDS, trustOf: (pr) => trust.reviewTrustOf(pr, declared), settledOf: (pr) => orders.settledGreenOf(pr) };
+  return { fields: orders.REVIEW_PULL_FIELDS, trustOf: (pr) => trust.reviewTrustOf(pr, declared), settledOf: (pr, required) => orders.settledGreenOf(pr, required), unrequiredRedOf: (pr, required) => orders.unrequiredRedOf(pr, required) };
 }
 
 /**

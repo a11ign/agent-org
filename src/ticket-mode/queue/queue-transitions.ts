@@ -390,14 +390,15 @@ export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readon
 
 /**
  * Record the paths each queued run's plan declares, for each run whose plan was read, and clear why it could not be (`pathsFailure`). A run that has
- * started keeps what it started with.
+ * started keeps what it started with. `stepPaths` is the paths each step section of the plan lists, by step number, for a plan that has any (A11-175); a plan read again that has none drops what was recorded.
  */
-export function recordPaths(queue: Queue, paths: ReadonlyMap<string, readonly string[]>): Queue {
+export function recordPaths(queue: Queue, paths: ReadonlyMap<string, readonly string[]>, stepPaths: ReadonlyMap<string, Readonly<Record<string, readonly string[]>>> = new Map()): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
     const found = paths.get(entry.ticket.key);
     if (entry.phase !== "queued" || found === undefined) return entry;
-    const { pathsFailure: _read, ...rest } = entry;
-    return { ...rest, paths: found };
+    const { pathsFailure: _read, stepPaths: _earlier, ...rest } = entry;
+    const ofSteps = stepPaths.get(entry.ticket.key);
+    return { ...rest, paths: found, ...(ofSteps === undefined || Object.keys(ofSteps).length === 0 ? {} : { stepPaths: ofSteps }) };
   }) };
 }
 

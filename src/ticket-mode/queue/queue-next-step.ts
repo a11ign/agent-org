@@ -10,13 +10,13 @@ import { replace, SETTLED, type Entry, type Queue } from "./queue-entries-and-ou
 
 /**
  * The run for the next step of a plan, queued at `now` in place of `entry`, whose partial pull requests merged and finished `step` (A11-168): the same ticket, model, effort,
- * plan paths and repositories, and `steps` with `step` appended. It is a fresh worker: it has no session, no plan to wait for (the plan is attached), and none of the finished
+ * plan paths (and the paths of each of its steps) and repositories, and `steps` with `step` appended. It is a fresh worker: it has no session, no plan to wait for (the plan is attached), and none of the finished
  * run's outcome, pull requests, declaration or state move. Not `movedFrom`: the first step merged, so the ticket has started, and a later step that ends with no pull
  * request must not put it back in Todo. PURE.
  */
 function nextStepRun(entry: Entry, step: MergedStep, now: number): Entry {
-  const { ticket, repos, model, effort, planned, paths, plannedRepo, projectRepo, planSteps, steps = [] } = entry;
-  return { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(paths ? { paths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}),
+  const { ticket, repos, model, effort, planned, paths, stepPaths, plannedRepo, projectRepo, planSteps, steps = [] } = entry;
+  return { ticket, repos, model, effort, ...(planned ? { planned } : {}), ...(paths ? { paths } : {}), ...(stepPaths ? { stepPaths } : {}), ...(plannedRepo !== undefined ? { plannedRepo } : {}),
     ...(projectRepo !== undefined ? { projectRepo } : {}), ...(planSteps !== undefined ? { planSteps } : {}), steps: [...steps, step], phase: "queued", queuedAt: now };
 }
 

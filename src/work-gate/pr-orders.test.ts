@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stallReasonOf, reviewGateOf } from "./pr-orders/pr-gate-readings.ts";
-import { perPullRequestOrders, fileReviewGatedHuman, reviewGatedHumanBrief } from "./pr-orders.ts";
+import { perPullRequestOrders, fileReviewGatedHuman, reviewGatedHumanBrief, settledGreenOf, unrequiredRedOf } from "./pr-orders.ts";
 import { clearedByOf, checkMarkersOf } from "./review-gate.ts";
 import { subjectRef } from "../review-attribution.ts";
 import { reviewGatedUnaskedReading, REVIEW_GATED_MINUTES } from "../org-health/overdue-readings.ts";
@@ -132,4 +132,33 @@ test("review-gated-unasked: a red review-gated pull request with no reviewer ord
   assert.equal(tripped.status, "tripped");
   const quiet = reviewGatedUnaskedReading({ now: NOW, prs: [{ number: 5528, redSince: oneHourAgo, reviewerOrdered: false }] });
   assert.equal(quiet.status, "clear");
+});
+
+// A11-175: the reviewer waits for the checks the branch REQUIRES, not for every check on the head. a11ign/lab#144 had `gate`, `refusalOwners` and `checks (own)` green, and `checks (cross-repo)`, which is not
+// required, red: its reviewer never started.
+const LAB_144 = { statusCheckRollup: [green("gate"), green("refusalOwners"), green("checks (own)"), red("checks (cross-repo)")] };
+const LAB_REQUIRED = ["gate", "refusalOwners", "checks (own)"];
+
+test("A11-175: settledGreenOf counts only the required checks, and every check when the list is null or empty", () => {
+  assert.equal(settledGreenOf(LAB_144, null), false, "with no list every check counts, so the red unrequired one holds it: the incident");
+  assert.equal(settledGreenOf(LAB_144), false, "the list defaults to none read");
+  assert.equal(settledGreenOf(LAB_144, []), false, "a branch that requires nothing counts every check, as the board's failing checks do");
+  assert.equal(settledGreenOf(LAB_144, LAB_REQUIRED), true, "the required checks are green and the red one is not required");
+  const running = { statusCheckRollup: [green("gate"), { name: "checks (own)", status: "IN_PROGRESS", conclusion: null }, red("checks (cross-repo)")] };
+  assert.equal(settledGreenOf(running, ["gate", "checks (own)"]), false, "a required check still running has not settled");
+  assert.equal(settledGreenOf({ statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "FAILURE" }, green("checks (own)")] }, LAB_REQUIRED.slice(0, 1)), false, "a required check that failed holds it");
+  assert.equal(settledGreenOf({ statusCheckRollup: [green("gate")] }, LAB_REQUIRED), false, "a required check that has not reported is not settled");
+  assert.equal(settledGreenOf({ statusCheckRollup: [{ name: "gate", status: "IN_PROGRESS", conclusion: null }, red("checks (cross-repo)")] }, ["checks (own)"]), false, "none of the required checks has reported");
+  const rerun = { statusCheckRollup: [{ ...red("checks (own)"), completedAt: new Date(NOW - 5 * HOUR).toISOString() }, green("checks (own)"), green("gate")] };
+  assert.equal(settledGreenOf(rerun, ["checks (own)", "gate"]), true, "the newest run of a required check is the one that counts");
+});
+
+test("A11-175: unrequiredRedOf names the checks that failed and are not required, once each, and none when every check counts", () => {
+  assert.deepEqual(unrequiredRedOf(LAB_144, LAB_REQUIRED), ["checks (cross-repo)"]);
+  assert.deepEqual(unrequiredRedOf(LAB_144, null), [], "with no list every check counts, so none is left out");
+  assert.deepEqual(unrequiredRedOf(LAB_144, []), []);
+  assert.deepEqual(unrequiredRedOf({ statusCheckRollup: [green("gate"), { name: "checks (cross-repo)", status: "IN_PROGRESS", conclusion: null }] }, ["gate"]), [], "an unrequired check still running is not red");
+  assert.deepEqual(unrequiredRedOf({ statusCheckRollup: [red("gate"), green("lint")] }, ["lint"]), ["gate"]);
+  const twice = { statusCheckRollup: [red("checks (cross-repo)"), red("checks (cross-repo)"), green("gate")] };
+  assert.deepEqual(unrequiredRedOf(twice, ["gate"]), ["checks (cross-repo)"]);
 });

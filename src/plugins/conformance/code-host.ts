@@ -53,6 +53,7 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
   "readReviewState reads the head, the reviews and whether the checks settled": ({ host, probe }) => {
     const state = host.readReviewState(probe.pull);
     expect(isObject(state) && isString(state.head) && Array.isArray(state.reviews) && typeof state.settled === "boolean", `readReviewState(${probe.pull}) must read { head, reviews, settled }`);
+    expect(!isObject(state) || state.unrequiredRed === undefined || (Array.isArray(state.unrequiredRed) && state.unrequiredRed.every(isString)), `readReviewState(${probe.pull}) must name unrequiredRed, when it has any, as a list of check names`);
     expect(host.readReviewState(probe.missing) === null, "readReviewState must answer null for a pull request it cannot read");
   },
   "openPullUrlsOf lists a repository's open pull requests": ({ host, probe }) => {

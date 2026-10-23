@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
+import { replan } from "./queue/queue-ticket-text.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, talkRound, type Outcome, type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, checkRound, conflictRound, holdForSession, recordCheckHeads, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
 import { clearPartial, nextStepRuns, planStepsUnread, queueNextStep, recordPlanSteps } from "./queue/queue-next-step.ts";
@@ -1083,6 +1084,40 @@ test("A11-168: queueNextStep appends the merged step and its pull requests, and 
   for (const dropped of ["session", "outcome", "partial", "pullStates", "movedFrom", "plan", "review", "trackerState", "finishedAt", "startedAt", "workspace"] as const) assert.equal(next[dropped], undefined, dropped);
   const [second] = queueNextStep(mergedPartial("step 2 of 3", { steps: next.steps }), "A", { step: 2, of: 3, prs: [PR_2] }, 60).entries;
   assert.deepEqual(second.steps?.map(({ step }) => step), [1, 2], "a later step is appended after the earlier one");
+});
+
+// A11-175: the paths each step section of the plan lists are recorded with the plan's paths, and travel with them to the next step and through a round.
+const STEP_PATHS = { "1": ["agent-org:src/a.ts"], "2": ["agent-org:src/b/"] };
+
+test("A11-175: recordPaths records the step sections' paths beside the plan's, replaces them when the plan is read again, and leaves a run that has started as it is", () => {
+  const queued = resumeQueue(enqueue(emptyQueue(2), [ticket("A"), ticket("B")], choice, 1));
+  const read = recordPaths(queued, new Map([["A", ["agent-org:src/a.ts", "agent-org:src/b/"]], ["B", ["agent-org:src/"]]]), new Map<string, Record<string, readonly string[]>>([["A", STEP_PATHS], ["B", {}]]));
+  assert.deepEqual(read.entries.map((entry) => [entry.paths, entry.stepPaths]), [[["agent-org:src/a.ts", "agent-org:src/b/"], STEP_PATHS], [["agent-org:src/"], undefined]], "a plan whose steps list no paths records none");
+  const again = recordPaths(read, new Map([["A", ["agent-org:src/a.ts"]]]), new Map());
+  assert.equal(again.entries[0].stepPaths, undefined, "a plan read again that has none drops what was recorded");
+  assert.deepEqual(recordPaths(queued, new Map([["A", ["agent-org:src/a.ts"]]])).entries[0].stepPaths, undefined, "and callers that read no step sections record none");
+  const started = markStarting(read, "A", 5);
+  assert.deepEqual(recordPaths(started, new Map([["A", ["agent-org:x/"]]]), new Map([["A", { "1": ["agent-org:x/"] }]])).entries.find((entry) => entry.ticket.key === "A")?.stepPaths, STEP_PATHS, "a run that has started keeps what it started with");
+});
+
+test("A11-175: a queued run whose plan is written again drops the paths of its steps with the plan's paths", () => {
+  const queued = recordPaths(resumeQueue(enqueue(emptyQueue(1), [ticket("A")], choice, 1)), new Map([["A", ["agent-org:src/a.ts"]]]), new Map([["A", STEP_PATHS]]));
+  assert.deepEqual(queued.entries[0].stepPaths, STEP_PATHS);
+  const [again] = replan(queued, "A", { model: "opus", effort: "max" }, [], undefined).entries;
+  assert.deepEqual([again.paths, again.stepPaths], [undefined, undefined]);
+});
+
+test("A11-175: the next step's run carries the step sections' paths with the plan's, and so does a review round, a talk session and a retried review", () => {
+  const finished = mergedPartial("step 1 of 2: the rest", { stepPaths: STEP_PATHS });
+  const [next] = queueNextStep(finished, "A", { step: 1, of: 2, prs: [PR_1] }, 50).entries;
+  assert.deepEqual(next.stepPaths, STEP_PATHS, "the next step is queued with every step's paths, and reads its own from them");
+  assert.deepEqual(queueNextStep(mergedPartial("step 1 of 2"), "A", { step: 1, of: 2, prs: [PR_1] }, 50).entries[0].stepPaths, undefined, "a plan with none carries none");
+  const asked = finish(markRunning(markStarting({ ...emptyQueue(1), entries: [next] }, "A", 51), "A", "w1", "w1:p1"), "A", { kind: "draft-pr", prs: [{ repo: "agent-org", url: PR_2 }], partial: "step 2 of 2" }, 70);
+  const withSession = { ...asked, entries: [{ ...asked.entries[0], session: "s-2" }] };
+  assert.deepEqual(approve(withSession, "A", 80).entries[0].stepPaths, STEP_PATHS, "a review round carries them");
+  assert.deepEqual(talk(withSession, "A", 90).entries[0].stepPaths, STEP_PATHS, "a talk session carries them");
+  const reviewing = { ...withSession, entries: [{ ...approve(withSession, "A", 80).entries[0], phase: "finished" as const, outcome: { kind: "crashed", reason: "boom" } as Outcome }] };
+  assert.deepEqual(retry(reviewing, "A", 100).entries[0].stepPaths, STEP_PATHS, "a retried review round keeps them");
 });
 
 test("A11-168: a queued next step keeps its steps through a review round, a talk session and a retry, so each knows which step it is", () => {
