@@ -1,10 +1,11 @@
 // @ts-check
 // module: the in-memory code host (A11-158) -- the reference that passes `runCodeHostConformance`, and what core's tests use in place of GitHub
 //
-// IT HOLDS PULL REQUESTS AND NOTHING ELSE, and answers `null` for one it was never given, as a host does that cannot read it. A test seeds a pull request (`seedPull`),
+// IT HOLDS PULL REQUESTS, AND ROW MODE'S ROWS (`code-host-rows.ts`), and answers `null` for one it was never given, as a host does that cannot read it. A test seeds a pull request (`seedPull`),
 // moves its head or its checks, and reads what the board asked of it (`calls`) and did to it (`armed`, `reviewRequests`, `retargets`). Every read is synchronous, as the contract's are.
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createFakeRows, emptyRowsWorld } from "./code-host-rows.ts";
 import type { ChangeFacts, ChangeRef, CodeHost, CodeHostEvent, CodeHostEventKind, CodeHostWrapper, MergedFindings, PullFeedback, Reply, RetargetRequest, ReviewClaimEntry, ReviewState, VerdictDoor, WrapperInputs } from "../contracts/code-host.ts";
 
 /** A pull request as the fake holds it. */
@@ -204,6 +205,7 @@ function wrapperOf(state: FakeWrapperState): CodeHostWrapper {
 const wants = ({ filter }: Subscriber, event: CodeHostEvent): boolean => (filter.kinds?.includes(event.kind) ?? true) && (filter.ref === undefined || filter.ref.id === event.ref.id);
 
 export function createFakeCodeHost(login: string | null = "fake-worker") {
+  const rowsWorld = emptyRowsWorld();
   const pulls: Pulls = new Map();
   const repositories = new Set<string>();
   const subscribers: Subscriber[] = [];
@@ -215,9 +217,12 @@ export function createFakeCodeHost(login: string | null = "fake-worker") {
   const checksAndClaims: FakeChecksAndClaims = { logs: new Map(), reruns: [], rerunRefusal: null, claims: new Map(), now: Date.now, claimReadRefusal: null, claimWriteRefusal: null, claimWrites: [] };
   const host: CodeHost = {
     ...readsOf(pulls, repositories, login, calls), ...actionsOf(pulls, subscribers, { armed, reviewRequests }), ...checksAndClaimsOf(checksAndClaims, calls),
-    sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR,
+    sweepRetargets: sweepOf(pulls, retargets), wrapper: wrapperOf(wrapperState), verdictDoor: FAKE_DOOR, rows: createFakeRows(rowsWorld),
+    repoViewArgs: (repo) => ["fake-repo-view", repo], repoCloneArgs: (remote, path) => ["fake-repo-clone", remote, path],
   };
   return Object.assign(host, {
+    /** The rows, pull requests and merge queue the fake's `rows` act on, for a test to seed and read (see {@link FakeRowsWorld}). */
+    rowsWorld,
     /** The checks' logs and reruns and the review claims the fake holds, for a test to seed and read (see {@link FakeChecksAndClaims}). */
     checksAndClaims,
     /** What the fake's wrapper refuses to write (null: nothing) and the reason a role's App cannot mint, by role. */

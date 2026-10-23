@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.5 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.7 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -7,8 +7,10 @@
 // imports nothing else of core: `ReviewState` is declared here, and `ticket-mode/reviewer-port.ts` re-exports it.
 // An operation joins this contract only when a sibling ticket moves a call that needs it (A11-160 moves the gate's).
 //
-// ROW MODE'S GITHUB OPERATIONS will join as an optional `rows` group of this contract, not as a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
+// ROW MODE'S GITHUB OPERATIONS are an optional `rows` group of this contract, not a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`); the group is declared in `code-host-rows.ts`.
 //
+// 1.7 (A11-160, step 4): `repoViewArgs` and `repoCloneArgs`, required (the arguments onboard and the conventions install run to read and clone a repository, which are not row mode's), and `rows`, an OPTIONAL group: row mode's GitHub operations, which `src/ticket-port/` held (the GitHub adapter of the ticket port and the reads and writes of rows, pull requests, checks, the merge queue and the
+// board). A code host without `rows` serves ticket mode only; a row-mode entry refuses to start without it, by name. A plugin of 1.6 is read as one that has none.
 // 1.6 (A11-175): `ReviewState.unrequiredRed`, OPTIONAL: the checks that failed and that the branch does not require. `settled` counts only the required checks, so a head with one of these red is settled, and the
 // reviewer is told which they are. A plugin of 1.5 is read as one that names none.
 // 1.5 (A11-160, step 3): `readCheckLog` and `rerunFailedChecks` (what the board does about a red check), `readReviewClaims` and `writeReviewClaim` (the commit status that says which instance is reviewing a head), and `verdictDoor`,
@@ -23,11 +25,12 @@
 // 1.1 (A11-160): `readPullFeedback` takes the accounts whose feedback is not the worker's to answer besides its own (the reviewer's), which ticket mode filtered out of GitHub's
 // answer before the read moved into the plugin. A plugin of 1.0 is read as one that is given none.
 import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort } from "../../ticket-port/port.ts";
+import type { CodeHostRows } from "./code-host-rows.ts";
 
-export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort };
+export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort, CodeHostRows };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.6";
+export const CODE_HOST_CONTRACT_VERSION = "1.7";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -167,6 +170,10 @@ export interface CodeHostWrapper {
  * A code host plugin. Every read answers `null` for "could not ask", never for "there is none": a caller that acts on `null` acts on a guess.
  */
 export interface CodeHost extends CodeHostPort {
+  /** The arguments that ask the host whether the account it acts as can read `repo` (contract 1.7: onboard and the conventions install run them as the person's own login). Not row mode's: every code host has them. */
+  repoViewArgs(repo: string): string[];
+  /** The arguments that clone `remote` to `path` (contract 1.7; see {@link CodeHost.repoViewArgs}). */
+  repoCloneArgs(remote: string, path: string): string[];
   /** The login of the account this host acts as, which is the board's workers' own, or null when it cannot be read. */
   readOwnLogin(): string | null;
   /**
@@ -213,4 +220,6 @@ export interface CodeHost extends CodeHostPort {
   readonly verdictDoor?: VerdictDoor;
   /** The routing wrapper of an org host (contract 1.3), or absent for a code host that installs none. */
   readonly wrapper?: CodeHostWrapper;
+  /** Row mode's GitHub operations (contract 1.7), or absent for a code host that serves ticket mode only. */
+  readonly rows?: CodeHostRows;
 }

@@ -8,6 +8,8 @@ import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
 import { join } from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpDir } from "../lib/tmp-fixture.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import type { PluginState } from "../ticket-mode/plugins.ts";
 import type { RunResult } from "./service.ts";
 
@@ -68,6 +70,17 @@ test("a fresh machine adds the marketplace from its repository and installs the 
     `installed ${PLUGIN} for every folder`,
     `${PLUGIN} loads for a worker's session`,
   ]);
+});
+
+test("A11-160: the install asks the code host for the arguments that read the repository, and a code host with no row mode serves it", () => {
+  const { calls, deps } = world();
+  try {
+    substituteCodeHost({ ...createFakeCodeHost(), rows: undefined });
+    installConventions({ plugin: PLUGIN, repo: REPO }, deps, deps.gh);
+    assert.equal(calls[0], `gh fake-repo-view ${REPO}`, "the arguments are the code host's own, and a host that serves ticket mode only has them");
+  } finally {
+    forgetActivation();
+  }
 });
 
 test("a second run changes nothing: the marketplace and the install are there, so no add and no install runs", () => {

@@ -1,51 +1,6 @@
-// a11ign#5038: what the merge guard's approval rule reads off a pull request -- its reviews, and the commits since each approval -- through an injected
-// `run` (`gh`, as the caller hands it in). This file names no `gh` and spawns nothing: `ticket-port.test.ts` (#484) holds the port to that, and the
-// spawn stays with whoever owns the runner.
-export type ApprovalFacts = {
-  /** Commits of the PR itself: in `head` and not in `main`. */
-  ownShas: string[];
-  /** Latest opinion of each reviewer, approvals only, each with the commit it was submitted on. */
-  approvals: { reviewer: string; commitId: string;
-    /** Commits in `commitId...head` (parents included), or null when `commitId` is not an ancestor of the head. */
-    sinceApproval: { sha: string; parents: string[]; }[] | null; }[];
-};
+// a11ign#5038: what the merge guard's approval rule reads off a pull request -- its reviews, and the commits since each approval.
+// The operation lives in the GitHub plugin (`plugins/github/rows/approval-reads.ts`, A11-160) behind the code host's `rows`; this file is core's delegate, so a caller's import does not change (`src/plugins/rows.ts`).
+import { delegates } from "../plugins/rows.ts";
+export type { ApprovalFacts } from "../plugins/contracts/code-host-rows.ts";
 
-type Review = { reviewer: string; state: string; commitId: string; submittedAt: string; };
-
-/** The state each reviewer's NEWEST opinionated review leaves them in: only APPROVED survives as an approval. */
-export function latestApprovals(reviews: Review[]): Review[] {
-  const opinions = reviews
-    .filter((r) => ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state))
-    .sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
-  const latest = new Map<string, Review>();
-  for (const review of opinions) latest.set(review.reviewer, review);
-  return [...latest.values()].filter((r) => r.state === "APPROVED");
-}
-
-
-/**
- * WHAT `approvalHeadReasons` NEEDS for pull request `number` of `repo`, or `null` for "could not ask": a refused `run` or an answer that does not
- * parse. `null` is never "covered", and never "no approvals".
- */
-export function approvalFactsOf(
-  { repo, number, head }: { repo: string; number: number; head: string; }, run: (args: string[]) => string,
-): ApprovalFacts | null {
-  try {
-    const lines = (out: string) => out.split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    const reviews: Review[] = lines(run(["api", `repos/${repo}/pulls/${number}/reviews`, "--paginate", "--jq",
-      ".[] | {reviewer: .user.login, state, commitId: .commit_id, submittedAt: .submitted_at}"]));
-    const commitsOf = (range: string) => lines(run(["api", `repos/${repo}/compare/${range}`, "--paginate",
-      "--jq", "{status, commits: [.commits[] | {sha, parents: [.parents[].sha]}]}"]));
-    const ownShas = commitsOf(`main...${head}`).flatMap((page) => page.commits.map((c: { sha: string; }) => c.sha));
-    const approvals = latestApprovals(reviews).map((review) => {
-      const pages = commitsOf(`${review.commitId}...${head}`);
-      const ancestor = ["ahead", "identical"].includes(pages[0]?.status);
-      return { reviewer: review.reviewer, commitId: review.commitId,
-        sinceApproval: ancestor ? pages.flatMap((page) => page.commits) : null };
-    });
-    return { ownShas, approvals };
-  } catch (error) {
-    void error; // an unread review list is "cannot say", which the gate reports as CANNOT_ASK
-    return null;
-  }
-}
+export const { latestApprovals, approvalFactsOf } = delegates("latestApprovals", "approvalFactsOf");

@@ -8,10 +8,6 @@
 // an accessor answers null for one that is "none": no enabled plugin.
 //
 // MEMOIZED PER PROCESS: the second call returns the first's result, whatever it is given. A test calls `forgetActivation`.
-import { spawnSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { PROVIDER_BLOCKS, type ProviderBlock } from "./concerns.ts";
 import { isActive, type Providers } from "../ticket-mode/providers.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
@@ -21,14 +17,14 @@ import type { Publisher } from "./contracts/publisher.ts";
 import type { Reviewer } from "./contracts/reviewer.ts";
 import type { TicketSource } from "./contracts/tracker.ts";
 import { type ImportModule, loadDefault, loadEnabled } from "./loader.ts";
-import type { Catalog, CodeHostPolicy, ExecOptions, ExecResult, HostPlaceReading, LoadedPlugin, PluginDeps, ProbeRequest, ReviewerHelpers } from "./manifest.ts";
-import { messagingHelpers } from "../messaging/plugin-helpers.ts";
-import { corePolicy } from "./policy.ts";
-import { publishingHelpers } from "./publishing-helpers.ts";
+import { activatedHost, forgetSlot, lightPluginDeps, PluginActivationRefusal, setActivated, substituteHost, substitutedHost } from "./code-host-slot.ts";
+import type { Catalog, CodeHostPolicy, LoadedPlugin, PluginDeps, ReviewerHelpers } from "./manifest.ts";
 import { gateHelpers } from "./reviewing-gate.ts";
 
-/** A plugin that cannot run the host, or a concern with nothing to run it: the start is refused with the reason, naming the concern and the plugin. */
-export class PluginActivationRefusal extends Error {}
+export { coreRowsHelpers, loadedCodeHost } from "./code-host-slot.ts";
+export { realExec, realMode, realPlace, realProbe } from "./real-seams.ts";
+
+export { PluginActivationRefusal };
 
 /** The plugins the host enabled, loaded: ask for a concern's implementation. */
 export type Active = Readonly<{
@@ -103,22 +99,17 @@ export async function loadActive(providers: Providers, catalog: Catalog, deps: P
 }
 
 let activation: Promise<Active> | null = null;
-/** What the activation answered, once it has: the synchronous accessors read it. */
-let activated: Active | null = null;
-/** A code host a test put in place of the activated one. */
-let substitute: CodeHost | null = null;
 
 /** {@link loadActive}, once per process. `blocks` narrows what is built to some blocks (`ticket:review` builds the code host alone). */
 export function activatePlugins(providers: Providers, catalog: Catalog, deps: PluginDeps, importModule?: ImportModule, blocks?: readonly ProviderBlock[]): Promise<Active> {
-  activation ??= loadActive(providers, catalog, deps, importModule, blocks).then((active) => (activated = active));
+  activation ??= loadActive(providers, catalog, deps, importModule, blocks).then((active) => { setActivated(active); return active; });
   return activation;
 }
 
 /** Forgets the activation, and any code host a test substituted, so a test starts from none. */
 export function forgetActivation(): void {
   activation = null;
-  activated = null;
-  substitute = null;
+  forgetSlot();
 }
 
 /**
@@ -127,65 +118,17 @@ export function forgetActivation(): void {
  * and REFUSES by name when nothing was activated, so a caller that forgot is told and never silently given a default.
  */
 export function activeCodeHost(): CodeHost {
+  const substitute = substitutedHost();
   if (substitute !== null) return substitute;
+  const activated = activatedHost();
   if (activated === null) throw new PluginActivationRefusal("no code host is active in this process: its entry point activates the plugins before it asks (agent-org plugin list shows the code host)");
   return activated.codeHost();
 }
 
 /** Puts `host` where {@link activeCodeHost} answers it, for a test; `null` takes it away. {@link forgetActivation} takes it away too. */
 export function substituteCodeHost(host: CodeHost | null): void {
-  substitute = host;
+  substituteHost(host);
 }
-
-/** How long a program may run when its caller names no limit: a Keychain prompt a person is reading, or a marketplace add, takes minutes. */
-const DEFAULT_EXEC_MS = 600_000;
-
-/** The most a program may print: the GitHub CLI's listings are large, and the default of one megabyte would cut a long one off as a failure. */
-const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
-
-/**
- * Runs `file` for real: the program's exit status (null when it could not start, with the reason in stderr) and what it printed. `inherit` gives it this process's terminal, and `env` is
- * laid over this process's environment for the run.
- */
-export function realExec(file: string, args: readonly string[], options: ExecOptions = {}): ExecResult {
-  const timeout = options.timeoutMs ?? DEFAULT_EXEC_MS;
-  const env = { ...process.env, ...options.env };
-  const result = options.inherit === true
-    ? spawnSync(file, [...args], { stdio: "inherit", encoding: "utf8", env })
-    : spawnSync(file, [...args], { encoding: "utf8", timeout, env, maxBuffer: EXEC_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error !== undefined) return { status: null, stdout: "", stderr: result.error.message };
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
-}
-
-/** A file's permission bits, or null when it cannot be read. */
-export function realMode(path: string): number | null {
-  try {
-    return statSync(path).mode & 0o777;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * GETs `/` of `host:port` for real: the status, or null when nothing answered within the time (a refused connection, a failed handshake, a timeout). `servername` and `hostHeader` let a
- * plugin reach a machine by its address and still name it, as a browser does by its name.
- */
-export function realProbe({ host, port, tls, servername, hostHeader, timeoutMs }: ProbeRequest): Promise<number | null> {
-  return new Promise((done) => {
-    const options = { host, port, path: "/", method: "GET", timeout: timeoutMs, ...(servername === undefined ? {} : { servername }), ...(hostHeader === undefined ? {} : { headers: { Host: hostHeader } }) };
-    const call = (tls ? httpsRequest : httpRequest)(options, (response) => {
-      response.resume();
-      done(response.statusCode ?? null);
-    });
-    call.on("timeout", () => call.destroy());
-    call.on("error", () => done(null));
-    call.end();
-  });
-}
-
-/** Where this machine's host file says it keeps what a code host's wrapper is rendered from: read when asked, so the host file's reader is imported only by a process that asks (doctor's rows). */
-export const realPlace = (): Promise<HostPlaceReading> => import("./host-place.ts").then(({ readHostPlace }) => readHostPlace())
-  .catch((cause: unknown): HostPlaceReading => ({ kind: "unreadable", reason: String((cause as Error)?.message ?? cause).split("\n")[0] }));
 
 /**
  * The deps core gives a plugin on this machine: the real `fetch`, programs and files. `pick` is the board's `tickets.pick`, `clones` the host's checkouts, `review` how a reviewer
@@ -193,6 +136,5 @@ export const realPlace = (): Promise<HostPlaceReading> => import("./host-place.t
  * (a process that is not a board gives none, and a reviewer that asks for them is refused by name).
  */
 export function realPluginDeps({ env, stateDir, pick, clones = {}, review, reviewing }: Readonly<{ env: Readonly<Record<string, string | undefined>>; stateDir: string; pick: PickScope; clones?: Readonly<Record<string, string>>; review?: CodeHostPolicy["review"]; reviewing?: ReviewerHelpers }>): PluginDeps {
-  return { env, stateDir, pick, clones, policy: corePolicy(review), log: (line) => process.stderr.write(`${line}\n`), fetch: (input, init) => fetch(input, init), exec: realExec, readFile: (path) => readFileSync(path, "utf8"), mode: realMode, probe: realProbe, messaging: messagingHelpers(),
-    publishing: publishingHelpers(), reviewing: reviewing ?? gateHelpers(), place: realPlace };
+  return { ...lightPluginDeps({ env, stateDir, pick, clones, ...(review === undefined ? {} : { review }) }), reviewing: reviewing ?? gateHelpers() };
 }

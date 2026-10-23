@@ -1,10 +1,11 @@
 // @ts-check
-// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim and the verdict door) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
+// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim, the verdict door and the optional `rows`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
 //
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
 // (`repository`), a pull request address it holds nothing for (`missing`), and the login the host acts as (`self`). A code host is synchronous, as every reader of it is.
 import type { ChangeRef, CodeHost, WrapperInputs } from "../contracts/code-host.ts";
+import type { CodeHostRows } from "../contracts/code-host-rows.ts";
 import { type Conditional, type ConformanceResult, expect, hasFunctions, isObject, isString, runChecks } from "./suite.ts";
 
 /**
@@ -20,13 +21,27 @@ export type CodeHostProbe = Readonly<{
 }>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
-const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
+/** The operations of the optional `rows` group (contract 1.7), as a function each; the other members are values. */
+const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
+  "boardFiledRow", "briefChairmanOnPull", "headOfChange", "checkRunsOfHead", "workflowRunsOf", "jobsOfRun", "failedLogOfRun", "stateOfRow", "redRunOfHead", "rerunFailedJobsOf", "closeRowWithComment", "commentsSince", "conditionalGetArgs",
+  "pullViewArgs", "pullTextOf", "branchRefTextOf", "addedFilesTextOf", "fileAtTextOf", "defaultBranchFileTextOf", "commentOnIssue", "openIncidentsOf", "readOpenPullHeads", "openPullBodiesOf", "outsideArmListArgs", "readyPullRequest",
+  "ensureTriageLabel", "isIssueOnBoard", "boardItemOf", "pullRequestFieldsOf", "queueEntriesOf", "mergeGroupRunCountOf", "dequeuePullRequestOf", "jobLogOf", "closedIncidentsOf", "createIncident", "closeIncident",
+  "forgetRefusedReads", "isRowsByLabelRead", "readUnlessRefused", "readRowsByLabel", "readClaimedRows", "sincePageArgs", "isSinceRead", "parsePage", "foldPage", "readRowsSince", "asListJson", "readMergedPullRequests",
+  "testsFirstReadsOf"] as const satisfies readonly (keyof CodeHostRows)[];
+
+const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
 
 const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
   "readOwnLogin names the account or answers null": ({ host }) => {
     const login = host.readOwnLogin();
     expect(login === null || (isString(login) && login !== ""), "readOwnLogin() must be a login, or null when it cannot be read");
+  },
+  "repoViewArgs and repoCloneArgs name the repository they are asked about": ({ host }) => {
+    const view = host.repoViewArgs("owner/repo");
+    const clone = host.repoCloneArgs("owner/repo", "/work/repo");
+    expect(Array.isArray(view) && view.every(isString) && view.includes("owner/repo"), "repoViewArgs must be a list of arguments that names the repository");
+    expect(Array.isArray(clone) && clone.every(isString) && clone.includes("owner/repo") && clone.includes("/work/repo"), "repoCloneArgs must be a list of arguments that names the remote and the path");
   },
   "readPullFeedback reads a pull request": ({ host, probe }) => {
     const feedback = host.readPullFeedback(probe.pull, probe.self);
@@ -109,7 +124,70 @@ const withClaim = (reason: string, run: (subject: Subject & { claim: NonNullable
   applies: ({ probe }) => probe.claim !== undefined, reason: `the probe names no head to claim, so ${reason}`, run: (subject) => run({ ...subject, claim: subject.probe.claim! }),
 });
 
+/** A `run` the host refuses: every call throws, as `gh` does for a call it cannot make. */
+const refused = (): string => {
+  throw new Error("HTTP 502: the host refused the call");
+};
+
+/** Whether `call` throws: a read that could not be made must not answer an empty list, and a write that could not be made must not read as done. */
+function throws(call: () => unknown): boolean {
+  try {
+    call();
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Rows whose operations act on the `run` their caller hands them (`acts: "through-run"`): only those have a refused `run` to answer. */
+const withRunRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
+  applies: ({ host }) => host.rows?.acts === "through-run", reason: `the code host has no rows that act through the caller's run (contract 1.7), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
+});
+
+const withRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
+  applies: ({ host }) => host.rows !== undefined, reason: `the code host has no rows, which are optional (contract 1.7), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
+});
+
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
+  "the rows are the operations row mode asks of the code host": withRows("row mode's operations are not asked", ({ rows }) => {
+    expect(hasFunctions(rows, ROWS_OPERATIONS), `rows is an object with ${ROWS_OPERATIONS.join(", ")} functions`);
+    expect(rows.acts === "through-run" || rows.acts === "on-its-own-state", "rows.acts must be through-run or on-its-own-state");
+    expect(isString(rows.tracker) && rows.tracker !== "" && isString(rows.openItemsQuery) && rows.openItemsQuery !== "", "rows.tracker and rows.openItemsQuery must be text");
+    expect(Number.isInteger(rows.sincePageSize) && rows.sincePageSize > 0 && Number.isInteger(rows.projectItemsPage) && rows.projectItemsPage > 0, "rows.sincePageSize and rows.projectItemsPage must be whole numbers above 0");
+    expect(Array.isArray(rows.corePoolProbe) && rows.corePoolProbe.every(isString), "rows.corePoolProbe must be a list of arguments");
+  }),
+  "a read the rows could not make answers null or throws, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository } = probe;
+    expect(rows.openIncidentsOf(repository, refused) === null && rows.closedIncidentsOf(repository, refused) === null && rows.openPullBodiesOf(repository, refused) === null, "a list of incidents or pull requests that could not be read must be null: null is never 'none'");
+    expect(rows.commentsSince({ repo: repository, since: 0, run: () => null }) === null, "comments that could not be read must be null: null is never 'no comment'");
+    expect(rows.approvalFactsOf({ repo: repository, number: 1, head: "a".repeat(40) }, refused) === null && rows.pullRequestFieldsOf({ repo: repository, number: 1, fields: "number", run: refused }) === null, "approval facts and a pull request's fields that could not be read must be null");
+    const heads = rows.readOpenPullHeads(repository, refused, 100);
+    expect(!heads.read && isString(heads.reason) && heads.reason !== "", "open pull request heads that could not be read must say why, and never be an empty list");
+    const adapter = rows.ticketAdapter({ run: refused, scope: repository });
+    expect(adapter.readItem({ tracker: rows.tracker, scope: repository, id: 1 }) === null && adapter.readOpenItems() === null, "an item or the open items that could not be read must be null: null is never an empty board");
+    expect(throws(() => rows.readRowsByLabel({ label: "x", state: "OPEN", select: "number", run: refused })) && throws(() => rows.readClaimedRows({ run: refused })), "rows by label that could not be read must throw: never nobody holds a row");
+    expect(throws(() => rows.readRowsSince({ ask: { kind: "issues", states: ["OPEN"], orderBy: "CREATED_AT", repo: repository, select: "number", newest: 1 }, run: refused })), "a window of rows that could not be read must throw: never an empty window");
+    expect(throws(() => rows.queueEntriesOf({ repo: repository, branch: "main", run: refused })) && throws(() => rows.checkRunsOfHead(repository, "a".repeat(40), refused)), "queue entries and check runs that could not be read must throw");
+  }),
+  "a write the rows could not make throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository } = probe;
+    expect(throws(() => rows.closeRowWithComment({ row: 1, repo: repository, comment: "done", run: refused })) && throws(() => rows.postRowComment({ repo: repository, row: 1, body: "b", run: refused }))
+      && throws(() => rows.commentOnIssue({ repo: repository, issue: 1, body: "b", run: refused })) && throws(() => rows.editComment({ repo: repository, id: 1, body: "b", run: refused })), "a comment or a close that was refused must throw");
+    expect(throws(() => rows.disableAutoMergeOf({ number: "1", repo: repository, run: refused })) && throws(() => rows.readyPullRequest({ number: 1, repo: repository, run: refused })) && throws(() => rows.dequeuePullRequestOf({ pullId: "x", run: refused })), "a merge or a readiness change that was refused must throw");
+    expect(throws(() => rows.createRow({ repo: repository, title: "t", labels: [], body: "b", run: () => "created, and no address printed" })), "a row filed that printed no address must throw: a row filed and not numbered would be filed again");
+  }),
+  "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect": withRows("no helper is asked", ({ rows }) => {
+    const reviews = [
+      { reviewer: "a", state: "APPROVED", commitId: "1", submittedAt: "2026-10-01T00:00:00Z" }, { reviewer: "a", state: "CHANGES_REQUESTED", commitId: "2", submittedAt: "2026-10-02T00:00:00Z" },
+      { reviewer: "b", state: "COMMENTED", commitId: "3", submittedAt: "2026-10-03T00:00:00Z" }, { reviewer: "b", state: "APPROVED", commitId: "4", submittedAt: "2026-10-04T00:00:00Z" },
+    ];
+    expect(JSON.stringify(rows.latestApprovals(reviews).map(({ reviewer }) => reviewer)) === '["b"]', "an approval stands only until its reviewer's newest opinion changes it: a is not an approver after asking for changes");
+    const ask = { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo: "o/r", select: "number", newest: 1 } as const;
+    expect(rows.isSinceRead(rows.sincePageArgs(ask, null)) && !rows.isRowsByLabelRead(rows.sincePageArgs(ask, null)), "a window page is recognised as a window page, and not as a read by label");
+    const listed = rows.asListJson({ labels: { nodes: [{ name: "x" }] }, number: 1 });
+    expect(Array.isArray(listed.labels) && listed.number === 1, "asListJson must turn a connection into its list and leave a scalar alone");
+    expect(throws(() => rows.parsePage("{}", ask)), "a page that is not a connection must throw: 'could not read' is never an empty page");
+  }),
   "readCheckLog reads the log behind a failing check": withCheck("no check's log is read", ({ host, check }) => {
     const log = host.readCheckLog(check.detailsUrl);
     expect(isString(log) && log.includes(check.log), `readCheckLog(${check.detailsUrl}) must read the log the host holds`);

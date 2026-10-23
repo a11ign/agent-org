@@ -59,7 +59,7 @@ import { pluginCopiesOf } from "../ticket-mode/pool-pin.ts";
 import { runVersions, type PluginCopy, type RunVersion } from "../ticket-mode/queue/queue-pins.ts";
 import { DEFAULT_TERMINAL_PORT, loopbackPort, PAIRING_STEPS } from "./terminal.ts";
 import { BUILD_LABELS, buildStarts, chromiumReport, PLAYWRIGHT_CLI, type ChromiumReport } from "./chromium.ts";
-import { realExec, realPlace, realProbe } from "../plugins/active.ts";
+import { coreRowsHelpers, realExec, realPlace, realProbe } from "../plugins/active.ts";
 import { corePolicy, reviewClaimIdentities } from "../plugins/policy.ts";
 
 export const MIN_NODE_MAJOR = 24;
@@ -332,7 +332,7 @@ function hostText(deps: DoctorDeps): string | null {
 async function pluginHealthOf(settings: TicketSettings | null, deps: DoctorDeps, place: HostPlaceReading): Promise<PluginHealth> {
   const { catalog, load, messaging, messagingChecks } = deps.agentOrgPlugins;
   const pluginDeps: PluginDeps = { env: deps.env, stateDir: settings?.stateDir ?? "", log: () => undefined, fetch: (input, init) => fetch(input, init), exec: deps.exec, readFile: deps.readFile, mode: deps.mode, probe: deps.probe, messaging: messagingHelpers(),
-    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(undefined, settings === null ? [] : reviewClaimIdentities(settings)), publishing: publishingHelpers(), reviewing: deps.reviewing, place: () => Promise.resolve(place) };
+    pick: settings?.pick ?? "assigned", clones: settings?.clones ?? {}, policy: corePolicy(undefined, settings === null ? [] : reviewClaimIdentities(settings)), publishing: publishingHelpers(), reviewing: deps.reviewing, rows: coreRowsHelpers, place: () => Promise.resolve(place) };
   return readPluginHealth({ catalog: catalog(), providers: settings?.providers ?? providersOfText(hostText(deps)), blocks: settings === null ? ["codeHost"] : PROVIDER_BLOCKS, deps: pluginDeps, load,
     version: toolVersionOf(), messaging: { state: messaging, checks: messagingChecks } });
 }

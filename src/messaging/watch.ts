@@ -71,7 +71,7 @@ import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { readAgents } from "../herdr-agents.ts";
 import { completionPath } from "../lib/tick-completion.ts";
 import { isBrokenRed } from "../red-pr.ts";
-import { asListJson, foldPage, parsePage, sincePageArgs, SINCE_PAGE_SIZE, type SinceRead } from "../ticket-port/rows-since.ts"; // #5076: the label and merged lists are connections, never a search
+import { asListJson, foldPage, parsePage, sincePageArgs, sincePageSize, type SinceRead } from "../ticket-port/rows-since.ts"; // #5076: the label and merged lists are connections, never a search
 
 const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 60_000;
@@ -180,7 +180,7 @@ export function createGhReader({ run = runGh }: { run?: (argv: readonly string[]
       // A connection cannot filter by `mergedAt`, so the merged pull requests are read newest-UPDATED first back to `since` (a merge is an update, so none is missed) and
       // kept by their own `mergedAt`: a count of "merged in 24 h" must not include a merge from last week. A window of more rows than `limit` fills two pages past it and
       // THROWS, which the summary reads as unread, as it reads a list at its limit.
-      const maxPages = Math.ceil(limit / SINCE_PAGE_SIZE) + 1;
+      const maxPages = Math.ceil(limit / sincePageSize()) + 1;
       const pulls = await connection({ kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo, select: "number mergedAt", since: new Date(sinceMs).toISOString(), maxPages });
       return pulls.filter((pull) => Date.parse(pull.mergedAt) >= sinceMs);
     },

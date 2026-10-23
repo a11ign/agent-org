@@ -23,7 +23,7 @@ import { eventsForRow, readStore, repriceEvents } from "./store.ts";
 import { defaultStore } from "./otel-receiver.ts";
 import { HAIKU_MODEL_ID, HAIKU_TIER_LABEL } from "../worker-profile.ts";
 import { REPO } from "../project-identity.ts";
-import { asListJson, readRowsSince, SINCE_PAGE_SIZE, type SinceRead } from "../ticket-port/rows-since.ts";
+import { asListJson, readRowsSince, sincePageSize, type SinceRead } from "../ticket-port/rows-since.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 
 export const MIN_RATE_ROWS = 8;
@@ -281,7 +281,7 @@ const toSecond = (ms: number): number => Math.floor(ms / MS_PER_SECOND) * MS_PER
  */
 function issuesClosedBetween(from: number, to: number, gh: GhRunner): GhIssue[] {
   const ask: SinceRead = { kind: "issues", states: ["CLOSED"], orderBy: "UPDATED_AT", repo: REPO, select: CLOSED_ROW_SELECT, since: new Date(toSecond(from)).toISOString(),
-    maxPages: CLOSED_ROWS_LIMIT / SINCE_PAGE_SIZE };
+    maxPages: CLOSED_ROWS_LIMIT / sincePageSize() };
   return readRowsSince({ ask, run: gh }).map(asListJson).filter((row) => {
     const at = Date.parse(String(row.closedAt));
     return at >= toSecond(from) && at <= toSecond(to);

@@ -169,7 +169,8 @@ function layOutTool(project: string): void {
   const tool = join(project, "packages/agent-org");
   rmSync(tool, { recursive: true, force: true });
   cpSync(join(TOOL_ROOT, "src"), join(tool, "src"), { recursive: true, filter: (path) => !path.endsWith(SELF) });
-  for (const entry of ["host", ".github", "CHANGELOG.md", "package.json", "LICENSE", "README.md"]) cpSync(join(TOOL_ROOT, entry), join(tool, entry), { recursive: true });
+  // `plugins/github`: row mode's GitHub operations are the code host plugin's, which a program loads from the tool's checkout when it runs (A11-160).
+  for (const entry of ["host", ".github", "plugins/github", "CHANGELOG.md", "package.json", "LICENSE", "README.md"]) cpSync(join(TOOL_ROOT, entry), join(tool, entry), { recursive: true });
   const siblings = join(project, "packages/lab/src/packaging");
   if (existsSync(siblings)) cpSync(siblings, join(tool, "src/packaging"), { recursive: true, force: false, filter: (path) => !isTest(path) });
   keepOldLeafNames(tool);

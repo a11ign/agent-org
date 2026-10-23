@@ -1,10 +1,7 @@
-// module: the argument lists onboard and the conventions plugin's install give the GitHub CLI for one repository (A11-145)
-//
-// NO IMPORTS, on purpose: the install commands load this, and they must not load the project declaration that the github adapter reads (a host with no primary
-// would refuse). The lists name no program: the caller runs them through its own `gh` seam, so this file spawns and imports nothing from GitHub.
+// A11-145: the argument lists onboard and the conventions plugin's install give the GitHub CLI for one repository.
+// They are the code host's own (`repoViewArgs`, `repoCloneArgs`, contract 1.7), and not row mode's: a code host with no `rows` has them, and these two install paths run on a host that needs none. This file is core's delegate, so a
+// caller's import does not change; it asks for the code host without asking for `rows`, and so loads nothing of row mode.
+import { loadedCodeHost } from "../plugins/code-host-slot.ts";
 
-/** The arguments of `gh repo view <repo>`, which the person's own login runs to read a repository (A11-145): it exits 0 when the login can read it. */
-export const repoViewArgs = (repo: string): string[] => ["repo", "view", repo];
-
-/** The arguments of `gh repo clone <remote> <path>`, run as the person's own login when a profile's checkout is missing (A11-145). */
-export const repoCloneArgs = (remote: string, path: string): string[] => ["repo", "clone", remote, path];
+export const repoViewArgs = (repo: string): string[] => loadedCodeHost().repoViewArgs(repo);
+export const repoCloneArgs = (remote: string, path: string): string[] => loadedCodeHost().repoCloneArgs(remote, path);

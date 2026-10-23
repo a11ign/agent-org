@@ -36,7 +36,7 @@ import { HOME_CHECKOUT } from "./project-config.ts";
 // A LEAF module with no imports of its own (#804), so this cannot form a cycle -- the same property that
 // let `close-rows-for-merged-pr.ts` import it under the no-`pnpm install` constraint.
 import { READY_LABEL } from "./claim-labels.ts";
-import { asListJson, readRowsSince, SINCE_PAGE_SIZE } from "./ticket-port/rows-since.ts"; // #5076: the PR windows are connections, never a search
+import { asListJson, readRowsSince, sincePageSize } from "./ticket-port/rows-since.ts"; // #5076: the PR windows are connections, never a search
 // The gate predicates live in `board-gates.ts` (#429), a module with no process in it, so a test of the
 // selection runs where a test of this file cannot. Re-exported: no importer of this file changes.
 import { latestVerdictGate } from "./board-gates.ts";
@@ -503,7 +503,7 @@ export function daysUntil(iso: string) {
 
 /** Bounded PR-listing refusal, on `issues()`'s own rule: a window of more rows than this is REFUSED, because
  * reading a partial listing as the whole window is worse than refusing. (#5076: a count of pull requests, read as
- * pages of {@link SINCE_PAGE_SIZE} by a connection, so this is a whole number of pages.)
+ * pages of {@link sincePageSize} by a connection, so this is a whole number of pages.)
  */
 export const PR_WINDOW_LIMIT = 500;
 
@@ -527,7 +527,7 @@ function prsBy(qualifier: "created" | "merged" | "closed", since: string, run: (
   const field = { created: "createdAt", merged: "mergedAt", closed: "closedAt" } as const;
   const from = Date.parse(since);
   return readRowsSince({ run, ask: { kind: "pullRequests", states: states[qualifier], repo: REPO, select, since,
-    orderBy: qualifier === "created" ? "CREATED_AT" : "UPDATED_AT", maxPages: PR_WINDOW_LIMIT / SINCE_PAGE_SIZE } })
+    orderBy: qualifier === "created" ? "CREATED_AT" : "UPDATED_AT", maxPages: PR_WINDOW_LIMIT / sincePageSize() } })
     .filter((pr) => Date.parse(pr[field[qualifier]]) >= from).map(asListJson);
 }
 

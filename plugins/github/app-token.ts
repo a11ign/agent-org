@@ -277,6 +277,8 @@ export async function permissionsMain(argv: string[], env: Record<string, string
   }
 }
 
+// NO TOP-LEVEL `await`: a module graph that has one cannot be `require`d, and this file is in the code host plugin's, which core loads synchronously for row mode (`src/plugins/activate-host-sync.ts`).
+// `main` answers an exit code and never rejects, so the code is set when it settles.
 if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.argv[1]) : "").href) {
-  process.exitCode = await main(process.argv.slice(2), process.env);
+  void main(process.argv.slice(2), process.env).then((code) => { process.exitCode = code; });
 }
