@@ -12,7 +12,7 @@ import { POOL_LOW_FRACTION, SIGNALS } from "../org-health/thresholds.ts";
 import { poolLowReading } from "../org-health/hold-and-rerun-readings.ts";
 import { orgHealthReadings, orgHealthOrders } from "../org-health/fleet-build-readings.ts";
 import { poolFromRateLimitField } from "../api-pool.ts";
-import { OPEN_ITEMS_QUERY as ROW_OFF_BOARD_QUERY } from "../ticket-port/github-adapter.ts";
+import { openItemsQuery } from "../ticket-port/github-adapter.ts";
 import { readRowsOffBoard } from "../work-gate/causes/rows-off-board.ts";
 import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { orgHealthNow } from "../work-gate/org-health.ts";
@@ -62,8 +62,8 @@ test("#3448 (3): the pool comes from a real answer's `rateLimit` field, which th
   assert.equal(poolFromRateLimitField({ rateLimit: { limit: 5000, remaining: 7, resetAt: RESET } })?.account, null, "an answer that names nobody is not given a name");
   assert.equal(poolFromRateLimitField({ viewer: { login: "x" } }), null, "no rateLimit: could not ask, not empty");
   assert.equal(poolFromRateLimitField({ rateLimit: { limit: "5000", remaining: "0" } }), null, "a malformed one is not read as zero");
-  assert.match(ROW_OFF_BOARD_QUERY, /rateLimit \{ limit remaining resetAt \}/);
-  assert.match(ROW_OFF_BOARD_QUERY, /viewer \{ login \}/);
+  assert.match(openItemsQuery(), /rateLimit \{ limit remaining resetAt \}/);
+  assert.match(openItemsQuery(), /viewer \{ login \}/);
 });
 
 test("#3448 (3): `readRowsOffBoard` leaves the pool it saw, once, and a refused read leaves none", () => {

@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
-import { CORE_POOL_PROBE } from "./ticket-port/core-pool-probe.ts";
+import { corePoolProbe } from "./ticket-port/core-pool-probe.ts";
 
 /**
  * `sessionId` is the 9th field, the id of the session that made the call (`plugins/github/wrapper/gh`, #3589); a line from before it has 8 fields and NO `sessionId` key, so it reads to the same entry it always did.
@@ -671,7 +671,7 @@ export const spawnQueued: RunQueued = (call, argv) => {
  */
 export function poolLeftOfQueued(run: RunQueued): PoolLeftOf {
   return (call, stderr) => {
-    const probe = [...(/graphql/i.test(stderr) ? GRAPHQL_POOL_PROBE : CORE_POOL_PROBE)];
+    const probe = [...(/graphql/i.test(stderr) ? GRAPHQL_POOL_PROBE : corePoolProbe())];
     return poolFromHeaders(probe, (args) => run(call, args).stdout ?? "")?.remaining ?? null;
   };
 }

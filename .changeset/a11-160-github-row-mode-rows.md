@@ -1,0 +1,5 @@
+---
+"agent-org": minor
+---
+
+Row mode's GitHub calls are now the GitHub plugin's (`plugins/github/rows/`), behind an optional `rows` group of code host contract 1.7: the GitHub adapter of the ticket port and the 24 files of reads and writes that `src/ticket-port/` held (rows by label and since a time, the merge queue, auto-merge, incidents, approvals, the board, comments, check runs, the pull request reads of the merge guard). Each operation moved unchanged and still takes the `run` its caller hands it, so the gate's timeout, memo and call census still apply; `src/ticket-port/<file>.ts` keeps a delegate with the old name and signature, so no caller changed. `src/ticket-port/` holds no `gh` call, and the call ratchet no longer exempts it. A program that reaches the rows with no activated code host loads the host file's by `require` (`activate-host-sync.ts`), and a code host with no `rows` is refused by name. `docs/gh-call-baseline.json` does not rise.

@@ -8,6 +8,7 @@ import { messagingHelpers } from "../../messaging/plugin-helpers.ts";
 import { corePolicy } from "../policy.ts";
 import { publishingHelpers } from "../publishing-helpers.ts";
 import { gateHelpers } from "../reviewing-gate.ts";
+import { rowsHelpers } from "../rows-helpers.ts";
 
 const NO_PROGRAM: ExecResult = { status: null, stdout: "", stderr: "no program is injected" };
 
@@ -20,7 +21,7 @@ export function fakePluginDeps(over: Partial<PluginDeps> = {}): PluginDeps {
     readFile: (path) => { throw new Error(`ENOENT: ${path}`); },
     mode: () => null,
     probe: () => Promise.resolve(null),
-    messaging: messagingHelpers(), publishing: publishingHelpers(), reviewing: gateHelpers(),
+    messaging: messagingHelpers(), publishing: publishingHelpers(), reviewing: gateHelpers(), rows: rowsHelpers,
     place: () => Promise.resolve({ kind: "no-project" }),
     ...over,
   };

@@ -9,7 +9,7 @@ the only place the repository runs `tailscale`), and `telegram` (messaging: the 
 | Plugin | Concern | What it is |
 | --- | --- | --- |
 | `linear` | tracker | Linear: where tickets are kept and read |
-| `github` | code host | GitHub: pull requests, reviews and checks (their logs and reruns), the review claim, the verdict door the reviewers post with (`reviewer/pr-review-verdict.sh` and its installer), and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up; contract 1.5) |
+| `github` | code host | GitHub: pull requests, reviews and checks (their logs and reruns), the review claim, the verdict door the reviewers post with (`reviewer/pr-review-verdict.sh` and its installer), and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up), and, for row mode, the optional `rows` group (`rows/`: the GitHub adapter of the ticket port and the reads and writes of rows, pull requests, checks, the merge queue and the board; contract 1.7) |
 | `local` | exposure | serves nothing: the board listens on `127.0.0.1`; refuses `serve` by name |
 | `tailscale` | exposure | `tailscale serve` for the page and the terminal, never Funnel; a path open to the internet for the event receiver (contract 1.1) |
 | `telegram` | messaging | Telegram: asks and announcements for the chairman, configured in `project.json`'s `messaging` key |
@@ -84,6 +84,10 @@ is used, and `refusal()` after `load()` says whether it can start here: the pool
 identities (`file`), why a write of it must be refused (`refusal`: the A11-84 rules that keep a wrapper naming no App off a host that declares one), what is wrong with an installed copy (`divergence`, `identityStale`), and whether a
 role's App can mint (`mintFailure`); core's `host:install`, `host:check`, the tick and the instance's start-up ask it, and write the file themselves. The plugin's doctor rows and onboard steps do the rest (`gh wrapper`, `wrapper roles`, `app token <role>`, the App's key). The programs the wrapper runs (`app-token.ts`, `author-flag.ts`)
 are run by their paths under the installed tool, never imported.
+
+**A code host's `rows`** (code host contract 1.7, optional) are row mode's GitHub operations, which `src/ticket-port/` held until A11-160 moved them (`docs/adr/0007-row-modes-github-operations-are-core-delegates-over-the-code-hosts-rows.md`). Each takes the `run` its caller hands it, so the caller's timeout, memo and call census still apply, and
+reads the project's vocabulary and board through `deps.rows`, which core hands over when an operation asks. A code host with none serves ticket mode only. Core loads the code host for them by `require`, which Node 24 allows on a module graph with no top-level `await`:
+a plugin of this kind keeps its graph free of one.
 
 A plugin may also bring a command: `src/commands.ts` can name its program by a path inside the plugin (`../plugins/github/stack-live-check-command.ts`).
 

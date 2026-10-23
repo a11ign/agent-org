@@ -18,6 +18,7 @@ import { readReplies } from "./replies.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
+import { createRows } from "./rows/index.ts";
 import { createWrapper } from "./wrapper.ts";
 
 /** The verdict door and the program that installs it, shipped beside this file. */
@@ -53,5 +54,6 @@ export function createCodeHost(deps: PluginDeps): CodeHost {
     armMerge: (ref) => notYet("arm a merge", ref),
     subscribe: () => () => undefined,
     wrapper: createWrapper(deps),
+    rows: createRows(deps.rows),
   };
 }

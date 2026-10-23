@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
 import { ghQueueTick, poolLeftOfQueued, QUEUE_DIR, readQueue, refusalKind, retryDue, spawnQueued } from "./gh-ledger.ts";
 import { GRAPHQL_POOL_PROBE } from "./api-pool.ts";
-import { CORE_POOL_PROBE } from "./ticket-port/core-pool-probe.ts";
+import { corePoolProbe } from "./ticket-port/core-pool-probe.ts";
 import { poolProbeAnswer as probeOf } from "./packaging/rows-by-label-fixtures.ts";
 import { forgetRefusedReads, readUnlessRefused } from "./ticket-port/rows-by-label.ts";
 
@@ -255,7 +255,7 @@ for (const [name, left, kind] of [
     queuedCall(dir);
     const probes: string[] = [];
     const run = (_call: unknown, argv: string[]) => {
-      if (argv.join(" ") !== CORE_POOL_PROBE.join(" ")) return { status: 1, stderr: INSTALLATION_REFUSAL };
+      if (argv.join(" ") !== corePoolProbe().join(" ")) return { status: 1, stderr: INSTALLATION_REFUSAL };
       probes.push(argv.join(" "));
       return { status: 0, stderr: "", stdout: probeOf(left) };
     };

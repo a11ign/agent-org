@@ -181,3 +181,9 @@ export function newestConclusion(runs: {
   const newest = newestRun(runs, name);
   return newest === null ? null : normaliseConclusion(newest.conclusion);
 }
+
+/** The roll-up check `gate` reports other jobs' results and names no cause of its own (A11-154). */
+const ROLL_UP_CHECK = /(^|[\s/])gate$/i;
+
+/** Whether a check is the roll-up `gate`, which reports other jobs' results and names no cause of its own (A11-154). PURE: ticket mode asks it of a red check (`ticket-mode/pool-checks.ts`). */
+export const isRollUpCheck = (name: string): boolean => ROLL_UP_CHECK.test(name);

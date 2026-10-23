@@ -21,7 +21,7 @@ import { underspecifiedReading, underspecifiedStops, type UnderspecifiedReading 
 import { commentsSince } from "../ticket-port/comments-since.ts";
 import { readRowsByLabel } from "../ticket-port/rows-by-label.ts";
 import { SHARED_FAILURE_LABEL } from "../ci-failure-class.ts";
-import { asListJson, readMergedPullRequests, readRowsSince, type SinceRead, SINCE_PAGE_SIZE, WindowCutShort } from "../ticket-port/rows-since.ts";
+import { asListJson, readMergedPullRequests, readRowsSince, type SinceRead, sincePageSize, WindowCutShort } from "../ticket-port/rows-since.ts";
 
 /** The cause this file feeds (`cause-declaration.ts` declares it), addressed to `ceo`. */
 export const RETRO_CAUSE = "org-retrospective";
@@ -102,7 +102,7 @@ export const MERGED_LIMIT_HIT = "limit-hit";
  */
 export function readMergedSince(repo: string, since: number, read: (args: string[]) => any = ghJson): any[] | null | typeof MERGED_LIMIT_HIT {
   try {
-    return readMergedPullRequests({ repo, select: "number createdAt", run: runThrough(read), window: { since: new Date(since).toISOString(), maxPages: MERGED_READ_LIMIT / SINCE_PAGE_SIZE } }) as any[];
+    return readMergedPullRequests({ repo, select: "number createdAt", run: runThrough(read), window: { since: new Date(since).toISOString(), maxPages: MERGED_READ_LIMIT / sincePageSize() } }) as any[];
   } catch (error) {
     return error instanceof WindowCutShort ? MERGED_LIMIT_HIT : null; // any other failure is `unknown`: a refused read, a payload that was not a connection
   }
@@ -464,7 +464,7 @@ function readMergedPrs({ repo, since, read, select, memory }: { repo: string; si
   memory.used.add(key);
   const mark = memory.marks[key];
   const marked = mark !== undefined && Number.isFinite(Date.parse(mark.updatedAt)) && Array.isArray(mark.rows);
-  const walk = (from: string) => readMergedUpdatedSince({ repo, select, run: runThrough(read), since: from, maxPages: LIST_LIMIT / SINCE_PAGE_SIZE }); // #5076: a connection read, not `--search merged:>=` (a GitHub SEARCH)
+  const walk = (from: string) => readMergedUpdatedSince({ repo, select, run: runThrough(read), since: from, maxPages: LIST_LIMIT / sincePageSize() }); // #5076: a connection read, not `--search merged:>=` (a GitHub SEARCH)
   try {
     if (marked && memory.walked.has(key)) return mark.rows.filter((row) => Date.parse(String(row.mergedAt)) >= since);
     let fresh: Record<string, unknown>[] | null = null;

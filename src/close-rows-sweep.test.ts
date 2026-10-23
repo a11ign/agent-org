@@ -146,7 +146,7 @@ const SELF = fileURLToPath(import.meta.url);
 /** A file that closes a row and is NOT driven by a merge, with the reason: nothing here has a build to verify. */
 const NOT_FROM_A_MERGE: Record<string, string> = {
   "wake/merge-queue-wait.ts": "closes a row whose question was ANSWERED (`answeredComment`), not one a pull request merged",
-  "ticket-port/close-row.ts": "the write behind `worker-state.ts`'s close of a `Claimed-nothing:` row on the worker's own reading (`done <row> --met`), which names each Done-when item and the comment holding it; no pull request merged",
+  "plugins/github/rows/close-row.ts": "the GitHub plugin's write (A11-160 moved it out of `src/ticket-port/`) behind `worker-state.ts`'s close of a `Claimed-nothing:` row on the worker's own reading (`done <row> --met`), which names each Done-when item and the comment holding it; no pull request merged",
 };
 const CLOSES_A_ROW = /\[\s*"issue",\s*"close"/;
 const CALLS_THE_VERIFY_ROW = /(?<!function )fileVerifyRowsFor\(/;
@@ -160,17 +160,16 @@ function sourceFiles(dir: URL): string[] {
 }
 
 test("8. every path that closes a row from a merge calls fileVerifyRowsFor (the positive control: both known paths are found first)", () => {
-  const root = new URL("./", import.meta.url);
-  const closers = sourceFiles(root).filter((path) => CLOSES_A_ROW.test(readFileSync(path, "utf8")));
-  const names = closers.map((path) => path.slice(fileURLToPath(root).length));
+  // The tool's source and the bundled plugins: the GitHub plugin holds the write that closes a row (A11-160), and a path there is a path like any other. Names are from the tool's root.
+  const roots = [new URL("./", import.meta.url), new URL("../plugins/", import.meta.url)];
+  const nameOf = (path: string): string => (path.startsWith(fileURLToPath(roots[1]!)) ? `plugins/${path.slice(fileURLToPath(roots[1]!).length)}` : path.slice(fileURLToPath(roots[0]!).length));
+  const closers = roots.flatMap((root) => sourceFiles(root)).filter((path) => CLOSES_A_ROW.test(readFileSync(path, "utf8")));
+  const names = closers.map(nameOf);
   for (const known of ["close-rows-for-merged-pr.ts", "close-rows-sweep.ts"]) {
     assert.ok(names.includes(known), `the walk found ${known}, so an emptiness result below is a result`);
   }
-  const unfiled = closers.filter((path) => {
-    const name = path.slice(fileURLToPath(root).length);
-    return !(name in NOT_FROM_A_MERGE) && !CALLS_THE_VERIFY_ROW.test(readFileSync(path, "utf8"));
-  });
-  assert.deepEqual(unfiled.map((path) => path.slice(fileURLToPath(root).length)), [],
+  const unfiled = closers.filter((path) => !(nameOf(path) in NOT_FROM_A_MERGE) && !CALLS_THE_VERIFY_ROW.test(readFileSync(path, "utf8")));
+  assert.deepEqual(unfiled.map(nameOf), [],
     "a file that closes a row from a merge must call fileVerifyRowsFor, or be named in NOT_FROM_A_MERGE with its reason");
   for (const name of Object.keys(NOT_FROM_A_MERGE)) assert.ok(names.includes(name), `${name} still closes a row, or its exemption is stale`);
 });

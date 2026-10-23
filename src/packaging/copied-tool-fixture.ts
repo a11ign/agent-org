@@ -7,7 +7,7 @@
  * So the tool's files land under `<copyRoot>/packages/agent-org/`, the project's under `<copyRoot>/`, and the copied tool is told the
  * copy is its project by a `host.json` of its own (`AGENT_ORG_HOST`), the one way it learns where a project is.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,6 +73,18 @@ function copyInto(target: string, source: string): void {
   copyFileSync(source, target);
 }
 
+/** The file that loads the code host's `rows` (A11-160): a program whose closure holds it reads the GitHub plugin from disk when it runs, so the copy must hold the plugin. */
+const LOADS_CODE_HOST_ROWS = join("src", "plugins", "rows.ts");
+
+/** Every non-test file under `directory`, as paths from `TOOL_ROOT`. */
+function pluginFilesUnder(directory: string): string[] {
+  return readdirSync(join(TOOL_ROOT, directory), { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return pluginFilesUnder(path);
+    return entry.name.endsWith(".test.ts") ? [] : [path];
+  });
+}
+
 /**
  * Copies `files` (absolute paths in this checkout) and the project's declaration under `copyRoot`.
  * @returns the copy of `entry`, and the environment that makes the copy its own project
@@ -80,6 +92,10 @@ function copyInto(target: string, source: string): void {
 export function copyToolAndProject(entry: string, files: Iterable<string>, copyRoot: string): { entry: string; env: Record<string, string> } {
   const copied = [...files];
   for (const file of copied) copyInto(join(copyRoot, TOOL_DIR, relative(TOOL_ROOT, file)), file);
+  // The code host is a plugin the program loads when it runs, not an import the closure can see: the GitHub plugin (which declares no dependency and imports core's types only) goes with a program that asks for its rows.
+  if (copied.some((file) => relative(TOOL_ROOT, file) === LOADS_CODE_HOST_ROWS)) {
+    for (const path of pluginFilesUnder(join("plugins", "github"))) copyInto(join(copyRoot, TOOL_DIR, path), join(TOOL_ROOT, path));
+  }
   // The tool's own package.json says "type": "module"; without it the copy's `.ts` files load as CommonJS under node.
   writeFileSync(join(copyRoot, TOOL_DIR, "package.json"), '{"type":"module"}');
   for (const file of projectFiles()) copyInto(join(copyRoot, file), join(HOME_CHECKOUT, file));

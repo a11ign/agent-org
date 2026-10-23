@@ -43,7 +43,7 @@ import { readClosedClaimLabelRows } from "../work-gate/causes/rows-claims-closed
 import { readRecentlyClosed } from "../work-gate/causes/rows-blocker-cleared.ts";
 import { readTrackerLanes } from "../work-gate/tick.ts";
 import { forgetRefusedReads, readClaimedRows, readRowsByLabel } from "../ticket-port/rows-by-label.ts";
-import { foldPage, readMergedPullRequests, readRowsSince, SINCE_PAGE_SIZE, WindowCutShort, type SinceRead } from "../ticket-port/rows-since.ts";
+import { foldPage, readMergedPullRequests, readRowsSince, sincePageSize, WindowCutShort, type SinceRead } from "../ticket-port/rows-since.ts";
 import { mergedPrsInWindow } from "../close-rows-sweep.ts";
 import { fetchReadyIssueNumbers } from "../board-snapshot.ts";
 import { ghReadyReader } from "../untiered-ready-rows.ts";
@@ -443,7 +443,7 @@ test("the window ends at the first row before it, and no page past that is asked
 });
 
 test("NEGATIVE CONTROL: a window longer than its pages is REFUSED, never returned in part -- and `newest` is the one that truncates, by its own name", () => {
-  const all = Array.from({ length: 3 * SINCE_PAGE_SIZE }, (_, i) => pull(5000 - i, { merged: ago(500 - i), updated: ago(500 - i) }));
+  const all = Array.from({ length: 3 * sincePageSize() }, (_, i) => pull(5000 - i, { merged: ago(500 - i), updated: ago(500 - i) }));
   const { run } = searchSpentGitHub(all);
   const ask: SinceRead = { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo: TRACKER, select: "number", since: SINCE_ISO };
   assert.throws(() => readRowsSince({ ask: { ...ask, maxPages: 2 }, run }), (error: Error) => error instanceof WindowCutShort && /may be cut short/.test(error.message));

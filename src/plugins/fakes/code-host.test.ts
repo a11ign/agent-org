@@ -22,6 +22,12 @@ function seeded() {
   return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim } };
 }
 
+/** The checks of the optional `rows` group: the fake serves ticket mode only, so they are skipped with their reason and never counted as passed (contract 1.7). */
+const ROWS_CHECKS = [
+  "the rows are the operations row mode asks of the code host", "a read the rows could not make answers null or throws, never an empty answer", "a write the rows could not make throws, so no caller reads it as done",
+  "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect",
+];
+
 test("the fake code host passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
   const { host, probe } = seeded();
   const { passed, skipped } = await runCodeHostConformance(host, probe);
@@ -35,22 +41,23 @@ test("the fake code host passes the code host contract suite, and the checks tha
     "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
-  assert.deepEqual(skipped, []);
+  assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake has no rows, which are optional: it serves ticket mode only");
+  assert.ok(skipped.every(({ reason }) => /the code host has no rows, which are optional \(contract 1\.7\)/.test(reason)));
 });
 
 test("without a change in the probe the port's reads are skipped with the reason, not passed", async () => {
   const { host, probe } = seeded();
   const { passed, skipped } = await runCodeHostConformance(host, { ...probe, change: undefined });
-  assert.deepEqual(skipped.map(({ check }) => check), ["readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"]);
-  assert.ok(skipped.every(({ reason }) => /the probe names no change/.test(reason)));
+  assert.deepEqual(skipped.map(({ check }) => check), [...ROWS_CHECKS, "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed"]);
+  assert.ok(skipped.filter(({ check }) => !ROWS_CHECKS.includes(check)).every(({ reason }) => /the probe names no change/.test(reason)));
   assert.ok(!passed.includes("armMerge arms the merge and says it is armed"));
 });
 
 test("without wrapper inputs in the probe the wrapper's checks are skipped with the reason, not passed", async () => {
   const { host, probe } = seeded();
   const { passed, skipped } = await runCodeHostConformance(host, { ...probe, wrapper: undefined });
-  assert.deepEqual(skipped.map(({ check }) => check), ["the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints"]);
-  assert.ok(skipped.every(({ reason }) => /the code host has no wrapper or the probe names no inputs for one/.test(reason)));
+  assert.deepEqual(skipped.map(({ check }) => check), [...ROWS_CHECKS, "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints"]);
+  assert.ok(skipped.filter(({ check }) => !ROWS_CHECKS.includes(check)).every(({ reason }) => /the code host has no wrapper or the probe names no inputs for one/.test(reason)));
   assert.ok(!passed.some((check) => check.startsWith("the wrapper")));
 });
 
@@ -136,8 +143,8 @@ test("the fake says a pull request is approved at its head only for an approval 
 test("without a check or a head to claim in the probe, their checks are skipped with the reason, not passed", async () => {
   const { host, probe } = seeded();
   const { passed, skipped } = await runCodeHostConformance(host, { ...probe, check: undefined, claim: undefined });
-  assert.deepEqual(skipped.map(({ check }) => check), ["readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it"]);
-  assert.deepEqual(skipped.map(({ reason }) => reason.replace(/, so .*/, "")), ["the probe names no check", "the probe names no head to claim"]);
+  assert.deepEqual(skipped.map(({ check }) => check), [...ROWS_CHECKS, "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it"]);
+  assert.deepEqual(skipped.filter(({ check }) => !ROWS_CHECKS.includes(check)).map(({ reason }) => reason.replace(/, so .*/, "")), ["the probe names no check", "the probe names no head to claim"]);
   assert.ok(!passed.includes("readCheckLog reads the log behind a failing check") && !passed.includes("a claim written on a head is read back from it"));
 });
 

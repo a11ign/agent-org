@@ -12,6 +12,7 @@ import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { Concern } from "./concerns.ts";
 import type { CodeHost, HostPlace, ReviewTrust } from "./contracts/code-host.ts";
+import type { RowsHelpers } from "./contracts/code-host-rows.ts";
 import type { MessagingPair } from "./contracts/messaging.ts";
 import type { PublishResult, PublishedPull } from "./contracts/publisher.ts";
 import type { TrackerWriting } from "./contracts/tracker.ts";
@@ -266,6 +267,8 @@ export type PluginDeps = Readonly<{
   publishing: PublishingHelpers;
   /** What a reviewer plugin needs of core (A11-161). */
   reviewing: ReviewerHelpers;
+  /** What a code host's `rows` need of core (A11-160): the project's vocabulary and board, asked when an operation needs them, so a host with no project builds a code host that has not been asked for a row. */
+  rows: () => RowsHelpers;
   /** Where the machine keeps what a code host's wrapper is rendered from (A11-160), asked only by the code host's doctor rows. */
   place: () => Promise<HostPlaceReading>;
 }>;

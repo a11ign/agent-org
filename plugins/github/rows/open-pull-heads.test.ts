@@ -1,6 +1,6 @@
 // no-token: gh -- agent-org#1193: `readOpenPullHeads` is handed a stub `run`; nothing here spawns `gh` or needs a token.
 /**
- * agent-org#1193 (agent-org#1167's open-PR hold): THE OPEN-PULL-REQUEST READ THROUGH THE TICKET PORT.
+ * agent-org#1193 (agent-org#1167's open-PR hold): THE OPEN-PULL-REQUEST READ, which lives in the GitHub plugin's rows (A11-160).
  *
  * Four claims, each with a case that can fail:
  *   1. a listing that reads is a `read: true` list of the fields the hold reads (number, url, head branch, label names), and the call asks for them;
