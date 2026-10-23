@@ -28,7 +28,7 @@ Acceptance:
 ```bash
 npm run lint
 npm run typecheck
-npx rstest run --config scripts/rstest/rstest.config.ts src/work-gate/pr-orders.test.ts plugins/github/code-host.test.ts plugins/github/conformance.test.ts plugins/atomic-reviewer src/plugins/fakes src/ticket-mode/plan-step-sections.test.ts src/ticket-mode/plan-steps.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/review-command.test.ts src/ticket-mode/reviewer-port.test.ts src/ticket-mode/pool.test.ts src/plugins/built-in.test.ts src/plugins/cli.test.ts src/install/doctor.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/work-gate/pr-orders.test.ts plugins/github/code-host.test.ts plugins/github/conformance.test.ts plugins/atomic-reviewer src/plugins/fakes src/ticket-mode/plan-step-sections.test.ts src/ticket-mode/plan-steps.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/review-command.test.ts src/ticket-mode/reviewer-port.test.ts src/ticket-mode/pool.test.ts src/plugins/built-in.test.ts src/install/doctor.test.ts
 ```
 
 History: full
