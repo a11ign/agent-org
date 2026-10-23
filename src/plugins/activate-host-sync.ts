@@ -31,7 +31,10 @@ export function loadCodeHostSync(hostFileText: string | null, env: NodeJS.Proces
   const report = providers.blocks.codeHost;
   const plugin = pluginNamed(catalog, report.provider);
   if (plugin === undefined || !runsOnAHost(plugin)) {
-    throw new CodeHostLoadRefusal(`the code host is ${report.provider}, which has no code to run on a host: name a bundled code host plugin in tickets.providers.codeHost (\`agent-org plugin list\`)`);
+    const noneBundled = catalog.plugins.every((candidate) => candidate.where !== "bundled");
+    throw new CodeHostLoadRefusal(noneBundled
+      ? `the code host is ${report.provider}, but this tool's checkout holds no bundled plugin: its plugins/ folder is missing, so no code host can be loaded (reinstall the tool)`
+      : `the code host is ${report.provider}, which has no code to run on a host: name a bundled code host plugin in tickets.providers.codeHost (\`agent-org plugin list\`)`);
   }
   const refusal = refusalOf(plugin);
   if (refusal !== null) throw new CodeHostLoadRefusal(`the code host plugin ${plugin.name} was refused: ${refusal}`);

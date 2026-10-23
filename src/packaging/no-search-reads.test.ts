@@ -187,6 +187,15 @@ test("NEGATIVE CONTROL (source): no file the claim or the gate reads through bui
   for (const file of COVERED) assert.deepEqual(searchBackedLists(moduleSource(file)), [], `${file} lists rows through a SEARCH`);
 });
 
+/** The moved readers (A11-160): the GitHub plugin's rows, which `ticket-port/` now delegates to, and which hold the argv the walk above can no longer see there. */
+const PLUGIN_ROWS = join(SRC, "..", "plugins", "github", "rows");
+
+test("NEGATIVE CONTROL (source, A11-160): no reader the plugin holds for row mode builds a list argv carrying `--label` or `--search`", () => {
+  const files = readdirSync(PLUGIN_ROWS).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"));
+  assert.ok(files.includes("rows-by-label.ts") && files.includes("rows-since.ts"), "the walk sees the two connection readers: an empty walk would pass for the wrong reason");
+  for (const file of files) assert.deepEqual(searchBackedLists(readFileSync(join(PLUGIN_ROWS, file), "utf8")), [], `plugins/github/rows/${file} lists rows through a SEARCH`);
+});
+
 test("POSITIVE CONTROL (source, #5074): `wake.ts` and `row-file.ts` are walked, and each still lists rows -- with a plain list, which is no search", () => {
   assert.ok(COVERED.includes("wake.ts") && COVERED.includes("row-file.ts"), "the walk sees the two files this row converted");
   for (const file of ["wake.ts", "row-file.ts"]) {

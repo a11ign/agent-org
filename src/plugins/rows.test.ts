@@ -40,6 +40,10 @@ test("the GitHub plugin's module graph can be required, because it has no top-le
   assert.equal(typeof host.rows?.readRowsByLabel, "function");
 });
 
+test("a checkout with no bundled plugin says its plugins folder is missing, and not that the host file names the wrong plugin", () => {
+  assert.throws(() => loadCodeHostSync(null, {}, DEPS, { plugins: [], refusals: [] }), /this tool's checkout holds no bundled plugin: its plugins\/ folder is missing/);
+});
+
 test("a code host that is a fake, or a plugin of a contract major this agent-org does not read, is refused by name", () => {
   assert.throws(() => loadCodeHostSync(hostText({ codeHost: { provider: "fake-codeHost" } }), {}, DEPS), /the code host is fake-codeHost, which has no code to run on a host: name a bundled code host plugin in tickets\.providers\.codeHost/);
   const github = pluginNamed(defaultCatalog(), "github")!;

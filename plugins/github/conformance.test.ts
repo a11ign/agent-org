@@ -11,6 +11,7 @@ import { ContractError } from "../../src/plugins/conformance/suite.ts";
 import type { WrapperInputs } from "../../src/plugins/contracts/code-host.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { corePolicy } from "../../src/plugins/policy.ts";
+import "../../src/plugins/row-mode.ts"; // registers what core owns of row mode that reads the project, which the conformance of the rows asks for
 import { create } from "./index.ts";
 
 export const REPOSITORY = "owner/repo";

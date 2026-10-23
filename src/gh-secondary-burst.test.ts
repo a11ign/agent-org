@@ -22,6 +22,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpDir, tmpDirForFile } from "./lib/tmp-fixture.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 import { ghQueueTick, poolLeftOfQueued, QUEUE_DIR, readQueue, refusalKind, retryDue, spawnQueued } from "./gh-ledger.ts";
 import { GRAPHQL_POOL_PROBE } from "./api-pool.ts";
 import { corePoolProbe } from "./ticket-port/core-pool-probe.ts";
@@ -289,5 +291,24 @@ test("(e) the gate's pool reader sends the wrapper's probe as the entry's accoun
     assert.equal(reading(call, INSTALLATION_REFUSAL), null, "no answer is no reading, never a zero");
   } finally {
     process.env.PATH = savedPath;
+  }
+});
+
+// ---- (g) a code host that cannot be loaded is no reading of the pool, and never stops the retry ------------------------------
+
+test("(g) A11-160: the core pool's probe is the code host's, so a code host that cannot be loaded gives no reading, and a GraphQL refusal does not need it", () => {
+  const call = queuedCall(join(tmpDir("gh-secondary-no-host-"), QUEUE_DIR));
+  const asked: string[][] = [];
+  const reading = poolLeftOfQueued((_call, argv) => {
+    asked.push(argv);
+    return { status: 0, stderr: "", stdout: probeOf(4560) };
+  });
+  try {
+    substituteCodeHost(createFakeCodeHost());
+    assert.equal(reading(call, INSTALLATION_REFUSAL), null, "the host asked has no rows, so there is no probe to send: no reading, not a throw");
+    assert.deepEqual(asked, [], "and nothing was sent");
+    assert.equal(reading(call, "GraphQL: API rate limit exceeded for user ID 1"), 4560, "CONTROL: the GraphQL probe is core's and is sent as before");
+  } finally {
+    forgetActivation();
   }
 });

@@ -8,7 +8,8 @@ import { messagingHelpers } from "../../messaging/plugin-helpers.ts";
 import { corePolicy } from "../policy.ts";
 import { publishingHelpers } from "../publishing-helpers.ts";
 import { gateHelpers } from "../reviewing-gate.ts";
-import { rowsHelpers } from "../rows-helpers.ts";
+import { coreRowsHelpers } from "../code-host-slot.ts";
+import "../rows.ts"; // registers the part of row mode that reads nothing of the project, so a test needs no project to build a code host; the part that reads it is `row-mode.ts`'s
 
 const NO_PROGRAM: ExecResult = { status: null, stdout: "", stderr: "no program is injected" };
 
@@ -21,7 +22,7 @@ export function fakePluginDeps(over: Partial<PluginDeps> = {}): PluginDeps {
     readFile: (path) => { throw new Error(`ENOENT: ${path}`); },
     mode: () => null,
     probe: () => Promise.resolve(null),
-    messaging: messagingHelpers(), publishing: publishingHelpers(), reviewing: gateHelpers(), rows: rowsHelpers,
+    messaging: messagingHelpers(), publishing: publishingHelpers(), reviewing: gateHelpers(), rows: coreRowsHelpers,
     place: () => Promise.resolve({ kind: "no-project" }),
     ...over,
   };

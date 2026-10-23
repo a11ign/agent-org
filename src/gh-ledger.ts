@@ -1,6 +1,6 @@
 // @ts-check
-// THE READER OF THE `gh` CALL LEDGER (#3466) -- a LEAF module: no import but node's own, since it is run by hand on a host
-// where nothing else is wanted.
+// THE READER OF THE `gh` CALL LEDGER (#3466) -- a module with almost nothing to import, since it is run by hand on a host
+// where nothing else is wanted: node's own, `api-pool.ts` (a leaf) and `ticket-port/core-pool-probe.ts`, which asks the code host for the core pool's probe only when a refusal is diagnosed.
 //
 // `plugins/github/wrapper/gh` WRITES the ledger (one TAB-separated line per call, shell, so a call pays no node start-up and the wrapper has
 // no dependency on where this checkout lives); this file only READS it and answers the question #3448 could not: WHICH
@@ -665,14 +665,27 @@ export const spawnQueued: RunQueued = (call, argv) => {
 };
 
 /**
+ * The probe for the pool a refusal names, or `null` when it cannot be had: the core pool's probe is the code host's (`corePoolProbe`), and a code host that cannot be loaded is no answer, which the queue
+ * retry reads as it reads a pool that gave none, and never as a reason to stop retrying what GitHub refused.
+ */
+function probeFor(stderr: string): string[] | null {
+  if (/graphql/i.test(stderr)) return [...GRAPHQL_POOL_PROBE];
+  try {
+    return [...corePoolProbe()];
+  } catch {
+    return null;
+  }
+}
+
+/**
  * (#1518) THE REFUSED POOL'S `x-ratelimit-remaining`, read the way `plugins/github/wrapper/gh` reads it: the GraphQL probe for a refusal that names GraphQL, else the core one,
  * sent THROUGH `run`, so it goes as the call's own account (`spawnQueued` sets its config dir). `null` when there is no answer. The probe is sent through the
  * caller's runner and not spawned here, so this file keeps its one spawn site (the ratchet, #826).
  */
 export function poolLeftOfQueued(run: RunQueued): PoolLeftOf {
   return (call, stderr) => {
-    const probe = [...(/graphql/i.test(stderr) ? GRAPHQL_POOL_PROBE : corePoolProbe())];
-    return poolFromHeaders(probe, (args) => run(call, args).stdout ?? "")?.remaining ?? null;
+    const probe = probeFor(stderr);
+    return probe === null ? null : poolFromHeaders(probe, (args) => run(call, args).stdout ?? "")?.remaining ?? null;
   };
 }
 
