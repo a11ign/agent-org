@@ -17,10 +17,10 @@ import { declaredRegionFiles, splitRegionEntry } from "../region-paths.ts";
 import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
 import { pathsAsRegion } from "./overlap.ts";
+import { refuse, ticketClosesReport } from "./ticket-references.ts";
 import { HOST_FILE_ENV, readTicketSettings, type TicketSettings } from "./settings.ts";
 import { DEFAULT_KEYWORDS, type Keywords, type TicketSource } from "./source.ts";
 import { ticketDir, ticketFolder } from "./ticket-paths.ts";
-import { declaredRemains } from "./queue/queue-entries-and-outcomes.ts";
 import { READY_FILE } from "./worker-files.ts";
 import { TICKET_ENV } from "./worktree-command.ts";
 
@@ -272,68 +272,8 @@ function changesetCheck(body: string, diff: DiffReading, { hasChangesets }: { ha
     + "say why none is due with a `no-release: <reason>` line in the body. Nothing was sent to GitHub (A11-74).", note: null };
 }
 
-/** A `Closes` or `Refs` line, at the start of a line, as a worker writes it, with or without bold around its verb: the tracker's two words. */
-const referenceLine = ({ closing, nonClosing }: Keywords): RegExp => new RegExp(
-  `^[ \\t]*(?:[-*>][ \\t]+)?(?:\\*\\*|__)?(${escapeRegExp(closing)}|${escapeRegExp(nonClosing)})(?:\\*\\*|__)?:?(?:\\*\\*|__)?[ \\t]+(\\S.*)$`, "gm");
-const escapeRegExp = (word: string): string => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** A ticket's key, or a pull request's `#N`, as one word of a reference, with the markdown or punctuation a worker wraps it in. */
-const REFERENCED = /^[*_`(]*([A-Za-z][A-Za-z0-9]*-\d+|#\d+)[*_`).,;:]*$/;
-/** A body's `Partial:` line: what remains of the ticket after a partial pull request. A placeholder, or no words, is no declaration. */
-const PARTIAL_LINE = /^\s*(?:[-*]\s+)?(?:\*\*|__)?Partial:(?:\*\*|__)?[ \t]*(\S.*)$/m;
-
-/** What the body's `Partial:` line says remains of the ticket, or null when the body declares the pull request complete. PURE. */
-const partialOf = (body: string): string | null => declaredRemains(PARTIAL_LINE.exec(body)?.[1] ?? "");
-
-/** A body's `Closes` and `Refs` lines: each verb, the first word after it, and the ticket keys or pull request numbers its words name. */
-function referencesIn(body: string, keywords: Keywords): { verb: string; first: string; names: string[]; }[] {
-  // A reason after a dash is not a name, and a word that is not a key is not one either: `Closes A11-74 (done-when met)` names A11-74.
-  return [...body.matchAll(referenceLine(keywords))].map(([, verb, rest]) => {
-    const words = rest.split(/\s(?:--|—)\s/)[0].split(/[\s,;]+/).filter((word) => word !== "");
-    return { verb, first: words[0] ?? "", names: words.map((word) => REFERENCED.exec(word)?.[1]).filter((name): name is string => name !== undefined) };
-  });
-}
-
-/**
- * THE `closes` REPORT FOR A TICKET, replacing a row's: the body names its ticket with the tracker's closing keyword when the pull request completes it,
- * or with its non-closing keyword and a `Partial: <what remains>` line when it is partial (A11-92). The closing keyword completes the ticket when the pull
- * request merges, so the report says which it found. `Closes: none`, a closing keyword of any other ticket, a partial pull request that says it is
- * complete, and a body that names no ticket are refused. A non-closing keyword of another ticket is no refusal.
- * @param {string} body @param {string} key the ticket's key @param {Keywords} keywords the tracker's two words
- * @returns {{ ok: boolean, lines: string[] }}
- */
-export function ticketClosesReport(body: string, key: string, keywords: Keywords): { ok: boolean; lines: string[]; } {
-  const { closing, nonClosing } = keywords;
-  const references = referencesIn(body, keywords);
-  const closes = references.filter(({ verb }) => verb === closing);
-  const partial = partialOf(body);
-  if (closes.some(({ first }) => first.toLowerCase() === "none")) {
-    return refuse(`CLOSES: REFUSED -- \`${closing}: none\` is not a ticket's pull request's declaration. Name ${key} with \`${closing} ${key}\` when this pull request `
-      + `completes it, or with \`${nonClosing} ${key}\` and a \`Partial:\` line when it does not (A11-74, A11-92).`);
-  }
-  const others = closes.flatMap(({ names }) => names).filter((name) => name !== key);
-  if (others.length > 0) {
-    return refuse(`CLOSES: REFUSED -- \`${closing} ${others.join(", ")}\` names a ticket other than ${key}. \`${closing}\` completes the ticket it names when the pull request `
-      + `merges, so only ${key} may be closed here (A11-74).`);
-  }
-  if (closes.some(({ names }) => names.includes(key))) {
-    if (partial !== null) {
-      return refuse(`CLOSES: REFUSED -- \`${closing} ${key}\` completes the ticket when the pull request merges, but the body also has a \`Partial:\` line. `
-        + `Drop the line if this pull request completes ${key}, or write \`${nonClosing} ${key}\` if it does not (A11-92).`);
-    }
-    return { ok: true, lines: [`CLOSES: ${key} -- \`${closing}\` completes it when the pull request merges`] };
-  }
-  if (references.some(({ names }) => names.includes(key))) {
-    if (partial === null) {
-      return refuse(`CLOSES: REFUSED -- \`${nonClosing} ${key}\` links the ticket and does not complete it, and the body has no \`Partial:\` line. Write \`${closing} ${key}\` `
-        + `if this pull request completes ${key}, or add \`Partial: <what remains>\` if it does not (A11-92).`);
-    }
-    return { ok: true, lines: [`CLOSES: ${key} -- \`${nonClosing}\` links it and does not complete it: the pull request is partial, and ${partial} remains`] };
-  }
-  return refuse(`CLOSES: MISSING -- the body names no ticket: write \`${closing} ${key}\` when this pull request completes it, or \`${nonClosing} ${key}\` with a `
-    + `\`Partial:\` line when it does not (A11-74, A11-92).`);
-}
-
-const refuse = (line: string): { ok: boolean; lines: string[]; } => ({ ok: false, lines: [line] });
+// `ticketClosesReport` lives in the leaf `ticket-references.ts`, which CI's own `closes` report reads too; it is named here for the callers that took it from this file.
+export { ticketClosesReport };
 
 /** A `Pre-PR review:` line, at the start of a line or after a list marker, as a worker writes it: the skill's name and what it changed. */
 const PRE_REVIEW_LINE = /^\s*(?:[-*]\s+)?(?:\*\*|__)?Pre-PR review:(?:\*\*|__)?\s*(\S.*)$/gm;

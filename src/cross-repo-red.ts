@@ -1,11 +1,15 @@
 // @ts-check
-// A LAB PULL REQUEST WHOSE CROSS-REPO LEG ADDS A RED TEST FILE IS NOT ARMED UNLESS IT NAMES THE ROW THAT GREENS IT (agent-org#992).
+// A LAB PULL REQUEST WHOSE CROSS-REPO LEG ADDS A RED TEST FILE IS NOT ARMED UNLESS IT NAMES THE TICKET THAT GREENS IT (agent-org#992).
 //
 // THE GAP. `ci.yml` sets `continue-on-error` on the `cross-repo` matrix leg so that it never blocks, and the price is that `gate` reads
 // green while the leg is red: such a pull request is armed, merges, and puts `main` red. `readTrunkRed` (#539) then reads that red AFTER
 // the merge, and the session it wakes is the merging one, which did not cause it (lab#81 put `main` red on 2026-10-11 as the known price
 // of ADR 0045 cut 1; nothing at the gate asked that it be declared). This refuses the arm BEFORE the merge, unless the body names the
-// core-side row that greens the leg.
+// ticket that greens the leg.
+//
+// THE EXIT NAMES A TICKET (A11-127). Rows live in the tracker now, and the GitHub issues that once held them are closed, so a declaration naming an OPEN GitHub row could never
+// be written and every newly red leg was a wall. The line names the ticket that owns greening the leg (`A11-123`), and is read by its shape: CI and the arm bot hold no tracker
+// credential, so they cannot ask whether the ticket is open. The refusal itself stays: a pull request that newly reds the leg is still not armed unannounced.
 //
 // WHAT "RED" MEANS HERE IS DIFFERENCE, NOT ABSENCE OF GREEN: the leg has stood red on `main` for days under #4425 phase 3, one test file
 // at a time, so a pull request is judged on the files it fails that the newest trunk verdict run PASSED. A file `main` already fails is
@@ -14,7 +18,8 @@
 // THE LOG IS NOT TAP. The leg runs rstest, whose failed log has ` FAIL  <file> > <name>` lines (colour escapes included) where
 // `failingTestsFromJobLog` reads `not ok N` lines, so `summarizeTestLog` answers `unknown` for it and no code here read it.
 import { homeProjectDeclaration } from "./project-config.ts";
-import { checkRunsOfHead, failedLogOfRun, headOfChange, jobsOfRun, stateOfRow, workflowRunsOf, type CiJob } from "./ticket-port/ci-reads.ts";
+import { checkRunsOfHead, failedLogOfRun, headOfChange, jobsOfRun, workflowRunsOf, type CiJob } from "./ticket-port/ci-reads.ts";
+import { isTicketKey } from "./ticket-mode/ticket-references.ts";
 import { newestVerdictRun, trunkOfCodeRepository, type TrunkSource } from "./trunk-red.ts";
 
 /**
@@ -67,32 +72,23 @@ export function failingFilesFromRstestLog(logFailed: string, jobName: string): s
   return jobLines === 0 || files.size === 0 ? null : [...files].sort();
 }
 
-/** The `<row>` of a declaration line: `#n` is the PR's repository, `owner/repo#n` another's (the grammar of `Closes`, which `closedRowReferences` reads). */
-const ROW = /^(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)$/;
-
 /**
- * Every `Cross-repo-red:` line of a body, read. `malformed` carries the text after the colon of each line that is not exactly one row.
- * @param {string} body @param {string} prRepo
- * @returns {{ rows: { repo: string, number: number }[], malformed: string[] }}
+ * Every `Cross-repo-red:` line of a body, read. `malformed` carries the text after the colon of each line that is not exactly one ticket key.
+ * @param {string} body
+ * @returns {{ tickets: string[], malformed: string[] }}
  */
-export function declaredRows(body: string, prRepo: string): { rows: { repo: string; number: number }[]; malformed: string[] } {
-  const rows: { repo: string; number: number }[] = [];
+export function declaredTickets(body: string): { tickets: string[]; malformed: string[] } {
+  const tickets: string[] = [];
   const malformed: string[] = [];
   for (const match of body.matchAll(new RegExp(`^[ \\t]*${DECLARATION}:[ \\t]*(.*?)[ \\t]*$`, "gim"))) {
-    const row = ROW.exec(match[1] ?? "");
-    if (row === null) malformed.push(match[1] ?? "");
-    else rows.push({ repo: row[1] ?? prRepo, number: Number(row[2]) });
+    const text = match[1] ?? "";
+    if (isTicketKey(text)) tickets.push(text);
+    else malformed.push(text);
   }
-  return { rows, malformed };
+  return { tickets, malformed };
 }
 
-/** `owner/repo#n`, in full, so a refusal names the row the same way whichever repository it lives in. */
-const rowName = (row: { repo: string; number: number }) => `${row.repo}#${row.number}`;
-
 const firstLine = (cause: unknown) => String((cause as Error)?.message ?? cause).split("\n")[0];
-
-/** `gh` said the row is not there, as opposed to not answering: `gh issue view` prints `Could not resolve to an issue` or an `HTTP 404`. */
-const isNotFound = (cause: unknown) => /HTTP 404|Could not resolve to an? issue|not found/i.test(`${(cause as any)?.stderr ?? ""}\n${(cause as Error)?.message ?? cause}`);
 
 /** The code repository a pull request is in, as a trunk source, or `null` for the primary and for a repository the project does not declare (no leg to ask about). */
 function legSourceOf(repo: string, codeRepositories: readonly { key: string; repo: string }[]): TrunkSource | null {
@@ -177,27 +173,14 @@ export function crossRepoRedVerdict({ number, repo, prBody, run, codeRepositorie
   if (added.length === 0) return { kind: "clear" };
 
   const named = `${added.length === 1 ? "a test file" : `${added.length} test files`} the newest trunk run (${trunk.html_url}, ${trunk.conclusion}) did not fail: ${added.join(", ")}`;
-  const todo = `Add a line \`${DECLARATION}: <row>\` to the PR body naming the OPEN row that greens the leg (\`#n\`, or \`owner/repo#n\` for a core-side row)`;
+  const todo = `Add a line \`${DECLARATION}: <ticket>\` to the PR body naming the ticket that owns greening the leg (its key, for example \`A11-123\`)`;
   const refuse = (reason: string): CrossRepoRedVerdict => ({ kind: "cross-repo-red", files: added,
     why: `the cross-repo leg of #${number} fails on ${named}, and ${reason}. ${todo}` });
   if (typeof prBody !== "string") return { kind: "cannot-ask", why: `#${number}'s cross-repo leg fails on ${named}, and the PR body was not read, so its \`${DECLARATION}:\` line is unknown` };
-  const { rows, malformed } = declaredRows(prBody, repo);
-  if (malformed.length > 0) return refuse(`its \`${DECLARATION}:\` line is malformed (${malformed.map((text) => `\`${text}\``).join(", ")} is not \`#n\` or \`owner/repo#n\`)`);
-  if (rows.length === 0) return refuse(`its body carries no \`${DECLARATION}:\` line`);
-
-  const closed: string[] = [];
-  const absent: string[] = [];
-  for (const row of rows) {
-    try {
-      const state = stateOfRow(row.repo, row.number, run);
-      if (state === "OPEN") return { kind: "clear" };
-      closed.push(`${rowName(row)} is ${state === "" ? "in no readable state" : state}`);
-    } catch (cause) {
-      if (!isNotFound(cause)) return { kind: "cannot-ask", why: `#${number}'s cross-repo leg fails on ${named}, and ${rowName(row)}, its \`${DECLARATION}:\` row, could not be read (${firstLine(cause)})` };
-      absent.push(`${rowName(row)} does not exist`);
-    }
-  }
-  return refuse(`its \`${DECLARATION}:\` row does not stand: ${[...closed, ...absent].join("; ")}`);
+  const { tickets, malformed } = declaredTickets(prBody);
+  if (malformed.length > 0) return refuse(`its \`${DECLARATION}:\` line is malformed (${malformed.map((text) => `\`${text}\``).join(", ")} is not a ticket key such as \`A11-123\`)`);
+  if (tickets.length === 0) return refuse(`its body carries no \`${DECLARATION}:\` line`);
+  return { kind: "clear" };
 }
 
 /** The line that makes a once-only comment findable again; the files are in it, so a CHANGED set is said afresh. */
