@@ -551,6 +551,18 @@ async function blockedOn(pane: string) {
   return made;
 }
 
+/** NBF-1 worked, then blocked on the dangerous-rm prompt, which one pass declined: herdr refused the message as the agent read blocked, so it is untold (A11-174). */
+async function declinedButUntold() {
+  const made = await startedRun();
+  await agentIs(made, herdrName("NBF-1"), "working");
+  made.status.set(herdrName("NBF-1"), "blocked");
+  made.screen.text = DANGEROUS_RM;
+  made.h.refused.add("prompt");
+  made.h.reasons.set("prompt", "agent_blocked");
+  await made.pool.tick();
+  return made;
+}
+
 const SEND_KEYS = (name: string, ...keys: string[]) => ["--session", "tickets", "agent", "send-keys", name, ...keys];
 const keysSent = (calls: string[][]) => calls.filter((args) => args.includes("send-keys"));
 const promptsSent = (calls: string[][]) => calls.filter((args) => args.includes("agent") && args.includes("prompt"));
@@ -588,13 +600,7 @@ test("A11-174: an unrecognised dialog is not answered: no key and no message are
 });
 
 test("A11-174: a message herdr refuses while the agent is blocked is sent on the next pass that finds it not blocked, and the idle run is not ended as no-outcome meanwhile", async () => {
-  const { pool, status, entry, h, screen } = await startedRun();
-  await agentIs({ pool, status }, "t-nbf-1", "working");
-  status.set(herdrName("NBF-1"), "blocked");
-  screen.text = DANGEROUS_RM;
-  h.refused.add("prompt");
-  h.reasons.set("prompt", "agent_blocked");
-  await pool.tick();
+  const { pool, status, entry, h, screen } = await declinedButUntold();
   assert.deepEqual([keysSent(h.calls).length, entry("NBF-1").declined?.told], [1, false]);
   status.set(herdrName("NBF-1"), "idle");
   screen.text = "";
@@ -610,6 +616,16 @@ test("A11-174: a message herdr refuses while the agent is blocked is sent on the
   await agentIs({ pool, status }, herdrName("NBF-1"), "idle");
   assert.deepEqual(entry("NBF-1").outcome, { kind: "no-outcome" }, "told, an idle run with no outcome ends as it always has");
   assert.equal(promptsSent(h.calls).length, 3, "told once");
+});
+
+test("A11-174: an idle run that has written its outcome is settled as it was: the message its decline still owes is not sent to a run that is ending", async () => {
+  const { pool, status, entry, h, screen, settings } = await declinedButUntold();
+  h.refused.delete("prompt");
+  screen.text = "";
+  writeFileSync(join(ticketDir(settings, "NBF-1"), "outcome.json"), JSON.stringify({ kind: "needs-human", reason: "asked" }));
+  await agentIs({ pool, status }, herdrName("NBF-1"), "idle");
+  assert.equal(entry("NBF-1").outcome?.kind, "needs-human");
+  assert.equal(promptsSent(h.calls).length, 1, "only the refused attempt: nothing was sent to the run that ended");
 });
 
 test("A11-174: the fourth safety prompt on a run is left waiting for a person, with its first line", async () => {

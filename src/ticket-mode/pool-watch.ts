@@ -106,15 +106,21 @@ function watchRunning(ctx: PoolContext, status: ReadonlyMap<string, string>): vo
     if (prompt !== null && declineSafetyPrompt(ctx, entry, runPlace(ctx, entry), prompt)) continue;
     updateEach(ctx, runMembers(ctx, entry), (queue, member) => observe(queue, member, seen, prompt?.firstLine));
     const latest = () => store.get().entries.find((e) => e.ticket.key === key) ?? entry;
-    const justTold = retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
     const current = latest();
     const outcomePath = join(dir, OUTCOME_FILE);
     if ((seen === "idle" || seen === "done") && outcomeWritten(dir)) {
       settle(ctx, current, parseOutcome(readFileSync(outcomePath, "utf8")));
-      // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled.
-      if (sameRun(ctx, current)) watchStall(ctx, current, seen);
-    } else if (seen === "working") watchStall(ctx, current, seen);
-    else if (!justTold && stoppedWithNoOutcome(ctx, current, seen)) end(ctx, current, { kind: "no-outcome" });
+      // A run still running after its outcome was read wrote `working`: its idle clock runs, and may mark it stalled. A decline it was not yet told of is told now, not to a run that just ended.
+      if (sameRun(ctx, current)) {
+        watchStall(ctx, current, seen);
+        retellDeclined(ctx, latest(), runPlace(ctx, entry), seen);
+      }
+      continue;
+    }
+    // The message a refused one waits for, before an idle run with no outcome is called over: the status read before it is not the agent's answer to it (A11-174).
+    const justTold = retellDeclined(ctx, current, runPlace(ctx, entry), seen);
+    if (seen === "working") watchStall(ctx, latest(), seen);
+    else if (!justTold && stoppedWithNoOutcome(ctx, latest(), seen)) end(ctx, latest(), { kind: "no-outcome" });
   }
 }
 

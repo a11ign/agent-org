@@ -12,6 +12,7 @@ Claude Code asks a person before some commands even with permissions bypassed. O
 - `src/ticket-mode/board-view/run-reason.ts`, `view-types-and-filters.ts`, `ui.html`: `promptNote` is the card's line.
 - `src/ticket-mode/worker-files.ts`: "Commands that stall an unattended run" in the plan, batch plan, worker, review, publish and writer briefs.
 - `src/ticket-mode/pool.ts`, `pool-start.ts`: header comments.
+- `src/packaging/project-vocabulary.test.ts`: `"blocked"` in `pool-decline.ts` is declared as herdr's agent status, not a vocabulary label.
 
 ## How it is proven
 
@@ -28,7 +29,7 @@ Acceptance:
 ```bash
 npm run lint
 npm run typecheck
-npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/safety-prompt.test.ts src/pane-dialog.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/ui.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/update-drain.test.ts
+npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/safety-prompt.test.ts src/pane-dialog.test.ts src/ticket-mode/pool.test.ts src/ticket-mode/ui.test.ts src/ticket-mode/worker-files.test.ts src/ticket-mode/queue.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/update-drain.test.ts src/packaging/project-vocabulary.test.ts
 ```
 
 History: full
