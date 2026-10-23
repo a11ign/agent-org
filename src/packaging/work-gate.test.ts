@@ -1,6 +1,6 @@
 // no-token: MAX_ROW_ORDERS_PER_TICK -- #827. Importing anything from `work-gate.ts` reaches `defaultRun`
 // (`execFileSync("gh", ...)`, work-gate.ts:162), and this file never lets it run: every seam here is
-// handed an injected `run`. Measured 2026-09-23 -- 173/173 pass with `gh` off `PATH` entirely and
+// handed an injected `run` or reads the fake code host's world (A11-160, step 6: the readers that moved into the GitHub plugin's rows). Measured 2026-09-23 -- 173/173 pass with `gh` off `PATH` entirely and
 // `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset, which is what makes this a verified claim rather than
 // a hopeful one. Without it the acceptance job refuses the row's own declared command and verifies
 // NOTHING (#2106 hit exactly that).
@@ -20,7 +20,7 @@
  * AND THE POSITIVES ARE NOT OPTIONAL, for `review-verdict.test.ts`'s reason one level up: a `decide` that
  * returned `[]` for everything satisfies every "no order" case perfectly and would wake nobody, ever.
  */
-import { test, beforeEach } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, mkdtempSync, realpathSync,
   existsSync, writeFileSync, cpSync, rmSync } from "node:fs";
@@ -34,6 +34,26 @@ import { TOOL_ROOT, copyToolAndProject, importClosure, toolFile } from "./copied
 import { judgePin, type Declaration } from "../lib/pin-ratchet.ts";
 import { deriveClosureRequirements, createClosureMemo } from "../acceptance-commands/command-classes-and-declarations.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+/**
+ * A11-160 (step 6): the readers this file tests that moved into the GitHub plugin's rows (the required checks, `main`'s tip, the closed answer rows, the recently closed rows, a row's timeline, a pull request's commits and
+ * patch, the ready flip) read the FAKE code host's world, which a test seeds; nothing here hands them GitHub's answers. What each operation sends and how it reads GitHub's answer is the plugin's, and tested there
+ * (`plugins/github/rows/gate-reads.test.ts`, `gate-pull-reads.test.ts`, `required-contexts.test.ts`).
+ */
+const seedHost = () => {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  return host;
+};
+const seedWorld = () => seedHost().rowsWorld;
+/** A `run` for a reader that takes one: the fake code host acts on its own state, so a call to it means a reader reached for GitHub. */
+const noGh = (): string => {
+  throw new Error("the fake code host acts on its own state: no gh is run");
+};
+afterEach(() => forgetActivation());
 import { MAX_ROW_ORDERS_PER_TICK, comparablePrFiles, ownerOf, NOT_PICKABLE, NOT_STARTABLE, ROUTED_TO, PROMOTION_ASK_WINDOW_MS, HOUR_MS, PARKED_LABEL } from "../work-gate/vocabulary.ts";
 import { readCommitShas, readPatchId, withPatchIds, readWorktreeStamps, reviewBlocked, reviewableHead, pipelineCodeownerReviewMissing } from "../work-gate/causes/pr-reviews.ts";
 import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/tick-decisions-and-flags.ts";
@@ -80,7 +100,7 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { testEach } from "../lib/test-each.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
 // #5050: the gate's label lists are GraphQL connections, not `issue list`, so a fake answers them in the connection's shape (`rows-by-label-fixtures.ts`).
-import { connectionOf, readsClosedAnswerRows, closedAnswerConnection, readsRecentlyClosed, recentlyClosedConnection, readsRowsByLabel,
+import { connectionOf, readsRowsByLabel,
   type FakeRow } from "./rows-by-label-fixtures.ts";
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const RED = [{ name: "ci", status: "COMPLETED", conclusion: "FAILURE" }];
@@ -1079,14 +1099,21 @@ test("a verdict the opener did not attribute, or one the AUTHOR signed, still wa
   assert.equal(own.action, undefined, "an author cannot mark their own draft ready by reviewing it");
 });
 
+/** An open draft pull request in the fake code host's world, for the gate to flip. */
+const draftPull = (world: ReturnType<typeof seedWorld>, number: number) => {
+  world.pulls.set(number, { number, body: "", headRefName: `agent/draft-${number}`, labels: [], isDraft: true, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [] });
+  return world.pulls.get(number)!;
+};
+
 test("performActions does the work and wakes nobody", () => {
-  const calls: string[][] = [];
+  const world = seedWorld();
+  const pull = draftPull(world, 7);
   const lines: string[] = [];
   const orders = [{ session: "product-manager", cause: "draft-convinced-not-ready",
     action: { kind: "ready", pr: 7 } }];
-  const { delivered, performed } = performActions(orders, (args: string[]) => { calls.push(args); return ""; },
-    (line: string) => lines.push(line));
-  assert.deepEqual(calls, [["pr", "ready", "7"]], "one gh call, and it is the one the session would have run");
+  const { delivered, performed } = performActions(orders, noGh, (line: string) => lines.push(line));
+  assert.equal(pull.isDraft, false, "the code host was asked to mark the pull request ready, and it is");
+  assert.deepEqual(world.calls, ["markPullReady #7"], "one call, and it is the one the session would have run");
   assert.equal(performed, 1);
   assert.deepEqual(delivered, [], "nothing left to deliver, so no session is woken for it");
   assert.match(lines.join(""), /DID ready pr-7/, "and the tick log says what the gate did on its own");
@@ -1095,12 +1122,15 @@ test("performActions does the work and wakes nobody", () => {
 test("a FAILED action falls back to the session, and says why", () => {
   // The worst case must be exactly today's behaviour. An action that swallowed its own failure would
   // turn a visible wake into an invisible nothing -- the direction this repository has paid for before.
+  const world = seedWorld();
+  const pull = draftPull(world, 7);
+  world.failures.set("markPullReady", new Error("gh: not authorised"));
   const lines: string[] = [];
   const orders = [{ session: "product-manager", cause: "draft-convinced-not-ready", prompt: "...",
     action: { kind: "ready", pr: 7 } }];
-  const { delivered, performed } = performActions(orders, () => { throw new Error("gh: not authorised"); },
-    (line: string) => lines.push(line));
+  const { delivered, performed } = performActions(orders, noGh, (line: string) => lines.push(line));
   assert.equal(performed, 0);
+  assert.equal(pull.isDraft, true, "and the pull request is still a draft");
   assert.deepEqual(delivered, [{ session: "product-manager", cause: "draft-convinced-not-ready",
     prompt: "..." }], "the original order is delivered, with the spent action stripped off it");
   assert.match(lines.join(""), /COULD NOT ready pr-7: .*not authorised.*delivering to product-manager/);
@@ -1261,11 +1291,6 @@ test("the expensive question is asked only when something is red", () => {
   assert.equal(anyChecksRed([]), false);
 });
 
-/** `branches/main` as GitHub answers it (the part the gate reads); `contexts: null` is protection with no list. */
-const BRANCH_ANSWER = (contexts: string[] | null, isProtected = true) =>
-  JSON.stringify({ name: "main", protected: isProtected,
-    protection: { enabled: isProtected, required_status_checks: contexts === null ? {} : { contexts } } });
-
 /**
  * #2117: THE `pr-checks-failing` PROMPT CARRIES WHEN THE FAILING RUN STARTED AND WHETHER `main` MOVED
  * SINCE -- A FACT, NEVER A PREDICATE. #2087 (2026-09-23): the gate held `startedAt` and threw it away, and two
@@ -1383,188 +1408,75 @@ test("the prompt names BOTH regimes and chooses neither", () => {
   }
 });
 
-test("readBaseTip reads `commits/main`, and fails OPEN and LOUDLY on every unusable answer", () => {
-  const calls: string[][] = [];
-  const tip = readBaseTip((args: string[]) => { calls.push(args); return JSON.stringify(TIP_AFTER); });
-  assert.deepEqual(tip, TIP_AFTER);
-  assert.equal(calls[0][0], "api");
-  assert.ok(calls[0][1].endsWith("/commits/main"), `one CORE read of main's tip commit: ${calls[0][1]}`);
+test("readBaseTip reads main's tip from the code host, and fails OPEN and LOUDLY on every unusable answer", () => {
+  const world = seedWorld();
+  world.gate.mainTip = TIP_AFTER;
+  assert.deepEqual(readBaseTip(noGh), TIP_AFTER);
   const logged: string[] = [];
   const log = (line: string) => logged.push(line);
-  assert.equal(readBaseTip(() => { throw new Error("HTTP 403\nrate limit"); }, log), null);
+  world.failures.set("mainTipOf", new Error("HTTP 403\nrate limit"));
+  assert.equal(readBaseTip(noGh, log), null);
   assert.match(logged[0], /CANNOT READ main's tip[^]*HTTP 403/);
-  assert.equal(readBaseTip(() => "not json", log), null);
-  assert.equal(readBaseTip(() => JSON.stringify({ sha: "abc", date: "yesterday" }), log), null,
+  world.failures.clear();
+  world.gate.mainTip = null; // an answer that is not JSON, or carries no tip
+  assert.equal(readBaseTip(noGh, log), null);
+  world.gate.mainTip = { sha: "abc", date: "yesterday" };
+  assert.equal(readBaseTip(noGh, log), null,
     "an unparseable date must not be compared -- NaN > NaN is false, which would read as `not moved`");
-  assert.equal(readBaseTip(() => JSON.stringify({ date: TIP_AFTER.date }), log), null);
+  world.gate.mainTip = { date: TIP_AFTER.date } as never;
+  assert.equal(readBaseTip(noGh, log), null);
   for (const sha of ["", "not-a-sha", "abc", 12345]) {
-    assert.equal(readBaseTip(() => JSON.stringify({ sha, date: TIP_AFTER.date }), log), null,
+    world.gate.mainTip = { sha, date: TIP_AFTER.date } as never;
+    assert.equal(readBaseTip(noGh, log), null,
       `a tip whose sha is ${JSON.stringify(sha)} is unusable, so the prompt says UNKNOWN rather than quoting a blank`);
   }
 });
 
 test("the tip is read ONLY on a red tick, and declared in GH_READS beside requiredCheckNames", () => {
-  const calls: string[][] = [];
-  const spy = (args: string[]) => { calls.push(args); return JSON.stringify(TIP_AFTER); };
+  const world = seedWorld();
+  let reads = 0;
+  let tip: typeof TIP_AFTER | null = TIP_AFTER;
+  const countedTip = () => { reads += 1; return tip; };
+  Object.defineProperty(world.gate, "mainTip", { get: countedTip, set: (value) => { tip = value; }, configurable: true });
   const green = { ...RED_2087, statusCheckRollup: [{ ...RED_CI, conclusion: "SUCCESS" }] };
-  assert.equal(baseTipWhenRed([green], spy), null);
-  assert.equal(baseTipWhenRed([], spy), null);
-  assert.equal(calls.length, 0, "a healthy tick pays nothing");
-  assert.deepEqual(baseTipWhenRed([RED_2087], spy), TIP_AFTER);
-  assert.equal(calls.length, 1, "a red tick pays exactly one call");
+  assert.equal(baseTipWhenRed([green], noGh), null);
+  assert.equal(baseTipWhenRed([], noGh), null);
+  assert.equal(reads, 0, "a healthy tick pays nothing");
+  assert.deepEqual(baseTipWhenRed([RED_2087], noGh), TIP_AFTER);
+  assert.equal(reads, 1, "a red tick pays exactly one call");
   assert.ok(GH_READS.conditionalOnRedBase.includes("readBaseTip"));
   assert.ok(!GH_READS.unconditional.some((r: string) => r.includes("readBaseTip")), "never unconditional");
-});
-
-test("requiredCheckNames fails OPEN on every unusable answer", () => {
-  assert.deepEqual(requiredCheckNames(() => BRANCH_ANSWER(["gate"])), ["gate"]);
-  assert.equal(requiredCheckNames(() => { throw new Error("HTTP 404"); }), null,
-    "a repo with no branch protection must not read as 'nothing blocks a merge'");
-  assert.equal(requiredCheckNames(() => BRANCH_ANSWER([])), null, "an EMPTY required set is treated as unreadable");
-  assert.equal(requiredCheckNames(() => "not json"), null);
-});
-
-/**
- * #5020: CLASSIC PROTECTION IS GONE ON EVERY REPO AND THE LIST LIVES IN THE RULESETS. `gh` answers `branches/main`
- * with `protection: {enabled: false, required_status_checks: {contexts: []}}`, which read as "nothing is required"
- * for every tick since the chairman's consolidation and failed the gate open on every red PR.
- *
- * The fake routes by ENDPOINT, as GitHub does, so a reader that asks only one of the two is told the other's
- * answer is absent -- a mock returning one body for every call would pass a reader that never looked at the rules.
- */
-const rulesAnswer = (...checkRulesets: string[][]) => JSON.stringify([
-  { type: "deletion", ruleset_id: 1 },
-  { type: "pull_request", parameters: { required_approving_review_count: 1 }, ruleset_id: 1 },
-  ...checkRulesets.map((contexts, i) => ({ type: "required_status_checks", ruleset_id: 2 + i,
-    parameters: { strict_required_status_checks_policy: false,
-      required_status_checks: contexts.map((context) => ({ context, integration_id: 15368 })) } })),
-  { type: "merge_queue", ruleset_id: 1 },
-]);
-const CLASSIC_GONE = BRANCH_ANSWER([]);
-const routedGh = (answers: { rules?: string | Error; branch?: string | Error }) => (args: string[]) => {
-  const answer = args.some((arg) => arg.endsWith("/rules/branches/main")) ? answers.rules
-    : args.some((arg) => arg.endsWith("/branches/main")) ? answers.branch : undefined;
-  if (answer === undefined || answer instanceof Error) throw answer ?? new Error(`unexpected gh call: ${args.join(" ")}`);
-  return answer;
-};
-
-test("#5020: a ruleset-only answer yields the gate -- the classic list is empty and is never needed", () => {
-  const read = requiredWithLog(routedGh({ rules: rulesAnswer(["gate"]), branch: CLASSIC_GONE }));
-  assert.deepEqual(read.required, ["gate"]);
-  assert.deepEqual(read.lines, [], "a read that works says nothing");
-  assert.equal(read.calls.length, 1, "the ruleset answered, so the classic read is not paid for");
-  assert.ok(read.calls[0].some((arg: string) => arg.endsWith("/rules/branches/main")));
-});
-
-test("#5020: a classic-only answer still yields its list -- a repo the rulesets do not cover", () => {
-  const read = requiredWithLog(routedGh({ rules: "[]", branch: BRANCH_ANSWER(["gate", "verify"]) }));
-  assert.deepEqual(read.required, ["gate", "verify"]);
-  assert.deepEqual(read.lines, []);
-  assert.equal(read.calls.length, 2, "rulesets first, then the classic fallback");
-  // A refused ruleset read is a fallback too, not a verdict: the rulesets may be unreadable to this credential.
-  const refused = requiredWithLog(routedGh({ rules: new Error("HTTP 403"), branch: BRANCH_ANSWER(["gate"]) }));
-  assert.deepEqual(refused.required, ["gate"]);
-});
-
-test("#5020: neither source gives a list -> null, and the report names BOTH reads", () => {
-  for (const [name, answers] of Object.entries({
-    "no rule and no classic list": { rules: "[]", branch: CLASSIC_GONE },
-    "a rule that lists no check": { rules: rulesAnswer([]), branch: CLASSIC_GONE },
-    "both refused": { rules: new Error("HTTP 404"), branch: new Error("HTTP 404") },
-    "ruleset not JSON": { rules: "<html>", branch: "not json" },
-  })) {
-    const read = requiredWithLog(routedGh(answers));
-    assert.equal(read.required, null, `${name}: unknown, never [] (which would read as "nothing blocks")`);
-    assert.equal(read.lines.length, 1, name);
-    assert.match(read.lines[0], /CANNOT READ the required checks/, name);
-    assert.match(read.lines[0], /rules\/branches\/main/, `${name}: the ruleset read is named`);
-    assert.match(read.lines[0], /\/branches\/main`/, `${name}: the classic read is named`);
-    assert.equal(read.calls.length, 2, name);
-  }
-});
-
-test("#5020: several required_status_checks rules are UNIONED, deduplicated, and other rule types are ignored", () => {
-  // A rule of ANOTHER type that happens to carry a `required_status_checks` list is not a required check.
-  const other = { type: "workflows", ruleset_id: 9, parameters: { required_status_checks: [{ context: "not-required" }] } };
-  const rules = JSON.stringify([...JSON.parse(rulesAnswer(["gate", "verify"], ["gate", "lint"])), other]);
-  const read = requiredWithLog(routedGh({ rules, branch: CLASSIC_GONE }));
-  assert.deepEqual([...(read.required ?? [])].sort(), ["gate", "lint", "verify"]);
 });
 
 /**
  * FAILING OPEN IN SILENCE IS INDISTINGUISHABLE FROM NEVER HAVING WORKED -- #2106.
  *
- * `requiredCheckNames` returned `null` on EVERY tick from the day #1750 shipped until 2026-09-23, and
- * the only sign was a bare `gh: Not Found (HTTP 404)` on stderr beside an exit 0 -- `defaultRun` inherits
- * stderr, so `gh`'s own message was the whole report. Four days of a dead optimisation. There was never a
- * correctness bug: the fallback counts every check, so no red pull request went unreported. What was lost
- * is the saving, and nothing said so.
+ * `requiredCheckNames` returned `null` on EVERY tick from the day #1750 shipped until 2026-09-23, and the only sign was a bare `gh: Not Found (HTTP 404)` on stderr beside an exit 0. Four days of a dead optimisation.
+ * There was never a correctness bug: the fallback counts every check, so no red pull request went unreported. What was lost is the saving, and nothing said so.
  *
- * #2331 REMOVED THE CAUSE, NOT THE REPORT. The gate now reads `branches/main`, which a non-admin
- * credential can read, so the admin-only 404 that produced the four dead days is gone -- and with it the
- * `branches/main.protected` DISCRIMINATOR that existed to explain that 404 (#2022's FORBIDDEN-versus-ABSENT).
- * Nothing reaches a second read any more: the discriminator was the same endpoint as the read it explained.
- * The report itself stays, because `branches/main` can still be refused (network, a renamed trunk) and
- * "fails open" must still announce itself.
- *
- * THE TEST DRIVES THE THROWING CASE AND ASSERTS BOTH HALVES, because `null` alone is what the old code
- * already did. Only the report is new, and a test that checked the `null` would pass against the defect.
+ * THE TEST DRIVES THE UNREADABLE CASE AND ASSERTS BOTH HALVES, because `null` alone is what the old code already did. Only the report is new, and a test that checked the `null` would pass against the defect.
+ * Which endpoints the code host asks, how it unions the rulesets' lists and what its own report quotes are the plugin's (`plugins/github/rows/required-contexts.test.ts`, moved there with the reader, #5020 and #2331).
  */
-const requiredWithLog = (run: (args: string[]) => string) => {
+const requiredWithLog = () => {
   const lines: string[] = [];
-  const calls: string[][] = [];
-  const required = requiredCheckNames((args: string[]) => { calls.push(args); return run(args); },
-    (line) => { lines.push(line); });
-  return { required, lines, calls };
+  const required = requiredCheckNames(noGh, (line) => { lines.push(line); });
+  return { required, lines };
 };
 
-/** The gate's credential, as GitHub answers it: the ADMIN endpoint is a 404, `branches/main` answers. */
-const nonAdminGh = (branchAnswer: string) => (args: string[]) => {
-  if (args.some((arg) => arg.includes("branches/main/protection"))) throw new Error("gh: Not Found (HTTP 404)");
-  return branchAnswer;
-};
-
-test("the required checks are read through `branches/main` with the ADMIN endpoint answering 404 -- #2331", () => {
-  const read = requiredWithLog(nonAdminGh(BRANCH_ANSWER(["gate"])));
-  assert.deepEqual(read.required, ["gate"]);
-  assert.deepEqual(read.lines, [], "and a read that works says nothing");
-  assert.equal(read.calls.length, 2, "the rulesets, then the classic fallback -- and no discriminator beyond those (#5020)");
-  assert.ok(read.calls.every((args) => args.every((arg) => !arg.includes("branches/main/protection"))),
-    `no call may name the admin-only endpoint; saw ${JSON.stringify(read.calls)}`);
-  assert.ok(read.calls[0].some((arg) => arg.endsWith("/rules/branches/main")));
-  assert.ok(read.calls[1].some((arg) => arg.endsWith("/branches/main")));
-});
-
-test("POSITIVE CONTROL: a protected branch with no list is the existing 'cannot read' outcome -- #2331", () => {
-  // Without this, the test above is satisfied by any function that returns ["gate"].
-  const noList = requiredWithLog(nonAdminGh(BRANCH_ANSWER(null)));
-  assert.equal(noList.required, null, "protected, but nothing to read: fail open, never a default");
-  assert.equal(noList.lines.length, 1);
-  assert.match(noList.lines[0], /CANNOT READ the required checks/);
-  assert.match(noList.lines[0], /no usable list of contexts/);
-  assert.match(noList.lines[0], /"protected":true/, "the report quotes whether `main` is protected at all");
-
-  // #2022 STILL HOLDS AND NEEDS NO DISCRIMINATOR: a refusal is `null` and never a claim about protection.
-  const refused = requiredWithLog(() => { throw new Error("gh: Not Found (HTTP 404)"); });
-  assert.equal(refused.required, null);
-  assert.match(refused.lines[0], /REFUSED/);
-  assert.doesNotMatch(refused.lines[0], /ABSENT|unprotected/,
-    "a refused read says nothing about whether the trunk is protected");
-  assert.equal(refused.calls.length, 2, "both sources asked once, and a refusal is not followed by a diagnosing read");
-});
-
-test("the report cannot become tick noise on a healthy gate -- #2106", () => {
-  // THE POSITIVE CONTROL, NAMED. Every assertion above is satisfied by a version that reports on every
-  // tick, including the successful ones -- which would bury the failure it exists to surface.
-  const healthy = requiredWithLog(routedGh({ rules: rulesAnswer(["gate"]), branch: CLASSIC_GONE }));
-  assert.deepEqual(healthy.required, ["gate"], "the successful read is unchanged");
-  assert.deepEqual(healthy.lines, [], "a gate that CAN read the contexts says NOTHING");
-  assert.equal(healthy.calls.length, 1);
-
-  const empty = requiredWithLog(() => BRANCH_ANSWER([]));
-  assert.equal(empty.required, null);
-  assert.match(empty.lines[0], /no usable list of contexts/);
-  assert.doesNotMatch(empty.lines[0], /REFUSED/);
+test("requiredCheckNames: the contexts the code host reads are returned and say NOTHING; none readable is null with ONE report that names what the gate does about it -- #2106, #2331, #5020", () => {
+  const world = seedWorld();
+  world.gate.requiredChecks = ["gate", "verify"];
+  const healthy = requiredWithLog();
+  assert.deepEqual(healthy.required, ["gate", "verify"], "the successful read is unchanged");
+  assert.deepEqual(healthy.lines, [], "a gate that CAN read the contexts says NOTHING: the report cannot become tick noise on a healthy gate");
+  for (const [name, contexts] of Object.entries({ "no source gives a list": null, "an EMPTY required set": [] })) {
+    world.gate.requiredChecks = contexts;
+    const unreadable = requiredWithLog();
+    assert.equal(unreadable.required, null, `${name}: unknown, never [] (which would read as "nothing blocks a merge")`);
+    assert.equal(unreadable.lines.length, 1, name);
+    assert.match(unreadable.lines[0], /^CANNOT READ the required checks: /, name);
+    assert.match(unreadable.lines[0], /Falling back to EVERY check on the head/, `${name}: the consequence is part of the report`);
+  }
 });
 
 /**
@@ -2204,19 +2116,30 @@ test("answer-owed is a WAKE cause and a FINISH cause, unlike the other three", (
  */
 const holderRow = (n: number, holder: string, owed: string) => ({ number: n,
   labels: [{ name: `${SESSION_PREFIX}${holder}` }, { name: `${ANSWER_PREFIX}${owed}` }] });
-const timelineOf = (...events: unknown[]) => () => events.map((e) => JSON.stringify(e)).join("\n");
+type TimelineEvent = { event: "labeled" | "unlabeled" | "commented"; label?: string; at: string };
+/** Row `number` in the fake code host's world, with the label events and comments of its timeline at the times given. */
+const timelineOf = (number: number, ...events: TimelineEvent[]) => {
+  const world = seedWorld();
+  const row = fakeRow(world, number);
+  world.rows.set(number, row);
+  world.gate.events.set(number, events.filter((e) => e.event !== "commented").map((e) => ({ event: e.event as "labeled" | "unlabeled", label: e.label!, actor: null, at: e.at })));
+  for (const e of events.filter((candidate) => candidate.event === "commented")) row.comments.push({ id: world.nextCommentId++, body: "", createdAt: e.at });
+  return world;
+};
 
-test("readRowTimeline parses NDJSON and refuses rather than reporting an empty timeline", () => {
-  const ok = timelineOf({ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" });
-  assert.deepEqual(readRowTimeline(2649, ok as never),
+test("readRowTimeline reads the row's timeline from the code host and refuses rather than reporting an empty timeline", () => {
+  timelineOf(2649, { event: "labeled", label: "answer:ceo", at: "2026-09-26T12:42:47Z" });
+  assert.deepEqual(readRowTimeline(2649, noGh),
     [{ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" }]);
-  assert.equal(readRowTimeline(2649, () => { throw new Error("HTTP 404"); }), null,
+  const refused = timelineOf(2649, { event: "labeled", label: "answer:ceo", at: "2026-09-26T12:42:47Z" });
+  refused.gate.events.set(2649, new Error("HTTP 404"));
+  assert.equal(readRowTimeline(2649, noGh), null,
     "a refused read is null, never [] -- [] would read every bare label on it as unexplained");
 });
 
 test("a bare `answer:` label wakes the row's own HOLDER, never the addressee named in it", () => {
-  const bare = timelineOf({ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" });
-  const [order] = bareAnswerLabelOrders([holderRow(2649, "worker-2632", "ceo")], bare as never) as
+  timelineOf(2649, { event: "labeled", label: "answer:ceo", at: "2026-09-26T12:42:47Z" });
+  const [order] = bareAnswerLabelOrders([holderRow(2649, "worker-2632", "ceo")], noGh) as
     { session: string, cause: string, causeKey: string }[];
   assert.equal(order.session, "worker-2632", "the holder is woken, never `ceo`, who has nothing to answer");
   assert.equal(order.cause, "answer-label-unexplained");
@@ -2224,16 +2147,14 @@ test("a bare `answer:` label wakes the row's own HOLDER, never the addressee nam
 });
 
 test("a comment posted at or after the label answers it, and nothing fires", () => {
-  const explained = timelineOf(
-    { event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" },
-    { event: "commented", created_at: "2026-09-26T12:42:47Z" });
-  assert.deepEqual(bareAnswerLabelOrders([holderRow(2649, "worker-2632", "ceo")], explained as never), []);
+  timelineOf(2649, { event: "labeled", label: "answer:ceo", at: "2026-09-26T12:42:47Z" }, { event: "commented", at: "2026-09-26T12:42:47Z" });
+  assert.deepEqual(bareAnswerLabelOrders([holderRow(2649, "worker-2632", "ceo")], noGh), []);
 });
 
 test("a row nobody currently holds has nobody this cause can wake", () => {
-  const bare = timelineOf({ event: "labeled", label: { name: "answer:ceo" }, created_at: "2026-09-26T12:42:47Z" });
+  timelineOf(2649, { event: "labeled", label: "answer:ceo", at: "2026-09-26T12:42:47Z" });
   assert.deepEqual(
-    bareAnswerLabelOrders([{ number: 2649, labels: [{ name: "answer:ceo" }] }], bare as never), []);
+    bareAnswerLabelOrders([{ number: 2649, labels: [{ name: "answer:ceo" }] }], noGh), []);
 });
 
 test("answer-label-unexplained is FINISH and an ACTION cause, `claim-stalled`'s own classification", () => {
@@ -3478,17 +3399,14 @@ test("#2286: a refused closing-time read FAILS OPEN to the unstaged ask, never t
     + "one is the 16h09m stranding #2139 ended");
   assert.deepEqual(askKeys([clearedRow(2161)], T0 + 3 * HOUR, null), [FIRST_KEY],
     "it is today's behaviour, TTL and all -- degraded, not dropped");
-  assert.equal(readRecentlyClosed(() => { throw new Error("rate limited"); }), null, "a refusal is null");
-  // #5050: a limit refusal is remembered for the process, so the good read below would be answered `null` with no call. A new tick forgets it.
-  forgetRefusedReads();
-  assert.equal(readRecentlyClosed(() => "{}"), null, "so is a body that is not a list");
-  // #5050: the rows come from the `issues(states:CLOSED, orderBy: UPDATED_AT)` connection, and the read is no `--search`.
-  const asked: string[][] = [];
-  const read = readRecentlyClosed((args) => {
-    asked.push(args);
-    return recentlyClosedConnection([{ number: 2139, closedAt: "2026-09-23T22:00:00Z" }, { number: 7, closedAt: "not a date" }]);
-  });
-  assert.ok(asked.length === 1 && readsRecentlyClosed(asked[0]) && !asked[0].includes("--search"), "ONE connection read, never a search");
+  const world = seedWorld();
+  world.failures.set("recentlyClosedRowsOf", new Error("rate limited"));
+  assert.equal(readRecentlyClosed(noGh), null, "a refusal is null");
+  world.failures.clear();
+  // #5050: the rows come from the `issues(states:CLOSED, orderBy: UPDATED_AT)` connection, and the read is no `--search` (the plugin's `gate-reads.test.ts` holds the argument list and the body that is not a list).
+  world.rows.set(2139, fakeRow(world, 2139, { state: "CLOSED", closedAt: "2026-09-23T22:00:00Z" }));
+  world.rows.set(7, fakeRow(world, 7, { state: "CLOSED", closedAt: "not a date" }));
+  const read = readRecentlyClosed(noGh);
   assert.deepEqual([...(read ?? [])], [[2139, T0]], "POSITIVE CONTROL: a good read maps number to epoch ms, "
     + "and a row with no usable stamp is left out rather than read as the epoch");
 });
@@ -5133,16 +5051,22 @@ test("#3045 the reviewer's prompt says a verdict at an equal-patch head stands, 
   assert.doesNotMatch(ordersFor(readyPr(2104, AUTHORED, patched({ [AUTHORED]: PATCH_A })))[0].prompt, /is the same at/);
 });
 
+/** The diffs the fake code host is asked for, as `<base>...<head>`, and the one it answers for every head. */
+function diffsAsked(world: ReturnType<typeof seedWorld>) {
+  const asked: string[] = [];
+  const answerAnyDiff = (key: string) => { asked.push(key); return "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n"; };
+  Object.defineProperty(world.gate.diffs, "get", { value: answerAnyDiff });
+  return asked;
+}
+
 test("#3045 withPatchIds reads patches ONLY where the review question is genuinely open", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => { calls.push(args); return "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n"; };
+  const asked = diffsAsked(seedWorld());
   const open = readyPr(1, MERGE_UI);
   const settled = readyPr(2, MERGE_UI, { comments: [verdictAt(2, AUTHORED, "convinced")] });
   const red = readyPr(3, MERGE_UI, { statusCheckRollup: RED });
   const labelled = readyPr(5, MERGE_UI, { labels: [{ name: "awaiting-evidence" }] });
-  const out = withPatchIds([open, settled, red, labelled], run) as { patchIds?: Record<string, string> }[];
-  assert.deepEqual(calls.map((c) => c[c.length - 1]),
-    [`repos/a11ign/a11ign/compare/main...${MERGE_UI}`, `repos/a11ign/a11ign/compare/main...${MERGE_UI}`, `repos/a11ign/a11ign/compare/main...${AUTHORED.slice(0, 8)}`],
+  const out = withPatchIds([open, settled, red, labelled], noGh) as { patchIds?: Record<string, string> }[];
+  assert.deepEqual(asked, [`main...${MERGE_UI}`, `main...${MERGE_UI}`, `main...${AUTHORED.slice(0, 8)}`],
     "the open one at its head; the answered one at its head AND the head its verdict names; red and labelled: no call");
   assert.deepEqual(Object.keys(out[0].patchIds ?? {}), [MERGE_UI], "the positive control: the open one WAS enriched");
   assert.deepEqual(Object.keys(out[1].patchIds ?? {}), [MERGE_UI, AUTHORED.slice(0, 8)]);
@@ -5150,14 +5074,21 @@ test("#3045 withPatchIds reads patches ONLY where the review question is genuine
 });
 
 test("#3045 a REFUSED read leaves the pull request as it was -- never an empty patch id", () => {
-  const refuse = () => { throw new Error("HTTP 406 diff too large"); };
-  const [pr] = withPatchIds([readyPr(1, MERGE_UI)], refuse) as { patchIds?: unknown }[];
+  const world = seedWorld();
+  world.failures.set("compareDiffOf", new Error("HTTP 406 diff too large"));
+  world.failures.set("commitShasOf", new Error("HTTP 406 diff too large"));
+  const [pr] = withPatchIds([readyPr(1, MERGE_UI)], noGh) as { patchIds?: unknown }[];
   assert.equal(pr.patchIds, undefined);
-  assert.equal(readPatchId(MERGE_UI, "main", refuse), null);
-  assert.equal(readPatchId(MERGE_UI, "main", () => ""), patchIdOfDiff(""), "an empty diff is a real patch, not an unread one");
-  assert.deepEqual(readCommitShas(1, refuse), null);
-  assert.equal(readCommitShas(1, () => ""), null, "no commits is not a list either");
-  assert.deepEqual(readCommitShas(1, () => `${AUTHORED}\n${MERGE_UI}\n`), [AUTHORED, MERGE_UI]);
+  assert.equal(readPatchId(MERGE_UI, "main", noGh), null);
+  assert.deepEqual(readCommitShas(1, noGh), null);
+  world.failures.clear();
+  world.gate.diffs.set(`main...${MERGE_UI}`, "");
+  assert.equal(readPatchId(MERGE_UI, "main", noGh), patchIdOfDiff(""), "an empty diff is a real patch, not an unread one");
+  const pull = { number: 1, body: "", headRefName: "agent/x", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [] };
+  world.pulls.set(1, { ...pull, commits: [] });
+  assert.equal(readCommitShas(1, noGh), null, "no commits is not a list either");
+  world.pulls.set(1, { ...pull, commits: [AUTHORED, MERGE_UI] });
+  assert.deepEqual(readCommitShas(1, noGh), [AUTHORED, MERGE_UI]);
 });
 
 test("#3045 the patch read is counted in GH_READS", () => {
@@ -5276,43 +5207,29 @@ test("#2202: decide wakes the session for a closed row given as `answerOwed`, be
   assert.deepEqual(orders.map((o) => [o.cause, o.session]), [["answer-owed", "product-manager"]]);
 });
 
-test("#2202: readClosedAnswerRows asks for the CLOSED rows carrying the repo's own answer labels, and returns the "
-  + "rows GitHub gives it -- driven with a CLOSED row, not by the shape of an argv", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "label") return JSON.stringify([{ name: "answer:ceo" }, { name: "answer:orchestrator" }, { name: "answered" }]);
-    // #2641: the pull-request half has its own file, `closed-pr-answer-owed.test.ts`. #5050: both halves are connection reads over `gh api graphql`, told apart by the connection asked of.
-    if (readsClosedAnswerRows(args)?.kind === "pullRequests") return closedAnswerConnection([]);
-    if (readsClosedAnswerRows(args)?.kind === "issues") {
-      return closedAnswerConnection([closedOwedRow(1936, "orchestrator"), { number: 8, state: "CLOSED", labels: [{ name: "backlog" }] }]);
-    }
-    throw new Error(`unexpected call: ${args.join(" ")}`);
-  };
-  const rows = readClosedAnswerRows(run);
-  assert.deepEqual(rows?.map((r: { number: number }) => r.number), [1936], "only the row that carries an answer: label");
-  // #5050: a search's `label:"a","b"` was an OR; the connection's `labels:[a,b]` is an AND, so each label is asked on an alias of its own and a row on two is kept once.
-  const issues = readsClosedAnswerRows(calls[1]);
-  assert.deepEqual(issues, { kind: "issues", names: ["answer:ceo", "answer:orchestrator"] }, "a label that merely starts with `answer` is not asked for");
-  assert.match(calls[1].join(" "), /states: CLOSED,/, "and it is the CLOSED population -- the open read already has the rest");
-  assert.deepEqual(readsClosedAnswerRows(calls[2]), { kind: "pullRequests", names: ["answer:ceo", "answer:orchestrator"] }, "the pull requests ask for the same labels");
-  assert.match(calls[2].join(" "), /states: \[CLOSED, MERGED\],/, "and for the closed AND merged ones (the old `-is:open`)");
-  assert.equal(calls.length, 3, "the label list, then one read of each kind -- not one per label");
-  // `label list --search answer:` is the first call and is GraphQL `labels(query:)`, not a search of rows; the two row reads after it are the question.
-  assert.ok(!calls.slice(1).some((args) => args.includes("--search") || args[0] === "issue" || args[0] === "pr"), "neither row read is a SEARCH (#5050)");
+test("#2202: readClosedAnswerRows returns the CLOSED rows carrying the repo's own answer labels -- driven with a CLOSED row, not by the shape of an argv", () => {
+  const world = seedWorld();
+  world.rows.set(1936, fakeRow(world, 1936, { state: "CLOSED", labels: ["answer:orchestrator"] }));
+  world.rows.set(8, fakeRow(world, 8, { state: "CLOSED", labels: ["backlog"] }));
+  world.rows.set(9, fakeRow(world, 9, { labels: ["answer:ceo"] })); // OPEN: the open read already has it
+  world.rows.set(10, fakeRow(world, 10, { state: "CLOSED", labels: ["answered"] })); // a label that merely starts with `answer`
+  const rows = readClosedAnswerRows(noGh);
+  assert.deepEqual(rows?.map((r: { number: number }) => r.number), [1936], "only the row that carries an answer: label, and only a CLOSED one");
+  // What the plugin sends (one aliased connection read per kind, the CLOSED and the closed-and-merged population, never a SEARCH, #5050) is asserted in `plugins/github/rows/gate-pull-reads.test.ts`.
 });
 
 test("#2202: readClosedAnswerRows refuses rather than reporting nobody owes anything, and asks nothing with no labels", () => {
-  assert.equal(readClosedAnswerRows(() => { throw new Error("HTTP 502"); }), null);
-  assert.equal(readClosedAnswerRows(() => "not json"), null);
-  assert.deepEqual(readClosedAnswerRows((args) => { if (args[0] === "label") return "[]"; throw new Error("no search with no labels"); }),
-    [], "no answer: label exists, so nothing can owe -- and no search is made");
-  const refusedSearch = (args: string[]) => { if (args[0] === "label") return JSON.stringify([{ name: "answer:ceo" }]); return "{}"; };
-  assert.equal(readClosedAnswerRows(refusedSearch), null, "a read answering something that is not the connection is a refusal, never an empty tracker");
-  // #5050: `errors` beside `data` is a partial answer, and a partial answer of "who owes" is refused rather than read as the whole.
-  const partial = (args: string[]) => (args[0] === "label" ? JSON.stringify([{ name: "answer:ceo" }])
-    : JSON.stringify({ ...JSON.parse(closedAnswerConnection([closedOwedRow(1, "ceo")])), errors: [{ message: "timeout" }] }));
-  assert.equal(readClosedAnswerRows(partial), null, "a connection that came back with `errors` is not the whole list");
+  const host = seedHost();
+  const world = host.rowsWorld;
+  world.rows.set(1, fakeRow(world, 1, { state: "CLOSED", labels: ["answer:ceo"] }));
+  world.failures.set("labelNamesWithPrefix", new Error("HTTP 502"));
+  assert.equal(readClosedAnswerRows(noGh), null);
+  world.failures.clear();
+  (host.rows as { closedRowsCarryingLabels: unknown }).closedRowsCarryingLabels = () => null; // an answer that is not the whole connection (`errors` beside `data`, or no connection at all)
+  assert.equal(readClosedAnswerRows(noGh), null, "a read answering something that is not the connection is a refusal, never an empty tracker, and a partial answer of \"who owes\" is not the whole list (#5050)");
+  const bare = seedHost();
+  bare.rows!.closedRowsCarryingLabels = () => { throw new Error("no search with no labels"); };
+  assert.deepEqual(readClosedAnswerRows(noGh), [], "no answer: label exists, so nothing can owe -- and no search is made");
 });
 
 test("#2202: main feeds the closed-row read into `answerOwed` beside the open one, through the helper that SAYS a refusal", () => {

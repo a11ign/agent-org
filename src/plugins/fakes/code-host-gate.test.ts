@@ -88,3 +88,53 @@ test("the executor's process: a fake has no gh to start, and says so by name", (
   assert.throws(() => rows.gateRun({ timeoutMs: 1, capture: false }), /no gh to start for the gate's executor/);
   assert.throws(() => rows.runTogether({ calls: [], env: {}, callMs: 1, graceMs: 1, maxBuffer: 1 }), /no gh to start for a batch of calls/);
 });
+
+test("a test can count what the gate read: the reads of history, diffs, checks and jobs, and the pull requests readied, are lines in the world's calls", () => {
+  const { world, rows } = seeded();
+  world.pulls.set(3, { number: 3, body: "", headRefName: "b", labels: [], isDraft: true, armed: false, merged: false, mergedAt: null, createdAt: "t", comments: [] });
+  world.gate.diffs.set("main...abc", "d");
+  world.gate.actionsJobs.set("77", { conclusion: "success", runner_name: "r", steps: 2 });
+  rows.labeledEventTimesOf({ number: 7, label: "needs:chairman", run: refused });
+  rows.compareDiffOf({ repo: "x/y", base: "main", head: "abc", run: refused });
+  rows.failingCheckNamesAt({ repo: "x/y", commit: "abc", run: refused });
+  rows.actionsJobOf({ repo: "x/y", jobId: "77", run: refused });
+  rows.waitRefOf({ repo: world.repo, number: 7, run: refused });
+  rows.markPullReady({ number: 3, run: refused });
+  rows.markPullReady({ number: 3, repo: "o/r", run: refused });
+  assert.deepEqual(world.calls, ["labeledEventTimesOf #7", "compareDiffOf main...abc", "failingCheckNamesAt abc", "actionsJobOf 77", "waitRefOf fake/tracker#7", "markPullReady #3", "markPullReady o/r#3"]);
+});
+
+test("a history is seeded one login a line, `null` for an actor that is gone, or as a history that cannot be read", async () => {
+  const { seedLabelHistory } = await import("./code-host-gate.ts");
+  const { world, rows } = seeded();
+  world.rows.set(9, fakeRow(world, 9));
+  seedLabelHistory(world, { number: 9, label: "priority:chairman", actors: "ceo\nthe-chairman\nnull\n", endingAt: Date.parse("2026-10-05T00:00:00Z") });
+  assert.deepEqual(rows.labeledEventTimesOf({ number: 9, label: "priority:chairman", run: refused }), ["2026-10-04T23:57:00.000Z", "2026-10-04T23:58:00.000Z", "2026-10-04T23:59:00.000Z"]);
+  assert.equal(rows.newestLabellerOf({ number: 9, label: "priority:chairman", run: refused }), null, "the newest labeller's actor is gone: unknown, never the one before");
+  seedLabelHistory(world, { number: 9, label: "priority:chairman", actors: new Error("HTTP 403") });
+  assert.throws(() => rows.labeledEventTimesOf({ number: 9, label: "priority:chairman", run: refused }), /HTTP 403/);
+});
+
+test("the knobs for a read that came back wrong: an answer-label list that is not a list, closed rows that are not whole or not filtered, a refused kind, the recently-closed nodes as the test wants them, a repository's own closed pull requests", () => {
+  const { world, rows } = seeded();
+  world.rows.set(10, fakeRow(world, 10, { state: "CLOSED", closedAt: "2026-10-02T00:00:00Z", labels: ["answer:ceo"] }));
+  world.rows.set(11, fakeRow(world, 11, { state: "CLOSED", closedAt: "2026-10-02T00:00:00Z", labels: ["other"] }));
+  assert.deepEqual(rows.labelNamesWithPrefix({ prefix: "answer:", run: refused }), ["answer:ceo"]);
+  world.gate.labelListNotAList = true;
+  assert.equal(rows.labelNamesWithPrefix({ prefix: "answer:", run: refused }), null);
+  assert.deepEqual(rows.closedRowsCarryingLabels({ names: ["answer:ceo"], kind: "issues", run: refused })?.map(({ number }) => number), [10]);
+  world.gate.closedRowsUnfiltered = true;
+  assert.deepEqual(rows.closedRowsCarryingLabels({ names: ["answer:ceo"], kind: "issues", run: refused })?.map(({ number }) => number), [10, 11], "the server's filter switched off, so a caller's own is tested apart");
+  world.gate.closedRowsNotWhole.add("pullRequests");
+  assert.equal(rows.closedRowsCarryingLabels({ names: ["answer:ceo"], kind: "pullRequests", run: refused }), null);
+  world.failures.set("closedRowsCarryingLabels issues", new Error("HTTP 502"));
+  assert.throws(() => rows.closedRowsCarryingLabels({ names: ["x"], kind: "issues", run: refused }), /HTTP 502/);
+  assert.equal(rows.closedRowsCarryingLabels({ names: ["x"], kind: "pullRequests", run: refused }), null, "a refusal of one kind leaves the other kind's read alone");
+  world.gate.recentlyClosed = [{ number: 1 }];
+  assert.deepEqual(rows.recentlyClosedRowsOf({ limit: 5, run: refused }), [{ number: 1 }]);
+  world.gate.recentlyClosed = new Error("HTTP 403");
+  assert.throws(() => rows.recentlyClosedRowsOf({ limit: 5, run: refused }), /HTTP 403/);
+  world.gate.closedPulls = [{ at: "a" }];
+  world.gate.closedPullsByRepo = new Map([["o/r", [{ at: "b" }]]]);
+  assert.deepEqual([rows.closedPullsPage({ repo: "o/r", page: 1, pageSize: 10, run: refused }), rows.closedPullsPage({ repo: "x/y", page: 1, pageSize: 10, run: refused })], [[{ at: "b" }], [{ at: "a" }]]);
+});

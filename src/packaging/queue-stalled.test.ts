@@ -1,4 +1,4 @@
-// no-token: gh -- the verdicts are pure and driven with recorded rollups; the script is only spawned to show it refuses
+// no-token: gh -- the verdicts are pure and driven with recorded rollups, the ejection reads run on the fake code host's rows (A11-160, step 6); the script is only spawned to show it refuses
 // before any gh call (an unknown flag, no GITHUB_REPOSITORY). #1623's route (a), product-manager 15:05Z.
 /**
  * #361: AN ARMED, GREEN, CONFLICTING PR SITS FOREVER, AND NOTHING SAYS WHY.
@@ -8,7 +8,7 @@
  * against real, captured output rather than a guessed shape. See queue-stalled.ts's own header for the
  * incident (#232/#281, 12.5 PR-hours invisible) and why `mergeable` is not the instrument.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,10 @@ import { readEjections } from "../work-gate/causes/pr-ejected.ts";
 import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { stallReasonOf, greenUnarmedOrders, STALL_REASON } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { thrownBy } from "../lib/thrown-by.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), "../queue-stalled.ts");
 
@@ -545,7 +549,7 @@ test("#3019 done-when 4: a refused read yields no order -- null, never an all-cl
   assert.deepEqual(greenUnarmedOrders(split?.unarmed ?? null), [], "an empty remainder sends no order");
 });
 
-const GREEN_16 = { number: 16, isDraft: false, headRefOid: "b7143468da00ec074d40d3c512c69c48b8606dea", mergeStateStatus: "CLEAN",
+const GREEN_16 = { number: 16, isDraft: false, isCrossRepository: false, author: { login: "a11ign-ai-workers" }, headRefOid: "b7143468da00ec074d40d3c512c69c48b8606dea", mergeStateStatus: "CLEAN",
   reviewDecision: "APPROVED", statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }],
   labels: [{ name: "session:worker-16" }] };
 
@@ -586,28 +590,26 @@ test("#3019 the query names the three things the reading depends on", () => {
   }
 });
 
-/** A fake `gh` for the three reads an ejection costs: the timeline, the merge_group runs, and the failed run's log. */
+/**
+ * The three reads an ejection costs. The merge_group runs and the failed run's log are the fake code host's (`runs: "throw"` refuses the runs); the timeline is the one read core still parses itself,
+ * whose arguments the code host builds, so the returned `run` answers `timelines` for them.
+ */
 function fakeGh(timelines: Record<string, unknown>, { runs = "ok" }: { runs?: "ok" | "throw" } = {}) {
+  const host = createFakeCodeHost();
+  const { gate, ci } = host.rowsWorld;
+  gate.mergeGroupRuns = runs === "throw" ? new Error("HTTP 403") : [
+    { id: 37011501222, head_branch: "gh-readonly-queue/main/pr-16-474b45f", conclusion: "failure", created_at: "2026-10-02T13:12:50Z" },
+    { id: 37011180948, head_branch: "gh-readonly-queue/main/pr-16-ccea9e5", conclusion: "failure", created_at: "2026-10-02T13:09:54Z" },
+    { id: 37010289767, head_branch: "gh-readonly-queue/main/pr-16-474b45f", conclusion: "failure", created_at: "2026-10-02T13:16:00Z" },
+    { id: 99, head_branch: "gh-readonly-queue/main/pr-17-aaa", conclusion: "failure", created_at: "2026-10-02T13:14:00Z" },
+  ];
+  ci.logs.set("37011501222", ["gate\tTest\t2026-10-02T13:14:00Z # Subtest: x",
+    "gate\tTest\t2026-10-02T13:14:01Z not ok 301 - #2174: work-gate.ts loads in a tree with NO node_modules",
+    "gate\tTest\t2026-10-02T13:14:02Z not ok 302 - the count of non-test files carrying the literal",
+    "gate\tTest\t2026-10-02T13:14:03Z # fail 2"].join("\n"));
+  substituteCodeHost(host);
   return (args: string[]) => {
-    if (args[0] === "api" && args[1] === "graphql") {
-      const n = args[args.indexOf("-F") + 1].replace("n=", "");
-      return JSON.stringify(timelines[n]);
-    }
-    if (args[0] === "api" && args[1].includes("actions/runs")) {
-      if (runs === "throw") throw new Error("HTTP 403");
-      return JSON.stringify([
-        { id: 37011501222, head_branch: "gh-readonly-queue/main/pr-16-474b45f", conclusion: "failure", created_at: "2026-10-02T13:12:50Z" },
-        { id: 37011180948, head_branch: "gh-readonly-queue/main/pr-16-ccea9e5", conclusion: "failure", created_at: "2026-10-02T13:09:54Z" },
-        { id: 37010289767, head_branch: "gh-readonly-queue/main/pr-16-474b45f", conclusion: "failure", created_at: "2026-10-02T13:16:00Z" },
-        { id: 99, head_branch: "gh-readonly-queue/main/pr-17-aaa", conclusion: "failure", created_at: "2026-10-02T13:14:00Z" },
-      ]);
-    }
-    if (args[0] === "run" && args[1] === "view") {
-      return ["gate\tTest\t2026-10-02T13:14:00Z # Subtest: x",
-        "gate\tTest\t2026-10-02T13:14:01Z not ok 301 - #2174: work-gate.ts loads in a tree with NO node_modules",
-        "gate\tTest\t2026-10-02T13:14:02Z not ok 302 - the count of non-test files carrying the literal",
-        "gate\tTest\t2026-10-02T13:14:03Z # fail 2"].join("\n");
-    }
-    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    if (args[0] === "fake-ejection-query") return JSON.stringify(timelines[args[2]]);
+    throw new Error(`no gh: ${args.join(" ")}`);
   };
 }

@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3892)
+// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; the pull requests of a branch are the fake code host's rows (A11-160, step 6), so nothing is spawned (#3892)
 /**
  * #3892: A READY ROW WHOSE BRANCH'S PULL REQUEST WAS CLOSED UNMERGED IS OFFERED, NOT SHELVED.
  *
@@ -8,6 +8,9 @@
  * POSITIVE CONTROLS, one per way the row must STAY shelved: a branch with NO pull request (#2000's shape), one with an OPEN pull request (#3010's), one whose
  * pull request MERGED, and a row holding one closed branch and one bare branch. Each is the SAME fixture as the offered row with one thing changed, so "shelved" is
  * not what this harness says of every row, and each is red against an implementation that offers everything.
+ *
+ * THE PULL REQUESTS OF A BRANCH ARE THE CODE HOST'S (A11-160, step 6): `readBranchPrs` asks `pullsOfBranch`, and these cases seed the fake code host's world with the pull requests a branch carries. The command the GitHub plugin
+ * sends for it (`pr list --head <branch> --state all`) is held beside the operation (`plugins/github/rows/gate-pull-reads.test.ts`, #3892).
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -43,6 +46,25 @@ const { spawnClaimer } = await import("./wake/release-line-and-seats.ts");
 const { spawnableRole } = await import("./wake/pull-request-spawn-orders.ts");
 const { spawnedPrompt } = await import("./wake/fyi-queue.ts");
 const { writeFileSync: stamp } = await import("node:fs");
+const { forgetActivation, substituteCodeHost } = await import("./plugins/active.ts");
+const { createFakeCodeHost } = await import("./plugins/fakes/code-host.ts");
+
+after(() => forgetActivation());
+
+/** The fake code host in place, with `branches`' pull requests as [branch, number, state] (a closed one is closed unmerged); `asked` records each `pullsOfBranch` read's branch and limit. */
+function codeHostWith(...pulls: [string, number, "OPEN" | "MERGED" | "CLOSED"][]) {
+  const host = createFakeCodeHost();
+  for (const [branch, number, state] of pulls) {
+    host.rowsWorld.pulls.set(number, { number, body: "", headRefName: branch, labels: [], isDraft: false, armed: false, merged: state === "MERGED", mergedAt: state === "MERGED" ? "2026-10-01T00:00:00Z" : null,
+      createdAt: "2026-10-01T00:00:00Z", comments: [], closedAt: state === "CLOSED" ? "2026-10-02T00:00:00Z" : null });
+  }
+  const asked: { branch: string; limit: number }[] = [];
+  const read = host.rows!.pullsOfBranch;
+  host.rows!.pullsOfBranch = (request) => { asked.push({ branch: request.branch, limit: request.limit }); return read(request); };
+  substituteCodeHost(host);
+  return { host, asked };
+}
+const manyClosed = (branch: string, count: number): [string, number, "CLOSED"][] => Array.from({ length: count }, (_, i) => [branch, 5000 - i, "CLOSED"]);
 
 const ROW = 3505;
 const BRANCH = "agent/the-split-move-3-3505";
@@ -133,45 +155,44 @@ test("`spawnableRole` accepts that order for the engineer pool", () => {
   assert.deepEqual(spawnableRole(order, [], ["worker-capture"]), { role: "worker-capture" });
 });
 
-test("readBranchPrs asks one `pr list --head <branch> --state all` per branch, and a refused read is `null`, not `[]`", () => {
-  const asked: string[][] = [];
-  const run = (args: string[]) => { asked.push(args); return JSON.stringify([{ number: 3834, state: "CLOSED" }]); };
-  assert.deepEqual(readBranchPrs([{ branch: BRANCH }], run), [pr(BRANCH, 3834, "CLOSED")]);
-  assert.deepEqual(asked[0].slice(0, 5), ["pr", "list", "--head", BRANCH, "--state"]);
-  assert.equal(asked[0][5], "all");
-  assert.equal(readBranchPrs([{ branch: BRANCH }], () => { throw new Error("rate limited"); }), null);
+test("readBranchPrs reads every pull request of each branch in any state, and a refused read is `null`, not `[]`", () => {
+  const { host, asked } = codeHostWith([BRANCH, 3834, "CLOSED"]);
+  assert.deepEqual(readBranchPrs([{ branch: BRANCH }]), [pr(BRANCH, 3834, "CLOSED")]);
+  assert.deepEqual(asked.map((read) => read.branch), [BRANCH], "one read per branch");
+  host.rowsWorld.failures.set("pullsOfBranch", new Error("rate limited"));
+  assert.equal(readBranchPrs([{ branch: BRANCH }]), null);
 });
 
 test("readBranchPrs refuses a FULL page: `gh` cuts the oldest, so a merged pull request can hide beyond the limit (#3892 review)", () => {
-  let limit = 0;
-  const page = (size: number) => (args: string[]) => {
-    limit = Number(args[args.indexOf("--limit") + 1]);
-    // newest first, as `gh` returns them: the cut-off merged one is the OLDEST and is not in the page
-    return JSON.stringify(Array.from({ length: size }, (_, i) => ({ number: 5000 - i, state: "CLOSED" })));
+  // newest first, as `gh` returns them: the cut-off merged one is the OLDEST and is not in the page
+  const page = (size: number, ...branches: string[]) => {
+    const { asked } = codeHostWith(...manyClosed(BRANCH, size));
+    return { limit: () => asked[0]?.limit ?? 0, read: () => readBranchPrs(branches.map((branch) => ({ branch }))) };
   };
-  assert.equal(readBranchPrs([{ branch: BRANCH }], page(1))?.length, 1);
+  const one = page(1, BRANCH);
+  assert.equal(one.read()?.length, 1);
+  const limit = one.limit();
   assert.ok(limit > 1, "the page limit is read off the call itself");
   // positive control: one short of the limit is the whole list and is read
-  assert.equal(readBranchPrs([{ branch: BRANCH }], page(limit - 1))?.length, limit - 1);
-  assert.equal(readBranchPrs([{ branch: BRANCH }], page(limit)), null, "a page exactly at the limit may have been cut");
-  assert.equal(readBranchPrs([{ branch: BRANCH }, { branch: "agent/other-3835" }], page(limit)), null);
+  assert.equal(page(limit - 1, BRANCH).read()?.length, limit - 1);
+  assert.equal(page(limit, BRANCH).read(), null, "a page exactly at the limit may have been cut");
+  assert.equal(page(limit, BRANCH, "agent/other-3835").read(), null);
 });
 
 test("a full page leaves the row SHELVED through the tick's reader, not offered", () => {
-  const full = () => JSON.stringify(Array.from({ length: 1000 }, (_, i) => ({ number: 5000 - i, state: "CLOSED" })));
-  assert.equal(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH), full), null);
-  const ok = () => JSON.stringify([{ number: 3834, state: "CLOSED" }]);
-  assert.deepEqual(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH), ok), [pr(BRANCH, 3834, "CLOSED")]);
+  codeHostWith(...manyClosed(BRANCH, 1000));
+  assert.equal(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH)), null);
+  codeHostWith([BRANCH, 3834, "CLOSED"]);
+  assert.deepEqual(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH)), [pr(BRANCH, 3834, "CLOSED")]);
 });
 
 test("readBranchPrsOfUnclaimed asks only about branches of UNCLAIMED ready rows, and nothing when there are none", () => {
-  const asked: string[][] = [];
-  const run = (args: string[]) => { asked.push(args); return "[]"; };
-  assert.equal(readBranchPrsOfUnclaimed([row(ROW, ["ready", "in-progress"])], onOrigin(BRANCH), run), null);
+  const { asked } = codeHostWith();
+  assert.equal(readBranchPrsOfUnclaimed([row(ROW, ["ready", "in-progress"])], onOrigin(BRANCH)), null);
   assert.equal(asked.length, 0, "a claimed row's branch is its holder's");
-  assert.deepEqual(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH), run), []);
+  assert.deepEqual(readBranchPrsOfUnclaimed([row()], onOrigin(BRANCH)), []);
   assert.equal(asked.length, 1, "the same fixture, unclaimed, DOES ask");
-  assert.equal(readBranchPrsOfUnclaimed([row()], null, run), null);
+  assert.equal(readBranchPrsOfUnclaimed([row()], null), null);
 });
 
 test("branchesToReplace names the closed PRs per branch", () => {

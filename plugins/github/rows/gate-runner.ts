@@ -4,19 +4,40 @@
 // that is started is the plugin's. `gateRunner` is one call, run to completion or cut at a bound, and `runGhTogether` is several started at once so they wait together. Both run through `deps.exec`, so a test
 // injects the answer and core's `realExec` is the one that spawns.
 import type { BatchAnswer, BatchCall, GateRunOptions } from "../../../src/plugins/contracts/code-host-rows.ts";
-import type { PluginDeps } from "../../../src/plugins/manifest.ts";
+import type { ExecResult, PluginDeps } from "../../../src/plugins/manifest.ts";
 import { GhFailure } from "../gh.ts";
 
-/** `gh`, run to completion or cut at `timeoutMs`; a call that hits the bound throws with `code: "ETIMEDOUT"`, as `execFileSync` threw it, which is a refusal every reader already turns into `null` for ITS lane. */
+/** The most one `gh` call may print before it is refused: 32 MiB, as the gate has always allowed. */
+const GATE_MAX_BUFFER = 32 * 1024 * 1024;
+
+/** `ETIMEDOUT`, `ENOENT`, `ENOBUFS`: the code `execFileSync` put on the error of a program that was cut or could not start. */
+const SPAWN_CODE = /\b(E[A-Z]+)\b/;
+
+/**
+ * What `execFileSync` threw for a `gh` that did not succeed. One that EXITED is a {@link GhFailure} (the status, stderr and stdout, and a message that holds the command and what gh printed). One that was CUT or could
+ * not start has the spawn error for its message and no stderr of its own (`refusalOf` then names the signal that stopped it), and carries `code` (`ETIMEDOUT` for a call that hit the bound, which is a refusal every
+ * reader already turns into `null` for ITS lane) and `signal`. One stopped by a signal with no spawn error (an out-of-memory kill) says which command failed.
+ */
+function failureOf(args: readonly string[], result: ExecResult): GhFailure {
+  if (result.status !== null) return new GhFailure(args, result);
+  if (result.spawnError === undefined) return Object.assign(new GhFailure(args, { ...result, status: 1 }), { status: null, signal: result.signal });
+  const code = SPAWN_CODE.exec(result.spawnError)?.[1];
+  return Object.assign(new GhFailure(args, { ...result, stderr: result.spawnError }), { stderr: "", signal: result.signal, ...(code === undefined ? {} : { code }) });
+}
+
+/** Whether `stderr` is gh's own: not the spawn error `realExec` puts there when a program was cut or could not start. */
+const printedByGh = (result: ExecResult): boolean => result.spawnError === undefined && result.stderr !== "";
+
+/**
+ * `gh`, run to completion or cut at `timeoutMs` and killed with SIGKILL (a `gh` that has hung is not one that answers a polite request). A call that does not succeed throws {@link failureOf}. What gh prints on stderr
+ * goes through to this process's own unless the call is `capture`d (a read whose refusal is an answer the caller handles), as `execFileSync` let it through.
+ */
 export function gateRunner(deps: Pick<PluginDeps, "exec" | "log">, { timeoutMs, capture }: GateRunOptions): (args: string[], repo?: string) => string {
   return (args, repo) => {
-    const result = deps.exec("gh", args, { timeoutMs, ...(repo === undefined ? {} : { env: { GH_REPO: repo } }) });
-    // A `gh` that is not captured lets its stderr through to this process's own, as `execFileSync` did; a captured one carries it on the error.
-    if (!capture && result.stderr !== "") deps.log(result.stderr.replace(/\n$/, ""));
+    const result = deps.exec("gh", args, { timeoutMs, killSignal: "SIGKILL", maxBuffer: GATE_MAX_BUFFER, ...(repo === undefined ? {} : { env: { GH_REPO: repo } }) });
+    if (!capture && printedByGh(result)) deps.log(result.stderr.replace(/\n$/, ""));
     if (result.status === 0) return result.stdout;
-    const failure = new GhFailure(args, result);
-    if (result.status === null && /ETIMEDOUT/.test(result.stderr)) throw Object.assign(failure, { code: "ETIMEDOUT" });
-    throw failure;
+    throw failureOf(args, result);
   };
 }
 
@@ -43,9 +64,14 @@ Promise.all(JSON.parse(process.argv[1]).map(one)).then((answers) => process.stdo
  * answers as a refused one (`failed`, `status: null`, `code: "ETIMEDOUT"`), so every caller's fail-open verdict stands and the other calls' answers are intact. The worker's own wait is `graceMs` longer, so it
  * reports the call it cut before it is killed; if it is killed anyway, this THROWS and the caller runs its calls one by one.
  */
-export function runGhTogether(deps: Pick<PluginDeps, "exec">, { calls, env, callMs, graceMs, maxBuffer }: { calls: BatchCall[]; env: NodeJS.ProcessEnv; callMs: number; graceMs: number; maxBuffer: number }): BatchAnswer[] {
-  const result = deps.exec(process.execPath, ["-e", batchWorker(maxBuffer), JSON.stringify(calls), String(callMs)], { timeoutMs: callMs + graceMs, env: definedOnly(env) });
-  if (result.status !== 0) throw new Error(`the batch of ${calls.length} gh calls did not finish: ${result.stderr.trim().split("\n")[0] || `status ${result.status}`}`);
+export function runGhTogether(deps: Pick<PluginDeps, "exec" | "log">, { calls, env, callMs, graceMs, maxBuffer }: { calls: BatchCall[]; env: NodeJS.ProcessEnv; callMs: number; graceMs: number; maxBuffer: number }): BatchAnswer[] {
+  const result = deps.exec(process.execPath, ["-e", batchWorker(maxBuffer), JSON.stringify(calls), String(callMs)], { timeoutMs: callMs + graceMs, killSignal: "SIGKILL", maxBuffer, env: definedOnly(env) });
+  if (result.stderr !== "" && result.spawnError === undefined) deps.log(result.stderr.replace(/\n$/, ""));
+  if (result.status !== 0) {
+    const reason = result.spawnError ?? (result.stderr.trim().split("\n")[0] || `status ${result.status}`);
+    const code = SPAWN_CODE.exec(result.spawnError ?? "")?.[1];
+    throw Object.assign(new Error(`the batch of ${calls.length} gh calls did not finish: ${reason}`), code === undefined ? {} : { code });
+  }
   return JSON.parse(result.stdout);
 }
 

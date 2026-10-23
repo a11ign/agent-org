@@ -28,8 +28,8 @@ test("a call is `gh` with the bound, aimed by GH_REPO where the caller names a r
   assert.equal(run(["pr", "list"]), "answer\n");
   assert.equal(run(["pr", "list"], "o/r"), "answer\n");
   assert.deepEqual(called, [
-    { file: "gh", args: ["pr", "list"], options: { timeoutMs: 30_000 } },
-    { file: "gh", args: ["pr", "list"], options: { timeoutMs: 30_000, env: { GH_REPO: "o/r" } } },
+    { file: "gh", args: ["pr", "list"], options: { timeoutMs: 30_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024 } },
+    { file: "gh", args: ["pr", "list"], options: { timeoutMs: 30_000, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024, env: { GH_REPO: "o/r" } } },
   ]);
 });
 
@@ -47,14 +47,30 @@ test("a failed call throws what `execFileSync` threw: the status, stderr and std
   }
 });
 
-test("a call that hit the bound throws with code ETIMEDOUT, the refusal every reader turns into null for its own lane", () => {
-  const { deps } = injected({ status: null, stdout: "", stderr: "spawnSync gh ETIMEDOUT" });
-  const refusal = (() => { try { gateRunner(deps, { timeoutMs: 400, capture: true })(["pr", "list"]); } catch (error) { return error as { code?: string; status?: number | null }; } })();
-  assert.equal(refusal?.code, "ETIMEDOUT");
-  assert.equal(refusal?.status, null);
+const refusalOf = (run: () => unknown): { code?: string; status?: number | null; signal?: string | null; stderr?: string; message?: string } => {
+  try { run(); } catch (error) { return error as never; }
+  throw new Error("the call was expected to be refused");
+};
+
+test("a call that hit the bound throws with code ETIMEDOUT, the refusal every reader turns into null for its own lane, and says the signal that stopped it and nothing on stderr", () => {
+  const { deps } = injected({ status: null, stdout: "", stderr: "spawnSync gh ETIMEDOUT", spawnError: "spawnSync gh ETIMEDOUT", signal: "SIGKILL" });
+  const refusal = refusalOf(() => gateRunner(deps, { timeoutMs: 400, capture: true })(["pr", "list"]));
+  assert.deepEqual([refusal.code, refusal.status, refusal.signal, refusal.stderr, refusal.message], ["ETIMEDOUT", null, "SIGKILL", "", "spawnSync gh ETIMEDOUT"],
+    "no stderr of its own, so the reader's own line says `gh was stopped by SIGKILL`, as it did when execFileSync threw it");
 });
 
-test("what gh prints on stderr goes through to this process's own unless the call is captured (a read whose refusal is an answer the caller handles)", () => {
+test("a gh that could not start throws its spawn error with that error's code; one stopped by a signal says which command failed and what it printed", () => {
+  const { deps: missing } = injected({ status: null, stdout: "", stderr: "spawnSync gh ENOENT", spawnError: "spawnSync gh ENOENT", signal: null });
+  assert.deepEqual([refusalOf(() => gateRunner(missing, { timeoutMs: 1, capture: true })(["x"])).code, refusalOf(() => gateRunner(missing, { timeoutMs: 1, capture: true })(["x"])).message], ["ENOENT", "spawnSync gh ENOENT"]);
+  const { deps: killed } = injected({ status: null, stdout: "", stderr: "half a line", signal: "SIGTERM" });
+  const refusal = refusalOf(() => gateRunner(killed, { timeoutMs: 1, capture: true })(["pr", "list"]));
+  assert.deepEqual([refusal.status, refusal.signal, refusal.stderr, refusal.message], [null, "SIGTERM", "half a line", "Command failed: gh pr list\nhalf a line"]);
+});
+
+test("what gh prints on stderr goes through to this process's own unless the call is captured (a read whose refusal is an answer the caller handles); the spawn error of a cut call is not gh's and is not echoed", () => {
+  const cut = injected({ status: null, stdout: "", stderr: "spawnSync gh ETIMEDOUT", spawnError: "spawnSync gh ETIMEDOUT", signal: "SIGKILL" });
+  refusalOf(() => gateRunner(cut.deps, { timeoutMs: 1, capture: false })(["pr", "list"]));
+  assert.deepEqual(cut.told, []);
   const letThrough = injected({ status: 0, stdout: "x", stderr: "warning: a thing\n" });
   gateRunner(letThrough.deps, { timeoutMs: 1, capture: false })(["pr", "list"]);
   assert.deepEqual(letThrough.told, ["warning: a thing"]);
@@ -73,9 +89,13 @@ test("a batch is ONE `node` with the worker's text, the calls as JSON and the bo
   assert.equal(call.args[0], "-e");
   assert.ok(String(call.args[1]).startsWith("/* work-gate.ts runBatch */\n"), "the worker names its script on its first line (#4148): the ledger reads it there");
   assert.match(String(call.args[1]), /maxBuffer: 1024, timeout: Number\(process\.argv\[2\]\), killSignal: "SIGKILL"/);
-  assert.deepEqual([call.args[2], call.args[3], call.options], [JSON.stringify(calls), "500", { timeoutMs: 5_500, env: { PATH: "/stub" } }]);
-  const dead = injected({ status: null, stdout: "", stderr: "spawnSync node ETIMEDOUT" });
-  assert.throws(() => runGhTogether(dead.deps, { calls, env: {}, callMs: 1, graceMs: 1, maxBuffer: 1 }), /^Error: the batch of 2 gh calls did not finish: spawnSync node ETIMEDOUT$/);
+  assert.deepEqual([call.args[2], call.args[3], call.options], [JSON.stringify(calls), "500", { timeoutMs: 5_500, killSignal: "SIGKILL", maxBuffer: 1024, env: { PATH: "/stub" } }]);
+  const dead = injected({ status: null, stdout: "", stderr: "spawnSync node ETIMEDOUT", spawnError: "spawnSync node ETIMEDOUT", signal: "SIGKILL" });
+  const refusal = refusalOf(() => runGhTogether(dead.deps, { calls, env: {}, callMs: 1, graceMs: 1, maxBuffer: 1 }));
+  assert.deepEqual([refusal.message, refusal.code], ["the batch of 2 gh calls did not finish: spawnSync node ETIMEDOUT", "ETIMEDOUT"]);
+  const noisy = injected({ status: 0, stdout: "[]", stderr: "(node:1) Warning: a thing\n" });
+  runGhTogether(noisy.deps, { calls: [], env: {}, callMs: 1, graceMs: 1, maxBuffer: 1 });
+  assert.deepEqual(noisy.told, ["(node:1) Warning: a thing"], "what the worker printed on stderr goes through, as it did when it was inherited");
 });
 
 test("#4148: the batch worker NAMES ITSELF to the ledger (the 852 calls that read /usr/bin/node): the first line of its text is where the wrapper's cut command line finds a script", () => {
@@ -120,10 +140,20 @@ test("a `gh` that never returns ends at the bound with ETIMEDOUT, while one that
   });
 });
 
+test("a `gh` that IGNORES the polite request to stop is killed at the bound all the same (SIGKILL, not SIGTERM)", { timeout: 20_000 }, () => {
+  withStub(`exec ${process.execPath} -e "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"`, () => {
+    const began = Date.now();
+    const refusal = refusalOf(() => gateRunner({ exec: realExec, log: () => undefined }, { timeoutMs: BOUND_MS, capture: true })(["hang"]));
+    assert.equal(refusal.code, "ETIMEDOUT");
+    assert.equal(refusal.signal, "SIGKILL");
+    assert.ok(Date.now() - began < BOUND_MS + SLACK_MS, "ended at the bound, not when the stub chose to stop");
+  });
+});
+
 test("a batch whose first call stalls ends at about the bound and the second call's answer is intact; a cut call answers as a refused one", () => {
   withStub(`if [ "$1" = stall ]; then echo "slow" >&2; exec sleep 30; fi\necho "$1"`, () => {
     const began = Date.now();
-    const [cut, fine] = runGhTogether({ exec: realExec }, { calls: [{ args: ["stall"], repo: undefined }, { args: ["fine"], repo: undefined }], env: { ...process.env, GH_REPO: "" }, callMs: BOUND_MS, graceMs: 5_000, maxBuffer: 1024 * 1024 });
+    const [cut, fine] = runGhTogether({ exec: realExec, log: () => undefined }, { calls: [{ args: ["stall"], repo: undefined }, { args: ["fine"], repo: undefined }], env: { ...process.env, GH_REPO: "" }, callMs: BOUND_MS, graceMs: 5_000, maxBuffer: 1024 * 1024 });
     assert.ok(Date.now() - began < 10_000, "the batch waited for the bound, not for the sleeper");
     assert.deepEqual(fine, { stdout: "fine\n" });
     assert.ok("failed" in cut);

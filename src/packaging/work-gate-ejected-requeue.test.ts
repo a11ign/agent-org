@@ -1,11 +1,11 @@
-// no-token: gh -- `run` is a fake `gh` that answers from fixtures and records every call; nothing here spawns `gh`
+// no-token: gh -- the reads and the arm are the fake code host's rows (A11-160, step 6); the two reads whose answer core still parses (the queue's timeline and the open pull requests) are a `run` that answers from fixtures; nothing here spawns `gh`
 /**
  * a11ign#5125: A PULL REQUEST THE MERGE QUEUE EJECTED FOR A FAILURE THAT IS NOT ITS OWN IS RE-QUEUED BY THE GATE, ONCE, WHEN THE NEWEST MERGE GROUP IS GREEN.
  *
  * THE DEFECT, 2026-10-11: a11ign#5115, #5122 and #5124 were ejected (`failed_checks`) by one test that reads the world (`docs-release-pin-currency.real-tree.test.ts`: the newest release),
  * `main` was green again within the hour, and nothing re-queued them: auto-merge is cleared on ejection, so they sat approved, clean and unarmed until a person armed them by hand.
  *
- * Every case is reached from `readArmingOf`, the call the tick makes, with the real timeline, run list and `--log-failed` shapes behind a fake `gh`; the orders are the real ones (`stalledPrOrders`).
+ * Every case is reached from `readArmingOf`, the call the tick makes, with the real timeline shape behind a `run` and the merge-group runs, the `--log-failed` log and the arm in the fake code host's world; the orders are the real ones (`stalledPrOrders`).
  * The row's named cases are the first two tests:
  *   (1) the #5124 shape (ejected by the pin guard, diff unrelated) is re-queued once `main` is green;
  *   (2) a PR ejected by its own test wakes its holder with the failing test.
@@ -13,7 +13,7 @@
  * (`scopeOf`'s named cases), and runs in that repository's suite. Reading that file from here would grep a sibling checkout's source, and this host's checkout is `main`, which does not
  * hold the change until it merges.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +27,11 @@ import { type ArmingPort } from "../work-gate/vocabulary.ts";
 import { CAUSES, JUDGMENT_CAUSES } from "../cause-declaration.ts";
 import { stalledPrOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import type { Decision, ItemRef } from "../ticket-port/port.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const HOME = "a11ign/a11ign";
 const NOW = Date.parse("2026-10-11T17:40:00Z");
@@ -46,11 +51,11 @@ type World = {
   log?: string[];
   /** How many `failed_checks` entries the head has had, newest last. */
   entries?: number;
-  /** The queue's runs, as `gh api ... --jq` hands them over. */
+  /** The queue's runs, as the code host hands them over. */
   groups?: { head_branch: string; conclusion: string | null; created_at: string }[];
   /** The marker comment is already on the pull request. */
   recorded?: boolean;
-  /** `pr merge` is accepted but the pull request then reads unarmed. */
+  /** The arm is accepted but the pull request then reads unarmed. */
   armRefused?: boolean;
   body?: string;
   /** The labels the pull request carries: none is the holder-less shape (a11ign#5115), `hold:<who>` is a hold. */
@@ -79,31 +84,27 @@ const QUEUE_EVENTS = (entries: number) => Array.from({ length: entries }, (_, at
   { __typename: "RemovedFromMergeQueueEvent", createdAt: at === entries - 1 ? REMOVED_AT : `2026-10-11T16:${30 + at * 20}:00Z`, reason: "failed_checks" },
 ]).flat();
 
-/** A fake `gh`: answers the reads the tick makes and records every call. `armed` is what `pr merge` changes. */
-function fakeGh(world: World = {}) {
+/**
+ * THE WORLD: the pull request in the fake code host (its arm takes unless `armRefused`), the row its body closes (closed, with no blockers), the merge-group runs and the failed run's log it holds, and a `run` for the
+ * two reads core still parses itself, whose arguments the code host builds: the pull request's queue timeline and the open pull requests as the armed rule reads them. `armed` lists the arms asked for.
+ */
+function seeded(world: World = {}) {
   const number = world.number ?? 5124;
-  const calls: string[][] = [];
-  let armed = false;
+  const host = createFakeCodeHost();
+  const held = host.rowsWorld;
+  held.repo = HOME;
+  held.pulls.set(number, { number, body: world.body ?? "Closes: none -- test", headRefName: "agent/some-slug", labels: world.labels ?? [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "t", comments: [], armTakes: world.armRefused !== true });
+  // `blockerVerdict` asks each closing row for its blocked-by edges before the arm: a CLOSED row answers like an open one.
+  for (const closed of /Closes #(\d+)/.exec(world.body ?? "")?.slice(1) ?? []) held.rows.set(Number(closed), fakeRow(held, Number(closed), { state: "CLOSED" }));
+  held.gate.mergeGroupRuns = [{ id: 9001, head_branch: `gh-readonly-queue/main/pr-${number}-ccc`, conclusion: "failure", created_at: "2026-10-11T17:12:00Z" }, ...(world.groups ?? GREEN_AFTER)] as typeof held.gate.mergeGroupRuns;
+  held.ci.logs.set("9001", logFailed(world.log ?? tapFailure(PIN_GUARD)));
+  substituteCodeHost(host);
   const run = (args: string[]): string => {
-    calls.push(args);
-    const line = args.join(" ");
-    if (args[0] === "api" && args[1] === "graphql" && line.includes("timelineItems")) {
-      return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [{ __typename: "PullRequestCommit" }, ...QUEUE_EVENTS(world.entries ?? 1)] } });
-    }
-    if (args[0] === "api" && args[1] === "graphql" && line.includes("-F n=")) {
-      return JSON.stringify({ merged: false, autoMergeRequest: armed && world.armRefused !== true ? { enabledAt: "now" } : null, mergeQueueEntry: null });
-    }
-    if (args[0] === "api" && args[1] === "graphql") return JSON.stringify([{ number, isDraft: false, merged: false, autoMergeRequest: null, mergeQueueEntry: null }]);
-    if (/actions\/runs\?event=merge_group/.test(line)) {
-      return JSON.stringify([{ id: 9001, head_branch: `gh-readonly-queue/main/pr-${number}-ccc`, conclusion: "failure", created_at: "2026-10-11T17:12:00Z" }, ...(world.groups ?? GREEN_AFTER)]);
-    }
-    if (args[0] === "run" && args[1] === "view") return logFailed(world.log ?? tapFailure(PIN_GUARD));
-    if (args[0] === "pr" && args[1] === "merge") { armed = true; return ""; }
-    // `blockerVerdict` asks each closing row for its blocked-by edges before the arm: a CLOSED row answers like an open one.
-    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ blockedBy: { nodes: [], totalCount: 0 } });
-    throw new Error(`fake gh: unexpected ${line.slice(0, 120)}`);
+    if (args[0] === "fake-ejection-query") return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [{ __typename: "PullRequestCommit" }, ...QUEUE_EVENTS(world.entries ?? 1)] } });
+    if (args[0] === "fake-open-pull-nodes") return JSON.stringify(host.rows!.readOpenPullNodes({ repo: args[1] }));
+    throw new Error(`no gh: ${args.join(" ").slice(0, 120)}`);
   };
-  return { run, calls };
+  return { run, host, get armed() { return held.calls.filter((call) => call.startsWith("armPullAuto ")); } };
 }
 
 function fakePort() {
@@ -127,7 +128,7 @@ const prOf = (world: World = {}) => {
 
 /** One tick's arming read, as `decide` is handed it. */
 function tick(world: World = {}, { state = ON, now = NOW }: { state?: ReturnType<typeof emptyCanaryState>; now?: number } = {}) {
-  const gh = fakeGh(world);
+  const gh = seeded(world);
   const port = fakePort();
   const said: string[] = [];
   const pr = prOf(world);
@@ -138,7 +139,7 @@ function tick(world: World = {}, { state = ON, now = NOW }: { state?: ReturnType
   return { arming, gh, port, said, orders };
 }
 
-const armCalls = (gh: ReturnType<typeof fakeGh>) => gh.calls.filter((c) => c[0] === "pr" && c[1] === "merge");
+const armCalls = (gh: ReturnType<typeof seeded>) => gh.armed;
 
 // --- the row's named cases ----------------------------------------------------------------------------------------------------------------------
 
@@ -147,7 +148,7 @@ test("the #5124 shape: ejected by the pin guard, diff unrelated, is re-queued on
   assert.equal(arming.ejections.size, 0, "it left the ejected set: nobody is told to fix what is not theirs");
   assert.deepEqual(arming.stranded, []);
   assert.deepEqual(orders, [], "no order");
-  assert.deepEqual(armCalls(gh), [["pr", "merge", "--auto", "--merge", "5124", "--repo", HOME]], "armed once, by the gate, with the merge method the org uses");
+  assert.deepEqual(armCalls(gh), [`armPullAuto ${HOME}#5124`], "armed once, by the gate, through the code host");
   assert.equal(port.comments.length, 1, "and recorded on the pull request");
   assert.equal(port.comments[0].decision.kind, "pr-ejected-requeued");
   assert.match(port.comments[0].decision.text, /docs-release-pin-currency\.real-tree\.test\.ts, which the pull request does not change/);
@@ -174,7 +175,7 @@ test("the #5115 shape: ejected, its row CLOSED by a sibling pull request in the 
   const body = "Closes #5109\n\nAcceptance: see .acceptance/agent~pm-brief-tests-first-5109.md";
   for (const [what, labels] of [["no label at all", []], ["a `session:` label of a session that no longer exists", ["session:worker-5109"]]] as const) {
     const { arming, gh, port, orders } = tick({ number: 5115, body, labels: [...labels], changed: [".agent-org/roles/product-manager.md", ".acceptance/agent~pm-brief-tests-first-5109.md"] });
-    assert.deepEqual(armCalls(gh), [["pr", "merge", "--auto", "--merge", "5115", "--repo", HOME]], `${what}: armed once, by the gate`);
+    assert.deepEqual(armCalls(gh), [`armPullAuto ${HOME}#5115`], `${what}: armed once, by the gate`);
     assert.equal(arming.ejections.size, 0, `${what}: it left the ejected set`);
     assert.deepEqual(orders, [], `${what}: no manager is woken`);
     assert.deepEqual(port.comments.map((c) => c.decision.kind), ["pr-ejected-requeued"], `${what}: and the record says so`);
@@ -211,7 +212,7 @@ test("a log that names no file, or a diff that was not listed whole, is UNKNOWN,
   assert.match(noFile.said.join(""), /names no file the failure is in/);
   // THE CONTROL: the same PR with its whole diff listed is re-queued.
   assert.equal(tick({}).arming.ejections.size, 0);
-  const gh = fakeGh();
+  const gh = seeded();
   const evidence = new Map<number, EjectionEvidence>([[5124, { failedEntries: 1, log: logFailed(tapFailure(PIN_GUARD)), runs: GREEN_AFTER }]]);
   const partial = { ...prOf(), changedFiles: 250 };
   const outcome = requeueEjected(new Map([[5124, { removedAt: REMOVED_AT, runId: 9001, failingTests: null }]]),

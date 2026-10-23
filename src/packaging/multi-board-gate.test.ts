@@ -21,6 +21,8 @@ import { decide, readLanes, scopeTick, unreadLanes } from "../work-gate/tick/tic
 import { scopesOf } from "../work-gate/vocabulary.ts";
 import { greenUnarmedOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { performActions } from "../work-gate/orders.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { ledgerLine, readLedger } from "../wake/session-endings.ts";
 import { readLedgerDeliveries, stuckRowOf } from "../wake/merge-queue-wait.ts";
 import { reviewerMismatch, orderPullRequest, orderPullRequestRef, noReviewCheckoutFor, isReviewerOrder, liveReviewers } from "../wake/reviewer-tokens-and-checkouts.ts";
@@ -434,11 +436,16 @@ test("`pr-green-unarmed` for another repository names ITS number and ITS reposit
   assert.match(theirs.prompt, /other#5, other#9/);
 });
 
-test("`gh pr ready` for a pull request of another repository is aimed at THAT repository; the primary's is exactly `pr ready <n>`", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => { calls.push(args); return ""; };
+test("the ready flip for a pull request of another repository is aimed at THAT repository; the primary's names none", () => {
+  // A11-160 (step 6): the flip is the code host's `markPullReady`. What the gate decides is whether to name a repository; the commands themselves (the bare one, and `--repo` after it) are asserted in `plugins/github/rows/gate-reads.test.ts`.
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const asked: { number: number | string; repo?: string }[] = [];
+  const recordFlip = ({ number, repo }: { number: number | string; repo?: string }) => { asked.push({ number, ...(repo === undefined ? {} : { repo }) }); };
+  host.rows!.markPullReady = recordFlip;
   const order = (action: Record<string, unknown>) => ({ session: "product-manager", cause: "draft-convinced-not-ready", causeKey: "k", prompt: "p", action });
   const quiet = () => undefined;
-  performActions([order({ kind: "ready", pr: 12 }), order({ kind: "ready", pr: 12, repo: "acme/other" })], run, quiet);
-  assert.deepEqual(calls, [["pr", "ready", "12"], ["pr", "ready", "12", "--repo", "acme/other"]]);
+  performActions([order({ kind: "ready", pr: 12 }), order({ kind: "ready", pr: 12, repo: "acme/other" })], () => { throw new Error("the fake code host acts on its own state: no gh is run"); }, quiet);
+  assert.deepEqual(asked, [{ number: 12 }, { number: 12, repo: "acme/other" }]);
+  forgetActivation();
 });

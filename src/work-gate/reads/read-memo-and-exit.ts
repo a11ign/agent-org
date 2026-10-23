@@ -106,8 +106,13 @@ export const ghCallName = (args: string[]) => args.slice(0, 2).join(" ");
  */
 export const ghWithin = (timeoutMs: number, { stdio, log = (line) => process.stderr.write(line) }: { stdio?: "pipe"; log?: (line: string) => void; } = {}) => {
   // The code host is asked when the first call is MADE, not when the runner is: `defaultRun` is built as this file loads, and a program that imports it asks no code host until it reads.
-  let started: ((args: string[], repo?: string) => string) | undefined;
-  const launch = (args: string[], repo: string | undefined) => (started ??= rows().gateRun({ timeoutMs, capture: stdio === "pipe" }))(args, repo);
+  let started: { host: ReturnType<typeof rows>; run: (args: string[], repo?: string) => string } | undefined;
+  const launch = (args: string[], repo: string | undefined) => {
+    const host = rows();
+    // Made again when the code host is another one (a test that substitutes the host, an activation that came after the first read).
+    if (started?.host !== host) started = { host, run: rows().gateRun({ timeoutMs, capture: stdio === "pipe" }) };
+    return started.run(args, repo);
+  };
   return (args: string[], repo = activeRepo) => {
     try {
       return launch(args, repo);
@@ -363,7 +368,7 @@ function runUnmetered(calls: { args: string[]; repo: string | undefined; }[], en
 
 const callKey = (args: string[], repo: string | undefined) => JSON.stringify([repo ?? "", args]);
 
-/** How many open rows `readOpenRows` asks for (it spells the number itself: `packaging/work-gate.test.ts` pins that one literal); a list that comes back this long may have been cut, and answers nothing a narrower list could be taken from. A drift between the two turns the fold off, which `work-gate.test.ts` (1a) reads. */
+/** How many open rows `readOpenRows` asks the code host for (`openRowsOf`, once: `packaging/work-gate.test.ts` pins that the gate asks at this limit and asks once); a list that comes back this long may have been cut, and answers nothing a narrower list could be taken from. A drift between the two turns the fold off, which `work-gate.test.ts` (1a) reads. */
 export const OPEN_ROWS_LIMIT = 500;
 
 type OpenRowsList = { label: string | null; limit: number; fields: string[] };

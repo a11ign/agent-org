@@ -1,13 +1,16 @@
-// no-token: gh -- `decide` is pure, and the tracker's history is a stub handed to the reader in place of `gh`
+// no-token: gh -- `decide` is pure, and the tracker's history is the fake code host's world (A11-160, step 6) read in place of `gh`
 /**
  * #4800: a CLAIMED chairman row is in the gate's chairman set, so a Ready chairman row over its file is shelved naming it (#4793's claim refuses it anyway).
  * Each "not offered" has a sibling that differs in the one thing that offers it.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { readChairmanPriorityOfOffer } from "./work-gate/tick.ts";
 import { CHAIRMAN_PRIORITY_LABEL as LABEL } from "./work-gate/vocabulary.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { seedLabelHistory } from "./plugins/fakes/code-host-gate.ts";
 
 const REGION = ["packages/guards/src/shared.ts"];
 const DECLARATION = { code: [{ key: "", repo: "a11ign/a11ign" }], dora: [{ repo: "a11ign/a11ign", releasablePaths: ["packages/"] }] };
@@ -17,8 +20,14 @@ const row = (number: number, labels: string[]) => ({
 });
 const candidate = row(20, ["ready", LABEL]);
 const holder = (labels: string[] = []) => row(40, ["in-progress", "session:worker-40", ...labels]);
-/** The history: `labeller(n)` is who added the label to row n. */
-const history = (labeller: (n: number) => string) => (args: string[]) => `${labeller(Number(/issues\/(\d+)\//.exec(args[1])?.[1]))}\n`;
+/** The history: `labeller(n)` is who added the label to row n; the fake code host's world holds it, and no `gh` is run. */
+const history = (labeller: (n: number) => string) => {
+  const host = createFakeCodeHost();
+  for (const { number } of [candidate, holder()]) seedLabelHistory(host.rowsWorld, { number, label: LABEL, actors: `${labeller(number)}\n` });
+  substituteCodeHost(host);
+  return (): string => { throw new Error("the fake code host acts on its own state: no gh is run"); };
+};
+afterEach(() => forgetActivation());
 const CHAIRMAN = "DanBeckDev";
 
 function offeredOver(claimedHolder: ReturnType<typeof holder>, labeller: (n: number) => string) {

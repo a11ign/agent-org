@@ -3,7 +3,7 @@
 // The gate DECIDES (which pull request is stuck, whose check is required, what a failed run means); what it ASKS OF GITHUB and how it reads the answer is here. Each takes the `run` the gate hands it (the contract's
 // head says why) and builds the same argument list the gate built, so the tick's memo keys and the ledger's lines are what they were. Each THROWS when `gh` refuses or an answer is not the shape, unless its comment
 // says it answers `null`: "could not read" is never an empty list.
-import type { RequiredContexts, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
+import type { ActionsJob, RequiredContexts, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
 
 // --- the checks `main` requires ---------------------------------------------------------------------------------------------------------
 
@@ -176,12 +176,12 @@ export function mergeGroupRunsOf({ repo, withConclusion, run }: { repo: string; 
 const JOB_FIELDS = "{conclusion, runner_name, steps: (.steps // [] | length)}";
 
 /** The jobs of workflow run `runId`, each with {@link JOB_FIELDS}. THROWS when the read is refused. */
-export function jobsOfMergeGroupRun({ repo, runId, run }: { repo: string; runId: number; run: RowsRun }): { conclusion: string | null; runner_name: string; steps: number }[] {
+export function jobsOfMergeGroupRun({ repo, runId, run }: { repo: string; runId: number; run: RowsRun }): ActionsJob[] {
   return JSON.parse(run(["api", `repos/${repo}/actions/runs/${runId}/jobs?per_page=100`, "--jq", `[.jobs[] | ${JOB_FIELDS}]`]));
 }
 
 /** One Actions job, with {@link JOB_FIELDS}. THROWS when the read is refused. */
-export function actionsJobOf({ repo, jobId, run }: { repo: string; jobId: string; run: RowsRun }): { conclusion: string | null; runner_name: string; steps: number } {
+export function actionsJobOf({ repo, jobId, run }: { repo: string; jobId: string; run: RowsRun }): ActionsJob {
   return JSON.parse(run(["api", `repos/${repo}/actions/jobs/${jobId}`, "--jq", JOB_FIELDS]));
 }
 

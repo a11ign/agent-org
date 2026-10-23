@@ -82,8 +82,7 @@ export function readClosedAnswerRows(run: (args: string[]) => string = defaultRu
     // label -- agent-org, since it became a declared tracker -- is "nobody owes anything", not a refusal. Only the
     // EMPTY stdout is read so; text that does not parse, a non-array and a thrown `gh` stay `null` below.
     // #5050: under the tick's refusal memory too -- a limit the by-label reads met is not answered by asking the label list.
-    asking = "label list";
-    const names = readUnlessRefused({ what: "the answer: label names", run, read: () => codeHostRows().labelNamesWithPrefix({ prefix: ANSWER_PREFIX, run }) });
+    const names = readUnlessRefused({ what: "the answer: label names", run, read: () => { asking = "label list"; return codeHostRows().labelNamesWithPrefix({ prefix: ANSWER_PREFIX, run }); } });
     if (names === null) return refusedClosedRows(asking, "answered something that is not a list");
     if (names.length === 0) return [];
     // agent-org#1636: ONE ALIAS PER LABEL IS ONE GRAPHQL POINT PER LABEL PER KIND, and the label list never shrinks (34 in the home repository, 27 of them an ended session's:

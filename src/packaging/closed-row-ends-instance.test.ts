@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh`, `git`, `herdr` and `row-claim` call here is an injected seam; nothing imported reaches the real one
+// no-token: gh -- every `gh`, `git`, `herdr` and `row-claim` call here is an injected seam, or the fake code host's rows (A11-160, step 6); nothing imported reaches the real one
 /**
  * #3535: A CLOSED ROW ENDS ITS INSTANCE.
  *
@@ -9,8 +9,11 @@
  * THE CONTROL EVERY "NOTHING IS ORDERED" ASSERTION IS READ AGAINST is the same fixture with the row still open: it yields neither the release nor the
  * interrupt, so the closed row's two orders are not what any claimed row yields.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { claimStallsNow, claimStallTick, closedClaimsNow } from "../work-gate/claim-stall-tick.ts";
 import { closedClaimsWhenWorkerListed } from "../work-gate/tick.ts";
 import { readOpenRowFollowUps, stripClosedClaims } from "../work-gate.ts";
@@ -245,28 +248,45 @@ test("#3535 (5) CONTROL: herdr lists worker-<n>: the SAME read IS made, ONCE, fo
   assert.ok(batches.some((b) => b.some((c) => isClosedClaimRead(c.args))), "asked together with the other follow-ups, not after them");
 });
 
+afterEach(() => forgetActivation());
+
+/** The fake code host in place, holding `rows` as the REST reads of a listed worker's rows would find them (the code host's `closedClaimedRowsOf`: A11-160, step 6); `pulls` are the pull requests that cross-reference a row. */
+function codeHostHolding(...rows: ReturnType<typeof issue>[]) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  for (const r of rows) {
+    world.rows.set(r.number, fakeRow(world, r.number, { state: r.state === "CLOSED" ? "CLOSED" : "OPEN", labels: r.labels, closedAt: r.state === "CLOSED" ? "2026-10-04T19:31:00Z" : null,
+      comments: r.comments.map((c, at) => ({ id: at + 1, body: c.body, createdAt: c.createdAt, author: c.author.login })) }));
+    world.gate.crossReferences.set(r.number, r.pulls.map((p) => ({ number: p.number, headRefName: p.head, title: "t" })));
+  }
+  substituteCodeHost(host);
+  return world;
+}
+
 test("#3535 (5) a listed worker's row that is closed WITHOUT the claim label, or does not exist, is not a closed claim", () => {
   const agents = [{ label: "worker-3535", status: "working" }, { label: "worker-3600", status: "working" }];
-  const rows = (run: (args: string[]) => string) => closedClaimsWhenWorkerListed(agents, run)?.rows;
-  assert.deepEqual(rows(rest(issue(3535, "CLOSED", ["started"]), issue(3600, "CLOSED", ["in-progress", "session:worker-3600"])))?.map((r) => r.number), [3600]);
-  assert.deepEqual(rows(rest()), [], "an absent row is no claim");
+  codeHostHolding(issue(3535, "CLOSED", ["started"]), issue(3600, "CLOSED", ["in-progress", "session:worker-3600"]));
+  assert.deepEqual(closedClaimsWhenWorkerListed(agents)?.rows?.map((r) => r.number), [3600]);
+  codeHostHolding();
+  assert.deepEqual(closedClaimsWhenWorkerListed(agents)?.rows, [], "an absent row is no claim");
 });
 
 test("#3535 (5) the shape the decision reads: labels, the claim record's comments and the closing pull requests", () => {
-  const [row] = closedClaimsWhenWorkerListed([{ label: "worker-3535", status: "working" }], rest(issue(3535, "CLOSED", CLAIM)))!.rows!;
+  codeHostHolding(issue(3535, "CLOSED", CLAIM));
+  const [row] = closedClaimsWhenWorkerListed([{ label: "worker-3535", status: "working" }])!.rows!;
   const { orders } = closedTick([row], [{ label: "worker-3535", status: "working" }]);
   assert.deepEqual([orders[0].release?.branch, orders[0].release?.interrupt], [BRANCH, true], "the claim record is found in the comments as the read returns them");
-  const byPr = issue(3535, "CLOSED", CLAIM, [{ number: 313, head: BRANCH }]);
-  const [merged] = closedClaimsWhenWorkerListed([{ label: "worker-3535", status: "working" }], rest(byPr))!.rows!;
+  codeHostHolding(issue(3535, "CLOSED", CLAIM, [{ number: 313, head: BRANCH }]));
+  const [merged] = closedClaimsWhenWorkerListed([{ label: "worker-3535", status: "working" }])!.rows!;
   assert.deepEqual(closedTick([merged], [{ label: "worker-3535", status: "working" }]).orders.map((o) => o.release?.why), ["closed"], "a row closed by its own pull request is released here (#1463): no merge settle clears agent-org labels");
 });
 
 test("#3535 (5) the call is refused, or herdr is unreadable: UNREAD (rows null), never an empty list and never 'not asked'", () => {
   const agents = [{ label: "worker-9", status: "working" }];
-  const refused = () => { throw Object.assign(new Error("Command failed: gh"), { status: 1, stderr: "HTTP 502", stdout: "" }); };
-  assert.deepEqual(closedClaimsWhenWorkerListed(agents, refused), { rows: null, agents });
-  assert.deepEqual(closedClaimsWhenWorkerListed(agents, () => "not json"), { rows: null, agents });
-  assert.deepEqual(closedClaimsWhenWorkerListed(null, () => "[]"), { rows: null, agents: null });
+  codeHostHolding().failures.set("closedClaimedRowsOf", Object.assign(new Error("Command failed: gh"), { status: 1, stderr: "HTTP 502", stdout: "" }));
+  assert.deepEqual(closedClaimsWhenWorkerListed(agents, undefined, () => {}), { rows: null, agents });
+  // an answer that is not JSON is refused by the operation itself (`plugins/github/rows/closed-claim-reads.test.ts`, #948 (2, 3))
+  assert.deepEqual(closedClaimsWhenWorkerListed(null), { rows: null, agents: null });
 });
 
 test("#3535 (5) the read is counted in GH_READS as conditional on a listed worker, and is NOT one of the unconditional reads", () => {

@@ -1,4 +1,4 @@
-// no-token: gh -- importing `row-file.ts` and `ready-label-audit.ts` reaches `gh`, and this file never lets it run: `blockedByRefusal` is handed a fake `read`, `newUmbrellaEdges` a fake `addedAt`, `remoteTagExists` a fake `run`
+// no-token: gh -- importing `row-file.ts` and `ready-label-audit.ts` reaches `gh`, and this file never lets it run: `blockedByRefusal` is handed a fake `read`, `newUmbrellaEdges` a fake `addedAt`, `remoteTagExists` the fake code host's rows (a world of tags held in memory)
 /**
  * #4005: A WAIT NAMES THE CONDITION, NOT AN UMBRELLA ROW. The release states (`published <pkg>@<dist-tag>`, `<pkg> latest = next`, `tagged <tag>`) are read from the registry or
  * the remote, a failed read is an unknown, and `row-file` and the audit refuse an edge onto a row of several done-whens that names none of them.
@@ -6,12 +6,16 @@
  *
  * MUTATION: see `work-gate-held-on-satisfied.test.ts`, which records the four whole-file mutations (`releaseHolds` always true / false, `umbrellaEdge` always null / a hit) and what each turned red.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { WAIT_STATES, parseWaits, conditionHolds, doneWhenCount, namedDoneWhens, umbrellaEdge, waitItemOf, releaseReferencesOf } from "../wait-condition.ts";
 import { readReleaseFacts, remoteTagExists } from "../work-gate/held-on-satisfied-orders.ts";
 import { blockedByNumbers, blockedByRefusal } from "../row-file/issue-body-and-region-checks.ts";
 import { newUmbrellaEdges, UMBRELLA_EDGE_REFUSED_FROM } from "../ready-label-audit.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const wait = (text: string) => parseWaits(`Waiting-for: ${text}`)[0];
 const facts = (releases?: Record<string, Record<string, string> | boolean>) => ({ items: {}, ...(releases && { releases }) });
@@ -65,15 +69,18 @@ test("readReleaseFacts reads each distinct fact once, leaves a failed read OUT, 
   assert.deepEqual(Object.keys(readReleaseFacts({ items, readers: { distTags: () => ({}), tagExists: () => true }, limit: 1 })), ["npm:a11ign"]);
 });
 
-test("remoteTagExists compares the EXACT ref (matching-refs is a prefix match) and reads a failure as null", () => {
-  const remote = (answer: () => string) => ({ run: answer, repo: () => "a11ign/a11ign" });
-  const asked: string[][] = [];
-  assert.equal(remoteTagExists("v0", remote(() => JSON.stringify([{ ref: "refs/tags/v0" }, { ref: "refs/tags/v0.1" }]))), true);
-  assert.equal(remoteTagExists("v0", { run: (a) => { asked.push(a); return "[]"; }, repo: () => "a11ign/a11ign" }), false);
-  assert.deepEqual(asked, [["api", "repos/a11ign/a11ign/git/matching-refs/tags/v0"]]);
-  assert.equal(remoteTagExists("v0", remote(() => JSON.stringify([{ ref: "refs/tags/v0.1" }]))), false, "a longer tag is not this one");
-  assert.equal(remoteTagExists("v0", remote(() => { throw new Error("403"); })), null);
-  assert.equal(remoteTagExists("v0", remote(() => "not json")), null);
+test("remoteTagExists asks the code host whether the EXACT tag exists (a longer tag is not it) and reads a failure as null", () => {
+  // A11-160 (step 6): the fake code host's rows hold the tags; that the listing GitHub answers matches by prefix, and the exact ref is compared, is the plugin's (`plugins/github/rows/gate-reads.test.ts`).
+  const host = createFakeCodeHost();
+  host.rowsWorld.gate.tags.add("v0").add("v0.1");
+  substituteCodeHost(host);
+  const remote = { run: () => { throw new Error("the fake code host acts on its own state: no gh is run"); }, repo: () => "a11ign/a11ign" };
+  assert.equal(remoteTagExists("v0", remote), true);
+  assert.equal(remoteTagExists("v1", remote), false, "a tag nobody made is a read answer, false");
+  host.rowsWorld.gate.tags.delete("v0");
+  assert.equal(remoteTagExists("v0", remote), false, "a longer tag is not this one");
+  host.rowsWorld.failures.set("tagExistsOn", new Error("403"));
+  assert.equal(remoteTagExists("v0", remote), null, "a failed read is an unknown, never false");
 });
 
 test("doneWhenCount counts the numbered clauses under the Done-when heading only", () => {

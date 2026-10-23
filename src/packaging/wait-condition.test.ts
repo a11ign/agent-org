@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `waitTickFacts` is handed a fake `run`, `orgHealthNow` the clock, the last merge and the log, and the one process test refuses `--until` before the command reads a label
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: the references a wait names are read from the fake code host's rows (a world held in memory), `orgHealthNow` is handed the clock, the last merge and the log, and the one process test refuses `--until` before the command reads a label
 /**
  * `packages/agent-org/src/wait-condition.ts` and its wiring, #2996: A DECLARED WAIT NAMES THE CONDITION IT WAITS FOR, AND THE TICK RE-READS IT.
  *
@@ -13,7 +13,7 @@
  * control, the exemption's trip, the end-to-end tick, the truth table and the per-kind cases that need a true condition -- and `the SAME fixture ... OPEN` stays green; ALWAYS TRUE turns
  * 10 red, the "unresolved is excused" ones among them. Each direction breaks the tests that assert its own half and no wiring test that does not read a condition.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,12 @@ import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { withPrOwners } from "../work-gate/pr-owners.ts";
 import { redPrFacts } from "../work-gate/tick.ts";
 import { staleWaitOrders, waitTickFacts, refFactOf, readWaitFacts, orgHealthNow } from "../work-gate/org-health.ts";
+import { repoNow } from "../work-gate/reads/read-memo-and-exit.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const HOLD_ENTRY = fileURLToPath(new URL("../pr-hold.ts", import.meta.url));
 const MINUTE_MS = 60_000;
@@ -276,17 +282,25 @@ test("stale-wait is offered to ceo only after 30 minutes of a true condition, an
   assert.equal(order.subject, SIGNALS.STALE_WAIT);
 });
 
-/** A `gh api repos/<r>/issues/<n>` that answers from a table, and records what it was asked. */
-function fakeGh(table: Record<string, unknown>) {
-  const asked: string[] = [];
-  const run = (args: string[]) => {
-    asked.push(args[1]);
-    if (!Object.hasOwn(table, args[1])) throw new Error("refused");
-    return JSON.stringify(table[args[1]]);
+/**
+ * The fake code host (A11-160, step 6; a stub `gh` answering `issues/<n>` before) holding the items a wait names, as items of the repository the gate reads (`repoNow()`): `issues` maps a number to what GitHub
+ * states of it. `asked` records the numbers the gate read, and `run` is one that throws: nothing reaches `gh`. An item not in the table is a read that is refused.
+ */
+function fakeGh(issues: Record<number, typeof ISSUE_2867>) {
+  const host = createFakeCodeHost();
+  const asked: number[] = [];
+  for (const [number, issue] of Object.entries(issues)) {
+    host.rowsWorld.foreignRows.set(`${repoNow()}#${number}`, fakeRow(host.rowsWorld, Number(number), { state: issue.state === "open" ? "OPEN" : "CLOSED", closedAt: issue.closed_at, labels: issue.labels, createdAt: issue.updated_at }));
+  }
+  const read = host.rows!.waitRefOf;
+  host.rows!.waitRefOf = (request) => { asked.push(request.number); return read(request); };
+  substituteCodeHost(host);
+  const run = (): string => {
+    throw new Error("the fake code host acts on its own state: no gh is run");
   };
   return { run, asked };
 }
-const ISSUE_2867 = { state: "closed", closed_at: ISO(NOW - 4 * HOUR_MS), updated_at: ISO(NOW - 4 * HOUR_MS), merged_at: null, labels: [] };
+const ISSUE_2867 = { state: "closed", closed_at: ISO(NOW - 4 * HOUR_MS), updated_at: ISO(NOW - 4 * HOUR_MS), merged_at: null, labels: [] as string[] };
 
 function tick(prsRead: unknown[], run: (args: string[]) => string) {
   const said: string[] = [];
@@ -305,8 +319,8 @@ function tick(prsRead: unknown[], run: (args: string[]) => string) {
 }
 
 test("THE TICK, END TO END: the freeze's PR with #2867 closed orders the setter AND offers ceo the stale-wait signal AND the red-pr signal", () => {
-  const { run, asked } = fakeGh({ "repos/a11ign/a11ign/issues/2867": ISSUE_2867 });
-  const { orders } = tick([heldPr([marker("Waiting-for: closed #2867", NOW - 8 * HOUR_MS)])], (args) => run(args.map((a) => a.replace(/^repos\/[^/]+\/[^/]+\//, "repos/a11ign/a11ign/"))));
+  const { run, asked } = fakeGh({ 2867: ISSUE_2867 });
+  const { orders } = tick([heldPr([marker("Waiting-for: closed #2867", NOW - 8 * HOUR_MS)])], run);
   assert.equal(asked.length, 1, "one read for the one reference");
   const subjects = orders.map((o) => `${o.session}/${o.cause}/${o.subject}`).sort();
   assert.deepEqual(subjects, ["ceo/org-health/red-pr-unattended", "ceo/org-health/stale-wait", "ceo/org-health/stale-wait-2988"]);
@@ -327,7 +341,9 @@ test("a reference found in the open lists costs no read, and reads past the boun
   assert.deepEqual(asked, []);
   const many = waitItemOf(heldPr([], { body: Array.from({ length: 5 }, (_, i) => `Waiting-for: closed #${3000 + i}`).join("\n") }), "pr");
   const asking: string[] = [];
-  const bounded = readWaitFacts({ items: [many], open: [], run: (args: string[]) => { asking.push(args[1]); return JSON.stringify(ISSUE_2867); }, limit: 2 });
+  const counting = fakeGh(Object.fromEntries(Array.from({ length: 5 }, (_, i) => [3000 + i, ISSUE_2867])));
+  const bounded = readWaitFacts({ items: [many], open: [], run: counting.run, limit: 2 });
+  asking.push(...counting.asked.map(String));
   assert.equal(asking.length, 2, "the bound stops the reads");
   assert.deepEqual(Object.keys(bounded.items), ["#3000", "#3001"], "and the rest are LEFT OUT, which conditionHolds calls unknown");
   assert.equal(waitTickFacts({ prsRead: null, openRowsRead: [], now: NOW }), null, "a refused list is a refusal, not an empty org");

@@ -1,19 +1,19 @@
-// no-token: gh -- `run` is a fake `gh` that answers from fixtures and records every call; nothing here spawns `gh`
+// no-token: gh -- the reads and the arm are the fake code host's rows (A11-160, step 6); the two reads whose answer core still parses (the queue's timeline and the open pull requests) are a `run` that answers from fixtures; nothing here spawns `gh`
 /**
  * agent-org#1647: A NETWORK ERROR IN AN INSTALL STEP OF A MERGE-GROUP RUN IS INFRASTRUCTURE, AND THE GATE RE-QUEUES THE EJECTED PULL REQUEST ONCE.
  *
  * THE DEFECT, 2026-10-16: agent-org#1639 was approved and green, and the queue ejected it because the merge group's `typecheck` job failed in its install on `npm error code ECONNRESET` (run 38936509518).
  * That job names no file, so the ownership was `unknown`, the ejection stayed the owner's, and `arm-pr` refused to re-arm without a push: about two hours until a person armed it by hand.
  *
- * Every case is reached from `readArmingOf`, the call the tick makes, with the real timeline, run list and `--log-failed` shapes behind a fake `gh` (the log below is that run's own shape: the step's
+ * Every case is reached from `readArmingOf`, the call the tick makes, with the real timeline shape behind a `run` and the merge-group runs, the `--log-failed` log and the arm in the fake code host's world (the log below is that run's own shape: the step's
  * lines end `A complete log of this run can be found in`, so the error line is NOT the last one). The row's cases, each with its control:
  *   (1) the install log is re-queued once (control: the flag OFF, or only the older flag on, leaves it the owner's);
  *   (2) the same log on a head already re-queued once is NOT (control: the first entry is);
  *   (3) a log that names a file the pull request changes is still the owner's (control: the unrelated file, with the flag on, is not infrastructure either);
  *   (4) a log with no recognised signature is still `unknown` (control: the same step with ECONNRESET is re-queued; and ECONNRESET in a step that is NOT an install is not infrastructure);
- *   (5) with the flag OFF nothing is read or written (the world's `gh` throws if asked).
+ *   (5) with the flag OFF nothing is read or written (the world's `run` throws if asked, and the fake records no arm).
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { emptyCanaryState, machineryFlagOn, STANDARD_MACHINERY_SIGNALS } from "../org-health/fleet-build-readings.ts";
@@ -24,6 +24,10 @@ import { REENQUEUE_EJECTED_FLAG, REENQUEUE_INFRA_FLAG, jobFailuresOf, ownershipO
 import { readArmingOf } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { type ArmingPort } from "../work-gate/vocabulary.ts";
 import yaml from "yaml";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const HOME = "a11ign/agent-org";
 const NUMBER = 1639;
@@ -72,23 +76,24 @@ const QUEUE_EVENTS = (entries: number) => Array.from({ length: entries }, (_, at
   { __typename: "RemovedFromMergeQueueEvent", createdAt: at === entries - 1 ? REMOVED_AT : `2026-10-16T16:${30 + at * 20}:00Z`, reason: "failed_checks" },
 ]).flat();
 
-function fakeGh(world: World = {}) {
-  const calls: string[][] = [];
-  let armed = false;
+/**
+ * THE WORLD: the pull request in the fake code host (its arm takes unless `armRefused`), the merge-group runs and the failed run's log it holds, and a `run` for the two reads core still parses itself, whose arguments the
+ * code host builds: the pull request's queue timeline and the open pull requests as the armed rule reads them. `armed` lists the arms the code host was asked for.
+ */
+function seeded(world: World = {}) {
+  const host = createFakeCodeHost();
+  const held = host.rowsWorld;
+  held.pulls.set(NUMBER, { number: NUMBER, body: "Closes: none -- test", headRefName: "agent/some-slug", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "t", comments: [], armTakes: world.armRefused !== true });
+  // THE QUEUE'S NEWEST GROUP IS RED by default: the network case must not wait for a green one, which answers "is main fixed" and a dropped connection broke nothing on main.
+  held.gate.mergeGroupRuns = [{ id: 38936509518, head_branch: `gh-readonly-queue/main/pr-${NUMBER}-ccc`, conclusion: "failure", created_at: "2026-10-16T17:02:00Z" }, ...(world.groups ?? RED_AFTER)] as typeof held.gate.mergeGroupRuns;
+  held.ci.logs.set("38936509518", world.log ?? NETWORK_LOG);
+  substituteCodeHost(host);
   const run = (args: string[]): string => {
-    calls.push(args);
-    const line = args.join(" ");
-    if (args[0] === "api" && args[1] === "graphql" && line.includes("timelineItems")) return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [{ __typename: "PullRequestCommit" }, ...QUEUE_EVENTS(world.entries ?? 1)] } });
-    if (args[0] === "api" && args[1] === "graphql" && line.includes("-F n=")) return JSON.stringify({ merged: false, autoMergeRequest: armed && world.armRefused !== true ? { enabledAt: "now" } : null, mergeQueueEntry: null });
-    if (args[0] === "api" && args[1] === "graphql") return JSON.stringify([{ number: NUMBER, isDraft: false, merged: false, autoMergeRequest: null, mergeQueueEntry: null }]);
-    // THE QUEUE'S NEWEST GROUP IS RED by default: the network case must not wait for a green one, which answers "is main fixed" and a dropped connection broke nothing on main.
-    if (/actions\/runs\?event=merge_group/.test(line)) return JSON.stringify([{ id: 38936509518, head_branch: `gh-readonly-queue/main/pr-${NUMBER}-ccc`, conclusion: "failure", created_at: "2026-10-16T17:02:00Z" }, ...(world.groups ?? RED_AFTER)]);
-    if (args[0] === "run" && args[1] === "view") return world.log ?? NETWORK_LOG;
-    if (args[0] === "pr" && args[1] === "merge") { armed = true; return ""; }
-    if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ blockedBy: { nodes: [], totalCount: 0 } });
-    throw new Error(`fake gh: unexpected ${line.slice(0, 120)}`);
+    if (args[0] === "fake-ejection-query") return JSON.stringify({ mergeQueueEntry: null, timelineItems: { nodes: [{ __typename: "PullRequestCommit" }, ...QUEUE_EVENTS(world.entries ?? 1)] } });
+    if (args[0] === "fake-open-pull-nodes") return JSON.stringify(host.rows!.readOpenPullNodes({ repo: args[1] }));
+    throw new Error(`no gh: ${args.join(" ").slice(0, 120)}`);
   };
-  return { run, calls };
+  return { run, host, get armed() { return held.calls.filter((call) => call.startsWith("armPullAuto ")); } };
 }
 
 const RED_AFTER = [{ head_branch: "gh-readonly-queue/main/pr-1700-ddd", conclusion: "failure", created_at: "2026-10-16T17:06:00Z" }];
@@ -108,7 +113,7 @@ const prOf = (changed: string[] = ["src/unrelated.ts"]) => ({
 });
 
 function tick(world: World = {}, state: ReturnType<typeof emptyCanaryState> = INFRA_ON) {
-  const gh = fakeGh(world);
+  const gh = seeded(world);
   const port = fakePort();
   const said: string[] = [];
   const arming = readArmingOf([prOf(world.changed)], ["gate"], { scope: HOME, run: gh.run, portFor: port.portFor, env: {}, log: (line) => said.push(line), state, now: NOW });
@@ -116,7 +121,7 @@ function tick(world: World = {}, state: ReturnType<typeof emptyCanaryState> = IN
   return { arming, gh, port, said: said.join("") };
 }
 
-const armCalls = (gh: ReturnType<typeof fakeGh>) => gh.calls.filter((c) => c[0] === "pr" && c[1] === "merge");
+const armCalls = (gh: ReturnType<typeof seeded>) => gh.armed;
 
 // --- (1) re-queued once -----------------------------------------------------------------------------------------------------------------------
 
@@ -124,7 +129,7 @@ test("an install step that ends `npm error code ECONNRESET` is re-queued once by
   const { arming, gh, port, said } = tick();
   assert.equal(arming.ejections.size, 0, "it left the ejected set: nobody is told to fix what is not theirs");
   assert.deepEqual(arming.networkNotRequeued, [], "and the detector has nothing to say");
-  assert.deepEqual(armCalls(gh), [["pr", "merge", "--auto", "--merge", String(NUMBER), "--repo", HOME]], "armed once, by the gate, the way the org merges");
+  assert.deepEqual(armCalls(gh), [`armPullAuto ${HOME}#${NUMBER}`], "armed once, by the gate, through the code host");
   assert.deepEqual(port.comments.map((c) => c.kind), ["pr-ejected-requeued"]);
   assert.match(port.comments[0].text, /install step of `typecheck` failed on the network or the registry \(npm error code ECONNRESET\)/);
   assert.match(port.comments[0].text, /flag `queue\.reenqueueInfra`/);
@@ -199,11 +204,13 @@ test("a log with no recognised signature is still `unknown`, and a network word 
 test("with the flag OFF the decider reads nothing and writes nothing; the detector still counts, from the log the tick already holds", () => {
   const evidence = new Map<number, EjectionEvidence>([[NUMBER, { failedEntries: 1, log: NETWORK_LOG, runs: RED_AFTER }]]);
   const calls: string[][] = [];
+  const armed = seeded();
   const port = fakePort();
   const outcome = requeueEjected(new Map([[NUMBER, { removedAt: REMOVED_AT, runId: 1, failingTests: null }]]), {
     prs: [prOf()], scope: HOME, run: (args) => { calls.push(args); throw new Error("the decider asked gh while the flag is off"); }, portFor: port.portFor, state: OFF, now: NOW, log: () => {}, evidence,
   });
   assert.deepEqual(calls, [], "no read, no arm");
+  assert.deepEqual(armed.armed, [], "and the code host was asked to arm nothing");
   assert.deepEqual(port.comments, [], "no record");
   assert.equal(outcome.remaining.size, 1, "the ejection comes back whole");
   assert.deepEqual([outcome.requeued, outcome.stranded], [[], []]);
@@ -211,7 +218,7 @@ test("with the flag OFF the decider reads nothing and writes nothing; the detect
   assert.equal(outcome.networkNotRequeued[0].line, "npm error code ECONNRESET");
   // THE CONTROL: the same call with the flag on arms, so the flag is the only difference.
   const on = requeueEjected(new Map([[NUMBER, { removedAt: REMOVED_AT, runId: 1, failingTests: null }]]), {
-    prs: [prOf()], scope: HOME, run: fakeGh().run, portFor: fakePort().portFor, state: INFRA_ON, now: NOW, log: () => {}, evidence,
+    prs: [prOf()], scope: HOME, run: seeded().run, portFor: fakePort().portFor, state: INFRA_ON, now: NOW, log: () => {}, evidence,
   });
   assert.deepEqual(on.requeued, [NUMBER]);
   assert.deepEqual(on.networkNotRequeued, []);

@@ -21,6 +21,8 @@ export type FakeRow = {
   comments: { id: number; body: string; createdAt: string; /** The login that wrote it, where a test needs one (the gate tells the chairman's comment from another's). */ author?: string }[]; blockedBy: number[]; onBoard: boolean; boardStatus: string | null;
   /** Set when the blocked-by edges cannot be read whole (a page was cut): the code host answers `null` for the blockers, never an empty list. */
   blockedByUnread?: boolean;
+  /** When it was last updated; absent is when it was created. */
+  updatedAt?: string;
 };
 
 /**
@@ -198,7 +200,7 @@ const unmodeled = (operation: string) => (): never => {
 };
 
 /** The nodes of a connection read, in the shape a caller reads them (`number`, `body`, `labels.nodes[].name`, `blockedBy.nodes[].number`). */
-const nodeOf = (row: FakeRow): any => ({ number: row.number, title: row.title, body: row.body, state: row.state, createdAt: row.createdAt, closedAt: row.closedAt,
+const nodeOf = (row: FakeRow): any => ({ number: row.number, title: row.title, body: row.body, state: row.state, createdAt: row.createdAt, updatedAt: row.updatedAt ?? row.createdAt, closedAt: row.closedAt,
   labels: { nodes: row.labels.map((name) => ({ name })) }, blockedBy: { nodes: row.blockedBy.map((number) => ({ number })) } });
 
 const pullOf = (world: FakeRowsWorld, number: number): FakeRowPull => {

@@ -1,4 +1,4 @@
-// no-token: gh -- a fake `run` stands for `gh`, and the status page is a local server; nothing reaches GitHub, git or herdr
+// no-token: gh -- the fake code host's rows stand for GitHub (A11-160, step 6), and the status page is a local server; nothing reaches GitHub, git or herdr
 /**
  * #3723: THE GATE READS GITHUB'S OWN STATUS, so a runner outage is held as ONE signal and not woken as a hundred reds.
  *
@@ -11,7 +11,7 @@
  * cannot be read holds nothing, and the next reading with every component operational delivers what was held. Each assertion that something is
  * HELD also asserts the order exists without the incident, so none passes because the fixture never made an order.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -20,6 +20,11 @@ import { join } from "node:path";
 import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { holdForGithubIncident, githubIncidentOf, githubIncidentOrder, startGithubStatus, GITHUB_STATUS_TIMEOUT_MS } from "./work-gate/causes/org-health-github-incident.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import type { FakeJob } from "./plugins/fakes/code-host-gate.ts";
+
+afterEach(() => forgetActivation());
 
 type Incident = ReturnType<typeof githubIncidentOf>;
 type Order = { session: string, cause: string, subject: string, discriminator: string, causeKey: string, prompt: string };
@@ -34,7 +39,7 @@ const check = (name: string, over: Record<string, unknown> = {}) => ({
 });
 const prOf = (over: Record<string, unknown> = {}) => ({
   number: 3709, headRefOid: "0123abcd00000000", isDraft: false, headRefName: "agent/some-slug-3709", labels: [{ name: "session:worker-3709" }],
-  closingIssuesReferences: [], comments: [], reviews: [], reviewDecision: "APPROVED", statusCheckRollup: [check("gate")], ...over,
+  author: { login: "a11ign-ai-workers" }, isCrossRepository: false, closingIssuesReferences: [], comments: [], reviews: [], reviewDecision: "APPROVED", statusCheckRollup: [check("gate")], ...over,
 });
 let seen: object[] = []; // the pull requests the last `ordersOf` made orders from: what `holdForGithubIncident` is handed to find the one an order names
 const ordersOf = (...prs: object[]) => { seen = prs; return decide({ prs, readyRows: [], nowMs: NOW }) as Order[]; };
@@ -48,18 +53,33 @@ const summary = (actions = "degraded_performance", extra: Record<string, unknown
 const INCIDENT = githubIncidentOf({ status: 200, body: summary() });
 const CLEAR = githubIncidentOf({ status: 200, body: summary("operational", { incidents: [] }) });
 
-/** What `gh api` answers for a job id or a run id, as the REAL jobs answered on 2026-10-05; anything else is a refusal, which no order may be held on. */
+/** What GitHub holds for a job id or a run id, as the REAL jobs answered on 2026-10-05; anything else is a refusal, which no order may be held on. */
 const NEVER_STARTED = { conclusion: "cancelled", runner_name: "", steps: 0 };
 const RAN = { conclusion: "failure", runner_name: "GitHub Actions 1000051907", steps: 12 };
-const fakeGh = (answers: Record<string, unknown>, calls: string[] = []) => (args: string[]): string => {
-  const path = args[1] ?? "";
-  calls.push(path);
-  const key = Object.keys(answers).find((k) => path.includes(k));
-  if (key === undefined) throw new Error(`gh: not found ${path}`);
-  return JSON.stringify(answers[key]);
+
+/**
+ * Puts the fake code host in place of GitHub, holding `answers`: `actions/jobs/<id>` is an Actions job, `actions/runs?event=merge_group` the queue's runs and `actions/runs/<id>/jobs` the jobs of one run.
+ * `asked` lists each Actions job read by id.
+ */
+function hostHolding(answers: Record<string, unknown>) {
+  const host = createFakeCodeHost();
+  const { gate } = host.rowsWorld;
+  for (const [path, answer] of Object.entries(answers)) {
+    const job = /^actions\/jobs\/(\d+)$/.exec(path)?.[1];
+    const runJobs = /^actions\/runs\/(\d+)\/jobs$/.exec(path)?.[1];
+    if (job !== undefined) gate.actionsJobs.set(job, answer as FakeJob);
+    else if (runJobs !== undefined) gate.mergeGroupJobs.set(Number(runJobs), answer as FakeJob[]);
+    else if (path === "actions/runs?event=merge_group") gate.mergeGroupRuns = answer as typeof gate.mergeGroupRuns;
+  }
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+const hold = (orders: Order[], incident: Incident, answers: Record<string, unknown>, extra: Record<string, unknown> = {}, asked: string[] = []) => {
+  const world = hostHolding(answers);
+  const held = holdForGithubIncident(orders, incident, { prs: seen, nowMs: NOW, ...extra }) as { orders: Order[], held: { subject: string, session: string, why: string }[] };
+  asked.push(...world.calls.filter((call) => call.startsWith("actionsJobOf ")).map((call) => call.slice("actionsJobOf ".length)));
+  return held;
 };
-const hold = (orders: Order[], incident: Incident, answers: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
-  holdForGithubIncident(orders, incident, { prs: seen, run: fakeGh(answers), nowMs: NOW, ...extra }) as { orders: Order[], held: { subject: string, session: string, why: string }[] };
 
 const cancelledRed = () => prOf({ statusCheckRollup: [check("gate", { conclusion: "CANCELLED", detailsUrl: `${RUN}/job/111` })] });
 const timedOutRed = () => prOf({ number: 3710, headRefOid: "4444abcd00000000",
@@ -172,7 +192,7 @@ test("DONE-WHEN 4: it clears itself -- the next reading with every component ope
   const during = hold(orders, INCIDENT, JOBS);
   assert.deepEqual(during.orders, [], "tick 1, inside the incident");
   const calls: string[] = [];
-  const after = holdForGithubIncident(orders, CLEAR, { prs: seen, run: fakeGh(JOBS, calls), nowMs: NOW }) as { orders: Order[], held: unknown[] };
+  const after = hold(orders, CLEAR, JOBS, {}, calls);
   assert.deepEqual(after.orders, orders, "tick 2, the first after it clears: the held orders go out, whole");
   assert.deepEqual(after.held, []);
   assert.deepEqual(calls, [], "and clearing costs no call: the same status reading is the whole of it");
@@ -184,8 +204,8 @@ test("a held order is classified once per job per tick, however many orders name
   const twin = prOf({ number: 3712, headRefOid: "6666abcd00000000" });
   const orders = ordersOf(cancelledRed(), { ...twin, statusCheckRollup: cancelledRed().statusCheckRollup });
   assert.equal(orders.length, 2);
-  hold(orders, INCIDENT, JOBS, { run: fakeGh(JOBS, calls) });
-  assert.deepEqual(calls, ["repos/a11ign/a11ign/actions/jobs/111"]);
+  hold(orders, INCIDENT, JOBS, {}, calls);
+  assert.deepEqual(calls, ["111"], "one read of job 111, though two orders name it");
 });
 
 // ---- THE FETCH: bounded, off the critical path, fails open --------------------------------------------------------------------------------

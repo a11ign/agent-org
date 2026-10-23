@@ -3,7 +3,10 @@
 // Two questions of closed rows: which of a listed worker's own rows closed while still carrying the claim (read by number over REST, with the comments the claim record is read from and the pull requests that
 // cross-reference each), and which closed rows or pull requests still carry an `answer:` label (one aliased GraphQL read). What the gate DECIDES of them is core's; the commands and the reading of the answers
 // are here. Each takes the `run` the gate hands it (the contract's head says why).
-import type { ClosedClaimedRead, ClosedLabelledRow, RowsReadHelpers, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
+import type { AimedRun, ClosedLabelledRow, CodeHostRows, RowsReadHelpers, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
+
+/** A closed row that still carries the claim, with the comments the claim record is read from and the pull requests that cross-reference it. */
+type ClosedClaimedRead = ReturnType<CodeHostRows["closedClaimedRowsOf"]>[number];
 import { readUnlessRefused } from "./rows-by-label.ts";
 
 /** A REST answer as JSON. An answer that is not JSON is a refusal, named as one (#948). */
@@ -51,7 +54,7 @@ function closingPullRequestsOf(api: (path: string, flags?: string[]) => any, num
  * The rows among `numbers` that are CLOSED and still carry `claimLabel`, over REST (the GraphQL pool can run dry while REST's does not): each with its labels, the comments the claim record is read from and the pull
  * requests that cross-reference it. `aim` is the repository the calls are aimed at when it is not the executor's own. THROWS when a read is refused or an answer is not JSON; a row `gh` answers 404 for is absent.
  */
-export function closedClaimedRowsOf({ repo, aim, numbers, claimLabel, run }: { repo: string; aim?: string; numbers: number[]; claimLabel: string; run: (args: string[], repo?: string) => string }): ClosedClaimedRead[] {
+export function closedClaimedRowsOf({ repo, aim, numbers, claimLabel, run }: { repo: string; aim?: string; numbers: number[]; claimLabel: string; run: AimedRun }): ClosedClaimedRead[] {
   const api = (path: string, flags: string[] = []) => json(run(["api", ...flags, `repos/${repo}/${path}`], aim));
   const rows: ClosedClaimedRead[] = [];
   for (const number of numbers) {

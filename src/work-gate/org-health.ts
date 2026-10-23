@@ -607,7 +607,7 @@ const MOVE_PAGES = 3;
 const MOVE_PAGE_SIZE = 100;
 
 /**
- * #4295: THE NEWEST-FIRST LIST OF `path`, PAGE BY PAGE, UNTIL IT REACHES BACK TO `since`. `jq` projects each item to `{ at, ... }` (epoch-able ISO `at`, the field the list is sorted on). Returns the items, or `null`
+ * #4295: THE NEWEST-FIRST LIST THE CODE HOST PAGES (`readPage`), PAGE BY PAGE, UNTIL IT REACHES BACK TO `since`. Each item is projected to `{ at, ... }` (epoch-able ISO `at`, the field the list is sorted on). Returns the items, or `null`
  * when a page was refused, unparseable, or the pages ran out before the list reached `since`: an item older than the window cannot matter, but one the pages never reached might, so that is UNKNOWN and not "nothing".
  */
 function newestSince(readPage: (page: number) => unknown, { since }: { since: number; }): any[] | null {
@@ -714,7 +714,11 @@ export function boardRowsOf(openRowsRead: any[], claimedComments: any[] | null |
  * `null` is a row that could not be read, which is unknown and never "open with a question".
  */
 function readLabelFacts({ run, repo, number }: { run: (args: string[]) => string; repo: string; number: number; }): { state: string; lastComment: { body: string; createdAt: string; } | null; } | null {
-  return rows().rowStateAndNewestComment({ repo, number, run });
+  try {
+    return rows().rowStateAndNewestComment({ repo, number, run });
+  } catch {
+    return null; // no code host to ask is a row that could not be read
+  }
 }
 
 /** The times `answer:<session>` was added to the row, from the `labeled` events `readProseFacts` already read for every row holding a handoff. */

@@ -1,4 +1,4 @@
-// no-token: gh -- importing `row-file.ts` reaches `gh`, and this file never lets it run: every write goes through a recording `run`, every fact through a fake reader, and `registryDistTags` is replaced by `readers`
+// no-token: gh -- importing `row-file.ts` reaches `gh`, and this file never lets it run: every read and write goes through the fake code host's rows, and `registryDistTags` is replaced by `readers`
 /**
  * #4020: A WAIT THAT CLEARS ON A RELEASE FACT RAISES `needs:chairman` WHEN THE ACT THAT REMAINS IS THE CHAIRMAN'S. #2885 and #2887 sat parked three days after `screenreader-worker` 0.3.0
  * and `screenreader-fleet` 0.5.1 shipped, because "ask the chairman once the packages have real releases" was a sentence and nothing named the condition or the ask.
@@ -14,7 +14,7 @@
  * RED/GREEN: on `origin/main` this file does not import (`work-gate/chairman-ask-orders.ts` does not exist), and its predecessor reading, `splitHeldOnSatisfied` on a PARKED row, held 0 and
  * sent the wait to the generic stale-wait order (#4020's Open-check). MUTATIONS are recorded in the pull request, one per guard and in both directions.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";
 import { chairmanAskOrders, chairmanAskRefusal, askOf, withoutDeclaration, MARKER, postedBrief } from "../work-gate/chairman-ask-orders.ts";
@@ -23,6 +23,9 @@ import { requestEvent } from "../messaging/sources/requests.ts";
 import { readFileSync } from "node:fs";
 import { workGateSource } from "../lib/work-gate-source.ts";
 import { moduleSource } from "../lib/source-text-reads.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 
 const NOW = Date.parse("2026-10-07T21:00:00Z");
 const FLEET = "@a11ign/screenreader-fleet";
@@ -41,25 +44,54 @@ const body = (wait: string, lines = LINES) => `## Why\n\nParked.\n\nWaiting-for:
 const row = (number: number, text: string, labels: string[] = ["lane:any", "parked"]) => ({ number, title: `row ${number}`, body: text, labels: labels.map((name) => ({ name })), updatedAt: "2026-10-04T00:00:00Z" });
 const noItems = () => ({ items: {} });
 
-/** A `gh` that records every write and answers the comment read; `fail` names a subcommand that throws. */
+afterEach(() => forgetActivation());
+
+/** A write the tick made to a row, in the order it made it: the brief (`comment`), the label, or the body edit. */
+type Write = { kind: "comment" | "label" | "body"; number: number; text: string };
+
+/**
+ * The fake code host's rows (A11-160, step 6; a stub `gh` before), recording every read and write the tick makes of them. `comments` are the comments already on every row it is asked about; `fail` names the write
+ * ("comment" or "label", or "edit" for the label and the body edit) that GitHub refuses; `unreadable` refuses the read of a row's comments.
+ */
 function fakeGh({ comments = [] as { body: string }[], fail = "", unreadable = false } = {}) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "issue" && args[1] === "view") {
-      if (unreadable) throw new Error("HTTP 502");
-      return JSON.stringify({ comments });
-    }
-    if (`${args[0]} ${args[1]}` === fail) throw new Error("HTTP 403");
-    return "";
+  const host = createFakeCodeHost();
+  const { rowsWorld: world, rows } = host;
+  if (unreadable) world.failures.set("commentBodiesOfRow", new Error("HTTP 502"));
+  if (fail === "issue comment") world.failures.set("commentOnRow", new Error("HTTP 403"));
+  if (fail === "issue edit") for (const name of ["addLabelToRow", "setRowBody"]) world.failures.set(name, new Error("HTTP 403"));
+  const calls: string[] = [];
+  const log: Write[] = [];
+  const record = (name: "commentOnRow" | "addLabelToRow" | "setRowBody", kind: Write["kind"], textOf: (request: any) => string) => {
+    const operation = rows![name] as (request: any) => unknown;
+    (rows as any)[name] = (request: any) => {
+      calls.push(`${name} ${request.number}`);
+      log.push({ kind, number: Number(request.number), text: textOf(request) });
+      return operation(request);
+    };
   };
-  const writes = () => calls.filter((a) => a[0] === "issue" && a[1] !== "view");
-  return { run, calls, writes };
+  record("commentOnRow", "comment", (request) => request.body);
+  record("addLabelToRow", "label", (request) => request.label);
+  record("setRowBody", "body", (request) => request.body);
+  const read = rows!.commentBodiesOfRow;
+  rows!.commentBodiesOfRow = (request) => { calls.push(`commentBodiesOfRow ${request.number}`); return read(request); };
+  substituteCodeHost(host);
+  /** Puts the rows the tick is handed into the world, each with the comments already on it. */
+  const seed = (listed: unknown[]) => {
+    for (const { number, body: text, labels } of listed as { number: number; body: string; labels: { name: string }[] }[]) {
+      world.rows.set(number, fakeRow(world, number, { body: text, labels: labels.map(({ name }) => name), comments: comments.map(({ body: commentBody }, id) => ({ id: id + 1, body: commentBody, createdAt: "2026-10-05T00:00:00Z" })) }));
+    }
+  };
+  const run = (): string => {
+    throw new Error("the fake code host acts on its own state: no gh is run");
+  };
+  return { run, calls, world, seed, writes: () => log };
 }
 
 const readers = (distTags: Record<string, string> | null) => ({ distTags: () => distTags, tagExists: () => null });
-const tick = (rows: unknown[], dist: Record<string, string> | null, io: ReturnType<typeof fakeGh>, extra = {}) =>
-  chairmanAskOrders({ rows, now: NOW }, { run: io.run, repo: () => "a11ign/a11ign", readItemFacts: noItems, limit: 8, readers: readers(dist), log: () => {}, ...extra });
+const tick = (rows: unknown[], dist: Record<string, string> | null, io: ReturnType<typeof fakeGh>, extra = {}) => {
+  io.seed(rows);
+  return chairmanAskOrders({ rows, now: NOW }, { run: io.run, repo: () => "a11ign/a11ign", readItemFacts: noItems, limit: 8, readers: readers(dist), log: () => {}, ...extra });
+};
 
 test("#2887 (the whole shape): RED while the registry holds only the placeholder, GREEN once `latest` exists -- the brief is posted, the label put on, the declaration removed, ceo told, ONCE", () => {
   const rows = [row(2887, body(`published ${FLEET}@latest`))];
@@ -70,15 +102,15 @@ test("#2887 (the whole shape): RED while the registry holds only the placeholder
   const after = fakeGh();
   const orders = tick(rows, { reserved: "0.0.0-reserved.0", latest: "0.5.1" }, after);
   const [comment, label, edit] = after.writes();
-  assert.deepEqual(after.writes().map((a) => a.slice(0, 3)), [["issue", "comment", "2887"], ["issue", "edit", "2887"], ["issue", "edit", "2887"]]);
-  const posted = comment[comment.indexOf("--body") + 1];
+  assert.deepEqual(after.writes().map(({ kind, number }) => [kind, number]), [["comment", 2887], ["label", 2887], ["body", 2887]]);
+  const posted = comment.text;
   assert.match(posted, /^BRIEF for the chairman\n/, "the comment OPENS with the marker the alert source reads");
   assert.match(posted, /^Condition true at 2026-10-07T21:00:00\.000Z: published @a11ign\/screenreader-fleet@latest \(registry dist-tags \{"reserved":"0\.0\.0-reserved\.0","latest":"0\.5\.1"\}\)$/m);
   assert.match(posted, /Declared 2026-10-04 by the row's author\. The tick re-read only the condition above: NOT that `Checked:` was true/);
   assert.ok(posted.trimEnd().endsWith(MARKER));
-  assert.deepEqual(label, ["issue", "edit", "2887", "--add-label", "needs:chairman"]);
+  assert.deepEqual(label, { kind: "label", number: 2887, text: "needs:chairman" });
 
-  const newBody = edit[edit.indexOf("--body") + 1];
+  const newBody = edit.text;
   assert.equal(orders.length, 1);
   assert.equal(orders[0].session, "ceo");
   assert.equal(orders[0].causeKey, "ceo/org-health/chairman-ask-raised-order@2887");
@@ -86,7 +118,7 @@ test("#2887 (the whole shape): RED while the registry holds only the placeholder
 
   const again = fakeGh();
   assert.deepEqual(tick([row(2887, newBody, ["lane:any", "parked", "needs:chairman"])], { latest: "0.5.1" }, again), [], "the next tick sees a labelled row with no declaration");
-  assert.deepEqual(again.calls, []);
+  assert.deepEqual(again.calls, [], "and it reads and writes nothing");
 });
 
 testEach("#2887 (the whole shape): the edited row keeps its Why and Filed-by, and loses the declaration the tick has used", [
@@ -97,7 +129,7 @@ testEach("#2887 (the whole shape): the edited row keeps its Why and Filed-by, an
   const after = fakeGh();
   tick([row(2887, body(`published ${FLEET}@latest`))], { reserved: "0.0.0-reserved.0", latest: "0.5.1" }, after);
   const [, , edit] = after.writes();
-  const newBody = edit[edit.indexOf("--body") + 1];
+  const newBody = edit.text;
   assert[c.expect](newBody, c.pattern, c.message);
 });
 
@@ -189,13 +221,13 @@ test("a failed write is recoverable: no label without a brief, and a posted brie
   const rows = [row(9, body(`published ${FLEET}@latest`))];
   const commentFails = fakeGh({ fail: "issue comment" });
   assert.deepEqual(tick(rows, { latest: "0.5.1" }, commentFails), [], "ceo is told only when the label went on");
-  assert.deepEqual(commentFails.writes().map((a) => a[1]), ["comment"], "the label is NOT applied after a failed comment");
+  assert.deepEqual(commentFails.writes().map(({ kind }) => kind), ["comment"], "the label is NOT applied after a failed comment");
 
   const labelFails = fakeGh({ fail: "issue edit" });
   assert.deepEqual(tick(rows, { latest: "0.5.1" }, labelFails), []);
   const retry = fakeGh({ comments: [{ body: `BRIEF for the chairman\n...\n${MARKER}` }] });
   assert.equal(tick(rows, { latest: "0.5.1" }, retry).length, 1);
-  assert.deepEqual(retry.writes().map((a) => a[1]), ["edit", "edit"], "the posted brief is found by its marker and not posted again");
+  assert.deepEqual(retry.writes().map(({ kind }) => kind), ["label", "body"], "the posted brief is found by its marker and not posted again");
 
   const blind = fakeGh({ unreadable: true });
   assert.deepEqual(tick(rows, { latest: "0.5.1" }, blind), []);

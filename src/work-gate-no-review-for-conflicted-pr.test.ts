@@ -1,4 +1,4 @@
-// no-token: gh -- pure: `perPullRequestOrders` and `stallReasonOf` over in-memory pull requests; nothing reaches `gh`, `git` or herdr
+// no-token: gh -- pure: `perPullRequestOrders` and `stallReasonOf` over in-memory pull requests, and (11) over the fake code host's rows (A11-160, step 6); nothing reaches `gh`, `git` or herdr
 /**
  * #3476: A PULL REQUEST THAT CONFLICTS WITH ITS BASE IS NOT ASKED FOR A FIRST REVIEW OF THAT HEAD.
  *
@@ -9,11 +9,15 @@
  * THE CONTROLS ARE THE ROW'S: (2) is the non-empty case (1)'s emptiness is read against, and (2) and (4) each differ from (1) in ONE fact
  * (the merge state; the head and the merge state). (5) pins the other direction: a verdict already given is not withdrawn by a conflict.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { perPullRequestOrders } from "./work-gate/pr-orders.ts";
 import { stallReasonOf } from "./work-gate/pr-orders/pr-gate-readings.ts";
 import { reviewableHead, reviewWait, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 type Order = { session: string, cause: string, causeKey: string, discriminator: string, prompt: string };
 
@@ -127,16 +131,17 @@ test("(10) a non-required check still RUNNING beside a settled-green required on
 });
 
 test("(11) withPatchIds reads the patch for the pull request the question is open for, on the same list draftOrder reads", () => {
-  const compares: string[] = [];
-  const run = (args: string[]) => { compares.push(args[args.length - 1]); return "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n"; };
+  const host = createFakeCodeHost();
+  host.rowsWorld.gate.diffs.set(`main...${OLD_HEAD}`, "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n");
+  substituteCodeHost(host);
+  const compares = () => host.rowsWorld.calls.filter((call) => call.startsWith("compareDiffOf "));
   const pr = keyedPr([GATE_OK, TYPECHECK_RED]);
-  const [read] = withPatchIds([pr], run, REQUIRED) as { patchIds?: Record<string, string> }[];
+  const [read] = withPatchIds([pr], undefined, REQUIRED) as { patchIds?: Record<string, string> }[];
   assert.deepEqual(Object.keys(read.patchIds ?? {}), [OLD_HEAD], "enriched at its head");
-  assert.equal(compares.some((c) => c.includes(`compare/main...${OLD_HEAD}`)), true);
-  compares.length = 0;
-  const [unread] = withPatchIds([pr], run, null) as { patchIds?: unknown }[];
+  assert.deepEqual(compares(), [`compareDiffOf main...${OLD_HEAD}`]);
+  const [unread] = withPatchIds([pr], undefined, null) as { patchIds?: unknown }[];
   assert.equal(unread.patchIds, undefined, "an unread list: red on any check, as before");
-  assert.deepEqual(compares, [], "and no call is paid for it");
+  assert.equal(compares().length, 1, "and no call is paid for it");
   assert.equal(reviewableHead(pr, REQUIRED), OLD_HEAD);
   assert.equal(reviewableHead(pr, null), null);
 });

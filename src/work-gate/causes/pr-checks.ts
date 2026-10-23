@@ -21,7 +21,12 @@ export type RequiredContexts = import("../../plugins/contracts/code-host-rows.ts
  * `repo` is `owner/name`, or gh's own `{owner}/{repo}` placeholder (the gate's default). Never throws: a refusal becomes part of `diagnosis`.
  */
 export function readRequiredContexts(run: (args: string[]) => string, repo = "{owner}/{repo}"): RequiredContexts {
-  return rows().readRequiredContexts({ run, repo });
+  try {
+    return rows().readRequiredContexts({ run, repo });
+  } catch (error) {
+    // No code host to ask (it cannot be loaded, or serves no row mode) is a read that failed, said as one: the caller fails open and tells why.
+    return { contexts: null, diagnosis: `the code host could not be asked (${String((error as Error)?.message ?? error).split("\n")[0]}).` };
+  }
 }
 
 /**

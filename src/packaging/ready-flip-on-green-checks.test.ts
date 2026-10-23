@@ -1,4 +1,4 @@
-// no-token: gh -- #3448. `decide` and `requiredWhenNeeded` are pure over the pull requests and the required list handed to them, and `performActions` is handed a `run` that records the call it would have made.
+// no-token: gh -- #3448. `decide` and `requiredWhenNeeded` are pure over the pull requests and the required list handed to them, and `performActions` marks ready through the fake code host's rows (A11-160, step 6), which record the pull request they were asked to.
 /**
  * #3448: A CONVINCED DRAFT WITH SETTLED GREEN REQUIRED CHECKS AT ITS HEAD IS MARKED READY BY THE GATE, WHATEVER ITS VERIFY STAMP SAYS.
  *
@@ -9,11 +9,15 @@
  *
  * Every negative differs from the positive control in exactly one field, so each "no flip" could have been a flip.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { performActions } from "../work-gate/orders.ts";
 import { requiredWhenNeeded } from "../work-gate/pr-orders/pr-gate-readings.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const HEAD = "a".repeat(40);
 const OLDER = "b".repeat(40);
@@ -28,27 +32,30 @@ const verdict = (head: string, by: string, word: string) => ({ body: `Review of 
 /** The positive control: a convinced draft at HEAD, a RED stamp, and the one required check green at HEAD. */
 const draft = (over: Pr = {}): Pr => ({
   number: 7, isDraft: true, headRefOid: HEAD, body: "b", headRefName: "agent/x",
-  statusCheckRollup: GREEN, author: { login: "a11ign-ai-workers" }, labels: [{ name: "session:worker-1" }],
+  statusCheckRollup: GREEN, author: { login: "a11ign-ai-workers" }, isCrossRepository: false, labels: [{ name: "session:worker-1" }],
   comments: [verdict(HEAD, "reviewer-7", "convinced")], verifyStamp: RED_STAMP, ...over,
 });
 
 /** What the tick does with the pull request: the orders `decide` builds, and then what `performActions` runs and delivers. */
 function tick(pr: Pr, required: string[] | null = REQUIRED) {
   const orders = decide({ prs: [pr], readyRows: [], required }) as Order[];
-  const calls: string[][] = [];
-  const { delivered } = performActions(orders, (args: string[]) => { calls.push(args); return ""; }, () => {});
+  const host = createFakeCodeHost();
+  host.rowsWorld.pulls.set(7, { number: 7, body: "", headRefName: "agent/x", labels: [], isDraft: true, armed: false, merged: false, mergedAt: null, createdAt: "t", comments: [] });
+  substituteCodeHost(host);
+  const { delivered } = performActions(orders, undefined, () => {});
+  const calls = host.rowsWorld.calls.filter((call) => call.startsWith("markPullReady ")).map((call) => call.slice("markPullReady ".length));
   return { calls, delivered: delivered as Order[] };
 }
 const noFlip = (pr: Pr, required: string[] | null = REQUIRED) => tick(pr, required).calls;
 
 test("#3448 (1): a convinced draft with a RED stamp and every required check green at its head is marked ready, and no session is woken", () => {
   const { calls, delivered } = tick(draft());
-  assert.deepEqual(calls, [["pr", "ready", "7"]], "POSITIVE CONTROL: `gh pr ready` runs, in the existing call shape");
+  assert.deepEqual(calls, ["#7"], "POSITIVE CONTROL: the draft is marked ready through the code host");
   assert.deepEqual(delivered, [], "and nothing is delivered to any session -- not the author, not product-manager");
 });
 
 test("#3448 (1): the same with NO stamp at all is marked ready, as it always was", () => {
-  assert.deepEqual(tick(draft({ verifyStamp: undefined })).calls, [["pr", "ready", "7"]]);
+  assert.deepEqual(tick(draft({ verifyStamp: undefined })).calls, ["#7"]);
 });
 
 test("#3448 (1): one field differing from the positive control withholds the flip", () => {

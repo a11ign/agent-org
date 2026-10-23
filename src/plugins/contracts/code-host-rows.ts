@@ -243,8 +243,9 @@ export type BatchAnswer = { stdout: string } | { failed: true; stdout: string; s
 /** What the gate reads to know which checks can block a merge on `main`: the contexts, or `null` and the report of why no source gave any. */
 export type RequiredContexts = { contexts: string[]; diagnosis?: undefined } | { contexts: null; diagnosis: string };
 
-/** A closed row that still carries the claim, with the comments the claim record is read from and the pull requests that cross-reference it. */
-export type ClosedClaimedRead = { number: number; labels: { name: string }[]; comments: { body: string; createdAt: string; author: { login: string | undefined } }[]; closedByPullRequestsReferences: { number: number; headRefName: string; title: string }[] };
+/** An Actions job as the gate reads whether it ever got a runner: its conclusion, the runner it ran on and how many steps it ran. */
+export type ActionsJob = { conclusion: string | null; runner_name: string; steps: number };
+
 
 /** A closed row or pull request that carries an answer label, in the shape `gh` gave (`labels` an array). */
 export type ClosedLabelledRow = { number: number; title: string; state: string; isDraft?: boolean; labels: { name: string }[] };
@@ -539,14 +540,14 @@ export interface CodeHostRows {
   failingCheckNamesAt(request: { repo: string; commit: string; run: RowsRun }): string[];
   checkRunSummariesAt(request: { repo: string; commit: string; run: RowsRun }): { id: number; name: string; summary: unknown }[];
   mergeGroupRunsOf(request: { repo: string; withConclusion: boolean; run: RowsRun }): { id: number; head_branch: string; conclusion?: string | null; created_at: string }[];
-  jobsOfMergeGroupRun(request: { repo: string; runId: number; run: RowsRun }): { conclusion: string | null; runner_name: string; steps: number }[];
-  actionsJobOf(request: { repo: string; jobId: string; run: RowsRun }): { conclusion: string | null; runner_name: string; steps: number };
+  jobsOfMergeGroupRun(request: { repo: string; runId: number; run: RowsRun }): ActionsJob[];
+  actionsJobOf(request: { repo: string; jobId: string; run: RowsRun }): ActionsJob;
   /** The open rows, newest `limit`, with the JSON fields named. THROWS when the answer parses but is not a list. */
   openRowsOf(request: { limit: number; fields: string; run: RowsRun }): any[];
   /** The repository's labels that start with `prefix`, or `null` when the answer is not a list. */
   labelNamesWithPrefix(request: { prefix: string; run: RowsRun }): string[] | null;
   /** The rows among `numbers` that are closed and still carry the claim, with their comments and the pull requests that cross-reference them. */
-  closedClaimedRowsOf(request: { repo: string; aim?: string; numbers: number[]; claimLabel: string; run: AimedRun }): ClosedClaimedRead[];
+  closedClaimedRowsOf(request: { repo: string; aim?: string; numbers: number[]; claimLabel: string; run: AimedRun }): { number: number; labels: { name: string }[]; comments: { body: string; createdAt: string; author: { login: string | undefined } }[]; closedByPullRequestsReferences: { number: number; headRefName: string; title: string }[] }[];
   /** The closed rows or pull requests carrying any of the named labels, in ONE aliased read under the tick's refusal memory, or `null` when the answer is not whole. */
   closedRowsCarryingLabels(request: { names: string[]; kind: "issues" | "pullRequests"; run: RowsRun }): ClosedLabelledRow[] | null;
 }
