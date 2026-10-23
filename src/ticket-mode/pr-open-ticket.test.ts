@@ -210,6 +210,10 @@ test("A11-178: bodies that carry no closing word beside a key are as they were: 
   assert.equal(ticketClosesReport(`Closes ${KEY}\n\nIt fixes the report, closes the loop and completes the grammar of ${KEY}'s body.\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a closing word that is not followed by a key reads nothing");
   assert.equal(ticketClosesReport(QUOTING_BODY("the closing keyword followed by the key"), KEY, DEFAULT_KEYWORDS).ok, true);
   assert.equal(ticketClosesReport(`Refs ${KEY}\nPartial: step 1 of 3\n\nIt fixes the UTF-8 handling, which Refs ${KEY} links.\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a closing word with other words before the key reads nothing");
+  const prose = "It fixes UTF-8 handling, implements ISO-8601 parsing, resolves SHA-256 collisions and completes x86-64 support.";
+  assert.equal(ticketClosesReport(`Closes ${KEY}\n\n${prose}\n`, KEY, DEFAULT_KEYWORDS).ok, true, "a key-shaped word of no ticket's team is not another ticket");
+  assert.equal(ticketClosesReport(`Refs ${KEY}\nPartial: step 1 of 3\n\n${prose}\n`, KEY, DEFAULT_KEYWORDS).ok, true);
+  assert.equal(ticketClosesReport(`Closes ${KEY}\n\nIt also fixes a11-31.\n`, KEY, DEFAULT_KEYWORDS).ok, false, "another ticket of the team is, in any case");
 });
 
 test("A11-178: a tracker that declares no closing words is read by its closing keyword alone, and one that declares them is read by all of them", () => {

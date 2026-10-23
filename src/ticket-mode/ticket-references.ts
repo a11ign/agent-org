@@ -43,10 +43,17 @@ export function closingMentionsIn(body: string, keywords: Keywords): ClosingMent
 }
 
 /** The line of `text` that holds the character at `at`. PURE. */
-const lineAt = (text: string, at: number): string => text.slice(text.lastIndexOf("\n", at - 1) + 1, text.indexOf("\n", at) === -1 ? undefined : text.indexOf("\n", at));
+function lineAt(text: string, at: number): string {
+  const start = text.lastIndexOf("\n", at - 1) + 1;
+  const end = text.indexOf("\n", at);
+  return text.slice(start, end === -1 ? undefined : end);
+}
 
 /** Whether two ticket keys are one ticket's, whatever case a body writes them in. PURE. */
 const sameKey = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+
+/** Whether `name` is the key of another ticket of `key`'s team (`A11-31` beside `A11-74`), whatever case a body writes them in. PURE. */
+const isTeammate = (name: string, key: string): boolean => !sameKey(name, key) && name.slice(0, name.lastIndexOf("-")).toLowerCase() === key.slice(0, key.lastIndexOf("-")).toLowerCase();
 
 /** A body's `Closes` and `Refs` lines: each verb, the first word after it, and the ticket keys or pull request numbers its words name. */
 export function referencesIn(body: string, keywords: Keywords): { verb: string; first: string; names: string[]; }[] {
@@ -79,9 +86,11 @@ export function ticketClosesReport(body: string, key: string, keywords: Keywords
     return refuse(`CLOSES: REFUSED -- \`${closing} ${others.join(", ")}\` names a ticket other than ${key}. \`${closing}\` completes the ticket it names when the pull request `
       + `merges, so only ${key} may be closed here (A11-74).`);
   }
-  const strays = closingMentionsIn(body, keywords).filter(({ names }) => names.some((name) => !sameKey(name, key)));
+  const mentions = closingMentionsIn(body, keywords);
+  // Another ticket is one of this ticket's team: `fixes UTF-8 handling` and `implements ISO-8601` name no ticket, and the tracker acts on none.
+  const strays = mentions.filter(({ names }) => names.some((name) => isTeammate(name, key)));
   if (strays.length > 0) {
-    const foreign = strays[0].names.filter((name) => !sameKey(name, key));
+    const foreign = strays[0].names.filter((name) => isTeammate(name, key));
     return refuse(`CLOSES: REFUSED -- line \`${strays[0].line}\` reads as a closing word followed by ${foreign.join(", ")}, which is not ${key}. The tracker completes the ticket a closing word names `
       + `when the pull request merges, wherever in the body it is, a code span or a quoted example included, so only ${key} may follow one. If it is not a ticket's key, say it in other words (A11-178).`);
   }
@@ -92,7 +101,7 @@ export function ticketClosesReport(body: string, key: string, keywords: Keywords
     }
     return { ok: true, lines: [`CLOSES: ${key} -- \`${closing}\` completes it when the pull request merges`] };
   }
-  const quoted = partial === null ? undefined : closingMentionsIn(body, keywords).find(({ names }) => names.some((name) => sameKey(name, key)));
+  const quoted = partial === null ? undefined : mentions.find(({ names }) => names.some((name) => sameKey(name, key)));
   if (quoted !== undefined) {
     return refuse(`CLOSES: REFUSED -- the body has a \`Partial:\` line, but line \`${quoted.line}\` reads as a closing word followed by ${key}. The tracker completes the ticket when the pull request `
       + `merges if it finds one anywhere in the body, a code span or a quoted example included, whatever the rest of the body declares. Drop the example, or describe it in words, such as `

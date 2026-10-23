@@ -540,23 +540,26 @@ async function startBatch(ctx: PoolContext, batch: readonly Entry[]): Promise<vo
  * body carries a closing word beside the ticket's key, whatever the rest of the body declares. The tracker moves such a ticket back and posts the comment ({@link earlyCompletionComment}) naming the merged pull
  * requests and what remains, and the run reads the tracker's state again on the next sweep, so its next step is queued like that of any partial run. A ticket a person completed is left alone, and the run reads
  * Completed. A refusal, a tracker that cannot undo a completion, and a completion it cannot attribute are recorded on the run, which the card flags, and the next sweep asks again. Never throws.
+ * A run that has not finished reads no Completed from the tracker, so for it only the move back is recorded: a person's completion, or a failure, is the sweep's to find when the run finishes.
  */
 export async function undoEarlyCompletion(ctx: PoolContext, entry: Entry): Promise<void> {
   const { source } = ctx;
   const key = entry.ticket.key;
   const undo = source.undoAutomaticCompletion?.bind(source);
   if (undo === undefined) {
-    update(ctx, (queue) => recordReopenFailure(queue, key, "the tracker cannot put a ticket back"));
+    if (entry.phase === "finished") update(ctx, (queue) => recordReopenFailure(queue, key, "the tracker cannot put a ticket back"));
     return;
   }
   try {
     const { reopened, by, note } = await undo(key, earlyCompletionComment(entry));
     if (reopened !== null) log(`${key}: the tracker's integration completed it while its work was partial; moved it back to ${reopened.from}`);
-    if (by === "person") update(ctx, (queue) => recordCompletedByPerson(queue, key));
-    else if (reopened !== null || by === "none") update(ctx, (queue) => recordReopened(queue, key));
+    if (reopened !== null || by === "none") update(ctx, (queue) => recordReopened(queue, key));
+    else if (entry.phase !== "finished") return;
+    else if (by === "person") update(ctx, (queue) => recordCompletedByPerson(queue, key));
     else update(ctx, (queue) => recordReopenFailure(queue, key, note ?? "the tracker did not say why"));
   } catch (err) {
-    update(ctx, (queue) => recordReopenFailure(queue, key, messageOf(err)));
+    if (entry.phase === "finished") update(ctx, (queue) => recordReopenFailure(queue, key, messageOf(err)));
+    else log(`${key}: the tracker could not be asked whether its integration completed it: ${messageOf(err)}`);
   }
 }
 

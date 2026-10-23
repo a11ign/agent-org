@@ -103,7 +103,7 @@ export type PullState = "open" | "merged" | "closed";
  * The words a tracker reads in a pull request's body to link it to a ticket: `closing`, which completes the ticket when the pull request merges,
  * and `nonClosing`, which only links it. Linear reads `Closes` as the first and `Refs` as the second.
  * `closingWords` (contract 1.5, A11-178) is every word the tracker completes a ticket by when it finds one, followed by a key, ANYWHERE in the body: a code span, a fence or a quoted example
- * included. A tracker that declares none is read as `[closing]`.
+ * included. A tracker that declares keywords without `closingWords` is read as `[closing]`; one that declares no keywords is read by {@link DEFAULT_KEYWORDS}.
  */
 export type Keywords = Readonly<{ closing: string; nonClosing: string; closingWords?: readonly string[] }>;
 
@@ -264,7 +264,7 @@ export interface TicketSource {
    * Undo a completion the tracker's own integration made, and leave a person's alone (contract 1.5, A11-178). A pull request that merges can complete its ticket although its body declared it
    * partial, because the integration reads a closing word anywhere in the body. When the ticket is in a completed state, the tracker finds out who moved it there: the integration, a person, or
    * neither it can tell. For the integration it moves the ticket back to the state it was in before that move and posts `comment`, and answers `reopened` with the move. For a person it changes
-   * nothing and posts nothing. A ticket that is not completed answers `by: "none"`. The move back happens only while the ticket is still in the state the integration put it in, as
+   * nothing and posts nothing. A ticket that is not completed answers `by: "none"`. The move back happens only if the ticket is in the state the integration put it in when the tracker reads it, as
    * {@link restoreState}'s does. A source without it cannot undo one. Throws when the tracker refuses or cannot be asked.
    */
   undoAutomaticCompletion?(key: string, comment: string): Promise<AutomaticCompletionUndo>;

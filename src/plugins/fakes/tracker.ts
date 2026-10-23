@@ -94,7 +94,8 @@ function readsOf(held: Tickets, calls: string[]): Pick<TicketSource, "assigned" 
     },
     stateTypes: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).statusType] as const] : []))),
     texts: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, { description: heldOf(held, key).ticket.description, updatedAt: heldOf(held, key).ticket.updatedAt ?? EPOCH }] as const] : []))),
-    pullStates: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, heldOf(held, key).pulls] as const] : []))),
+    // A copy, as a tracker answers a read: a pull request linked after the read must not change what the board recorded from it.
+    pullStates: async (keys) => new Map(keys.flatMap((key) => (held.has(key) ? [[key, { ...heldOf(held, key).pulls }] as const] : []))),
     async blockers(keys) {
       const blockerOf = (blocker: string): Blocker => ({ key: blocker, state: heldOf(held, blocker).statusType, status: heldOf(held, blocker).ticket.status, pulls: heldOf(held, blocker).pulls });
       return new Map(keys.flatMap((key): [string, Blocker[]][] => (held.has(key) ? [[key, heldOf(held, key).blockedBy.map(blockerOf)]] : [])));

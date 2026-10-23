@@ -138,11 +138,11 @@ test("A11-178: step 2 is queued before the integration completes the ticket: as 
   assert.match(made.tracker.comments[0]?.text ?? "", /a11ign\/agent-org #1827 merged as step 1 of 3 of NBF-1\..*Remaining: steps 2 and 3 of 3\./);
 });
 
-test("A11-178: step 2 starts on a ticket a person completed: it is left alone and the run goes on; a ticket not completed at all costs only the question", async () => {
+test("A11-178: step 2 starts on a ticket a person completed: it is left alone and the run goes on, without a record that would outlive the step; a ticket not completed at all costs only the question", async () => {
   const completed = world();
   queuedForStepTwo(completed, "person");
   await completed.pool.tick();
-  assert.deepEqual([run(completed).phase, run(completed).completedBy, completed.tracker.ticketOf("NBF-1")?.status, completed.tracker.comments], ["running", "person", "Done", []]);
+  assert.deepEqual([run(completed).phase, run(completed).completedBy, completed.tracker.ticketOf("NBF-1")?.status, completed.tracker.comments], ["running", undefined, "Done", []]);
   const open = world();
   queuedForStepTwo(open);
   await open.pool.tick();
@@ -161,4 +161,16 @@ test("A11-178: step 2's pull request is open when the integration completes the 
   await made.pool.refreshTracker();
   assert.deepEqual([made.tracker.ticketOf("NBF-1")?.status, run(made).phase, run(made).trackerState, runStatus(run(made))], ["In Progress", "finished", undefined, "awaiting-review"]);
   assert.match(made.tracker.comments[0]?.text ?? "", /merged as step 1 of 3 of NBF-1.*Remaining: steps 2 and 3 of 3\./, "it names the step that merged and what remains");
+});
+
+test("A11-178: a tracker that cannot be asked as step 2 starts costs the run nothing: it goes on, and the failure is not recorded on a run that has not finished", async () => {
+  const made = world();
+  made.refusal.message = "Linear answered 502: bad gateway";
+  queuedForStepTwo(made, "integration");
+  await made.pool.tick();
+  assert.deepEqual([run(made).phase, run(made).reopenFailure, made.tracker.ticketOf("NBF-1")?.status], ["running", undefined, "Done"]);
+  const unable = world({ undoAutomaticCompletion: undefined });
+  queuedForStepTwo(unable);
+  await unable.pool.tick();
+  assert.deepEqual([run(unable).phase, run(unable).reopenFailure], ["running", undefined]);
 });

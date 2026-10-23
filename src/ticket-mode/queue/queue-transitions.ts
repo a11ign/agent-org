@@ -376,10 +376,12 @@ export function unpark(queue: Queue, key: string): Queue {
  * since the pull request was open is seen before a step is queued for it.
  */
 export function unsettledKeys(queue: Queue): string[] {
-  return queue.entries.filter((entry) => entry.phase === "finished" && (!SETTLED.has(entry.trackerState ?? "")
-    && (settledByPulls(entry) === null || (entry.partial !== undefined && settledByPulls(entry) === "completed")) || completedBeforeMerge(entry)))
-    .map((entry) => entry.ticket.key);
+  return queue.entries.filter((entry) => entry.phase === "finished" && (isUnsettled(entry) || completedBeforeMerge(entry))).map((entry) => entry.ticket.key);
 }
+
+/** A finished run neither the tracker nor its pull requests have settled, or a partial one whose pull requests merged and whose ticket the tracker has not finished. PURE. */
+const isUnsettled = (entry: Entry): boolean => !SETTLED.has(entry.trackerState ?? "")
+  && (settledByPulls(entry) === null || (entry.partial !== undefined && settledByPulls(entry) === "completed"));
 
 /**
  * A partial run whose ticket the tracker read Completed before it read its pull requests merged (A11-178): the tracker's integration completes a ticket as the merge lands, and a read between the two sees the
