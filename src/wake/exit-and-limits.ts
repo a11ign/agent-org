@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, openSync, readSync, closeSync, fstatSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +7,7 @@ import type { CanaryState } from "../org-health/fleet-build-readings.ts";
 import { REVIEWER_STATE_DIR } from "../work-gate/vocabulary.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { REPO } from "../project-identity.ts";
+import { rows } from "../plugins/rows.ts";
 import { accountLimitFlag, tickAccountLimit, type AccountLimit } from "../account-limit.ts";
 import { isLimitMenu } from "../worker-state.ts";
 import { inBuildReason, isInBuild, unansweredRefusal, lookupHeldRows } from "../row-claim/own-pr-health-rule.ts";
@@ -304,16 +304,18 @@ function resetPassed(label: string, { run, home, now }: { run: (args: string[]) 
 
 export const defaultRun = (args: string[]) => herdrRun(args);
 
-/** `gh`, for the escalation half -- a different binary from `herdr`, so a different runner. */
-export const defaultGh = (args: string[]) =>
-  execFileSync("gh", args, { encoding: "utf8", timeout: 30_000 });
+/** `gh`, for the escalation half -- a different binary from `herdr`, so a different runner: the code host's own, which runs the program as the process's account and cuts a call at 30 s. */
+export const defaultGh = (args: string[]) => rows().ownRun(args);
+
+/** The command the leak guard is keyed on (`assertNoLeakInArgv` judges the argument list of this command and no other): the tracker's CLI, which the code host starts. */
+const TRACKER_COMMAND = "gh";
 
 /**
  * `gh` for the one call in this file that SENDS A BODY -- the comment a release leaves on its row (#2470) -- refused before it is spawned if
  * the body would leak (#1053: "guarded in the SPAWN HELPER"). Every other `gh` call here is a read or a label edit, which send none.
  */
 export const guardedGh = (args: string[]) => {
-  assertNoLeakInArgv("gh", args);
+  assertNoLeakInArgv(TRACKER_COMMAND, args);
   return defaultGh(args);
 };
 

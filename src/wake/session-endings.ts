@@ -4,6 +4,7 @@ import { ANSWER_PREFIX } from "../waiting-condition.ts";
 import { readReviewerRegistry } from "../work-gate/causes/org-health-reviewer-auth.ts";
 import { reviewerInstance } from "../review-attribution.ts";
 import { REPO } from "../project-identity.ts";
+import { rows } from "../plugins/rows.ts";
 import { roleBriefPath } from "../project-roles.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { firstLine } from "../herdr-agents.ts";
@@ -209,7 +210,7 @@ function sessionUnknown(session: string, deps: { agents: readonly { label: strin
  */
 export function dropUnknownHandoffs(handoffs: readonly { id: string; session: string; prompt: string; queuedAt?: number; }[], deps: {
   agents: readonly { label: string; status: string; paneless?: boolean; }[]; roster: readonly string[]; isLead: (label: string) => boolean;
-  holder: (ref: number) => { open: boolean; sessions: string[]; } | null; post: (args: string[]) => unknown; queuePath: string; paused: boolean; now?: number;
+  holder: (ref: number) => { open: boolean; sessions: string[]; } | null; post: (args: string[]) => string; queuePath: string; paused: boolean; now?: number;
 }): { kept: typeof handoffs; lines: string[] } {
   const now = deps.now ?? Date.now();
   const statePath = join(dirname(deps.queuePath), UNKNOWN_SINCE_FILE);
@@ -231,8 +232,8 @@ export function dropUnknownHandoffs(handoffs: readonly { id: string; session: st
       + "(`dropped`, carrying its text), not as a delivery.\n");
     if (row === undefined) continue;
     try {
-      deps.post(["issue", "comment", String(row), "--body", `Order ${order.id} was written for "${order.session}", which the org has not known for ${waited} `
-        + "(no pane, not a standing seat). It was dropped from the queue with a record and nothing was delivered. If the work still needs doing, send it to a session that exists."]);
+      rows().commentOnRow({ number: row, run: deps.post, body: `Order ${order.id} was written for "${order.session}", which the org has not known for ${waited} `
+        + "(no pane, not a standing seat). It was dropped from the queue with a record and nothing was delivered. If the work still needs doing, send it to a session that exists." });
     } catch (err) {
       lines.push(`DROP NOT TOLD ON #${row}: ${order.id} was dropped but the comment failed (${firstLine(err)}).\n`);
     }
@@ -312,13 +313,13 @@ export function settle(order: { id: string; session: string; prompt: string; que
  */
 export function holderOf(ref: number, run: (args: string[]) => string = defaultGh): { open: boolean; sessions: string[]; } | null {
   try {
-    const read = JSON.parse(run(["api", `repos/${REPO}/issues/${ref}`, "--jq", "{state, labels: [.labels[].name]}"]));
-    const sessions = (read.labels as string[]).filter((l) => l.startsWith(SESSION_PREFIX))
+    const read = rows().issueStateAndLabelsOf({ repo: REPO, number: ref, run });
+    if (read === null) return { open: false, sessions: [] };
+    const sessions = read.labels.filter((l) => l.startsWith(SESSION_PREFIX))
       .map((l) => l.slice(SESSION_PREFIX.length)).sort();
-    return { open: read.state === "open", sessions };
-  } catch (err) {
-    return /HTTP 404|Not Found/.test(String((err as any)?.stderr ?? (err as any)?.message))
-      ? { open: false, sessions: [] } : null;
+    return { open: read.open, sessions };
+  } catch {
+    return null;
   }
 }
 

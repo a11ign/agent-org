@@ -13,6 +13,7 @@ import { cloneOfKey } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { builtInCheckoutOf } from "../built-in-checkout.ts";
 import { readUnlessRefused } from "../ticket-port/rows-by-label.ts";
+import { rows } from "../plugins/rows.ts";
 import { parseWaits, umbrellaEdge } from "../wait-condition.ts";
 import { DISTINCT_FROM_FLAG } from "../duplicate-row.ts";
 import { ACCEPTANCE_FIELD, ANSWER_PREFIX } from "../project-vocabulary.ts";
@@ -989,12 +990,8 @@ export function blockedByRefusal(body: string, argv: string[], { read }: { read:
 
 /** @param {number} number @param {(cmd: string, args: string[]) => string} run @param {string} repo the tracker the new row is filed in, where its blocker lives @returns {{ state: string, body: string } | null} the blocker, `null` when it cannot be read */
 export function readBlocker(number: number, run: (cmd: string, args: string[]) => string, repo: string): { state: string; body: string; } | null {
-  try {
-    const row = JSON.parse(run("gh", ["issue", "view", String(number), "--repo", repo, "--json", "state,body"]));
-    return typeof row?.state === "string" ? { state: row.state, body: String(row.body ?? "") } : null;
-  } catch {
-    return null; // an unreadable blocker is an unknown, never an umbrella
-  }
+  const { argumentsRunOf, blockerRowOf } = rows();
+  return blockerRowOf({ number, repo, run: argumentsRunOf(run) }); // an unreadable blocker is an unknown, never an umbrella
 }
 
 /**
@@ -1100,12 +1097,13 @@ const OPEN_TITLE_READ_LIMIT = 200;
  */
 export function openRowTitled(title: string, repo: string, run: (cmd: string, args: string[]) => string): { number: number; } | null | "unreadable" {
   try {
-    const gh = (args: string[]): string => run("gh", args);
-    const rows = JSON.parse(readUnlessRefused({ what: `the ${OPEN_TITLE_READ_LIMIT} newest open rows of ${repo}`, run: gh,
-      read: () => gh(["issue", "list", "--repo", repo, "--state", "open", "--limit", String(OPEN_TITLE_READ_LIMIT), "--json", "number,title"]) }));
-    if (!Array.isArray(rows)) return "unreadable";
+    const { argumentsRunOf, newestOpenRowsText } = rows();
+    const ask = argumentsRunOf(run);
+    const open = JSON.parse(readUnlessRefused({ what: `the ${OPEN_TITLE_READ_LIMIT} newest open rows of ${repo}`, run: ask,
+      read: () => newestOpenRowsText({ repo, limit: OPEN_TITLE_READ_LIMIT, run: ask }) }));
+    if (!Array.isArray(open)) return "unreadable";
     const wanted = comparableTitle(title);
-    const hit = rows.find((row) => typeof row?.title === "string" && comparableTitle(row.title) === wanted);
+    const hit = open.find((row) => typeof row?.title === "string" && comparableTitle(row.title) === wanted);
     return hit ? { number: Number(hit.number) } : null;
   } catch {
     return "unreadable"; // an outage is CANNOT_ASK, never "no duplicate"

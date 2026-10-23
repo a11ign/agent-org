@@ -76,9 +76,9 @@
 // #2011, which delivered it, and #2030, #2038 and #2044, which merely mention it. The `Delivers:`
 // declaration is what separates the one from the three.
 //
-// BOTH READS GO TO THE END OF THEIR CONNECTION, and neither takes a window. `PAGE_SIZE` carries the
-// window this replaced and why it was a silent wrong answer; `MAX_PAGES`, the one bound that remains and
-// why exceeding it is a FAILED lookup rather than a short one. Said once, there, rather than twice.
+// BOTH READS GO TO THE END OF THEIR CONNECTION, and neither takes a window (the code host's `crossReferencingPullsOf` and
+// `changedPathsOfPull`, `plugins/github/rows/rules-delivery.ts`): the window this replaced was a silent wrong answer, and the one bound
+// that remains makes exceeding it a FAILED lookup rather than a short one. Said once, there, rather than twice.
 //
 // WHAT THIS READING CAN AND CANNOT SEE, stated the way `owed` above states its own gap, because #2026
 // asked for exactly that:
@@ -147,6 +147,7 @@
 // `session:<name>`, excluding the row being claimed right now), and ask GitHub which PR would close each.
 import { REPO } from "../project-identity.ts";
 import { gh, lookup } from "../merge-guard/lookups.ts";
+import { rows } from "../plugins/rows.ts";
 import { readClaimedRows } from "../ticket-port/rows-by-label.ts"; // #5039
 import { declaredRegionFiles, regionCovers } from "../region-paths.ts";
 // #2126: the reviewer NAME is parsed by the tree's own verdict parser, never a second reading of the
@@ -558,37 +559,19 @@ export const OPEN_PR_LIMIT = 200;
 const HEAD_DISPLAY_CHARS = 8;
 
 /**
- * #2316: THE LIST READ'S FIELDS, which must NEVER include `commits`. #2254 added it here (226e6a24e) and
- * GitHub refused the whole query -- *"requesting up to 1,000,000 possible nodes which exceeds the maximum
- * limit of 500,000"* -- because `commits` nests a connection inside `reviews` inside a 200-row page. The
- * read failed, `lookup` swallowed it, and B2's unanswered-refusal clause was OFF for every claim until
- * this row. `commits` is fetched per pull request instead (`commitsOf`), and only where it is consulted.
- */
-const LIST_FIELDS = "number,headRefOid,reviewDecision,reviews,author";
-
-/**
  * #2316: THE ONE PLACE `commits` IS READ, PER PULL REQUEST. `authorCommitsSinceRefusal` counts commits
  * after the latest refusal and returns 0 for a pull request with no `CHANGES_REQUESTED` review, so only a
  * pull request GitHub itself reports as `CHANGES_REQUESTED` can have its answer read from here. Everything
- * else costs nothing extra: with none refused, the whole health read is still exactly one call.
+ * else costs nothing extra: with none refused, the whole health read is still exactly one call. (The list
+ * read's own fields never include `commits`: GitHub refused the whole query for it, #2316 -- the code host's
+ * `openPullReviewsOf` holds that.)
  */
 function commitsOf(number: number, run: (args: string[]) => string, repo: string): PrCommit[] {
-  const raw = run(["pr", "view", String(number), "--repo", repo, "--json", "commits"]);
-  const parsed: { commits?: PrCommit[]; } = JSON.parse(raw);
-  return parsed.commits ?? [];
+  return rows().commitsOfPull({ repo, number, run });
 }
 
 function readOpenPrReviewHealth(run: (args: string[]) => string, repo: string): PrReviewHealth[] {
-  const raw = run(["pr", "list", "--repo", repo, "--state", "open", "--limit", String(OPEN_PR_LIMIT),
-    "--json", LIST_FIELDS]);
-  const parsed: {
-      number: number; headRefOid?: string; reviewDecision?: string | null;
-      reviews?: {
-          state?: string; body?: string; submittedAt?: string;
-          commit?: { oid?: string; };
-      }[];
-      author?: { login?: string; };
-  }[] = JSON.parse(raw);
+  const parsed = rows().openPullReviewsOf({ repo, limit: OPEN_PR_LIMIT, run });
   return parsed.map((pr) => {
     const refused = pr.reviewDecision === CHANGES_REQUESTED;
     return { number: pr.number, head: pr.headRefOid ?? "",
@@ -666,13 +649,7 @@ export function lookupOtherHeldIssues(mySession: string, excludeIssueNumber: num
  */
 export function lookupClosingPrHealth(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): { number: number; state: "OPEN" | "MERGED" | "CLOSED"; } | undefined | null {
   return lookup(() => {
-    const [owner, name] = repo.split("/");
-    const query = "query($owner:String!,$name:String!,$number:Int!){"
-      + "repository(owner:$owner,name:$name){issue(number:$number){"
-      + "closedByPullRequestsReferences(first:5){nodes{number state headRefOid}}}}}";
-    const data = JSON.parse(run(["api", "graphql", "-f", `query=${query}`,
-      "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${issueNumber}`]));
-    const nodes: { number: number; state: "OPEN" | "MERGED" | "CLOSED"; headRefOid: string; }[] = data.data.repository.issue.closedByPullRequestsReferences.nodes;
+    const nodes = rows().closingPullsOf({ repo, number: issueNumber, run });
     if (nodes.length === 0) return undefined;
     // MOST RECENT (last) reference wins -- an issue can accumulate more than one over its life (a
     // reverted fix reopened and closed by a second PR); the newest is the one that matters now.
@@ -684,31 +661,6 @@ export function lookupClosingPrHealth(issueNumber: number, { run = gh, repo = RE
     return { number: pr.number, state: pr.state };
   });
 }
-
-/**
- * #2026: HOW MUCH OF EACH CONNECTION ONE REQUEST CARRIES -- a PAGE SIZE, not a window. GitHub caps a
- * connection page at 100, and both reads below page to the END rather than stopping at the first page.
- *
- * THE WINDOW THIS REPLACED WAS A SILENT WRONG ANSWER IN BOTH DIRECTIONS (reviewer-2 on #2048, and the
- * verdict is right): `timelineItems(last:20)` drops a real delivery the moment twenty cross-references
- * accumulate after it -- and a row that is BLOCKING ITS AUTHOR collects them, because every sibling row
- * and pull request that cites the refusal adds one -- while `files(first:100)` misses a Region path that
- * falls after the hundredth changed file of a wide rename. Each truncation reads as "nobody declared a
- * delivery", which leaves the author in build with no way to tell a missing line from an unread one.
- * A cap NOBODY CAN SEE is the defect; a page size everything pages past is not.
- */
-const PAGE_SIZE = 100;
-
-/**
- * #2026: THE MOST PAGES EITHER READ WILL TAKE, and it exists to bound a SERVER that never says it has
- * finished -- a `hasNextPage` that stays true against a cursor that stops moving would otherwise spin
- * forever inside a claim. It is not a window: exceeding it THROWS, so `lookup` reads `null` and the row
- * stays IN BUILD, which is this clause's own safe direction (see `rowFactsFor`). `MAX_PAGES * PAGE_SIZE`
- * cross-references or changed files is orders past anything this repository has produced -- deliberately
- * not written out as a number here, which would go stale the first time either constant moved -- so
- * reaching it means the connection is misbehaving rather than that the row is busy.
- */
-const MAX_PAGES = 50;
 
 /** A `Delivers:` line of its own, the way `Acceptance:` and `Closes:` are lines of their own. */
 const DELIVERS_LINE = /^[ \t]*(?:\*\*)?Delivers:(?:\*\*)?[ \t]*(.*)$/gim;
@@ -754,7 +706,7 @@ export function lookupDeliveringPr(issueNumber: number, { run = gh, repo = REPO 
   return lookup(() => {
     // A cross-reference whose source is an ISSUE matches no inline fragment and arrives as `{}`, so the
     // number is what separates a pull request from one -- not a `__typename` this query need not ask for.
-    const declaring = crossReferencingPrs(issueNumber, { run, repo })
+    const declaring = rows().crossReferencingPullsOf({ repo, number: issueNumber, run })
       .filter((source) => source.number !== undefined
         && deliveredRowsDeclaredBy(source.body ?? "").includes(issueNumber));
     if (declaring.length === 0) return undefined;
@@ -762,84 +714,8 @@ export function lookupDeliveringPr(issueNumber: number, { run = gh, repo = REPO 
     // itself on a second pull request and the newest is the one that describes the tree now.
     const pr = declaring[declaring.length - 1];
     const number = (pr.number as number);
-    return { number, state: (pr.state as any), changedPaths: changedPathsOf(number, { run, repo }) };
+    return { number, state: (pr.state as any), changedPaths: rows().changedPathsOfPull({ repo, number, run }) };
   });
-}
-
-/** The cross-reference timeline, to its end. */
-const CROSS_REFERENCE_QUERY = "query($owner:String!,$name:String!,$number:Int!,$after:String){"
-  + "repository(owner:$owner,name:$name){issue(number:$number){"
-  + `timelineItems(first:${PAGE_SIZE},after:$after,itemTypes:[CROSS_REFERENCED_EVENT]){`
-  + "pageInfo{hasNextPage endCursor}nodes{"
-  + "... on CrossReferencedEvent{source{... on PullRequest{number state body}}}}}}}}";
-
-/** ONE pull request's changed paths, to their end. */
-const CHANGED_FILES_QUERY = "query($owner:String!,$name:String!,$number:Int!,$after:String){"
-  + "repository(owner:$owner,name:$name){pullRequest(number:$number){"
-  + `files(first:${PAGE_SIZE},after:$after){pageInfo{hasNextPage endCursor}nodes{path}}}}}`;
-
-/**
- * #2026: EVERY PULL REQUEST THAT CROSS-REFERENCES THIS ROW, read to the end of the timeline.
- *
- * THE TIMELINE ASKS FOR NO FILE LISTS, and that is the change reviewer-2's blocker forced rather than a
- * tidy-up alongside it: the files are needed for exactly ONE pull request -- the one that declared the
- * delivery -- so fetching a hundred paths for every unrelated cross-reference both cost more and made the
- * file list impossible to page (there is no single cursor across a hundred nested connections). Reading
- * the declaration first and the files second is what makes both reads complete.
- */
-function crossReferencingPrs(issueNumber: number, where: { run: (args: string[]) => string; repo: string; }): { number?: number; state?: string; body?: string; }[] {
-  return everyNodeOf((cursor) => graphqlPage(where, CROSS_REFERENCE_QUERY, issueNumber, cursor)
-    .data.repository.issue.timelineItems)
-    .map((node: { source?: object; }) => node.source ?? {});
-}
-
-/**
- * #2026: EVERY PATH ONE PULL REQUEST CHANGES, read to the end of the file list -- never the first page.
- * A wide rename is exactly the shape that both moves a row's declared paths and runs past a hundred
- * files, so a truncated list would refuse the delivery that proves the point.
- */
-function changedPathsOf(prNumber: number, where: { run: (args: string[]) => string; repo: string; }): string[] {
-  return everyNodeOf((cursor) => graphqlPage(where, CHANGED_FILES_QUERY, prNumber, cursor)
-    .data.repository.pullRequest.files)
-    .map((file: { path: string; }) => file.path);
-}
-
-/**
- * ONE PAGE of a GraphQL connection. `$after` is DECLARED by both queries but only SENT once there is a
- * cursor: an unsupplied nullable variable is `null`, which is where a connection starts -- and `-f after=`
- * would send the empty STRING instead, which is a cursor GitHub rejects.
- *
- * @param where the runner, and the repository the query is about
- *
- * @param number the issue or pull request the query is about
- */
-function graphqlPage({ run, repo }: { run: (args: string[]) => string; repo: string; }, query: string, number: number, cursor: string | null): any {
-  const [owner, name] = repo.split("/");
-  const args = ["api", "graphql", "-f", `query=${query}`,
-    "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`];
-  if (cursor) args.push("-f", `after=${cursor}`);
-  return JSON.parse(run(args));
-}
-
-/**
- * EVERY node of a paged connection, in page order -- so the LAST node is still the most recent one, the
- * reading both callers above take.
- *
- * A PAGE WITHOUT `pageInfo` THROWS rather than reading as the last one. Both queries ask for it, so its
- * absence means the response is not the shape this code believes it is -- and the one thing this read
- * must never do quietly is stop early, which is the defect it was written to fix.
- */
-function everyNodeOf(page: (cursor: string | null) => { nodes?: any[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null; }; }): any[] {
-  const all: any[] = [];
-  let cursor: string | null = null;
-  for (let read = 0; read < MAX_PAGES; read += 1) {
-    const { nodes, pageInfo } = page(cursor);
-    all.push(...(nodes ?? []));
-    if (!pageInfo) throw new Error("a connection page carried no `pageInfo`, so its end cannot be read");
-    if (!pageInfo.hasNextPage) return all;
-    cursor = pageInfo.endCursor ?? null;
-  }
-  throw new Error(`a connection did not end within ${MAX_PAGES} pages`);
 }
 
 /**
@@ -860,18 +736,16 @@ export function lookupRowShape(issueNumber: number, { run = gh, repo = REPO }: {
   return lookup(() => {
     // #2241: `labels` and `blockedBy` ride the SAME call, because `waitingOn` reads all three of the row's
     // waiting conditions off one object and a second `issue view` would be a second round trip per held row.
-    const view = JSON.parse(run(["issue", "view", String(issueNumber), "--repo", repo,
-      "--json", "body,labels,blockedBy"]));
+    const view = rows().rowShapeFactsOf({ repo, number: issueNumber, run });
     const body = view.body;
     // `declaredRegionFiles` is the tree's own parser, not a second reading of the Region: #941 taught it
     // directory items, #975 root-level files, #999 fenced extensionless paths. A row whose Region it reads
     // as empty is a row naming no file -- which is what "the deliverable is not a commit" looks like.
     const declared = declaredRegionFiles(body ?? "") ?? [];
-    // GitHub's OWN sub-issue link, written by `row-file --parent`. It cannot be self-applied the way a
+    // `view.subIssues` is GitHub's OWN sub-issue link, written by `row-file --parent`. It cannot be self-applied the way a
     // label can: filing the sub-row is what creates it.
-    const subs = JSON.parse(run(["api", `repos/${repo}/issues/${issueNumber}/sub_issues`]));
     return { declaresPaths: declared.length > 0, declaredPaths: declared,
-      subIssues: Array.isArray(subs) ? subs.length : 0,
+      subIssues: view.subIssues,
       body: body ?? "", labels: view.labels, blockedBy: view.blockedBy };
   });
 }
@@ -948,11 +822,10 @@ export function escalateDisputeToCeo(row: RowFacts, { run = gh, log = (line) => 
   if (!review || !dispute) return false;
   const label = `${ANSWER_PREFIX}ceo`;
   try {
-    if (alreadyLabelled(row.number, label, { run, repo })) return false;
-    run(["label", "create", label, "--repo", repo, "--force"]);
-    run(["issue", "edit", String(row.number), "--repo", repo, "--add-label", label]);
-    run(["issue", "comment", String(row.number), "--repo", repo,
-      "--body", disputeComment(row.number, review, dispute)]);
+    if (rows().rowCarriesLabel({ repo, number: row.number, label, run })) return false;
+    rows().ensureLabelIn({ repo, name: label, run });
+    rows().addLabelToRowIn({ repo, number: row.number, label, run });
+    rows().commentOnIssue({ repo, issue: row.number, body: disputeComment(row.number, review, dispute), run });
     log(`row-claim: #${review.number} carries OPPOSITE verdicts at \`${dispute.head.slice(0, HEAD_DISPLAY_CHARS)}\` `
       + `(\`${dispute.approved.by}\` approved, \`${dispute.refused.by}\` asked for changes), so the claim `
       + `is NOT refused and #${row.number} now carries \`${label}\` (#2126).`);
@@ -963,17 +836,6 @@ export function escalateDisputeToCeo(row: RowFacts, { run = gh, log = (line) => 
       + `proceeds; put \`${label}\` on #${row.number} by hand so ceo can see it.`);
     return false;
   }
-}
-
-/**
- * Whether a row already carries `label` -- ONE read, made only on the dispute path, so the common claim
- * pays nothing for it. Throws on a failure rather than reading as "not labelled", which would re-post the
- * dispute comment on every claim.
- */
-function alreadyLabelled(issueNumber: number, label: string, { run, repo }: { run: (args: string[]) => string; repo: string; }): boolean {
-  const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", "labels"]);
-  const parsed: { labels?: { name?: string; }[]; } = JSON.parse(raw);
-  return (parsed.labels ?? []).some((entry) => entry?.name === label);
 }
 
 /**

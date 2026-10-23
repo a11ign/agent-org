@@ -80,9 +80,11 @@ import { REPO } from "../project-identity.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { extractClosesDeclaration, closesReferences } from "../acceptance-commands/acceptance-report-and-closure.ts";
 import { gh, lookup } from "../merge-guard/lookups.ts";
+import { rows } from "../plugins/rows.ts";
 import { holdersOf } from "../pr-hold-state.ts";
 import { declaredRegionFiles, extractRegionSection, regionCovers, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
+import type { OpenPullFiles } from "../plugins/contracts/code-host-rows-facts.ts";
 import { readClaimedRows } from "../ticket-port/rows-by-label.ts";
 import { isAcceptancePath } from "../acceptance-file.ts";
 import { lookupBlockedByEdge } from "./blocked-by-edge-rule.ts";
@@ -340,13 +342,6 @@ function areBlockedOnEachOther(asker: number | null, claimed: number, blockersOf
  */
 export const NO_CODE_LEFT_LABEL = "no-code-left";
 
-/**
- * #732: THE ONE `--json` ASK THE CLAIM MAKES OF A ROW ITSELF. The asking side's Region read (`lookupMyRegionFiles`) and the template
- * check's body read (`lookupIssueBody`) both use it, because the claim's batched pre-write read serves them from ONE `gh issue view`
- * only while their argv is identical -- change one and the claim makes a second call. `labels` is for {@link NO_CODE_LEFT_LABEL}.
- */
-export const ROW_READ_FIELDS = "body,labels";
-
 const hasLabel = (row: any, name: string) => (row?.labels ?? []).some((l: any) => String(l?.name ?? l) === name);
 
 const FENCE_LINE = /^\s*(?:```|~~~)/;
@@ -452,13 +447,12 @@ function notComparableReason(other: { number: number; files: string[]; changedFi
  * #727 (#732): A ROW LABELLED {@link NO_CODE_LEFT_LABEL} ASKS FOR NO FILE, whatever its Region still names. The label is the holder's word that
  * the row edits nothing now (a build merged and only a host read is left), and until now only the RESERVATION side read it
  * ({@link claimedRegionsOf}): the asking side read the body alone, so a reopened verify-only row was refused against an unrelated open
- * pull request on the files its finished build had edited. `labels` rides the same `gh issue view` as `body` -- the same argv ({@link ROW_READ_FIELDS}) as the template check's body read, so the claim still makes one call -- and
+ * pull request on the files its finished build had edited. `labels` rides the same `gh issue view` as `body` -- the same argv (`bodyAndLabelsOf`, #732) as the template check's body read, so the claim still makes one call -- and
  * the answer is `[]` -- a real, comparable "no files" -- never `null`, which would say the question could not be asked.
  */
 export function lookupMyRegionFiles(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): string[] | null {
   return lookup(() => {
-    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", ROW_READ_FIELDS]);
-    const parsed: { body?: string; labels?: unknown[]; } = JSON.parse(raw);
+    const parsed = rows().bodyAndLabelsOf({ repo, number: issueNumber, run });
     if (hasLabel(parsed, NO_CODE_LEFT_LABEL)) return [];
     return declaredRegionFiles(parsed.body ?? "");
   });
@@ -506,15 +500,14 @@ export function lookupOpenPrFiles({ run = gh, log = (line) => process.stderr.wri
  * with two, "the open pull requests could not be read" no longer says which half a person should go and look at.
  */
 function openPrsOf({ key, repo }: { key: string; repo: string; }, { run, log, trackerRepo }: { run: (args: string[]) => string; log: (line: string) => void; trackerRepo: string; }) {
-  let raw: string;
+  let parsed: OpenPullFiles[];
   try {
-    raw = run(["pr", "list", "--repo", repo, "--state", "open", "--json", "number,changedFiles,files,body,labels,headRefName"]);
+    parsed = rows().openPullsWithFilesOf({ repo, run });
   } catch (error) {
     log(`row-claim: could not read ${repo}'s open pull requests (${String((error as Error).message).split("\n")[0]}) `
       + "-- B4 is INCONCLUSIVE, never \"no overlap\" (#2617).");
     throw error;
   }
-  const parsed: { number: number; changedFiles: number; files: { path: string; }[]; body?: string; labels?: { name: string; }[]; headRefName?: string; }[] = JSON.parse(raw);
   return parsed.map((pr) => {
     const listed = pr.files.map((f) => f.path);
     const files = listed.length < pr.changedFiles ? pagedPrFiles(pr.number, listed, { run, log, repo }) : listed;
@@ -534,8 +527,7 @@ function openPrsOf({ key, repo }: { key: string; repo: string; }, { run, log, tr
  */
 function pagedPrFiles(number: number, listed: string[], { run, log, repo }: { run: (args: string[]) => string; log: (line: string) => void; repo: string; }): string[] {
   try {
-    return run(["api", "--paginate", `repos/${repo}/pulls/${number}/files?per_page=100`, "--jq", ".[].filename"])
-      .split("\n").filter(Boolean);
+    return rows().pullFilePathsOf({ repo, number, run });
   } catch (error) {
     log(`row-claim: could not page #${number}'s files past ${listed.length} (${(error as Error).message}) `
       + "-- B4 will refuse it as not comparable (#1419).");

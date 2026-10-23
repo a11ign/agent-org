@@ -1,11 +1,15 @@
 // #4630: a Haiku start that is not coping restarts on Sonnet. Pure decisions first, then the tick's seam over a fake herdr and a fake `gh`.
 // EVERY CLAIM HAS ITS NEGATIVE CONTROL: the cap one count away from it, a Sonnet start beside a Haiku one, a row already escalated beside one that is not.
 // DETERMINISTIC AND OFFLINE: no provider, no key, no network (`fetch` is replaced by a throw for the whole file), no corpus -- every transcript here is typed inline.
-// no-token: gh -- every `gh` and `herdr` call is an injected seam; nothing imported reaches the real one
+// no-token: none -- `herdr` is an injected seam and the row's reads and its comment go to the fake code host's rows (A11-160, step 7); nothing imported reaches `gh`
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
+import { REPO } from "./project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import { decisionLogPathFrom } from "./decision-provider.ts";
 import {
@@ -29,6 +33,7 @@ beforeEach(() => {
   globalThis.fetch = (() => { fetched += 1; throw new Error("the escalation must not touch the network"); }) as unknown as typeof fetch;
 });
 afterEach(() => {
+  forgetActivation();
   globalThis.fetch = realFetch;
   assert.equal(fetched, 0, "nothing in the escalation reaches the network");
 });
@@ -189,14 +194,22 @@ const SESSION = `worker-${ROW}`;
 const WORKTREE = `/h/repos/wt-${ROW}`;
 const BRANCH = `agent/a-haiku-start-${ROW}`;
 
-/** A host: herdr (recording), `gh` (a row with a claim record) and the ledger's directory. `closeFails` and `unreadable` break one half each. */
+/** A host: herdr (recording), the fake code host (a row with a claim record) and the ledger's directory. `closeFails` and `unreadable` break one half each. */
 function rig(opts: { records?: string[]; closeFails?: boolean; unreadable?: boolean; createFails?: boolean; neverReady?: boolean; counts?: { turns: number | null; compactions: number | null } | null; live?: string[] } = {}) {
   const dir = tmpDir("escalation-tick-");
   const ledgerPath = join(dir, "state", "wake-ledger");
   mkdirSync(join(dir, "state"), { recursive: true });
   writeFileSync(claimOrdersPath(ledgerPath), `${(opts.records ?? [arm(SESSION, ROW, HAIKU), red(ROW, "aaa"), red(ROW, "bbb")]).join("\n")}\n`);
   const herdr: string[][] = [];
-  const posted: string[][] = [];
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = REPO;
+  world.rows.set(ROW, fakeRow(world, ROW, { title: "A Haiku start that fails CI twice restarts on Sonnet", comments: [{ id: 1, createdAt: "2026-10-09T09:00:00Z", author: "a11ign-ai-workers",
+    body: `${CLAIM_RECORD_MARKER}\n**Claim record** -- claimed by \`${SESSION}\`.\nClaimed-branch: ${BRANCH}\nClaimed-worktree: ${WORKTREE}\n` }] }));
+  if (opts.unreadable) world.failures.set("titleAndCommentsOf", new Error("gh: HTTP 502"));
+  substituteCodeHost(host);
+  /** What was written to the row after its claim record: the comments, in order. */
+  const written = () => world.rows.get(ROW)!.comments.slice(1).map((comment) => comment.body);
   const pane = startedPanes();
   const run = (args: string[]) => {
     herdr.push(args);
@@ -210,13 +223,7 @@ function rig(opts: { records?: string[]; closeFails?: boolean; unreadable?: bool
     if (opts.neverReady && verb === "agent get") return JSON.stringify({ result: { agent: { agent_status: "idle", interactive_ready: false } } });
     return pane(args) ?? "{}";
   };
-  const gh = (args: string[]) => {
-    if (opts.unreadable) throw new Error("gh: HTTP 502");
-    return JSON.stringify({ title: "A Haiku start that fails CI twice restarts on Sonnet", comments: [
-      { body: `${CLAIM_RECORD_MARKER}\n**Claim record** -- claimed by \`${SESSION}\`.\nClaimed-branch: ${BRANCH}\nClaimed-worktree: ${WORKTREE}\n`, createdAt: "2026-10-09T09:00:00Z", author: { login: "a11ign-ai-workers" } },
-    ] });
-  };
-  const deps = { run, gh, post: (args: string[]) => { posted.push(args); return ""; }, ledgerPath, worktreesDir: "/h/repos", env: { GH_CONFIG_DIR: "/h/w" },
+  const deps = { run, gh: () => "", post: () => "", ledgerPath, worktreesDir: "/h/repos", env: { GH_CONFIG_DIR: "/h/w" },
     now: () => 1_700_000_000_000, sleep: () => {}, warn: () => {}, counts: () => (opts.counts === undefined ? { turns: 10, compactions: 0 } : opts.counts) };
   const verbs = () => herdr.map((a) => a.slice(2, 4).join(" "));
   const decisionLog = () => {
@@ -224,7 +231,7 @@ function rig(opts: { records?: string[]; closeFails?: boolean; unreadable?: bool
     return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
   };
   const record = () => readFileSync(claimOrdersPath(ledgerPath), "utf8");
-  return { deps, herdr, posted, verbs, decisionLog, record, ledgerPath, live: opts.live ?? [SESSION] };
+  return { deps, herdr, world, written, verbs, decisionLog, record, ledgerPath, live: opts.live ?? [SESSION] };
 }
 
 test("SEAM: a Haiku worker whose pull request failed CI twice is ended, restarted on Sonnet in its own worktree, and told why", () => {
@@ -255,9 +262,10 @@ test("SEAM: a Haiku worker whose pull request failed CI twice is ended, restarte
 test("SEAM: the claim is neither released nor re-won -- no `row-claim`, no label edit, no `decline`", () => {
   const h = rig();
   performEscalations(h.live, h.deps);
-  const everything = JSON.stringify([...h.herdr, ...h.posted]);
+  const everything = JSON.stringify([...h.herdr, ...h.written()]);
   assert.doesNotMatch(everything, /row-claim|decline|--remove-label|--add-label/);
-  assert.deepEqual(h.posted.map((a) => a.slice(0, 2)), [["issue", "comment"]], "one thing was written to the row: a comment");
+  assert.equal(h.written().length, 1, "one thing was written to the row: a comment");
+  assert.deepEqual(h.world.rows.get(ROW)!.labels, [], "and no label was touched");
 });
 
 test("SEAM: the escalation is a decision-log line (`model-escalation`, `via: none`) and a row comment, not an order", () => {
@@ -266,10 +274,9 @@ test("SEAM: the escalation is a decision-log line (`model-escalation`, `via: non
   const logged = h.decisionLog();
   assert.equal(logged.length, 1);
   assert.deepEqual({ use: logged[0].use, id: logged[0].id, via: logged[0].via, outcome: logged[0].outcome }, { use: "model-escalation", id: `row-${ROW}`, via: "none", outcome: "escalate" });
-  const comment = h.posted[0];
-  assert.deepEqual(comment.slice(0, 3), ["issue", "comment", String(ROW)]);
-  assert.match(comment.at(-1) ?? "", /restarted on Sonnet\/high/);
-  assert.match(comment.at(-1) ?? "", /via: none/);
+  const [comment] = h.written();
+  assert.match(comment, /restarted on Sonnet\/high/);
+  assert.match(comment, /via: none/);
   assert.equal(claimFacts(h.record(), ROW).escalated, true, "and the record holds the once");
 });
 
@@ -288,7 +295,7 @@ test("SEAM: a Sonnet start over every cap is left alone -- no call, no line, no 
   const got = performEscalations(h.live, h.deps);
   assert.deepEqual(got, { lines: [], busied: [] });
   assert.equal(h.herdr.length, 0);
-  assert.equal(h.posted.length, 0);
+  assert.equal(h.written().length, 0);
   assert.deepEqual(h.decisionLog(), []);
 });
 
@@ -317,7 +324,7 @@ test("SEAM: a pane that will not close writes NOTHING, so the escalation is stil
   assert.deepEqual(got.busied, []);
   assert.equal(claimFacts(h.record(), ROW).escalated, false);
   assert.deepEqual(h.decisionLog(), []);
-  assert.equal(h.posted.length, 0);
+  assert.equal(h.written().length, 0);
   assert.equal(h.verbs().includes("workspace create"), false, "no second process beside the first");
 });
 
@@ -336,7 +343,7 @@ test("SEAM: a new pane that never becomes ready is closed and the CLAIM IS STILL
   assert.match(got.lines[0], /^ESCALATED #4999: .*NOT PROMPTED -- .*interactive-ready/);
   const closes = h.herdr.filter((a) => a.slice(2, 4).join(" ") === "workspace close").map((a) => a.at(-1));
   assert.deepEqual(closes, ["wOLD", "wNEW"], "the Haiku pane, then the replacement that could not be used");
-  assert.doesNotMatch(JSON.stringify([...h.herdr, ...h.posted]), /row-claim|decline/);
+  assert.doesNotMatch(JSON.stringify([...h.herdr, ...h.written()]), /row-claim|decline/);
   assert.equal(claimFacts(h.record(), ROW).escalated, true, "and the gate's respawn will be Sonnet");
 });
 

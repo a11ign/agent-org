@@ -13,7 +13,7 @@
  * because the prose around a fenced Region declares nothing. The control for both is (1)/(9): the same rows without the label, or with the
  * file inside the fence, DO shelve, so the emptiness asserted below is read against a non-empty answer in the same test.
  */
-import { test, after, beforeEach } from "node:test";
+import { test, after, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -21,6 +21,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 // THE PROJECT THIS RUNS AGAINST IS A RECORDED ONE (#3233's shape, `packaging/row-claim-file-overlap-rule.test.ts`): the host file is set FIRST and
 // the tool imported AFTER it, so the acceptance command as written -- no `$AGENT_ORG_HOST` -- runs, and a project changing its declaration
@@ -46,6 +49,7 @@ const { NO_CODE_LEFT_LABEL, claimedRegionOverlapReason, claimedRegionsOf, lookup
 const { forgetRefusedReads } = await import("./ticket-port/rows-by-label.ts");
 // #5039: a read refused for a limit is remembered for the life of the process (the tick), so each test is a fresh one.
 beforeEach(() => forgetRefusedReads());
+afterEach(() => forgetActivation());
 const { declaredRegionFiles } = await import("./region-paths.ts");
 const { reportB4, sessionEligibilityReason } = await import("./row-claim.ts");
 const { partitionUnclaimed } = await import("./work-gate/causes/rows-claims.ts");
@@ -94,27 +98,31 @@ const connection = (rows: any[], { hasNextPage = false }: { hasNextPage?: boolea
   pageInfo: { hasNextPage, endCursor: hasNextPage ? "cursor" : null },
   nodes: rows.map((row) => ({ number: row.number, body: row.body, labels: { nodes: row.labels }, blockedBy: row.blockedBy })),
 } } } });
-const refuseSearch = (args: string[]): void => {
-  if (args.includes("--label") || args.includes("--search")) throw new Error("GraphQL: API rate limit already exceeded for installation ID 170075049");
-};
-const readsClaimedRows = (args: string[]): boolean => args[0] === "api" && args[1] === "graphql" && args.includes("label=in-progress");
 
-/** One `gh` mock routed by subcommand shape, the way `row-claim-session-eligibility.test.ts` does it. */
-function ghFor({ own, claimedRows, prs = [], claimedRead }: {
-  own: { number: number; region: string[] }; claimedRows: unknown[]; prs?: unknown[]; claimedRead?: () => string;
+/**
+ * The fake code host holding what the claim reads (A11-160, step 7): the asking row, whose body declares `own.region`; the rows already claimed (`in-progress`, with their bodies and `blockedBy` edges); and the open
+ * pull requests of the second code repository, with the files they change. `claimedRefused` refuses the by-label read of the claimed rows, as GitHub refuses a rate-limited one. The old stub answered the same
+ * open pull requests for every repository; the pull requests here are the second repository's, which is where the claim reads them (`repos: [AGENT_ORG]`).
+ */
+function ghFor({ own, claimedRows, prs = [], claimedRefused = false }: {
+  own: { number: number; region: string[] }; claimedRows: any[]; prs?: any[]; claimedRefused?: boolean;
 }) {
-  return (_cmd: string, args: string[]): string => {
-    refuseSearch(args);
-    if (readsClaimedRows(args)) return claimedRead ? claimedRead() : connection(claimedRows as any[]);
-    if (args[0] === "issue" && args[1] === "view") {
-      return JSON.stringify({ number: own.number, title: "A row", body: rowBody(...own.region), labels: [], blockedBy: { nodes: [] } });
-    }
-    if (args[0] === "pr" && args[1] === "list") return JSON.stringify(prs);
-    return "[]";
-  };
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = TRACKER;
+  world.rows.set(own.number, fakeRow(world, own.number, { title: "A row", body: rowBody(...own.region), labels: [] }));
+  for (const row of claimedRows) {
+    world.rows.set(row.number, fakeRow(world, row.number, { body: row.body, labels: row.labels.map((label: { name: string }) => label.name), blockedBy: row.blockedBy.nodes.map((node: { number: number }) => node.number) }));
+  }
+  world.rules.otherRepos.set(AGENT_ORG.repo, new Map(prs.map((pr: any) => [pr.number, { number: pr.number, body: pr.body, headRefName: pr.headRefName, labels: [], isDraft: false, armed: false, merged: false, mergedAt: null,
+    createdAt: "2026-10-04T00:00:00Z", comments: [], files: pr.files.map((file: { path: string }) => file.path) }])));
+  if (claimedRefused) world.failures.set("readClaimedRows", new Error("gh: rate limited"));
+  return host;
 }
-const claimFor = (number: number, session: string, run: ReturnType<typeof ghFor>) =>
-  sessionEligibilityReason(number, session, { run, repo: TRACKER, repos: [AGENT_ORG] });
+const claimFor = (number: number, session: string, host: ReturnType<typeof ghFor>) => {
+  substituteCodeHost(host);
+  return sessionEligibilityReason(number, session, { repo: TRACKER, repos: [AGENT_ORG] });
+};
 
 // --- (1) the #3414 fixture ----------------------------------------------------------------------------------------------------------
 
@@ -224,10 +232,9 @@ test("(7) the claimed-row read failing is `null`, never `[]`: a throw, a bad pay
 });
 
 test("(7) the claim REFUSES as INCONCLUSIVE when it cannot read who holds what -- and only when it had a Region to compare", () => {
-  const unreadable = (): string => { throw new Error("gh: rate limited"); };
-  const run = ghFor({ own: { number: 3414, region: REGION_3414 }, claimedRows: [], claimedRead: unreadable });
+  const run = ghFor({ own: { number: 3414, region: REGION_3414 }, claimedRows: [], claimedRefused: true });
   assert.match(claimFor(3414, "worker-3414", run) ?? "", /COULD NOT BE ASKED which rows are already claimed.*INCONCLUSIVE/);
-  const noRegion = ghFor({ own: { number: 3414, region: [] }, claimedRows: [], claimedRead: unreadable });
+  const noRegion = ghFor({ own: { number: 3414, region: [] }, claimedRows: [], claimedRefused: true });
   assert.equal(claimFor(3414, "worker-3414", noRegion), null, "control: a row declaring no file has nothing to compare, so no read is asked of it");
 });
 

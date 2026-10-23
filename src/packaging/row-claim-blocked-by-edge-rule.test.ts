@@ -6,8 +6,11 @@
  * carried an open `blockedBy` on #1878/#1883 while mislabelled `ready`, and neither B2 nor B4 has anything
  * to say about it.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import {
   blockedByEdgeReason, lookupBlockedByEdge,
 } from "../row-claim/blocked-by-edge-rule.ts";
@@ -43,21 +46,32 @@ test("a failed lookup fails OPEN, never blocking a claim on a network error", ()
     "matches B2/B4: this protects the session's ability to claim ANYTHING, not a verdict about evidence");
 });
 
-// --- lookupBlockedByEdge: the network read ---
+// --- lookupBlockedByEdge: the read of the code host's rows (A11-160, step 7: it was a stubbed `gh`; the argument list it sends is `plugins/github/rows/rules-rows.test.ts`'s) ---
 
-test("lookupBlockedByEdge asks gh for exactly this row's blockedBy", () => {
-  let askedArgs: string[] = [];
-  const run = (args: string[]) => {
-    askedArgs = args;
-    return JSON.stringify({ blockedBy: { nodes: [{ number: 5, state: "OPEN" }] } });
-  };
-  const result = lookupBlockedByEdge(1852, { run });
+afterEach(() => forgetActivation());
+
+const unreached = (): string => { throw new Error("a run was made: the code host's rows answer from the world, not from a `gh`"); };
+
+function fakeWorld() {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.rows.set(1852, fakeRow(world, 1852, { blockedBy: [5] }));
+  world.rows.set(5, fakeRow(world, 5));
+  substituteCodeHost(host);
+  return world;
+}
+
+test("lookupBlockedByEdge reads exactly this row's blockedBy, each blocker with its state", () => {
+  const world = fakeWorld();
+  const result = lookupBlockedByEdge(1852, { run: unreached, repo: world.repo });
   assert.deepEqual(result, { blockedBy: { nodes: [{ number: 5, state: "OPEN" }] } });
-  assert.deepEqual(askedArgs.slice(0, 3), ["issue", "view", "1852"]);
-  assert.ok(askedArgs.includes("blockedBy"));
+  world.rows.get(5)!.state = "CLOSED";
+  assert.deepEqual(lookupBlockedByEdge(1852, { run: unreached, repo: world.repo }), { blockedBy: { nodes: [{ number: 5, state: "CLOSED" }] } }, "the state is read each time, not remembered");
 });
 
-test("lookupBlockedByEdge returns null, not a throw, on a failed gh call", () => {
-  const run = (): string => { throw new Error("gh: rate limited"); };
-  assert.equal(lookupBlockedByEdge(1852, { run }), null);
+test("lookupBlockedByEdge returns null, not a throw, on a failed read", () => {
+  const world = fakeWorld();
+  world.failures.set("blockedByOf", new Error("gh: rate limited"));
+  assert.equal(lookupBlockedByEdge(1852, { run: unreached, repo: world.repo }), null);
+  assert.equal(lookupBlockedByEdge(404, { run: unreached, repo: fakeWorld().repo }), null, "a row that cannot be read is null as well");
 });

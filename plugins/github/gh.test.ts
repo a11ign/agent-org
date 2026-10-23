@@ -22,6 +22,12 @@ test("the runner starts `gh` with the arguments, a thirty-second cut and no envi
   assert.equal(GH_TIMEOUT_MS, 30_000);
 });
 
+test("a runner made with a longer cut (the wake's reports read for two minutes) starts `gh` with that cut and no other change", () => {
+  const { calls, exec } = recording({ status: 0, stdout: "[]" });
+  assert.equal(ghRunner({ exec }, {}, { timeoutMs: 120_000 })(["api", "repos/a/b/pulls"]), "[]");
+  assert.deepEqual(calls, [{ file: "gh", args: ["api", "repos/a/b/pulls"], options: { timeoutMs: 120_000, env: {} } }]);
+});
+
 test("a call that exits non-zero throws the command and what gh printed, so a reader that looks for HTTP 404 in it finds it", () => {
   const { exec } = recording({ status: 1, stderr: "gh: Not Found (HTTP 404)\n" });
   assert.throws(() => ghRunner({ exec })(["api", "repos/a/b/branches/x"]), (error: unknown) => error instanceof GhFailure

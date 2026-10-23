@@ -1,16 +1,22 @@
-// no-token: gh -- `defect-class-line.ts` reads a row's labels only through the reader it is given, `pr-open`'s `main` and `row-file`'s `createIssue` take `git`, `gh` and the label reader as seams, and every one here is a fake; nothing reaches GitHub
+// no-token: gh -- `row-file`'s read-back runs on the fake code host's rows (A11-160, step 7); `defect-class-line.ts` reads a row's labels only through the reader it is given, `pr-open`'s `main` and `row-file`'s `createIssue` take `git`, `gh` and the label reader as seams, and every one here is a fake; nothing reaches GitHub
 // #4123 (child A of #4122): a pull request that closes a `defect` row carries exactly one `Class:` line, and `row-file --kind defect` is what puts the label on the row.
 //
 // EVERY REFUSAL HAS ITS ACCEPTING TWIN differing by ONE fact, so a check that always refuses is red in the twin and one that never refuses is red in the first.
 // `defectBody` is the control for every "refused" below: the same body with a well-formed line is accepted, so a refusal is the line's doing and not the fixture's.
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { CI_BODY_REPORTS, rowLabelsFromEnv, runCiBodyReports } from "./acceptance-commands/acceptance-report-and-closure.ts";
 import { DEFECT_LABEL, classLinesIn, defectClassReport } from "./defect-class-line.ts";
 import { main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";
 import { createIssue } from "./row-file/roadmap-and-milestone-checks.ts";
 import { kindRefusal, withKindLabel } from "./row-file/title-kind-and-label-refusals.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { REPO } from "./project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const EM = "—";
 const GOOD = `Class: stale-reading ${EM} any reader that caches a label it is asked for later; guard: #4122 child B's class-repeat reading`;
@@ -169,6 +175,18 @@ function fileWith(extra: any, { labelsOnRow = null as string[] | null } = {}) {
   const created: any[] = [];
   const ensured: any[] = [];
   const said: any[] = [];
+  // The filed row reads back as the fake code host holds it: its body and its milestone.
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  const filedRow = fakeRow(world, 900, { body: `${FILING_BODY}\n\nFiled-by: worker-1\n` });
+  world.rows.set(900, filedRow);
+  // The tracker a filing lands in is the one its Region names (#4078): the row is #900 of each repository this test may file into.
+  for (const repo of new Set([REPO, "a11ign/a11ign", "a11ign/agent-org"])) {
+    if (repo !== world.repo) world.foreignRows.set(`${repo}#900`, filedRow);
+    world.filing.rowMilestones.set(`${repo}#900`, "CI reset");
+  }
+  substituteCodeHost(host);
   const write = process.stderr.write;
   const writeOut = process.stdout.write;
   process.stderr.write = (chunk) => { said.push(String(chunk)); return true; };
@@ -178,7 +196,7 @@ function fileWith(extra: any, { labelsOnRow = null as string[] | null } = {}) {
     const withKind = extra.length > 0;
     const code = createIssue(argv, {
       spawnGh: (a) => { created.push(...a); return FILED_URL; },
-      run: (_cmd, args) => (readsRowsByLabel(args) !== null ? connectionOf([]) : args[0] === "issue" && args[1] === "list" ? "[]" : args.includes("milestone") ? "CI reset" : args.includes("body") ? `${FILING_BODY}\n\nFiled-by: worker-1\n` : ""),
+      run: (_cmd, args) => (readsRowsByLabel(args) !== null ? connectionOf([]) : ""), // #5039: the claimed rows' by-label read -- none held
       fetchBoardStatus: () => "Backlog",
       fetchLabels: () => ({ number: 900, title: "a defect", labels: labelsOnRow ?? ["backlog", "lane:any", ...(withKind ? ["defect"] : [])] }),
       moveStatus: () => ({ moved: true }), loadLanesConfig: () => ({ lanes: [] }),

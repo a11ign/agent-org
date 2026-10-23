@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is the injected `run` seam `escalateStuck` already takes; the repository and the board are injected as `repoOf` and `boardOf`, so nothing imported reaches the real declaration
+// no-token: none -- the rows `escalateStuck` writes are the fake code host's (A11-160, step 7); the repository and the board are injected as `repoOf` and `boardOf`, so nothing imported reaches the real declaration or `gh`
 /**
  * #4727: THE ROW THE TICK FILES FOR A STUCK CAUSE IS BORN IN A STATE.
  *
@@ -6,74 +6,65 @@
  * so `row-without-exactly-one-state` and `row-off-board` fired on it within 20 minutes and cost `product-manager` two wakes. It is now created
  * `parked` + `answer:ceo` + `out-of-release` and put on the board at Backlog as part of filing.
  *
- * THE CONTROL: against the unmodified `fileRepositoryRow` the first case fails (its `issue create` carries `answer:ceo` and no more). Make the
+ * THE CONTROL: against the unmodified `fileRepositoryRow` the first case fails (the row it files carries `answer:ceo` and no more). Make the
  * board step a no-op and the second goes red; drop the title look and the third does.
  */
-import { test } from "node:test";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { afterEach, test } from "node:test";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import assert from "node:assert/strict";
 import { escalateStuck, ESCALATION_LABEL } from "./wake/merge-queue-wait.ts";
 import { MAX_DELIVERIES } from "./wake/fyi-delivery-and-limits.ts";
 
 const SHA = "0123abcd";
 const KEY = `worker-4727/trunk-red/pr-agent-org#56/${SHA}`;
-const URL = "https://github.com/a11ign/a11ign/issues/4800";
+const FILED = 4800;
+afterEach(() => forgetActivation());
+/** The `run` the tick is handed: the rows are the fake's, so nothing may reach it. */
+const noRun = (args: string[]): string => { throw new Error(`the fake code host answers every read; nothing may run ${args.join(" ")}`); };
 const BOARD = { owner: "a11ign", number: 1 };
 const declared = (key: string): string | null => (key === "agent-org" ? "a11ign/agent-org" : null);
 
-/** One escalation of the keyed red, every `gh` call recorded; `open` is what `issue list` answers, `fail` makes a call whose command matches throw. */
-function escalate({ open = [] as { number: number; title: string; }[], board = BOARD as typeof BOARD | null, fail = null as RegExp | null } = {}) {
-  const calls: string[][] = [];
+/** One escalation of the keyed red over a fake code host whose next row is #4800; `open` are the rows it already holds, waiting on ceo, `fail` names an operation that is refused. */
+function escalate({ open = [] as { number: number; title: string; }[], board = BOARD as typeof BOARD | null, fail = null as string | null } = {}) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.nextNumber = FILED;
+  for (const held of open) world.rows.set(held.number, fakeRow(world, held.number, { title: held.title, labels: [ESCALATION_LABEL, "parked"] }));
+  if (fail !== null) world.failures.set(fail, new Error("GraphQL: Could not resolve to a ProjectV2"));
+  substituteCodeHost(host);
   const log: string[] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (fail !== null && fail.test(args.join(" "))) throw new Error("GraphQL: Could not resolve to a ProjectV2");
-    if (readsRowsByLabel(args) !== null) return connectionOf(open);
-    return args[1] === "list" ? JSON.stringify(open) : args[1] === "create" ? `${URL}\n` : "";
-  };
-  const labelled = escalateStuck([`${KEY}: delivered ${MAX_DELIVERIES} times`], run, (l: string) => log.push(l), { repoOf: declared, boardOf: () => board });
-  return { calls, labelled, log: log.join("") };
+  const labelled = escalateStuck([`${KEY}: delivered ${MAX_DELIVERIES} times`], noRun, (l: string) => log.push(l), { repoOf: declared, boardOf: () => board });
+  const held = new Set(open.map((row) => row.number));
+  const filed = [...world.rows.values()].filter((row) => !held.has(row.number));
+  return { world, filed, labelled, log: log.join("") };
 }
 
-const labelsOf = (call: string[]) => call.flatMap((arg, i) => (call[i - 1] === "--label" ? [arg] : []));
-const creates = (calls: string[][]) => calls.filter((c) => c[0] === "issue" && c[1] === "create");
-const onBoard = (calls: string[][]) => calls.filter((c) => c[0] === "project");
-
 test("a filed stuck-cause row is created with its wait, its one state and its release declaration", () => {
-  const { calls, labelled } = escalate();
-  assert.equal(creates(calls).length, 1);
-  assert.deepEqual(labelsOf(creates(calls)[0]).sort(), [ESCALATION_LABEL, "out-of-release", "parked"].sort());
-  assert.equal(labelsOf(creates(calls)[0])[0], ESCALATION_LABEL, "the wait stays the first label: removing it is still the answer");
-  assert.deepEqual(labelled, [4800]);
+  const { filed, labelled } = escalate();
+  assert.equal(filed.length, 1);
+  assert.deepEqual([...filed[0].labels].sort(), [ESCALATION_LABEL, "out-of-release", "parked"].sort());
+  assert.equal(filed[0].labels[0], ESCALATION_LABEL, "the wait stays the first label: removing it is still the answer");
+  assert.deepEqual(labelled, [FILED]);
 });
 
-test("the row is put on the board at Backlog, after it is created and by its own URL", () => {
-  const { calls } = escalate();
-  const board = onBoard(calls);
-  assert.deepEqual(board.map((c) => c.slice(0, 2).join(" ")), ["project item-add", "project item-edit"]);
-  for (const call of board) {
-    assert.equal(call[2], "1");
-    assert.equal(call[call.indexOf("--owner") + 1], "a11ign");
-    assert.equal(call[call.indexOf("--url") + 1], URL);
-  }
-  const edit = board[1];
-  assert.equal(edit[edit.indexOf("--field") + 1], "Status");
-  assert.equal(edit[edit.indexOf("--value") + 1], "Backlog");
-  assert.ok(calls.indexOf(creates(calls)[0]) < calls.indexOf(board[0]), "created, then boarded");
+test("the row is put on the board at Backlog, after it is created and by its own number", () => {
+  const { filed } = escalate();
+  assert.deepEqual([filed[0].onBoard, filed[0].boardStatus], [true, "Backlog"]);
 });
 
 test("a second call for the same title files and boards nothing (the dedupe holds)", () => {
   const first = escalate();
-  const title = first.calls.find((c) => c[1] === "create")![first.calls.find((c) => c[1] === "create")!.indexOf("--title") + 1];
-  const { calls, labelled } = escalate({ open: [{ number: 4800, title }] });
-  assert.equal(creates(calls).length, 0, "no second row");
-  assert.equal(onBoard(calls).length, 0, "and no write to the one that exists");
-  assert.deepEqual(labelled, [4800]);
+  const { filed, labelled, world } = escalate({ open: [{ number: FILED, title: first.filed[0].title }] });
+  assert.equal(filed.length, 0, "no second row");
+  assert.equal(world.rows.get(FILED)!.onBoard, false, "and no write to the one that exists");
+  assert.deepEqual(labelled, [FILED]);
 });
 
 test("a board that refuses is said once in the tick log and the row is not recorded as labelled", () => {
-  const { labelled, log, calls } = escalate({ fail: /project item-add/ });
-  assert.equal(creates(calls).length, 1, "the row was filed: ceo can read it");
+  const { labelled, log, filed } = escalate({ fail: "addRowToProject" });
+  assert.equal(filed.length, 1, "the row was filed: ceo can read it");
   assert.deepEqual(labelled, []);
   assert.match(log, /COULD NOT ESCALATE agent-org#56: #4800 filed but OFF THE BOARD: GraphQL/);
 });

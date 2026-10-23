@@ -7,7 +7,7 @@
  * a11ign/a11ign#3566: every tick appends ONE `tick-cost` line, so that "the tick takes 2 to 10 minutes" is a reading from a file and not from a
  * journal, and says where the minutes went: per phase, wall AND CPU (children included), and per command the tick started.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -19,6 +19,11 @@ import { CENSUS_ENV, GATE_SPANS_ENV, currentCensusPhase, describeSpawn, endGateS
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { readElsewherePrs } from "./work-gate/reads.ts";
 import { claimRow } from "./row-claim.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { fakePluginDeps } from "./plugins/fakes/deps.ts";
+import { createCodeHost } from "../plugins/github/code-host.ts";
+
+afterEach(() => forgetActivation());
 import { instanceCacheRead } from "./wake/fyi-delivery-and-limits.ts";
 import { LIVE_TRANSCRIPT_HORIZON_MS, liveClaudeTurns } from "./work-gate/row-call-count-orders.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
@@ -418,11 +423,14 @@ test("#3566: liveClaudeTurns does not read a transcript no write has touched wit
 /** agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, not `gh issue view`. */
 const isLabelRead = (args: string[]) => args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "");
 
-/** A `gh` for one `ready` row whose body states its template fields and whose `blockedBy` is empty; every call it is asked is kept, in order. */
+/**
+ * A `gh` for one `ready` row whose body states its template fields and whose `blockedBy` is empty; every call it is asked is kept, in order. The claim's `gh` is the code host's (A11-160, step 7), so the code host is the GitHub
+ * plugin's own over an `exec` that answers by argv: this test counts the commands the plugin builds and the memo keeps, which the fake's rows (that ignore `run`) cannot say.
+ */
 function claimReads({ failBody = false } = {}) {
   const calls: string[][] = [];
   let labelReads = 0;
-  const run = (_cmd: string, args: string[]): string => {
+  const answer = (args: string[]): string => {
     calls.push(args);
     const json = args[args.indexOf("--json") + 1];
     // agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, whose state is lower case
@@ -439,7 +447,15 @@ function claimReads({ failBody = false } = {}) {
     if (args[1] === "view" && json === "blockedBy") return JSON.stringify({ blockedBy: { nodes: [] } });
     return "[]";
   };
-  return { calls, run };
+  substituteCodeHost(createCodeHost(fakePluginDeps({ exec: (_file, args) => {
+    try {
+      return { status: 0, stdout: answer([...args]), stderr: "" };
+    } catch (error) {
+      return { status: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
+    }
+  } })));
+  const run = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+  return { calls, run: run as never };
 }
 /** The `issue view` calls whose `--json` fields are exactly `json` or include it as one field (`body` is asked as `body,labels`, #732). */
 const rowReads = (calls: string[][], json: string) => calls.filter((args) => {

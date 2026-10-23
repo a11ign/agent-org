@@ -1,19 +1,24 @@
 // no-token: gh
 //
-// Imports `row-file.ts`, which spawns `gh`; true of the IMPORT and false of the CALL. Every reader below is injected (`run`, the board and
-// label readers, `moveStatus`, `roadmapItems`, `roadmapField`), so no test lets a real spawn happen -- the arrangement `row-file-board.test.ts` uses.
+// Imports `row-file.ts`, which spawns `gh`; true of the IMPORT and false of the CALL. The board, its items and its Roadmap field are the fake code host's world (A11-160, step 7); the label
+// readers, `moveStatus` and `spawnGh` are injected, and the one `run` left answers only the claimed rows' by-label read, which is the blast radius's (another step). No test lets a real spawn happen.
 /**
  * #516: `row-file` refuses a row under a roadmap epic that has no `Roadmap` value, and sets it when it boards the row.
  *
  * POSITIVE CONTROL: the first refusal test below is the one the row names -- a parent whose epic HAS a value and an argv with no `--roadmap=`.
  * With `roadmapPlan`'s refusal removed that test fails (it files the row), which is the run the PR shows.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { createIssue } from "./row-file/roadmap-and-milestone-checks.ts";
-import { parentFromArgv, parentRef, roadmapFromArgv, roadmapItemsOf, roadmapFieldOf, type RoadmapItem } from "./row-file/title-kind-and-label-refusals.ts";
+import { parentFromArgv, parentRef, roadmapFromArgv } from "./row-file/title-kind-and-label-refusals.ts";
 import { withFiledBy } from "./row-file/issue-body-and-region-checks.ts";
 import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const HOME = { key: "", repo: "a11ign/a11ign", board: { owner: "a11ign", number: 1 } };
 const DECLARATION = { tracker: [HOME], code: [{ key: "", repo: "a11ign/a11ign" }],
@@ -27,39 +32,32 @@ const EPIC = "a11ign/a11ign#4437";
 const ROW = "a11ign/a11ign#900";
 
 /**
- * A fake board: every project item keyed `owner/repo#n`. `item-add` boards the new row with no value; `item-edit` sets the value the option id
- * names -- so what each assertion reads is what the act WROTE, and a `--roadmap=` that was never applied reads as `null`.
+ * A fake board: the fake code host's world, every project item keyed `owner/repo#n`. The new row is boarded with no value (`addRowToProject` finds its item there); setting the option names the value the option id
+ * stands for -- so what each assertion reads is what the act WROTE, and a `--roadmap=` that was never applied reads as `null`.
  */
 function fakeBoard(options: { epicValue?: string | null; epicUnreadable?: boolean; fieldMissing?: boolean; editFails?: boolean; editIgnored?: boolean } = {}) {
-  const items = new Map<string, RoadmapItem[]>([[EPIC, [{ id: "PVTI_epic", number: 1, owner: "a11ign", value: options.epicValue ?? null }]]]);
-  const log = { spawned: [] as string[][], edits: [] as string[][], reads: [] as string[], stderr: "", stdout: "" };
-  const run = (_cmd: string, args: string[]): string => {
-    if (readsRowsByLabel(args) !== null) return connectionOf([]); // #5039: the claimed rows' by-label read (the sweep window's, the blast radius's) -- none held
-    if (args[0] === "project" && args[1] === "item-add") { items.set(ROW, [{ id: "PVTI_900", number: 1, owner: "a11ign", value: null }]); return ""; }
-    if (args[0] === "project" && args[1] === "item-edit" && args.includes("--single-select-option-id")) {
-      log.edits.push(args);
-      if (options.editFails) throw new Error("GraphQL: Resource not accessible by integration");
-      const name = OPTIONS.find((o) => o.id === args[args.indexOf("--single-select-option-id") + 1])?.name ?? null;
-      if (!options.editIgnored) for (const item of items.get(ROW) ?? []) if (item.id === args[args.indexOf("--id") + 1]) item.value = name;
-      return "";
-    }
-    if (args[0] === "issue" && args[1] === "list") return "[]"; // the duplicate-title read: no open row has it
-    if (args[0] === "issue" && args[1] === "view" && args.includes("body")) return `${BODY}\nFiled-by: worker-516\n`;
-    if (args[0] === "issue" && args[1] === "view" && args.includes("milestone")) return "CI reset";
-    return "";
-  };
-  const roadmapItems = (issue: { repo: string; number: number }) => {
-    const key = `${issue.repo}#${issue.number}`;
-    log.reads.push(key);
-    if (options.epicUnreadable && key === EPIC) throw new Error("HTTP 502");
-    return (items.get(key) ?? []).map((item) => ({ ...item }));
-  };
-  const deps = { run, roadmapItems, roadmapField: () => (options.fieldMissing ? null : FIELD),
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = "a11ign/a11ign";
+  world.filing.roadmapItems.set(EPIC, options.epicUnreadable ? new Error("HTTP 502") : [{ id: "PVTI_epic", number: 1, owner: "a11ign", value: options.epicValue ?? null }]);
+  world.filing.roadmapItems.set(ROW, [{ id: "PVTI_900", number: 1, owner: "a11ign", value: null }]);
+  world.filing.roadmapFields.set("a11ign/1", options.fieldMissing ? null : FIELD);
+  if (options.editFails) world.failures.set("setBoardItemOption", new Error("GraphQL: Resource not accessible by integration"));
+  if (options.editIgnored) host.rows!.setBoardItemOption = (request) => { world.filing.optionsSet.push({ itemId: request.itemId, projectId: request.projectId, fieldId: request.fieldId, optionId: request.optionId }); };
+  substituteCodeHost(host);
+  const log = { spawned: [] as string[][], stderr: "", stdout: "" };
+  const items = world.filing.roadmapItems;
+  const deps = { run: (_cmd: string, args: string[]) => (readsRowsByLabel(args) !== null ? connectionOf([]) : ""), // #5039: the claimed rows' by-label read (the sweep window's, the blast radius's) -- none held
     moveStatus: () => ({ moved: true as const }), fetchBoardStatus: () => "Backlog", ensureLabels: () => undefined,
     fetchLabels: () => ({ number: 900, title: "t", state: "OPEN", labels: ["backlog", "lane:any", "out-of-release"] }),
     loadLanesConfig: () => ({ lanes: [] }), milestones: () => ["CI reset"], primaryMilestones: () => ["CI reset"], declaration: DECLARATION,
-    spawnGh: (argv: string[]) => { log.spawned.push(argv); return "https://github.com/a11ign/a11ign/issues/900"; } };
-  return { log, items, deps };
+    spawnGh: (argv: string[]) => {
+      log.spawned.push(argv);
+      world.rows.set(900, fakeRow(world, 900, { body: `${BODY}\nFiled-by: worker-516\n` }));
+      world.filing.rowMilestones.set(ROW, "CI reset");
+      return "https://github.com/a11ign/a11ign/issues/900";
+    } };
+  return { log, items, deps, world };
 }
 
 function file(argv: string[], board = fakeBoard()) {
@@ -83,7 +81,7 @@ test("#516 POSITIVE CONTROL: a parent whose epic has a Roadmap value and no --ro
   assert.match(r.log.stderr, /REFUSING to file/);
   assert.match(r.log.stderr, /Self-healing org/, "names the value the epic carries");
   for (const option of OPTIONS) assert.ok(r.log.stderr.includes(`\`${option.name}\``), `lists ${option.name}`);
-  assert.equal(r.log.edits.length, 0);
+  assert.equal(r.world.filing.optionsSet.length, 0);
 });
 
 test("#516: an unknown --roadmap= is refused with the option list; nothing is filed", () => {
@@ -98,9 +96,8 @@ test("#516: a parent whose epic has a value and --roadmap=<option> files the row
   const r = file(["--parent=4437", "--roadmap=Self-healing org"], fakeBoard({ epicValue: "Self-healing org" }));
   assert.equal(r.code, 0, r.log.stderr);
   assert.equal(r.log.spawned.length, 1);
-  assert.deepEqual(r.log.edits, [["project", "item-edit", "--id", "PVTI_900", "--project-id", "PVT_1", "--field-id", "PVTSSF_roadmap",
-    "--single-select-option-id", "OPT_3"]]);
-  assert.equal(r.items.get(ROW)?.[0].value, "Self-healing org");
+  assert.deepEqual(r.world.filing.optionsSet, [{ itemId: "PVTI_900", projectId: "PVT_1", fieldId: "PVTSSF_roadmap", optionId: "OPT_3" }]);
+  assert.equal((r.items.get(ROW) as { value: string | null }[])[0].value, "Self-healing org");
   assert.match(r.log.stdout, /issues\/900\n$/);
   assert.doesNotMatch(r.log.stderr, /differs from/, "agreeing with the epic is silent");
 });
@@ -117,13 +114,13 @@ test("#516: an epic with NO Roadmap value changes nothing -- the row is filed an
   const r = file(["--parent=4437"], fakeBoard({ epicValue: null }));
   assert.equal(r.code, 0, r.log.stderr);
   assert.equal(r.log.spawned.length, 1);
-  assert.equal(r.log.edits.length, 0);
+  assert.equal(r.world.filing.optionsSet.length, 0);
 });
 
 test("#516: a --roadmap= given under an epic with no value is still checked and set, never silently ignored", () => {
   const set = file(["--parent=4437", "--roadmap=Clean boundaries"], fakeBoard({ epicValue: null }));
   assert.equal(set.code, 0, set.log.stderr);
-  assert.equal(set.items.get(ROW)?.[0].value, "Clean boundaries");
+  assert.equal((set.items.get(ROW) as { value: string | null }[])[0].value, "Clean boundaries");
   const unknown = file(["--parent=4437", "--roadmap=Sideways"], fakeBoard({ epicValue: null }));
   assert.equal(unknown.code, 1);
   assert.equal(unknown.log.spawned.length, 0);
@@ -132,8 +129,8 @@ test("#516: a --roadmap= given under an epic with no value is still checked and 
 test("#516: no --parent and no --roadmap= reads no epic and writes no field", () => {
   const r = file([], fakeBoard({ epicValue: "Clean boundaries" }));
   assert.equal(r.code, 0, r.log.stderr);
-  assert.deepEqual(r.log.reads, []);
-  assert.equal(r.log.edits.length, 0);
+  assert.deepEqual(r.world.filing.roadmapReads, []);
+  assert.equal(r.world.filing.optionsSet.length, 0);
 });
 
 test("#516: --roadmap= with no --parent= is refused: the value comes from the epic", () => {
@@ -176,7 +173,7 @@ test("#516: naming a different option than the epic's is allowed, and says so", 
   const r = file(["--parent=4437", "--roadmap=Manager redesign"], fakeBoard({ epicValue: "Clean boundaries" }));
   assert.equal(r.code, 0, r.log.stderr);
   assert.match(r.log.stderr, /WARNING .* differs from a11ign\/a11ign#4437's `Roadmap` \(`Clean boundaries`\)/);
-  assert.equal(r.items.get(ROW)?.[0].value, "Manager redesign");
+  assert.equal((r.items.get(ROW) as { value: string | null }[])[0].value, "Manager redesign");
 });
 
 test("#516: the parent is read in every spelling gh takes, and an epic in another repository is read there", () => {
@@ -191,20 +188,5 @@ test("#516: the parent is read in every spelling gh takes, and an epic in anothe
   assert.equal(parentRef("the epic", "a11ign/agent-org"), null);
   const r = file(["--parent=a11ign/a11ign#4437"], fakeBoard({ epicValue: "Clean boundaries" }));
   assert.equal(r.code, 1);
-  assert.ok(r.log.reads.includes(EPIC));
-});
-
-test("#516: the readers parse GitHub's shapes -- items with their value, options from the project, a missing field as null", () => {
-  const items = JSON.stringify({ data: { repository: { issue: { projectItems: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
-    { id: "PVTI_1", project: { number: 2, owner: { login: "a11ign" } }, fieldValueByName: { name: "Clean boundaries" } },
-    { id: "PVTI_2", project: { number: 1, owner: { login: "a11ign" } }, fieldValueByName: null }] } } } } });
-  assert.deepEqual(roadmapItemsOf({ repo: "a11ign/agent-org", number: 5 }, () => items),
-    [{ id: "PVTI_1", number: 2, owner: "a11ign", value: "Clean boundaries" }, { id: "PVTI_2", number: 1, owner: "a11ign", value: null }]);
-  const board = (field: unknown) => JSON.stringify({ data: { repositoryOwner: { projectV2: { id: "PVT_9", field } } } });
-  const tracker = { key: "agent-org", repo: "a11ign/agent-org", board: { owner: "a11ign", number: 2 } };
-  assert.deepEqual(roadmapFieldOf(tracker, () => board({ id: "F1", options: [{ id: "O1", name: "Clean boundaries" }] })),
-    { projectId: "PVT_9", fieldId: "F1", options: [{ id: "O1", name: "Clean boundaries" }] });
-  assert.equal(roadmapFieldOf(tracker, () => board(null)), null);
-  assert.throws(() => roadmapFieldOf(tracker, () => JSON.stringify({ data: { repositoryOwner: { projectV2: null } } })), /could not read a11ign\/projects\/2/);
-  assert.throws(() => roadmapItemsOf({ repo: "a11ign/agent-org", number: 5 }, () => "{}"), /expected shape/);
+  assert.ok(r.world.filing.roadmapReads.includes(EPIC));
 });

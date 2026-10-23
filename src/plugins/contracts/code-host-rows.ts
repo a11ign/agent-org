@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's optional `rows` group, version 1.9 -- row mode's GitHub operations (A11-160, steps 4 to 6)
+// module: the code host contract's optional `rows` group, version 1.10 -- row mode's GitHub operations (A11-160, steps 4 to 7)
 //
 // A TYPE FILE: it imports nothing at run time. ROW MODE USES GITHUB AS ITS TRACKER (rows are issues, `TicketPort` is implemented over them), its queue (project items and labels) and its code host, and a plugin
 // serves one concern, so row mode's operations are an OPTIONAL member group of the code host contract rather than a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
@@ -13,9 +13,12 @@
 // 1.8 (step 5): the callers that arm, guard and queue a merge moved (`arm-pr`, `auto-arm-sweep`, `merge-guard`, `merge-queue`, `pr-armed-state`), and what they asked of GitHub is a named operation now. `run` is OPTIONAL on
 // them and on the arming operations of 1.7 they use: a caller that has not moved hands its own, and one that has hands none, so the code host runs `gh` itself (`ownRun` is the plugin's, for the callers still to move).
 //
+// 1.10 (step 7): wake, the claim and the filing of rows moved (see the three sections at the end of the group), and what they asked of GitHub is a named operation now, on the `run` each caller hands it where it has one.
+//
 // 1.9 (step 6): the work gate moved (`src/work-gate/`), and what it asked of GitHub is a named operation now, on the `run` the gate hands each: the gate's EXECUTOR (the tick's memo, its budget, the bound on a call, the
 // repository a call is aimed at) stays core's, and the process it starts is the plugin's (`gateRun`, `runTogether`).
 import type { Pool as PoolReading } from "../../api-pool.ts";
+import type { BlockerRead, BranchedPullState, ClosingPullRead, CommandRun, CrossReferencingPull, LabelEvent, LabelEventRead, MarkedComment, MilestoneRead, OpenPullFiles, OpenPullReview, PullCommit, PullState, RestCommentsRead, RestRow, RestRowRead, RoadmapFieldRead, RoadmapItemRead, RowFacts, RowShapeFacts, TierFacts } from "./code-host-rows-facts.ts";
 import type { ApiBudget, BlockerWriter, OpenItemsReader, PortEvent, TicketPort } from "../../ticket-port/port.ts";
 
 /** One `gh` command line in, its text out, throwing as the command fails. The caller's: see the head of this file. */
@@ -550,4 +553,127 @@ export interface CodeHostRows {
   closedClaimedRowsOf(request: { repo: string; aim?: string; numbers: number[]; claimLabel: string; run: AimedRun }): { number: number; labels: { name: string }[]; comments: { body: string; createdAt: string; author: { login: string | undefined } }[]; closedByPullRequestsReferences: { number: number; headRefName: string; title: string }[] }[];
   /** The closed rows or pull requests carrying any of the named labels, in ONE aliased read under the tick's refusal memory, or `null` when the answer is not whole. */
   closedRowsCarryingLabels(request: { names: string[]; kind: "issues" | "pullRequests"; run: RowsRun }): ClosedLabelledRow[] | null;
+
+  // --- wake (contract 1.10, A11-160 step 7) ---
+  /** The title and the comments of row `number` of `repo` (a missing list is an empty one). THROWS when the read is refused or is not JSON. */
+  titleAndCommentsOf(request: { repo: string; number: number; run: RowsRun }): { title: string; comments: any[] };
+  /** The names of the labels on row `number` of `repo`, or `null` when the answer carries no list of labels. THROWS when the read is refused. */
+  labelNamesOfRow(request: { repo: string; number: number; run: RowsRun }): string[] | null;
+  /** GitHub's word for the state of row `number` (`OPEN`, `CLOSED`) in `repo`, or in the repository the call is aimed at when `repo` is absent. THROWS when the read is refused. */
+  rowStateOf(request: { number: number; repo?: string; run: RowsRun }): string;
+  /** The labels, body and title of row `number` of `repo`. THROWS when the read is refused or the answer carries no list of labels. */
+  labelsBodyTitleOf(request: { repo: string; number: number; run: RowsRun }): TierFacts;
+  /** Closes row `number` of the repository the call is aimed at, with `comment`. */
+  closeHomeRowWithComment(request: { number: number; comment: string; run: RowsRun }): void;
+  /** Files a row with every one of `labels` and answers what `gh` printed (the new row's URL). */
+  fileRowWithLabels(request: { title: string; body: string; labels: readonly string[]; run: RowsRun }): string;
+  /** The last event that put `label` on row `number` or took it off, or `null` when it never had one. THROWS when the read is refused. */
+  lastLabelEventOf(request: { number: number; label: string; run: RowsRun }): LabelEvent | null;
+  /** Every comment on row `number`, each with whether its body carries `marker`. THROWS when the read is refused. */
+  markedCommentsOf(request: { number: number; marker: string; run: RowsRun }): MarkedComment[];
+  /** Whether pull request `number` of `repo` sits in the merge queue. THROWS when the read is refused. */
+  isPullQueued(request: { repo: string; number: number; run: RowsRun }): boolean;
+  /** `open` or `closed` (a merged pull request is closed) for pull request `number` of `repo`, or `null` for any other word. THROWS when the read is refused. */
+  pullStateWordOf(request: { repo: string; number: number; run: RowsRun }): "open" | "closed" | null;
+  /** Whether issue or pull request `number` of `repo` is open, and its labels; `null` for a reference that does not exist (GitHub's 404). THROWS when the read is refused otherwise. */
+  issueStateAndLabelsOf(request: { repo: string; number: number; run: RowsRun }): { open: boolean; labels: string[] } | null;
+  /** When the first comment of row `number` of `repo` whose body starts with `prefix` was made (the text GitHub gives), or `null` when none does. THROWS when the read is refused. */
+  firstCommentTimeStartingWith(request: { repo: string; number: number; prefix: string; pageSize: number; run: RowsRun }): string | null;
+  /**
+   * `gh`, as the process's own account, cut at `timeoutMs`: for a caller that hands the runner on to a reader that has not moved (the trace's, step 8), and for the claim, whose writes must not be cut by the plugin's own
+   * bound. `withoutGitEnv` takes the variables a hook sets (`GIT_DIR`, ...) off each call's environment, as the claim's spawn helper always did. A fake has no `gh`, and its runner throws.
+   */
+  ownRunWithin(timeoutMs: number, options?: { withoutGitEnv?: boolean }): RowsRun;
+  /** TRANSITIONAL, with the trace's reader (step 8): the answer of `gh api <args>`, parsed as JSON, on the `run` the caller hands over. THROWS when the read is refused or is not JSON. */
+  readRestJson(request: { args: string[]; run: RowsRun }): any;
+
+  // --- the claim (contract 1.10, A11-160 step 7) ---
+  /** The arguments that create the label `label` in `repo`, or update it (`--force`): the claim runs them one at a time or hands them to its executor to wait together. */
+  ensureLabelArgs(label: string, repo: string): string[];
+  /** A row as REST states it. THROWS when `gh` fails; `{ unreadable }` for an answer that is not a row. */
+  readRestRow(request: { repo: string; number: number; run: RowsRun }): RestRowRead;
+  /** A row's last 100 comments (bodies, oldest first) as REST states them. THROWS when `gh` fails; `{ unreadable }` for an answer that is not a list of pages. */
+  readRestComments(request: { repo: string; number: number; run: RowsRun }): RestCommentsRead;
+  /** Sets a row's labels to exactly `labels`, in ONE request: a row never holds half of it. THROWS when refused. */
+  setRowLabels(request: { repo: string; number: number; labels: readonly string[]; run: RowsRun }): void;
+  /** Takes `remove` off a row of `repo` and puts `add` on, in one edit. THROWS when refused. */
+  editRowLabels(request: { repo: string; number: number; remove: readonly string[]; add: readonly string[]; run: RowsRun }): void;
+
+  // --- the filing of rows and the top-level claim and row files (contract 1.10, A11-160 step 7) ---
+  /** The arguments-only runner of this code host's program, made of one that takes the program and its arguments. The operations take the runner of their caller; a caller that holds a {@link CommandRun} makes it here and names no program. */
+  argumentsRunOf(run: CommandRun): RowsRun;
+  /** A blocker's state and body, or `null` when it cannot be read: an unreadable blocker is an unknown, never an umbrella. Never throws. */
+  blockerRowOf(request: { number: number; repo: string; run: RowsRun }): BlockerRead | null;
+  /** The newest `limit` open rows of `repo` as a JSON list of `{ number, title }`, as text. THROWS when the read is refused. */
+  newestOpenRowsText(request: { repo: string; limit: number; run: RowsRun }): string;
+  /** Sets the single-select option `optionId` of the field `fieldId` of project `projectId` on the board item `itemId`. */
+  setBoardItemOption(request: { itemId: string; projectId: string; fieldId: string; optionId: string; run: RowsRun }): void;
+  /** Files a row from the arguments of the code host's own create command, unchanged, and answers its address, trimmed. THROWS when the code host refuses. */
+  fileRowFromArguments(request: { argv: string[]; run: RowsRun }): string;
+  /** The milestones of `repo`. THROWS when the read is refused or the answer is not a list. */
+  milestonesOf(request: { repo: string; run: RowsRun }): MilestoneRead[];
+  /** The titles of the milestones of `repo`, without the blank ones. THROWS when the read is refused. */
+  milestoneTitlesOf(request: { repo: string; run: RowsRun }): string[];
+  /** Puts every label of `labels` on row `number` of `repo`, in one edit. */
+  addLabelsToRowIn(request: { repo: string; number: number; labels: string[]; run: RowsRun }): void;
+  /** The body of row `number` of `repo`, as the code host prints it. THROWS when the read is refused. */
+  bodyTextOfRowIn(request: { repo: string; number: number; run: RowsRun }): string;
+  /** The title of the milestone of row `number` of `repo`, as the code host prints it (empty for a row with none). THROWS when the read is refused. */
+  milestoneTitleOfRow(request: { repo: string; number: number; run: RowsRun }): string;
+  /** Every project item of row `number` of `repo` with its value of the single-select field `field`. THROWS on a refused read or an answer of an unexpected shape. */
+  roadmapItemsOf(request: { repo: string; number: number; field: string; run: RowsRun }): RoadmapItemRead[];
+  /** The single-select field `field` of board `boardNumber` of `owner`; `null` when the board has none. THROWS when the board cannot be read. */
+  roadmapFieldOf(request: { owner: string; boardNumber: number; field: string; run: RowsRun }): RoadmapFieldRead | null;
+
+  // --- the claim's rules (contract 1.10, A11-160 step 7) ---
+  /** The `blockedBy` edge of row `number` of `repo`, as GitHub answers it. THROWS when the read is refused or is not JSON. */
+  blockedByOf(request: { repo: string; number: number; run: RowsRun }): { blockedBy?: { nodes?: { number?: number; state?: string }[] } };
+  /** The body and labels of row `number` of `repo`: the argument list the claim's batched read sends. THROWS when the read is refused or is not JSON. */
+  bodyAndLabelsOf(request: { repo: string; number: number; run: RowsRun }): { body?: string; labels?: unknown[] };
+  /** A held row as B2 reads it: body, labels and `blockedBy` in one call, then the count of its sub-issues in a second. THROWS when either is refused. */
+  rowShapeFactsOf(request: { repo: string; number: number; run: RowsRun }): RowShapeFacts;
+  /** Whether row `number` of `repo` carries `label`. THROWS when the read is refused: never "not labelled". */
+  rowCarriesLabel(request: { repo: string; number: number; label: string; run: RowsRun }): boolean;
+  /** The newest `limit` open pull requests of `repo` with their reviews, in one call. THROWS when the read is refused. */
+  openPullReviewsOf(request: { repo: string; limit: number; run: RowsRun }): OpenPullReview[];
+  /** The commits of pull request `number` of `repo`; none where the answer carries no list. THROWS when the read is refused. */
+  commitsOfPull(request: { repo: string; number: number; run: RowsRun }): PullCommit[];
+  /** The pull requests GitHub resolves as closing row `number` of `repo`, oldest first. THROWS when the read is refused or the answer is not that shape. */
+  closingPullsOf(request: { repo: string; number: number; run: RowsRun }): ClosingPullRead[];
+  /** Every item that cross-references row `number` of `repo`, read to the end of the timeline. THROWS when a read is refused, a page has no end marker, or the timeline does not end. */
+  crossReferencingPullsOf(request: { repo: string; number: number; run: RowsRun }): CrossReferencingPull[];
+  /** Every path pull request `number` of `repo` changes, read to the end of its file list. THROWS as {@link CodeHostRows.crossReferencingPullsOf} does. */
+  changedPathsOfPull(request: { repo: string; number: number; run: RowsRun }): string[];
+  /** Every open pull request of `repo` with the files it changes, its body, labels and branch, in one call. THROWS when the read is refused. */
+  openPullsWithFilesOf(request: { repo: string; run: RowsRun }): OpenPullFiles[];
+  /** Every file pull request `number` of `repo` changes, through REST's pages. THROWS when the read is refused. */
+  pullFilePathsOf(request: { repo: string; number: number; run: RowsRun }): string[];
+  /** Creates the label `name` in `repo`; creating one that exists is harmless. A refused write THROWS. */
+  ensureLabelIn(request: { repo: string; name: string; run: RowsRun }): void;
+  /** Puts `label` on row `number` of `repo`. A refused write THROWS. */
+  addLabelToRowIn(request: { repo: string; number: number; label: string; run: RowsRun }): void;
+  /** What changed in `repo` between commit `sha` and its `main`, or `null` when GitHub cannot say (offline, no token, an unknown commit): never "nothing changed". */
+  compareShaWithMain(request: { repo: string; sha: string; run: RowsRun }): { status: string; files: string[] } | null;
+
+  // --- the other claim and row files (contract 1.10, A11-160 step 7) ---
+  /** A row's `labeled` and `unlabeled` events, every page, oldest first. THROWS when the read is refused or a line is not JSON: a history that could not be read is never an empty one. `run` absent: the code host runs `gh` itself. */
+  labelEventsOf(request: { repo: string; row: number; run?: RowsRun }): LabelEventRead[];
+  /** Takes every label in `labels` off row `number` of `repo` in ONE edit. THROWS when `gh` refuses. */
+  removeLabelsFromRow(request: { repo: string; number: number; labels: readonly string[]; run?: RowsRun }): void;
+  /** The GraphQL answer, as text, naming the pull request that closed row `number` of `repo` (the last of its closing events). THROWS when the read is refused. */
+  closingTimelineTextOf(request: { repo: string; number: number; run?: RowsRun }): string;
+  /** The `limit` most recently closed rows of `repo`, as the text of a JSON list of `{ number, title, closedAt, stateReason }`. THROWS when the read is refused. */
+  closedRowListingTextOf(request: { repo: string; limit: number; run?: RowsRun }): string;
+  /** Every `labeled` and `unlabeled` event of the repository, every page, as one JSON object per line `{ number, event, label, at }`. THROWS when the read is refused. */
+  labelEventLogTextOf(request: { repo: string; run?: RowsRun }): string;
+  /** The `limit` newest pull requests of `repo` in any state, with the branch each was opened from. THROWS when the read is refused or is not JSON. */
+  pullStatesOf(request: { repo: string; limit: number; run?: RowsRun }): BranchedPullState[];
+  /** Every pull request of `repo` opened from `branch`, in any state: an answer that is not a list is the empty list. THROWS when the read is refused or is not JSON. */
+  pullStatesOfBranchIn(request: { repo: string; branch: string; run?: RowsRun }): PullState[];
+  /** A row's body, labels, state and close time as GitHub states them. THROWS when the read is refused or is not JSON. */
+  rowFactsIn(request: { repo: string; number: number; run?: RowsRun }): RowFacts;
+  /** The open rows (`issues`, pull requests dropped) or pull requests of `repo` over REST, every page. THROWS when a page is not a list or the listing runs past its pages. */
+  openRestListingOf(request: { repo: string; kind: "issues" | "pulls"; run?: RowsRun }): object[];
+  /** A row's body in `repo`. THROWS when the read is refused or is not JSON. */
+  rowBodyIn(request: { repo: string; number: number; run?: RowsRun }): string;
 }

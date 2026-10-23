@@ -11,12 +11,17 @@
  * MUTATIONS, each run by hand and recorded on the row: the answer branch adding no `backlog` (the 14-row test goes red), `stateLabelFindings` never finding (the leaf cases and the
  * signal go red), always finding (the single-state controls go red), `writeDeclineLabels` without its state re-read (the refusal test goes red and no other).
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { watchedRows } from "./plugins/fakes/watched-rows.test.support.ts";
+import { REPO } from "./project-identity.ts";
 
 // The project is a recorded one, as `org-health-auto-off-refusal.test.ts`: the host file is set FIRST and the tool imported AFTER it, dynamically.
 const SCRATCH = mkdtempSync(join(tmpdir(), "state-label-"));
@@ -38,6 +43,8 @@ const { SIGNALS } = await import("./org-health/thresholds.ts");
 const { stateLabelReading } = await import("./org-health/board-truth-and-access-readings.ts");
 const { orgHealthReadings, orgHealthOrders } = await import("./org-health/fleet-build-readings.ts");
 const { labelRefusal, boardingFor } = await import("./row-file/title-kind-and-label-refusals.ts");
+
+afterEach(() => forgetActivation());
 
 const row = (number: number, labels: string[], state?: string) => ({ number, labels, ...(state ? { state } : {}) });
 
@@ -135,23 +142,22 @@ test("`rowsBeingFiled` names exactly the rows the grace excused, so a reader can
 
 // --- the decline path never writes a row to no state --------------------------------------------------------------------------------
 
-/** `releaseBoard` of `work-gate-claim-stalled.test.ts`: REACTIVE, because the decline re-reads the row after its edit. */
+/**
+ * The fake code host holding row 3643: REACTIVE, because the decline re-reads the row after its edit (A11-160, step 7: the rows are the code host's). `held` is the row itself, so a test changes its labels as the
+ * answerer would; `edits` are the edits the decline made, as the labels removed and added. With `landsAdds` off the edit exits well, removes what it was told and adds nothing.
+ */
 function board(labels: string[], state = "OPEN", landsAdds = true) {
-  const held = { labels: [...labels], state };
-  const edits: { removed: string[], added: string[] }[] = [];
-  const run = (_cmd: string, args: string[]) => {
-    if (args[1] === "edit") {
-      const changed = (flag: string) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
-      edits.push({ removed: changed("--remove-label"), added: changed("--add-label") });
-      held.labels = [...held.labels.filter((l) => !changed("--remove-label").includes(l)), ...(landsAdds ? changed("--add-label") : [])];
-      return "";
-    }
-    // agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, whose state is lower case
-    return args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "")
-      ? JSON.stringify({ number: 3643, title: "A row", state: held.state.toLowerCase(), labels: held.labels.map((name) => ({ name })) }) : "";
-  };
-  return { held, edits, run };
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.rows.set(3643, fakeRow(host.rowsWorld, 3643, { title: "A row", labels: [...labels], state: state as "OPEN" | "CLOSED" }));
+  host.rowsWorld.claim.dropAdds = !landsAdds;
+  const watched = watchedRows(host);
+  substituteCodeHost(watched.host);
+  const held = host.rowsWorld.rows.get(3643)!;
+  const edits = () => watched.calls.filter((call) => call.op === "editRowLabels").map((call) => ({ removed: call.request.remove as string[], added: call.request.add as string[] }));
+  return { held, get edits() { return edits(); }, run: noGh };
 }
+const noGh = (cmd: string): string => { throw new Error(`a decline reached \`${cmd}\` through its run: GitHub is the code host's`); };
 const CLAIMED = ["in-progress", "started", "was-ready", "session:worker-7", "out-of-release", "lane:any"];
 const RECORD = [claimRecordComment({ session: "worker-7", nothing: "the claim named no branch and no worktree" })];
 const decline = (b: ReturnType<typeof board>, options: Record<string, unknown> = {}) =>

@@ -50,6 +50,7 @@ function rowsRunners(deps: PluginDeps): RowsRunners {
   return {
     own: ghRunner(deps, {}, { echo }),
     queue: ghRunner(deps, {}, { echo, withoutEnv: () => Object.keys(deps.env).filter((name) => name.startsWith("GIT_")) }),
+    within: (timeoutMs, options) => ghRunner(deps, {}, { echo, timeoutMs, ...(options?.withoutGitEnv ? { withoutEnv: () => Object.keys(deps.env).filter((name) => name.startsWith("GIT_")) } : {}) }),
     gate: (options) => gateRunner(deps, options),
     together: (request) => runGhTogether(deps, request),
   };

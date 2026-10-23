@@ -95,7 +95,7 @@ import { isRowsByLabelRead, readRowsByLabel } from "./ticket-port/rows-by-label.
 import { readSweepWindows, recordOverrunRefusal, sweepFreezeAtClaim, sweepFreezeOf, type SweepRow } from "./sweep-window.ts"; // #4603: a declared sweep freezes its Region for its window
 import { templateFieldsReason, lookupIssueBody } from "./row-claim/template-fields-rule.ts";
 import { scopeHash, claimedScopeOf, CLAIM_RECORD_SCOPE } from "./claim-scope.ts"; // #4759: the leaf the tick compares the record with the live row from
-import { staleRuleReason } from "./row-claim/stale-rule-guard.ts";
+import { REPOSITORY as INSTALLED_RULE_REPOSITORY, staleRuleReason } from "./row-claim/stale-rule-guard.ts";
 import { stateEntryPath } from "./host-config.ts";
 // eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { CLAIM_GUARD_HELD_KIND, CLAIM_REFUSED_KIND, FAILURE_LEDGER_FILE, recordFailure } from "./failure-ledger.ts"; // #972: a refusal is a line of the ledger the storm signal reads
@@ -118,6 +118,9 @@ import { BLOCKED_LABEL, BACKLOG_LABEL, ANSWER_PREFIX, SESSION_PREFIX } from "./p
 import { worktreeOwner, stampWorktree, OWNER_FILE } from "./worktree-owner.ts";
 import { launchGate } from "./board-snapshot-scope.ts";
 import { assertNoLeakInArgv } from "./lib/leak-patterns.ts";
+import { rows } from "./plugins/rows.ts";
+import { PluginActivationRefusal } from "./plugins/code-host-slot.ts";
+import type { CodeHostRows, RowsRun } from "./plugins/contracts/code-host-rows.ts";
 
 // #804: CLAIM_LABEL/STARTED_LABEL are IMPORTED (above) from the leaf claim-labels.ts and re-exported
 // here, not declared in this file -- see claim-labels.ts's own header for why. Every existing
@@ -299,9 +302,28 @@ type IssueClaim = { number: number, title: string, labels: string[], state?: "OP
  * @type {(cmd: string, args: string[]) => string}
  */
 const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string => {
-  assertNoLeakInArgv(cmd, args); // #1053: guarded in the SPAWN HELPER -- three comment writers below
+  assertNoLeakInArgv(cmd, args); // #1053: guarded in the SPAWN HELPER
   return execFileSync(cmd, args, { encoding: "utf8", env: sandboxGitEnv() });
 };
+
+/** The command the leak guard is keyed on (`assertNoLeakInArgv` judges the argument list of this command and no other): the tracker's CLI, which the code host starts. */
+const CODE_HOST_COMMAND = "gh";
+
+/**
+ * (A11-160, step 7) EVERY GITHUB CALL OF A CLAIM IS A NAMED OPERATION OF THE CODE HOST'S `rows`, and this is the `run` the claim hands each: the code host's own runner behind the leak guard #1053 put in the spawn helper
+ * (an argv bound for the tracker with a leak in its body is refused here, before it is sent). `run` below stays for the claim's `git` and the board snapshot; `gh` is no longer reached through it.
+ * @type {(args: string[]) => string}
+ */
+export const claimGh: RowsRun = (args) => {
+  assertNoLeakInArgv(CODE_HOST_COMMAND, args);
+  return rows().ownRunWithin(CLAIM_CALL_MS, { withoutGitEnv: true })(args);
+};
+
+/**
+ * The longest a claim waits for one `gh` call. Before step 7 a claim's `gh` had NO bound at all (`execFileSync`), and the code host's own runner cuts a call at 30 s, which would throw for a label `PUT` or a comment that
+ * GitHub then applied: a partial claim reported for a write that landed. Ten minutes is the bound the claim's batch and the gate's slowest call already allow; it only turns a call that never returns into a refusal.
+ */
+export const CLAIM_CALL_MS = 600_000;
 
 /**
  * `run` that asks GitHub for a given ROW READ once (a11ign/a11ign#3566, slice 5). One claim's checks each read the row they are about -- the template
@@ -311,21 +333,21 @@ const defaultRun: (cmd: string, args: string[]) => string = (cmd, args): string 
  * ONLY THE PRE-WRITE CHECKS ARE GIVEN THIS: it is a snapshot of the row from the start of the claim, which is what those checks already compare
  * against, and nothing after the first write may be answered from it (the labels are read again, fresh, right before and right after the write that
  * claims). A read that THROWS is not remembered, so a failed read is retried exactly as before; a write is never passed through the cache.
- * @param {typeof defaultRun} run
- * @returns {typeof defaultRun}
+ * @param {RowsRun} run
+ * @returns {RowsRun}
  */
-function readsOnce(run: typeof defaultRun): typeof defaultRun {
+function readsOnce(run: RowsRun): RowsRun {
   const answers: Map<string, string> = new Map();
-  return (cmd, args) => {
+  return (args) => {
     // #5039: the claimed rows are a connection read now, not an `issue list`, and the claim asks for them from three places (B4, B2 and the sweep freeze).
     // agent-org#1302: a row's own labels and comments are read over REST now, so the REST read is one of the reads this answers once too.
-    const isRowRead = cmd === "gh" && ((args[0] === "issue" && (args[1] === "view" || args[1] === "list")) || isRowsByLabelRead(args)
-      || (args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+(\/comments)?(\?|$)/.test(args[1] ?? "")));
-    if (!isRowRead) return run(cmd, args);
+    const isRowRead = (args[0] === "issue" && (args[1] === "view" || args[1] === "list")) || isRowsByLabelRead(args)
+      || (args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+(\/comments)?(\?|$)/.test(args[1] ?? ""));
+    if (!isRowRead) return run(args);
     const key = JSON.stringify(args);
     const known = answers.get(key);
     if (known !== undefined) return known;
-    const answer = run(cmd, args);
+    const answer = run(args);
     answers.set(key, answer);
     return answer;
   };
@@ -345,12 +367,12 @@ function readsOnce(run: typeof defaultRun): typeof defaultRun {
  * fact-stated-twice shape #749 itself exists to name. Behaviour is unchanged for every existing caller.
  * agent-org#575: `repo` is the repository the labels are created in -- the tracker's, for a claim in a tracker that is not the first, whose
  * repository holds none of them until a claim makes them (the first tracker's default is what every caller written before this row meant).
- * @param {string[]} labels @param {{ run?: typeof defaultRun, batch?: typeof runBatch, repo?: string }} [deps] `batch` (#3566, slice 9) asks the creates together; absent, one by one
+ * A11-160, step 7: the creates are the code host's (`ensureLabelIn`, and `ensureLabelArgs` for the ones its executor waits for together), so this takes no `run`.
+ * @param {string[]} labels @param {{ batch?: typeof runBatch, repo?: string }} [deps] `batch` (#3566, slice 9) asks the creates together; absent, one by one
  */
-export function ensureLabelsExist(labels: string[], { run = defaultRun, batch, repo = REPO }: { run?: typeof defaultRun; batch?: typeof runBatch; repo?: string; } = {}) {
-  const create = (label: string) => ["label", "create", label, "--repo", repo, "--force"];
-  if (batch !== undefined && labels.length > 1 && createdTogether(labels.map(create), batch)) return;
-  for (const label of labels) run("gh", create(label));
+export function ensureLabelsExist(labels: string[], { batch, repo = REPO }: { batch?: typeof runBatch; repo?: string; } = {}) {
+  if (batch !== undefined && labels.length > 1 && createdTogether(labels.map((label) => rows().ensureLabelArgs(label, repo)), batch)) return;
+  for (const label of labels) rows().ensureLabelIn({ repo, name: label, run: claimGh });
 }
 
 /**
@@ -365,7 +387,7 @@ export function ensureLabelsExist(labels: string[], { run = defaultRun, batch, r
  */
 function createdTogether(argvs: string[][], batch: typeof runBatch): boolean {
   try {
-    for (const args of argvs) assertNoLeakInArgv("gh", args); // #1053: the batch is a spawn of its own, so the guard `defaultRun` carries is asked here as well
+    for (const args of argvs) assertNoLeakInArgv(CODE_HOST_COMMAND, args); // #1053: the batch is a spawn of its own, so the guard `defaultRun` carries is asked here as well
     const answers = batch(argvs.map((args) => ({ args, repo: undefined })));
     if (answers.every((answer) => !("failed" in answer))) return true;
     process.stderr.write("NOTE: a label create was refused in the batch, so the creates run one by one\n");
@@ -425,8 +447,7 @@ function trackerSpelling(tracker: Tracker): string {
 }
 
 /**
- * Reads an issue's CURRENT labels from the real board. Injectable `run`, the same seam
- * `install-git-hooks.mjs` uses, so this is testable without a network call or a real repo.
+ * Reads an issue's CURRENT labels from the real board, through the code host, so it is testable without a network call or a real repo.
  *
  * REFUSES TO GUESS: `gh` failing (network, auth, a deleted issue), or answering with a shape this
  * function does not recognise, throws -- it never falls through to an empty label list, which is
@@ -434,45 +455,27 @@ function trackerSpelling(tracker: Tracker): string {
  *
  * #2617: `repo` is the TRACKER the row lives in -- the one the project's declaration names for it (default the first).
  *
+ * A11-160, step 7: the read and the reading of GitHub's REST answer are the code host's (`readRestRow`); what a refusal SAYS (and what a 404 hints) stays here. There is no `run`: `gh` is reached through the code host.
+ *
  * @param {number} issueNumber
- * @param {{ run?: typeof defaultRun, repo?: string }} [deps]
+ * @param {{ repo?: string, declaration?: { tracker: readonly Tracker[] } }} [deps]
  * @returns {IssueClaim}
  */
-export function fetchLabels(issueNumber: number, { run = defaultRun, repo = REPO, declaration }: { run?: typeof defaultRun; repo?: string; declaration?: { tracker: readonly Tracker[]; }; } = {}): IssueClaim {
-  let raw: string;
+export function fetchLabels(issueNumber: number, { repo = REPO, declaration }: { repo?: string; declaration?: { tracker: readonly Tracker[]; }; } = {}): IssueClaim {
+  let read: ReturnType<CodeHostRows["readRestRow"]>;
   try {
     // agent-org#1302: REST, not `gh issue view` (GraphQL). An exhausted GraphQL pool refused every claim it read; REST is another pool (#1113).
-    raw = run("gh", ["api", `repos/${repo}/issues/${issueNumber}`]);
+    read = rows().readRestRow({ repo, number: issueNumber, run: claimGh });
   } catch (cause) {
+    if (cause instanceof PluginActivationRefusal) throw cause; // a code host that serves no rows is refused by name, and is not a read that failed
     throw new Error(`row-claim: could not read issue #${issueNumber} from ${repo} -- refusing to guess `
       + `whether it is claimed${ghSaid(cause)}. ${(cause as Error).message}${missingRowHint(issueNumber, repo, cause, declaration)}`, { cause });
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(`row-claim: gh's response for issue #${issueNumber} was not JSON -- refusing to `
-      + `guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
-  }
-  const obj = (parsed as { number?: unknown, title?: unknown, labels?: unknown, state?: unknown });
-  if (typeof obj?.number !== "number" || typeof obj?.title !== "string" || !Array.isArray(obj?.labels)) {
-    throw new Error(`row-claim: gh's response for issue #${issueNumber} is missing number/title/labels -- `
-      + `refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
-  }
-  const names = obj.labels.map((l: unknown) => {
-    const name = (l as { name?: unknown })?.name;
-    if (typeof name !== "string") {
-      throw new Error(`row-claim: a label on issue #${issueNumber} has no name -- refusing to guess. `
-        + `Got: ${JSON.stringify(l)}`);
-    }
-    return name;
-  });
+  if ("unreadable" in read) throw new Error(read.unreadable);
   // #752: OPTIONAL, DELIBERATELY -- every existing caller/test that mocks a read without a `state` field must keep behaving exactly as it did
   // (the open case), so an absent or unrecognised value is treated as "not verified closed" rather than refused outright. `declineRow`
-  // is the one place this actually changes behaviour, and only when `state` is the literal `"CLOSED"`. REST answers `open`/`closed`
-  // in lower case, which is mapped to the upper case every caller reads (agent-org#1302).
-  const state = obj.state === "open" ? "OPEN" : obj.state === "closed" ? "CLOSED" : undefined;
-  return { number: obj.number, title: obj.title, labels: names, state };
+  // is the one place this actually changes behaviour, and only when `state` is the literal `"CLOSED"`.
+  return read.row;
 }
 
 /**
@@ -484,37 +487,22 @@ export function fetchLabels(issueNumber: number, { run = defaultRun, repo = REPO
  * silently became "no worktree recorded" would skip the removal and report a clean decline -- unreadable
  * is not unrecorded, the same distinction `arm-pr`'s own label read already refuses to blur.
  * @param {number} issueNumber
- * @param {{ run?: typeof defaultRun, repo?: string }} [deps] `repo` is the tracker the row lives in
+ * @param {{ repo?: string }} [deps] `repo` is the tracker the row lives in
  * @returns {string[]}
  */
-export function fetchClaimComments(issueNumber: number, { run = defaultRun, repo = REPO }: { run?: typeof defaultRun; repo?: string; } = {}): string[] {
-  let raw: string;
+export function fetchClaimComments(issueNumber: number, { repo = REPO }: { repo?: string; } = {}): string[] {
+  let read: ReturnType<CodeHostRows["readRestComments"]>;
   try {
-    // agent-org#1302: REST, as `fetchLabels` is. `--paginate --slurp` joins the pages into one array of pages (`--paginate` alone prints one
-    // array per page back to back, which is not JSON past the first page), and the last 100 are kept, as GraphQL's `comments(last: 100)` gave them.
-    raw = run("gh", ["api", `repos/${repo}/issues/${issueNumber}/comments?per_page=100`, "--paginate", "--slurp"]);
+    // agent-org#1302: REST, as `fetchLabels` is, and the last 100 comments are kept, as GraphQL's `comments(last: 100)` gave them.
+    read = rows().readRestComments({ repo, number: issueNumber, run: claimGh });
   } catch (cause) {
+    if (cause instanceof PluginActivationRefusal) throw cause;
     throw new Error(`row-claim: could not read issue #${issueNumber}'s comments from ${repo} -- refusing `
       + `to guess what branch or worktree its claim recorded${ghSaid(cause)}. ${(cause as Error).message}`,
     { cause });
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (cause) {
-    throw new Error(`row-claim: gh's comment response for issue #${issueNumber} was not JSON -- refusing `
-      + `to guess. First 200 chars: ${raw.slice(0, 200)}`, { cause });
-  }
-  const pages = Array.isArray(parsed) && parsed.every(Array.isArray) ? parsed : null;
-  if (pages === null) {
-    throw new Error(`row-claim: gh's response for issue #${issueNumber}'s comments was not a list of pages -- `
-      + `refusing to guess. Got: ${JSON.stringify(parsed).slice(0, 300)}`);
-  }
-  const comments = pages.flat().slice(-100);
-  return comments.map((c: unknown) => {
-    const body = (c as { body?: unknown })?.body;
-    return typeof body === "string" ? body : "";
-  });
+  if ("unreadable" in read) throw new Error(read.unreadable);
+  return read.comments;
 }
 
 /**
@@ -653,8 +641,7 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
     return { moved: false, reason, notOnBoard: true };
   }
   const board = tracker?.board ?? { owner: PROJECT_OWNER, number: PROJECT_NUMBER };
-  const edit = () => run("gh", ["project", "item-edit", String(board.number), "--owner", board.owner,
-    "--url", url, "--field", "Status", "--value", statusName]);
+  const edit = () => rows().setProjectStatus({ owner: board.owner, projectNumber: board.number, url, status: statusName, run: claimGh });
   const firstBoard = board.owner === PROJECT_OWNER && board.number === PROJECT_NUMBER;
   try {
     // #1275: the snapshot covers the one item this edit touches, not the whole board.
@@ -731,13 +718,13 @@ export function moveProjectStatus(issueNumber: number, statusName: string,
  * repository the project declares (`lookupOpenPrFiles`), and `repo` only tells it whose rows a `Closes` names.
  * @param {number} issueNumber the row about to be claimed -- excluded from B2's "other held rows" check
  * @param {string} mySession
- * @param {{ run?: typeof defaultRun, repo?: string, repos?: readonly { key: string, repo: string }[], adoptedBranch?: string,
- *           }} deps `repos` is the code repositories B4 reads; absent, every one the project declares. `adoptedBranch` (#2769) is
+ * @param {{ ghRun?: RowsRun, repo?: string, repos?: readonly { key: string, repo: string }[], adoptedBranch?: string,
+ *           }} deps `ghRun` (A11-160, step 7) is the `run` the reads are handed (the claim's read-once one, for the claim); absent, the code host's own. `repos` is the code repositories B4 reads; absent, every one the project declares. `adoptedBranch` (#2769) is
  *   the branch `--adopt` is re-stamping, so the open PR from it is the row's own work under B4 even if it declares `Closes: none`
  * @returns {string | null}
  */
 export function sessionEligibilityReason(issueNumber: number, mySession: string, deps: {
-    run?: typeof defaultRun; repo?: string; repos?: readonly { key: string; repo: string; }[]; adoptedBranch?: string;
+    ghRun?: RowsRun; repo?: string; repos?: readonly { key: string; repo: string; }[]; adoptedBranch?: string;
 } = {}): string | null {
   return sessionEligibility(issueNumber, mySession, deps).reason;
 }
@@ -751,10 +738,9 @@ type WalkedPast = { kind: "row" | "pr"; number: number; repo?: string; };
  * yield was for (#989), and `null` for a chairman's yield and for a refusal.
  * @returns {YieldVerdict}
  */
-export function sessionEligibility(issueNumber: number, mySession: string, { run = defaultRun, repo = REPO, repos, adoptedBranch }: {
-    run?: typeof defaultRun; repo?: string; repos?: readonly { key: string; repo: string; }[]; adoptedBranch?: string;
+export function sessionEligibility(issueNumber: number, mySession: string, { ghRun = claimGh, repo = REPO, repos, adoptedBranch }: {
+    ghRun?: RowsRun; repo?: string; repos?: readonly { key: string; repo: string; }[]; adoptedBranch?: string;
 } = {}): YieldVerdict {
-  const ghRun = (args: string[]) => run("gh", args);
   const refused = (reason: string): YieldVerdict => ({ reason, walked: [], emergency: null });
 
   // #989: B2 asks whether a ROW is in build, not whether a PR is open. `null` from the lookup is
@@ -1021,11 +1007,10 @@ function eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedB
  * not add to `writeRowLabels`'s own complexity count (a called function's branches are not the caller's).
  * @param {number} issueNumber
  * @param {string | null} blockedByNote
- * @param {(cmd: string, args: string[]) => string} runFn
  */
-function postBlockedByNoteIfAny(issueNumber: number, blockedByNote: string | null, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
+function postBlockedByNoteIfAny(issueNumber: number, blockedByNote: string | null, repo: string = REPO) {
   if (blockedByNote) {
-    runFn("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body", blockedByNote]);
+    rows().postRowComment({ repo, row: issueNumber, body: blockedByNote, run: claimGh });
   }
 }
 
@@ -1038,11 +1023,10 @@ function postBlockedByNoteIfAny(issueNumber: number, blockedByNote: string | nul
  * must not share a spelling.
  * @param {number} issueNumber
  * @param {{ session: string, branch?: string, worktree?: string }} record
- * @param {(cmd: string, args: string[]) => string} runFn
  */
-function postClaimRecord(issueNumber: number, { session, branch, worktree, scope }: { session: string; branch?: string; worktree?: string; scope?: string | null; }, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
+function postClaimRecord(issueNumber: number, { session, branch, worktree, scope }: { session: string; branch?: string; worktree?: string; scope?: string | null; }, repo: string = REPO) {
   const body = claimRecordComment({ session, branch, worktree, scope, nothing: !branch && !worktree ? NOTHING_REASON : null });
-  runFn("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body", body]);
+  rows().postRowComment({ repo, row: issueNumber, body, run: claimGh });
 }
 
 /**
@@ -1056,12 +1040,10 @@ function postClaimRecord(issueNumber: number, { session, branch, worktree, scope
  * wrote nothing would inherit its time.
  * @param {number} issueNumber
  * @param {{ session: string, recorded: { branch: string | null, worktree: string | null, nothing?: true } }} release
- * @param {(cmd: string, args: string[]) => string} runFn
  */
-function postReleaseRecord(issueNumber: number, { session, recorded }: { session: string; recorded: { branch: string | null; worktree: string | null; nothing?: true; }; }, runFn: (cmd: string, args: string[]) => string, repo: string = REPO) {
+function postReleaseRecord(issueNumber: number, { session, recorded }: { session: string; recorded: { branch: string | null; worktree: string | null; nothing?: true; }; }, repo: string = REPO) {
   if (!recorded.branch && !recorded.worktree && !recorded.nothing) return;
-  runFn("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body",
-    claimRecordComment({ session, released: true })]);
+  rows().postRowComment({ repo, row: issueNumber, body: claimRecordComment({ session, released: true }), run: claimGh });
 }
 
 /**
@@ -1209,22 +1191,6 @@ export function labelSetForClaim(labels: readonly string[], add: readonly string
 }
 
 /**
- * #2151: `PUT /repos/<repo>/issues/<n>/labels` -- GitHub's "Set labels for an issue" -- as `gh api`
- * arguments: the whole list in ONE request, so there is no add half and no remove half to come apart.
- * `row-file.ts`'s `labelSetArgs` builds the identical request for the promote act (#2111) and cannot be
- * imported from here (it imports this module and runs an act on load); it is outside this row's Region, so
- * folding the two into one function is left to whoever next touches that file.
- * @param {number} issueNumber
- * @param {readonly string[]} labels
- * @param {string} [repo] agent-org#575: the tracker's repository; absent, the first tracker's, which is what every caller before it meant
- * @returns {string[]}
- */
-function claimLabelSetArgs(issueNumber: number, labels: readonly string[], repo: string = REPO): string[] {
-  return ["api", "--method", "PUT", `repos/${repo}/issues/${issueNumber}/labels`,
-    ...labels.flatMap((label) => ["-f", `labels[]=${label}`])];
-}
-
-/**
  * #749, then #2151: writes the claim's labels, split from `writeRowLabels` for the same reason
  * `postBlockedByNoteIfAny` above is (a called function's own lines are not the caller's).
  *
@@ -1253,14 +1219,14 @@ function claimLabelSetArgs(issueNumber: number, labels: readonly string[], repo:
  * for any path outside `/private/tmp`). The two facts are written as a claim COMMENT instead, by
  * `writeRowLabels` after it knows it won the race.
  * @param {number} issueNumber
- * @param {{ run: typeof defaultRun, mySession: string, extraLabels: string[], landed: string[], labelBatch?: typeof runBatch, repo?: string }} args
+ * @param {{ mySession: string, extraLabels: string[], landed: string[], labelBatch?: typeof runBatch, repo?: string }} args
  *   `repo` (agent-org#575) is the tracker's repository the labels are made in and set on; absent, the first's. `landed` gains the write once it has succeeded (#1399)
  * @returns {{ refusal: string | null }} a refusal means NOTHING was written
  */
-function applyClaimLabels(issueNumber: number, { run, mySession, extraLabels, landed, labelBatch, repo = REPO }: { run: typeof defaultRun; mySession: string; extraLabels: string[]; landed: string[]; labelBatch?: typeof runBatch; repo?: string; }): { refusal: string | null; } {
+function applyClaimLabels(issueNumber: number, { mySession, extraLabels, landed, labelBatch, repo = REPO }: { mySession: string; extraLabels: string[]; landed: string[]; labelBatch?: typeof runBatch; repo?: string; }): { refusal: string | null; } {
   const claimLabels = [CLAIM_LABEL, `${SESSION_PREFIX}${mySession}`, ...extraLabels];
-  ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { run, batch: labelBatch, repo });
-  const fresh = fetchLabels(issueNumber, { run, repo });
+  ensureLabelsExist([...claimLabels, WAS_READY_LABEL], { batch: labelBatch, repo });
+  const fresh = fetchLabels(issueNumber, { repo });
   const decision = decideClaim(fresh.labels, mySession, standInFor(issueNumber, fresh));
   if (!decision.proceed) {
     return { refusal: `${decision.reason} -- as read immediately before the label write, which a claim that `
@@ -1270,7 +1236,7 @@ function applyClaimLabels(issueNumber: number, { run, mySession, extraLabels, la
   // read the write is computed from. A resume finds `ready` already gone and adds nothing.
   const wasReady = fresh.labels.includes(READY_LABEL);
   const labels = labelSetForClaim(fresh.labels, wasReady ? [...claimLabels, WAS_READY_LABEL] : claimLabels);
-  run("gh", claimLabelSetArgs(issueNumber, labels, repo));
+  rows().setRowLabels({ repo, number: issueNumber, labels, run: claimGh }); // #2151: `PUT /repos/<repo>/issues/<n>/labels`, the whole list in ONE request, so there is no add half and no remove half to come apart
   landed.push(`set the row's labels to ${labels.join(", ")} (\`${READY_LABEL}\` removed in the same write)`);
   return { refusal: null };
 }
@@ -1298,7 +1264,7 @@ export function persistentReason(mySession: string, { persistent }: { persistent
  * @param {{ issueNumber: number, mySession: string, before: { labels: string[] }, drained: readonly string[],
  *           instance: { spare: boolean, rows: readonly number[] }, adoptedBranch?: string, blockedBy?: string, repo?: string }} claim
  *   `repo` (agent-org#575) is the tracker the row lives in, which every read here about the ROW reads it from; absent, the first
- * @param {typeof defaultRun} preWrite
+ * @param {RowsRun} preWrite
  * @returns {{ refusal: { claimed: false, reason: string } | null, blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1], scope: string | null }}
  *   `scope` (#4739) is the `scopeHash` of the very body the template check just read, so the record names the row as it was checked and not
  *   as a second read finds it; `null` when the body could not be read, which the record leaves out rather than hashing nothing.
@@ -1320,14 +1286,13 @@ export function testsFirstClaimReason(body: string, issueNumber: number, { enabl
 function preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy, repo = REPO, testsFirst = false }: {
         issueNumber: number; mySession: string; before: { labels: string[]; }; drained: readonly string[];
         instance: { spare: boolean; rows: readonly number[]; }; adoptedBranch?: string; blockedBy?: string; repo?: string; testsFirst?: boolean;
-    }, preWrite: typeof defaultRun): { refusal: { claimed: false; reason: string; } | null; blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1]; scope: string | null; } {
+    }, preWrite: RowsRun): { refusal: { claimed: false; reason: string; } | null; blockedByNote: Parameters<typeof postBlockedByNoteIfAny>[1]; scope: string | null; } {
   // #707: THE TEMPLATE FIELDS, checked on EVERY claim attempt -- unlike the session-eligibility block
   // below, this is a property of the ROW, not of who is claiming it or when they last touched it, so it
   // is not skipped on a resumed (`alreadyMine`) claim: a row dispatched before this check shipped, or by
   // a hand-claim (#673) that bypassed row-claim entirely, must still be caught the first time row-claim
   // itself acts on it, which may well be a "resume".
-  const ghRunForBody = (args: string[]) => preWrite("gh", args);
-  const body = lookupIssueBody(issueNumber, { run: ghRunForBody, repo });
+  const body = lookupIssueBody(issueNumber, { run: preWrite, repo });
   if (body !== null) {
     const templateReason = templateFieldsReason(body, issueNumber);
     if (templateReason) return { refusal: { claimed: false, reason: templateReason }, blockedByNote: null, scope: null };
@@ -1346,7 +1311,7 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
   // its non-resumed B2/B4 bundle and for any caller (such as #1886's own Open-check) that reads it
   // directly -- this one is what makes the row-owned property actually hold on every attempt, resumed or
   // not.
-  const blockedRow = lookupBlockedByEdge(issueNumber, { run: ghRunForBody, repo });
+  const blockedRow = lookupBlockedByEdge(issueNumber, { run: preWrite, repo });
   const blockedReason = blockedByEdgeReason(blockedRow, repo === REPO ? {} : { repo });
   if (blockedReason) return { refusal: { claimed: false, reason: blockedReason }, blockedByNote: null, scope: null };
 
@@ -1368,17 +1333,17 @@ function preWriteChecks({ issueNumber, mySession, before, drained, instance, ado
     if (oneRow) return { refusal: { claimed: false, reason: oneRow }, blockedByNote: null, scope: null };
     // #1281: A row whose `Waiting-for:` is still unmet is not finishable, and the gate releases a claim on one. Taking it again would hold the
     // slot for the length of the wait, so the new claim is refused until the condition is true. A resume is not refused: the holder is there.
-    const unmet = unmetWaitingFor(body, repo, (ref) => readWaitRef(ref, ghRunForBody));
+    const unmet = unmetWaitingFor(body, repo, (ref) => readWaitRef(ref, preWrite));
     if (unmet !== null) return { refusal: { claimed: false, reason: `\`Waiting-for: ${unmet}\` is not yet true: the row cannot be finished until it is, and a claim on it is released again. Claim it once the condition holds.` }, blockedByNote: null, scope: null };
-    const { reason: ineligible, walked, emergency } = sessionEligibility(issueNumber, mySession, { run: preWrite, adoptedBranch, repo });
+    const { reason: ineligible, walked, emergency } = sessionEligibility(issueNumber, mySession, { ghRun: preWrite, adoptedBranch, repo });
     // #4793: a priority row that B4 let past holders SAYS SO on the row, through the note a `--blocked-by` exception already leaves (#989: and the incident, for an emergency one).
     blockedByNote = walkedPastNote(issueNumber, walked, emergency);
     if (ineligible) {
       const eligibility = eligibilityWithBlockedBy({ issueNumber, mySession, ineligible, blockedBy },
-        { ghRun: ghRunForBody, repo });
+        { ghRun: preWrite, repo });
       // #1314: a refusal on a swept Region after that sweep's overrun notice is the failure (`sweep-overrun`), written at the final verdict only: a chairman's yield lets it past.
       if (!eligibility.proceed) {
-        recordOverrunRefusal(eligibility.reason, { issueNumber, reads: { run: ghRunForBody, repo } });
+        recordOverrunRefusal(eligibility.reason, { issueNumber, reads: { run: preWrite, repo } });
         return { refusal: { claimed: false, reason: eligibility.reason }, blockedByNote: null, scope: null };
       }
       blockedByNote = eligibility.blockedByNote;
@@ -1418,7 +1383,7 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
           batch?: typeof runBatch; labelBatch?: typeof runBatch; tracker?: Tracker; testsFirst?: boolean;
       } = {}): { claimed: true; statusMoved: true; } | { claimed: true; statusMoved: false; notOnBoard: boolean; statusReason: string; } | { claimed: false; reason: string; } {
   const repo = tracker?.repo ?? REPO;
-  const before = fetchLabels(issueNumber, { run, repo });
+  const before = fetchLabels(issueNumber, { repo });
   const decision = decideClaim(before.labels, mySession, standInFor(issueNumber, before));
   if (!decision.proceed) return { claimed: false, reason: decision.reason };
   const notEngineer = persistentReason(mySession, { persistent });
@@ -1430,12 +1395,11 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
   // NOTHING FROM THE FIRST WRITE ON IS PART OF THIS: the labels above and the labels `applyClaimLabels` reads again stay fresh and sequential.
   const checked = readWithFirstWaveTogether(
     (together) => preWriteChecks({ issueNumber, mySession, before, drained, instance, adoptedBranch, blockedBy, repo, testsFirst },
-      readsOnce((cmd, args) => {
-        if (cmd !== "gh") return run(cmd, args);
-        assertNoLeakInArgv(cmd, args); // #1053: the batch is a spawn of its own, so the guard `defaultRun` carries is asked here as well
+      readsOnce((args) => {
+        assertNoLeakInArgv(CODE_HOST_COMMAND, args); // #1053: the batch is a spawn of its own, so the guard `claimGh` carries is asked here as well
         return together(args);
       })),
-    (args) => run("gh", args), batch);
+    claimGh, batch);
   if (checked.refusal) return checked.refusal;
   const { blockedByNote, scope } = checked;
 
@@ -1444,7 +1408,7 @@ function writeRowLabels(issueNumber: number, mySession: string, extraLabels: str
   // #1399: FROM THE FIRST WRITE ON, A FAILURE IS A PARTIAL WRITE, never `COULD NOT DETERMINE` -- see
   // `LANDED_WRITE_EXIT`. The checks above wrote nothing, so a throw from them still propagates as it did.
   return withLandedWrites(issueNumber, landed, () => {
-    const { refusal } = applyClaimLabels(issueNumber, { run, mySession, extraLabels, landed, labelBatch, repo });
+    const { refusal } = applyClaimLabels(issueNumber, { mySession, extraLabels, landed, labelBatch, repo });
     if (refusal) return { claimed: false, reason: refusal };
     return completeClaim(issueNumber,
       { run, moveStatus, mySession, sessionLabel, extraLabels, blockedByNote, branch, worktree, scope, landed, tracker });
@@ -1467,7 +1431,7 @@ function completeClaim(issueNumber: number,
       worktree?: string; scope?: string | null; landed: string[]; tracker?: Tracker;
   }): { claimed: true; statusMoved: true; } | { claimed: true; statusMoved: false; notOnBoard: boolean; statusReason: string; } | { claimed: false; reason: string; } {
   const repo = tracker?.repo ?? REPO;
-  const after = fetchLabels(issueNumber, { run, repo });
+  const after = fetchLabels(issueNumber, { repo });
   const afterStatus = claimStatus(after.labels);
   const otherSessions = afterStatus.sessions.filter((s) => s !== mySession);
   if (otherSessions.length > 0) {
@@ -1478,21 +1442,20 @@ function completeClaim(issueNumber: number,
     // #987: there is no branch/worktree label to take back any more, and nothing to retract in the thread
     // either -- the claim-record comment is posted BELOW this block, so a claim that lost the race never
     // wrote one. That ordering is the same reason #741's exception note sits where it does.
-    run("gh", ["issue", "edit", String(issueNumber), "--repo", repo,
-      ...[sessionLabel, ...extraLabels].flatMap((l) => ["--remove-label", l])]);
+    rows().editRowLabels({ repo, number: issueNumber, remove: [sessionLabel, ...extraLabels], add: [], run: claimGh });
     landed.push(`backed off: removed labels ${[sessionLabel, ...extraLabels].join(", ")}`);
     return { claimed: false, reason: `lost a race to ${otherSessions.join(", ")} -- backed off` };
   }
   // #741: THE EXCEPTION GOES ON THE RECORD, in the same act that wins the claim -- never on a race we
   // then lost (the block above already returned), so a losing session's attempted override leaves no
   // comment behind naming an exception it never actually exercised.
-  postBlockedByNoteIfAny(issueNumber, blockedByNote, run, repo);
+  postBlockedByNoteIfAny(issueNumber, blockedByNote, repo);
   if (blockedByNote) landed.push("posted the exception note (--blocked-by, or the chairman row's B4 yield)");
   // #987: THE BRANCH AND WORKTREE GO ON THE RECORD HERE, for the identical reason #741's note above does
   // -- after the race is known to be won, so a losing session never leaves a record naming a worktree it
   // did not get to keep. `branch`/`worktree` are the values this claim was GIVEN, not values read back:
   // there is nothing to read back yet, and the comment IS the record.
-  postClaimRecord(issueNumber, { session: mySession, branch, worktree, scope }, run, repo);
+  postClaimRecord(issueNumber, { session: mySession, branch, worktree, scope }, repo);
   landed.push(`posted the claim record (branch ${branch ?? "none"}, worktree ${worktree ?? "none"})`);
   // #400: THE LABEL IS THE RECORD; THIS MOVES THE VIEW TO MATCH IT, IN THE SAME ACT. A view corrected only
   // by a later sweep is wrong between sweeps, and "between sweeps" is where a worker reads it -- measured
@@ -1835,15 +1798,15 @@ function worktreeHolding(branch: string, run: typeof defaultRun): { held: false;
 /**
  * Who a branch belongs to, as far as the tracker records: the claim record of the row its trailing number names.
  * A read that fails SAYS so; it is never turned into an owner or into "nobody".
- * @param {string} branch @param {typeof defaultRun} run
+ * @param {string} branch
  * @returns {string}
  */
-function branchOwnerText(branch: string, run: typeof defaultRun): string {
+function branchOwnerText(branch: string): string {
   const match = /-(\d+)$/.exec(branch);
   if (!match) return "its name carries no row number, so there is no claim record to name an owner";
   const row = Number(match[1]);
   try {
-    const comments = fetchClaimComments(row, { run });
+    const comments = fetchClaimComments(row);
     const session = claimRecordSession(comments);
     if (claimRecordFrom(comments).branch === branch && session) return `row #${row}'s claim record names \`${session}\``;
     return `row #${row}'s newest claim record does not name this branch`;
@@ -1930,11 +1893,11 @@ export function worktreeTargetReason({ branch, worktree, issueNumber, adopt, myS
     // This row's own unmerged work is adopted in place, with its commits, and returns here before the origin checks below would refuse it
     // for being on origin. A tree standing on the branch is still a refusal: `claimWithWorktree` would have two trees on one branch.
     if (!local.held && isOwnRowBranch(branch, issueNumber, run)) return null;
-    return `--branch=${branch} ALREADY EXISTS locally (${branchOwnerText(branch, run)}), ${local.why}. Refusing before any write.`
+    return `--branch=${branch} ALREADY EXISTS locally (${branchOwnerText(branch)}), ${local.why}. Refusing before any write.`
       + (local.held ? "" : localBranchRemedy(branch, issueNumber));
   }
   if (gitRefExists(["ls-remote", "--exit-code", "--heads", "origin", branch], 2, `branch ${branch} on origin`, run)) {
-    return `--branch=${branch} ALREADY EXISTS on origin (${branchOwnerText(branch, run)}). Refusing before any write.`;
+    return `--branch=${branch} ALREADY EXISTS on origin (${branchOwnerText(branch)}). Refusing before any write.`;
   }
   const rowBranches = rowBranchesOnOrigin(issueNumber, run);
   if (rowBranches.length > 0) return rowBranchRefusal(issueNumber, rowBranches);
@@ -1975,7 +1938,7 @@ function claimedBranchesOf(comments: string[]): string[] {
  */
 function isOwnRowBranch(branch: string, issueNumber: number, run: typeof defaultRun): boolean {
   try {
-    if (claimedBranchesOf(fetchClaimComments(issueNumber, { run })).includes(branch)) return true;
+    if (claimedBranchesOf(fetchClaimComments(issueNumber)).includes(branch)) return true;
     return rowNumberOfBranch(branch) === issueNumber
       && gitRefExists(["ls-remote", "--exit-code", "--heads", "origin", branch], 2, `branch ${branch} on origin`, run);
   } catch {
@@ -2560,14 +2523,12 @@ function declineRemoveLabels(status: { branch: string | null; worktree: string |
  * removed it (the correct act). An OPEN row whose labels after the write hold no state label is refused here for the same reason a label
  * that did not land is: the edit ran and its effect is not the one a decline promises. A closed row has no lane to be in (`closed`).
  * @param {number} issueNumber @param {string[]} removeLabels @param {string[]} addLabels
- * @param {{ run: typeof defaultRun, landed: string[], closed: boolean, repo?: string }} deps `repo` (agent-org#575) is the tracker's repository; absent, the first's
+ * @param {{ landed: string[], closed: boolean, repo?: string }} deps `repo` (agent-org#575) is the tracker's repository; absent, the first's
  */
-function writeDeclineLabels(issueNumber: number, removeLabels: string[], addLabels: string[], { run, landed, closed, repo = REPO }: { run: typeof defaultRun; landed: string[]; closed: boolean; repo?: string; }) {
-  ensureLabelsExist(addLabels, { run, repo });
-  run("gh", ["issue", "edit", String(issueNumber), "--repo", repo,
-    ...removeLabels.flatMap((l) => ["--remove-label", l]),
-    ...addLabels.flatMap((l) => ["--add-label", l])]);
-  const after = fetchLabels(issueNumber, { run, repo }).labels;
+function writeDeclineLabels(issueNumber: number, removeLabels: string[], addLabels: string[], { landed, closed, repo = REPO }: { landed: string[]; closed: boolean; repo?: string; }) {
+  ensureLabelsExist(addLabels, { repo });
+  rows().editRowLabels({ repo, number: issueNumber, remove: removeLabels, add: addLabels, run: claimGh });
+  const after = fetchLabels(issueNumber, { repo }).labels;
   const stillThere = removeLabels.filter((l) => after.includes(l));
   const stillMissing = addLabels.filter((l) => !after.includes(l));
   if (stillThere.length > 0 || stillMissing.length > 0) {
@@ -2703,7 +2664,7 @@ export function declineRow(issueNumber: number, mySession: string,
     return { declined: false, reason: "--blocked and --answer are two different releases (a finding vs. a ruling owed); give one" };
   }
   const repo = tracker?.repo ?? REPO;
-  const before = fetchLabels(issueNumber, { run, repo });
+  const before = fetchLabels(issueNumber, { repo });
   const status = claimStatus(before.labels);
   const ownershipReason = declineOwnershipReason(status, mySession);
   if (ownershipReason) return { declined: false, reason: ownershipReason };
@@ -2711,7 +2672,7 @@ export function declineRow(issueNumber: number, mySession: string,
   // migration read for the three open rows that still carry one -- `claimedObjects`' own header carries
   // the count and the command that says when the fallback can go. Read AFTER the ownership check, so a
   // decline this session was never entitled to make costs no extra `gh` call.
-  const recorded = claimedObjects({ labels: before.labels, comments: fetchComments(issueNumber, { run, repo }) });
+  const recorded = claimedObjects({ labels: before.labels, comments: fetchComments(issueNumber, { repo }) });
   const landed: string[] = [];
   // #1399: as `writeRowLabels` -- from the worktree removal on, a failure reports what it already changed.
   return withLandedWrites(issueNumber, landed, () => releaseRow(issueNumber,
@@ -2755,19 +2716,18 @@ function releaseRow(issueNumber: number,
   const keepsState = before.labels.some((l) => l !== CLAIM_LABEL && STATE_LABELS.includes(l));
   const { restoreReady, addLabels } = declineAddLabels({ isClosed, wasReady, blockedReason, answer, keepsState });
   const removeLabels = declineRemoveLabels(status, mySession, { wasReady });
-  writeDeclineLabels(issueNumber, removeLabels, addLabels, { run, landed, closed: isClosed, repo });
+  writeDeclineLabels(issueNumber, removeLabels, addLabels, { landed, closed: isClosed, repo });
 
   // #987: AND THE RELEASE GOES ON THE RECORD, so the newest claim-record comment stops naming a worktree
   // this call has just removed.
-  postReleaseRecord(issueNumber, { session: mySession, recorded }, run, repo);
+  postReleaseRecord(issueNumber, { session: mySession, recorded }, repo);
   if (recorded.branch || recorded.worktree || recorded.nothing) landed.push("posted the release record");
 
   if (blockedReason && !isClosed) {
     // A LABEL CARRIES NO FREE TEXT -- the reason has to live somewhere a future reader can see it, and an
     // issue comment is where every other "record why" in this codebase already puts one
     // (board-report.ts, npm-token-liveness.mjs).
-    run("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body",
-      `Declined by \`${mySession}\` and marked \`blocked\`: ${blockedReason}`]);
+    rows().postRowComment({ repo, row: issueNumber, body: `Declined by \`${mySession}\` and marked \`blocked\`: ${blockedReason}`, run: claimGh });
     landed.push("posted the blocked reason");
   }
 
@@ -3092,9 +3052,6 @@ function readClaimedHalf(deps: { repo?: string; claimed?: (where?: { repo?: stri
   return { claimed, sweeps };
 }
 
-/** #4799, #989: the live `gh` the priority reads ask with, one spawn site for all of them (`gh-call-ratchet` counts spawn sites, and this file is baselined). */
-const priorityGh = (args: string[]): string => defaultRun("gh", args);
-
 /**
  * #4799: whose rows are the chairman's, as `check` asks it -- lazily, and only after a refusal. A caller that injects any other read supplies them all, and one that
  * injects nothing here has declared no history to read: that is today's refusal, which is also what an unreadable history gives the claim.
@@ -3103,7 +3060,7 @@ function chairmanRowsOf(deps: { repo?: string; mine?: unknown; others?: unknown;
   const { repo, chairmanRows } = deps;
   if (chairmanRows !== undefined) return () => chairmanRows({ repo });
   const readsLive = deps.mine === undefined && deps.others === undefined && deps.claimed === undefined;
-  return readsLive ? () => lookupChairmanRows({ run: priorityGh, repo: repo ?? REPO }) : () => null;
+  return readsLive ? () => lookupChairmanRows({ run: claimGh, repo: repo ?? REPO }) : () => null;
 }
 
 /**
@@ -3114,7 +3071,7 @@ function emergencyRowsOf(deps: { repo?: string; mine?: unknown; others?: unknown
   const { repo, emergencyRows } = deps;
   if (emergencyRows !== undefined) return () => emergencyRows({ repo });
   const readsLive = deps.mine === undefined && deps.others === undefined && deps.claimed === undefined && deps.chairmanRows === undefined;
-  return readsLive ? () => lookupEmergencyRows({ run: priorityGh, repo: repo ?? REPO }) : () => null;
+  return readsLive ? () => lookupEmergencyRows({ run: claimGh, repo: repo ?? REPO }) : () => null;
 }
 
 /**
@@ -3126,7 +3083,7 @@ function chairmanYieldLine({ myFiles, issueNumber, openPrs, reads, repo, chairma
   // An unread claimed list refuses the claim before a yield is asked (and the priority history is not worth a round trip to learn nothing).
   if (reads.claimed === null) return null;
   const made = { claimed: reads.claimed, chairmanRows, emergencyRows, sweepFreeze: (files: string[]) => sweepFreezeOf({ myFiles: files, issueNumber, sweeps: reads.sweeps }) };
-  const ask: B4Ask = { myFiles, otherPrFiles: openPrs, issueNumber, run: priorityGh, repo: repo ?? REPO, made };
+  const ask: B4Ask = { myFiles, otherPrFiles: openPrs, issueNumber, run: claimGh, repo: repo ?? REPO, made };
   const refusal = b4Refusal(ask);
   if (refusal === null) return null;
   const { reason, walked, emergency } = chairmanYieldVerdict(ask, refusal);
@@ -3166,9 +3123,8 @@ function runStatus(issueNumber: number, trackerKey: string = "") {
   const { repo } = found.tracker;
   try {
     const { labels, title } = fetchLabels(issueNumber, { repo });
-    // #771: same injected-`run` shape `writeRowLabels` already uses for the identical lookup.
-    const ghRunForBody = (args: string[]) => defaultRun("gh", args);
-    const body = lookupIssueBody(issueNumber, { run: ghRunForBody, repo });
+    // #771: the same lookup `writeRowLabels` makes, handed the code host's runner.
+    const body = lookupIssueBody(issueNumber, { run: claimGh, repo });
     // #987: the recorded branch/worktree now live in a comment, so `check` reads the thread too. Same
     // `claimedObjects` resolution `declineRow` uses, so the two can never disagree about which directory
     // a claim is holding open.
@@ -3646,7 +3602,8 @@ async function main() {
   // AT THE ONE CHOKE POINT, not per mode. `check` prints the same rule-derived verdict `claim` does, so a
   // guard on the claim path alone would leave the read that people quote unheld -- this repository's most
   // expensive recurring shape is a remedy applied at one call site when the behaviour reaches several.
-  const stale = staleRuleReason();
+  // The guard is a leaf and spawns no `gh`: an installed copy of the rule asks GitHub through the code host (#3188, A11-160).
+  const stale = staleRuleReason({ compare: (sha) => rows().compareShaWithMain({ repo: INSTALLED_RULE_REPOSITORY, sha, run: (args) => rows().ownRun(args) }) });
   if (stale) {
     process.stderr.write(`COULD NOT DETERMINE: ${stale}\n`);
     recordClaimRefusal(stale);

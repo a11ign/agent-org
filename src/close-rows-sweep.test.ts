@@ -145,7 +145,7 @@ test("7. a PR whose merge time was not read files nothing and says NOT CHECKED, 
 const SELF = fileURLToPath(import.meta.url);
 /** A file that closes a row and is NOT driven by a merge, with the reason: nothing here has a build to verify. */
 const NOT_FROM_A_MERGE: Record<string, string> = {
-  "wake/merge-queue-wait.ts": "closes a row whose question was ANSWERED (`answeredComment`), not one a pull request merged",
+  "plugins/github/rows/wake-rows.ts": "the GitHub plugin's write (A11-160 moved it out of `wake/merge-queue-wait.ts`) that closes a row whose question was ANSWERED (`answeredComment`), not one a pull request merged",
   "plugins/github/rows/close-row.ts": "the GitHub plugin's write (A11-160 moved it out of `src/ticket-port/`) behind `worker-state.ts`'s close of a `Claimed-nothing:` row on the worker's own reading (`done <row> --met`), which names each Done-when item and the comment holding it; no pull request merged",
 };
 const CLOSES_A_ROW = /\[\s*"issue",\s*"close"/;

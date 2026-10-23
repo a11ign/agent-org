@@ -381,7 +381,6 @@ test("#1401 POPULATION CONTROL: named seams from the enumeration are classified 
   const expectedLive: Array<[string, string, string]> = [
     ["src/stranded-branches.ts", "sweepPullRequests", "a destructured run the function calls with gh"],
     ["src/stranded-branches.ts", "fetchAllPRHeadRefs", "live only through the undefaulted fetchPRHeadRefPage"],
-    ["src/row-claim.ts", "fetchLabels", "a destructured run, #1406's seam"],
     ["src/ready-label-audit.ts", "reportReleaseDrift", "a non-injectable alias"],
   ];
   for (const [file, fn, why] of expectedLive) assert.ok(isLive(file, fn), `${file} ${fn} should be live: ${why}`);

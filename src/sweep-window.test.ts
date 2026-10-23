@@ -125,7 +125,7 @@ function ghFor({ sweeps, comments, prs = [], asker = ["agent-org:src/b.ts"] }: {
   };
   return { run, written };
 }
-const claimFor = (run: ReturnType<typeof ghFor>["run"]) => sessionEligibilityReason(ASKER, "worker-5000", { run, repo: TRACKER, repos: [AGENT_ORG] });
+const claimFor = (run: ReturnType<typeof ghFor>["run"]) => sessionEligibilityReason(ASKER, "worker-5000", { ghRun: (args) => run(INJECTED_GH, args), repo: TRACKER, repos: [AGENT_ORG] });
 const ledger = () => { try { return readFileSync(join(STATE_DIR, FAILURE_LEDGER_FILE), "utf8"); } catch { return ""; } };
 
 const sweepRow = listed(SWEEP, rowBody("agent-org:src/"), "worker-4389");

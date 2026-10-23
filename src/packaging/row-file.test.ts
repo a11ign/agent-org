@@ -19,7 +19,7 @@
  * `Filed-by: <session>` into the body that actually reaches `gh` -- see `row-claim.ts`'s `filedByLine`
  * for the read side.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -36,12 +36,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendFiledBy, bodyFromArgv, directoryRegionWarning, acceptanceShapeRefusal, fileRefusalReason, openCheckTranscriptRefusal, sessionFromArgv, slashlessDirectoryWarning, unrecognisedRegionWarning, withFiledBy } from "../row-file/issue-body-and-region-checks.ts";
 import { boardAndVerify, createIssue, withAcceptanceLane } from "../row-file/roadmap-and-milestone-checks.ts";
-import { boardingFor, fetchIssueBoardStatus, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, unverifiedFilingFields, withoutLabels } from "../row-file/title-kind-and-label-refusals.ts";
+import { boardingFor, issueNumberFromUrl, labelRefusal, labelValuesFromArgv, laneLabelsFor, milestoneRefusal, unverifiedFilingFields, withoutLabels } from "../row-file/title-kind-and-label-refusals.ts";
 import { labelSetForPromotion, promoteArgvRefusal, promoteFromArgv, promoteRefusalReason, promoteRow, promotionLabelsSettled, unverifiedPromotionFields } from "../row-file/roadmap-and-milestone-checks.ts";
 import { filingWarnings, malformedAcceptanceCommandWarning, quotedTestCountWarning, regionClosureWarning } from "../row-file/issue-body-and-region-checks.ts";
 import { CLAIM_LABEL } from "../claim-labels.ts";
 import { filedByLine } from "../row-claim.ts";
 import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow as worldRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 import { withGitSandbox } from "@a11ign/toolchain/lib/git-sandbox";
 import { RESOURCES } from "../project-vocabulary.ts";
@@ -400,31 +405,7 @@ test("unverifiedFilingFields: everything missing at once is all named, not just 
   assert.equal(missing.length, 4);
 });
 
-// --- #844: fetchIssueBoardStatus -- a single targeted read, not the whole board ---
-
-test("fetchIssueBoardStatus reads the Status option name off the one matching project", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [
-    { project: { number: 1 }, fieldValueByName: { name: "Backlog" } },
-  ] } } } } });
-  assert.equal(fetchIssueBoardStatus(900, { run }), "Backlog");
-});
-
-test("fetchIssueBoardStatus: no project item at all reads as null, not a crash", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [] } } } } });
-  assert.equal(fetchIssueBoardStatus(900, { run }), null);
-});
-
-test("fetchIssueBoardStatus: an item on a DIFFERENT project is not read as this one's Status", () => {
-  const run = () => JSON.stringify({ data: { repository: { issue: { projectItems: { nodes: [
-    { project: { number: 7 }, fieldValueByName: { name: "Done" } },
-  ] } } } } });
-  assert.equal(fetchIssueBoardStatus(900, { run }), null);
-});
-
-test("MUTATION: fetchIssueBoardStatus throws, never returns null as if unboarded, when gh fails", () => {
-  const run = () => { throw new Error("gh: not authenticated"); };
-  assert.throws(() => fetchIssueBoardStatus(900, { run }), /could not read #900's Project membership/);
-});
+// --- #844: the Status of the one matching project is read by a single targeted read, not the whole board: `plugins/github/rows/project-membership.test.ts` ---
 
 // --- #771 ACCEPTANCE: filedByLine (row-claim.ts) reads exactly what row-file.ts writes, and only that ---
 
@@ -449,17 +430,40 @@ test("filedByLine is null on a body with no Filed-by line at all", () => {
 
 const FILED_URL = "https://github.com/a11ign/a11ign/issues/900";
 
-/** A `run` fake for the calls createIssue makes AFTER spawnGh: `gh project item-add` and the body
- * read-back (`gh issue view ... --json body --jq .body`). Everything else answers "" harmlessly. */
+/**
+ * The fake code host AFTER a filing: row #900 of the tracker carries `body` and the `milestone` it reads back as (#1011: the read-back asks for the milestone as well as the body -- `gh` ACCEPTING `--milestone` is
+ * not evidence the field is set, so a fixture that answers only the body would report the row unverified). The writes the filing makes to it are recorded in `log`, in order. The `run` answers only the claimed rows'
+ * by-label read, which is the blast radius's (another step); nothing else of the filing asks `run` anything.
+ */
+function afterFiling(body: string, milestone = "CI reset") {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  const row = worldRow(world, 900, { body });
+  world.rows.set(900, row);
+  // The tracker a filing lands in is the one its Region names (#4078), and a scratch project declares its own: the row is #900 of each repository a test may file into.
+  for (const repo of new Set([REPO, "a11ign/a11ign", "a11ign/agent-org"])) {
+    if (repo !== world.repo) world.foreignRows.set(`${repo}#900`, row);
+    world.filing.rowMilestones.set(`${repo}#900`, milestone);
+  }
+  substituteCodeHost(host);
+  const log = { order: [] as string[], itemAdds: [] as { owner: string; number: number; url: string }[], edits: [] as string[][] };
+  const code = host.rows!;
+  const addToProject = code.addRowToProject;
+  code.addRowToProject = (request) => { log.order.push("board"); log.itemAdds.push({ owner: request.owner, number: request.projectNumber, url: request.url }); addToProject(request); };
+  const addLabels = code.addLabelsToRowIn;
+  code.addLabelsToRowIn = (request) => { log.order.push(`label:${request.labels[0]}`); log.edits.push([...request.labels]); addLabels(request); };
+  const run = (_cmd: string, args: string[]) => (readsRowsByLabel(args) !== null ? connectionOf([]) : ""); // #5039: the claimed rows' by-label read (the sweep window's, the blast radius's) -- none held
+  return { host, world, log, run };
+}
+
+/** The fake code host the last {@link afterRun} made: a test reads what the filing wrote to it. */
+let filed = afterFiling("");
+
+/** The `run` of the fake code host after a filing (see {@link afterFiling}); `filed` is that host. */
 function afterRun(body: string, milestone = "CI reset") {
-  // #1011: the read-back now asks for the milestone as well as the body -- `gh` ACCEPTING `--milestone` is
-  // not evidence the field is set. A fixture that answers only the body would report the row unverified.
-  return (_cmd: string, args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return connectionOf([]); // #5039: the claimed rows' by-label read (the sweep window's, the blast radius's) -- none held
-    if (args[0] === "issue" && args[1] === "list") return "[]"; // #4294: the duplicate-title read -- no open row has the title
-    if (args.includes("milestone")) return milestone;
-    return args.includes("body") ? body : "";
-  };
+  filed = afterFiling(body, milestone);
+  return filed.run;
 }
 
 /** The full set of happy-path dependencies, so each test overrides only what it means to test. */
@@ -475,10 +479,10 @@ const RELEASE = ["--milestone", "CI reset"];
 /** The milestone reader, injected everywhere so no test reaches GitHub for the suggestion list. */
 const MILESTONES = () => ["CI reset", "Road to version one"];
 
-function happyDeps(session: string, label: string, overrides: Record<string, unknown> = {}) {
+function happyDeps(session: string, label: string, { readBackBody, readBackMilestone, ...overrides }: Record<string, unknown> & { readBackBody?: string; readBackMilestone?: string } = {}) {
   return {
     spawnGh: () => FILED_URL,
-    run: afterRun(appendFiledBy(COMPLETE_BODY, session)),
+    run: ("run" in overrides ? overrides.run : afterRun(readBackBody ?? appendFiledBy(COMPLETE_BODY, session), readBackMilestone)) as ReturnType<typeof afterRun>, // a caller that hands its own `run` made its own fake code host
     fetchBoardStatus: () => (label === "ready" ? "Ready" : "Backlog"),
     fetchLabels: () => ({ number: 900, title: "a real row", labels: [label, "lane:any"] }),
     moveStatus: () => ({ moved: true as const }),
@@ -516,14 +520,10 @@ test("#844 ACCEPTANCE, MUTATION TARGET: the board label is added via a SEPARATE 
   + "proved necessary: a `ready` label present before the item has a Status makes the row itself the "
   + "shape #747's board-safety floor refuses, on its own snapshot, every time", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE, "--ready"];
-  const order: string[] = [];
+  const deps = happyDeps("worker-contracts", "ready");
+  const order = filed.log.order;
   const code = createIssue(argv, {
-    ...happyDeps("worker-contracts", "ready"),
-    run: (cmd: string, args: string[]) => {
-      if (args[1] === "item-add") order.push("board");
-      if (args.includes("--add-label")) order.push(`label:${args[args.indexOf("--add-label") + 1]}`);
-      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(cmd, args);
-    },
+    ...deps,
     moveStatus: (n: number, s: string) => { order.push(`status:${s}`); return { moved: true as const }; },
   });
   assert.equal(code, 0);
@@ -534,19 +534,13 @@ test("#844 ACCEPTANCE, MUTATION TARGET: the board label is added via a SEPARATE 
 test("ACCEPTANCE: the issue is added to Project 2 and its Status is moved to match the label, both "
   + "AFTER a successful gh issue create", { skip: SKIP_NO_PACKAGES }, () => {
   const argv = ["--title", "a real row", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  const projectCalls: string[][] = [];
   const moveCalls: [number, string][] = [];
   const code = createIssue(argv, {
     ...happyDeps("worker-contracts", "backlog"),
-    run: (cmd: string, args: string[]) => {
-      if (args[1] === "item-add") projectCalls.push(args);
-      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(cmd, args);
-    },
     moveStatus: (n: number, s: string) => { moveCalls.push([n, s]); return { moved: true }; },
   });
   assert.equal(code, 0);
-  assert.equal(projectCalls.length, 1);
-  assert.ok(projectCalls[0].includes("--url") && projectCalls[0].includes(FILED_URL));
+  assert.deepEqual(filed.log.itemAdds, [{ owner: "a11ign", number: 1, url: FILED_URL }], "added once, to Project 1 of the tracker's owner, by the issue's own URL");
   assert.deepEqual(moveCalls, [[900, "Backlog"]]);
 });
 
@@ -568,25 +562,20 @@ test("#883 ACCEPTANCE: a MULTI-LANE Region derives and applies BOTH lane labels 
   const wideLane = { ...PIPELINE_LANE, lane: "wide", owner: "worker-a", paths: ["packages/lab/"] };
   const narrowLane = { ...DOCS_LANE, lane: "narrow", owner: "worker-b", paths: ["packages/lab/src/packaging/"] };
   const ensured: string[][] = [];
-  let editArgs: string[] | null = null;
   const code = createIssue(argv, {
     ...happyDeps("worker-contracts", "backlog", {
       fetchLabels: () => ({ number: 900, title: "a real row",
         labels: ["backlog", "lane:worker-a", "lane:worker-b"] }),
       loadLanesConfig: () => ({ lanes: [wideLane, narrowLane] }),
     }),
-    run: (cmd: string, args: string[]) => {
-      if (args[1] === "edit") editArgs = args;
-      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(cmd, args);
-    },
     ensureLabels: (labels: string[]) => { ensured.push(labels); },
   });
   assert.equal(code, 0);
   assert.deepEqual(ensured[0]?.sort(), ["backlog", "lane:worker-a", "lane:worker-b"].sort());
-  const finalEditArgs = editArgs as string[] | null;
-  assert.ok(finalEditArgs, "expected a gh issue edit call");
-  assert.ok(finalEditArgs.includes("lane:worker-a") && finalEditArgs.includes("lane:worker-b"),
-    `expected both lane labels in the edit call; got: ${JSON.stringify(finalEditArgs)}`);
+  const [edit] = filed.log.edits;
+  assert.ok(edit, "expected an edit of the row's labels");
+  assert.deepEqual(filed.log.edits.length, 1, "in the SAME edit as the board label");
+  assert.ok(edit.includes("lane:worker-a") && edit.includes("lane:worker-b"), `expected both lane labels in the edit; got: ${JSON.stringify(edit)}`);
 });
 
 test("#883 ACCEPTANCE, MUTATION TARGET: an unreadable/malformed docs/lane-ownership.json refuses BEFORE "
@@ -635,17 +624,18 @@ test("#844 ACCEPTANCE: gh issue create succeeding but printing something that is
   assert.equal(code, 2);
 });
 
+/** A happy-path filing through the fake code host, with `overrides` and, where `failure` names one, the operation that fails with its message: the exit code, and what was said on stderr. */
+function filingReportingStderr(overrides: Record<string, unknown> = {}, failure?: { operation: string; message: string }) {
+  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
+  const deps = happyDeps("worker-contracts", "backlog", overrides);
+  if (failure !== undefined) filed.world.failures.set(failure.operation, new Error(failure.message));
+  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, { ...deps, ...overrides }));
+  return { code, stderr };
+}
+
 test("#844 ACCEPTANCE: a failure adding the issue to Project 2 is refused distinctly (exit 2), naming "
   + "the issue number and the hand-recovery command -- it is NOT reported as a plain success", { skip: SKIP_NO_PACKAGES }, () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, {
-    ...happyDeps("worker-contracts", "backlog"),
-    run: (_cmd: string, args: string[]) => {
-      if (args[1] === "item-add") throw new Error("gh: could not add item");
-      if (readsRowsByLabel(args) !== null) return connectionOf([]);
-      return args[0] === "issue" && args[1] === "list" ? "[]" : "";
-    },
-  }));
+  const { code, stderr } = filingReportingStderr({}, { operation: "addRowToProject", message: "gh: could not add item" });
   assert.equal(code, 2);
   assert.match(stderr, /FILED as #900/);
   assert.match(stderr, /could NOT add it to Project/);
@@ -664,27 +654,15 @@ test("#844 ACCEPTANCE, MUTATION TARGET: a Status move that does not succeed is r
 
 test("#844 ACCEPTANCE: a label-add failure AFTER a successful Status move is refused distinctly (exit "
   + "2), naming the issue number and the Status already set, never reported as filed cleanly", { skip: SKIP_NO_PACKAGES }, () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, {
-    ...happyDeps("worker-contracts", "backlog"),
-    run: (_cmd: string, args: string[]) => {
-      if (args.includes("--add-label")) throw new Error("gh: label add failed");
-      return afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"))(_cmd, args);
-    },
-  }));
+  const { code, stderr } = filingReportingStderr({}, { operation: "addLabelsToRowIn", message: "gh: label add failed" });
   assert.equal(code, 2);
-  assert.match(stderr, /FILED as #900, boarded with Status "Backlog"/);
-  assert.match(stderr, /`backlog`\/`lane:any` could not be added/);
+  for (const said of [/FILED as #900, boarded with Status "Backlog"/, /`backlog`\/`lane:any` could not be added/]) assert.match(stderr, said);
 });
 
 test("#844 ACCEPTANCE, MUTATION TARGET: everything succeeds but the READ-BACK disagrees (e.g. the label "
   + "did not actually stick) -- refused distinctly (exit 2), naming what is missing, never reported as "
   + "filed cleanly on the strength of the write calls alone", { skip: SKIP_NO_PACKAGES }, () => {
-  const argv = ["--title", "x", "--body", COMPLETE_BODY, "--session=worker-contracts", ...RELEASE];
-  const { result: code, text: stderr } = capturingWrites(process.stderr, () => createIssue(argv, {
-    ...happyDeps("worker-contracts", "backlog"),
-    fetchLabels: () => ({ number: 900, title: "x", labels: [] }), // the write claimed success; the read-back disagrees
-  }));
+  const { code, stderr } = filingReportingStderr({ fetchLabels: () => ({ number: 900, title: "x", labels: [] }) }); // the write claimed success; the read-back disagrees
   assert.equal(code, 2);
   assert.match(stderr, /FILED as #900/);
   assert.match(stderr, /the `backlog` label/);
@@ -762,7 +740,7 @@ test("REAL CLI: no --session= at all refuses with its own message, distinct from
 function fileWith(argv: string[], overrides: Record<string, unknown> = {}) {
   let created: string[] | null = null;
   const code = createIssue(argv, {
-    ...happyDeps("worker-contracts", "backlog"),
+    ...happyDeps("worker-contracts", "backlog", overrides),
     spawnGh: (a: string[]) => { created = a; return FILED_URL; },
     ...overrides,
   });
@@ -1468,29 +1446,30 @@ testEach("#1912: createIssue files a fleet-Acceptance row with lane:orchestrator
 // label step never runs, and the message named only the Status — so an operator following the refusal
 // exactly fixes the Status and stops, leaving the row invisible to every label-keyed view.
 
-// #1250: the `run` stub RECORDS, because the fact both halves of the pair need to measure is a CALL --
-// "were the labels applied" -- and a stub that returns "" for everything cannot answer it in either
-// direction. It dispatches on argv only where the success path reads back, so the verify actually passes
+// #1250: the fake code host RECORDS, because the fact both halves of the pair need to measure is a CALL --
+// "were the labels applied" -- and a fake that records nothing cannot answer it in either direction. The row answers what the success path reads back, so the verify actually passes
 // and `ok: true` is a real outcome rather than a refusal the control happens not to match.
 type Board = { ok: true } | { ok: false; message: string };
-const boardRun = (calls: string[][]) => (cmd: string, argv: string[]) => {
-  calls.push([cmd, ...argv]);
-  if (argv.includes("--json") && argv.includes("body")) return "prose\n\nFiled-by: worker-capture\n";
-  if (argv.includes("--json") && argv.includes("milestone")) return "Road to version one";
-  return "";
+const boardDeps = (moved: boolean, addFails = false) => {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  world.rows.set(1248, worldRow(world, 1248, { body: "prose\n\nFiled-by: worker-capture\n" }));
+  world.filing.rowMilestones.set(`${REPO}#1248`, "Road to version one");
+  if (addFails) world.failures.set("addRowToProject", new Error("HTTP 502"));
+  substituteCodeHost(host);
+  const edits: string[][] = [];
+  const addLabels = host.rows!.addLabelsToRowIn;
+  host.rows!.addLabelsToRowIn = (request) => { edits.push([...request.labels]); addLabels(request); };
+  const deps = {
+    run: (): string => { throw new Error("the fake code host acts on its own state: no gh is run"); },
+    fetchBoardStatus: () => "Backlog",
+    fetchLabels: () => ({ labels: ["backlog", "lane:any"], body: "", milestone: "Road to version one" }),
+    moveStatus: () => (moved ? { moved: true } : { moved: false, reason: "GraphQL 500" }),
+    ensureLabels: () => {},
+  };
+  return { deps, edits };
 };
-const boardDeps = (moved: boolean, calls: string[][] = [], addFails = false) => ({
-  run: (cmd: string, argv: string[]) => {
-    if (addFails && argv[0] === "project" && argv[1] === "item-add") throw new Error("HTTP 502");
-    return boardRun(calls)(cmd, argv);
-  },
-  fetchBoardStatus: () => "Backlog",
-  fetchLabels: () => ({ labels: ["backlog", "lane:any"], body: "", milestone: "Road to version one" }),
-  moveStatus: () => (moved ? { moved: true } : { moved: false, reason: "GraphQL 500" }),
-  ensureLabels: () => {},
-});
-const labelCall = (calls: string[][]) =>
-  calls.find((c) => c[1] === "issue" && c[2] === "edit" && c.includes("--add-label"));
 const boardArgs = {
   issueNumber: 1248, url: "https://github.com/x/y/issues/1248",
   boarding: { status: "Backlog", label: "backlog" },
@@ -1498,7 +1477,7 @@ const boardArgs = {
 };
 
 test("#1249: a Status failure names the labels it skipped, and how to apply both", () => {
-  const r = boardAndVerify(boardArgs, boardDeps(false) as never);
+  const r = boardAndVerify(boardArgs, boardDeps(false).deps as never);
   assert.equal(r.ok, false);
   assert.match(r.message, /were NOT applied/,
     "the refusal must say the labels did not land -- following it exactly must leave the row boarded");
@@ -1515,21 +1494,20 @@ test("#1249 POSITIVE CONTROL: when the Status succeeds the labels are actually A
   //
   // The two halves now measure ONE fact from both sides: on failure the message says the labels did not
   // land, and on success they DID -- asserted at the call, which is the only place that is observable.
-  const calls: string[][] = [];
-  const r = boardAndVerify(boardArgs, boardDeps(true, calls) as never) as Board;
+  const { deps, edits } = boardDeps(true);
+  const r = boardAndVerify(boardArgs, deps as never) as Board;
   assert.equal(r.ok, true,
     "the success path must actually succeed -- the old control passed on a read-back refusal too");
-  assert.deepEqual(labelCall(calls),
-    ["gh", "issue", "edit", "1248", "--repo", REPO, "--add-label", "backlog", "--add-label", "lane:any"],
-    "the labels the failure message says were SKIPPED are the ones this path applies");
+  assert.deepEqual(edits, [["backlog", "lane:any"]],
+    "the labels the failure message says were SKIPPED are the ones this path applies, in one edit (the arguments are `filing-rows.test.ts`'s)");
 });
 
 test("#1249 NEGATIVE CONTROL: when the Status fails the labels are not applied at all", () => {
   // The other side of the same fact. Without this, "the message says they were skipped" and "they were
   // skipped" are two claims with nothing comparing them.
-  const calls: string[][] = [];
-  boardAndVerify(boardArgs, boardDeps(false, calls) as never);
-  assert.equal(labelCall(calls), undefined,
+  const { deps, edits } = boardDeps(false);
+  boardAndVerify(boardArgs, deps as never);
+  assert.deepEqual(edits, [],
     "the early return is what the refusal is reporting -- if the labels landed anyway it is lying");
 });
 
@@ -1537,8 +1515,8 @@ test("#1250: the item-add rung names BOTH steps it skips, and repairs all three"
   // The rung worker-capture's own filing hit, and the one the first fix did not reach: item-add is the
   // first of three, so its failure skips the Status AND the labels. An operator who follows it exactly
   // must not end with a boarded row that has neither.
-  const calls: string[][] = [];
-  const r = boardAndVerify(boardArgs, boardDeps(true, calls, true) as never) as Board;
+  const { deps, edits } = boardDeps(true, true);
+  const r = boardAndVerify(boardArgs, deps as never) as Board;
   assert.equal(r.ok, false);
   const message = (r as { message: string }).message;
   assert.match(message, /neither the Status "Backlog" nor/, "it must name the Status as skipped");
@@ -1546,7 +1524,7 @@ test("#1250: the item-add rung names BOTH steps it skips, and repairs all three"
   assert.match(message, /item-edit 1 --owner \S+ --url \S+ --field Status --value "Backlog"/,
     "and be followable for the Status, not only describe it");
   assert.match(message, /--add-label backlog --add-label lane:any/, "and for the labels");
-  assert.equal(labelCall(calls), undefined, "neither later step ran, which is what the message reports");
+  assert.deepEqual(edits, [], "neither later step ran, which is what the message reports");
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -1567,21 +1545,17 @@ test("#1250: the item-add rung names BOTH steps it skips, and repairs all three"
  */
 function fileWatching(argv: string[], overrides: Record<string, unknown> = {},
   readBackMilestone = "CI reset") {
-  const added: string[] = [];
   const moved: string[] = [];
   let said = "";
   const write = process.stderr.write.bind(process.stderr);
   (process.stderr as { write: unknown }).write = (chunk: unknown) => { said += String(chunk); return true; };
   try {
-    const base = afterRun(appendFiledBy(COMPLETE_BODY, "worker-contracts"), readBackMilestone);
     const { code, created } = fileWith(argv, {
-      run: (cmd: string, args: string[]) => {
-        args.forEach((arg, i) => { if (arg === "--add-label") added.push(args[i + 1]); });
-        return base(cmd, args);
-      },
+      readBackMilestone,
       moveStatus: (_n: number, status: string) => { moved.push(status); return { moved: true as const }; },
       ...overrides,
     });
+    const added = filed.log.edits.flat(); // every label the filing put on the row, beside the board label
     return { code, created: created as string[] | null, added, moved, said };
   } finally {
     (process.stderr as { write: unknown }).write = write;
@@ -1698,7 +1672,6 @@ function lanesAppliedBy(cell: (typeof LANE_CELLS)[number], typed: string[]) {
   assert.equal(body.includes(cell.acceptance), true, "the Acceptance replacement landed");
   const argv = ["--title", "a real row", "--body", body, "--session=worker-contracts", ...RELEASE, ...typed];
   let created: string[] = [];
-  const added: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   (process.stderr as { write: unknown }).write = () => true;
   try {
@@ -1706,14 +1679,11 @@ function lanesAppliedBy(cell: (typeof LANE_CELLS)[number], typed: string[]) {
       ...happyDeps("worker-contracts", "backlog", {
         loadLanesConfig: () => cell.lanes,
         fetchLabels: () => ({ number: 900, title: "a real row", labels: ["backlog", ...cell.derived] }),
+        readBackBody: appendFiledBy(body, "worker-contracts"),
       }),
       spawnGh: (a: string[]) => { created = a; return FILED_URL; },
-      run: (cmd: string, args: string[]) => {
-        args.forEach((arg, i) => { if (arg === "--add-label") added.push(args[i + 1]); });
-        return afterRun(appendFiledBy(body, "worker-contracts"))(cmd, args);
-      },
     });
-    return { code, applied: lanesIn([...labelValuesFromArgv(created), ...added]).sort() };
+    return { code, applied: lanesIn([...labelValuesFromArgv(created), ...filed.log.edits.flat()]).sort() };
   } finally {
     (process.stderr as { write: unknown }).write = write;
   }
@@ -2002,23 +1972,30 @@ function fakeRow(options: {
   failLabelWrite?: boolean;
   additiveLabelWrite?: boolean;
   onStatusMove?: (row: { labels: string[] }) => void;
+  onLabelWrite?: () => void;
 } = {}) {
   const state = options.state ?? "OPEN";
-  const row = { labels: [...(options.labels ?? ["backlog", "lane:any"])],
-    status: options.status ?? "Backlog", calls: [] as string[][] };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  const held = worldRow(world, 2111, { labels: [...(options.labels ?? ["backlog", "lane:any"])], body: options.body ?? COMPLETE_BODY, state });
+  world.rows.set(2111, held);
+  world.rows.set(2050, held); // the tests that promote #2050 read the same row
+  substituteCodeHost(host);
+  const row = { get labels() { return held.labels; }, set labels(labels: string[]) { held.labels = labels; }, status: options.status ?? "Backlog" };
+  const writes: { repo: string; number: number; labels: string[] }[] = [];
+  const setLabels = host.rows!.setRowLabels;
+  host.rows!.setRowLabels = (request) => {
+    options.onLabelWrite?.();
+    writes.push({ repo: request.repo, number: request.number, labels: [...request.labels] });
+    if (options.failLabelWrite) throw new Error("HTTP 502: Bad gateway (github.com)");
+    // The real endpoint SETS the list. `additiveLabelWrite` is the fake that does NOT, which is how the
+    // read-back's refusal gets driven rather than assumed -- see its own test below.
+    if (options.additiveLabelWrite) held.labels = [...held.labels, ...request.labels.filter((label) => !held.labels.includes(label))];
+    else setLabels(request);
+  };
   const deps = {
-    run: (_cmd: string, args: string[]) => {
-      row.calls.push(args);
-      if (args[0] !== "api") return args.includes("body") ? (options.body ?? COMPLETE_BODY) : "";
-      if (options.failLabelWrite) throw new Error("HTTP 502: Bad gateway (github.com)");
-      const wanted = args.filter((a) => a.startsWith("labels[]=")).map((a) => a.slice("labels[]=".length));
-      // The real endpoint SETS the list. `additiveLabelWrite` is the fake that does NOT, which is how the
-      // read-back's refusal gets driven rather than assumed -- see its own test below.
-      row.labels = options.additiveLabelWrite
-        ? [...row.labels, ...wanted.filter((l) => !row.labels.includes(l))]
-        : wanted;
-      return "";
-    },
+    run: (): string => { throw new Error("the fake code host acts on its own state: no gh is run"); },
     fetchLabels: () => ({ number: 2111, title: "a real row", state, labels: [...row.labels] }),
     fetchBoardStatus: () => row.status,
     moveStatus: (_n: number, status: string) => {
@@ -2028,31 +2005,27 @@ function fakeRow(options: {
     },
     ensureLabels: () => {},
   };
-  /** Every label-WRITING call the act made -- the population the atomicity claim is about. */
-  const labelWrites = () => row.calls.filter((args) => args[0] === "api");
+  /** Every label-WRITING request the act made -- the population the atomicity claim is about. */
+  const labelWrites = () => writes;
   return { row, deps, labelWrites };
 }
 
 test("#2111 ACCEPTANCE, MUTATION TARGET: the Status moves first, and the labels are then written by "
   + "EXACTLY ONE request that SETS the whole list -- no `--add-label`/`--remove-label` pair anywhere, "
   + "because one `gh issue edit` invocation carrying both is one COMMAND and not one write (#677)", { skip: SKIP_NO_PACKAGES }, () => {
-  const { row, deps, labelWrites } = fakeRow();
   const order: string[] = [];
+  const { row, deps, labelWrites } = fakeRow({ onLabelWrite: () => order.push("labels") });
   const code = promoteRow(["--promote=2111", "--session=worker-capture"], {
     ...deps,
     moveStatus: (_n: number, status: string) => { order.push(`status:${status}`); row.status = status;
       return { moved: true as const }; },
-    run: (cmd: string, args: string[]) => { if (args[0] === "api") order.push("labels"); return deps.run(cmd, args); },
   });
   assert.equal(code, 0);
   assert.deepEqual(order, ["status:Ready", "labels"],
     `the Status moves before a single label write -- got: ${JSON.stringify(order)}`);
   assert.equal(labelWrites().length, 1, "one request, and the reason it is one is what makes it atomic");
-  assert.deepEqual(labelWrites()[0], ["api", "--method", "PUT", `repos/${REPO}/issues/2111/labels`,
-    "-f", "labels[]=ready", "-f", "labels[]=lane:any"],
-    "GitHub's `Set labels for an issue`: the whole list in one PUT, every other label carried");
-  assert.ok(!row.calls.some((args) => args.includes("--add-label") || args.includes("--remove-label")),
-    "the delta form is the one #677 reproduced coming apart, so it must not appear at all");
+  assert.deepEqual(labelWrites()[0], { repo: REPO, number: 2111, labels: ["ready", "lane:any"] },
+    "the whole list in one request, every other label carried (the request is GitHub's `Set labels for an issue`, one PUT with no `--add-label`/`--remove-label` pair: `filing-rows.test.ts`)");
   assert.deepEqual(row.labels, ["ready", "lane:any"], "and the row ends carrying exactly that list");
 });
 
@@ -2144,8 +2117,7 @@ test("#2111 ACCEPTANCE: a row already carrying BOTH labels is repaired by the on
   + "promoted once the read-back confirms it", { skip: SKIP_NO_PACKAGES }, () => {
   const { row, deps, labelWrites } = fakeRow({ labels: ["backlog", "ready", "lane:any"] });
   assert.equal(promoteRow(["--promote=2050"], deps), 0);
-  assert.deepEqual(labelWrites()[0], ["api", "--method", "PUT", `repos/${REPO}/issues/2050/labels`,
-    "-f", "labels[]=ready", "-f", "labels[]=lane:any"]);
+  assert.deepEqual(labelWrites()[0], { repo: REPO, number: 2050, labels: ["ready", "lane:any"] });
   assert.deepEqual(row.labels, ["ready", "lane:any"]);
 });
 
@@ -2435,7 +2407,7 @@ testInProject("#2035: the three reach the author through createIssue, and the ro
   } finally {
     process.stderr.write = original;
   }
-  assert.equal(code, 0, "warnings never refuse");
+  assert.equal(code, 0, `warnings never refuse: ${stderr}`);
   assert.match(stderr, /row-file: WARNING -- the `## Region` names source file\(s\) whose import closure/);
   assert.match(stderr, /row-file: WARNING -- the `## Acceptance` section quotes a test count/);
   assert.match(stderr, /row-file: WARNING -- the `## Acceptance` section yields 1 line\(s\)/);

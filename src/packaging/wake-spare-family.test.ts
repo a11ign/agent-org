@@ -36,6 +36,7 @@ import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
 import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.ts";
+import { REPO } from "../project-identity.ts";
 import { startedPanes } from "./started-pane.ts";
 import { moduleSource } from "../lib/source-text-reads.ts";
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
@@ -250,25 +251,26 @@ test("#2403: pr-open labels a PR opened from a family member's tree, and not one
 // --- Done-when 4 of the ruling: the label exists before it is used ------------------------------------------------
 
 test("#2403: `row-claim` creates `session:worker-<n>` before adding it, so the first use of an address never fails", () => {
-  const calls: string[][] = [];
-  let reads = 0;
-  const run = (_cmd: string, args: string[]) => {
-    calls.push(args);
-    // agent-org#1302: the row's labels are read over REST, `gh api repos/<repo>/issues/<n>`
-    if (args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "")) {
-      reads += 1;
-      const labels = reads === 1 ? [] : [{ name: CLAIM_LABEL }, { name: "session:worker-12" }, { name: STARTED_LABEL }];
-      return JSON.stringify({ number: 2403, title: "A row", labels });
-    }
-    return "";
-  };
-  const got = claimRow(2403, "worker-12", { run, moveStatus: () => ({ moved: true }), branch: "agent/x-2403" });
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  host.rowsWorld.rows.set(2403, fakeRow(host.rowsWorld, 2403, { title: "A row", labels: [], body: "## Region\n\nNo file declared here.\n\n## Acceptance\n\n```bash\ntrue\n```\n\n## Open-check\n\nTRUE ALREADY\n", onBoard: true }));
+  // The operations the claim asks the code host for, in the order it asks them.
+  const asked: string[] = [];
+  const watched = Object.fromEntries(Object.entries(host.rows!).map(([name, member]) => typeof member !== "function" ? [name, member]
+    : [name, (...args: unknown[]) => {
+      const request = (args[0] ?? {}) as { name?: string; labels?: readonly string[] };
+      if (name === "ensureLabelIn" && request.name === "session:worker-12") asked.push("created");
+      if (name === "setRowLabels" && request.labels?.includes("session:worker-12")) asked.push("added");
+      return (member as (...given: unknown[]) => unknown).apply(host.rows, args);
+    }]));
+  substituteCodeHost({ ...host, rows: watched as unknown as typeof host.rows });
+  const noGh = (cmd: string): string => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+  const got = claimRow(2403, "worker-12", { run: noGh as never, moveStatus: () => ({ moved: true }), branch: "agent/x-2403" });
   assert.equal(got.claimed, true);
-  const create = calls.findIndex((a) => a[0] === "label" && a[1] === "create" && a[2] === "session:worker-12");
-  // #2151: the claim's labels are one `PUT`, which names the label as `labels[]=<name>`.
-  const add = calls.findIndex((a) => a[2] === "PUT" && a.includes("labels[]=session:worker-12"));
-  assert.ok(create !== -1 && add !== -1 && create < add, "created, then added");
-  assert.ok(calls[create].includes("--force"), "idempotently: a label a previous instance made is not an error");
+  // #2151: the claim's labels are one set of the row's labels, which names the session's label.
+  assert.deepEqual(asked, ["created", "added"], "created, then added");
+  assert.ok(host.rowsWorld.labelsCreated.includes("session:worker-12"), "and created for the row's repository");
+  assert.deepEqual([...host.rowsWorld.rows.get(2403)!.labels].sort(), [CLAIM_LABEL, "session:worker-12", STARTED_LABEL].sort(), "the row carries the claim, the session's label and started");
 });
 
 // --- Done-when 3: the engineer lifecycle is unchanged -------------------------------------------------------------

@@ -12,7 +12,8 @@ import { decide, decisionLogPathFrom, decisionSwitchesPath, readSwitches, record
 import { printDiagnostic, processState } from "./triage-provider.ts";
 import { readFileSync } from "node:fs";
 import { DUPLICATE_SIMILARITY, namesDifferentRepos, similarity, wordsOf } from "./board-truth-audit.ts";
-import { openRestListing } from "./blast-radius.ts";
+import { rows } from "./plugins/rows.ts";
+import type { RowsRun } from "./plugins/contracts/code-host-rows.ts";
 import { extractRegionSection, regionPathsFromBody } from "./region-paths.ts";
 
 export const DISTINCT_FROM_FLAG = "--distinct-from=";
@@ -31,7 +32,6 @@ const QUESTIONS: Readonly<Record<"sameChange" | "sameDefect" | "supersedes", Que
 });
 
 type RowRef = { number: number; title: string };
-export type Run = (cmd: string, args: string[]) => string;
 export type Verdict = { sameChange: boolean; sameDefect: boolean; supersedes: boolean };
 export type DuplicateCheck = { refusal: string | null; warnings: string[] };
 export type DuplicateInput = {
@@ -40,7 +40,8 @@ export type DuplicateInput = {
   /** The body being filed: its Region is half of every pair's state. */
   body: string;
   repo: string;
-  run: Run;
+  /** The caller's own `gh`, handed on to the code host's reads; absent, the code host runs `gh` itself. */
+  run?: RowsRun;
   host: DecisionDeps["host"];
   /** Where the project's `decisions.json` and the decision log are; absent means no switches file and no log. */
   projectDir?: string;
@@ -76,17 +77,17 @@ export function candidatesFor(title: string, open: readonly RowRef[], { skip = [
 
 const regionOf = (body: string): string[] => regionPathsFromBody(extractRegionSection(body) ?? "").slice(0, MAX_REGION_PATHS);
 
-function openRows(repo: string, run: Run): RowRef[] | null {
+function openRows(repo: string, run: RowsRun | undefined): RowRef[] | null {
   try {
-    return openRestListing<RowRef>((args) => run("gh", args), repo, "issues").filter((r) => Number.isInteger(r.number) && typeof r.title === "string");
+    return (rows().openRestListingOf({ repo, kind: "issues", run }) as RowRef[]).filter((r) => Number.isInteger(r.number) && typeof r.title === "string");
   } catch {
     return null; // an unreadable board asks nobody: the exact-title rule still runs, and says so itself when IT cannot read
   }
 }
 
-function bodyOf(number: number, repo: string, run: Run): string {
+function bodyOf(number: number, repo: string, run: RowsRun | undefined): string {
   try {
-    return String(JSON.parse(run("gh", ["issue", "view", String(number), "--repo", repo, "--json", "body"]))?.body ?? "");
+    return rows().rowBodyIn({ repo, number, run });
   } catch {
     return ""; // a Region that cannot be read is an empty list in the state, not a reason to stop asking about the titles
   }

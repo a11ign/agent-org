@@ -1,20 +1,25 @@
-// no-token: gh -- nothing here calls `gh`; the row reads are a stub `run` and the provider is a fake `fetch`
+// no-token: none -- nothing here calls `gh`; the row reads are the fake code host's rows and the provider is a fake `fetch`
 //
 // #4634: `row-file` ASKS WHETHER A NEW ROW DUPLICATES AN OPEN ONE, over candidates code chose. #4535 and #4536 were twins and were filed anyway.
 //
-// NO NETWORK, NO `corpus`: the provider is a fake `fetch` that records every call and answers per question name, the open rows are a fixture behind a stub `gh`.
+// NO NETWORK, NO `corpus`: the provider is a fake `fetch` that records every call and answers per question name, the open rows are a fixture in the fake code host's world.
 // POSITIVE CONTROLS, NAMED: the "provider on" case below is the non-empty population every "asks nobody" case is read against -- the same rig, the same title and rows, with
 // the provider declared and the use switched on, DOES send a request. Each refusal case has its negative twin (the same pair answered `no`).
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { DUPLICATE_SIMILARITY } from "./board-truth-audit.ts";
 import { parseHostConfig } from "./host-config.ts";
 import { freshState } from "./triage-provider.ts";
 import { appendDistinctFrom, candidatesFor, CANDIDATE_OVERLAP, distinctFromOf, DISTINCT_FROM_FLAG, duplicateRowCheck, MAX_CANDIDATES } from "./duplicate-row.ts";
 import { withFiledBy } from "./row-file/issue-body-and-region-checks.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const TITLE = "A decision document sizes assessing a multi-step task with actions between steps and a report per step, and names the first row (#4084 outcome 12)";
 const TWIN = TITLE;
@@ -27,16 +32,15 @@ const JEV = { provider: "jev", keyPath: KEY_PATH, minConfidence: 0.9 };
 type Open = { number: number; title: string };
 type Says = Partial<Record<"sameChange" | "sameDefect" | "supersedes", [string, number]>>;
 
-/** A stub `gh`: the REST issues listing answers the open rows, `issue view N` the body. `calls` records every call. */
-function stubGh(open: Open[], { outage = false } = {}) {
-  const calls: string[][] = [];
-  const run = (_cmd: string, args: string[]): string => {
-    calls.push(args);
-    if (outage) throw new Error("HTTP 502");
-    if (args[0] === "api" && args[1].includes("/issues?")) return JSON.stringify(open);
-    return JSON.stringify({ body: REGION_BODY });
-  };
-  return { run, calls };
+/** The fake code host holding the open rows, each with the Region body; `outage` refuses the listing as GitHub's 502 would. `calls` records the reads the code host was asked for. */
+function fakeGh(open: Open[], { outage = false } = {}) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = "a11ign/a11ign";
+  for (const { number, title } of open) world.rows.set(number, fakeRow(world, number, { title, body: REGION_BODY }));
+  if (outage) world.failures.set("openRestListingOf", new Error("HTTP 502"));
+  substituteCodeHost(host);
+  return { calls: world.calls, world };
 }
 
 /** A fake `fetch` that answers each question by name from `says` (default `no` at 1.0) and records the request bodies. */
@@ -56,13 +60,13 @@ function fakeFetch(says: Says | ((n: number) => Says) = {}) {
 }
 
 function rig({ triage = JEV as unknown, absent = false, on = true, open = [{ number: 4535, title: TWIN }], says = {} as Says | ((n: number) => Says), keyReadable = true, argv = [] as string[], title = TITLE, ledger = false } = {}) {
-  const gh = stubGh(open);
+  const gh = fakeGh(open);
   const net = fakeFetch(says);
   const lines: string[] = [];
   const keyReads: string[] = [];
   const dir = ledger ? mkdtempSync(join(tmpdir(), "duplicate-row-")) : undefined;
   const input = {
-    argv, title, body: REGION_BODY, repo: "a11ign/a11ign", run: gh.run, host: host(absent ? undefined : triage),
+    argv, title, body: REGION_BODY, repo: "a11ign/a11ign", host: host(absent ? undefined : triage),
     ...(dir === undefined ? {} : { ledgerPath: join(dir, "wake-ledger") }),
     deps: {
       fetch: net.fn, state: freshState(), timeoutMs: 50, diagnostic: (line: string) => lines.push(line), switches: { "duplicate-row": on } as const,
@@ -84,15 +88,15 @@ test("provider on, same change above the floor: REFUSED, both rows named, the wa
   assert.ok(String(check.refusal).includes(`${DISTINCT_FROM_FLAG}4535`), "the way out is named");
   assert.equal(net.requests.length, 1, "one pair, one request (the POSITIVE CONTROL for every 'asks nobody' case)");
   assert.deepEqual(Object.keys(net.requests[0].questions).sort(), ["sameChange", "sameDefect", "supersedes"]);
-  assert.ok(gh.calls.length >= 2, "the board and the candidate's row were read");
+  assert.deepEqual(gh.calls, ["openRestListingOf issues", "rowBodyIn #4535"], "the board and the candidate's row were read");
 });
 
-// agent-org#1005: the open rows are read over REST, the core pool, never `gh issue list`, which spends the GraphQL pool the managers App shares.
-test("the open rows are read as `gh api repos/<repo>/issues`, never `gh issue list`", async () => {
+// agent-org#1005: the open rows are read over REST, the core pool, never `gh issue list`, which spends the GraphQL pool the managers App shares. THE ARGUMENT LIST is the plugin's (`plugins/github/rows/misc-rows.test.ts`); what core
+// asks the code host for is the REST listing of the issues, and not a pull request listing.
+test("the open rows are asked as the REST listing of issues", async () => {
   const { input, gh } = rig({ says: {} });
   await duplicateRowCheck(input);
-  assert.ok(gh.calls.some((args) => args[0] === "api" && args[1] === "repos/a11ign/a11ign/issues?state=open&per_page=100&page=1"), "the REST issues listing is read, paged from the first page");
-  assert.deepEqual(gh.calls.filter((args) => args[0] === "issue" && args[1] === "list"), [], "no `gh issue list`: it spends the GraphQL pool");
+  assert.deepEqual(gh.calls.filter((call) => call.startsWith("openRestListing")), ["openRestListingOf issues"], "the REST issues listing is read once");
 });
 
 test("the negative control of that refusal: the same pair answered `no` files", async () => {
@@ -147,9 +151,9 @@ test("KEY MISSING: the key was tried, no request left the process, nothing is re
 
 test("an unreadable board asks nobody and refuses nothing: the exact-title rule still runs", async () => {
   const net = fakeFetch({ sameChange: ["yes", 1] });
-  const gh = stubGh([], { outage: true });
   const { input } = rig();
-  assert.deepEqual(await duplicateRowCheck({ ...input, run: gh.run, deps: { ...input.deps, fetch: net.fn } }), { refusal: null, warnings: [] });
+  fakeGh([], { outage: true });
+  assert.deepEqual(await duplicateRowCheck({ ...input, deps: { ...input.deps, fetch: net.fn } }), { refusal: null, warnings: [] });
   assert.equal(net.requests.length, 0);
 });
 

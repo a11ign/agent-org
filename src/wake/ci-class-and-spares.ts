@@ -28,6 +28,7 @@ import { ESCALATED, VOIDED, declaresDecision, deliveredId, handoffQueuePath, que
 import { cycleVerdict, isSpareRole, readLedgerDeliveries, readTextOrNull, sessionStateOf, spareDecision, spareInstances, type SpareWorktree } from "./merge-queue-wait.ts";
 import { absentInstanceCycle, appendSpareCycle, isPersistentRole, readSpareRegistry, type SpareCycle } from "./fyi-delivery-and-limits.ts";
 import { WAKE_TTL_MS, endedSessionsAt, escalatedKeys, holderOf, readSpareCycles, resolveEndedHandoffs, sparePathsFrom } from "./session-endings.ts";
+import { rows } from "../plugins/rows.ts";
 
 /**
  * `ci-failure-class` (#4632) for each settled-red order. The class and the route go in the journal line whoever chose; the ORDER's text gains them only when the PROVIDER chose, or when a rule
@@ -462,8 +463,8 @@ function releasePlan(request: ReleaseRequest, deps: ReleaseDeps, site: ReleaseSi
  */
 function stillHolds(request: ReleaseRequest, deps: ReleaseDeps, site: ReleaseSite): boolean | null {
   try {
-    const labels = JSON.parse(deps.gh(["issue", "view", String(request.row), "--repo", site.repo, "--json", "labels"]))?.labels;
-    return Array.isArray(labels) && labels.some((l: any) => l?.name === `${SESSION_PREFIX}${request.session}`);
+    const labels = rows().labelNamesOfRow({ repo: site.repo, number: request.row, run: deps.gh });
+    return Array.isArray(labels) && labels.some((name) => name === `${SESSION_PREFIX}${request.session}`);
   } catch {
     return null;
   }
@@ -570,7 +571,7 @@ function settleRelease(request: ReleaseRequest, plan: { keep: boolean; work: Ret
     try { act(); } catch (err) { deps.warn(`release: ${rowOf(request)}: could not ${what} (${firstLine(err)}).`); }
   };
   attempt("post the release comment", () => {
-    deps.gh(["issue", "comment", String(request.row), "--repo", site.repo, "--body", releaseComment(request, plan)]);
+    rows().postRowComment({ repo: site.repo, row: request.row, body: releaseComment(request, plan), run: deps.gh });
   });
   // The kept-tree ledger is keyed by the FIRST tracker's row number (`spawnClaimer` neither reads nor writes it for a keyed row), so a keyed release writes
   // nothing to it: under the bare number it would be the record of a home row of the same number, and `null` would delete that row's.
@@ -1009,7 +1010,7 @@ function instancesNow(registryPath: string): Record<string, SpareInstance> {
 
 function rowStateOf(row: number, repo?: string): string | null {
   try {
-    return String(JSON.parse(defaultGh(["issue", "view", String(row), ...(repo === undefined ? [] : ["--repo", repo]), "--json", "state"])).state);
+    return rows().rowStateOf({ number: row, repo, run: defaultGh });
   } catch {
     return null;
   }
@@ -1085,7 +1086,7 @@ export function poolEngineerReason(eligibility: (label: string) => string | null
  */
 export function escalationMemory(ledgerPath: string, unavailable: (label: string) => string | null) {
   return { escalated: escalatedKeys(ledgerPath), unavailable,
-    ask: { post: (row: number, body: string) => { guardedGh(["issue", "comment", String(row), "--body", body]); },
+    ask: { post: (row: number, body: string) => { rows().commentOnRow({ number: row, body, run: guardedGh }); },
       stateOf: sessionStateOf, now: Date.now },
     record: (key: string) => writeFileSync(ledgerPath, `${Date.now()}\t${ESCALATED}\t${key}\n`, { flag: "a" }) };
 }

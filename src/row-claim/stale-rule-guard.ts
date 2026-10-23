@@ -214,23 +214,8 @@ export function installedLayoutOf(entry: string): { installed: boolean; sha: str
   return { installed: true, sha, packageRoot };
 }
 
-const REPOSITORY = "a11ign/agent-org";
-
-/**
- * What changed in `a11ign/agent-org` between the installed commit and its `main`: GitHub's own compare, one call, nothing cloned. `null` when GitHub
- * cannot say (no `gh`, no token, offline, an unknown sha) -- CANNOT ASK, and never "nothing changed".
- */
-function compareWithMain(sha: string): { status: string; files: string[]; } | null {
-  try {
-    const out = execFileSync("gh", ["api", `repos/${REPOSITORY}/compare/${sha}...main`, "--jq",
-      "{status: .status, files: [.files[].filename]}"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    const parsed = JSON.parse(out);
-    return typeof parsed.status === "string" && Array.isArray(parsed.files) ? parsed : null;
-  } catch (error) {
-    void error; // CANNOT ASK is reported by the caller, by name
-    return null;
-  }
-}
+/** The repository an installed copy of the rule was made from: the one `compare` is asked about. */
+export const REPOSITORY = "a11ign/agent-org";
 
 /** GitHub's compare lists at most 300 files: a list that long may have been cut, and a cut list cannot clear anything. */
 const COMPARE_FILE_CAP = 300;
@@ -256,7 +241,9 @@ const cannotAskInstalled = (entry: string, why: string) => `CANNOT ASK whether t
  */
 export function installedStaleReason({ entry, sha, packageRoot, compare }: { entry: string; sha: string | null; packageRoot: string; compare?: (sha: string) => { status: string; files: string[]; } | null; }): string | null {
   if (sha === null) return cannotAskInstalled(entry, "the install directory names no commit, so there is nothing to compare with `main`.");
-  const result = (compare ?? compareWithMain)(sha);
+  // THE GUARD IS A LEAF AND SPAWNS NO `gh`: the caller hands it the question for GitHub (the code host's `compareShaWithMain`, aimed at {@link REPOSITORY}), and a caller that hands none cannot ask.
+  if (compare === undefined) return cannotAskInstalled(entry, "nothing was given to ask GitHub with, so there is nothing to compare with `main`.");
+  const result = compare(sha);
   if (result === null) return cannotAskInstalled(entry, `GitHub could not compare ${sha.slice(0, 12)} with ${REPOSITORY}'s main (offline, no \`gh\` token, or an unknown commit).`);
   if (result.status === "identical" || result.status === "behind") return null; // installed IS main, or is ahead of it
   const spec = rulePathspec(entry, packageRoot);

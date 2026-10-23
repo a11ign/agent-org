@@ -11,13 +11,35 @@
  * must be reported UNATTRIBUTABLE BY NAME. "Nobody claimed this" and "the record is missing" produced the
  * identical blank before this existed, and they are different states.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   claimsFromEvents, describeClaims, unattributableClosedRows, parseEventLines, labelEventsByIssue,
   parseClosedRows, claimsWithNoEvent, fetchClosedRowEvents, PROVENANCE_REQUIRED_FROM,
-  reportableUnattributable, attributionFor, closingPrFromResponse, ARM_LABELS_FROM,
+  reportableUnattributable, attributionFor, closingPrFromResponse, ARM_LABELS_FROM, fetchClosingPullRequest,
 } from "../claim-provenance.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
+
+/**
+ * The fake code host holding closed rows (`closed`: number, close time and, where a test names it, why it closed) and the repository's label events (`events`, by row number, oldest first), which is what the
+ * audit's three reads (the closed listing, the event log and the pull request that closed a row) are rendered from. `refuse` names an operation whose read is refused, as GitHub refuses one.
+ */
+function fakeProvenance({ closed = [] as { number: number; closedAt: string; stateReason?: string }[], events = {} as Record<number, { event: "labeled" | "unlabeled"; label: string; at: string }[]>, refuse = [] as string[] } = {}) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  for (const { number, closedAt, stateReason } of closed) {
+    world.rows.set(number, fakeRow(world, number, { title: number === 1 ? "a" : `row ${number}`, state: "CLOSED", closedAt }));
+    if (stateReason !== undefined) world.misc.stateReasons.set(number, stateReason);
+  }
+  for (const [number, history] of Object.entries(events)) world.gate.events.set(Number(number), history.map((event) => ({ ...event, actor: null })));
+  for (const operation of refuse) world.failures.set(operation, new Error("gh exploded"));
+  substituteCodeHost(host);
+  return world;
+}
 
 const row = (number: number, closedAt: string, events: unknown[] = []) =>
   ({ number, title: `row ${number}`, closedAt, events }) as never;
@@ -167,43 +189,32 @@ test("an UNLABELED event does not satisfy the floor -- only the event that APPLI
 
 // --- fetchClosedRowEvents: failure never degrades to an empty population ---
 
-const listing = JSON.stringify([{ number: 1, title: "a", closedAt: "2026-09-09T10:00:00Z" }]);
-const runWith = (events: string) => (_cmd: string, args: string[]) =>
-  args[0] === "issue" ? listing : events;
+const FIRST_CLOSED = [{ number: 1, closedAt: "2026-09-09T10:00:00Z" }];
 
 test("a failed listing THROWS -- an empty one would audit a population it never read", () => {
-  const run = (_cmd: string, args: string[]) => {
-    if (args[0] === "issue") throw new Error("gh exploded");
-    return "";
-  };
-  assert.throws(() => fetchClosedRowEvents({ run: run as never }), /could not list closed rows/);
+  fakeProvenance({ closed: FIRST_CLOSED, refuse: ["closedRowListingTextOf"] });
+  assert.throws(() => fetchClosedRowEvents(), /could not list closed rows/);
 });
 
 test("a failed event read THROWS -- an empty log would report EVERY closed row unattributable", () => {
-  const run = (_cmd: string, args: string[]) => {
-    if (args[0] === "issue") return listing;
-    throw new Error("gh exploded");
-  };
-  assert.throws(() => fetchClosedRowEvents({ run: run as never }), /refusing to report every closed row/);
+  fakeProvenance({ closed: FIRST_CLOSED, refuse: ["labelEventLogTextOf"] });
+  assert.throws(() => fetchClosedRowEvents(), /refusing to report every closed row/);
 });
 
 test("a row with no events comes back with an empty history rather than being dropped", () => {
-  const rows = fetchClosedRowEvents({ run: runWith("") as never });
+  fakeProvenance({ closed: FIRST_CLOSED });
+  const rows = fetchClosedRowEvents();
   assert.deepEqual(rows.map((r) => [r.number, r.events.length]), [[1, 0]]);
 });
 
 test("THE FLOOR REFUSES THE WHOLE READ, not just the row it noticed on", () => {
-  assert.throws(() => fetchClosedRowEvents({
-    run: runWith(line(1, "labeled", "ready", "2026-09-09T10:00:00Z")) as never,
-    openIssues: [{ number: 9, labels: ["session:worker-judge"] }],
-  }), /the log is SHORT/);
+  fakeProvenance({ closed: FIRST_CLOSED, events: { 1: [ev("labeled", "ready", "2026-09-09T10:00:00Z")] } });
+  assert.throws(() => fetchClosedRowEvents({ openIssues: [{ number: 9, labels: ["session:worker-judge"] }] }), /the log is SHORT/);
 });
 
 test("the floor passes when every live claim's applying event is in the log", () => {
-  const rows = fetchClosedRowEvents({
-    run: runWith(line(9, "labeled", "session:worker-judge", "2026-09-09T10:00:00Z")) as never,
-    openIssues: [{ number: 9, labels: ["session:worker-judge"] }],
-  });
+  fakeProvenance({ closed: FIRST_CLOSED, events: { 9: [ev("labeled", "session:worker-judge", "2026-09-09T10:00:00Z")] } });
+  const rows = fetchClosedRowEvents({ openIssues: [{ number: 9, labels: ["session:worker-judge"] }] });
   assert.equal(rows.length, 1);
 });
 
@@ -294,18 +305,14 @@ test("#848: NOT_PLANNED reaches the filter through the REAL fetch path -- asked 
   // The first version filtered on `stateReason` while `fetchClosedRowEvents` never asked `gh` for it and
   // rebuilt each row without it, so in production the filter could not fire and the audit's
   // "N closed NOT_PLANNED are not counted" always said 0. The synthetic rows above carried the field by
-  // hand, which is how every assertion passed.
-  const calls: string[][] = [];
-  const listing = JSON.stringify([
-    { number: 798, title: "probe", closedAt: "2026-09-09T15:04:24Z", stateReason: "NOT_PLANNED" },
-    { number: 853, title: "a real bypass", closedAt: "2026-09-09T17:46:42Z", stateReason: "COMPLETED" },
-  ]);
-  const run = (_cmd: string, args: string[]) => { calls.push(args); return args[0] === "issue" ? listing : ""; };
-  const rows = fetchClosedRowEvents({ run: run as never });
-
-  const listingArgs = calls.find((args) => args[0] === "issue") ?? [];
-  assert.match(listingArgs[listingArgs.indexOf("--json") + 1] ?? "", /\bstateReason\b/,
-    "the listing must ASK for stateReason");
+  // hand, which is how every assertion passed. THAT THE LISTING ASKS `gh` FOR IT is the plugin's to assert
+  // (`plugins/github/rows/misc-rows.test.ts`); here the row's reason must come out the other end.
+  fakeProvenance({ closed: [
+    { number: 798, closedAt: "2026-09-09T15:04:24Z", stateReason: "NOT_PLANNED" },
+    { number: 853, closedAt: "2026-09-09T17:46:42Z", stateReason: "COMPLETED" },
+  ] });
+  const rows = fetchClosedRowEvents();
+  assert.deepEqual(rows.map((r) => [r.number, r.stateReason]), [[798, "NOT_PLANNED"], [853, "COMPLETED"]], "the reason is carried, not rebuilt away");
   assert.deepEqual(reportableUnattributable(rows, { since: PROVENANCE_REQUIRED_FROM }).map((r) => r.number), [853]);
 });
 
@@ -320,4 +327,19 @@ test("#848: a closing PR with no createdAt THROWS -- read as the earlier side of
   }
   // The control: the same closer WITH a createdAt parses, so the throws above are about the field.
   assert.equal(closingPrFromResponse(closer(ARM_LABELS_FROM), 912)?.createdAt, ARM_LABELS_FROM);
+});
+
+// --- fetchClosingPullRequest: the code host names the pull request behind a row's closing event ---
+
+test("the pull request that closed a row is read through the code host: its branch, merge, opening time and session labels", () => {
+  const world = fakeProvenance({ closed: FIRST_CLOSED });
+  world.misc.closingPulls.set(1, { number: 887, headRefName: "agent/row-1", merged: true, createdAt: ARM_LABELS_FROM, labels: ["session:worker-judge", "was-ready"] });
+  assert.deepEqual(fetchClosingPullRequest(1), { number: 887, headRefName: "agent/row-1", merged: true, createdAt: ARM_LABELS_FROM, sessionLabels: ["session:worker-judge"] });
+});
+
+test("a row no pull request closed reads as `null` -- and a read that was refused THROWS, never `null` (that would report the row undeclared)", () => {
+  const world = fakeProvenance({ closed: FIRST_CLOSED });
+  assert.equal(fetchClosingPullRequest(1), null, "the twin of the refusal below: the read worked and found no pull request");
+  world.failures.set("closingTimelineTextOf", new Error("HTTP 502"));
+  assert.throws(() => fetchClosingPullRequest(1), /could not read #1's closing pull request -- refusing to report it as undeclared on a failed read\. HTTP 502/);
 });

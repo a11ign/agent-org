@@ -5,6 +5,7 @@ import { flagValue } from "../lib/cli-flags.ts";
 import { readReviewerRegistry } from "../work-gate/causes/org-health-reviewer-auth.ts";
 import { reviewerInstance, subjectMention } from "../review-attribution.ts";
 import { stateEntryPath } from "../host-config.ts";
+import { rows } from "../plugins/rows.ts";
 import { roleBriefPath } from "../project-roles.ts";
 import { listingIsComplete, firstLine } from "../herdr-agents.ts";
 import { seatRunKeys } from "../seat-retire-reset.ts";
@@ -272,8 +273,7 @@ function pullRequestState(pr: number, key: string = ""): string | null {
   try {
     const repo = codeRepositoryOf(key);
     if (repo === null) return null;
-    const state = defaultGh(["api", `repos/${repo}/pulls/${pr}`, "--jq", ".state"]).trim();
-    return state === "open" || state === "closed" ? state : null;
+    return rows().pullStateWordOf({ repo, number: pr, run: defaultGh });
   } catch {
     return null;
   }

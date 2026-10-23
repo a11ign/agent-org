@@ -99,7 +99,7 @@ const commentOf = (world: FakeRowsWorld, row: FakeRow, body: string): void => {
 
 /** An item's state as a wait reads it: a row, or a pull request (which carries `merged_at`). */
 function waitRefOf(world: FakeRowsWorld, repo: string, number: number): ReturnType<CodeHostRows["waitRefOf"]> {
-  const pull = repo === world.repo ? world.pulls.get(number) : undefined;
+  const pull = repo === world.repo ? world.pulls.get(number) : world.rules.otherRepos.get(repo)?.get(number); // A11-160, step 7: another repository's pull request is among the rules' `otherRepos`
   if (pull !== undefined) {
     return { state: pull.merged || pull.closedAt != null ? "closed" : "open", closed_at: pull.mergedAt ?? pull.closedAt ?? null, updated_at: pull.mergedAt ?? pull.createdAt, merged_at: pull.mergedAt, labels: [...pull.labels] };
   }

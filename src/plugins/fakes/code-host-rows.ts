@@ -14,6 +14,11 @@ import type { ApprovalReview, ClosingIssue, CodeHostRows, GithubTicketAdapter, G
 import { ciOperations, emptyCi, type FakeCi } from "./code-host-ci.ts";
 import { mergeOperations } from "./code-host-merge.ts";
 import { emptyGate, gateOperations, type FakeGate } from "./code-host-gate.ts";
+import { emptyClaim, claimOperations, type FakeClaim } from "./code-host-claim.ts";
+import { emptyFiling, filingOperations, type FakeFiling } from "./code-host-filing.ts";
+import { emptyMisc, miscOperations, type FakeMisc } from "./code-host-misc.ts";
+import { emptyRules, rulesOperations, type FakeRules } from "./code-host-rules.ts";
+import { emptyWake, wakeOperations, type FakeWake } from "./code-host-wake.ts";
 
 /** A row (an issue) as the fake holds it. */
 export type FakeRow = {
@@ -90,6 +95,12 @@ export type FakeRowsWorld = {
   jumpRefusal: string | null;
   /** What the work gate reads beyond rows and pull requests: a row's label history, the tracker's events, checks, runs and diffs (`code-host-gate.ts`). */
   gate: FakeGate;
+  /** What wake, the claim and the filing of rows read beyond that (A11-160, step 7): `code-host-wake.ts`, `code-host-claim.ts`, `code-host-filing.ts`. */
+  wake: FakeWake;
+  claim: FakeClaim;
+  filing: FakeFiling;
+  rules: FakeRules;
+  misc: FakeMisc;
   /** The next number a created row gets, and the next id a comment gets. */
   nextNumber: number;
   nextCommentId: number;
@@ -98,7 +109,7 @@ export type FakeRowsWorld = {
 };
 
 export function emptyRowsWorld(repo: string = "fake/tracker"): FakeRowsWorld {
-  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, gate: emptyGate(), nextNumber: 1, nextCommentId: 1, now: Date.now };
+  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, gate: emptyGate(), wake: emptyWake(), claim: emptyClaim(), filing: emptyFiling(), rules: emptyRules(), misc: emptyMisc(), nextNumber: 1, nextCommentId: 1, now: Date.now };
 }
 
 const STATES: readonly TicketState[] = ["backlog", "ready", "in-progress", "parked"];
@@ -237,7 +248,12 @@ function trackerOperations(world: FakeRowsWorld): Pick<CodeHostRows, "ticketAdap
   return {
     ticketAdapter: ({ scope }) => adapterOver(world, scope),
     keyedCommentsOf: ({ row, marker, since }) => rowOf(world, row).comments.filter((c) => c.body.startsWith(marker) && Date.parse(c.createdAt) >= Date.parse(since)).map(({ id, body }) => ({ id, body })),
-    postRowComment: ({ row, body }) => comment(row, body),
+    // A row of ANOTHER repository (a keyed tracker's, A11-160 step 7) is among the foreign rows; naming no repository, or the world's own, is the home row.
+    postRowComment: ({ repo, row, body }) => {
+      const foreign = repo === world.repo ? undefined : world.foreignRows.get(`${repo}#${row}`);
+      if (foreign === undefined) comment(row, body);
+      else foreign.comments.push({ id: nextCommentId(world), body, createdAt: iso(world) });
+    },
     createRow: ({ title, labels, body }) => {
       const number = world.nextNumber++;
       world.rows.set(number, fakeRow(world, number, { title, labels: [...labels], body }));
@@ -377,6 +393,11 @@ export function createFakeRows(world: FakeRowsWorld = emptyRowsWorld()): CodeHos
     ...mergeOperations(world),
     ...ciOperations(world),
     ...gateOperations(world),
+    ...wakeOperations(world),
+    ...claimOperations(world),
+    ...filingOperations(world),
+    ...rulesOperations(world),
+    ...miscOperations(world),
     latestApprovals,
     approvalFactsOf: unmodeled("approvalFactsOf"),
     reviewsOf: unmodeled("reviewsOf"),

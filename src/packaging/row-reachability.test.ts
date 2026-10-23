@@ -14,14 +14,8 @@
  * Driven against the pure verdict: the states worth testing are combinations of lookup results, and
  * arranging them against real refs would mean creating branches at the moment the test runs.
  */
-// no-token: gh
-//
-// #772: this file imports `row-reachability.ts` for `startability`, `symbolOnMain` and
-// `refsCarryingSymbol`, and that module's line 53 spawns `gh` for the ISSUE fetch — a path none of these
-// tests take: every one of them drives git against a real local tree, or hands `startability` a facts
-// object built here. DECLARED AND THEN PROVED, because the mechanism's own check is shallow (this file
-// must not call `gh(`): run with `GH_TOKEN`/`GITHUB_TOKEN` unset and a fake `gh` first on `PATH` that
-// exits 97 and shouts, and the suite passes with the fake never invoked.
+// no-token: none -- nothing here reaches `gh`: `row-reachability.ts` asks the code host's rows for the issue fetch (A11-160), a path none of these tests take, and every one of them drives git against a real local tree or hands
+// `startability` a facts object built here. The reads that module makes of GitHub (the pull request listing and the row's fields) are the plugin's to test (`plugins/github/rows/misc-rows.test.ts`).
 import { test } from "node:test";
 import { testEach } from "../lib/test-each.ts";
 import assert from "node:assert/strict";

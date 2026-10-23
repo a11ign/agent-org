@@ -42,6 +42,7 @@ import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { REPO } from "./project-identity.ts";
 import { sandboxGitEnv } from "./lib/git-env.ts";
+import { rows } from "./plugins/rows.ts";
 import { regionPathsFromBody, declaredRegionFiles, declaresNoCommit } from "./region-paths.ts";
 // #2619 (child 3d of #69): the `blocked` label, moved to the project's declared vocabulary.
 import { BLOCKED_LABEL } from "./project-vocabulary.ts";
@@ -50,7 +51,6 @@ const EXIT = { STARTABLE: 0, BLOCKED: 1, CANNOT_ASK: 2 };
 
 const git: (args: string[]) => string = (args): string => execFileSync("git", args,
   { encoding: "utf8", env: sandboxGitEnv(), stdio: ["ignore", "pipe", "pipe"] });
-const gh: (args: string[]) => string = (args): string => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 // PATH extraction moved to `./region-paths.ts` (#462, B4) -- a leaf module with no further imports, so
 // `row-claim/file-overlap-rule.ts` can read the SAME extraction this file uses without dragging this
@@ -340,9 +340,8 @@ function prStateMap() {
   if (prMap) return prMap;
   prMap = new Map();
   try {
-    for (const pr of JSON.parse(gh(["pr", "list", "--repo", REPO, "--state", "all",
-      "--limit", "400", "--json", "number,state,headRefName"]))) {
-      const key = (pr as { headRefName: string }).headRefName;
+    for (const pr of rows().pullStatesOf({ repo: REPO, limit: 400 })) {
+      const key = pr.headRefName;
       prMap.set(key, [...(prMap.get(key) ?? []), `PR #${pr.number} ${pr.state}`]);
     }
   } catch {
@@ -358,9 +357,8 @@ function prState(ref: string) {
   const known = prStateMap().get(branch);
   if (known) return known.join(", ");
   try {
-    const found = JSON.parse(gh(["pr", "list", "--repo", REPO, "--head", branch, "--state", "all",
-      "--json", "number,state"]));
-    if (!Array.isArray(found) || found.length === 0) return "no PR";
+    const found = rows().pullStatesOfBranchIn({ repo: REPO, branch });
+    if (found.length === 0) return "no PR";
     return found.map((pr) => `PR #${pr.number} ${pr.state}`).join(", ");
   } catch {
     return "PR state unreadable";
@@ -671,8 +669,7 @@ export function heldRefsSummary(live: { ref: string; state: string; }[]): string
 
 /** @param {number} row */
 function facts(row: number) {
-  const issue = JSON.parse(gh(["issue", "view", String(row), "--repo", REPO,
-    "--json", "body,labels,state,closedAt"]));
+  const issue = rows().rowFactsIn({ repo: REPO, number: row });
   const body = issue.body ?? "";
   // THE BOARD'S OWN RECORD, not prose. A row can be blocked by another ROW -- #77 is "blocked behind
   // #35's schema migration" and carries the `blocked` label -- and neither its region nor its symbols say

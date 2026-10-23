@@ -34,13 +34,13 @@ export class GhFailure extends Error {
  * What a runner may be made with besides the account: `withoutEnv` names, when a call is made, the variables taken off its environment, and `echo` is told what `gh` printed on stderr, on success and on
  * failure alike, as `execFileSync` let it through to this process's own stderr (a row mode program's log says `! Pull request is already queued to merge` from it).
  */
-export type RunnerOptions = Readonly<{ withoutEnv?: () => readonly string[]; echo?: (text: string) => void }>;
+export type RunnerOptions = Readonly<{ withoutEnv?: () => readonly string[]; echo?: (text: string) => void; timeoutMs?: number }>;
 
 /** Runs `gh` with `args` as the process's own account, or as the one `env` names (with the variables `withoutEnv` names taken off), and answers its text. THROWS a {@link GhFailure} when it exits non-zero or cannot start. */
 export function ghRunner(deps: Pick<PluginDeps, "exec">, env: Readonly<Record<string, string>> = {}, options: RunnerOptions = {}): Gh {
   return (args) => {
     const withoutEnv = options.withoutEnv?.() ?? [];
-    const result = deps.exec("gh", args, { timeoutMs: GH_TIMEOUT_MS, env, ...(withoutEnv.length === 0 ? {} : { withoutEnv }) });
+    const result = deps.exec("gh", args, { timeoutMs: options.timeoutMs ?? GH_TIMEOUT_MS, env, ...(withoutEnv.length === 0 ? {} : { withoutEnv }) });
     if (options.echo !== undefined && result.stderr !== "") options.echo(result.stderr.replace(/\n$/, ""));
     if (result.status !== 0) throw new GhFailure(args, result);
     return result.stdout;

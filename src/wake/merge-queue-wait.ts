@@ -6,6 +6,7 @@ import { ANSWER_PREFIX } from "../waiting-condition.ts";
 import { subjectMention } from "../review-attribution.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { REPO } from "../project-identity.ts";
+import { rows } from "../plugins/rows.ts";
 import { roleBriefPath } from "../project-roles.ts";
 import { SESSION_PREFIX, OUT_OF_RELEASE_LABEL } from "../project-vocabulary.ts";
 import { PARKED_LABEL } from "../wait-condition.ts";
@@ -323,7 +324,7 @@ function escalationTargetOf(key: string, { repoOf, boardOf }: { repoOf: (repoKey
   if (subject === null) return null;
   if (subject.repoKey === "") {
     const row = (subject.number as number);
-    return { ref: `#${row}`, row, title: null, place: (run) => { run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]); return row; } };
+    return { ref: `#${row}`, row, title: null, place: (run) => { rows().addLabelToRow({ number: row, label: ESCALATION_LABEL, run }); return row; } };
   }
   // A keyed EPIC is not a red: the row filed below says `main` is red, which it is not, and its label cannot be set from the primary's tracker.
   if (/\/epic-/.test(key)) return null;
@@ -390,10 +391,9 @@ const FILED_STUCK_ROW_LABELS = [ESCALATION_LABEL, PARKED_LABEL, OUT_OF_RELEASE_L
  */
 function boardFiledRow({ url, number }: { url: string; number: number; }, board: Board | null, run: (args: string[]) => string): void {
   if (board === null) throw new Error(`#${number} filed but OFF THE BOARD: no board declared`);
-  const on = ["--owner", board.owner, "--url", url];
   try {
-    run(["project", "item-add", String(board.number), ...on]);
-    run(["project", "item-edit", String(board.number), ...on, "--field", "Status", "--value", FILED_STATUS]);
+    rows().addRowToProject({ owner: board.owner, projectNumber: board.number, url, run });
+    rows().setProjectStatus({ owner: board.owner, projectNumber: board.number, url, status: FILED_STATUS, run });
   } catch (err: any) {
     throw new Error(`#${number} filed but OFF THE BOARD: ${firstLine(err, 120)}`, { cause: err });
   }
@@ -414,7 +414,7 @@ function fileRepositoryRow({ ref, repo, key, board }: { ref: string; repo: strin
   const open = readRowsByLabel({ label: ESCALATION_LABEL, state: "OPEN", select: "number title", run });
   const existing = open.find((row: { title: string; }) => row.title === title);
   if (existing !== undefined) return existing.number;
-  const made = run(["issue", "create", "--title", title, "--body", body, ...FILED_STUCK_ROW_LABELS.flatMap((label) => ["--label", label])]);
+  const made = rows().fileRowWithLabels({ title, body, labels: FILED_STUCK_ROW_LABELS, run });
   const filed = /(\S+\/issues\/(\d+))\s*$/.exec(made);
   if (filed === null) return null;
   const number = Number(filed[2]);
@@ -446,7 +446,7 @@ function closeAnsweredRow({ title, key }: { title: string; key: string; }, { run
     const filed = parked.filter((row) => row.title === title);
     if (filed.some((row) => row.labels.some((label) => label.name.startsWith(ANSWER_PREFIX)))) return closed;
     for (const row of filed) {
-      run(["issue", "close", String(row.number), "--comment", answeredComment(key)]);
+      rows().closeHomeRowWithComment({ number: row.number, comment: answeredComment(key), run });
       closed.push(row.number);
       log(`ANSWERED #${row.number} (${key}) -- ${ESCALATION_LABEL} was removed, so the row is closed\n`);
     }
@@ -470,7 +470,7 @@ function rowsTitled(title: string, run: (args: string[]) => string): { number: n
   const closed = readRowsByLabel({ label: PARKED_LABEL, state: "CLOSED", select: "number title closedAt", newest: TITLED_READ_NEWEST, run });
   const parked = readRowsByLabel({ label: PARKED_LABEL, state: "OPEN", select: "number title", run });
   const newest: { number: number; title: string; }[] = JSON.parse(readUnlessRefused({ what: `the ${TITLED_READ_NEWEST} newest open rows`, run,
-    read: () => run(["issue", "list", "--state", "open", "--limit", String(TITLED_READ_NEWEST), "--json", "number,title"]) }));
+    read: () => JSON.stringify(rows().openRowsOf({ limit: TITLED_READ_NEWEST, fields: "number,title", run })) }));
   const open = new Map([...parked, ...newest].map((row) => [row.number, row]));
   return [...closed.map((row) => ({ ...row, state: "CLOSED" })), ...[...open.values()].map((row) => ({ ...row, state: "OPEN", closedAt: null }))]
     .filter((row) => row.title === title);
@@ -595,7 +595,7 @@ function reaskCleared({ row, key }: { row: number; key: string; }, { run, log, a
     if (!waiting && comments.some((c) => c.marked)) return false;
     const answer = comments.filter((c) => c.login === removed.by && c.at <= removed.at).pop();
     if (!waiting) ask.post(row, reaskComment({ key, removed, answer, elapsedMs: ask.now() - removed.at, state: ask.stateOf(sessionOfKey(key)) }));
-    run(["issue", "edit", String(row), "--add-label", ESCALATION_LABEL]);
+    rows().addLabelToRow({ number: row, label: ESCALATION_LABEL, run });
     log(`ASKED AGAIN #${row} -> ${ESCALATION_LABEL} (${key}: label removed ${Math.round((ask.now() - removed.at) / 60_000)} minutes ago, cause still true)\n`);
     return true;
   } catch (err: any) {
@@ -616,22 +616,14 @@ function labelRemoval(row: number, run: (args: string[]) => string): { at: numbe
  * The escalation label's last event on the row, `null` when it never had one.
  */
 function lastLabelEvent(row: number, run: (args: string[]) => string): { event: string; at: number; by: string; } | null {
-  const events = run(["api", "--paginate", `repos/{owner}/{repo}/issues/${row}/events`, "--jq",
-    `.[] | select(.label.name == ${JSON.stringify(ESCALATION_LABEL)}) | [.event, .actor.login, .created_at] | @json`]);
-  const last = events.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l)).pop();
-  return last === undefined ? null : { event: String(last[0]), at: Date.parse(last[2]), by: String(last[1]) };
+  return rows().lastLabelEventOf({ number: row, label: ESCALATION_LABEL, run });
 }
 
 /**
  * Every comment on the row as `{ id, login, at, marked }`, `marked` being "carries `marker`".
  */
 export function rowComments(row: number, marker: string, run: (args: string[]) => string): { id: number; login: string; at: number; marked: boolean; }[] {
-  const lines = run(["api", "--paginate", `repos/{owner}/{repo}/issues/${row}/comments`, "--jq",
-    `.[] | [.id, .user.login, .created_at, (.body | contains(${JSON.stringify(marker)}))] | @json`]);
-  return lines.split("\n").filter((l) => l.trim() !== "").map((l) => {
-    const [id, login, at, marked] = JSON.parse(l);
-    return { id, login, at: Date.parse(at), marked };
-  });
+  return rows().markedCommentsOf({ number: row, marker, run });
 }
 
 /**

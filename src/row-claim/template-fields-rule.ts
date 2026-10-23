@@ -18,7 +18,7 @@
 // missing": a reader fixing the row needs to know WHICH of the three to add, not that something is wrong.
 import { REPO } from "../project-identity.ts";
 import { gh, lookup } from "../merge-guard/lookups.ts";
-import { ROW_READ_FIELDS } from "./file-overlap-rule.ts";
+import { rows } from "../plugins/rows.ts";
 import { declaredRegionFiles, hasTemplateField, regionCoversIn, splitRegionEntry } from "../region-paths.ts";
 import { extractAcceptanceSection, runsTheWholeSuite } from "../acceptance-commands/suite-and-checkout-commands.ts";
 
@@ -192,7 +192,7 @@ export function templateFieldsReason(body: string, issueNumber: number): string 
  * row has nothing". Collapsing the two via `parsed.body ?? ""` would read the second as the first and
  * refuse every claim.
  * #2617: `repo` is the TRACKER the row lives in, as the project's declaration names it (default the first).
- * #732: it asks {@link ROW_READ_FIELDS} (`body,labels`), the SAME argv as `lookupMyRegionFiles`, so the claim's batched read serves both
+ * #732: it asks `bodyAndLabelsOf` (`body,labels`), the SAME argv as `lookupMyRegionFiles`, so the claim's batched read serves both
  * from one `gh issue view`; the labels are ignored here, and an answer with no `body` still throws.
  * @param {number} issueNumber
  * @param {{ run?: (args: string[]) => string, repo?: string }} [deps]
@@ -200,9 +200,7 @@ export function templateFieldsReason(body: string, issueNumber: number): string 
  */
 export function lookupIssueBody(issueNumber: number, { run = gh, repo = REPO }: { run?: (args: string[]) => string; repo?: string; } = {}): string | null {
   return lookup(() => {
-    const raw = run(["issue", "view", String(issueNumber), "--repo", repo, "--json", ROW_READ_FIELDS]);
-    /** @type {{ body?: string }} */
-    const parsed: { body?: string; } = JSON.parse(raw);
+    const parsed = rows().bodyAndLabelsOf({ repo, number: issueNumber, run });
     if (!("body" in parsed)) throw new Error("response carried no body field");
     return parsed.body ?? "";
   });

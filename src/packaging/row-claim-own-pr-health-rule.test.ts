@@ -19,19 +19,51 @@
  *
  * IN BUILD MEANS A CLAIMED ROW WHOSE OWN DELIVERABLE IS A COMMIT THAT DOES NOT EXIST YET.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRow } from "../plugins/fakes/code-host-rows.ts";
 import {
   inBuildReason, isInBuild, lookupOtherHeldIssues, lookupClosingPrHealth, lookupRowShape,
   deliveredRowsDeclaredBy, lookupDeliveringPr, lookupHeldRows,
   unansweredRefusal, disputeAtHead, lookupOpenPrReviewHealth, escalateDisputeToCeo, OPEN_PR_LIMIT,
   authorCommitsSinceRefusal,
 } from "../row-claim/own-pr-health-rule.ts";
-import { connectionOf, readsRowsByLabel } from "./rows-by-label-fixtures.ts";
 
-/** #5039: the claimed rows, as the connection answers them, each carrying the claim label and `session:<name>` -- the session's own rows are told apart client-side. */
-const heldBy = (session: string, ...numbers: number[]) => connectionOf(
-  numbers.map((number) => ({ number, labels: ["in-progress", `session:${session}`] })));
+// THE LOOKUPS ASK THE CODE HOST'S ROWS (A11-160, step 7; they were a stubbed `gh` before). The fake code host answers from a world the test seeds and ignores the `run` it is handed, so the `run` below is one that fails
+// the test if anything reaches it. What the lookups SEND to GitHub (the argument lists, the paging of the two connections, the fields asked) is asserted by `plugins/github/rows/rules-rows.test.ts`, not here.
+afterEach(() => forgetActivation());
+
+const unreached = (): string => { throw new Error("a run was made: the code host's rows answer from the world, not from a `gh`"); };
+
+/** The fake code host in place, and its world. */
+function fakeWorld() {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+type World = ReturnType<typeof fakeWorld>;
+
+/** What every lookup is given: a `run` that must not be reached, the world's own repository, and where a lookup says what it could not read. */
+const depsOf = (world: World, log?: (line: string) => void) => ({ run: unreached, repo: world.repo, ...(log === undefined ? {} : { log }) });
+
+/** #5039: a claimed row, carrying the claim label and `session:<name>` -- the session's own rows are told apart client-side. */
+function heldRow(world: World, session: string, number: number, over: Partial<FakeRow> = {}): FakeRow {
+  const row = fakeRow(world, number, { labels: ["in-progress", `session:${session}`], ...over });
+  world.rows.set(number, row);
+  return row;
+}
+
+/** The Region a held row declares one file under. */
+const HELD_BODY = "## Region\n\n```\nscripts/held.mjs\n```\n";
+
+/** A pull request of the world: its state is what GitHub would say of it (`MERGED` is merged, `CLOSED` was closed without merging), and it closes the rows named. */
+function pullOf(world: World, number: number, over: { state?: "OPEN" | "MERGED" | "CLOSED"; closes?: number[]; files?: string[]; reviewDecision?: string | null; headRefOid?: string } = {}): void {
+  const { state = "OPEN", closes = [], ...rest } = over;
+  world.pulls.set(number, { number, body: "", headRefName: `branch-${number}`, labels: [], isDraft: false, armed: false, merged: state === "MERGED", mergedAt: state === "MERGED" ? "2026-09-23T00:00:00Z" : null, createdAt: "2026-09-01T00:00:00Z", comments: [],
+    ...(state === "CLOSED" ? { closedAt: "2026-09-23T00:00:00Z" } : {}), closes: closes.map((row) => ({ number: row, labels: [] })), ...rest });
+}
 
 /** A row owed a commit: held, declaring files, no sub-rows, no PR. Each test changes ONE fact from this. */
 const inBuild = { number: 989, declaresPaths: true, subIssues: 0, closingPr: undefined };
@@ -134,34 +166,31 @@ test("#989: the held population is this session's own rows -- another session's 
   // #5039: `lookupOtherHeldIssues` reads ALL the `in-progress` rows once (the one list the claim already reads, so
   // it is never a search) and filters on `session:<name>` CLIENT-SIDE. This guards that filter from widening later,
   // which is the failure nobody notices: a row of another session is in the answer and must NOT come out of it.
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return connectionOf([
-      { number: 908, labels: ["in-progress", "session:worker-judge"] },
-      { number: 912, labels: ["in-progress", "session:worker-capture"] },
-      { number: 915, labels: ["in-progress"] },
-    ]);
-  };
-  assert.deepEqual(lookupOtherHeldIssues("worker-judge", 989, { run }), [908],
+  const world = fakeWorld();
+  heldRow(world, "worker-judge", 908);
+  heldRow(world, "worker-capture", 912);
+  world.rows.set(915, fakeRow(world, 915, { labels: ["in-progress"] }));
+  assert.deepEqual(lookupOtherHeldIssues("worker-judge", 989, depsOf(world)), [908],
     "another session's row and a row no session holds are in the answer and are not this session's");
-  assert.equal(calls.length, 1, "one read of the claimed rows, not one per session");
-  assert.ok(calls[0].includes("label=in-progress"), "the read asked for the claimed rows");
-  assert.equal(readsRowsByLabel(calls[0])?.label, "in-progress");
-  assert.equal(calls[0].some((a) => a.includes("session:")), false,
-    "the session is NOT part of the request -- it is told apart in the answer, which is what keeps the read off search");
 });
 
 test("#989: the row being claimed is never checked against itself", () => {
-  const run = () => heldBy("worker-judge", 989, 908);
-  assert.deepEqual(lookupOtherHeldIssues("worker-judge", 989, { run }), [908]);
+  const world = fakeWorld();
+  heldRow(world, "worker-judge", 989);
+  heldRow(world, "worker-judge", 908);
+  assert.deepEqual(lookupOtherHeldIssues("worker-judge", 989, depsOf(world)), [908]);
 });
 
 test("#989: a failed lookup is INCONCLUSIVE -- null, never an empty list read as 'holds nothing'", () => {
-  const run = () => { throw new Error("gh: network"); };
-  assert.equal(lookupOtherHeldIssues("worker-judge", 989, { run }), null);
-  assert.equal(lookupRowShape(989, { run }), null);
-  assert.equal(lookupClosingPrHealth(989, { run }), null);
+  const world = fakeWorld();
+  heldRow(world, "worker-judge", 908);
+  const deps = depsOf(world);
+  world.failures.set("readClaimedRows", new Error("gh: network"));
+  assert.equal(lookupOtherHeldIssues("worker-judge", 989, deps), null);
+  world.failures.set("rowShapeFactsOf", new Error("gh: network"));
+  assert.equal(lookupRowShape(908, deps), null);
+  world.failures.set("closingPullsOf", new Error("gh: network"));
+  assert.equal(lookupClosingPrHealth(908, deps), null);
 });
 
 test("#989: the Region reading DELEGATES to the tree's own parser -- it is not a second reading", () => {
@@ -174,10 +203,11 @@ test("#989: the Region reading DELEGATES to the tree's own parser -- it is not a
   // #1005) was open, so a fenced `scripts/git-hooks/pre-push` declared nothing and asserting it would have
   // pinned a parser this rule does not own to a version that had not landed. #1005 merged an hour later,
   // and the case below now passes with NO change to the rule -- which is the property worth having.
-  const body = (region: string) => JSON.stringify({ body: `## Region\n\n${region}\n` });
-  const shapeFor = (region: string) => lookupRowShape(989, {
-    run: (args) => (args[0] === "issue" ? body(region) : "[]"),
-  });
+  const world = fakeWorld();
+  const shapeFor = (region: string) => {
+    heldRow(world, "worker-judge", 989, { body: `## Region\n\n${region}\n` });
+    return lookupRowShape(989, depsOf(world));
+  };
   assert.equal(shapeFor("```\nscripts/row-claim/own-pr-health-rule.ts\n```")?.declaresPaths, true);
   assert.equal(shapeFor("```\nscripts/git-hooks/pre-push\n```")?.declaresPaths, true, "#999's fenced "
     + "extensionless path -- #911's own Region, which declared nothing before PR #1005 merged");
@@ -186,12 +216,10 @@ test("#989: the Region reading DELEGATES to the tree's own parser -- it is not a
 });
 
 test("#989: the parent reading is GitHub's own sub-issue link, counted", () => {
-  const shape = lookupRowShape(908, {
-    run: (args) => (args[0] === "issue"
-      ? JSON.stringify({ body: "## Region\n\n```\neslint.config.js\n```\n" })
-      : JSON.stringify([{ number: 986 }, { number: 1000 }])),
-  });
-  assert.equal(shape?.subIssues, 2);
+  const world = fakeWorld();
+  heldRow(world, "worker-judge", 908, { body: "## Region\n\n```\neslint.config.js\n```\n" });
+  world.rules.subIssues.set(908, 2);
+  assert.equal(lookupRowShape(908, depsOf(world))?.subIssues, 2);
 });
 
 /**
@@ -355,53 +383,20 @@ test("#2026: one pull request may declare more than one row, and `none` declares
 });
 
 // --- #2026: what the declaration is READ from ----------------------------------------------------------
+//
+// THE TWO CONNECTIONS (the cross-reference timeline and one pull request's changed files) ARE READ TO THEIR END by the code host (`crossReferencingPullsOf` and `changedPathsOfPull`): the pages, the cursors, the full
+// page size, the bound and the missing `pageInfo` are asserted where they are written, `plugins/github/rows/rules-rows.test.ts`. What is asserted HERE is what this rule makes of what they answer.
 
-/**
- * A FULL PAGE, the size the rule asks GitHub for — 100, the largest a connection page can be. The
- * fixtures below decide their own page boundaries, so the paging TESTS would pass against any value;
- * the test directly below is what makes this number a pin rather than a description.
- */
-const PAGE = 100;
+/** What the timeline answers for a pull request that cross-references a row: its number, state and body. An ISSUE cross-reference matches no inline fragment and arrives as `{}` -- measured, not assumed. */
+const crossRef = (pr: { number: number; state: string; body: string }) => ({ number: pr.number, state: pr.state, body: pr.body });
 
-/**
- * ONE PAGE of a GraphQL connection, `pageInfo` and all, as GitHub sends it — the cursor is the index of
- * the page that follows, so a fixture says where a page boundary falls by where it splits its array.
- */
-const connectionPage = (pages: unknown[][], index: number) => ({
-  nodes: pages[index] ?? [],
-  pageInfo: { hasNextPage: index + 1 < pages.length, endCursor: String(index + 1) },
-});
-
-/** The live shape of #2000's timeline on 2026-09-23, with #2011's body carrying the line it would need. */
-const crossRef = (pr: { number: number; state: string; body: string }) => (
-  { source: { number: pr.number, state: pr.state, body: pr.body } });
-
-/**
- * BOTH READS THE DELIVERY LOOKUP MAKES, each served as PAGES: the cross-reference timeline, which carries
- * no file lists at all, and then the changed files of whichever pull request declared. A fixture that
- * could only ever answer one page is a fixture that cannot tell paging from truncation, which is the
- * defect reviewer-2 found in the first cut of this Region.
- */
-const deliveryApi = (timelinePages: unknown[][], filePages: Record<number, string[][]> = {}) => {
-  const calls: string[][] = [];
-  const cursor = (args: string[]) => Number(args.find((a) => a.startsWith("after="))?.slice("after=".length) ?? 0);
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args.join(" ").includes("timelineItems")) {
-      return JSON.stringify({ data: { repository: { issue: {
-        timelineItems: connectionPage(timelinePages, cursor(args)) } } } });
-    }
-    const pr = Number(args.find((a) => a.startsWith("number="))?.slice("number=".length));
-    const pages = (filePages[pr] ?? [[]]).map((paths) => paths.map((path) => ({ path })));
-    return JSON.stringify({ data: { repository: { pullRequest: {
-      files: connectionPage(pages, cursor(args)) } } } });
-  };
-  return { run, calls };
-};
-
-/** One timeline page and one file page — the shape of almost every row, and the default to read against. */
-const oneDelivery = (nodes: unknown[], paths: Record<number, string[]> = {}) => deliveryApi([nodes],
-  Object.fromEntries(Object.entries(paths).map(([pr, list]) => [pr, [list]])));
+/** A world where row 2000's timeline is `nodes` and each pull request in `paths` changes the paths it names. */
+function oneDelivery(nodes: object[], paths: Record<number, string[]> = {}) {
+  const world = fakeWorld();
+  world.rules.crossReferences.set(`${world.repo}#2000`, nodes);
+  for (const [number, files] of Object.entries(paths)) pullOf(world, Number(number), { files });
+  return world;
+}
 
 test("#2026: the timeline is the CANDIDATE set and the declaration is the filter", () => {
   const nodes = [
@@ -410,148 +405,50 @@ test("#2026: the timeline is the CANDIDATE set and the declaration is the filter
     crossRef({ number: 2030, state: "MERGED", body: "mentions #2000 in prose" }),
     crossRef({ number: 2044, state: "MERGED", body: "also mentions #2000" }),
   ];
-  const { run } = oneDelivery(nodes, { 2011: ["packages/agent-org/host/x"], 2044: ["docs/b.md"] });
-  assert.deepEqual(lookupDeliveringPr(2000, { run }),
+  const world = oneDelivery(nodes, { 2011: ["packages/agent-org/host/x"], 2044: ["docs/b.md"] });
+  assert.deepEqual(lookupDeliveringPr(2000, depsOf(world)),
     { number: 2011, state: "MERGED", changedPaths: ["packages/agent-org/host/x"] },
     "#2030 and #2044 are real cross-references of #2000 that delivered nothing — reading the timeline "
     + "alone would have picked the last of the three");
 });
 
 test("#2026: a declaration naming ANOTHER row is not a declaration of this one", () => {
-  const { run } = oneDelivery([crossRef({ number: 9, state: "OPEN", body: "Delivers: #2002" })], { 9: ["a.ts"] });
-  assert.equal(lookupDeliveringPr(2000, { run }), undefined);
+  const world = oneDelivery([crossRef({ number: 9, state: "OPEN", body: "Delivers: #2002" })], { 9: ["a.ts"] });
+  assert.equal(lookupDeliveringPr(2000, depsOf(world)), undefined);
 });
 
 test("#2026: nothing declaring is `undefined` and a failed lookup is `null` — different states", () => {
-  assert.equal(lookupDeliveringPr(2000, { run: oneDelivery([]).run }), undefined);
-  assert.equal(lookupDeliveringPr(2000, { run: () => { throw new Error("gh: network"); } }), null,
+  const world = oneDelivery([]);
+  assert.equal(lookupDeliveringPr(2000, depsOf(world)), undefined);
+  world.failures.set("crossReferencingPullsOf", new Error("gh: network"));
+  assert.equal(lookupDeliveringPr(2000, depsOf(world)), null,
     "an inconclusive answer must never read as 'nothing in build', which would defeat the rule");
-});
-
-test("#2026: the lookup asks GitHub's own cross-reference events, not a search over bodies", () => {
-  // A search index lags the body edit the refusal has just told somebody to make; the timeline is computed
-  // server-side the moment the body is written. This pins the mechanism, which is the finding.
-  const { run, calls } = oneDelivery([]);
-  lookupDeliveringPr(2000, { run });
-  const query = calls[0].join(" ");
-  assert.match(query, /CROSS_REFERENCED_EVENT/);
-  assert.doesNotMatch(query, /\bsearch\(/, "a search query would be indexed minutes after the edit");
-});
-
-// --- #2026: BOTH CONNECTIONS ARE READ TO THEIR END — reviewer-2's blocker on #2048 ----------------------
-
-/**
- * THE ROW THAT IS BLOCKING ITS AUTHOR IS THE ROW THAT COLLECTS CROSS-REFERENCES — every sibling row and
- * pull request that cites the refusal adds one — so the delivery is the OLDEST interesting event on the
- * timeline and a window reads past it. The first cut of this Region took `timelineItems(last:20)`, which
- * answered "nobody declared a delivery" the moment twenty events piled up after the one that mattered,
- * and left the author in build with nothing to distinguish a missing line from an unread one.
- */
-/**
- * THE PAGING TESTS BELOW CANNOT SEE THE PAGE SIZE — every fixture decides its own boundaries, so a
- * `PAGE_SIZE` of 1 would page correctly and survive all of them while making a claim cost fifty requests.
- * Both queries ask for the largest page GitHub will give, and this is the assertion that notices.
- */
-test("#2026: both queries ask for a FULL page, so paging is not paid for one node at a time", () => {
-  const { run, calls } = oneDelivery([crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })],
-    { 2011: ["a.ts"] });
-  lookupDeliveringPr(2000, { run });
-  assert.match(calls[0].join(" "), new RegExp(`timelineItems\\(first:${PAGE},`));
-  assert.match(calls[1].join(" "), new RegExp(`files\\(first:${PAGE},`));
-});
-
-test("#2026: a delivery declared before a hundred more cross-references is still found", () => {
-  const noise = (from: number) => Array.from({ length: PAGE }, (_, i) => crossRef(
-    { number: from + i, state: "MERGED", body: `mentions #2000 in passing (${from + i})` }));
-  const { run, calls } = deliveryApi(
-    [[crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" }), ...noise(3000).slice(1)],
-      noise(4000), noise(5000)],
-    { 2011: [["packages/agent-org/host/units.mjs"]] });
-  assert.deepEqual(lookupDeliveringPr(2000, { run }),
-    { number: 2011, state: "OPEN", changedPaths: ["packages/agent-org/host/units.mjs"] },
-    "the declaration is 200 cross-references back; a single page of the timeline cannot see it");
-  assert.equal(calls.filter((args) => args.join(" ").includes("timelineItems")).length, 3,
-    "three pages, so the read genuinely continued rather than the fixture flattening them");
-});
-
-/**
- * AND THE SAME TRUNCATION ON THE OTHER CONNECTION. `files(first:100)` misses a Region path that falls
- * after the hundredth changed file — and a wide rename is exactly the shape that both moves a row's
- * declared paths and runs past a hundred files, so the truncated read would refuse the delivery that
- * proves the point.
- */
-test("#2026: a Region path after the hundredth changed file is still read", () => {
-  const filler = (from: number) => Array.from({ length: PAGE }, (_, i) => `docs/note-${from + i}.md`);
-  const { run, calls } = deliveryApi([[crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })]],
-    { 2011: [filler(0), [...filler(100).slice(1), "packages/agent-org/host/units.mjs"]] });
-  const delivery = lookupDeliveringPr(2000, { run });
-  assert.ok(delivery?.changedPaths.includes("packages/agent-org/host/units.mjs"),
-    "the only path the Region covers is on the second page of the file list");
-  assert.equal(delivery?.changedPaths.length, PAGE * 2, "both pages, whole");
-  assert.equal(calls.filter((args) => args.join(" ").includes("pullRequest")).length, 2);
-});
-
-test("#2026: each page is asked with the cursor the one before it gave", () => {
-  // Without this the loop re-reads page one until the bound trips: `hasNextPage` alone is not paging.
-  const { run, calls } = deliveryApi([[], [], []]);
-  lookupDeliveringPr(2000, { run });
-  assert.deepEqual(calls.map((args) => args.find((a) => a.startsWith("after=")) ?? "after=<unsent>"),
-    ["after=<unsent>", "after=1", "after=2"],
-    "the first page sends no cursor at all — `-f after=` would send the empty STRING, which GitHub rejects");
+  const refusedTimeline = oneDelivery([crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })], { 2011: ["a.ts"] });
+  refusedTimeline.rules.crossReferences.set(`${refusedTimeline.repo}#2000`, new Error("gh: GraphQL 502"));
+  assert.equal(lookupDeliveringPr(2000, depsOf(refusedTimeline)), null, "a timeline that cannot be read to its end is a failed lookup, not a short answer");
 });
 
 test("#2026: the timeline asks for no file lists; the files are read off the ONE pull request that declared", () => {
   // Not a tidy-up: a hundred nested file connections have no single cursor between them, so asking for
   // the files inline is what made the file list impossible to page in the first place.
-  const { run, calls } = oneDelivery([crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" })],
-    { 2011: ["a.ts"] });
-  lookupDeliveringPr(2000, { run });
-  assert.doesNotMatch(calls[0].join(" "), /files\(/, "the candidate set costs one page of numbers and bodies");
-  assert.match(calls[1].join(" "), /pullRequest\(number:\$number\)\{files\(/);
-  assert.ok(calls[1].includes("number=2011"),
-    `the SECOND read is about the declaring PR, not the row — ${calls[1].join(" ")}`);
-});
-
-/**
- * THE ONE BOUND THAT REMAINS, AND IT IS A FAILED LOOKUP RATHER THAN A SHORT ANSWER. A `hasNextPage` that
- * stays true against a cursor that stops moving would spin forever inside a claim, so the read gives up —
- * and gives up by THROWING, which `lookup` reads as `null` and `rowFactsFor` leaves IN BUILD. A bound that
- * returned what it had would be the truncation this test exists to forbid, wearing a larger number.
- */
-test("#2026: a connection that never ends is a FAILED lookup, not a short answer", () => {
-  const endless = () => JSON.stringify({ data: { repository: { issue: { timelineItems: {
-    nodes: [], pageInfo: { hasNextPage: true, endCursor: "always-more" } } } } } });
-  assert.equal(lookupDeliveringPr(2000, { run: endless }), null);
-});
-
-test("#2026: a page carrying no `pageInfo` is a failed lookup, not the last page", () => {
-  const shapeless = () => JSON.stringify({ data: { repository: { issue: { timelineItems: { nodes: [] } } } } });
-  assert.equal(lookupDeliveringPr(2000, { run: shapeless }), null,
-    "both queries ask for `pageInfo`, so its absence means the response is not the shape this code reads");
+  const world = oneDelivery([crossRef({ number: 2011, state: "OPEN", body: "Delivers: #2000" }), crossRef({ number: 2030, state: "OPEN", body: "mentions #2000" })],
+    { 2011: ["a.ts"], 2030: ["b.ts"] });
+  lookupDeliveringPr(2000, depsOf(world));
+  assert.deepEqual(world.calls, [`crossReferencingPullsOf ${world.repo}#2000`, `changedPathsOfPull ${world.repo}#2011`],
+    "one read of the candidate set, then the changed files of the declaring pull request and no other");
 });
 
 // --- #2026: the composition, and the call it does NOT make ---------------------------------------------
 
-/** Answers each `gh` shape `lookupHeldRows` drives, so one test can pin which calls are made at all. */
-const fleet = (opts: { closingPr?: string; region: string;
-  timelineNodes?: unknown[]; filePaths?: Record<number, string[]> }) => {
-  const seen: string[] = [];
-  const delivery = oneDelivery(opts.timelineNodes ?? [], opts.filePaths ?? {});
-  const run = (args: string[]) => {
-    const joined = args.join(" ");
-    if (readsRowsByLabel(args) !== null) { seen.push("held"); return heldBy("worker-capture", 2000); }
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (joined.includes("closedByPullRequestsReferences")) {
-      seen.push("closing");
-      const nodes = opts.closingPr ? [{ number: 2011, state: opts.closingPr, headRefOid: "abc" }] : [];
-      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
-    }
-    if (joined.includes("timelineItems")) { seen.push("delivery"); return delivery.run(args); }
-    if (joined.includes("pullRequest(")) { seen.push("files"); return delivery.run(args); }
-    if (args[0] === "issue") { seen.push("shape"); return JSON.stringify({ body: `## Region\n\n${opts.region}\n` }); }
-    seen.push("subs"); return "[]";
-  };
-  return { seen, rows: lookupHeldRows("worker-capture", 2026, { run }) };
+/** The world `lookupHeldRows` drives: `worker-capture` holds row 2000 with `region`, a pull request that closes it in `closingPr` (if any), and the timeline and files the delivery lookup reads. */
+const fleet = (opts: { closingPr?: "OPEN" | "MERGED" | "CLOSED"; region: string; timelineNodes?: object[]; filePaths?: Record<number, string[]> }) => {
+  const world = fakeWorld();
+  heldRow(world, "worker-capture", 2000, { body: `## Region\n\n${opts.region}\n` });
+  if (opts.closingPr) pullOf(world, 2011, { state: opts.closingPr, closes: [2000], headRefOid: "abc" });
+  world.rules.crossReferences.set(`${world.repo}#2000`, opts.timelineNodes ?? []);
+  for (const [number, files] of Object.entries(opts.filePaths ?? {})) pullOf(world, Number(number), { files });
+  const seen = () => world.calls.map((call) => call.split(" ")[0]);
+  return { world, seen, rows: lookupHeldRows("worker-capture", 2026, depsOf(world)) };
 };
 
 const REGION = "```\npackages/agent-org/host/units.mjs\n```";
@@ -562,14 +459,15 @@ test("#2026: a row already cleared by `Closes:` costs NO delivery lookup", () =>
   // where it decides the verdict.
   const { seen, rows } = fleet({ closingPr: "OPEN", region: REGION });
   assert.equal(inBuildReason(rows ?? []), null);
-  assert.ok(!seen.includes("delivery"), `the delivery lookup must not run — calls were ${seen.join(",")}`);
+  assert.ok(seen().includes("closingPullsOf"), "the control: the closing pull request WAS asked for");
+  assert.ok(!seen().includes("crossReferencingPullsOf"), `the delivery lookup must not run — reads were ${seen().join(",")}`);
 });
 
 test("#2026: a row in build IS asked, and the Region overlap is the tree's own `regionCovers`", () => {
   const { seen, rows } = fleet({ region: REGION, timelineNodes: [
     crossRef({ number: 2011, state: "OPEN", body: "Closes: none -- the host install finishes it\n"
       + "Delivers: #2000\n" })], filePaths: { 2011: ["packages/agent-org/host/units.mjs"] } });
-  assert.ok(seen.includes("delivery"));
+  assert.ok(seen().includes("crossReferencingPullsOf"));
   assert.deepEqual(rows?.[0].deliveringPr, { state: "OPEN", proposesRegionPath: true });
   assert.equal(inBuildReason(rows ?? []), null, "#2026's own open-check, end to end");
 });
@@ -635,17 +533,10 @@ test("#2026: the remedy is printed only in the refusal, and mutating it out goes
  * quiet. The fakes were right and the failure direction was wrong.
  */
 test("#2026: a FAILED delivery lookup leaves the row IN BUILD — the clause fails to not clearing", () => {
-  const run = (args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return heldBy("worker-capture", 2000);
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args.join(" ").includes("timelineItems")) throw new Error("gh: GraphQL 502");
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: [] } } } } });
-    }
-    if (args[0] === "issue") return JSON.stringify({ body: `## Region\n\n${REGION}\n` });
-    return "[]";
-  };
-  const rows = lookupHeldRows("worker-capture", 2026, { run });
+  const world = fakeWorld();
+  heldRow(world, "worker-capture", 2000, { body: `## Region\n\n${REGION}\n` });
+  world.failures.set("crossReferencingPullsOf", new Error("gh: GraphQL 502"));
+  const rows = lookupHeldRows("worker-capture", 2026, depsOf(world));
   assert.notEqual(rows, null, "the HELD reading answered, so the claim is not inconclusive overall");
   assert.equal(rows?.[0].deliveringPr, undefined);
   assert.ok(inBuildReason(rows ?? []), "a new clause must not change the rule's behaviour under failure");
@@ -780,22 +671,24 @@ test("#2126 (4): contradictory verdicts at the SAME head are NOT refused", () =>
     + "clearance above comes from the dispute and not from the fixture being harmless");
 });
 
-test("#2126 (4): the escape ESCALATES -- it labels the row `answer:ceo` and writes the dispute on it", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return args[0] === "issue" && args[1] === "view" ? JSON.stringify({ labels: [] }) : "";
-  };
-  const lines: string[] = [];
-  assert.equal(escalateDisputeToCeo(disputedRow, { run, log: (l) => lines.push(l) }), true);
+/** The world where the disputed row (#2099) is held by `worker-tooling`, with `labels` on it. */
+function disputedWorld(labels: string[] = []) {
+  const world = fakeWorld();
+  heldRow(world, "worker-tooling", 2099, { labels: ["in-progress", "session:worker-tooling", ...labels] });
+  return world;
+}
 
-  const edit = calls.find((c) => c[0] === "issue" && c[1] === "edit");
-  assert.ok(edit, `the row must be labelled -- calls were ${calls.map((c) => c.slice(0, 2).join(" ")).join(", ")}`);
-  assert.deepEqual([edit?.[2], edit?.[edit.indexOf("--add-label") + 1]], ["2099", "answer:ceo"],
+test("#2126 (4): the escape ESCALATES -- it labels the row `answer:ceo` and writes the dispute on it", () => {
+  const world = disputedWorld();
+  const lines: string[] = [];
+  assert.equal(escalateDisputeToCeo(disputedRow, depsOf(world, (l) => lines.push(l))), true);
+
+  assert.ok(world.rows.get(2099)!.labels.includes("answer:ceo"),
     "on the row whose pull request is disputed, with the org's own `answer:<session>` spelling -- removing "
     + "the label IS the act of answering, so nothing has to remember this");
+  assert.deepEqual(world.labelsCreated, ["answer:ceo"], "the label is created first, so the edit that names it cannot be refused for a label that does not exist");
 
-  const comment = calls.find((c) => c[0] === "issue" && c[1] === "comment")?.slice(-1)[0] ?? "";
+  const comment = world.rows.get(2099)!.comments.slice(-1)[0]?.body ?? "";
   assert.match(comment, /#2105/, "naming the pull request");
   assert.match(comment, /e1b8b7bc/, "and the head both verdicts were posted at");
   assert.match(comment, /reviewer-2/);
@@ -807,21 +700,25 @@ test("#2126 (4): the escape ESCALATES -- it labels the row `answer:ceo` and writ
 test("#2126 (4): a row already awaiting ceo is NOT re-labelled and NOT re-commented", () => {
   // A claim can drive this twice (`sessionEligibilityReason`, then the `--blocked-by` path), and a second
   // identical comment on every claim is how a useful record becomes noise a future reader has to skip.
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify({ labels: [{ name: "answer:ceo" }] });
-  };
-  assert.equal(escalateDisputeToCeo(disputedRow, { run, log: () => {} }), false);
-  assert.deepEqual(calls.filter((c) => c[1] === "edit" || c[1] === "comment"), [],
-    "nothing is written -- and the control for this emptiness is the test directly above, which asserts "
+  const world = disputedWorld(["answer:ceo"]);
+  assert.equal(escalateDisputeToCeo(disputedRow, depsOf(world, () => {})), false);
+  assert.deepEqual(world.rows.get(2099)!.comments, [], "nothing is written -- and the control for this emptiness is the test directly above, which asserts "
     + "the same call DOES write against a row with no label");
+  assert.deepEqual(world.labelsCreated, []);
+});
+
+test("#2126 (4): driving the escape twice writes it once -- the second drive finds the label the first one wrote", () => {
+  const world = disputedWorld();
+  assert.equal(escalateDisputeToCeo(disputedRow, depsOf(world, () => {})), true);
+  assert.equal(escalateDisputeToCeo(disputedRow, depsOf(world, () => {})), false);
+  assert.equal(world.rows.get(2099)!.comments.length, 1, "and writes no second comment");
 });
 
 test("#2126 (4): a failed escalation write never fails the claim, and says what to do by hand", () => {
+  const world = disputedWorld();
+  world.failures.set("addLabelToRowIn", new Error("gh: 403 rate limited"));
   const lines: string[] = [];
-  const run = () => { throw new Error("gh: 403 rate limited"); };
-  assert.equal(escalateDisputeToCeo(disputedRow, { run, log: (l) => lines.push(l) }), false,
+  assert.equal(escalateDisputeToCeo(disputedRow, depsOf(world, (l) => lines.push(l))), false,
     "the claim proceeds: a write this rule could not make must not become a refusal it never decided");
   assert.equal(lines.length, 1);
   assert.match(lines[0], /403 rate limited/, "the cause is recorded rather than swallowed");
@@ -829,11 +726,11 @@ test("#2126 (4): a failed escalation write never fails the claim, and says what 
 });
 
 test("#2126 (4): a row with no dispute escalates nothing", () => {
-  const calls: string[][] = [];
-  assert.equal(escalateDisputeToCeo(proposedRow, { run: (a) => { calls.push(a); return ""; }, log: () => {} }),
-    false);
-  assert.deepEqual(calls, [], "the control is the escalation test above, which writes on the same shape "
+  const world = disputedWorld();
+  assert.equal(escalateDisputeToCeo(proposedRow, depsOf(world, () => {})), false);
+  assert.deepEqual(world.calls, [], "no read and no write: the control is the escalation test above, which writes on the same shape "
     + "with `dispute` set");
+  assert.deepEqual(world.rows.get(2099)!.comments, []);
 });
 
 // --- #2126: reading the dispute off GitHub, where the reviewer's name is NOT `author.login` -------------
@@ -954,41 +851,34 @@ test("#2126: COMMENTED and DISMISSED decide nothing, so they are not a side of a
     + "approval GitHub still counts");
 });
 
+/** A world where `worker-tooling` holds row 2083 (the claim being 2126), whose pull request 2107 is `state` and is read as `reviewDecision`. */
+function reviewWorld(state: "OPEN" | "MERGED" | "CLOSED" = "OPEN", reviewDecision: string | null = "CHANGES_REQUESTED") {
+  const world = fakeWorld();
+  heldRow(world, "worker-tooling", 2083, { body: HELD_BODY });
+  pullOf(world, 2107, { state, closes: [2083], headRefOid: REFUSED_HEAD, reviewDecision });
+  return world;
+}
+
 test("#2126/#2316: with no pull request CHANGES_REQUESTED the review-health read is exactly ONE call", () => {
   // The shape the row asked for by name. #989 took two calls per held row OUT of this path when it dropped
   // the colour read; a clause that put one back PER ROW would undo the measurement that justified it. Since
   // #2316 a `CHANGES_REQUESTED` pull request costs one more (`commits`), so this pins what is still protected:
   // a queue with nothing refused is read in one call however long it is.
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify([2107, 2108, 2109].map((number) => ({ number, headRefOid: REFUSED_HEAD,
-      reviewDecision: number === 2109 ? "APPROVED" : null, reviews: [] })));
-  };
-  const health = lookupOpenPrReviewHealth({ run });
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].slice(0, 2), ["pr", "list"]);
-  assert.ok(calls[0].includes("--state") && calls[0][calls[0].indexOf("--state") + 1] === "open");
-  assert.match(calls[0][calls[0].indexOf("--json") + 1], /reviewDecision/);
+  const world = fakeWorld();
+  for (const number of [2107, 2108, 2109]) pullOf(world, number, { headRefOid: REFUSED_HEAD, reviewDecision: number === 2109 ? "APPROVED" : null });
+  const health = lookupOpenPrReviewHealth(depsOf(world));
+  assert.deepEqual(world.calls.map((call) => call.split(" ")[0]), ["openPullReviewsOf"], "one read of the queue and no read of any commits");
   assert.equal(health?.length, 3);
-  assert.doesNotMatch(calls[0].join(" "), /commits/, "GitHub refuses `commits` on the list: 1,000,000 nodes > 500,000");
 });
 
 test("#2316: `commits` is read PER PULL REQUEST, and only for a CHANGES_REQUESTED one", () => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[1] === "view") return JSON.stringify({ commits: [] });
-    return JSON.stringify([
-      { number: 2107, headRefOid: REFUSED_HEAD, reviewDecision: "CHANGES_REQUESTED", reviews: [] },
-      { number: 2108, headRefOid: REFUSED_HEAD, reviewDecision: "APPROVED", reviews: [] },
-      { number: 2109, headRefOid: REFUSED_HEAD, reviewDecision: null, reviews: [] }]);
-  };
-  lookupOpenPrReviewHealth({ run });
-  const views = calls.filter((args) => args[1] === "view");
-  assert.equal(calls.length, 2, "one list, one view");
-  assert.deepEqual(views.map((args) => args[2]), ["2107"], "the refused pull request and no other");
-  assert.equal(views[0][views[0].indexOf("--json") + 1], "commits");
+  const world = fakeWorld();
+  pullOf(world, 2107, { headRefOid: REFUSED_HEAD, reviewDecision: "CHANGES_REQUESTED" });
+  pullOf(world, 2108, { headRefOid: REFUSED_HEAD, reviewDecision: "APPROVED" });
+  pullOf(world, 2109, { headRefOid: REFUSED_HEAD, reviewDecision: null });
+  lookupOpenPrReviewHealth(depsOf(world));
+  assert.equal(world.calls.length, 2, "one list, one view");
+  assert.deepEqual(world.calls.filter((call) => call.startsWith("commitsOfPull")), [`commitsOfPull ${world.repo}#2107`], "the refused pull request and no other");
 });
 
 /** The text GitHub returned for #2254's query, verbatim from the row's Open-check. */
@@ -998,39 +888,30 @@ const NODE_LIMIT = "GraphQL: By the time this query traverses to the authors con
 test("#2316: a read GitHub REFUSES is REPORTED with GitHub's reason, and a healthy read prints nothing", () => {
   // THE CONTROL IS IN THE SAME TEST: a reporter that always spoke would pass the first half alone.
   const lines: string[] = [];
-  const healthy = lookupOpenPrReviewHealth({ run: () => "[]", log: (line) => lines.push(line) });
+  const world = fakeWorld();
+  const healthy = lookupOpenPrReviewHealth(depsOf(world, (line) => lines.push(line)));
   assert.deepEqual(healthy, []);
   assert.equal(lines.length, 0, "a healthy read is silent");
 
   // `execFileSync` puts what GitHub said on `stderr`; `message` is only `Command failed: gh pr list ...`.
   const refused = Object.assign(new Error("Command failed: gh pr list --json ..."), { stderr: `${NODE_LIMIT}\n` });
-  const failed = lookupOpenPrReviewHealth({ run: () => { throw refused; }, log: (line) => lines.push(line) });
+  world.failures.set("openPullReviewsOf", refused);
+  const failed = lookupOpenPrReviewHealth(depsOf(world, (line) => lines.push(line)));
   assert.equal(failed, null, "still `null`: an unanswerable read refuses nothing");
   assert.deepEqual(lines, [`B2 review-health read FAILED: ${NODE_LIMIT}; claims are not being checked for unanswered refusals`]);
 
   // A failure in the PER-PULL-REQUEST stage is the same failure and is reported the same way.
-  const viewFails = (args: string[]) => {
-    if (args[1] === "view") throw new Error("gh: 502");
-    return JSON.stringify([{ number: 2107, headRefOid: REFUSED_HEAD, reviewDecision: "CHANGES_REQUESTED", reviews: [] }]);
-  };
-  assert.equal(lookupOpenPrReviewHealth({ run: viewFails, log: (line) => lines.push(line) }), null);
+  const viewFails = reviewWorld();
+  viewFails.failures.set("commitsOfPull", new Error("gh: 502"));
+  assert.equal(lookupOpenPrReviewHealth(depsOf(viewFails, (line) => lines.push(line))), null);
   assert.match(lines[1], /^B2 review-health read FAILED: gh: 502; claims are not/);
 });
 
 test("#2316: through the claim path, the failure reaches the log and B2 still refuses nothing", () => {
   const lines: string[] = [];
-  const run = (args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return heldBy("worker-tooling", 2083);
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "pr" && args[1] === "list") throw new Error(NODE_LIMIT);
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: {
-        nodes: [{ number: 2107, state: "OPEN", headRefOid: REFUSED_HEAD }] } } } } });
-    }
-    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
-    return "[]";
-  };
-  const rows = lookupHeldRows("worker-tooling", 2126, { run, log: (line) => lines.push(line) });
+  const world = reviewWorld();
+  world.failures.set("openPullReviewsOf", new Error(NODE_LIMIT));
+  const rows = lookupHeldRows("worker-tooling", 2126, depsOf(world, (line) => lines.push(line)));
   assert.equal(rows?.[0].openPrReview, undefined);
   assert.equal(lines.length, 1, "the read failed once and said so once");
   assert.match(lines[0], /1,000,000 possible nodes/);
@@ -1042,27 +923,19 @@ test("#2126: `gh pr list`'s own default of THIRTY is overridden, or the window w
   //
   // EQUALITY AGAINST THE DECLARED CONSTANT, not a floor: `>= 100` is satisfied by 100 and by 30000 alike,
   // and a floor on a number the assertion also reports is the shape `reported-counts.test.ts` refuses.
-  // `indexOf` answers -1 for an absent flag, so a `pr list` sent with NO `--limit` at all fails this too.
-  const calls: string[][] = [];
-  lookupOpenPrReviewHealth({ run: (args) => { calls.push(args); return "[]"; } });
-  assert.equal(calls[0][calls[0].indexOf("--limit") + 1], String(OPEN_PR_LIMIT),
+  // The code host is HANDED the bound (the fake records it), so a read made with no limit at all fails this too; that the plugin
+  // turns it into `--limit <n>` is `plugins/github/rows/rules-rows.test.ts`'s.
+  const world = fakeWorld();
+  lookupOpenPrReviewHealth(depsOf(world));
+  assert.deepEqual(world.calls, [`openPullReviewsOf ${world.repo} limit ${OPEN_PR_LIMIT}`],
     "the bound SENT is the declared one -- a `pr list` with no `--limit` silently applies thirty");
 });
 
 test("#2126: a FAILED review-health read refuses nothing -- the clause fails to not refusing", () => {
-  assert.equal(lookupOpenPrReviewHealth({ run: () => { throw new Error("gh: 502"); }, log: () => {} }), null);
-  const run = (args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return heldBy("worker-tooling", 2083);
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "pr" && args[1] === "list") throw new Error("gh: 502");
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: {
-        nodes: [{ number: 2107, state: "OPEN", headRefOid: REFUSED_HEAD }] } } } } });
-    }
-    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
-    return "[]";
-  };
-  const rows = lookupHeldRows("worker-tooling", 2126, { run });
+  const world = reviewWorld();
+  world.failures.set("openPullReviewsOf", new Error("gh: 502"));
+  assert.equal(lookupOpenPrReviewHealth(depsOf(world, () => {})), null);
+  const rows = lookupHeldRows("worker-tooling", 2126, depsOf(world, () => {}));
   assert.notEqual(rows, null, "the HELD reading answered, so the claim is not inconclusive overall");
   assert.equal(rows?.[0].openPrReview, undefined);
   assert.equal(inBuildReason(rows ?? []), null, "this clause can only ever CREATE a refusal, so an "
@@ -1072,42 +945,18 @@ test("#2126: a FAILED review-health read refuses nothing -- the clause fails to 
 test("#2126: no held row has an open pull request -- the review-health call is not made at all", () => {
   // Behaviour, not thrift: `row-claim-session-eligibility.test.ts` pins that a row IN BUILD is reported
   // without B4's `pr list` round trip, and this read is a `pr list` too.
-  let prListAsked = false;
-  const run = (args: string[]) => {
-    if (args[0] === "pr" && args[1] === "list") prListAsked = true;
-    if (readsRowsByLabel(args) !== null) return heldBy("worker-tooling", 2083);
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ data: { repository: { issue: {
-        closedByPullRequestsReferences: { nodes: [] } } } } });
-    }
-    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
-    return "[]";
-  };
-  assert.ok(inBuildReason(lookupHeldRows("worker-tooling", 2126, { run }) ?? []));
-  assert.equal(prListAsked, false);
+  const world = fakeWorld();
+  heldRow(world, "worker-tooling", 2083, { body: HELD_BODY });
+  assert.ok(inBuildReason(lookupHeldRows("worker-tooling", 2126, depsOf(world)) ?? []));
+  assert.equal(world.calls.some((call) => call.startsWith("openPullReviewsOf")), false);
 });
 
 test("#2126: the open pull request's NUMBER is carried, and only while it is OPEN", () => {
-  const run = (state: string) => (args: string[]) => {
-    if (readsRowsByLabel(args) !== null) return heldBy("worker-tooling", 2083);
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 2107, headRefOid: REFUSED_HEAD,
-        reviewDecision: "CHANGES_REQUESTED", reviews: [] }]);
-    }
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: {
-        nodes: [{ number: 2107, state, headRefOid: REFUSED_HEAD }] } } } } });
-    }
-    if (args[0] === "issue") return JSON.stringify({ body: "## Region\n\n```\nscripts/held.mjs\n```\n" });
-    return "[]";
-  };
-  const open = lookupHeldRows("worker-tooling", 2126, { run: run("OPEN") });
+  const open = lookupHeldRows("worker-tooling", 2126, depsOf(reviewWorld("OPEN")));
   assert.equal(open?.[0].openPrNumber, 2107);
   assert.ok(inBuildReason(open ?? []), "#2126's own live shape, end to end through the lookup");
 
-  const merged = lookupHeldRows("worker-tooling", 2126, { run: run("MERGED") });
+  const merged = lookupHeldRows("worker-tooling", 2126, depsOf(reviewWorld("MERGED")));
   assert.equal(merged?.[0].openPrNumber, undefined,
     "a MERGED pull request is delivered, so its last verdict is nobody's outstanding work");
   assert.equal(inBuildReason(merged ?? []), null);
@@ -1130,12 +979,13 @@ type Health = NonNullable<Parameters<typeof unansweredRefusal>[0]["openPrReview"
 // query), and `pr view <n>` carries them. A fixture that put `commits` in the list would test a read that fails live.
 const healthOf = (pr: Record<string, unknown>) => {
   const { commits, ...listed } = pr as { commits?: object[] } & Record<string, unknown>;
-  const run = (args: string[]) => args[1] === "view" ? JSON.stringify({ commits: commits ?? [] })
-    : JSON.stringify([{
-      number: 2240, headRefOid: "bfee37e369", reviewDecision: "CHANGES_REQUESTED", author: { login: "a11ign-ai-workers" },
-      reviews: [{ state: "CHANGES_REQUESTED", submittedAt: refusedAt, commit: { oid: "16840d7f" },
-        body: "**Review of #2240 at `16840d7f`, by reviewer-2: not convinced.**" }], ...listed }]);
-  return lookupOpenPrReviewHealth({ run })?.[0] as Health;
+  const world = fakeWorld();
+  pullOf(world, 2240, { headRefOid: "bfee37e369", reviewDecision: "CHANGES_REQUESTED" });
+  world.rules.reviews.set(2240, { author: { login: "a11ign-ai-workers" },
+    reviews: [{ state: "CHANGES_REQUESTED", submittedAt: refusedAt, commit: { oid: "16840d7f" },
+      body: "**Review of #2240 at `16840d7f`, by reviewer-2: not convinced.**" }], ...(listed as object) });
+  world.rules.commits.set(2240, (commits ?? []) as never);
+  return lookupOpenPrReviewHealth(depsOf(world))?.[0] as Health;
 };
 // AUTHORS ARE MEASURED, not invented: the sweep's merges are `DanBeckDev` (#2107, #2240); the answer to #2240
 // was `web-flow` + the `claude` co-author, because a session's commit is NOT under the PR author's login.
@@ -1321,44 +1171,35 @@ test("#2241 (5) FAIL CLOSED: a row that cannot be parsed for a waiting condition
   assert.equal(inBuildReason([{ ...shelved1926, body: "Not-before: 2099-01-01T01:30:00Z" }], EVENING), null);
 });
 
-/** A `gh` stand-in for a held row's lookup: the held-by answer, the empty lists, and `view` for the `issue view` call. */
-function heldRowRun(view: object) {
-  return (args: string[]): string => {
-    if (readsRowsByLabel(args) !== null) return heldBy("worker-tooling", 1926);
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "api" && args[1] === "graphql") {
-      return JSON.stringify({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes: [] } } } } });
-    }
-    if (args[0] === "issue") return JSON.stringify(view);
-    return "[]";
-  };
+/** A world where `worker-tooling` holds row 1926 with `over` on it, and nothing else is open. */
+function shelvedWorld(over: Partial<FakeRow>) {
+  const world = fakeWorld();
+  heldRow(world, "worker-tooling", 1926, over);
+  return world;
 }
 
-test("#2241: the lookup carries body, labels and blockedBy on the SAME `issue view` call", () => {
-  const seen: string[][] = [];
-  const view = { body: "## Region\n\n```\nscripts/held.mjs\n```\n\nNot-before: 2099-01-01\n",
-    labels: [{ name: "in-progress" }], blockedBy: { nodes: [], totalCount: 0 } };
-  const answer = heldRowRun(view);
-  const run = (args: string[]) => {
-    seen.push(args);
-    return answer(args);
-  };
-  const rows = lookupHeldRows("worker-tooling", 2241, { run });
-  assert.equal(rows?.[0].body, view.body);
-  assert.deepEqual(rows?.[0].labels, view.labels);
-  assert.deepEqual(rows?.[0].blockedBy, view.blockedBy);
-  const views = seen.filter((args) => args[0] === "issue" && args[1] === "view");
-  assert.equal(views.length, 1, "one round trip per held row: a second `issue view` would undo #989's measurement");
-  assert.equal(views[0][views[0].indexOf("--json") + 1], "body,labels,blockedBy");
+test("#2241: the lookup carries body, labels and blockedBy on the SAME read of the row", () => {
+  const body = "## Region\n\n```\nscripts/held.mjs\n```\n\nNot-before: 2099-01-01\n";
+  const world = shelvedWorld({ body, labels: ["in-progress", "session:worker-tooling"] });
+  const rows = lookupHeldRows("worker-tooling", 2241, depsOf(world));
+  assert.equal(rows?.[0].body, body);
+  assert.deepEqual(rows?.[0].labels, [{ name: "in-progress" }, { name: "session:worker-tooling" }]);
+  assert.deepEqual(rows?.[0].blockedBy, { nodes: [] });
+  assert.equal(world.calls.filter((call) => call.startsWith("rowShapeFactsOf")).length, 1,
+    "one round trip per held row: a second read of the row would undo #989's measurement (the fields it asks for are `rules-rows.test.ts`'s)");
   assert.equal(inBuildReason(rows ?? []), null, "end to end: a real lookup of a shelved row does not refuse");
 });
 
 test("#2241: a lookup that carried a Region but NO wait fields leaves the row in build -- fail closed, end to end", () => {
   const region = "## Region\n\n```\nscripts/held.mjs\n```\n";
   // The wait lives in `blockedBy`, which this lookup answer does not carry: nothing to read it from.
-  const uncarried = lookupHeldRows("worker-tooling", 2241, { run: heldRowRun({ body: region }) });
+  const uncarriedWorld = shelvedWorld({ body: region });
+  uncarriedWorld.rules.uncarried.add(1926);
+  const uncarried = lookupHeldRows("worker-tooling", 2241, depsOf(uncarriedWorld));
   assert.ok(inBuildReason(uncarried ?? []), "a wait that could not be read is not a wait");
-  const carried = lookupHeldRows("worker-tooling", 2241, { run: heldRowRun({ body: region, labels: [],
-    blockedBy: { nodes: [{ number: 1918, state: "OPEN" }] } }) });
+  const carriedWorld = shelvedWorld({ body: region });
+  carriedWorld.rows.set(1918, fakeRow(carriedWorld, 1918));
+  carriedWorld.rows.get(1926)!.blockedBy = [1918];
+  const carried = lookupHeldRows("worker-tooling", 2241, depsOf(carriedWorld));
   assert.equal(inBuildReason(carried ?? []), null, "and the same row with the blocker CARRIED is the other direction");
 });

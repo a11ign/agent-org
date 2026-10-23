@@ -83,18 +83,6 @@
       "spawns": 1,
       "calls": 4
     },
-    "src/claim-label-strip.ts": {
-      "spawns": 0,
-      "calls": 1
-    },
-    "src/claim-provenance.ts": {
-      "spawns": 3,
-      "calls": 3
-    },
-    "src/claim-stall/stall-causes-and-claim-readings.ts": {
-      "spawns": 1,
-      "calls": 1
-    },
     "src/class-repeat.ts": {
       "spawns": 1,
       "calls": 5
@@ -118,10 +106,6 @@
     "src/dora.ts": {
       "spawns": 2,
       "calls": 6
-    },
-    "src/duplicate-row.ts": {
-      "spawns": 2,
-      "calls": 1
     },
     "src/fleet-gated-nightly.ts": {
       "spawns": 0,
@@ -231,50 +215,6 @@
       "spawns": 1,
       "calls": 2
     },
-    "src/row-claim.ts": {
-      "spawns": 17,
-      "calls": 11
-    },
-    "src/row-claim/blocked-by-edge-rule.ts": {
-      "spawns": 0,
-      "calls": 1
-    },
-    "src/row-claim/blocked-by-rule.ts": {
-      "spawns": 0,
-      "calls": 2
-    },
-    "src/row-claim/file-overlap-rule.ts": {
-      "spawns": 0,
-      "calls": 3
-    },
-    "src/row-claim/own-pr-health-rule.ts": {
-      "spawns": 0,
-      "calls": 10
-    },
-    "src/row-claim/stale-rule-guard.ts": {
-      "spawns": 1,
-      "calls": 1
-    },
-    "src/row-claim/template-fields-rule.ts": {
-      "spawns": 0,
-      "calls": 1
-    },
-    "src/row-file/issue-body-and-region-checks.ts": {
-      "spawns": 2,
-      "calls": 2
-    },
-    "src/row-file/title-kind-and-label-refusals.ts": {
-      "spawns": 4,
-      "calls": 3
-    },
-    "src/row-file/roadmap-and-milestone-checks.ts": {
-      "spawns": 12,
-      "calls": 11
-    },
-    "src/row-reachability.ts": {
-      "spawns": 1,
-      "calls": 3
-    },
     "src/settle-closed-rows.ts": {
       "spawns": 1,
       "calls": 0
@@ -340,38 +280,6 @@
       "calls": 0
     },
     "src/unwaited-stock-rows.ts": {
-      "spawns": 1,
-      "calls": 2
-    },
-    "src/wake.ts": {
-      "spawns": 0,
-      "calls": 2
-    },
-    "src/wake/session-endings.ts": {
-      "spawns": 0,
-      "calls": 2
-    },
-    "src/wake/exit-and-limits.ts": {
-      "spawns": 2,
-      "calls": 0
-    },
-    "src/wake/release-line-and-seats.ts": {
-      "spawns": 0,
-      "calls": 4
-    },
-    "src/wake/merge-queue-wait.ts": {
-      "spawns": 0,
-      "calls": 9
-    },
-    "src/wake/seat-reset.ts": {
-      "spawns": 0,
-      "calls": 1
-    },
-    "src/wake/ci-class-and-spares.ts": {
-      "spawns": 0,
-      "calls": 4
-    },
-    "src/wakes-per-row.ts": {
       "spawns": 1,
       "calls": 2
     },

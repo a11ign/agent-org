@@ -9,7 +9,7 @@
  *
  * THE CLAIM IS THE REAL ONE: `sessionEligibilityReason` over a `gh` mock, as in `sweep-window.test.ts`, so the refusal text is the one `row-claim` prints.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -40,6 +40,9 @@ process.chdir(PROJECT);
 
 const { OVERRUN_MARKER, SWEEP_OVERRUN_KIND, readSweepWindows, recordOverrunRefusal, reportSweepWindows } = await import("./sweep-window.ts");
 const { claimRow, sessionEligibilityReason } = await import("./row-claim.ts");
+const { forgetActivation, substituteCodeHost } = await import("./plugins/active.ts");
+const { fakePluginDeps } = await import("./plugins/fakes/deps.ts");
+const { createCodeHost } = await import("../plugins/github/code-host.ts");
 const { FAILURE_LEDGER_FILE, SWEEP_WINDOW_RELEASED_KIND, parseFailureLedger, repeatsIn } = await import("./failure-ledger.ts");
 const { groupByClass } = await import("./class-repeat.ts");
 const { stateEntryPath } = await import("./host-config.ts");
@@ -120,7 +123,7 @@ function ghFor({ comments, asker = ["agent-org:src/b.ts"] }: { comments: unknown
     return "[]";
   };
 }
-const claimFor = (run: ReturnType<typeof ghFor>) => sessionEligibilityReason(ASKER, "worker-5000", { run, repo: TRACKER, repos: [AGENT_ORG] });
+const claimFor = (run: ReturnType<typeof ghFor>) => sessionEligibilityReason(ASKER, "worker-5000", { ghRun: (args) => run(INJECTED_GH, args), repo: TRACKER, repos: [AGENT_ORG] });
 // The name the injected `run` mock is keyed on: no process is spawned, so this is not a `gh` spawn and the `no-token` header holds.
 const INJECTED_GH = "gh";
 // THE READS THE RECORDER MAKES, as `row-claim` makes them: the `gh` mock behind a one-argument `run`, so a conclusive read is what the control reads.
@@ -195,8 +198,25 @@ function claimGh(comments: unknown[], { chairman = false } = {}) {
     return "[]";
   };
 }
+/**
+ * A11-160, step 7: a claim's `gh` is the code host's, and the sweep's reads (`sweep-window.ts`, another step's) still go through the `run` the claim hands them. So the code host here is the GitHub plugin over an `exec`
+ * that answers from the mock, and the claim's own `run` is for `git` alone.
+ */
+function viaGithub(mock: (cmd: string, args: string[]) => string): (cmd: string) => string {
+  substituteCodeHost(createCodeHost(fakePluginDeps({ exec: (_file, args) => {
+    try {
+      return { status: 0, stdout: mock(INJECTED_GH, [...args]), stderr: "" };
+    } catch (error) {
+      const failed = error as { status?: number; stdout?: string; stderr?: string };
+      return { status: failed.status ?? 1, stdout: failed.stdout ?? "", stderr: failed.stderr ?? "" };
+    }
+  } })));
+  return (cmd) => { throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`); };
+}
+afterEach(() => forgetActivation());
+
 const claimLive = (comments: unknown[], chairman = false) => claimRow(ASKER, `worker-${ASKER}`, {
-  run: claimGh(comments, { chairman }), moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
+  run: viaGithub(claimGh(comments, { chairman })) as never, moveStatus: () => ({ moved: true }), drained: [], instance: { spare: false, rows: [] }, persistent: false,
   tracker: { key: "", repo: TRACKER },
 } as never) as { claimed: boolean; reason?: string };
 /** The claim on the swept Region, on a cleared default ledger: its verdict, and the ledger text it left. */

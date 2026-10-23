@@ -1,4 +1,4 @@
-// no-token: gh -- `gh` is never reached: every call is handed a fake `run` over an in-memory pair of repositories.
+// no-token: none -- the fake code host's rows hold the pair of repositories in memory, and `git` runs in scratch repositories; nothing reaches `gh` or the network
 /**
  * agent-org#575, a11ign/a11ign#4737: A `claim`, `dispatch`, `decline` AND `conflict` IN A DECLARED KEYED TRACKER WRITE THAT TRACKER, never the first
  * tracker's same-numbered issue.
@@ -16,7 +16,7 @@
  *   - the worktree is made from the tracker's clone, and a claim that stops half-way is undone in the same call;
  *   - the wiring the CLI adds on top (`--tracker=` to the deps, `<key>#<n>` in the printed line, the clone, the conflict log's key).
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -24,9 +24,11 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
-import { parseProjectDeclaration } from "./project-config.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
 import { REPO } from "./project-identity.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow, type FakeRow } from "./plugins/fakes/code-host-rows.ts";
+import { parseProjectDeclaration } from "./project-config.ts";
 import { PROJECT_NUMBER, PROJECT_OWNER } from "./board-snapshot.ts";
 import { CLAIM_RECORD_MARKER } from "./claim-labels.ts";
 import {
@@ -88,85 +90,82 @@ test("the first tracker's claim is never refused for its names -- every claim wr
 
 // --- 2. the write -----------------------------------------------------------------------------------------------------------
 
-type Issue = { labels: string[], state: string, body: string, comments: string[] };
-type Call = { args: string[], repo: string | null };
+type Seen = { op: string; repo: string | null };
 
-/** Two repositories that BOTH have an issue 575, so a write that went to the wrong one is a write to a real, wrong issue. */
-function fakeGithub(seed: { first?: string[], second?: string[], bodies?: { first?: string, second?: string } } = {}) {
-  const issues = new Map<string, Issue>([
-    [`${FIRST_REPO}#${ROW}`, { labels: seed.first ?? ["ready"], state: "OPEN", body: seed.bodies?.first ?? BODY, comments: [] }],
-    [`${SECOND_REPO}#${ROW}`, { labels: seed.second ?? ["ready"], state: "OPEN", body: seed.bodies?.second ?? BODY, comments: [] }],
-  ]);
-  const calls: Call[] = [];
-  const writes: Call[] = [];
-  const fail = (what: string): never => { throw Object.assign(new Error(`Command failed: gh ${what}`), { status: 1, stdout: "", stderr: what }); };
-  const run = (cmd: string, args: string[]): string => {
-    if (cmd !== "gh") return fail(`${cmd} is not gh`);
-    const flag = args.indexOf("--repo");
-    const api = args[0] === "api" ? /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/labels$/.exec(args[args.indexOf("PUT") + 1] ?? "") : null;
-    // agent-org#1302: the row's labels and state, and its comments as pages, are read over REST
-    const rest = args[0] === "api" ? /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)(\/comments\?per_page=100)?$/.exec(args[1] ?? "") : null;
-    // The by-label read of the claimed rows (#5039) names its repository as `-F owner=` / `-F name=`, not `--repo`: record THAT, so "every read goes to the tracker's repository" stays a reading.
-    const argOf = (key: string) => args.find((a) => a.startsWith(`${key}=`))?.slice(key.length + 1);
-    const byLabel = readsRowsByLabel(args) !== null;
-    const repo = flag >= 0 ? args[flag + 1] : api ? api[1] : rest ? rest[1] : byLabel ? `${argOf("owner")}/${argOf("name")}` : null;
-    calls.push({ args, repo });
-    if (byLabel) return connectionOf([]);
-    const number = Number(api ? api[2] : rest ? rest[2] : args[2]);
-    const issue = issues.get(`${repo}#${number}`);
-    if (rest) {
-      if (!issue) return fail(`api ${number} -- Not Found in ${repo}`);
-      // REST answers the issue's state in lower case, and its comments as pages of the list (the `--paginate --slurp` shape)
-      if (rest[3]) return JSON.stringify([issue.comments.map((body) => ({ body }))]);
-      return JSON.stringify({ number, title: "A row", labels: issue.labels.map((name) => ({ name })), state: issue.state.toLowerCase() });
-    }
-    if (args[0] === "issue" && args[1] === "view") {
-      if (!issue) return fail(`issue view ${number} -- Could not resolve to an issue in ${repo}`);
-      const fields = args[args.indexOf("--json") + 1];
-      if (fields === "blockedBy") return JSON.stringify({ blockedBy: { nodes: [] } });
-      if (fields.split(",").includes("body")) return JSON.stringify({ body: issue.body, labels: issue.labels.map((name) => ({ name })) });
-      if (fields === "comments") return JSON.stringify({ comments: issue.comments.map((body) => ({ body })) });
-      return JSON.stringify({ number, title: "A row", labels: issue.labels.map((name) => ({ name })), state: issue.state });
-    }
-    if (args[0] === "issue" && args[1] === "list") return "[]";
-    if (args[0] === "label" && args[1] === "create") { writes.push({ args, repo }); return ""; }
-    if (api && args.includes("PUT")) {
-      writes.push({ args, repo });
-      if (!issue) return fail(`PUT to ${repo}#${number}`);
-      issue.labels = args.filter((a) => a.startsWith("labels[]=")).map((a) => a.slice("labels[]=".length));
-      return "";
-    }
-    if (args[0] === "issue" && args[1] === "edit") {
-      writes.push({ args, repo });
-      if (!issue) return fail(`edit ${repo}#${number}`);
-      for (let at = 0; at < args.length; at += 1) {
-        if (args[at] === "--remove-label") issue.labels = issue.labels.filter((l) => l !== args[at + 1]);
-        if (args[at] === "--add-label" && !issue.labels.includes(args[at + 1])) issue.labels.push(args[at + 1]);
+/** The code host operations that WRITE a row, and so whose repository a keyed claim must get right. */
+const ROW_WRITES = ["setRowLabels", "editRowLabels", "ensureLabelIn", "postRowComment"];
+/** The operations that READ a row: whose repository a keyed claim must get right too. */
+const ROW_READS = ["readRestRow", "readRestComments", "blockedByOf", "bodyAndLabelsOf"];
+
+/** `run` for a claim whose `gh` is the code host's: it is for `git` and the board snapshot only, so a `gh` through it is a loud mistake, and a claim handed it makes no batch of its own. */
+const noGh = (cmd: string): string => {
+  throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`);
+};
+
+/**
+ * Two repositories that BOTH have an issue 575, so a write that went to the wrong one is a write to a real, wrong issue: the first tracker's is the fake code host's own repository (A11-160, step 7), the second's is
+ * a foreign one. The fake's `rows` are watched: every operation that reads or writes a row is noted with the repository it was aimed at, and a Status move is kept whole (owner, board and address), since the fake
+ * would put it on the home row of the same number.
+ */
+function fakeGithub(seed: { first?: string[], second?: string[], bodies?: { first?: string, second?: string }, referenced?: "open" | "closed" } = {}) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = FIRST_REPO;
+  const row = (labels: string[], body: string) => fakeRow(world, ROW, { title: "A row", labels, body, onBoard: true });
+  world.rows.set(ROW, row(seed.first ?? ["ready"], seed.bodies?.first ?? BODY));
+  world.foreignRows.set(`${SECOND_REPO}#${ROW}`, row(seed.second ?? ["ready"], seed.bodies?.second ?? BODY));
+  if (seed.referenced !== undefined) {
+    // A pull request of the tracker's repository: `merged #1055` is true once it has merged.
+    const merged = seed.referenced === "closed";
+    world.rules.otherRepos.set(SECOND_REPO, new Map([[1055, { number: 1055, body: "", headRefName: "agent/x-1055", labels: [], isDraft: false, armed: false, merged, mergedAt: merged ? "2026-10-09T00:00:00Z" : null,
+      createdAt: "2026-10-08T00:00:00Z", comments: [] }]]));
+  }
+  const seen: Seen[] = [];
+  const moves: { owner: string; projectNumber: number; url: string; status: string }[] = [];
+  const watched = Object.fromEntries(Object.entries(host.rows!).map(([name, member]) => {
+    if (typeof member !== "function") return [name, member];
+    return [name, (...args: unknown[]) => {
+      const request = (args[0] ?? {}) as { repo?: string };
+      if (name === "setProjectStatus") {
+        const refusal = world.failures.get(name);
+        if (refusal !== undefined) throw refusal;
+        moves.push({ owner: (args[0] as any).owner, projectNumber: (args[0] as any).projectNumber, url: (args[0] as any).url, status: (args[0] as any).status });
+        return undefined;
       }
-      return "";
-    }
-    if (args[0] === "issue" && args[1] === "comment") {
-      writes.push({ args, repo });
-      if (!issue) return fail(`comment ${repo}#${number}`);
-      issue.comments.push(args[args.indexOf("--body") + 1]);
-      return "";
-    }
-    if (args[0] === "project") { writes.push({ args, repo }); return ""; }
-    return "[]";
+      if (ROW_WRITES.includes(name) || ROW_READS.includes(name)) seen.push({ op: name, repo: request.repo ?? null });
+      return (member as (...given: unknown[]) => unknown).apply(host.rows, args);
+    }];
+  }));
+  substituteCodeHost({ ...host, rows: watched as unknown as typeof host.rows });
+  const view = (held: FakeRow) => ({
+    get labels() { return held.labels; },
+    get state() { return held.state; },
+    /** The bodies of its comments, oldest first. */
+    get comments() { return held.comments.map((comment) => comment.body); },
+    say: (body: string) => { held.comments.push({ id: world.nextCommentId++, body, createdAt: new Date(world.now()).toISOString() }); },
+  });
+  const first = () => view(world.rows.get(ROW)!);
+  const second = () => view(world.foreignRows.get(`${SECOND_REPO}#${ROW}`)!);
+  return {
+    world, moves, first, second,
+    /** What a claim wrote to rows, by operation and the repository it was aimed at. */
+    get writes(): Seen[] { return seen.filter((call) => ROW_WRITES.includes(call.op)); },
+    get reads(): Seen[] { return seen.filter((call) => ROW_READS.includes(call.op)); },
+    forget: (key: string) => world.foreignRows.delete(key),
   };
-  return { run, calls, writes, issues, first: () => issues.get(`${FIRST_REPO}#${ROW}`) as Issue, second: () => issues.get(`${SECOND_REPO}#${ROW}`) as Issue };
 }
 
-const CLAIM_DEPS = { drained: [], instance: { spare: false, rows: [] }, persistent: false };
-const issueWrites = (writes: Call[]) => writes.filter((call) => call.args[0] !== "project");
+const CLAIM_DEPS = { run: noGh as never, drained: [], instance: { spare: false, rows: [] }, persistent: false };
 
 /** The fake, with the claim record a claim of SESSION leaves in the keyed tracker's repository, so a decline has a claim to release. */
 function heldKeyedRow(seed: Parameters<typeof fakeGithub>[0]) {
   const record = claimRecordComment({ session: SESSION, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
   const gh = fakeGithub(seed);
-  gh.second().comments.push(record);
+  gh.second().say(record);
   return gh;
 }
+
+afterEach(() => forgetActivation());
 
 test("PRECONDITION: the two trackers really are two repositories and two boards, so every assertion below can tell them apart", () => {
   assert.notEqual(FIRST_REPO, SECOND_REPO);
@@ -175,7 +174,7 @@ test("PRECONDITION: the two trackers really are two repositories and two boards,
 
 test("`claim` in a keyed tracker labels THAT tracker's issue, comments there and moves ITS card -- and the first tracker's issue 575 is untouched", () => {
   const gh = fakeGithub();
-  const result = claimRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, ...CLAIM_DEPS, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
+  const result = claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
   assert.deepEqual(result, { claimed: true, statusMoved: true });
 
   const held = gh.second().labels;
@@ -184,37 +183,32 @@ test("`claim` in a keyed tracker labels THAT tracker's issue, comments there and
   assert.deepEqual(gh.first().labels, ["ready"], "the first tracker's issue of the same number is exactly what it was");
   assert.deepEqual(gh.first().comments, []);
 
-  assert.deepEqual(issueWrites(gh.writes).filter((call) => call.repo !== SECOND_REPO), [], "no write of any kind named the first tracker's repository");
-  const put = gh.writes.find((call) => call.args[0] === "api") as Call;
-  assert.equal(put.args[put.args.indexOf("PUT") + 1], `repos/${SECOND_REPO}/issues/${ROW}/labels`);
-  const created = gh.writes.filter((call) => call.args[0] === "label").map((call) => call.args[2]);
-  assert.deepEqual(created, ["in-progress", `session:${SESSION}`, "started", "was-ready"],
+  assert.deepEqual(gh.writes.filter((call) => call.repo !== SECOND_REPO), [], "no write of any kind named the first tracker's repository");
+  assert.deepEqual(gh.writes.filter((call) => call.op === "setRowLabels"), [{ op: "setRowLabels", repo: SECOND_REPO }], "the labels are ONE set, on the tracker's issue");
+  assert.deepEqual(gh.world.labelsCreated, ["in-progress", `session:${SESSION}`, "started", "was-ready"],
     "the claim creates the labels the tracker's repository does not have yet, so no vocabulary declaration is needed for them");
   const comments = gh.second().comments;
   assert.equal(comments.length, 1);
   assert.match(comments[0], new RegExp(CLAIM_RECORD_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(comments[0], /agent\/x-agent-org-575/);
 
-  const moves = gh.writes.filter((call) => call.args[0] === "project");
-  assert.deepEqual(moves.map((call) => call.args), [["project", "item-edit", String(SECOND_BOARD), "--owner", PROJECT_OWNER,
-    "--url", `https://github.com/${SECOND_REPO}/issues/${ROW}`, "--field", "Status", "--value", "In progress"]],
-  "ONE item-edit, on the tracker's board, for the tracker's issue");
-  assert.deepEqual(gh.calls.filter((call) => call.args[0] === "project" || (call.args.includes("graphql") && readsRowsByLabel(call.args) === null)).length, 1,
-    "and no board snapshot: the snapshot reads the FIRST tracker's board, so one taken here would guard the wrong board");
+  assert.deepEqual(gh.moves, [{ owner: PROJECT_OWNER, projectNumber: SECOND_BOARD, url: `https://github.com/${SECOND_REPO}/issues/${ROW}`, status: "In progress" }],
+    "ONE Status move, on the tracker's board, for the tracker's issue");
+  // The snapshot is the board's own reading through `run`, which a claim here is handed none of: `noGh` throws for a `gh`, so a snapshot taken would have failed the claim above.
 });
 
 test("every read the keyed claim makes about the ROW goes to the tracker's repository too", () => {
   const gh = fakeGithub();
-  claimRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, ...CLAIM_DEPS });
-  const rowReads = gh.calls.filter((call) => call.args[0] === "issue" || call.args[0] === "label" || call.args[0] === "api");
-  assert.ok(rowReads.length >= 6, `the claim read the row's labels, body and edge and wrote its labels: ${rowReads.length} calls`);
-  assert.deepEqual([...new Set(rowReads.map((call) => call.repo))], [SECOND_REPO]);
+  claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS });
+  const rowCalls = [...gh.reads, ...gh.writes];
+  assert.ok(rowCalls.length >= 6, `the claim read the row's labels, body and edge and wrote its labels: ${rowCalls.length} calls`);
+  assert.deepEqual([...new Set(rowCalls.map((call) => call.repo))], [SECOND_REPO]);
 });
 
 test("CONTROL: the same claim with NO tracker is the first tracker's -- its issue is labelled, the tracker's is not, and the Status move names no tracker", () => {
   const gh = fakeGithub();
   const moves: object[] = [];
-  const result = claimRow(ROW, "worker-575", { run: gh.run, ...CLAIM_DEPS, moveStatus: (_n: number, status: string, opts?: object) => { moves.push({ status, opts: opts ?? {} }); return { moved: true as const }; } });
+  const result = claimRow(ROW, "worker-575", { ...CLAIM_DEPS, moveStatus: (_n: number, status: string, opts?: object) => { moves.push({ status, opts: opts ?? {} }); return { moved: true as const }; } });
   assert.equal(result.claimed, true);
   assert.ok(gh.first().labels.includes("in-progress") && gh.first().labels.includes("session:worker-575"));
   assert.deepEqual(gh.second().labels, ["ready"], "the other tracker's same-numbered issue is untouched");
@@ -224,15 +218,15 @@ test("CONTROL: the same claim with NO tracker is the first tracker's -- its issu
 
 test("a keyed tracker whose row cannot be read is NOT read as the first tracker's: the claim throws naming the repository and writes nothing", () => {
   const gh = fakeGithub();
-  gh.issues.delete(`${SECOND_REPO}#${ROW}`);
-  assert.throws(() => claimRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, ...CLAIM_DEPS }), new RegExp(`could not read issue #${ROW} from ${SECOND_REPO}`));
+  gh.forget(`${SECOND_REPO}#${ROW}`);
+  assert.throws(() => claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS }), new RegExp(`could not read issue #${ROW} from ${SECOND_REPO}`));
   assert.deepEqual(gh.writes, [], "nothing was written anywhere");
   assert.deepEqual(gh.first().labels, ["ready"], "least of all to the first tracker's row of that number");
 });
 
 test("a keyed tracker's row already held by another session is refused, from THAT tracker's labels", () => {
   const gh = fakeGithub({ first: ["ready"], second: ["in-progress", "started", "session:worker-agent-org-9"] });
-  const result = claimRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, ...CLAIM_DEPS });
+  const result = claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS });
   assert.equal(result.claimed, false);
   assert.deepEqual(gh.writes, [], "refused before any write");
 });
@@ -242,22 +236,21 @@ test("a keyed tracker's row already held by another session is refused, from THA
 test("`decline` in a keyed tracker releases THAT tracker's issue -- labels, release record and the card back to Ready -- and not the first's", () => {
   const record = claimRecordComment({ session: SESSION, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
   const gh = fakeGithub({ first: ["in-progress", "started", "session:worker-575"], second: ["in-progress", "started", "was-ready", `session:${SESSION}`] });
-  gh.second().comments.push(record);
-  const result = declineRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, keepWorktree: true });
+  gh.second().say(record);
+  const result = declineRow(ROW, SESSION, { run: noGh as never, tracker: TRACKER, keepWorktree: true });
   assert.deepEqual(result, { declined: true, restoredReady: true, blocked: false, closed: false, statusMoved: true });
 
   assert.deepEqual(gh.second().labels, ["ready"], "the tracker's row is back to `ready` and carries no claim");
   assert.deepEqual(gh.first().labels, ["in-progress", "started", "session:worker-575"], "the first tracker's row 575 -- another session's claim -- is untouched");
-  assert.deepEqual(issueWrites(gh.writes).filter((call) => call.repo !== SECOND_REPO), []);
+  assert.deepEqual(gh.writes.filter((call) => call.repo !== SECOND_REPO), []);
   assert.equal(gh.second().comments.length, 2, "a release record was posted under the claim record, in the tracker's repository");
   assert.match(gh.second().comments[1], /released by/);
-  assert.deepEqual(gh.writes.filter((call) => call.args[0] === "project").map((call) => call.args), [["project", "item-edit", String(SECOND_BOARD), "--owner", PROJECT_OWNER,
-    "--url", `https://github.com/${SECOND_REPO}/issues/${ROW}`, "--field", "Status", "--value", "Ready"]]);
+  assert.deepEqual(gh.moves, [{ owner: PROJECT_OWNER, projectNumber: SECOND_BOARD, url: `https://github.com/${SECOND_REPO}/issues/${ROW}`, status: "Ready" }]);
 });
 
 test("a decline in a keyed tracker by a session that does not hold THAT tracker's row is refused, though it holds the first tracker's row of that number", () => {
   const gh = fakeGithub({ first: ["in-progress", "started", "session:worker-575"], second: ["in-progress", "started", `session:${SESSION}`] });
-  const result = declineRow(ROW, "worker-575", { run: gh.run, tracker: TRACKER });
+  const result = declineRow(ROW, "worker-575", { run: noGh as never, tracker: TRACKER });
   assert.equal(result.declined, false);
   assert.match((result as { reason: string }).reason, new RegExp(`held by ${SESSION}, not worker-575`));
   assert.deepEqual(gh.writes, []);
@@ -266,7 +259,7 @@ test("a decline in a keyed tracker by a session that does not hold THAT tracker'
 test("CONTROL: a decline with NO tracker releases the first tracker's issue and moves its card with no tracker named", () => {
   const gh = fakeGithub({ first: ["in-progress", "started", "was-ready", "session:worker-575"], second: ["in-progress", "session:worker-agent-org-575"] });
   const moves: object[] = [];
-  const result = declineRow(ROW, "worker-575", { run: gh.run, moveStatus: (_n: number, status: string, opts?: object) => { moves.push({ status, opts: opts ?? {} }); return { moved: true as const }; } });
+  const result = declineRow(ROW, "worker-575", { run: noGh as never, moveStatus: (_n: number, status: string, opts?: object) => { moves.push({ status, opts: opts ?? {} }); return { moved: true as const }; } });
   assert.equal(result.declined, true);
   assert.deepEqual(gh.first().labels, ["ready"]);
   assert.deepEqual(gh.second().labels, ["in-progress", "session:worker-agent-org-575"]);
@@ -281,7 +274,7 @@ test("agent-org#1568: a claim of a `backlog` row leaves exactly `in-progress` as
 
 test("agent-org#1568: a release of a row claimed from `backlog` puts `backlog` back and leaves no `in-progress`", () => {
   const gh = heldKeyedRow({ first: ["ready"], second: ["in-progress", "started", `session:${SESSION}`] });
-  const result = declineRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, keepWorktree: true });
+  const result = declineRow(ROW, SESSION, { run: noGh as never, tracker: TRACKER, keepWorktree: true });
   assert.deepEqual(result, { declined: true, restoredReady: false, blocked: false, closed: false, statusMoved: true });
   assert.deepEqual(gh.second().labels, ["backlog"], "the released row is back in `backlog` and holds no claim");
   assert.deepEqual(gh.first().labels, ["ready"], "the first tracker's row 575 is untouched");
@@ -289,32 +282,30 @@ test("agent-org#1568: a release of a row claimed from `backlog` puts `backlog` b
 
 // --- 4. the board move --------------------------------------------------------------------------------------------------------
 
-test("`moveProjectStatus` for a tracker on another board is one item-edit on THAT board with no snapshot; for the first board it is the snapshot's, as before", () => {
-  const seen: string[][] = [];
+test("`moveProjectStatus` for a tracker on another board is one Status move on THAT board with no snapshot; for the first board it is the snapshot's, as before", () => {
+  const gh = fakeGithub();
   let snapshots = 0;
-  const run = (_cmd: string, args: string[]) => { seen.push(args); return ""; };
   const snapshot = ((act: () => unknown) => { snapshots += 1; return act(); }) as never;
-  const moved = moveProjectStatus(ROW, "In progress", { run, snapshot, tracker: TRACKER, log: () => {} });
+  const moved = moveProjectStatus(ROW, "In progress", { run: noGh as never, snapshot, tracker: TRACKER, log: () => {} });
   assert.deepEqual(moved, { moved: true });
   assert.equal(snapshots, 0, "no snapshot is taken for another tracker's board");
-  assert.deepEqual(seen, [["project", "item-edit", String(SECOND_BOARD), "--owner", PROJECT_OWNER,
-    "--url", `https://github.com/${SECOND_REPO}/issues/${ROW}`, "--field", "Status", "--value", "In progress"]]);
+  assert.deepEqual(gh.moves, [{ owner: PROJECT_OWNER, projectNumber: SECOND_BOARD, url: `https://github.com/${SECOND_REPO}/issues/${ROW}`, status: "In progress" }]);
 
-  seen.length = 0;
-  moveProjectStatus(ROW, "In progress", { run, snapshot, log: () => {} });
+  gh.moves.length = 0;
+  moveProjectStatus(ROW, "In progress", { run: noGh as never, snapshot, log: () => {} });
   assert.equal(snapshots, 1, "CONTROL: with no tracker, the first board's snapshot guards the move as it always did");
-  assert.deepEqual(seen, [["project", "item-edit", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER,
-    "--url", `https://github.com/${FIRST_REPO}/issues/${ROW}`, "--field", "Status", "--value", "In progress"]]);
+  assert.deepEqual(gh.moves, [{ owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, url: `https://github.com/${FIRST_REPO}/issues/${ROW}`, status: "In progress" }]);
 
-  seen.length = 0;
+  gh.moves.length = 0;
   const first = { key: "", repo: FIRST_REPO, board: { owner: PROJECT_OWNER, number: PROJECT_NUMBER } };
-  moveProjectStatus(ROW, "Ready", { run, snapshot, tracker: first, log: () => {} });
+  moveProjectStatus(ROW, "Ready", { run: noGh as never, snapshot, tracker: first, log: () => {} });
   assert.equal(snapshots, 2, "a tracker that IS the first board keeps the snapshot");
 });
 
 test("a failed move on a keyed tracker's board is reported as the half-applied claim it is, never folded into success", () => {
-  const run = () => { throw new Error("HTTP 502"); };
-  const moved = moveProjectStatus(ROW, "In progress", { run, tracker: TRACKER, log: () => {} });
+  const gh = fakeGithub();
+  gh.world.failures.set("setProjectStatus", new Error("HTTP 502"));
+  const moved = moveProjectStatus(ROW, "In progress", { run: noGh as never, tracker: TRACKER, log: () => {} });
   assert.equal(moved.moved, false);
   assert.match((moved as { reason: string }).reason, /could not move #575's Status to "In progress" -- HTTP 502/);
 });
@@ -344,26 +335,25 @@ test("THE WIRING: `--tracker=` reaches the write through `claimOrDispatch` and `
 
 test("`dispatch` in a keyed tracker writes `in-progress` and `session:` on THAT tracker's issue and not `started`; the first tracker's issue is untouched", () => {
   const gh = fakeGithub();
-  const result = dispatchRow(ROW, SESSION, { run: gh.run, tracker: TRACKER });
+  const result = dispatchRow(ROW, SESSION, { run: noGh as never, tracker: TRACKER, moveStatus: () => ({ moved: true as const }) });
   assert.equal(result.claimed, true);
   assert.deepEqual([...gh.second().labels].sort(), ["in-progress", `session:${SESSION}`, "was-ready"].sort(), "dispatched, not started");
   assert.deepEqual(gh.first().labels, ["ready"]);
-  assert.deepEqual(issueWrites(gh.writes).filter((call) => call.repo !== SECOND_REPO), [], "no write named the first tracker's repository");
+  assert.deepEqual(gh.writes.filter((call) => call.repo !== SECOND_REPO), [], "no write named the first tracker's repository");
 });
 
 test("a tracker that declares NO board is claimed with its labels alone: no `gh project` call, the note says so, and the FIRST tracker's card is never moved", () => {
   const gh = fakeGithub();
   const noBoard = { key: "agent-org", repo: SECOND_REPO } as Tracker;
   const said: string[] = [];
-  const result = claimRow(ROW, SESSION, { run: gh.run, tracker: noBoard, ...CLAIM_DEPS,
+  const result = claimRow(ROW, SESSION, { tracker: noBoard, ...CLAIM_DEPS,
     moveStatus: (n: number, status: string, opts?: object) => moveProjectStatus(n, status, { ...(opts ?? {}), log: (line) => said.push(line) }) });
   assert.equal(result.claimed, true, "the labels are the claim, and they landed");
   assert.equal((result as { statusMoved: boolean }).statusMoved, false);
   assert.equal((result as { notOnBoard: boolean }).notOnBoard, true, "a known, permitted gap: the CLI exits clean on it");
   assert.match((result as { statusReason: string }).statusReason, new RegExp(`^${NO_BOARD_DECLARED} \`agent-org\``));
   assert.ok(gh.second().labels.includes("in-progress") && gh.second().labels.includes(`session:${SESSION}`));
-  assert.deepEqual(gh.calls.filter((call) => call.args[0] === "project" || (call.args.includes("graphql") && readsRowsByLabel(call.args) === null)), [],
-    "no board call of any kind, so no board of the first tracker's either (the claimed rows' by-label read is a graphql call too, #5039, and is not a board)");
+  assert.deepEqual(gh.moves, [], "no board call of any kind, so no board of the first tracker's either");
   assert.deepEqual(gh.first().labels, ["ready"]);
   assert.ok(said.some((line) => new RegExp(NO_BOARD_DECLARED).test(line)), "and it is said aloud, not only returned");
 });
@@ -457,14 +447,15 @@ test("a keyed claim that throws AFTER its labels landed is undone in the same ca
   const fx = twoCheckouts();
   try {
     const gh = fakeGithub();
-    const run = (cmd: string, args: string[]) => (cmd === "git" ? git(fx.keyed, ...args.filter((a, at) => !(a === "-C" || args[at - 1] === "-C"))) : gh.run(cmd, args));
-    // The claim writes its labels through the fake, then fails at the claim record -- the half-way the row names.
+    const run = (cmd: string, args: string[]) => (cmd === "git" ? git(fx.keyed, ...args.filter((a, at) => !(a === "-C" || args[at - 1] === "-C"))) : noGh(cmd));
+    // The claim writes its labels through the fake, then fails at the claim record -- the half-way the row names. The refusal is the CLAIM's alone: the release that undoes it posts its own record.
     const claim = ((n: number, s: string, deps: object) => {
-      const out = claimRow(n, s, { ...deps, ...CLAIM_DEPS, run: (cmd: string, args: string[]) => {
-        if (cmd === "gh" && args[0] === "issue" && args[1] === "comment") throw new Error("HTTP 502 posting the claim record");
-        return gh.run(cmd, args);
-      } } as never);
-      return out;
+      gh.world.failures.set("postRowComment", new Error("HTTP 502 posting the claim record"));
+      try {
+        return claimRow(n, s, { ...deps, ...CLAIM_DEPS } as never);
+      } finally {
+        gh.world.failures.delete("postRowComment");
+      }
     }) as never;
     let thrown: Error | null = null;
     try {
@@ -578,7 +569,7 @@ test("a record with no `Claimed-scope:` line -- every one written before this ro
 test("`claim` posts the hash of the row it just READ: the same body and a changed body read back as the same hash and a different one", () => {
   const claimed = (body: string) => {
     const gh = fakeGithub({ bodies: { first: body } });
-    const result = claimRow(ROW, "worker-575", { run: gh.run, ...CLAIM_DEPS, branch: "agent/x-575", worktree: "../wt-575", moveStatus: () => ({ moved: true as const }) });
+    const result = claimRow(ROW, "worker-575", { ...CLAIM_DEPS, branch: "agent/x-575", worktree: "../wt-575", moveStatus: () => ({ moved: true as const }) });
     assert.equal(result.claimed, true);
     assert.equal(gh.first().comments.length, 1);
     return claimRecordFrom(gh.first().comments);
@@ -594,7 +585,7 @@ test("`claim` posts the hash of the row it just READ: the same body and a change
 test("a KEYED tracker's claim hashes the TRACKER'S row, not the first tracker's issue of the same number", () => {
   const trackerBody = BODY.replace("No file declared here.", "No file declared here, said the other tracker.");
   const gh = fakeGithub({ bodies: { second: trackerBody } });
-  const result = claimRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, ...CLAIM_DEPS, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
+  const result = claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575" });
   assert.equal(result.claimed, true);
   assert.equal(claimRecordFrom(gh.second().comments).scope, scopeHash(trackerBody));
   assert.notEqual(scopeHash(trackerBody), scopeHash(BODY), "PRECONDITION: the two trackers' bodies hash differently, so the assertion above can tell them apart");
@@ -603,11 +594,8 @@ test("a KEYED tracker's claim hashes the TRACKER'S row, not the first tracker's 
 
 test("a body that cannot be read leaves the line OUT rather than hashing nothing, and the claim goes on as it did", () => {
   const gh = fakeGithub();
-  const run = (cmd: string, args: string[]) => {
-    if (args.includes("body") || args.includes("body,labels")) throw Object.assign(new Error("Command failed: gh issue view -- HTTP 502"), { status: 1, stdout: "", stderr: "502" });
-    return gh.run(cmd, args);
-  };
-  const result = claimRow(ROW, "worker-575", { run, ...CLAIM_DEPS, branch: "agent/x-575", worktree: "../wt-575", moveStatus: () => ({ moved: true as const }) });
+  gh.world.failures.set("bodyAndLabelsOf", Object.assign(new Error("Command failed: gh issue view -- HTTP 502"), { status: 1, stdout: "", stderr: "502" }));
+  const result = claimRow(ROW, "worker-575", { ...CLAIM_DEPS, branch: "agent/x-575", worktree: "../wt-575", moveStatus: () => ({ moved: true as const }) });
   assert.equal(result.claimed, true);
   const record = gh.first().comments[0];
   assert.doesNotMatch(record, /Claimed-scope/);
@@ -616,39 +604,29 @@ test("a body that cannot be read leaves the line OUT rather than hashing nothing
 
 // --- 3. #1281: a claim on a row whose `Waiting-for:` is unmet ----------------------------------------------------------------
 
-/** The fake, with `gh api repos/<r>/issues/<n>` answering for the referenced item `state`. */
-function withReferenced(state: "open" | "closed", seed: Parameters<typeof fakeGithub>[0]) {
-  const gh = fakeGithub(seed);
-  const inner = gh.run;
-  const run = (cmd: string, args: string[]): string => {
-    const isIssueRead = cmd === "gh" && args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/1055$/.test(args[1] ?? "");
-    if (isIssueRead) {
-      return JSON.stringify({ state, closed_at: state === "closed" ? "2026-10-09T00:00:00Z" : null, updated_at: "2026-10-09T00:00:00Z", merged_at: state === "closed" ? "2026-10-09T00:00:00Z" : null, labels: [] });
-    }
-    return inner(cmd, args);
-  };
-  return { ...gh, run };
-}
+/** The fake, with the referenced item #1055 of the tracker's repository in `state`. */
+const withReferenced = (state: "open" | "closed", seed: Parameters<typeof fakeGithub>[0]) => fakeGithub({ ...seed, referenced: state });
 const WAITING_BODY = `${BODY}\nWaiting-for: merged #1055\n`;
 
 test("#1281: a claim on a row whose `Waiting-for:` is unmet is refused before any write, and accepted once the wait is true", () => {
   const open = withReferenced("open", { second: ["ready"], bodies: { second: WAITING_BODY } });
-  const refused = claimRow(ROW, SESSION, { run: open.run, tracker: TRACKER, ...CLAIM_DEPS });
+  const refused = claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS });
   assert.equal(refused.claimed, false);
   assert.match((refused as { reason: string }).reason, /Waiting-for: merged #1055/);
-  assert.deepEqual(issueWrites(open.writes), [], "nothing was written");
+  assert.deepEqual(open.writes, [], "nothing was written");
   assert.deepEqual(open.second().labels, ["ready"]);
 
   const met = withReferenced("closed", { second: ["ready"], bodies: { second: WAITING_BODY } });
-  assert.deepEqual(claimRow(ROW, SESSION, { run: met.run, tracker: TRACKER, ...CLAIM_DEPS }), { claimed: true, statusMoved: true });
+  assert.deepEqual(claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS }), { claimed: true, statusMoved: true });
   const none = withReferenced("open", { second: ["ready"] });
-  assert.deepEqual(claimRow(ROW, SESSION, { run: none.run, tracker: TRACKER, ...CLAIM_DEPS }), { claimed: true, statusMoved: true }, "no line, no refusal");
+  assert.deepEqual(claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS }), { claimed: true, statusMoved: true }, "no line, no refusal");
+  assert.deepEqual(none.first().labels, ["ready"]);
 });
 
 test("#1281: a row the gate released on its unmet wait (no claim labels left) is refused its re-claim by the same holder", () => {
   const gh = withReferenced("open", { second: ["ready", "was-ready"], bodies: { second: WAITING_BODY } });
-  gh.second().comments.push(claimRecordComment({ session: SESSION, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575", released: true }));
-  const result = claimRow(ROW, SESSION, { run: gh.run, tracker: TRACKER, ...CLAIM_DEPS });
+  gh.second().say(claimRecordComment({ session: SESSION, branch: "agent/x-agent-org-575", worktree: "../wt-agent-org-575", released: true }));
+  const result = claimRow(ROW, SESSION, { tracker: TRACKER, ...CLAIM_DEPS });
   assert.equal(result.claimed, false);
-  assert.deepEqual(issueWrites(gh.writes), []);
+  assert.deepEqual(gh.writes, []);
 });

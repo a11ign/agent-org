@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is the injected `run` seam `escalateStuck` already takes, and the repository declaration is injected as `repoOf`; nothing imported reaches the real one
+// no-token: none -- the rows `escalateStuck` reads and writes are the fake code host's (A11-160, step 7), and the repository declaration is injected as `repoOf`; nothing imported reaches `gh`
 /**
  * #622: A STUCK-CAUSE ROW THE TICK FILED IS CLOSED WHEN ITS `answer:ceo` IS REMOVED, NOT LEFT `parked` WITH NO WAIT.
  *
@@ -11,8 +11,10 @@
  * `answer:<session>`, is left. Make `closeAnsweredRow` never close and the first goes red; make it close whatever it finds and the
  * second, fourth and fifth do.
  */
-import { test } from "node:test";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { afterEach, test } from "node:test";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 import assert from "node:assert/strict";
 import { escalateStuck, ESCALATION_LABEL } from "./wake/merge-queue-wait.ts";
 import { MAX_DELIVERIES } from "./wake/fyi-delivery-and-limits.ts";
@@ -20,71 +22,86 @@ import { MAX_DELIVERIES } from "./wake/fyi-delivery-and-limits.ts";
 const SHA = "0123abcd";
 const MERGED = `worker-3075/trunk-red/pr-agent-org#56/${SHA}`;
 const PRIMARY = `worker-3075/trunk-red/pr-56/${SHA}`;
-const ISSUE_URL = "https://github.com/a11ign/a11ign/issues/3101\n";
+afterEach(() => forgetActivation());
+/** The `run` the tick is handed: the rows are the fake's, so nothing may reach it. */
+const noRun = (args: string[]): string => { throw new Error(`the fake code host answers every read; nothing may run ${args.join(" ")}`); };
 const declared = (key: string): string | null => (key === "agent-org" ? "a11ign/agent-org" : null);
 
 type Row = { number: number; title: string; labels: { name: string }[] };
 
+/** A fake code host holding `open` as open rows, the next filed row being #9000. */
+function hostHolding(open: Row[]) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.nextNumber = 9000;
+  for (const r of open) world.rows.set(r.number, fakeRow(world, r.number, { title: r.title, labels: r.labels.map((l) => l.name) }));
+  substituteCodeHost(host);
+  return world;
+}
+
 /** The title the tick files for `MERGED`, read off a first escalation so the fixture does not restate its wording. */
 const filedTitle = (() => {
-  const calls: string[][] = [];
-  escalateStuck([`${MERGED}: x`], (a: string[]) => { calls.push(a); return a[0] === "api" ? connectionOf([]) : a[1] === "list" ? "[]" : a[1] === "create" ? ISSUE_URL : ""; }, () => {}, { repoOf: declared });
-  const create = calls.find((c) => c[1] === "create") as string[];
-  return create[create.indexOf("--title") + 1];
+  const world = hostHolding([]);
+  escalateStuck([`${MERGED}: x`], noRun, () => {}, { repoOf: declared });
+  forgetActivation();
+  return [...world.rows.values()][0].title;
 })();
 
 const row = (labels: string[], title = filedTitle, number = 3101): Row => ({ number, title, labels: labels.map((name) => ({ name })) });
 
-/** One tick over a key already escalated; `open` is every open row `issue list` can see, filtered by the `--label` it is asked for. */
+/** What a world holds, to say what a tick wrote: every row's state, labels, body and comments. */
+const snapshot = (world: ReturnType<typeof hostHolding>) => JSON.stringify([...world.rows.values()]);
+
+/** One tick over a key already escalated; `open` is every open row the fake holds, filtered by the label the tick asks for. */
 function tick(key: string, open: Row[]) {
-  const calls: string[][] = [];
+  const world = hostHolding(open);
+  const before = snapshot(world);
   const log: string[] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    const asked = readsRowsByLabel(args);
-    if (asked === null) return args[1] === "list" ? "[]" : "";
-    return connectionOf(open.filter((r) => asked.state === "OPEN" && r.labels.some((l) => l.name === asked.label)));
-  };
-  escalateStuck([`${key}: delivered ${MAX_DELIVERIES} times`], run, (l: string) => log.push(l), { repoOf: declared, escalated: new Set([key]) });
-  return { calls, log: log.join(""), closes: calls.filter((c) => c[1] === "close"), writes: calls.filter((c) => c[1] !== "list" && readsRowsByLabel(c) === null) };
+  escalateStuck([`${key}: delivered ${MAX_DELIVERIES} times`], noRun, (l: string) => log.push(l), { repoOf: declared, escalated: new Set([key]) });
+  const closes = [...world.rows.values()].filter((r) => r.state === "CLOSED");
+  return { world, log: log.join(""), closes, written: snapshot(world) !== before };
 }
 
 test("an open filed stuck-cause row whose answer:ceo is gone is closed with a comment naming the cause key", () => {
   const { closes, log } = tick(MERGED, [row(["parked", "out-of-release"])]);
   assert.equal(closes.length, 1);
-  assert.equal(closes[0][2], "3101");
-  const comment = closes[0][closes[0].indexOf("--comment") + 1];
+  assert.equal(closes[0].number, 3101);
+  const comment = closes[0].comments.at(-1)!.body;
   assert.ok(comment.includes(MERGED), "the comment names the cause key");
   assert.match(comment, /answer:ceo/);
   assert.match(log, /ANSWERED #3101 \(.*\) -- answer:ceo was removed/);
 });
 
 test("a row still carrying answer:ceo is not touched", () => {
-  const { writes } = tick(MERGED, [row([ESCALATION_LABEL, "parked", "out-of-release"])]);
-  assert.deepEqual(writes, []);
+  assert.equal(tick(MERGED, [row([ESCALATION_LABEL, "parked", "out-of-release"])]).written, false);
   // CONTROL: the same row, label gone, is the one closed.
   assert.equal(tick(MERGED, [row(["parked", "out-of-release"])]).closes.length, 1);
 });
 
 test("a row filed for something else is not closed, and a cause with no row open writes nothing", () => {
-  assert.deepEqual(tick(MERGED, [row(["parked"], "Stuck trunk-red: another -- a different cause")]).writes, []);
-  assert.deepEqual(tick(MERGED, []).writes, [], "the row already closed: nothing to do, and no error");
+  assert.equal(tick(MERGED, [row(["parked"], "Stuck trunk-red: another -- a different cause")]).written, false);
+  assert.equal(tick(MERGED, []).written, false, "the row already closed: nothing to do, and no error");
 });
 
 test("a row re-routed to another session, or no longer parked, is left", () => {
-  assert.deepEqual(tick(MERGED, [row(["parked", "answer:product-manager"])]).writes, [], "answer:<session> is a wait, not an answer");
-  assert.deepEqual(tick(MERGED, [row(["ready", "out-of-release"])]).writes, [], "moved out of parked: closing it would discard the work");
+  assert.equal(tick(MERGED, [row(["parked", "answer:product-manager"])]).written, false, "answer:<session> is a wait, not an answer");
+  assert.equal(tick(MERGED, [row(["ready", "out-of-release"])]).written, false, "moved out of parked: closing it would discard the work");
 });
 
 test("a label row of the primary is not closed: its answer is read by the re-ask, not here", () => {
-  const { calls } = tick(PRIMARY, [row(["parked"], "Some row of the primary", 56)]);
-  assert.deepEqual(calls.filter((c) => c[1] === "close"), []);
-  assert.deepEqual(calls.filter((c) => c[1] === "list" || readsRowsByLabel(c) !== null), [], "and no list is read for it");
+  const world = hostHolding([row(["parked"], "Some row of the primary", 56)]);
+  world.failures.set("readRowsByLabel", new Error("HTTP 502"));
+  const log: string[] = [];
+  escalateStuck([`${PRIMARY}: delivered ${MAX_DELIVERIES} times`], noRun, (l: string) => log.push(l), { repoOf: declared, escalated: new Set([PRIMARY]) });
+  assert.deepEqual([...world.rows.values()].filter((r) => r.state === "CLOSED"), []);
+  assert.doesNotMatch(log.join(""), /COULD NOT CLOSE/, "and no list of rows is read for it: a refused read would have been said");
 });
 
-test("a refused `gh` is reported, not thrown, and closes nothing", () => {
+test("a refused read is reported, not thrown, and closes nothing", () => {
+  const world = hostHolding([row(["parked", "out-of-release"])]);
+  world.failures.set("readRowsByLabel", new Error("HTTP 502"));
   const log: string[] = [];
-  const refuse = () => { throw new Error("HTTP 502"); };
-  escalateStuck([`${MERGED}: x`], refuse, (l: string) => log.push(l), { repoOf: declared, escalated: new Set([MERGED]) });
+  escalateStuck([`${MERGED}: x`], noRun, (l: string) => log.push(l), { repoOf: declared, escalated: new Set([MERGED]) });
   assert.match(log.join(""), /COULD NOT CLOSE ANSWERED ROW .*: HTTP 502/);
+  assert.equal(world.rows.get(3101)!.state, "OPEN");
 });

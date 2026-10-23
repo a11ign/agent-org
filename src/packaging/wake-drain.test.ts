@@ -6,7 +6,7 @@
  * acceptance job refused it and verified nothing. Every fact read here -- herdr, GitHub, the two ledgers -- is
  * injected or stubbed on PATH, so the row's Acceptance is a command the job can RUN.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, cpSync } from "node:fs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
@@ -24,6 +24,7 @@ import { startedPanes } from "./started-pane.ts";
 // temp directory so no `git` the tool asks resolves to the repository this file sits in. The children it spawns inherit the variable.
 const FIXTURE_DIR = mkdtempSync(join(tmpdir(), "wake-drain-roster-"));
 after(() => rmSync(FIXTURE_DIR, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 const PROJECT = join(FIXTURE_DIR, "project");
 cpSync(fileURLToPath(new URL("./fixtures/wake-drain/project", import.meta.url)), PROJECT, { recursive: true });
 // A SPAWN IS REFUSED BEFORE THE CLAIM WHEN THE ENGINEER BRIEF IS NOT AT ITS ABSOLUTE PATH (#869): the recorded project holds a one-line one.
@@ -52,6 +53,10 @@ const { readSpareCycles, sparePathsFrom } = await import("../wake/session-ending
 const { spareRoles } = await import("../wake/merge-queue-wait.ts");
 const { drainReason } = await import("../row-claim/runner-rule.ts");
 const { claimRow } = await import("../row-claim.ts");
+const { REPO } = await import("../project-identity.ts");
+const { substituteCodeHost, forgetActivation } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+const { fakeRow } = await import("../plugins/fakes/code-host-rows.ts");
 /** #2546: a test that is not ABOUT the clear's five-second settle does not wait it; `wake-clear-settle.test.ts` pins the delay. */
 const noSettle = () => {};
 const deliver: typeof settlingDeliver = (orders, agents, roster, deps) => settlingDeliver(orders, agents, roster, { ...deps, sleep: noSettle });
@@ -482,36 +487,33 @@ test("#2324 (3) POSITIVE CONTROLS: a spare and an undrained role are not refused
   assert.equal(drainReason("worker-judge", []), null, "the drain lifts itself: `activeDrain` returns none after a failed cycle");
 });
 
-/** A `gh` for one row that is `ready`, and (once written to) carries the claiming session's labels. */
-// agent-org#1302: the row's labels and state are read over REST, `gh api repos/<repo>/issues/<n>`, not `gh issue view`
-const isLabelRead = (args: string[]) => args[0] === "api" && /^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(args[1] ?? "");
+/** A claim has no `run` for GitHub: the code host is the fake's, holding one `ready` row (and, when it is already the session's, its labels). */
+const noGh = (cmd: string): string => {
+  throw new Error(`a claim reached \`${cmd}\` through its run: GitHub is the code host's`);
+};
 
-function claimStub(session: string, { alreadyMine = false } = {}) {
-  let labelReads = 0;
-  return (_cmd: string, args: string[]): string => {
-    if (isLabelRead(args)) {
-      labelReads += 1;
-      const mine = [`session:${session}`, "in-progress"];
-      const labels = labelReads === 1 ? ["ready", ...(alreadyMine ? mine : [])] : [...mine, "started", "was-ready"];
-      return JSON.stringify({ number: 2324, title: "A row", state: "open", labels: labels.map((name) => ({ name })) });
-    }
-    // Body and `blockedBy` reads fail: those lookups return null and the claim's checks fail OPEN, which is what
-    // lets this fixture reach the one check under test without a canned answer for each.
-    if (args[1] === "view") throw new Error("simulated: this fixture answers no body and no blockedBy");
-    return "[]";
-  };
+/** A row that satisfies the issue template and names no file, so the claim's other checks have nothing to refuse and the drain is the one under test. */
+const ROW_BODY = "## Region\n\nNo file declared here.\n\n## Acceptance\n\n```bash\ntrue\n```\n\n## Open-check\n\nTRUE ALREADY\n";
+
+function readyRow(session: string, alreadyMine: boolean) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.repo = REPO;
+  const row = fakeRow(host.rowsWorld, 2324, { title: "A row", body: ROW_BODY, labels: ["ready", ...(alreadyMine ? [`session:${session}`, "in-progress"] : [])], onBoard: true });
+  host.rowsWorld.rows.set(2324, row);
+  substituteCodeHost(host);
+  return row;
 }
-const claimAs = (session: string, drained: string[], alreadyMine = false) =>
-  claimRow(2324, session, { run: claimStub(session, { alreadyMine }), moveStatus: () => ({ moved: true }), drained });
+const claimAs = (session: string, drained: string[], alreadyMine = false) => {
+  readyRow(session, alreadyMine);
+  return claimRow(2324, session, { run: noGh as never, moveStatus: () => ({ moved: true }), drained });
+};
 
 test("#2324 (3) ACCEPTANCE: `claimRow` by a drained role is refused, naming the drain, and NOTHING is written", () => {
-  const writes: string[][] = [];
-  const stub = claimStub("worker-judge");
-  const run = (cmd: string, args: string[]) => { if (args[1] === "edit" || args[1] === "comment") writes.push(args); return stub(cmd, args); };
-  const got = claimRow(2324, "worker-judge", { run, moveStatus: () => ({ moved: true }), drained: STANDING });
+  const row = readyRow("worker-judge", false);
+  const got = claimRow(2324, "worker-judge", { run: noGh as never, moveStatus: () => ({ moved: true }), drained: STANDING });
   assert.equal(got.claimed, false);
   assert.match((got as { reason: string }).reason, /worker-judge is DRAINED/);
-  assert.deepEqual(writes, [], "a refused claim leaves the row exactly as it found it");
+  assert.deepEqual([row.labels, row.comments], [["ready"], []], "a refused claim leaves the row exactly as it found it");
 });
 
 test("#2324 (3) POSITIVE CONTROLS through `claimRow`: a spare claims, an empty drain claims, and a drained role RESUMING its own row claims", () => {
