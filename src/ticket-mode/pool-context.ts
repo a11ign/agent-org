@@ -4,7 +4,6 @@
 import { createGate, shellPreflight, type PreflightExec } from "./preflight.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { type HookCommand } from "./worker-files.ts";
 import { type Queue } from "./queue/queue-entries-and-outcomes.ts";
 import { type TicketSettings, HOST_FILE_ENV, plansInBatches } from "./settings.ts";
@@ -47,8 +46,6 @@ export type PoolDeps = Readonly<{
   herdrService?: HerdrService;
   /** Wait between looks at a just-started server or agent. */
   wait?: (ms: number) => Promise<void>;
-  /** `gh`, for the calls the code host does not make yet: a failed check's job log and its re-run, and the reviewer's claim (A11-160 moves them in its later steps). */
-  gh?: (args: string[]) => string;
   /** `git` in a clone or worktree, for the heads of stacked blockers' branches and the rebase of a stacked run (A11-116). */
   git?: Git;
   /**
@@ -96,7 +93,6 @@ export type PoolContext = Readonly<{
   /** The `tickets.preflight` commands, asked before a run starts: a failure holds every start, and says why. */
   gate: ReturnType<typeof createGate>;
   transcripts: string;
-  gh: (args: string[]) => string;
   git: Git;
   /** The accounts whose feedback a worker does not answer besides its own: the reviewer's, so its verdict never moves `feedbackAt`. None on a machine with no reviewer. */
   feedbackIgnores: readonly string[];
@@ -155,7 +151,6 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   const now = deps.now ?? Date.now;
   const gate = createGate(settings.preflight, deps.preflight ?? shellPreflight, now);
   const transcripts = deps.transcriptsRoot ?? join(homedir(), ".claude", "projects");
-  const gh = deps.gh ?? defaultGh;
   const git = deps.git ?? defaultGit;
   /** How long a run with a working note may sit idle with no newer outcome before the board marks it stalled. */
   const stallMs = settings.stallMinutes * 60_000;
@@ -214,7 +209,7 @@ export function newPoolContext(store: QueueStore, deps: PoolDeps): PoolContext {
   /** The new-ticket runs whose drafts are being read, by id, so a tick that sees the same outcome meanwhile reads them once. */
   const finishing = new Set<string>();
   return {
-    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, gh, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
+    store, settings, source, codeHost, hook, deps, herdr, herdrAsync, wait, now, gate, transcripts, git, feedbackIgnores, hostFile, stallMs, session, misses, answered, rebasing: new Set<string>(),
     startedHere, attaching, telling: new Set<string>(), pendingMoves, removing, batches, reviewerOn, reviewerFile, reviewerMemory, reviewer, reviewerState, offPulls: new Set<string>(), publisher: deps.publisher, reviewerStarted, reviewerResumed,
     reviewerReposts, reviewerRereviewed, closing, pullReads, refusedHeads, reviewerDropped, claudeSessions, finishing, tickState: { busy: false, again: false }, ownLogin: { value: null },
   };

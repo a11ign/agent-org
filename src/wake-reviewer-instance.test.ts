@@ -50,7 +50,7 @@ process.env[REMOVAL_LOG_ENV] = join(tmpDirForFile("review-removal-log-"), "workt
  * restated and not imported from `wake.ts`: a pin that reads the order's own constant agrees with whatever the order prints (#3316).
  */
 const DOOR_SPELLING = (() => {
-  const line = readFileSync(fileURLToPath(new URL("./reviewer/install-reviewer-bin.sh", import.meta.url)), "utf8").split("\n").find((l) => l.startsWith("dest="));
+  const line = readFileSync(fileURLToPath(new URL("../plugins/github/reviewer/install-reviewer-bin.sh", import.meta.url)), "utf8").split("\n").find((l) => l.startsWith("dest="));
   const spelled = /\$\{A11Y_REVIEWER_BIN:-([^}]+)\}\/(pr-review-verdict)\}?"?$/.exec(line ?? "");
   assert.ok(spelled, `could not read the installer's default out of: ${line}`);
   return `${spelled[1]}/${spelled[2]}`;

@@ -1,4 +1,4 @@
-// no-token: gh -- herdr, git and the clock are all injected; nothing is spawned
+// no-token: none -- herdr, git and the clock are all injected; nothing is spawned
 //
 // THE ATOMIC REVIEWER'S PORT, as it was tested when it lived in `src/ticket-mode/reviewer-port.ts` (A11-161): the same tests, over the same fakes (herdr, `gh`, the code host), with the gate's own
 // modules loaded for real, since the gate stays core's and reaches the port through `deps.reviewing`. `atomicReviewerPort` below makes the port the way the board does, from the helpers.
@@ -23,16 +23,16 @@ const PR_URL = `https://github.com/${REPO}/pull/7`;
 const at = (ms: number) => new Date(ms).toISOString();
 
 /** What a test names of the board and the port's seams, as `atomicReviewerPort` took them before the plugin: `heads`, `clones` and `instance` are the board's. */
-type PortOptions = Seams & Readonly<{ session: string; run: (args: string[]) => string; gh: (args: string[]) => string; codeHost: CodeHost; heads?: Map<string, string>; clones?: Record<string, string>; instance: string }>;
+type PortOptions = Seams & Readonly<{ session: string; run: (args: string[]) => string; codeHost: CodeHost; heads?: Map<string, string>; clones?: Record<string, string>; instance: string }>;
 
 /** The port the board makes: over the real helpers of core, with the board's collaborators these options name. */
-function atomicReviewerPort({ session, run, gh, codeHost, heads = new Map<string, string>(), clones = {}, instance, ...seams }: PortOptions): ReviewerPort {
-  return portOver(reviewingHelpers({ session, run, gh, codeHost: () => codeHost, clones, instance, heads }), seams);
+function atomicReviewerPort({ session, run, codeHost, heads = new Map<string, string>(), clones = {}, instance, ...seams }: PortOptions): ReviewerPort {
+  return portOver(reviewingHelpers({ session, run, codeHost: () => codeHost, clones, instance, heads }), seams);
 }
 
 /** The verdict file of a checkout, found as the port finds it: with the verdict reader the board hands it. */
 const verdictFileIn = (tree: string, number: number, head: string): string | null => verdictFileOver(tree, number, head,
-  reviewingHelpers({ session: "tickets", run: () => "", gh: () => "", codeHost: () => createFakeCodeHost(), clones: {}, instance: "work", heads: new Map() }).board().verdict);
+  reviewingHelpers({ session: "tickets", run: () => "", codeHost: () => createFakeCodeHost(), clones: {}, instance: "work", heads: new Map() }).board().verdict);
 
 const review = (login: string, state: string, commit: string, ms: number) => ({ author: { login }, state, commit: { oid: commit }, submittedAt: at(ms) });
 
@@ -58,33 +58,16 @@ const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
 /** A commit status as GitHub keeps it on a head: its id, its context, when it was written, and its description. */
 type Status = { id: number; context: string; created_at: string; description: string };
 
-/**
- * The statuses on a head, as `gh api` answers them: a read is one tab-separated line per status under the claim's context, as the `--jq` in
- * `claimEntriesOf` prints them, and a write (a POST) adds one written now. The fake keeps them on `pr.statuses`, so a claim written through one `gh` is read
- * back through another.
- */
-function statusCall(pr: { statuses?: Status[] }, args: string[]): string {
-  const statuses = pr.statuses ??= [];
-  if (args.includes("POST")) {
-    const field = (name: string) => args.find((arg) => arg.startsWith(`${name}=`))!.slice(name.length + 1);
-    statuses.push({ id: statuses.length + 1, context: field("context"), created_at: new Date().toISOString(), description: field("description") });
-    return "";
-  }
-  return statuses.filter((status) => status.context === "agent-org/review").map((status) => `${status.id}\t${status.created_at}\t${status.description}\n`).join("");
-}
+/** The claim entries among a pull request's head statuses, in the order they were written. */
+const claimEntriesOf = (pr: { statuses?: Status[] }) =>
+  (pr.statuses ??= []).filter((status) => status.context === "agent-org/review").map((status) => ({ id: status.id, description: status.description, created: Date.parse(status.created_at) }));
 
 /**
- * GitHub as the reviewer's tests see it: the pull request `pr` describes, held by the code host (the fake) for every read of a pull request, and its head's commit statuses, which are
- * still `gh`'s. `head` is its commit, `reviews` its reviews as GitHub lists them, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its
+ * GitHub as the reviewer's tests see it: the pull request `pr` describes, held by the code host (the fake) for every read of a pull request, and its head's commit statuses, which its claim
+ * operations read and write (a write adds one written now, so a claim written through one port is read back through another). `head` is its commit, `reviews` its reviews as GitHub lists them, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its
  * state (open by default), `statuses` its head's commit statuses. A test moves the pull request by changing `pr`: each read holds it as it is then.
  */
 function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[]; state?: string; statuses?: Status[] }) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "api" && args.some((arg) => arg.includes("/statuses"))) return statusCall(pr, args);
-    throw new Error("gh exited 1");
-  };
   const host = createFakeCodeHost("worker-bot");
   type Reviewed = { author: { login: string }; state: string; commit: { oid: string }; submittedAt: string };
   const hold = (url: string): void => {
@@ -101,15 +84,18 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
     readPullFeedback: (url, self, alsoIgnore) => { hold(url); return host.readPullFeedback(url, self, alsoIgnore); },
     readReviewState: (url) => { hold(url); return host.readReviewState(url); },
     readPullState: (url) => { hold(url); return host.readPullState(url); },
+    readReviewClaims: () => ({ entries: claimEntriesOf(pr) }),
+    writeReviewClaim: ({ description }) => {
+      const statuses = pr.statuses ??= [];
+      statuses.push({ id: statuses.length + 1, context: "agent-org/review", created_at: new Date().toISOString(), description });
+      return null;
+    },
   };
-  return { run, calls, pr, codeHost };
+  return { pr, codeHost };
 }
 
-/**
- * The `gh` a port is given, and the `gh` its claims are written with (the reviewer role's, which the port makes from the reviewer's environment): one fake
- * for both, so a claim written through one is read back through the other, and no test reaches GitHub.
- */
-const claiming = (fake: ReturnType<typeof ghFor>) => ({ gh: fake.run, codeHost: fake.codeHost, claimGh: () => fake.run, mint: () => null });
+/** The code host a port is given, which also keeps its claims, so a claim written through one port is read back through another, and no test reaches GitHub. */
+const claiming = (fake: ReturnType<typeof ghFor>) => ({ codeHost: fake.codeHost, mint: () => null });
 
 test("the atomic reviewer refuses a pull request whose author is outside the org, and starts nothing", async () => {
   await loadReviewerGate();

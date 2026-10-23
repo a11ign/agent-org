@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
+const DOOR = fileURLToPath(new URL("../../plugins/github/reviewer/pr-review-verdict.sh", import.meta.url));
 const PROJECT_CONFIG = fileURLToPath(new URL("../project-config.ts", import.meta.url));
 const PROJECT_LIB = fileURLToPath(new URL("../lib", import.meta.url));
 

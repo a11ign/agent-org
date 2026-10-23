@@ -15,7 +15,6 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { declaredGhAccount } from "./gh-identity.ts";
 import { REVIEWER_GH_CONFIG_DIR } from "./reviewer-gh-config-dir.ts";
 import { GITHUB_ROLES, homeHostConfig, roleIdentity, type HostConfig } from "./host-config.ts";
@@ -37,9 +36,6 @@ export const AUTOMATION_WRITER_LOGIN = /^(?:app\/)?octo-sts(?:\[bot\])?$/i;
  * itself opened is the org's own work. It is `/home/agent/reviewer/gh` on the host, as `wake.ts` names it.
  */
 export { REVIEWER_GH_CONFIG_DIR } from "./reviewer-gh-config-dir.ts";
-
-/** The verdict door's source, the file the host installs as `<reviewer bin>/pr-review-verdict`. */
-export const DOOR_SOURCE = fileURLToPath(new URL("./reviewer/pr-review-verdict.sh", import.meta.url));
 
 
 /**

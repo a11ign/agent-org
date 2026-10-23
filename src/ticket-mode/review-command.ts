@@ -12,7 +12,6 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { refuseUnknownFlags } from "../lib/cli-flags.ts";
-import { defaultGh } from "../lib/tool-version-agreement.ts";
 import { herdrRun } from "../herdr-agents.ts";
 import { activatePlugins, realPluginDeps } from "../plugins/active.ts";
 import { reviewingBeforeActivation } from "../plugins/reviewing-helpers.ts";
@@ -79,7 +78,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
   const { memory } = readReviewerMemory(path);
   // The code host is the enabled plugin's, as the board's: the pull request is read through it, and so is each read the reviewer makes. Only it and the reviewer are built: the tracker's key
   // is not read for a command that asks it nothing, which is run from a shell with no Keychain (it was run from ssh).
-  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), gh: defaultGh, clones: settings.clones, instance: claimantOf(settings), heads: memory.heads, seen: memory.seen });
+  const { reviewing, activated } = reviewingBeforeActivation({ session: settings.herdrSession, run: (a) => herdrRun(a, 30_000), clones: settings.clones, instance: claimantOf(settings), heads: memory.heads, seen: memory.seen });
   const active = await activatePlugins(settings.providers, defaultCatalog(), realPluginDeps({ env: process.env, stateDir: settings.stateDir, pick: settings.pick, clones: settings.clones, review: gateReviewJudge, reviewing }), undefined, ["codeHost", "reviewer"]);
   activated(active);
   const chosen = await reviewerToStart(active, settings.providers, defaultCatalog());

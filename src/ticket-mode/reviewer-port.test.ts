@@ -1,4 +1,4 @@
-// no-token: gh -- herdr, git and the clock are all injected; nothing is spawned
+// no-token: none -- herdr, git and the clock are all injected; nothing is spawned
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
@@ -50,33 +50,16 @@ const GREEN = [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }];
 /** A commit status as GitHub keeps it on a head: its id, its context, when it was written, and its description. */
 type Status = { id: number; context: string; created_at: string; description: string };
 
-/**
- * The statuses on a head, as `gh api` answers them: a read is one tab-separated line per status under the claim's context, as the `--jq` in
- * `claimEntriesOf` prints them, and a write (a POST) adds one written now. The fake keeps them on `pr.statuses`, so a claim written through one `gh` is read
- * back through another.
- */
-function statusCall(pr: { statuses?: Status[] }, args: string[]): string {
-  const statuses = pr.statuses ??= [];
-  if (args.includes("POST")) {
-    const field = (name: string) => args.find((arg) => arg.startsWith(`${name}=`))!.slice(name.length + 1);
-    statuses.push({ id: statuses.length + 1, context: field("context"), created_at: new Date().toISOString(), description: field("description") });
-    return "";
-  }
-  return statuses.filter((status) => status.context === "agent-org/review").map((status) => `${status.id}\t${status.created_at}\t${status.description}\n`).join("");
-}
+/** The claim entries among a pull request's head statuses, in the order they were written. */
+const claimEntriesOf = (pr: { statuses?: Status[] }) =>
+  (pr.statuses ??= []).filter((status) => status.context === "agent-org/review").map((status) => ({ id: status.id, description: status.description, created: Date.parse(status.created_at) }));
 
 /**
- * GitHub as the reviewer's tests see it: the pull request `pr` describes, held by the code host (the fake) for every read of a pull request, and its head's commit statuses, which are
- * still `gh`'s. `head` is its commit, `reviews` its reviews as GitHub lists them, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its
+ * GitHub as the reviewer's tests see it: the pull request `pr` describes, held by the code host (the fake) for every read of a pull request, and its head's commit statuses, which its claim
+ * operations read and write (a write adds one written now, so a claim written through one port is read back through another). `head` is its commit, `reviews` its reviews as GitHub lists them, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its
  * state (open by default), `statuses` its head's commit statuses. A test moves the pull request by changing `pr`: each read holds it as it is then.
  */
 function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[]; state?: string; statuses?: Status[] }) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "api" && args.some((arg) => arg.includes("/statuses"))) return statusCall(pr, args);
-    throw new Error("gh exited 1");
-  };
   const host = createFakeCodeHost("worker-bot");
   type Reviewed = { author: { login: string }; state: string; commit: { oid: string }; submittedAt: string };
   const hold = (url: string): void => {
@@ -93,15 +76,18 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
     readPullFeedback: (url, self, alsoIgnore) => { hold(url); return host.readPullFeedback(url, self, alsoIgnore); },
     readReviewState: (url) => { hold(url); return host.readReviewState(url); },
     readPullState: (url) => { hold(url); return host.readPullState(url); },
+    readReviewClaims: () => ({ entries: claimEntriesOf(pr) }),
+    writeReviewClaim: ({ description }) => {
+      const statuses = pr.statuses ??= [];
+      statuses.push({ id: statuses.length + 1, context: "agent-org/review", created_at: new Date().toISOString(), description });
+      return null;
+    },
   };
-  return { run, calls, pr, codeHost };
+  return { pr, codeHost };
 }
 
-/**
- * The `gh` a port is given, and the `gh` its claims are written with (the reviewer role's, which the port makes from the reviewer's environment): one fake
- * for both, so a claim written through one is read back through the other, and no test reaches GitHub.
- */
-const claiming = (fake: ReturnType<typeof ghFor>) => ({ gh: fake.run, codeHost: fake.codeHost, claimGh: () => fake.run, mint: () => null });
+/** The code host a port is given, which also keeps its claims, so a claim written through one port is read back through another, and no test reaches GitHub. */
+const claiming = (fake: ReturnType<typeof ghFor>) => ({ codeHost: fake.codeHost, mint: () => null });
 
 /** A reviewer port that records each start and reports none live, so only the pool's own once-per-head memory stops a second start. */
 function fakePort() {
@@ -123,7 +109,7 @@ function setup(github: ReturnType<typeof ghFor>, port: ReviewerPort, tickets: Re
   const status = new Map<string, string>();
   const h = herdr(status);
   const pool = createPool(store, { settings, source, codeHost: github.codeHost, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: h.run, hostFile: "/work/.agent-org/host.json", now: () => 100, load: () => ({ load: 1, cores: 14 }), transcriptsRoot: join(root, "transcripts"), wait: async () => {},
-    pluginRecord: join(root, "no-plugin-record.json"), gh: github.run, reviewer: reviewerOver(port) });
+    pluginRecord: join(root, "no-plugin-record.json"), reviewer: reviewerOver(port) });
   const entry = (key: string) => queue.entries.find((e) => e.ticket.key === key)!;
   return { settings, pool, status, h, entry, root };
 }

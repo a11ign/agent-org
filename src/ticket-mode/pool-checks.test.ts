@@ -2,7 +2,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { errorLinesOfLog } from "../ci-log-lines.ts";
-import { jobLogOf, jobOfDetails } from "../ticket-port/ci-reads.ts";
 import { infrastructureCause } from "./pool-checks.ts";
 
 const stamped = (lines: string[]) => lines.map((line) => `2026-10-20T10:00:00.1234567Z ${line}`).join("\n");
@@ -32,12 +31,4 @@ test("A11-154: a log is the infrastructure's when a runner was lost, a rate limi
     ["no error at all", ["done"], null],
   ];
   for (const [why, lines, cause] of cases) assert.equal(infrastructureCause(stamped(lines)), cause, why);
-});
-
-test("A11-154: an Actions job's page names its repository, run and job, and any other address names none", () => {
-  assert.deepEqual(jobOfDetails("https://github.com/a11ign/agent-org/actions/runs/38391781529/job/112233"), { repo: "a11ign/agent-org", runId: 38391781529, jobId: 112233 });
-  for (const other of ["https://github.com/a11ign/agent-org/runs/112233", "https://ci.example/job/1", "https://github.com/a11ign/agent-org/pull/1"]) assert.equal(jobOfDetails(other), null, other);
-  const calls: string[][] = [];
-  assert.equal(jobLogOf("a11ign/agent-org", 112233, (args) => { calls.push(args); return "log"; }), "log");
-  assert.deepEqual(calls, [["api", "repos/a11ign/agent-org/actions/jobs/112233/logs", "--allow-escape-sequences"]], "with the escape codes allowed, which gh exits 1 on otherwise");
 });

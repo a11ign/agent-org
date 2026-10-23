@@ -16,7 +16,10 @@ function seeded() {
   const host = createFakeCodeHost("fake-worker");
   const { url, ref } = host.seedPull("owner/repo", 7, { feedback: { authors: ["a-person", "fake-worker"] } });
   const merged = host.seedPull("owner/repo", 8, { state: "merged", findings: { title: "feat: replay", number: 8, body: "What it found", sections: [{ file: "docs/spike.md", heading: "### Scripted replay", text: "Cookie dialogs drop pages." }] } });
-  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url } };
+  const check = { detailsUrl: "https://github.com/owner/repo/actions/runs/1/job/2", log: "Error: the build failed" };
+  host.checksAndClaims.logs.set(check.detailsUrl, `2026-10-22T10:00:00Z ${check.log}\n`);
+  const claim = { repository: "owner/repo", head: "c".repeat(40), environment: { GH_CONFIG_DIR: "/opt/reviewer/gh" } };
+  return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim } };
 }
 
 test("the fake code host passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
@@ -25,7 +28,9 @@ test("the fake code host passes the code host contract suite, and the checks tha
   assert.deepEqual(passed, [
     "shape", "readOwnLogin names the account or answers null", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read", "readReplies answers a list of replies, and null for a pull request it cannot read",
     "readPullState names the state or answers null", "readReviewState reads the head, the reviews and whether the checks settled", "openPullUrlsOf lists a repository's open pull requests",
-    "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes", "subscribe returns the function that cancels it",
+    "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes",
+    "readCheckLog answers null for an address that names no job", "rerunFailedChecks of no checks reruns nothing and says so", "readReviewClaims answers the entries of a head, or why it could not", "subscribe returns the function that cancels it",
+    "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
     "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
@@ -126,4 +131,54 @@ test("the fake says a pull request is approved at its head only for an approval 
   const own = host.seedPull("owner/repo", 6, { head: "h6", reviews: [review("fake-worker", "h6"), review("a-person", "older")] });
   assert.equal(host.readPullFeedback(own.url, "fake-worker")?.approvedAtHead, false, "the caller's own approval, and one on an earlier head, are not approval of this head");
   assert.deepEqual([host.readPullFeedback(url, "x")?.head, host.readPullFeedback(url, "x")?.mergeable], ["h5", true]);
+});
+
+test("without a check or a head to claim in the probe, their checks are skipped with the reason, not passed", async () => {
+  const { host, probe } = seeded();
+  const { passed, skipped } = await runCodeHostConformance(host, { ...probe, check: undefined, claim: undefined });
+  assert.deepEqual(skipped.map(({ check }) => check), ["readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it"]);
+  assert.deepEqual(skipped.map(({ reason }) => reason.replace(/, so .*/, "")), ["the probe names no check", "the probe names no head to claim"]);
+  assert.ok(!passed.includes("readCheckLog reads the log behind a failing check") && !passed.includes("a claim written on a head is read back from it"));
+});
+
+test("a code host that reads no log, or that loses the claim it wrote, fails by name", async () => {
+  const noLog = seeded();
+  noLog.host.checksAndClaims.logs.clear();
+  await assert.rejects(runCodeHostConformance(noLog.host, noLog.probe), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "readCheckLog reads the log behind a failing check");
+  const lost = seeded();
+  lost.host.writeReviewClaim = () => null;
+  await assert.rejects(runCodeHostConformance(lost.host, lost.probe), (error: unknown) => error instanceof ContractError && error.failures.map(({ check }) => check).join() === "a claim written on a head is read back from it");
+});
+
+test("a code host that answers neither the entries nor a reason fails by name", async () => {
+  const { host, probe } = seeded();
+  host.readReviewClaims = () => ({ unreadable: "" });
+  await assert.rejects(runCodeHostConformance(host, probe), (error: unknown) => error instanceof ContractError && error.failures.some(({ check }) => check === "readReviewClaims answers the entries of a head, or why it could not"));
+});
+
+test("the fake keeps the claims it is told to write, in order, for the head they were written on, and refuses as it is told to", () => {
+  const { host } = seeded();
+  const state = host.checksAndClaims;
+  state.now = () => 1_000;
+  const write = (head: string, description: string) => host.writeReviewClaim({ repository: "owner/repo", head, description, environment: { GH_CONFIG_DIR: "/r" } });
+  assert.equal(write("h1", "claimed by a"), null);
+  assert.equal(write("h1", "released by a"), null);
+  assert.equal(write("h2", "claimed by b"), null);
+  assert.deepEqual(host.readReviewClaims("owner/repo", "h1"), { entries: [{ id: 1, description: "claimed by a", created: 1_000 }, { id: 2, description: "released by a", created: 1_000 }] });
+  assert.deepEqual(host.readReviewClaims("owner/repo", "h3"), { entries: [] }, "a head nobody claimed has no entries, which is not a failure to read");
+  state.claimWriteRefusal = "HTTP 403";
+  assert.equal(write("h2", "claimed by c"), "HTTP 403");
+  assert.equal(state.claimWrites.length, 3, "a refused write is not kept");
+  state.claimReadRefusal = "HTTP 502";
+  assert.deepEqual(host.readReviewClaims("owner/repo", "h1"), { unreadable: "HTTP 502" });
+});
+
+test("the fake reruns what it is asked to and refuses when told to, and reads only the logs it holds", () => {
+  const { host } = seeded();
+  assert.equal(host.rerunFailedChecks(["u1", "u2"]), null);
+  assert.deepEqual(host.checksAndClaims.reruns, [["u1", "u2"]]);
+  host.checksAndClaims.rerunRefusal = "Command failed: gh run rerun";
+  assert.equal(host.rerunFailedChecks(["u3"]), "Command failed: gh run rerun");
+  assert.deepEqual(host.checksAndClaims.reruns, [["u1", "u2"]], "a refused rerun is not recorded as made");
+  assert.equal(host.readCheckLog("https://github.com/owner/repo/actions/runs/9/job/9"), null);
 });

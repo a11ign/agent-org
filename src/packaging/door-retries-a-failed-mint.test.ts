@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
+const DOOR = fileURLToPath(new URL("../../plugins/github/reviewer/pr-review-verdict.sh", import.meta.url));
 const HEAD = "f3879426aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const REFUSED = "gh: refused: the reviewer call is NOT sent as the account. app-token reviewer failed for App a11ign-reviewer: no key file at /keys/reviewer.pem (exit 1)";
 const UNAUTHORIZED = "HTTP 401: Bad credentials (https://api.github.com/repos/a11ign/agent-org/pulls/7/reviews)";

@@ -17,11 +17,17 @@ export const PULL = `https://github.com/${REPOSITORY}/pull/7`;
 export const MISSING = `https://github.com/${REPOSITORY}/pull/999`;
 export const MERGED = `https://github.com/${REPOSITORY}/pull/8`;
 const HEAD = "a".repeat(40);
+/** The head a claim is written on, the failing check's address, and its log's text. */
+export const CLAIM_HEAD = "c".repeat(40);
+export const CHECK_URL = `https://github.com/${REPOSITORY}/actions/runs/31/job/32`;
+export const CHECK_LOG = "Error: the build failed";
 
 const REFUSED = { status: 1, stdout: "", stderr: "gh: Could not resolve to a PullRequest (HTTP 404)\n" };
 
 /** The gh calls the plugin makes, answered from pull request 7: its feedback, its fields, its state and the list it is in. */
 function github(calls: string[][] = []) {
+  /** The statuses on the claim head, as GitHub keeps them: a POST adds one, and the listing prints one tab-separated line for each. */
+  const statuses: { id: number; context: string; created_at: string; description: string }[] = [];
   return (file: string, args: readonly string[]) => {
     calls.push([file, ...args]);
     if (file !== "gh") return { status: null, stdout: "", stderr: `${file} cannot start` };
@@ -43,6 +49,15 @@ function github(calls: string[][] = []) {
       return ok(JSON.stringify({ state: "OPEN", headRefOid: HEAD, reviews: [], author: { login: "worker-bot" }, isCrossRepository: false, baseRefName: "main" }));
     }
     if (args[0] === "pr" && args[1] === "list") return ok(JSON.stringify([{ number: 7, body: "" }]));
+    if (text === `api repos/${REPOSITORY}/actions/jobs/32/logs --allow-escape-sequences`) return ok(`2026-10-22T10:00:00Z ${CHECK_LOG}\n`);
+    if (args[0] === "api" && args.includes(`repos/${REPOSITORY}/commits/${CLAIM_HEAD}/statuses?per_page=100`)) {
+      return ok(statuses.map((status) => [status.id, status.created_at, status.description].join("\t")).join("\n") + (statuses.length > 0 ? "\n" : ""));
+    }
+    if (args[0] === "api" && args.includes("POST") && args.includes(`repos/${REPOSITORY}/statuses/${CLAIM_HEAD}`)) {
+      const field = (name: string) => args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
+      statuses.push({ id: statuses.length + 1, context: field("context"), created_at: "2026-10-22T10:00:00Z", description: field("description") });
+      return ok("");
+    }
     return REFUSED;
   };
 }
@@ -58,11 +73,16 @@ const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,isCrossRep
 
 test("the GitHub plugin passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
   const host = create({}, fakePluginDeps({ exec: github(), policy, readFile: (path) => readFileSync(path, "utf8"), env: { A11Y_APP_NODE: "false" } }));
-  const { passed, skipped } = await runCodeHostConformance(host, { pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED });
+  const { passed, skipped } = await runCodeHostConformance(host, {
+    pull: PULL, repository: REPOSITORY, missing: MISSING, self: "worker-bot", wrapper: WRAPPER_INPUTS, merged: MERGED,
+    check: { detailsUrl: CHECK_URL, log: CHECK_LOG }, claim: { repository: REPOSITORY, head: CLAIM_HEAD, environment: { GH_CONFIG_DIR: "/opt/reviewer/gh" } },
+  });
   assert.deepEqual(passed, [
     "shape", "readOwnLogin names the account or answers null", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read", "readReplies answers a list of replies, and null for a pull request it cannot read",
     "readPullState names the state or answers null", "readReviewState reads the head, the reviews and whether the checks settled", "openPullUrlsOf lists a repository's open pull requests",
-    "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes", "subscribe returns the function that cancels it",
+    "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes",
+    "readCheckLog answers null for an address that names no job", "rerunFailedChecks of no checks reruns nothing and says so", "readReviewClaims answers the entries of a head, or why it could not", "subscribe returns the function that cancels it",
+    "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
