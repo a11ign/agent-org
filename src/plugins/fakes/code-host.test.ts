@@ -22,27 +22,31 @@ function seeded() {
   return { host, probe: { pull: url, repository: "owner/repo", missing: fakePullUrl("owner/repo", 999), self: "fake-worker", change: ref, wrapper: INPUTS, merged: merged.url, check, claim } };
 }
 
-/** The checks of the optional `rows` group: the fake serves ticket mode only, so they are skipped with their reason and never counted as passed (contract 1.7). */
+/**
+ * The checks of the optional `rows` group that need a `run` to refuse: the fake's rows act on its own state and ignore `run`, so they are skipped with their reason and never counted as passed (contract 1.7).
+ * The other two checks of the group run on the fake's rows and pass.
+ */
 const ROWS_CHECKS = [
-  "the rows are the operations row mode asks of the code host", "a read the rows could not make answers null or throws, never an empty answer", "a write the rows could not make throws, so no caller reads it as done",
-  "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect",
+  "a read the rows could not make answers null or throws, never an empty answer", "a write the rows could not make throws, so no caller reads it as done",
 ];
+const ROWS_PASSED = ["the rows are the operations row mode asks of the code host", "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect"];
 
 test("the fake code host passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
   const { host, probe } = seeded();
   const { passed, skipped } = await runCodeHostConformance(host, probe);
   assert.deepEqual(passed, [
-    "shape", "readOwnLogin names the account or answers null", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read", "readReplies answers a list of replies, and null for a pull request it cannot read",
+    "shape", "readOwnLogin names the account or answers null", "repoViewArgs and repoCloneArgs name the repository they are asked about", "readPullFeedback reads a pull request", "readPullFeedback answers null for a pull request it cannot read", "readReplies answers a list of replies, and null for a pull request it cannot read",
     "readPullState names the state or answers null", "readReviewState reads the head, the reviews and whether the checks settled", "openPullUrlsOf lists a repository's open pull requests",
     "sweepRetargets keeps the note of a pull request it cannot read", "sweepRetargets with no pull requests has no notes",
     "readCheckLog answers null for an address that names no job", "rerunFailedChecks of no checks reruns nothing and says so", "readReviewClaims answers the entries of a head, or why it could not", "subscribe returns the function that cancels it",
+    ...ROWS_PASSED,
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
     "readChange reads a change, and answers null for one it cannot", "armMerge arms the merge and says it is armed",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
-  assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake has no rows, which are optional: it serves ticket mode only");
-  assert.ok(skipped.every(({ reason }) => /the code host has no rows, which are optional \(contract 1\.7\)/.test(reason)));
+  assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
+  assert.ok(skipped.every(({ reason }) => /the code host has no rows that act through the caller's run \(contract 1\.7\)/.test(reason)));
 });
 
 test("without a change in the probe the port's reads are skipped with the reason, not passed", async () => {

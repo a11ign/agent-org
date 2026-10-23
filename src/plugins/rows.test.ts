@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { codeHostForRows, forgetActivation, substituteCodeHost } from "./active.ts";
+import { loadedCodeHost, forgetActivation, substituteCodeHost } from "./active.ts";
 import { loadCodeHostSync } from "./activate-host-sync.ts";
 import { createFakeCodeHost } from "./fakes/code-host.ts";
 import { fakePluginDeps } from "./fakes/deps.ts";
@@ -27,6 +27,9 @@ import { rows } from "./rows.ts";
 const SRC = fileURLToPath(new URL("../", import.meta.url));
 const DEPS = () => fakePluginDeps();
 const PROJECT = join(SRC, "packaging", "fixtures", "row-claim-file-overlap-rule", "project");
+
+/** A code host that serves ticket mode only: the fake, with no `rows`. */
+const noRows = () => ({ ...createFakeCodeHost(), rows: undefined });
 
 const hostText = (providers: Record<string, unknown>): string => JSON.stringify({ tickets: { providers } });
 
@@ -58,14 +61,14 @@ test("a code host that is a fake, or a plugin of a contract major this agent-org
 test("row mode uses the substituted code host, then the activated one, then the host file's, each once, and forgetting starts over", () => {
   forgetActivation();
   try {
-    const loaded = codeHostForRows({});
-    assert.equal(codeHostForRows({}), loaded, "the host file's code host is loaded once per process");
+    const loaded = loadedCodeHost({});
+    assert.equal(loadedCodeHost({}), loaded, "the host file's code host is loaded once per process");
     const fake = createFakeCodeHost();
     substituteCodeHost(fake);
-    assert.equal(codeHostForRows({}), fake, "a test's substitute comes first");
+    assert.equal(loadedCodeHost({}), fake, "a test's substitute comes first");
     forgetActivation();
-    assert.notEqual(codeHostForRows({}), fake, "forgetting takes the substitute away");
-    assert.notEqual(codeHostForRows({}), loaded, "and the one loaded on row mode's own, which is loaded again");
+    assert.notEqual(loadedCodeHost({}), fake, "forgetting takes the substitute away");
+    assert.notEqual(loadedCodeHost({}), loaded, "and the one loaded on row mode's own, which is loaded again");
   } finally {
     forgetActivation();
   }
@@ -76,7 +79,7 @@ test("row mode uses the substituted code host, then the activated one, then the 
 test("a code host with no rows refuses a row-mode program by name, and the real one serves it", () => {
   forgetActivation();
   try {
-    substituteCodeHost(createFakeCodeHost());
+    substituteCodeHost(noRows());
     assert.throws(() => rows(), /row mode needs a code host that implements rows: .+ does not/);
   } finally {
     forgetActivation();

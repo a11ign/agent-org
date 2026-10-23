@@ -69,7 +69,6 @@ test("the rows ask core's helpers when an operation needs them, and the operatio
   };
   assert.deepEqual(rows.readOpenPullHeads("o/r", refused, 100).read, false);
   assert.equal(rows.openIncidentsOf("o/r", refused), null);
-  assert.deepEqual(rows.repoViewArgs("o/r"), ["repo", "view", "o/r"]);
   assert.equal(asked, 0, "none of those reads the project");
   assert.throws(() => rows.readRowsByLabel({ label: "x", state: "OPEN", select: "number", run: refused }), /HTTP 502|not registered/);
   assert.throws(() => rows.ticketAdapter({ run: refused, scope: "o/r" }), /core's helpers are not registered/);
@@ -81,9 +80,10 @@ test("the rows ask core's helpers when an operation needs them, and the operatio
 test("the rows hold the contract's operations and values, and the values are the ones a caller sizes its reads by", () => {
   const rows: CodeHostRows = createRows(() => { throw new Error("not asked"); });
   assert.equal(rows.tracker, "github");
+  assert.equal(rows.acts, "through-run", "the GitHub plugin's operations act on the run their caller hands them");
   assert.equal(rows.sincePageSize, 100, "a connection page is 100 rows at most, which a caller sizing a window by pages divides by");
   assert.equal(rows.projectItemsPage, 100);
   assert.deepEqual(rows.corePoolProbe, ["api", "user", "-i"]);
   assert.match(rows.openItemsQuery, /rateLimit \{ limit remaining resetAt \}/);
-  assert.deepEqual(Object.entries(rows).filter(([, value]) => typeof value !== "function").map(([name]) => name).sort(), ["corePoolProbe", "openItemsQuery", "projectItemsPage", "sincePageSize", "tracker"]);
+  assert.deepEqual(Object.entries(rows).filter(([, value]) => typeof value !== "function").map(([name]) => name).sort(), ["acts", "corePoolProbe", "openItemsQuery", "projectItemsPage", "sincePageSize", "tracker"]);
 });

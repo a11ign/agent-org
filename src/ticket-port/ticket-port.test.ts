@@ -15,10 +15,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { openItemsQuery, TRACKER } from "./github-adapter.ts";
+import { TRACKER } from "./github-adapter.ts";
 import { PROJECT_NUMBER } from "../board-snapshot-scope.ts";
-import { codeHostForRows, forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { loadedCodeHost, forgetActivation, substituteCodeHost } from "../plugins/active.ts";
 import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 import { rows } from "../plugins/rows.ts";
 import { readRowsOffBoard } from "../work-gate/causes/rows-off-board.ts";
 import { workGateSource } from "../lib/work-gate-source.ts";
@@ -128,8 +129,8 @@ test("A11-160 the delegates and the code host's `rows` cover each other: an oper
   const operations = Object.keys(rows());
   const delegated = delegatedOperations();
   assert.ok(operations.length > 50, "the real code host's rows are the ones read: a short list would pass for the wrong reason");
-  // `tracker` is core's own vocabulary (`TRACKER`) and is checked below; every other member is read through a delegate.
-  const undelegated = operations.filter((operation) => operation !== "tracker" && !delegated.has(operation));
+  // `tracker` is core's own vocabulary (`TRACKER`) and is checked below, and `acts` is how the code host's operations act, which the contract suite reads; every other member is read through a delegate.
+  const undelegated = operations.filter((operation) => operation !== "tracker" && operation !== "acts" && !delegated.has(operation));
   assert.deepEqual(undelegated, [], "an operation of the rows no file of src/ticket-port reaches");
   assert.deepEqual([...delegated].filter((operation) => !operations.includes(operation)), [], "a delegate to an operation the rows do not have");
   assert.equal(rows().tracker, TRACKER, "core's name for the adapter's kind of tracker is the code host's");
@@ -137,9 +138,9 @@ test("A11-160 the delegates and the code host's `rows` cover each other: an oper
 
 test("A11-160 a code host without `rows` refuses a row-mode program by name", () => {
   try {
-    substituteCodeHost(createFakeCodeHost());
+    substituteCodeHost({ ...createFakeCodeHost(), rows: undefined });
     assert.throws(() => rows(), /row mode needs a code host that implements rows: .+ does not/);
-    assert.equal(codeHostForRows().rows, undefined, "the host that was asked is the one with none");
+    assert.equal(loadedCodeHost().rows, undefined, "the host that was asked is the one with none");
   } finally {
     forgetActivation();
   }
@@ -148,24 +149,33 @@ test("A11-160 a code host without `rows` refuses a row-mode program by name", ()
 
 // --- 4. the consumer -----------------------------------------------------------------------------------------------------------------
 
-test("#484 consumer: readRowsOffBoard reads the tracker only through the port, and its facts are unchanged", () => {
-  const node = (number: number, projects: number[]) => ({ number, title: `row ${number}`, createdAt: "2026-09-26T08:00:00Z",
-    projectItems: { totalCount: projects.length, nodes: projects.map((n) => ({ project: { number: n } })) } });
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    return JSON.stringify({ data: { rateLimit: { limit: 5000, remaining: 4000, resetAt: "2026-10-10T13:00:00Z" }, viewer: { login: "a11ign-ai-leads" },
-      repository: { issues: { nodes: [node(1, [BOARD]), node(2, [])], pageInfo: { hasNextPage: false, endCursor: null } } } } });
+test("#484 consumer: readRowsOffBoard reads the tracker only through the port, and its facts are unchanged (on the fake code host's rows)", () => {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  const created = "2026-09-26T08:00:00.000Z";
+  world.rows.set(1, fakeRow(world, 1, { title: "row 1", createdAt: created, onBoard: true }));
+  world.rows.set(2, fakeRow(world, 2, { title: "row 2", createdAt: created, onBoard: false }));
+  world.rows.set(3, fakeRow(world, 3, { title: "row 3", createdAt: created, state: "CLOSED" }));
+  world.budget = { account: "a11ign-ai-leads", resource: "graphql", remaining: 4000, limit: 5000, resetAt: "2026-10-10T13:00:00Z" };
+  substituteCodeHost(host);
+  const run = (): string => {
+    throw new Error("the fake code host acts on its own state: no gh is run");
   };
   const pools: unknown[] = [];
-  const facts = readRowsOffBoard(run, pools as never);
-  assert.deepEqual(facts, [
-    { number: 1, title: "row 1", createdMs: Date.parse("2026-09-26T08:00:00Z"), onBoard: true },
-    { number: 2, title: "row 2", createdMs: Date.parse("2026-09-26T08:00:00Z"), onBoard: false },
-  ]);
-  assert.equal(calls.length, 1, "one call for fewer than a page of rows, as before");
-  assert.ok(calls[0].includes(`query=${openItemsQuery()}`), "the query is the adapter's");
-  assert.equal(pools.length, 1, "the budget the answer named reached the tick");
+  try {
+    const facts = readRowsOffBoard(run, pools as never);
+    assert.deepEqual(facts, [
+      { number: 1, title: "row 1", createdMs: Date.parse(created), onBoard: true },
+      { number: 2, title: "row 2", createdMs: Date.parse(created), onBoard: false },
+    ], "the open rows, each with whether it is on the board; a closed row is not asked about");
+    assert.deepEqual(pools, [world.budget], "the budget the tracker named reached the tick");
+    world.budget = null;
+    pools.length = 0;
+    readRowsOffBoard(run, pools as never);
+    assert.deepEqual(pools, [], "CONTROL: a tracker that names none tells the tick none");
+  } finally {
+    forgetActivation();
+  }
 });
 
 test("#484 consumer: work-gate.ts no longer names the off-board query or its paging; it asks through the port", () => {

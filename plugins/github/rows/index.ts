@@ -27,14 +27,14 @@ import { boardItemOf, isIssueOnBoard, PROJECT_ITEMS_PAGE } from "./project-membe
 import { pullRequestFieldsOf } from "./pull-request-fields.ts";
 import { dequeuePullRequestOf, mergeGroupRunCountOf, queueEntriesOf } from "./queue-entry-reads.ts";
 import { closeIncident, closedIncidentsOf, createIncident, jobLogOf } from "./release-incidents.ts";
-import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
 import { forgetRefusedReads, isRowsByLabelRead, readClaimedRows, readRowsByLabel, readUnlessRefused } from "./rows-by-label.ts";
 import { asListJson, foldPage, isSinceRead, parsePage, readMergedPullRequests, readRowsSince, SINCE_PAGE_SIZE, sincePageArgs } from "./rows-since.ts";
 import { testsFirstReadsOf } from "./tests-first-reads.ts";
 
 /** The values of the rows, and the operations that read the project's declaration: what core hands over as `helpers`, asked when an operation needs it. */
-function projectRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "tracker" | "sincePageSize" | "projectItemsPage" | "openItemsQuery" | "corePoolProbe" | "ticketAdapter" | "boardFiledRow" | "isIssueOnBoard" | "boardItemOf"> {
+function projectRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "acts" | "tracker" | "sincePageSize" | "projectItemsPage" | "openItemsQuery" | "corePoolProbe" | "ticketAdapter" | "boardFiledRow" | "isIssueOnBoard" | "boardItemOf"> {
   return {
+    acts: "through-run",
     tracker: TRACKER,
     sincePageSize: SINCE_PAGE_SIZE,
     projectItemsPage: PROJECT_ITEMS_PAGE,
@@ -52,7 +52,7 @@ const pullRequestRows = {
   latestApprovals, approvalFactsOf, keyedCommentsOf, postRowComment, createRow, editComment, reviewsOf, mergedWindowOf, openPullFieldsOf, readDisarmSeat, disableAutoMergeOf, briefChairmanOnPull,
   headOfChange, checkRunsOfHead, workflowRunsOf, jobsOfRun, failedLogOfRun, stateOfRow, redRunOfHead, rerunFailedJobsOf, closeRowWithComment, commentsSince, conditionalGetArgs, pullViewArgs,
   pullTextOf, branchRefTextOf, addedFilesTextOf, fileAtTextOf, defaultBranchFileTextOf, commentOnIssue, openIncidentsOf, readOpenPullHeads, openPullBodiesOf, outsideArmListArgs, readyPullRequest,
-  ensureTriageLabel, pullRequestFieldsOf, queueEntriesOf, mergeGroupRunCountOf, dequeuePullRequestOf, jobLogOf, closedIncidentsOf, createIncident, closeIncident, repoViewArgs, repoCloneArgs,
+  ensureTriageLabel, pullRequestFieldsOf, queueEntriesOf, mergeGroupRunCountOf, dequeuePullRequestOf, jobLogOf, closedIncidentsOf, createIncident, closeIncident,
   testsFirstReadsOf, isRowsByLabelRead, forgetRefusedReads, isSinceRead, parsePage, sincePageArgs, asListJson,
 };
 

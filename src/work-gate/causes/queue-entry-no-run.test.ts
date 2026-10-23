@@ -1,8 +1,8 @@
-// no-token: none -- every read and write goes through an injected runner and a temporary state directory; nothing here reaches GitHub, git, herdr or the fleet
+// no-token: none -- every read and write goes through the fake code host and a temporary state directory; nothing here reaches GitHub, git, herdr or the fleet
 /**
  * agent-org#1195: A MERGE-QUEUE ENTRY WITH NO RUN IS NAMED AND RE-QUEUED ONCE BY THE GATE, AND COUNTED.
  *
- * ONE HARNESS: `Queue` is a fake `gh` that answers the entries read, the runs-by-sha read and the dequeue from a table, records every call, and a fake arming port that records the re-arm and the
+ * ONE HARNESS: `queue` seeds the fake code host's merge queue (its entries, the runs-by-sha and the dequeue), records every call, and a fake arming port that records the re-arm and the
  * comment. Each negative differs from its positive by one fact, and the two controls the row names are here by name:
  *   (1) a read that failed is "unread", never "no run": a runner that THROWS on the runs read names nothing and re-queues nothing (fails on an implementation that reads a throw as an empty list);
  *   (2) once, not twice: the second occurrence on the same pull request makes no dequeue and no re-arm, and raises the incident.
@@ -11,12 +11,14 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { tmpDir } from "../../lib/tmp-fixture.ts";
+import { forgetActivation, substituteCodeHost } from "../../plugins/active.ts";
+import { createFakeCodeHost } from "../../plugins/fakes/code-host.ts";
 import { workGateSource } from "../../lib/work-gate-source.ts";
 import { emptyCanaryState } from "../../org-health/fleet-build-readings.ts";
 import { withMachineryFlag } from "../../org-health.ts";
-import type { QueueEntry } from "../../ticket-port/queue-entry-reads.ts";
+import type { QueueEntry } from "../../plugins/contracts/code-host-rows.ts";
 import type { ArmingPort } from "../vocabulary.ts";
 import { ORG_HEALTH_CLASSES } from "../org-health-suppression.ts";
 import {
@@ -33,33 +35,27 @@ const SHA = (n: number) => `${String(n).padStart(4, "0")}${"a".repeat(36)}`;
 const entry = (pull: number, { age = 12, state = "AWAITING_CHECKS", position = 1, sha = SHA(pull) }: { age?: number; state?: string; position?: number; sha?: string | null } = {}): QueueEntry =>
   ({ state, enqueuedAt: new Date(T0 - age * MIN).toISOString(), position, headSha: sha, pull, pullId: `PR_node_${pull}` });
 
-type Calls = { entries: number; runs: string[]; dequeued: string[]; armed: string[]; comments: { id: number; text: string }[] };
+type Calls = { readonly entries: number; readonly runs: string[]; readonly dequeued: string[]; armed: string[]; comments: { id: number; text: string }[] };
 
-/** The fake `gh`: `runs` maps sha to a count, or to `"throw"`; `dequeue` is `"ok"` or `"error"`; `entries` is a function so a later tick may read another queue. */
+/**
+ * The fake code host's merge queue (A11-160: the queue reads and the dequeue are the code host's `rows`, so this test seeds the fake's world and says nothing of GitHub's answers): `runs` maps a sha to a
+ * count, or to `"throw"`; `dequeue` is `"ok"` or a refusal; `entries` is a function so a later tick may read another queue. The arming port is a fake that records the re-arm and the comment.
+ */
 function queue({ entries, runs = {}, dequeue = "ok", queueRead = "ok", onDequeue = () => {} }: { entries: () => QueueEntry[]; runs?: Record<string, number | "throw">; dequeue?: "ok" | "error" | "errors-in-body"; queueRead?: "ok" | "throw"; onDequeue?: () => void }) {
-  const calls: Calls = { entries: 0, runs: [], dequeued: [], armed: [], comments: [] };
-  const run = (args: string[]): string => {
-    const text = args.join(" ");
-    if (text.includes("mutation")) {
-      calls.dequeued.push(String(args.find((arg) => arg.startsWith("id="))).slice(3));
-      onDequeue();
-      if (dequeue === "error") throw new Error("GraphQL: Could not resolve to a PullRequest");
-      return dequeue === "errors-in-body" ? JSON.stringify({ errors: [{ message: "not in the queue" }] }) : JSON.stringify({ data: { dequeuePullRequest: { mergeQueueEntry: null } } });
-    }
-    if (text.includes("mergeQueue")) {
-      calls.entries += 1;
-      if (queueRead === "throw") throw new Error("HTTP 502");
-      return JSON.stringify({ data: { repository: { mergeQueue: { entries: { nodes: entries().map((e) => ({ state: e.state, enqueuedAt: e.enqueuedAt, position: e.position,
-        headCommit: e.headSha === null ? null : { oid: e.headSha }, pullRequest: e.pull === null ? null : { number: e.pull, id: e.pullId } })) } } } } });
-    }
-    const sha = /head_sha=([0-9a-f]+)/.exec(text)?.[1];
-    if (sha !== undefined) {
-      calls.runs.push(sha);
-      const count = runs[sha] ?? 1;
-      if (count === "throw") throw new Error("HTTP 403: rate limit");
-      return `${count}\n`;
-    }
-    throw new Error(`unexpected gh call: ${text}`);
+  const host = createFakeCodeHost();
+  const { queue: world, calls: asked } = host.rowsWorld;
+  Object.defineProperty(world, "entries", { get: () => (queueRead === "throw" ? new Error("HTTP 502") : entries()), configurable: true });
+  for (const [sha, count] of Object.entries(runs)) world.runs.set(sha, count === "throw" ? new Error("HTTP 403: rate limit") : count);
+  world.dequeueRefusal = dequeue === "ok" ? null : dequeue === "error" ? "GraphQL: Could not resolve to a PullRequest" : "the dequeue was refused: not in the queue";
+  world.onDequeue = onDequeue;
+  substituteCodeHost(host);
+  const calls: Calls = {
+    get entries() { return asked.filter((call) => call === "queueEntriesOf").length; },
+    get runs() { return asked.filter((call) => call.startsWith("mergeGroupRunCountOf ")).map((call) => call.split(" ")[1]!); },
+    dequeued: world.dequeued, armed: [], comments: [],
+  };
+  const run = (): string => {
+    throw new Error("the fake code host acts on its own state: no gh is run");
   };
   const port: ArmingPort = {
     armMerge: (ref) => { calls.armed.push(ref.id); return true; },
@@ -67,6 +63,8 @@ function queue({ entries, runs = {}, dequeue = "ok", queueRead = "ok", onDequeue
   };
   return { run, port, calls };
 }
+
+afterEach(() => forgetActivation());
 
 /** One tick of the gate's call, with a state directory that persists between ticks of one test. */
 function gate(dir: string, harness: ReturnType<typeof queue>, { now, state = ON }: { now: number; state?: typeof ON }) {

@@ -4,7 +4,7 @@
 // `active.ts` is the activation: it loads the plugins a host enables, and its module graph holds the gate (the reviewer's helpers). Row mode's GitHub operations are reached from about 150 programs and from
 // the tests of the code that calls them, and a program that reaches for one must not load the activation to do it. So the process's code host lives HERE, in a module whose graph is light:
 //   - `active.ts` puts into it what it activated (`setActivated`) and what a test substituted (`substituteHost`);
-//   - row mode asks it (`codeHostForRows`), and when nothing is there it loads the host file's code host by `require` (`activate-host-sync.ts`) with deps that name no reviewer helpers;
+//   - row mode asks it (`loadedCodeHost`), and when nothing is there it loads the host file's code host by `require` (`activate-host-sync.ts`) with deps that name no reviewer helpers;
 //   - core registers what it owns of row mode (`registerRowsHelpers`, called by `rows.ts`), and the code host's deps ask for it when an operation needs it (`coreRowsHelpers`).
 import { readFileSync } from "node:fs";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
@@ -114,10 +114,10 @@ export function lightPluginDeps({ env, stateDir, pick, clones = {}, review }: Re
 }
 
 /**
- * THE CODE HOST FOR ROW MODE (A11-160, step 4): the one a test substituted, else the one an activation built, else the host file's code host, loaded once by `require` (`activate-host-sync.ts`). Row mode's
+ * THE CODE HOST FOR CODE THAT CANNOT AWAIT ONE (A11-160, step 4): row mode's operations, and the argument lists onboard and the conventions install ask of it. the one a test substituted, else the one an activation built, else the host file's code host, loaded once by `require` (`activate-host-sync.ts`). Row mode's
  * GitHub operations are reached from about 150 programs that are synchronous from their first line, so none can await an activation first. REFUSES, naming the plugin, a code host that cannot be loaded.
  */
-export function codeHostForRows(env: NodeJS.ProcessEnv = process.env): CodeHost {
+export function loadedCodeHost(env: NodeJS.ProcessEnv = process.env): CodeHost {
   if (substitute !== null) return substitute;
   if (activated !== null && activated.loaded.some(({ plugin }) => plugin.concern === "codeHost")) return activated.codeHost();
   loadedForRows ??= loadCodeHostSync(hostFileReader(env), env, (own) => ({ ...lightPluginDeps({ env: own, stateDir: "", pick: "assigned" }), reviewing: NO_REVIEWER_HELPERS }));

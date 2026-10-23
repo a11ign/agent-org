@@ -170,6 +170,11 @@ export type Page = { nodes: any[]; hasNextPage: boolean; endCursor: string | nul
  * does not change, and the delegates call the activated code host's `rows`.
  */
 export interface CodeHostRows {
+  /**
+   * How the operations act. `through-run`: on the `run` their caller hands them, which carries the caller's policy (the GitHub plugin's, until the callers move into it). `on-its-own-state`: on
+   * the host's own state, ignoring `run`, which is what a fake does. The contract suite asks a refused `run` of the first and has nothing to refuse in the second.
+   */
+  readonly acts: "through-run" | "on-its-own-state";
   /** The kind of tracker the adapter's items belong to: `ItemRef.tracker`. */
   readonly tracker: string;
   /** How many rows a connection page holds, which a caller sizing a window by pages needs. */
@@ -261,9 +266,6 @@ export interface CodeHostRows {
   closedIncidentsOf(repo: string, run: RowsRun): ClosedIncidentRead[] | null;
   createIncident(tracker: string, incident: { title: string; body: string }, run: RowsRun): void;
   closeIncident(tracker: string, number: number, comment: string, run: RowsRun): void;
-
-  repoViewArgs(repo: string): string[];
-  repoCloneArgs(remote: string, path: string): string[];
 
   /** For a test: a fresh process, which asks again what a limit refused. */
   forgetRefusedReads(): void;

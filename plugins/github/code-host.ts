@@ -14,6 +14,7 @@ import { ghRunner } from "./gh.ts";
 import { openPullUrlsOf } from "./open-pulls.ts";
 import { readOwnLogin, readPullFeedback } from "./pull-feedback.ts";
 import { readMergedFindings } from "./merged-findings.ts";
+import { repoCloneArgs, repoViewArgs } from "./repo-args.ts";
 import { readReplies } from "./replies.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
@@ -35,6 +36,8 @@ const notYet = (operation: string, ref: ChangeRef): never => {
 export function createCodeHost(deps: PluginDeps): CodeHost {
   const gh = ghRunner(deps);
   return {
+    repoViewArgs,
+    repoCloneArgs,
     readOwnLogin: () => readOwnLogin(gh),
     readPullFeedback: (url, self, alsoIgnore) => readPullFeedback(url, self, gh, deps.policy, alsoIgnore),
     readReplies: (url, request) => readReplies(url, request, gh),

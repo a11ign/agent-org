@@ -304,7 +304,7 @@ test("(g) A11-160: the core pool's probe is the code host's, so a code host that
     return { status: 0, stderr: "", stdout: probeOf(4560) };
   });
   try {
-    substituteCodeHost(createFakeCodeHost());
+    substituteCodeHost({ ...createFakeCodeHost(), rows: undefined });
     assert.equal(reading(call, INSTALLATION_REFUSAL), null, "the host asked has no rows, so there is no probe to send: no reading, not a throw");
     assert.deepEqual(asked, [], "and nothing was sent");
     assert.equal(reading(call, "GraphQL: API rate limit exceeded for user ID 1"), 4560, "CONTROL: the GraphQL probe is core's and is sent as before");

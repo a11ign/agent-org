@@ -25,17 +25,23 @@ type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
   "boardFiledRow", "briefChairmanOnPull", "headOfChange", "checkRunsOfHead", "workflowRunsOf", "jobsOfRun", "failedLogOfRun", "stateOfRow", "redRunOfHead", "rerunFailedJobsOf", "closeRowWithComment", "commentsSince", "conditionalGetArgs",
   "pullViewArgs", "pullTextOf", "branchRefTextOf", "addedFilesTextOf", "fileAtTextOf", "defaultBranchFileTextOf", "commentOnIssue", "openIncidentsOf", "readOpenPullHeads", "openPullBodiesOf", "outsideArmListArgs", "readyPullRequest",
-  "ensureTriageLabel", "isIssueOnBoard", "boardItemOf", "pullRequestFieldsOf", "queueEntriesOf", "mergeGroupRunCountOf", "dequeuePullRequestOf", "jobLogOf", "closedIncidentsOf", "createIncident", "closeIncident", "repoViewArgs",
-  "repoCloneArgs", "forgetRefusedReads", "isRowsByLabelRead", "readUnlessRefused", "readRowsByLabel", "readClaimedRows", "sincePageArgs", "isSinceRead", "parsePage", "foldPage", "readRowsSince", "asListJson", "readMergedPullRequests",
+  "ensureTriageLabel", "isIssueOnBoard", "boardItemOf", "pullRequestFieldsOf", "queueEntriesOf", "mergeGroupRunCountOf", "dequeuePullRequestOf", "jobLogOf", "closedIncidentsOf", "createIncident", "closeIncident",
+  "forgetRefusedReads", "isRowsByLabelRead", "readUnlessRefused", "readRowsByLabel", "readClaimedRows", "sincePageArgs", "isSinceRead", "parsePage", "foldPage", "readRowsSince", "asListJson", "readMergedPullRequests",
   "testsFirstReadsOf"] as const satisfies readonly (keyof CodeHostRows)[];
 
-const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
+const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
 
 const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
   "readOwnLogin names the account or answers null": ({ host }) => {
     const login = host.readOwnLogin();
     expect(login === null || (isString(login) && login !== ""), "readOwnLogin() must be a login, or null when it cannot be read");
+  },
+  "repoViewArgs and repoCloneArgs name the repository they are asked about": ({ host }) => {
+    const view = host.repoViewArgs("owner/repo");
+    const clone = host.repoCloneArgs("owner/repo", "/work/repo");
+    expect(Array.isArray(view) && view.every(isString) && view.includes("owner/repo"), "repoViewArgs must be a list of arguments that names the repository");
+    expect(Array.isArray(clone) && clone.every(isString) && clone.includes("owner/repo") && clone.includes("/work/repo"), "repoCloneArgs must be a list of arguments that names the remote and the path");
   },
   "readPullFeedback reads a pull request": ({ host, probe }) => {
     const feedback = host.readPullFeedback(probe.pull, probe.self);
@@ -133,6 +139,11 @@ function throws(call: () => unknown): boolean {
   }
 }
 
+/** Rows whose operations act on the `run` their caller hands them (`acts: "through-run"`): only those have a refused `run` to answer. */
+const withRunRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
+  applies: ({ host }) => host.rows?.acts === "through-run", reason: `the code host has no rows that act through the caller's run (contract 1.7), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
+});
+
 const withRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
   applies: ({ host }) => host.rows !== undefined, reason: `the code host has no rows, which are optional (contract 1.7), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
 });
@@ -140,11 +151,12 @@ const withRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows 
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "the rows are the operations row mode asks of the code host": withRows("row mode's operations are not asked", ({ rows }) => {
     expect(hasFunctions(rows, ROWS_OPERATIONS), `rows is an object with ${ROWS_OPERATIONS.join(", ")} functions`);
+    expect(rows.acts === "through-run" || rows.acts === "on-its-own-state", "rows.acts must be through-run or on-its-own-state");
     expect(isString(rows.tracker) && rows.tracker !== "" && isString(rows.openItemsQuery) && rows.openItemsQuery !== "", "rows.tracker and rows.openItemsQuery must be text");
     expect(Number.isInteger(rows.sincePageSize) && rows.sincePageSize > 0 && Number.isInteger(rows.projectItemsPage) && rows.projectItemsPage > 0, "rows.sincePageSize and rows.projectItemsPage must be whole numbers above 0");
     expect(Array.isArray(rows.corePoolProbe) && rows.corePoolProbe.every(isString), "rows.corePoolProbe must be a list of arguments");
   }),
-  "a read the rows could not make answers null or throws, never an empty answer": withRows("no refused read is asked", ({ rows, probe }) => {
+  "a read the rows could not make answers null or throws, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
     const { repository } = probe;
     expect(rows.openIncidentsOf(repository, refused) === null && rows.closedIncidentsOf(repository, refused) === null && rows.openPullBodiesOf(repository, refused) === null, "a list of incidents or pull requests that could not be read must be null: null is never 'none'");
     expect(rows.commentsSince({ repo: repository, since: 0, run: () => null }) === null, "comments that could not be read must be null: null is never 'no comment'");
@@ -157,7 +169,7 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     expect(throws(() => rows.readRowsSince({ ask: { kind: "issues", states: ["OPEN"], orderBy: "CREATED_AT", repo: repository, select: "number", newest: 1 }, run: refused })), "a window of rows that could not be read must throw: never an empty window");
     expect(throws(() => rows.queueEntriesOf({ repo: repository, branch: "main", run: refused })) && throws(() => rows.checkRunsOfHead(repository, "a".repeat(40), refused)), "queue entries and check runs that could not be read must throw");
   }),
-  "a write the rows could not make throws, so no caller reads it as done": withRows("no refused write is asked", ({ rows, probe }) => {
+  "a write the rows could not make throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
     const { repository } = probe;
     expect(throws(() => rows.closeRowWithComment({ row: 1, repo: repository, comment: "done", run: refused })) && throws(() => rows.postRowComment({ repo: repository, row: 1, body: "b", run: refused }))
       && throws(() => rows.commentOnIssue({ repo: repository, issue: 1, body: "b", run: refused })) && throws(() => rows.editComment({ repo: repository, id: 1, body: "b", run: refused })), "a comment or a close that was refused must throw");

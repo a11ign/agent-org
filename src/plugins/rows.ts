@@ -5,7 +5,7 @@
 // `rows` and calls it. A code host without `rows` serves ticket mode only (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`), and a row-mode program that reaches for one
 // is refused here, by name: `row mode needs a code host that implements rows: <plugin> does not`.
 import { providersOfText } from "../ticket-mode/providers.ts";
-import { codeHostForRows, hostFileTextForRows, PluginActivationRefusal, registerRowsReadHelpers } from "./code-host-slot.ts";
+import { loadedCodeHost, hostFileTextForRows, PluginActivationRefusal, registerRowsReadHelpers } from "./code-host-slot.ts";
 import type { CodeHostRows } from "./contracts/code-host-rows.ts";
 import { defaultCatalog } from "./registry.ts";
 import { rowsReadHelpers } from "./rows-light-helpers.ts";
@@ -20,7 +20,7 @@ function codeHostNamed(): string {
 
 /** The code host's row operations. REFUSES by name when the code host implements none. */
 export function rows(): CodeHostRows {
-  const host = codeHostForRows();
+  const host = loadedCodeHost();
   if (host.rows === undefined) throw new PluginActivationRefusal(`row mode needs a code host that implements rows: ${codeHostNamed()} does not`);
   return host.rows;
 }

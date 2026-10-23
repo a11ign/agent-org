@@ -21,7 +21,7 @@ import { activatedHost, forgetSlot, lightPluginDeps, PluginActivationRefusal, se
 import type { Catalog, CodeHostPolicy, LoadedPlugin, PluginDeps, ReviewerHelpers } from "./manifest.ts";
 import { gateHelpers } from "./reviewing-gate.ts";
 
-export { coreRowsHelpers, codeHostForRows } from "./code-host-slot.ts";
+export { coreRowsHelpers, loadedCodeHost } from "./code-host-slot.ts";
 export { realExec, realMode, realPlace, realProbe } from "./real-seams.ts";
 
 export { PluginActivationRefusal };

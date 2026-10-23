@@ -86,7 +86,7 @@ role's App can mint (`mintFailure`); core's `host:install`, `host:check`, the ti
 are run by their paths under the installed tool, never imported.
 
 **A code host's `rows`** (code host contract 1.7, optional) are row mode's GitHub operations, which `src/ticket-port/` held until A11-160 moved them (`docs/adr/0007-row-modes-github-operations-are-core-delegates-over-the-code-hosts-rows.md`). Each takes the `run` its caller hands it, so the caller's timeout, memo and call census still apply, and
-reads the project's vocabulary and board through `deps.rows`, which core hands over when an operation asks. A code host with none serves ticket mode only. Core loads the code host for them by `require`, which Node 24 allows on a module graph with no top-level `await`:
+reads the project's vocabulary and board through `deps.rows`, which core hands over when an operation asks. A code host with none serves ticket mode only; `rows.acts` says whether the operations act on the caller's `run` (GitHub's, for now) or on the host's own state (the fake's, which models a tracker and a queue in memory). Core loads the code host for them by `require`, which Node 24 allows on a module graph with no top-level `await`:
 a plugin of this kind keeps its graph free of one.
 
 A plugin may also bring a command: `src/commands.ts` can name its program by a path inside the plugin (`../plugins/github/stack-live-check-command.ts`).

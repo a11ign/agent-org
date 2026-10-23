@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ItemRef, PortEvent } from "../../../src/ticket-port/port.ts";
 import { rowsHelpers } from "../../../src/plugins/rows-helpers.ts";
-import { type GithubAdapterOptions, githubTicketAdapter as adapterOver, labelOfFlag as flagLabel } from "./adapter.ts";
+import { type GithubAdapterOptions, githubTicketAdapter as adapterOver, labelOfFlag as flagLabel, OPEN_ITEMS_QUERY } from "./adapter.ts";
 
 const HELPERS = rowsHelpers();
 const githubTicketAdapter = (options: GithubAdapterOptions) => adapterOver(options, HELPERS);
@@ -200,6 +200,22 @@ test("#921 NEGATIVE CONTROL: addBlocker refuses an item that is not GitHub's, by
   const { run, calls } = stub([]);
   assert.throws(() => githubTicketAdapter({ run, scope: SCOPE }).addBlocker({ ...ROW, tracker: "jira" }, BLOCKER), /only github items can be linked, got jira and github/);
   assert.equal(calls.length, 0);
+});
+
+test("#484 adapter: readOpenItems is ONE call for fewer than a page of rows, with the adapter's query, and the budget the answer named reaches the caller", () => {
+  const node = (number: number, projects: number[]) => ({ number, title: `row ${number}`, createdAt: "2026-09-26T08:00:00Z", projectItems: { totalCount: projects.length, nodes: projects.map((n) => ({ project: { number: n } })) } });
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    return JSON.stringify({ data: { rateLimit: { limit: 5000, remaining: 4000, resetAt: "2026-10-10T13:00:00Z" }, viewer: { login: "a11ign-ai-leads" },
+      repository: { issues: { nodes: [node(1, [BOARD]), node(2, [])], pageInfo: { hasNextPage: false, endCursor: null } } } } });
+  };
+  const budgets: unknown[] = [];
+  const items = githubTicketAdapter({ run, scope: SCOPE }).readOpenItems({ onBudget: (budget) => budgets.push(budget) });
+  assert.deepEqual(items?.map(({ ref, onBoard }) => [ref.id, onBoard]), [[1, true], [2, false]]);
+  assert.equal(calls.length, 1, "one call for fewer than a page of rows");
+  assert.ok(calls[0].includes(`query=${OPEN_ITEMS_QUERY}`), "the query is the adapter's");
+  assert.equal(budgets.length, 1, "the budget the answer named reached the caller");
 });
 
 test("#484 adapter: readOpenItems is `null` for a refused read, an answer with errors, a malformed page and a list still paging at the cap", () => {
