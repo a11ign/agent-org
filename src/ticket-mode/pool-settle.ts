@@ -10,9 +10,10 @@ import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSy
 import { basename } from "node:path";
 import { FINDINGS_HEADING, findingsSection, type PlanStamp, stampedPlan, unnamedIn, urlsNamedIn } from "./plan-stamp.ts";
 import { type TicketRead } from "./ticket-read.ts";
-import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, unpark } from "./queue/queue-transitions.ts";
+import { batchPlanDone, finish, noteWorking, park, planDone, recordPullFiles, recordPullStates, unpark } from "./queue/queue-transitions.ts";
 import { doneComment, PLAN_FILE_BYTES, QUESTION_CHARS } from "./pool-outcome.ts";
 import { recordOutcomeHeads } from "./queue/queue-pull-heads.ts";
+import { clearPartial } from "./queue/queue-next-step.ts";
 import { type Ticket } from "./source.ts";
 import { ticketDir } from "./ticket-paths.ts";
 import { productDecisionIn } from "./open-decisions.ts";
@@ -20,10 +21,12 @@ import { closedNote } from "../herdr-agents.ts";
 import { mergeWaits, type Order, parseOrder, unknownRepos } from "./batch-order.ts";
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, pullsOf, type PullHead } from "./board-view/view-types-and-filters.ts";
 import { countTokens, findTranscript } from "./pool-transcripts.ts";
-import { isParked } from "./board-view/pull-status-and-notes.ts";
+import { isParked, settledByPulls } from "./board-view/pull-status-and-notes.ts";
+import { stepNamed } from "./board-view/plan-steps.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { type PoolContext } from "./pool-context.ts";
 import type { PullFeedback } from "../plugins/contracts/code-host.ts";
+import type { PullState } from "./source.ts";
 
 /**
  * A run's agent wrote `working`: its reason becomes the run's latest note, for every ticket in the run, and the run carries on. The file's own
@@ -59,7 +62,7 @@ export function settle(ctx: PoolContext, entry: Entry, outcome: WrittenOutcome):
 /**
  * The board's completion of a worker's `done` (A11-91): the ticket moves to its team's completed state and the reason and evidence are posted on it,
  * through the tracker's own `complete`. The ticket's record of its move is cleared once it is complete, so nothing puts it back. A refusal, by the
- * board's rules or by the tracker, ends the run for a person, and the ticket is left where it is.
+ * board's rules or by the tracker, ends the run for a person, and the ticket is left where it is. A review round's `done` is judged by its pull requests first (A11-173).
  */
 async function completeDone(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "done" }>): Promise<void> {
   const { attaching, source } = ctx;
@@ -70,6 +73,8 @@ async function completeDone(ctx: PoolContext, entry: Entry, outcome: Extract<Out
   if (attaching.has(name)) return;
   attaching.add(name);
   try {
+    const mergedStates = entry.review === undefined ? {} : await settleReviewDone(ctx, entry, outcome);
+    if (mergedStates === null) return;
     const complete = source.complete?.bind(source);
     if (complete === undefined) return end(ctx, entry, { kind: "needs-human", reason: `this tracker cannot complete ${key}: ${outcome.reason}` });
     const note = await complete(key, doneComment(outcome));
@@ -78,11 +83,40 @@ async function completeDone(ctx: PoolContext, entry: Entry, outcome: Extract<Out
     if (note !== null) return end(ctx, entry, { kind: "needs-human", reason: `${key} was not completed (${note.trim()}): ${outcome.reason}` });
     update(ctx, (queue) => clearMove(queue, key));
     end(ctx, entry, outcome);
+    // Recorded once the run is finished, which is when the card reads them: it says what completed the ticket without waiting for the next refresh.
+    if (Object.keys(mergedStates).length > 0) update(ctx, (queue) => recordPullStates(queue, new Map([[key, mergedStates]])));
   } catch (err) {
     if (sameRun(ctx, entry)) end(ctx, entry, { kind: "needs-human", reason: `${key} could not be completed (${messageOf(err)}): ${outcome.reason}` });
   } finally {
     attaching.delete(name);
   }
+}
+
+/** What a review round's `done` does with its ticket, judged by the round's pull requests (A11-173): complete it now, leave it to the merge of an open pull request, or ask a person. PURE. */
+function reviewDoneVerdict(entry: Entry, states: Readonly<Record<string, PullState>>): "complete" | "wait" | "ask" {
+  const settled = settledByPulls({ ...entry, pullStates: states });
+  if (settled === "completed") return "complete";
+  return settled === "cancelled" ? "ask" : "wait";
+}
+
+/**
+ * Settle a review round's `done` by its pull requests as the tracker reads them (A11-173). With every one merged or closed and one merged, the ticket is completed now: the pull requests'
+ * states are returned, to be recorded once the run ends. With one still open the round ends as its ordinary `reviewed` result and the ticket completes when they merge, and the run's
+ * declaration goes, since the worker has said nothing remains to build. With all closed unmerged nothing was built, and a person is asked. Returns null, the run ended, when it does not
+ * complete, and also when the run was stopped meanwhile.
+ */
+async function settleReviewDone(ctx: PoolContext, entry: Entry, outcome: Extract<Outcome, { kind: "done" }>): Promise<Readonly<Record<string, PullState>> | null> {
+  const key = entry.ticket.key;
+  const states = (await ctx.source.pullStates?.([key]))?.get(key) ?? {};
+  if (!sameRun(ctx, entry)) return null;
+  const verdict = reviewDoneVerdict(entry, states);
+  if (verdict === "complete") return states;
+  if (verdict === "ask") end(ctx, entry, { kind: "needs-human", reason: `the worker wrote done in a review round, but its pull requests were closed without merging: ${outcome.reason}` });
+  else {
+    end(ctx, entry, { kind: "reviewed", prs: entry.review ?? [] });
+    update(ctx, (queue) => clearPartial(queue, key));
+  }
+  return null;
 }
 
 /**
@@ -115,10 +149,11 @@ async function proposeEdit(ctx: PoolContext, entry: Entry, outcome: Extract<Outc
   settle(ctx, entry, { ...outcome, edit: { ...edit, base: { title: base.title, description: base.description } } });
 }
 
-/** Why the board does not complete a ticket on its worker's `done`, or null when it may (A11-91): not a planning or review run, and no open sub-issues. */
+/** Why the board does not complete a ticket on its worker's `done`, or null when it may (A11-91): not a planning run, not a review round of a plan step with steps after it (A11-173), and no open sub-issues. A review round's `done` is judged by its pull requests ({@link settleReviewDone}). */
 function doneRefusal(ctx: PoolContext, entry: Entry): string | null {
   if (isPlanning(ctx, entry)) return `the worker wrote done in a planning run, which completes no ticket`;
-  if (entry.review !== undefined) return `the worker wrote done in a review run: its ticket completes when its pull requests merge`;
+  const unfinished = entry.review !== undefined && entry.partial !== undefined ? stepNamed(entry.partial) : null;
+  if (unfinished !== null && unfinished.step < unfinished.of) return `the worker wrote done in a review round of step ${unfinished.step} of ${unfinished.of}, which leaves the steps after it to do`;
   const children = entry.ticket.children ?? [];
   return children.length === 0 ? null : `${entry.ticket.key} has open sub-issues (${children.join(", ")}), which complete it, not its own done`;
 }

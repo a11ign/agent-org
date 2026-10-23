@@ -16,7 +16,7 @@ import { REPO } from "../../src/project-identity.ts";
 import { loadReviewerGate } from "../../src/ticket-mode/reviewer-port.ts";
 import { homeProjectDeclaration } from "../../src/project-config.ts";
 import { HOST_CONFIG_ENV, hostConfigPath } from "../../src/host-config.ts";
-import { NO_TICKET_LINE, POST_MERGE_RULE } from "./prompt.ts";
+import { NO_TICKET_LINE, POST_MERGE_RULE, RATCHET_RULE, unrequiredRedWords } from "./prompt.ts";
 import { REVIEW_CAUSE, atomicReviewerPort as portOver, clonedSeatOf, type Seams, verdictFileIn as verdictFileOver } from "./port.ts";
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -67,7 +67,7 @@ const claimEntriesOf = (pr: { statuses?: Status[] }) =>
  * operations read and write (a write adds one written now, so a claim written through one port is read back through another). `head` is its commit, `reviews` its reviews as GitHub lists them, `outside` whether its author is outside the org, `checks` its checks (green by default), `state` its
  * state (open by default), `statuses` its head's commit statuses. A test moves the pull request by changing `pr`: each read holds it as it is then.
  */
-function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[]; state?: string; statuses?: Status[] }) {
+function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; checks?: unknown[]; state?: string; statuses?: Status[]; unrequiredRed?: string[] }) {
   const host = createFakeCodeHost("worker-bot");
   type Reviewed = { author: { login: string }; state: string; commit: { oid: string }; submittedAt: string };
   const hold = (url: string): void => {
@@ -75,7 +75,7 @@ function ghFor(pr: { head: string; reviews?: unknown[]; outside?: boolean; check
     if (match === null) return;
     const checks = (pr.checks ?? GREEN) as { conclusion: string | null }[];
     host.seedPull(match[1], Number(match[2]), {
-      head: pr.head, state: (pr.state ?? "OPEN").toLowerCase() as "open" | "merged" | "closed", trust: pr.outside === true ? "outside" : "inside", settled: checks.every(({ conclusion }) => conclusion === "SUCCESS"),
+      head: pr.head, state: (pr.state ?? "OPEN").toLowerCase() as "open" | "merged" | "closed", trust: pr.outside === true ? "outside" : "inside", settled: checks.every(({ conclusion }) => conclusion === "SUCCESS"), ...(pr.unrequiredRed === undefined ? {} : { unrequiredRed: pr.unrequiredRed }),
       reviews: ((pr.reviews ?? []) as Reviewed[]).map((r) => ({ author: r.author.login, state: r.state, commit: r.commit.oid, at: Date.parse(r.submittedAt) })),
     });
   };
@@ -141,9 +141,9 @@ test("the reviewer is asked the gate's own verdict prompt for the pull request a
 });
 
 /** A port over a green, ready pull request whose head carries `statuses`, and the herdr it prompts: the reviewer's start, as the re-review tests drive it. */
-function startingPort({ reviews = [] as unknown[], statuses = [] as Status[] } = {}) {
+function startingPort({ reviews = [] as unknown[], statuses = [] as Status[], unrequiredRed }: { reviews?: unknown[]; statuses?: Status[]; unrequiredRed?: string[] } = {}) {
   const herd = herdr(new Map());
-  const fake = ghFor({ head: "h1", reviews, statuses });
+  const fake = ghFor({ head: "h1", reviews, statuses, ...(unrequiredRed === undefined ? {} : { unrequiredRed }) });
   const spawned: unknown[] = [];
   const port = atomicReviewerPort({ session: "tickets", instance: "work", run: herd.run, ...claiming(fake),
     spawn: (order) => { spawned.push(order); return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } }; },
@@ -546,4 +546,33 @@ test("clonedSeatOf takes a clone only of the primary's owner, refuses a name tha
   assert.equal(clonedSeatOf(`${OWNER}/not-cloned`, { owner: OWNER, clones, codes }), null, "a repository the host does not clone is no seat");
   assert.match(refusalOf(clonedSeatOf(`${OWNER}/.github`, { owner: OWNER, clones: { ".github": "/repos/github" }, codes: [] })), /its name `\.github` cannot be a reviewer key \(lowercase letters, digits and hyphens, not ending in a number\)/);
   assert.ok(refusalOf(clonedSeatOf(`${OWNER}/github`, { owner: OWNER, clones, codes })).includes(`declares \`github\` as the key of ${OWNER}/.github`), "the clone named as a declared key would take that key's seat");
+});
+
+test("A11-175: the started prompt names the unrequired red checks the code host reports, and the reprompt and a re-review do too; a head with none says nothing of them", async () => {
+  await loadReviewerGate();
+  const red = ["checks (cross-repo)"];
+  const { port, prompted } = startingPort({ unrequiredRed: red });
+  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { label: "reviewer-7" }, "its required checks are settled green, so it starts");
+  assert.ok(prompted().includes(unrequiredRedWords(red)) && prompted().endsWith(POST_MERGE_RULE), "the first review is told which checks were left red");
+  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN }), { prompted: true });
+  assert.ok(prompted().includes(unrequiredRedWords(red)), "and so is the reprompt");
+  const block = review("a11ign-reviewer", "CHANGES_REQUESTED", "h1", Date.now() - 30 * 60_000);
+  const again = startingPort({ reviews: [block], statuses: [FIRST_CLAIM(), BLOCK_STATUS()], unrequiredRed: red });
+  assert.deepEqual(again.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN, rereview: { replies: [REPLY] } }), { label: "reviewer-7" });
+  assert.ok(again.prompted().startsWith("This is a re-review of #7") && again.prompted().includes(unrequiredRedWords(red)), "a re-review is told too");
+  const plain = startingPort();
+  plain.port.start({ pr: PR_URL, head: "h1" }, { doneWhen: DONE_WHEN });
+  assert.ok(!plain.prompted().includes("not required"), "a head with no red check that is left out says nothing of them");
+});
+
+test("A11-175: a brief that names the plan step a pull request finishes reaches the prompt in a first review and a reprompt", async () => {
+  await loadReviewerGate();
+  const { port, prompted } = startingPort();
+  const brief = { doneWhen: DONE_WHEN, step: { step: 3, of: 9, section: "### Step 3 of 9: Reviews\n\nMove the calls." } };
+  assert.deepEqual(port.start({ pr: PR_URL, head: "h1" }, brief), { label: "reviewer-7" });
+  const first = prompted();
+  assert.ok(first.includes("This pull request is step 3 of 9 of its ticket's plan") && first.includes("Move the calls.") && first.includes(RATCHET_RULE));
+  assert.ok(first.includes(`The ticket's Done-when, for the last step (step 9 of 9), as the ticket states it:\n\n${DONE_WHEN}`) && first.endsWith(POST_MERGE_RULE));
+  assert.deepEqual(port.reprompt({ pr: PR_URL, head: "h1" }, brief), { prompted: true });
+  assert.equal(prompted(), first, "the reprompt says what the first prompt did");
 });

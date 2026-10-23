@@ -4,7 +4,7 @@ import { PROJECT_NUMBER } from "../board-snapshot.ts";
 import { REPO } from "../project-identity.ts";
 import { DEFECT_LABEL } from "../defect-class-line.ts";
 import { homeProjectDeclaration } from "../project-config.ts";
-import { boardItemOf, PROJECT_ITEMS_PAGE } from "../ticket-port/project-membership.ts";
+import { boardItemOf, projectItemsPage } from "../ticket-port/project-membership.ts";
 import { adopterRowKind } from "../work-gate/org-health.ts";
 import { inLane } from "../lane-ownership.ts";
 import { READY_LABEL, STATE_LABELS } from "../claim-labels.ts";
@@ -554,7 +554,7 @@ export function roadmapItemsOf(issue: { repo: string; number: number }, run: typ
   do {
     const after = cursor === null ? "" : `, after: "${cursor}"`;
     const query = `query { repository(owner: "${owner}", name: "${name}") { issue(number: ${issue.number}) `
-      + `{ projectItems(first: ${PROJECT_ITEMS_PAGE}${after}) { pageInfo { hasNextPage endCursor } `
+      + `{ projectItems(first: ${projectItemsPage()}${after}) { pageInfo { hasNextPage endCursor } `
       + `nodes { id project { number owner { ... on Organization { login } ... on User { login } } } fieldValueByName(name: "${ROADMAP_FIELD}") `
       + `{ ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }`;
     const page: any = JSON.parse(run("gh", ["api", "graphql", "-f", `query=${query}`]))?.data?.repository?.issue?.projectItems;

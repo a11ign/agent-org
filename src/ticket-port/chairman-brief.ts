@@ -1,8 +1,5 @@
-// a11ign#5528, agent-org#1538: the chairman's brief on a pull request whose failing check says `Cleared-by: human`. The two writes are GitHub's, so they
-// live in the ticket port (ADR 0046) and not in the gate's own file: a file outside the port may not gain a `gh` call (gh-call-ratchet).
+// a11ign#5528, agent-org#1538: the chairman's brief on a pull request whose failing check says `Cleared-by: human`.
+// The operation lives in the GitHub plugin (`plugins/github/rows/chairman-brief.ts`, A11-160) behind the code host's `rows`; this file is core's delegate, so a caller's import does not change (`src/plugins/rows.ts`).
+import { delegate } from "../plugins/rows.ts";
 
-/** Put `label` on pull request `number` of `repo` and post `body` as its comment: the label and the brief the chairman reads. */
-export function briefChairmanOnPull({ repo, number, label, body, run }: { repo: string; number: number; label: string; body: string; run: (args: string[]) => string }): void {
-  run(["pr", "edit", String(number), "--repo", repo, "--add-label", label]);
-  run(["pr", "comment", String(number), "--repo", repo, "--body", body]);
-}
+export const briefChairmanOnPull = delegate("briefChairmanOnPull");

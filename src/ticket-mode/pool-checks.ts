@@ -3,7 +3,7 @@
 
 import { CI_CLASS, errorLinesOfLog, LOG_TIMESTAMP, rateLimitOrLostRunner, READS_OUTSIDE, withoutColour } from "../ci-log-lines.ts";
 import { rerunOn5xx } from "../ci-rerun-on-5xx.ts";
-import { isRollUpCheck } from "../ticket-port/ci-reads.ts";
+import { isRollUpCheck } from "../newest-check-run.ts";
 import type { FailingCheck, PullFeedback } from "../plugins/contracts/code-host.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";

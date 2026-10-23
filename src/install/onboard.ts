@@ -44,7 +44,7 @@ import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { type BlockReport, DEFAULT_PROVIDER, type Providers, resolveProviders } from "../ticket-mode/providers.ts";
 import { blockOf, CONCERN_LABEL, CONCERN_OF_BLOCK, PROVIDER_BLOCKS, type ProviderBlock } from "../plugins/concerns.ts";
-import { realExec, realMode, realPlace, realProbe } from "../plugins/active.ts";
+import { coreRowsHelpers, realExec, realMode, realPlace, realProbe } from "../plugins/active.ts";
 import { messagingHelpers } from "../messaging/plugin-helpers.ts";
 import { type LoadResult, loadEnabled, settingsOfBlock } from "../plugins/loader.ts";
 import { defaultCatalog } from "../plugins/registry.ts";
@@ -446,7 +446,7 @@ async function runPluginSteps({ options, host, tickets, planned, answered, clone
   const stateDir = typeof host.stateDir === "string" ? host.stateDir : join(deps.home, ".local", "state", "agent-org");
   const pluginDeps: PluginDeps = { env: deps.env, stateDir, log: (line) => deps.out.log(line), fetch: (input, init) => fetch(input, init),
     exec: deps.exec, readFile: deps.readFile, mode: realMode, probe: realProbe, messaging: messagingHelpers(), pick: "assigned", clones, policy: corePolicy(),
-    publishing: publishingHelpers(), reviewing: gateHelpers(), place: realPlace };
+    publishing: publishingHelpers(), reviewing: gateHelpers(), rows: coreRowsHelpers, place: realPlace };
   const result = await deps.loadPlugins(providers, pluginDeps);
   const unbuilt = new Set(result.unbuilt.map(({ plugin }) => plugin.name));
   const refused = result.refusals.filter(({ plugin }) => !unbuilt.has(plugin));

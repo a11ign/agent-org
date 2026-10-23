@@ -304,15 +304,15 @@ type RunRecord = Readonly<{ tokens?: Entry["tokens"]; session?: string }>;
  */
 function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }: RunRecord): Entry {
   const ranIn = session ?? (entry.review || entry.talk ? entry.session : undefined);
-  // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, and any other
-  // keeps what the run had: a review round's `reviewed` says nothing of it.
+  // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, a `done` says nothing
+  // remains to build and drops the declaration (A11-173), and any other keeps what the run had: a review round's `reviewed` says nothing of it.
   // The heads of its pull requests belong to the outcome it replaces: the end of this run records its own (A11-153).
   const { session: _earlier, working: _note, declined: _refused, prompt: _asked, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, pullHeads: _read, sessionNote: _closed, handedBack: _handed, stoppedForUpdate: _stopped, ...kept } = entry;
   // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
   const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
   const { review: _borrowed, ...unborrowed } = kept;
   const rest = borrowed ? unborrowed : kept;
-  const partial = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" ? outcome.partial : entry.partial;
+  const partial = outcome.kind === "draft-pr" || outcome.kind === "ready-pr" ? outcome.partial : outcome.kind === "done" ? undefined : entry.partial;
   return { ...rest, phase: "finished", outcome, finishedAt: now, waiting: false, ...(tokens ? { tokens } : {}), ...(ranIn ? { session: ranIn } : {}),
     ...(partial !== undefined ? { partial } : {}) };
 }
@@ -390,14 +390,15 @@ export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readon
 
 /**
  * Record the paths each queued run's plan declares, for each run whose plan was read, and clear why it could not be (`pathsFailure`). A run that has
- * started keeps what it started with.
+ * started keeps what it started with. `stepPaths` is the paths each step section of the plan lists, by step number, for a plan that has any (A11-175); a plan read again that has none drops what was recorded.
  */
-export function recordPaths(queue: Queue, paths: ReadonlyMap<string, readonly string[]>): Queue {
+export function recordPaths(queue: Queue, paths: ReadonlyMap<string, readonly string[]>, stepPaths: ReadonlyMap<string, Readonly<Record<string, readonly string[]>>> = new Map()): Queue {
   return { ...queue, entries: queue.entries.map((entry) => {
     const found = paths.get(entry.ticket.key);
     if (entry.phase !== "queued" || found === undefined) return entry;
-    const { pathsFailure: _read, ...rest } = entry;
-    return { ...rest, paths: found };
+    const { pathsFailure: _read, stepPaths: _earlier, ...rest } = entry;
+    const ofSteps = stepPaths.get(entry.ticket.key);
+    return { ...rest, paths: found, ...(ofSteps === undefined || Object.keys(ofSteps).length === 0 ? {} : { stepPaths: ofSteps }) };
   }) };
 }
 

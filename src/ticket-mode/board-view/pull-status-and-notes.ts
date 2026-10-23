@@ -1,6 +1,7 @@
 import { CONCLUDED, HANDED_BACK, RESULT_KINDS, RUN_STATUSES, hasPlan, openPulls, pullsOf, type RunStatus, type ViewBlocker, type ViewEntry, type ViewTicket } from "./view-types-and-filters.ts";
 import { SCAFFOLD_DIRS } from "../../scaffold-dirs.ts";
 import { pullAnswer } from "./pull-answer.ts";
+import { currentStepOf, currentStepPaths } from "./plan-steps.ts";
 
 /**
  * A finished run's status from its pull requests alone, once each has merged or closed: completed when any merged, cancelled when every one
@@ -167,13 +168,27 @@ export function pathsOverlap(a: string, b: string): boolean {
 }
 
 /**
- * A run's footprint: the paths its plan says its work touches, and the files each of its open pull requests changes, each in the repository that
- * pull request is in, without the scaffolding (see {@link countsForOverlap}). A pull request whose list was cut short holds the files listed, and no
+ * The plan paths a run holds (A11-175). A run on a step of a multi-step plan holds that step's paths when the plan's section for it lists any. When it lists none, a run that has a pull request open holds that
+ * pull request's files alone (`footprintOf` adds them), since the files it changes are the pull request's, when its worker has ended or it is a round on that pull request (`review` is set). Any other run holds
+ * the whole plan's, because the files it will change are not known (A11-125): a first run still working, or one with no pull request open. A run that is no step of a plan holds the whole plan's. PURE.
+ */
+function heldPlanPaths(entry: ViewEntry): readonly string[] {
+  const ofStep = currentStepPaths(entry);
+  if (ofStep !== null) return ofStep;
+  const workerEnded = entry.phase !== "starting" && entry.phase !== "running";
+  const isRoundOnItsPulls = entry.review !== undefined;
+  const onlyPulls = currentStepOf(entry) !== null && (workerEnded || isRoundOnItsPulls) && openPulls(entry).length > 0;
+  return onlyPulls ? [] : (entry.paths ?? []);
+}
+
+/**
+ * A run's footprint: the paths its plan says its work touches (for a run on a step of a multi-step plan, that step's, see {@link heldPlanPaths}), and the files each of its open pull requests changes,
+ * each in the repository that pull request is in, without the scaffolding (see {@link countsForOverlap}). A pull request whose list was cut short holds the files listed, and no
  * others: the files past those are unknown, not untouched, and an empty name marks them. PURE.
  */
 export function footprintOf(entry: ViewEntry): string[] {
   const changed = openPulls(entry).flatMap(({ url, repo }) => (repo === undefined ? [] : (entry.pullFiles?.[url] ?? []).map((file) => `${repo}:${file}`)));
-  return [...(entry.paths ?? []), ...changed].filter(countsForOverlap);
+  return [...heldPlanPaths(entry), ...changed].filter(countsForOverlap);
 }
 
 /** The tracker's states that end a ticket's work: a run on such a ticket is done, or was dropped, and holds nothing once it is not live. */
@@ -198,9 +213,9 @@ const exempt = (entry: ViewEntry, other: ViewEntry): boolean =>
 
 /**
  * The counted paths a queued run contests: none for a run that holds no path (see {@link pathless}), or was started anyway past its overlap
- * (`overlapOverride`). PURE.
+ * (`overlapOverride`); for a queued step of a multi-step plan, its step's paths when the plan lists any for it, and not the whole plan's (A11-175). PURE.
  */
-const contested = (entry: ViewEntry): string[] => pathless(entry) || entry.overlapOverride !== undefined ? [] : (entry.paths ?? []).filter(countsForOverlap);
+const contested = (entry: ViewEntry): string[] => pathless(entry) || entry.overlapOverride !== undefined ? [] : (currentStepPaths(entry) ?? entry.paths ?? []).filter(countsForOverlap);
 
 /** Whether a run holds no path in the queue: it is not queued, it is planning, or it is a review round, since no path holds those. PURE. */
 const pathless = (entry: ViewEntry): boolean => entry.phase !== "queued" || entry.plan !== undefined || entry.review !== undefined;

@@ -1,22 +1,6 @@
-// agent-org#923: a repository's open pull requests, read through an injected `run` (`gh`, as the caller hands it in). This file names no `gh` and spawns nothing:
-// `ticket-port.test.ts` (#484) holds the port to that, and the spawn stays with whoever owns the runner.
-/** The most `gh pr list` returns in one read. A list AT this length may be cut short, so it is no reading (`null`), never a complete list. */
-export const OPEN_PULLS_LIMIT = 200;
+// agent-org#923: a repository's open pull requests.
+// The operation lives in the GitHub plugin (`plugins/github/rows/open-pulls.ts`, A11-160) behind the code host's `rows`; this file is core's delegate, so a caller's import does not change (`src/plugins/rows.ts`).
+import { delegate } from "../plugins/rows.ts";
+export type { OpenPullRead } from "../plugins/contracts/code-host-rows.ts";
 
-/** An open pull request as the consumer reads it: its number in its repository, and its body, which names the rows it closes. */
-export type OpenPullRead = { number: number; body: string; };
-
-/**
- * THE OPEN PULL REQUESTS OF `repo`, or `null` for "could not ask": a refused `run`, an answer that does not parse, and a list at `OPEN_PULLS_LIMIT`.
- * `null` is never "nothing is open" (#1286): a caller that refuses on an open pull request must not read a failed read as an empty list.
- */
-export function openPullsOf(repo: string, run: (args: string[]) => string): OpenPullRead[] | null {
-  try {
-    const pulls: OpenPullRead[] = JSON.parse(run(["pr", "list", "--repo", repo, "--state", "open", "--limit", String(OPEN_PULLS_LIMIT), "--json", "number,body"]));
-    if (!Array.isArray(pulls)) return null;
-    return pulls.length < OPEN_PULLS_LIMIT ? pulls : null;
-  } catch (error) {
-    void error; // no list is "cannot say", which the caller refuses on
-    return null;
-  }
-}
+export const openPullsOf = delegate("openPullBodiesOf");

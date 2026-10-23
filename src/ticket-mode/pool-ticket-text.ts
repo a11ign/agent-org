@@ -8,7 +8,7 @@
 //   - a run that is live is sent the change as a message through herdr (`tellLiveRuns`), and its next round's brief carries the new text anyway;
 //   - a queued run whose blocker's pull request has merged is given what that pull request found (`learnFromBlockers`), and a plan written before the merge is written again with it.
 // A plan with no stamp, such as one a person attached, is never read as stale: nothing records the text it was written against.
-import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type Learned, markTicketChanged, type PlannedAgainst, recordLearned, recordTicketChange, replan, type TicketChange } from "./queue/queue-ticket-text.ts";
@@ -16,6 +16,7 @@ import { isPlanning, log, messageOf, runPlace, update } from "./pool-state.ts";
 import { herdrRefusal } from "./pool-herdr.ts";
 import { PLAN_FILE_BYTES } from "./pool-outcome.ts";
 import { parseStamp, urlsNamedIn } from "./plan-stamp.ts";
+import { stepSectionText } from "./plan-step-sections.ts";
 import { descriptionHash, ticketReadOf, type TicketRead } from "./ticket-read.ts";
 import { BLOCKERS_DIR, diffText, type Finding, PREVIOUS_PLAN_DIR } from "./brief-ticket-text.ts";
 import { ticketDir } from "./ticket-paths.ts";
@@ -36,6 +37,27 @@ export async function planFiles(ctx: PoolContext, ticket: Ticket): Promise<reado
   const dir = join(ticketDir(settings, ticket.key), "paths");
   mkdirSync(dir, { recursive: true });
   return source.download(ticket, dir);
+}
+
+/**
+ * The plan's text for step `step` of ticket `key`, read from the plan files `planFiles` downloaded for it, or null when this machine names no plan, no plan file is there, or none has a section for
+ * that step (A11-175). Reads the folder and downloads nothing: a reviewer is briefed without a round trip to the tracker, and a plan the run was queued with is there.
+ */
+export function planStepSection(ctx: PoolContext, key: string, step: number): string | null {
+  const { settings } = ctx;
+  if (settings.plan === null) return null;
+  const pattern = new RegExp(settings.plan);
+  const dir = join(ticketDir(settings, key), "paths");
+  try {
+    for (const name of readdirSync(dir).sort()) {
+      if (!pattern.test(name) || statSync(join(dir, name)).size > PLAN_FILE_BYTES) continue;
+      const section = stepSectionText(readFileSync(join(dir, name), "utf8"), step);
+      if (section !== null) return section;
+    }
+  } catch {
+    // A folder that cannot be read has no plan to quote: the reviewer is told so.
+  }
+  return null;
 }
 
 /** The title a downloaded file was attached under: the tracker may put a counter in front of it (`attachment-3-<title>`). PURE. */

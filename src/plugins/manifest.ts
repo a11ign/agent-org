@@ -12,6 +12,7 @@ import type { SchemaEntry } from "../ticket-mode/config-schema.ts";
 import type { PickScope } from "../ticket-mode/settings.ts";
 import type { Concern } from "./concerns.ts";
 import type { CodeHost, HostPlace, ReviewTrust } from "./contracts/code-host.ts";
+import type { RowsHelpers } from "./contracts/code-host-rows.ts";
 import type { MessagingPair } from "./contracts/messaging.ts";
 import type { PublishResult, PublishedPull } from "./contracts/publisher.ts";
 import type { TrackerWriting } from "./contracts/tracker.ts";
@@ -62,11 +63,16 @@ export type ExecResult = Readonly<{ status: number | null; stdout: string; stder
 /** What running a program may be asked: `inherit` gives it this process's terminal, `timeoutMs` bounds it, and `env` is laid over this process's environment for that one run. */
 export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>> }>;
 
-/** How a reviewer judges a pull request, as the gate's modules decide it: the `--json` fields it reads by, whether the author is the org's own, and whether the checks settled green. */
+/**
+ * How a reviewer judges a pull request, as the gate's modules decide it: the `--json` fields it reads by, whether the author is the org's own, and whether the checks settled green.
+ * `required` is the names of the checks the branch requires (A11-175), or null when they were not read or could not be: then every check counts. `settledOf` counts only the required checks,
+ * and `unrequiredRedOf` names the checks that failed and are not required, which hold nothing.
+ */
 export type ReviewJudge = Readonly<{
   fields: string;
   trustOf(pr: Readonly<Record<string, any>>): ReviewTrust;
-  settledOf(pr: Readonly<Record<string, any>>): boolean;
+  settledOf(pr: Readonly<Record<string, any>>, required?: readonly string[] | null): boolean;
+  unrequiredRedOf(pr: Readonly<Record<string, any>>, required?: readonly string[] | null): readonly string[];
 }>;
 
 /**
@@ -261,6 +267,8 @@ export type PluginDeps = Readonly<{
   publishing: PublishingHelpers;
   /** What a reviewer plugin needs of core (A11-161). */
   reviewing: ReviewerHelpers;
+  /** What a code host's `rows` need of core (A11-160): the project's vocabulary and board, asked when an operation needs them, so a host with no project builds a code host that has not been asked for a row. */
+  rows: () => RowsHelpers;
   /** Where the machine keeps what a code host's wrapper is rendered from (A11-160), asked only by the code host's doctor rows. */
   place: () => Promise<HostPlaceReading>;
 }>;

@@ -34,11 +34,11 @@ export function settingsOfBlock(report: BlockReport): PluginSettings {
   return Object.fromEntries(Object.entries(report.settings).filter(([, setting]) => setting.value !== undefined).map(([name, setting]) => [name, setting.value]));
 }
 
-const isPluginModule = (value: unknown): value is PluginModule => typeof value === "object" && value !== null
+export const isPluginModule = (value: unknown): value is PluginModule => typeof value === "object" && value !== null
   && typeof (value as PluginModule).create === "function" && typeof (value as PluginModule).doctorChecks === "function" && Array.isArray((value as PluginModule).onboardSteps);
 
 /** The reason a bundled plugin cannot be loaded, or null when it can. */
-function refusalOf(plugin: CatalogPlugin): string | null {
+export function refusalOf(plugin: CatalogPlugin): string | null {
   if (!readsConcernContract(plugin.concern, plugin.contract)) return unreadMajorRefusal(plugin.name, plugin.concern, plugin.contract);
   return null;
 }

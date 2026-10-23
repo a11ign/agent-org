@@ -23,7 +23,6 @@ import {
 import { buildReport, readAll } from "./org-retro/journal-stats-and-verdicts.ts";
 import { readUnderspecified } from "./org-retro/retro-window-and-journal-patterns.ts";
 import { renderReport } from "./org-retro.ts";
-import { commentsSince } from "./ticket-port/comments-since.ts";
 import { testEach } from "./lib/test-each.ts";
 
 // --- fixtures -----------------------------------------------------------------------------------------------------------------
@@ -420,20 +419,6 @@ test("the live read asks each declared tracker for its comments once, and ONE re
   assert.equal(asked.length, 2);
   assert.ok(asked[0].startsWith("api --paginate --slurp repos/a11ign/a11ign/issues/comments?since=2026-10-10T18:00:00.000Z"));
   assert.equal(readUnderspecified({ now: NOW, declaration, read: (args) => (args.join(" ").includes("agent-org") ? null : []) }), null);
-});
-
-test("`commentsSince` flattens the pages, and a refused run or an answer that is not a list of lists is `null`, never `[]`", () => {
-  const page = [comment("a"), comment("b")];
-  const seen: string[][] = [];
-  const flat = commentsSince({ repo: "a11ign/a11ign", since: NOW, run: (args) => {
-    seen.push(args);
-    return [page, [comment("c")]];
-  } });
-  assert.deepEqual(flat?.map((one) => one.body), ["a", "b", "c"]);
-  assert.deepEqual(seen[0], ["api", "--paginate", "--slurp", "repos/a11ign/a11ign/issues/comments?since=2026-10-11T18:00:00.000Z&per_page=100"]);
-  assert.deepEqual(commentsSince({ repo: "r/r", since: NOW, run: () => [] }), [], "a list with no page is no comments: the read WORKED (the twin of the two nulls)");
-  assert.equal(commentsSince({ repo: "r/r", since: NOW, run: () => null }), null);
-  assert.equal(commentsSince({ repo: "r/r", since: NOW, run: () => [{ message: "Bad credentials" }] }), null);
 });
 
 test("`readAll` carries the read into the report's inputs through its seam", () => {

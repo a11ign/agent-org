@@ -6,9 +6,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { claimantOf, parseTicketSettings } from "./settings.ts";
+import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { markPublishRunning, markPublishStarting, respond as respondQueued } from "./queue/queue-transitions.ts";
 import { markWriterRunning, markWriterStarting, queueWriter, writerFailed } from "./queue.ts";
-import { remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
+import { dismiss as dismissRun, remove as removeQueued } from "./queue/queue-entries-and-outcomes.ts";
 import { refusal } from "./local-http.ts";
 import { checkGhWrapperAtStart, createBoard, FEEDBACK_MS, holdsKey, startFeedbackSweeps, type BoardDeps } from "./server.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
@@ -225,6 +226,23 @@ test("A11-168: a ticket In Progress from this instance's own dismissed run, clai
   const [status, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
   assert.equal(status, 200);
   assert.deepEqual(queue.entries.map((e: any) => e.ticket.key), ["NBF-1"]);
+});
+
+test("A11-173: a stopped partial run on a plan with no remaining step is dismissed and its In Progress ticket, claimed by this instance, is queued again with no state move", async () => {
+  const tracker = createFakeTracker([inProgress("NBF-1")]);
+  const b = board(4747, {}, {}, tracker);
+  tracker.setClaimant("NBF-1", claimantOf(b.settings));
+  const url = "https://github.com/a11ign/agent-org/pull/1816";
+  await queueFinished(b, { kind: "ready-pr", prs: [{ repo: "agent-org", url }], partial: "the docs" });
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, pullStates: { [url]: "merged" as const }, partial: "the docs", planSteps: 0 })) });
+  assert.equal(runStatus(b.store.get().entries[0]), "needs-you", "the plan has no remaining step, so the run stops for a person");
+  b.store.set(dismissRun(b.store.get(), "NBF-1"));
+  assert.deepEqual(b.store.get().entries, [], "Dismiss takes it off the board");
+  const before = tracker.ticketOf("NBF-1");
+  const [status, queue] = await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" }) as [number, any];
+  assert.equal(status, 200, "queued again with no one moving the ticket in the tracker");
+  assert.deepEqual(queue.entries.map((e: any) => [e.ticket.key, e.phase]), [["NBF-1", "queued"]]);
+  assert.deepEqual(tracker.ticketOf("NBF-1"), before, "and the ticket is in the state it was in");
 });
 
 test("A11-168: a ticket In Progress with no claim at all, moved there by hand, is not taken and is queued", async () => {
@@ -1181,7 +1199,7 @@ test("A11-163: GET /api/plugins answers every concern in order with each plugin'
   assert.equal(status, 200);
   assert.deepEqual(view.concerns.map(({ concern }) => concern), ["tracker", "codeHost", "publisher", "reviewer", "exposure", "messaging"]);
   assert.deepEqual(["linear", "github", "tailscale", "local", "slack"].map((name) => { const e = entryOf(view, name); return [name, e.version, e.contract, e.state]; }),
-    [["linear", "v1.2.3", "1.3", "enabled"], ["github", "v1.2.3", "1.5", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
+    [["linear", "v1.2.3", "1.4", "enabled"], ["github", "v1.2.3", "1.7", "enabled"], ["tailscale", "v1.2.3", "1.1", "enabled"], ["local", "v1.2.3", "1.1", "not installed"], ["slack", "v1.2.3", "1.1", "not installed"]]);
   assert.equal(view.concerns.find(({ concern }) => concern === "publisher")?.empty?.text, "None");
   assert.deepEqual(Object.keys(view.bases).sort(), ["host.json"], "this machine declares no project, so only the host file has a base");
   assert.equal(view.note, null);
@@ -1226,7 +1244,7 @@ test("A11-161: the Settings page lists slack and atomic with their folders and s
   const b = pluginsBoard({ ...FRESH_BLOCKS, publish, reviewer: { provider: "atomic" } });
   const view = await readPlugins(b);
   assert.deepEqual(["slack", "atomic"].map((name) => { const e = entryOf(view, name); return [name, e.where, e.contract, e.state]; }),
-    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.2", "enabled"]]);
+    [["slack", "plugins/slack", "1.1", "enabled"], ["atomic", "plugins/atomic-reviewer", "1.3", "enabled"]]);
   const hostBlock = (block: string) => JSON.parse(readFileSync(b.hostPath, "utf8")).tickets.providers[block];
   const off = await saidBy(b, { action: "disable", name: "slack", base: view.bases["host.json"] });
   assert.match(off, /^disabled slack: the board publishes nothing, and its settings are kept for `enable`$/);

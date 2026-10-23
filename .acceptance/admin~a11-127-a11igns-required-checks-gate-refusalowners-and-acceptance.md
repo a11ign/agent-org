@@ -7,4 +7,4 @@ npx rstest run --config scripts/rstest/rstest.config.ts src/packaging/ci-closes-
 
 Mutation: `ciClosesReport` was made to return the row report alone, and 7 of the 12 tests in the new file went red; `cross-repo-red.ts` was put back to its base and 10 of 28 in the two cross-repo files went red. Both were restored and the suites passed again.
 
-Consumer-declaration: none -- `extractClosesDeclaration` and `closesDeclarationReport` are unchanged, so `closes-mismatch-check`, `close-rows-for-merged-pr`, `merged-row-open-incident` and the work gate read what they did; the only callers of `declaredRows` and `stateOfRow` were in `cross-repo-red.ts`.
+Consumer-declaration: none -- `extractClosesDeclaration` and `closesDeclarationReport` are unchanged, so `closes-mismatch-check`, `close-rows-for-merged-pr`, `merged-row-open-incident` and the work gate read what they did; the only caller of `declaredRows` was `cross-repo-red.ts`, and `stateOfRow` stays in the code host contract.

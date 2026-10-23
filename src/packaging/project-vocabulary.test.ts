@@ -219,7 +219,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("ticket-port/port.ts", ['"backlog"', '"ready"', '"in-progress"', '"out-of-release"', "`lane:"], "the port's own state and flag names (ADR 0046 decision 1), not this project's labels"),
   // agent-org#907: a decision class names the port's states in the change it asks for (`state: "ready"`) and reads the shelved ones (`backlog`); the role excerpt says `ready` to the run.
   ...nonVocabulary("decision-run/classes/unclaimed-blocker-cleared.ts", ['"backlog"', '"ready"', "`ready`"], "the port's own state names (ADR 0046 decision 1) in a class's StateChange, and the word the run's excerpt uses for it"),
-  ...nonVocabulary("ticket-port/github-adapter.ts", ['"backlog"', '"ready"', '"in-progress"', '"lane:'], "the port's state and flag names, as the keys of the adapter's mapping table (ADR 0046 decision 5); the labels they map to are read from the vocabulary"),
+  // `plugins/fakes/code-host-rows.ts` (A11-160): the fake's rows speak the PORT'S own state and flag names (ADR 0046 decision 1), which are the labels a fake world carries; a project that spells its labels otherwise is the GitHub plugin's adapter to map.
+  ...nonVocabulary("plugins/fakes/code-host-rows.ts", ['"backlog"', '"ready"', '"in-progress"', '"out-of-release"', '"answer:', "`answer:", '"lane:', "`lane:"], "the port's own state and flag names (ADR 0046 decision 1), as the labels of the fake's rows"),
   // `decision-run/classes/row-off-board.ts` (agent-org#911): the class answers in, and its actions are written through, the PORT'S state and flag names (`backlog`, `ready`, `lane:`),
   // and it names them in the question and role excerpt a run reads. The labels they map to are the adapter's to read from the vocabulary; a class never spells a label.
   ...nonVocabulary("decision-run/classes/row-off-board.ts", ['"backlog"', '"ready"', '"lane:', "`backlog`", "`ready`"], "the port's own state and flag names as the class's answers and actions, and the prose that names them to a run"),
@@ -231,12 +232,25 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   // not the row `ready` label.
   ...nonVocabulary("work-gate/pr-orders/pr-gate-readings.ts", ['"ready"'], "the action kind for `gh pr ready`, GitHub's own verb"),
   // `auto-arm-sweep.ts` (agent-org#1573): `run(["pr", "ready", ...])` -- the same CLI verb, for an approved draft the outside home readies before it arms.
-  ...nonVocabulary("ticket-port/outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
   // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.
   ...nonVocabulary("ticket-mode/board-view/view-types-and-filters.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
   // A11-174: the pool tells a declined safety prompt's agent once it no longer reads `blocked`, herdr refusing a message to a blocked agent.
   ...nonVocabulary("ticket-mode/pool-decline.ts", ['"blocked"'], "an agent's `herdr` status, never the `blocked` label"),
 ];
+
+/**
+ * A11-160: the GitHub plugin's rows hold what `src/ticket-port/` held, so the walk reads them too. The adapter maps the PORT'S state and flag names to the labels it is handed
+ * (`RowsHelpers`), and the arming call's verb is GitHub's own: neither is this project's vocabulary.
+ */
+const DECLARED_PLUGIN_HITS: Declaration[] = [
+  ...nonVocabulary("adapter.ts", ['"backlog"', '"ready"', '"in-progress"', '"lane:'], "the port's state and flag names, as the keys of the adapter's mapping table (ADR 0046 decision 5); the labels they map to are read from the vocabulary"),
+  ...nonVocabulary("outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
+];
+
+test("A11-160: the plugin's rows carry no vocabulary literal in code that no declaration covers, and the declared ones are really there", () => {
+  const current = vocabularyEntries(join(TOOL_ROOT, "plugins", "github", "rows"));
+  assert.deepEqual(current, DECLARED_PLUGIN_HITS.map(({ name }) => name).sort(), "the plugin's rows hold a vocabulary literal no declaration names, or a declared one is gone");
+});
 
 test("the messaging sources' label literals equal the vocabulary's", () => {
   assert.equal(NEEDS_CHAIRMAN, NEEDS_CHAIRMAN_LABEL);

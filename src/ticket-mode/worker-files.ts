@@ -292,7 +292,10 @@ const stackLine = ({ key, url, repo, branch }: StackBase): string => (url === nu
 function stepsText(steps: readonly MergedStep[]): string {
   const last = steps.at(-1);
   if (last === undefined) return "";
-  const merged = steps.map(({ step, of, prs }) => `- step ${step} of ${of}: ${prs.join(", ") || "no pull request recorded"}`).join("\n");
+  const merged = steps.map(({ step, of, prs, counted }) => `- step ${step} of ${of}: ${prs.join(", ") || "no pull request recorded"}${counted ? " (counted by the board: the Partial line named no step)" : ""}`).join("\n");
+  const counting = last.counted
+    ? `\nThe Partial line of step ${last.step}'s pull request named no step, so the board counted it as step ${last.step} of ${last.of}. Check the merged pull requests above against the plan before you start, do the first step none of them did, and name it \`step <N> of <M>\` in your \`Partial:\` line.\n`
+    : "";
   return `
 ## Steps already merged
 
@@ -301,7 +304,7 @@ This ticket's plan has numbered steps, one pull request each. The board queued y
 ${merged}
 
 This run does step ${last.step + 1} of ${last.of}, and only that step. The worktree \`ticket:worktree\` gives you is the earlier step's branch, whose pull request merged: before you start, bring it up to date with \`git fetch origin && git merge origin/<the repository's default branch>\`, then open a NEW pull request from it for your step. Do not push to the merged pull request.
-`;
+${counting}`;
 }
 
 /** What a worker is told about a plan a planning run wrote, which no person agreed: nothing when a person's plan, or none, is all it has. */
@@ -502,9 +505,9 @@ Write \`planned\` once every ticket has its plan files or its \`${QUESTION_FILE}
 /**
  * What every plan says of the paths its work touches, in its one `## Paths` section: the board's overlap wait reads it (`overlap.ts`), and `pr:open`
  * reads it as the Region its pull request's diff is checked against (A11-125). The board holds back a ticket whose paths overlap a run in progress, so
- * the list must be complete.
+ * the list must be complete. A plan in numbered steps also lists each step's own paths in its step section, which is all the board holds for a run on that step (A11-175).
  */
-const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. That one section is what the board's overlap wait and `pr:open` both read, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says.";
+const PATHS_RULE = "Each plan file ends with a `## Paths` section listing every file or directory its work will change, one bullet each, as `- \`<repo>:<path>\``: `<repo>` is one of the repository names above, and a path ending in `/` names a directory. That one section is what the board's overlap wait and `pr:open` both read, so list every path the work changes, and no more. Do not list `.acceptance/` or `.changeset/`: the board ignores them, and a pull request needs them whatever the plan says. A plan delivered in numbered steps, one pull request each, gives each step a `### Step <N> of <M>: <title>` section that ends with that step's own `- \`<repo>:<path>\`` bullets: the board holds only the current step's paths and its open pull requests' files, and gives a reviewer that step's section. `## Paths` still lists every path of every step, because `pr:open` reads it as the Region.";
 
 /**
  * Step 5 of the brief, the commit. With the machine's pre-PR review skill named, the review runs after the commit, on the whole diff, before a push or a
@@ -550,7 +553,7 @@ function openPullRequestStep(opening: string, ticket: Ticket, prReview: string |
   // A reviewer reads the pull request and not this brief, so the body says which version of the ticket the work was done against (A11-167).
   const workedAgainst = read?.updatedAt == null ? "" : ` It carries the line \`Worked against the ticket as updated ${read.updatedAt}\`, so a reviewer can tell which text the work was done against.`;
   const reviewLine = prReview === null ? "" : `carries the line \`Pre-PR review: ${prReview} ran on the whole diff; it changed: <what, or nothing>\`, `;
-  return `6. Push the branch and open ${opening} The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. When the plan has numbered steps, the \`Partial:\` line begins \`step <N> of <M>\`, and the last step's pull request names the ticket \`${closing} ${ticket.key}\` and has no \`Partial:\` line. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Paths\` (or its \`## Region\`, in a plan written before \`## Paths\`), and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.${workedAgainst}`;
+  return `6. Push the branch and open ${opening} The body links ${ticket.url}, and names the ticket \`${closing} ${ticket.key}\` when this pull request completes it (its done-when is fully met), so the tracker closes the ticket when it merges. When the pull request is partial and leaves part of the ticket to do, it names the ticket \`${nonClosing} ${ticket.key}\` instead, with a \`Partial: <what remains>\` line, and the ticket stays open; a pull request that completes the ticket is never written with \`${nonClosing}\`. \`Partial:\` is for build work a later run of this ticket does, a plan step. An After-merge line of the ticket's Done-when is not partial: the board completes the ticket when the pull requests merge and lists those lines, so a pull request that leaves only After-merge lines names the ticket \`${closing} ${ticket.key}\`. When your pull requests finish the ticket together (two repositories, say), each names the ticket \`${nonClosing} ${ticket.key}\`, because one \`${closing}\` would complete the ticket on the first merge, and each \`Partial:\` line names the run's other pull requests; your outcome then has no \`partial\`, and the board completes the ticket once all of them have merged. When the plan has numbered steps, the \`Partial:\` line begins \`step <N> of <M>\`, and the last step's pull request names the ticket \`${closing} ${ticket.key}\` and has no \`Partial:\` line. The body says what changed and how you verified it, ${reviewLine}and, when the change is visible, shows it: take screenshots with what this machine provides (see "On this machine" when there is such a section), or else end the body with "Screenshot pending". It carries an \`Outside-Region: <path> — <reason>\` line for each path outside the plan's \`## Paths\` (or its \`## Region\`, in a plan written before \`## Paths\`), and either a changeset or a \`no-release: <reason>\` line. A pull request that needs another repository's unmerged one says so in its body. If \`pr:open\` refuses, fix what it names and run it again. Exit code 3 means the pull request exists: do not run it again, and run only the step its message names.${workedAgainst}`;
 }
 
 /**
@@ -624,7 +627,7 @@ ${outcomeExamples([drafts ? "draft-pr" : "ready-pr", "wrong-repo", "done", "chec
 
 \`done\`, \`checked\` and \`needs-human\` may each add \`"edit": { "title": "<the title it should have>", "description": "<the whole description it should have>", "why": "<what is wrong, and what shows it>" }\`.
 
-A partial pull request adds \`"partial": "<what remains>"\` to its \`${drafts ? "draft-pr" : "ready-pr"}\` line, the same words as its body's \`Partial:\` line, so the board leaves the ticket open when it merges. When the plan has numbered steps, \`partial\` begins \`step <N> of <M>\`: the board queues step N + 1 when that pull request merges. A pull request that completes the ticket has no \`partial\`.
+A partial pull request adds \`"partial": "<what remains>"\` to its \`${drafts ? "draft-pr" : "ready-pr"}\` line, the same words as its body's \`Partial:\` line, so the board leaves the ticket open when it merges. When the plan has numbered steps, \`partial\` begins \`step <N> of <M>\`: the board queues step N + 1 when that pull request merges. A pull request that completes the ticket has no \`partial\`. \`partial\` is what remains of the ticket once every pull request of this run has merged, and only build work a later run does. It is not what one pull request leaves to its sibling in this run, and not an After-merge line of the Done-when: a run whose pull requests finish the ticket together has no \`partial\`.
 
 ${DONE_CHECKED_OR_NEEDS_HUMAN}
 

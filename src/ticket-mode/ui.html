@@ -265,6 +265,7 @@
       <nav class="filters" id="filters" aria-label="Filter runs by status"></nav>
       <div class="run-list" id="runs"></div>
       <section class="run-list" id="pull-requests" aria-label="Pull requests" hidden></section>
+      <section class="run-list" id="after-merge" aria-label="After-merge checks" hidden></section>
     </div>
   </section>
   <section id="settings-page" aria-labelledby="settings-title" hidden>
@@ -339,7 +340,7 @@
 import {
   NEEDS_DECISION, GRILL, GRILL_TITLE, APPROVE_TITLE, APPLY_EDIT_TITLE, DISCARD_EDIT_TITLE, DISMISS_EDIT_TITLE, DISMISS_TITLE, RESPOND_TITLE, START_ANYWAY_TITLE, overrideNote, QUEUE_CHILDREN, hasEdit, QUEUE_CHILDREN_TITLE, childrenNote, isParentTicket, PRIORITY_NAMES, RUN_STATUSES, publishable, publishLabel, publishNote, publishTerminalLink, pullsOf, flatten, groupByStatus, inProject, isParked, missingPlan, parentKeys, parentTick, planChoiceOf, planCounts, prioritiesOf, priorityCounts, projectCounts, projectOf, chosenProject, queueLabel, recall, remember, runActions, shownStatus, sharedRunNote, terminalTab, apiBase, chosenConnection, connectionLabel, safeHref, runStatus, terminalOpenHref,
   WRITER_STATUS_LABEL, WRITER_PRIORITY_LABEL, writerStart, writerBody, goalNames, projectNames, writerRunActions, writerChoiceLabel,
-  reviewLinesOf, unlistedPulls, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, promptNote, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
+  reviewLinesOf, unlistedPulls, afterMergeChecks, reviewerBanner, ticketChangeOf, learnsFrom, diffLines, publishingOffLine, runChoiceLabel, runsShown, unplannedCount, workingNote, verdictNote, retargetNote, checkNote, rebaseNote, reasonOf, promptNote, updateLines, updateBanner, repoLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, selectable, stackedOn, stackNote, statusCounts, terminalLink, ticketCount, toggled, visibleTickets, cutListNote, waitNote, waitsOn, workersLabel,
 } from "/board-view.js";
 // The label rows: one per label group the listed tickets carry, and one for the labels in no group. label-filters.ts decides them, tested there.
 import { clearedRow, groupTags, labelRows, withLabels } from "/label-filters.js";
@@ -870,6 +871,12 @@ function renderBoard() {
   $("pull-requests").hidden = unlisted.length === 0;
   $("pull-requests").replaceChildren(...(unlisted.length > 0 ? [el("h2", {}, "Pull requests"), ...unlisted.map((pr) => el("div", { className: "run" },
     el("div", { className: "title" }, el("a", { href: safeHref(pr.url), target: "_blank", rel: "noreferrer" }, pr.label)), el("div", { className: "meta" }, pr.text)))] : []));
+  // The After-merge lines of the tickets whose pull requests merged, with who runs each (A11-173): read from the runs, so a row leaves with its run. Hidden when there are none.
+  const checks = afterMergeChecks(state.queue.entries);
+  $("after-merge").hidden = checks.length === 0;
+  $("after-merge").replaceChildren(...(checks.length > 0 ? [el("h2", {}, "After-merge checks"), ...checks.map((check) => el("div", { className: "run" },
+    el("div", { className: "title" }, check.url === null ? check.key : el("a", { href: safeHref(check.url), target: "_blank", rel: "noreferrer" }, check.key), ` ${check.line}`),
+    el("div", { className: "meta" }, `Runs it: ${check.owner}`)))] : []));
   $("max-note").textContent = workersLabel(state.queue.max);
   // A breaking update that drains (A11-169): its banner is the queue's own, so it is gone the moment the record is.
   const updating = updateBanner(state.queue.update ? state.queue.update.note : null);

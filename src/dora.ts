@@ -49,7 +49,7 @@ import { pathToFileURL } from "node:url";
 import { sandboxGitEnv } from "./lib/git-env.ts";
 import { isShipped, noReleaseReason } from "./release-behind-main.ts";
 import { readRowsByLabel } from "./ticket-port/rows-by-label.ts"; // #5076: the regression rows and the merged list are connections, never a search
-import { readMergedPullRequests, SINCE_PAGE_SIZE } from "./ticket-port/rows-since.ts";
+import { readMergedPullRequests, sincePageSize } from "./ticket-port/rows-since.ts";
 
 /** What an unreadable source prints. Never `0`. */
 export const UNKNOWN = "unknown";
@@ -1188,7 +1188,7 @@ const MERGED_PRS_LIMIT = 1000;
 function mergedPullRequestsOf(repo: string, since: string | null): any[] {
   const select = "number mergeCommit{oid} files(first:100){nodes{path}} body";
   const asked = { repo, select, run: ghText };
-  return readMergedPullRequests({ ...asked, window: since === null ? { newest: MERGED_PRS_LIMIT } : { since, maxPages: MERGED_PRS_LIMIT / SINCE_PAGE_SIZE } });
+  return readMergedPullRequests({ ...asked, window: since === null ? { newest: MERGED_PRS_LIMIT } : { since, maxPages: MERGED_PRS_LIMIT / sincePageSize() } });
 }
 
 export const githubReaders: Readers = {

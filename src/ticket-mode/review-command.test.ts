@@ -131,3 +131,12 @@ test("A11-161: ticket:review loads the enabled reviewer and starts it, and a rev
     { refusal: "ticket:review: the reviewer does not load on this host: /.agent-org/project.json: the declaration cannot be read" });
   assert.deepEqual(refusing.started, [], "nothing is started");
 });
+
+test("A11-175: ticket:review starts a reviewer past a red unrequired check: the state names it, and nothing is refused for it", () => {
+  const { p, calls } = port({ label: "reviewer-control-119" });
+  const state = { ...stateAt(HEAD), unrequiredRed: ["checks (cross-repo)"] } as ReviewState;
+  const r = reviewOnDemand(asked(state, { port: p }));
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /started reviewer-control-119 for .*pull\/119 at 3aeaba9b/);
+  assert.deepEqual(calls, [`live ${URL}@${HEAD}`, `start ${URL}@${HEAD}`]);
+});

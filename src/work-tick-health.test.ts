@@ -20,7 +20,6 @@ import { SIGNALS } from "./org-health/thresholds.ts";
 import { orgHealthOrders, orgHealthReadings } from "./org-health/fleet-build-readings.ts";
 import { tickRecordReading, tickWallReading } from "./org-health/claim-and-tick-readings.ts";
 import { tickHealthFooter } from "./trace/trace.ts";
-import { createRow } from "./ticket-port/approved-unqueued-reads.ts";
 import { ORG_HEALTH_CLASSES } from "./work-gate/org-health-suppression.ts";
 import { workGateSource } from "./lib/work-gate-source.ts";
 import { TICK_KILLED, TICK_MARKER_FILE, TICK_OVERRAN, TICK_RECORD_FILE, TICK_RECORD_MARKER, TICK_RECORD_TABLE_ROWS, TICK_SLOW_SECONDS, clearOwnMarker,
@@ -592,12 +591,7 @@ test("agent-org#1208: the weekly report prints the same two figures from the sam
   assert.match(tickHealthFooter(join(dir, "absent"), HEALTH_NOW)[0], /^TICK HEALTH: not read: .*tick-cost\.jsonl could not be read$/);
 }));
 
-test("agent-org#1208: the created row is `lane:ceo` with NO `ready` label, its number is read from the printed URL, and its body names the declaration key", () => {
-  let argv: string[] = [];
-  const number = createRow({ repo: "a11ign/a11ign", title: "t", labels: ["lane:ceo"], body: "b", run: (args) => { argv = args; return "https://github.com/a11ign/a11ign/issues/4321\n"; } });
-  assert.equal(number, 4321);
-  assert.deepEqual(argv.filter((arg, index) => argv[index - 1] === "--label"), ["lane:ceo"], "one label, the lane; `ready` would offer the row as work");
-  assert.throws(() => createRow({ repo: "a/b", title: "t", labels: [], body: "b", run: () => "created" }), /printed no row URL/, "a create with no number is never taken for one");
+test("agent-org#1208: the standing row's body names the declaration key and its title says what it is (the create itself is the code host's: plugins/github/rows/writes.test.ts)", () => {
   assert.match(tickRecordRowBody(), /units\.tickRecordIssue/);
   assert.match(TICK_RECORD_ROW_TITLE, /^Tick record/);
 });

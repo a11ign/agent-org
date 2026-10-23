@@ -54,6 +54,11 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     expect("posted" in repost || ("refusal" in repost && typeof repost.final === "boolean"), "repostVerdict() must answer { posted } or { refusal, final }");
     const prompt = reviewer.reprompt(probe.ref);
     expect("prompted" in prompt || "refusal" in prompt, "reprompt() must answer { prompted } or { refusal }");
+    // A brief that names the plan step of a partial pull request (contract 1.3) is one a reviewer takes, with its section found or not.
+    for (const section of ["Step 3 of 9: the section of the plan", null]) {
+      const stepped = reviewer.reprompt(probe.ref, { doneWhen: null, step: { step: 3, of: 9, section } });
+      expect("prompted" in stepped || "refusal" in stepped, "reprompt() with a brief that names a plan step must answer { prompted } or { refusal }");
+    }
   },
   "close answers closed, gone or busy, or a refusal": ({ reviewer, probe }) => {
     const answer = reviewer.close(probe.ref);

@@ -43,7 +43,7 @@ import { readClosedClaimLabelRows } from "../work-gate/causes/rows-claims-closed
 import { readRecentlyClosed } from "../work-gate/causes/rows-blocker-cleared.ts";
 import { readTrackerLanes } from "../work-gate/tick.ts";
 import { forgetRefusedReads, readClaimedRows, readRowsByLabel } from "../ticket-port/rows-by-label.ts";
-import { foldPage, readMergedPullRequests, readRowsSince, SINCE_PAGE_SIZE, WindowCutShort, type SinceRead } from "../ticket-port/rows-since.ts";
+import { foldPage, readMergedPullRequests, readRowsSince, sincePageSize, WindowCutShort, type SinceRead } from "../ticket-port/rows-since.ts";
 import { mergedPrsInWindow } from "../close-rows-sweep.ts";
 import { fetchReadyIssueNumbers } from "../board-snapshot.ts";
 import { ghReadyReader } from "../untiered-ready-rows.ts";
@@ -185,6 +185,15 @@ test("NEGATIVE CONTROL (source): no file the claim or the gate reads through bui
     "the walk sees the files this row converted: an empty walk would pass for the wrong reason");
   assert.ok(["work-gate.ts", "queue-table.ts", "work-tick.ts", "work-gate/org-health.ts"].every((file) => COVERED.includes(file)), "and the gate's own files (#5050)");
   for (const file of COVERED) assert.deepEqual(searchBackedLists(moduleSource(file)), [], `${file} lists rows through a SEARCH`);
+});
+
+/** The moved readers (A11-160): the GitHub plugin's rows, which `ticket-port/` now delegates to, and which hold the argv the walk above can no longer see there. */
+const PLUGIN_ROWS = join(SRC, "..", "plugins", "github", "rows");
+
+test("NEGATIVE CONTROL (source, A11-160): no reader the plugin holds for row mode builds a list argv carrying `--label` or `--search`", () => {
+  const files = readdirSync(PLUGIN_ROWS).filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"));
+  assert.ok(files.includes("rows-by-label.ts") && files.includes("rows-since.ts"), "the walk sees the two connection readers: an empty walk would pass for the wrong reason");
+  for (const file of files) assert.deepEqual(searchBackedLists(readFileSync(join(PLUGIN_ROWS, file), "utf8")), [], `plugins/github/rows/${file} lists rows through a SEARCH`);
 });
 
 test("POSITIVE CONTROL (source, #5074): `wake.ts` and `row-file.ts` are walked, and each still lists rows -- with a plain list, which is no search", () => {
@@ -443,7 +452,7 @@ test("the window ends at the first row before it, and no page past that is asked
 });
 
 test("NEGATIVE CONTROL: a window longer than its pages is REFUSED, never returned in part -- and `newest` is the one that truncates, by its own name", () => {
-  const all = Array.from({ length: 3 * SINCE_PAGE_SIZE }, (_, i) => pull(5000 - i, { merged: ago(500 - i), updated: ago(500 - i) }));
+  const all = Array.from({ length: 3 * sincePageSize() }, (_, i) => pull(5000 - i, { merged: ago(500 - i), updated: ago(500 - i) }));
   const { run } = searchSpentGitHub(all);
   const ask: SinceRead = { kind: "pullRequests", states: ["MERGED"], orderBy: "UPDATED_AT", repo: TRACKER, select: "number", since: SINCE_ISO };
   assert.throws(() => readRowsSince({ ask: { ...ask, maxPages: 2 }, run }), (error: Error) => error instanceof WindowCutShort && /may be cut short/.test(error.message));

@@ -361,15 +361,40 @@ export function reviewHeadsOf(pr: any, head: string, wait: "settled" | "running"
 /** The reviewer role file a pull request's reviewer reads, which the gate's prompt names; ticket mode's re-review brief names the same file (A11-156). */
 export { reviewerRoleFile };
 
-/** The fields a reviewer reads a pull request by: its head, its reviews and author, and the rollup `settledGreenOf` reads. */
-export const REVIEW_PULL_FIELDS = "headRefOid,reviews,author,isCrossRepository,isDraft,statusCheckRollup";
+/** The fields a reviewer reads a pull request by: its head, its reviews and author, the rollup `settledGreenOf` reads, and the body whose `Partial: step N of M` line names the plan step it finishes (A11-175). */
+export const REVIEW_PULL_FIELDS = "headRefOid,reviews,author,isCrossRepository,isDraft,statusCheckRollup,body";
+
+/** The name a rollup entry goes by: a check run's `name`, a commit status's `context`. */
+const checkNameOf = (check: any): string => String(check?.name ?? check?.context ?? "");
+
+/** The rollup of a pull request narrowed to the newest run per name, which is the only narrowing a question about its checks may ask of (`checksSettledGreen`). */
+const newestChecksOf = (pr: any): any[] => newestPerName(Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : []);
+
+/** The checks `required` names, or every check when it names none: a null list was not read or could not be, and an empty one is a branch that requires nothing, which counts every check as `pull-feedback.ts` does (A11-175). */
+const requiredNames = (required: readonly string[] | null): string[] | null => (required === null || required.length === 0 ? null : [...required]);
 
 /**
- * Whether a pull request's own checks have settled green, read off its rollup narrowed to the newest run per name (the way `checksSettledGreen`
- * asks). A pending check, or no check at all, is not settled green.
+ * Whether a pull request's checks have settled green, read off its rollup narrowed to the newest run per name (the way `checksSettledGreen` asks). A pending check, or no check at all, is not
+ * settled green. With `required`, the names of the checks the branch requires (A11-175), only those count: a required check that has not reported is not settled, and a check outside the list holds
+ * nothing, red or running. With no list, or an empty one, every check counts.
  */
-export function settledGreenOf(pr: any): boolean {
-  return checksSettledGreen(newestPerName(Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : [])) === true;
+export function settledGreenOf(pr: any, required: readonly string[] | null = null): boolean {
+  const names = requiredNames(required);
+  const rollup = newestChecksOf(pr);
+  if (names === null) return checksSettledGreen(rollup) === true;
+  const counted = blockingChecks(rollup, names);
+  return names.every((name) => counted.some((check) => checkNameOf(check) === name)) && checksSettledGreen(counted) === true;
+}
+
+/**
+ * The checks that failed and that the branch does not require (A11-175), by name, once each: what a reviewer is told was left red because it held nothing. Empty with no list of required checks,
+ * or an empty one, since then every check counts and none is left out. A check still running is not red.
+ */
+export function unrequiredRedOf(pr: any, required: readonly string[] | null = null): string[] {
+  const names = requiredNames(required);
+  if (names === null) return [];
+  const red = newestChecksOf(pr).filter((check) => !names.includes(checkNameOf(check)) && checksSettledGreen([check]) === false);
+  return [...new Set(red.map(checkNameOf))];
 }
 
 /**

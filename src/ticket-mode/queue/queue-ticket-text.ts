@@ -67,10 +67,10 @@ export function recordFindingsGiven(queue: Queue, key: string, urls: readonly st
 }
 
 /**
- * A queued run's plan is written again (A11-167): it becomes a planning run on `plan`, with its stale plan's paths and stamp dropped, since the plan they were read from is detached. The mark of what
+ * A queued run's plan is written again (A11-167): it becomes a planning run on `plan`, with its stale plan's paths (and the paths of its steps) and stamp dropped, since the plan they were read from is detached. The mark of what
  * changed stays, so the run says why it plans again.
  */
 export function replan(queue: Queue, key: string, plan: RunChoice, previous: readonly string[], change: TicketChange | undefined): Queue {
-  return replace(queue, key, ({ paths: _paths, pathsFailure: _failed, plannedAgainst: _stamp, planned: _planned, ticketChange: _before, ...entry }) =>
+  return replace(queue, key, ({ paths: _paths, stepPaths: _stepPaths, pathsFailure: _failed, plannedAgainst: _stamp, planned: _planned, ticketChange: _before, ...entry }) =>
     ({ ...entry, plan, previousPlan: previous, ...(change ? { ticketChange: change } : {}) }));
 }
