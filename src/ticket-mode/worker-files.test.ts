@@ -848,3 +848,22 @@ test("diffText shows the lines that differ with two lines of what stays around t
   const after = lines(12).map((line) => (line === "line 6" ? "line six" : line)).join("\n");
   assert.equal(diffText(before, after), "```diff\n...\n  line 4\n  line 5\n- line 6\n+ line six\n  line 7\n  line 8\n...\n```");
 });
+
+test("A11-173: rule 6 and the outcome section say partial is build work a later run does, After-merge lines are not partial, and a run's sibling pull requests say Refs with no partial", () => {
+  const brief = briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const rule6 = brief.split("\n").find((line) => line.startsWith("6. ")) ?? "";
+  assert.ok(rule6.includes("`Partial:` is for build work a later run of this ticket does, a plan step."), "partial is a plan step");
+  assert.ok(rule6.includes("An After-merge line of the ticket's Done-when is not partial: the board completes the ticket when the pull requests merge and lists those lines, so a pull request that leaves only After-merge lines names the ticket `Closes NBF-1270`."));
+  assert.ok(rule6.includes("When your pull requests finish the ticket together (two repositories, say), each names the ticket `Refs NBF-1270`, because one `Closes` would complete the ticket on the first merge, and each `Partial:` line names the run's other pull requests; your outcome then has no `partial`, and the board completes the ticket once all of them have merged."));
+  assert.ok(brief.includes("`partial` is what remains of the ticket once every pull request of this run has merged, and only build work a later run does. It is not what one pull request leaves to its sibling in this run, and not an After-merge line of the Done-when: a run whose pull requests finish the ticket together has no `partial`."), "the outcome section says the same");
+});
+
+test("A11-173: a counted step's brief says the board counted it and asks for step N of M", () => {
+  const brief = (steps: { step: number; of: number; prs: string[]; counted?: true }[]) => briefText({ ticket, folder: "/f", ticketDir: "/d", attachments: [], steps, clones, worktreeCommand: "w", prOpenCommand: "/node /tool/src/bin.ts pr:open" });
+  const counted = brief([{ step: 2, of: 9, prs: ["https://github.com/a11ign/agent-org/pull/1816"], counted: true }]);
+  assert.ok(counted.includes("- step 2 of 9: https://github.com/a11ign/agent-org/pull/1816 (counted by the board: the Partial line named no step)"), "the merged step is marked");
+  assert.ok(counted.includes("This run does step 3 of 9, and only that step."));
+  assert.ok(counted.includes("The Partial line of step 2's pull request named no step, so the board counted it as step 2 of 9. Check the merged pull requests above against the plan before you start, do the first step none of them did, and name it `step <N> of <M>` in your `Partial:` line."));
+  const named = brief([{ step: 2, of: 9, prs: ["https://github.com/a11ign/agent-org/pull/1816"] }]);
+  assert.equal(named.includes("counted"), false, "a step the declaration named says nothing of counting");
+});

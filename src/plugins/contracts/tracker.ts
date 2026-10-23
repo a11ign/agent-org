@@ -1,5 +1,5 @@
 // @ts-check
-// module: the tracker contract, version 1.3 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
+// module: the tracker contract, version 1.4 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
 // A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
 // implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
@@ -9,6 +9,9 @@
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
 //
+// 1.4 (A11-173) ADDS the optional `comment`: the board posts a comment on a ticket without moving it, for the After-merge checks of a ticket the tracker completed itself, where `complete` leaves the ticket and its comment alone. It is optional, so
+// a 1.3 tracker still passes: a source without it gets the checks recorded on the board, and the board's log says the comment was not posted.
+//
 // 1.3 (A11-167) ADDS the optional `updatedAt` of a `Ticket`, and the optional `texts` and `detachPlan`: the board checks the description of every queued and running ticket in one request, and detaches a plan whose
 // description has changed before the ticket is planned again (ADR 0005). All three are optional, so a 1.2 tracker still passes: a source without `texts` never marks a plan stale, and one without
 // `detachPlan` cannot re-plan.
@@ -17,7 +20,7 @@
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.3";
+export const TRACKER_CONTRACT_VERSION = "1.4";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -255,6 +258,11 @@ export interface TicketSource {
    * tracker. Throws when the tracker refuses.
    */
   complete?(key: string, comment: string): Promise<string | null>;
+  /**
+   * Post `body` as a comment on the ticket, whatever state it is in, and change nothing else (A11-173). One call posts one comment. Used for the After-merge checks of a ticket
+   * the tracker completed itself, which {@link complete} leaves alone with no comment. A source without it posts none. Throws when the tracker refuses.
+   */
+  comment?(key: string, body: string): Promise<void>;
   /**
    * Write a ticket's title and description, the fields given and no others, once a person has applied a worker's proposed edit to it (A11-91). A
    * source without it cannot apply one. Throws when the tracker refuses.

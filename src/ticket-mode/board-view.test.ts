@@ -9,7 +9,7 @@ import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
 import { diffLines, learnsFrom, learnsLine, REPLANNING_LINE, STALE_PLAN_LINE, ticketChangeOf } from "./board-view/ticket-change.ts";
-import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls } from "./board-view.ts";
+import { terminalOpenHref, runChoiceLabel, writerChoiceLabel, apiBase, chosenConnection, connectionLabel, safeHref, reviewLinesOf, unlistedPulls, afterMergeChecks } from "./board-view.ts";
 import { AWAITING_PERSON_LINE, claimWarning, publishingOffLine, pullReviewText, type PullRead, reviewerBanner, REVIEWER_OFF_BANNER, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { REGION_EXEMPT } from "../pr-open-region.ts";
 import { ACCEPTANCE_DIR } from "../acceptance-file.ts";
@@ -1317,9 +1317,9 @@ test("A11-168: a merged partial run the board did not queue a step for reads Nee
   assert.equal(reasonOf(stalled).line, "Partial merged: step 9 of 9: the docs. It names step 9 of 9, the last, with Partial: the last step closes the ticket");
   assert.equal(reasonOf(merged({ partial: "the docs" })).line, "Partial merged: the docs. It names no step, so nothing was queued: Dismiss it and queue the ticket");
   assert.equal(reasonOf(merged({ partial: "step 1 of 9", steps: [{ step: 1, of: 9, prs: [] }] })).line, "Partial merged: step 1 of 9. Step 1 is not after step 1: nothing was queued");
-  assert.deepEqual([runStatus(merged({ partial: "the docs", trackerState: "completed" })), reasonOf(merged({ partial: "the docs", trackerState: "completed" })).line], ["completed", null]);
+  assert.deepEqual([runStatus(merged({ partial: "the docs", trackerState: "completed" })), reasonOf(merged({ partial: "the docs", trackerState: "completed" })).line], ["completed", "completed: a11ign/agent-org #1811 merged"], "the tracker's word wins, and the card says what completed it");
   assert.equal(runStatus(merged({})), "completed", "a pull request with no declaration completes the run as before");
-  assert.equal(reasonOf(merged({})).line, null);
+  assert.equal(reasonOf(merged({})).line, "completed: a11ign/agent-org #1811 merged");
 });
 
 test("A11-168: a merged partial run is dismissed, not retried, and a closed unmerged one is still cancelled", () => {
@@ -1413,4 +1413,39 @@ test("A11-171: every card of a batch, and every press of Talk, names the same te
   assert.equal(terminalTab(card("NBF-2", "b0-0")), terminalTab(card("NBF-3", "b0-0")));
   assert.notEqual(terminalTab(card("NBF-2")), terminalTab(card("NBF-3")));
   assert.equal(terminalTab(card("NBF-2")), "terminal-NBF-2");
+});
+
+const PLUGIN_PR = "https://github.com/a11ign/plugin/pull/9";
+const AGENT_ORG_PR = "https://github.com/a11ign/agent-org/pull/1815";
+
+test("A11-173: a Completed run's line says completed: a11ign/agent-org #1815, a11ign/plugin #9 merged", () => {
+  const both = run({ outcome: { kind: "ready-pr", prs: [{ url: AGENT_ORG_PR }, { url: PLUGIN_PR }] }, pullStates: { [AGENT_ORG_PR]: "merged", [PLUGIN_PR]: "merged" } });
+  assert.equal(runStatus(both), "completed");
+  assert.deepEqual(reasonOf(both), { line: "completed: a11ign/agent-org #1815, a11ign/plugin #9 merged", question: null });
+  const reviewed = run({ outcome: { kind: "reviewed", prs: [{ url: AGENT_ORG_PR }] }, pullStates: { [AGENT_ORG_PR]: "merged" } });
+  assert.equal(reasonOf(reviewed).line, "completed: a11ign/agent-org #1815 merged", "a reviewed run too");
+  const closedOne = run({ outcome: { kind: "ready-pr", prs: [{ url: AGENT_ORG_PR }, { url: PLUGIN_PR }] }, pullStates: { [AGENT_ORG_PR]: "merged", [PLUGIN_PR]: "closed" } });
+  assert.equal(reasonOf(closedOne).line, "completed: a11ign/agent-org #1815 merged", "only the pull requests that merged are named");
+  const doneAfterReview = run({ outcome: { kind: "done", reason: "PR #1815 is merged", evidence: ["e"] } as never, review: [{ url: AGENT_ORG_PR }], pullStates: { [AGENT_ORG_PR]: "merged" } });
+  assert.deepEqual(reasonOf(doneAfterReview), { line: "completed: a11ign/agent-org #1815 merged", question: "PR #1815 is merged" }, "a done's reason stays one click away");
+  const doneAlone = run({ outcome: { kind: "done", reason: "nothing to build", evidence: ["e"] } as never });
+  assert.deepEqual(reasonOf(doneAlone), { line: "nothing to build", question: null }, "a done with no merged pull request keeps its reason as the line");
+  const partial = { ...both, partial: "step 1 of 3" };
+  assert.deepEqual([runStatus(partial), reasonOf(partial).line], ["needs-you", null], "a partial run is not Completed, and does not say it was");
+});
+
+test("A11-173: the After-merge checks list names each line's ticket and owner, and a run with them reads Completed, not Needs you", () => {
+  const listed = run({ ticket: { key: "A11-145", url: "https://linear.app/a11ign/issue/A11-145" }, outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" },
+    afterMerge: [{ line: "the laptop run shows 3 of 3. The chairman, after merge.", owner: "The chairman" }, { line: "a second check", owner: null }] });
+  assert.equal(runStatus(listed), "completed");
+  assert.equal(reasonOf(listed).line, "completed: a11ign/agent-org #1811 merged; 2 after-merge checks listed");
+  assert.equal(reasonOf({ ...listed, afterMerge: [listed.afterMerge![0]] }).line, "completed: a11ign/agent-org #1811 merged; 1 after-merge check listed");
+  const other = run({ ticket: { key: "A11-150" }, afterMerge: [{ line: "a live check", owner: "Someone" }] });
+  assert.deepEqual(afterMergeChecks([listed, run({ ticket: { key: "A11-146" } }), other]), [
+    { key: "A11-145", url: "https://linear.app/a11ign/issue/A11-145", line: "the laptop run shows 3 of 3. The chairman, after merge.", owner: "The chairman" },
+    { key: "A11-145", url: "https://linear.app/a11ign/issue/A11-145", line: "a second check", owner: "owner not named" },
+    { key: "A11-150", url: null, line: "a live check", owner: "Someone" },
+  ], "one row per line, in the order of the runs, with 'owner not named' where the line names none; a run with none adds none");
+  assert.deepEqual(afterMergeChecks([run({})]), [], "nothing is listed for a run that recorded none");
+  assert.deepEqual(afterMergeChecks([]), []);
 });

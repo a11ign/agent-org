@@ -2,8 +2,9 @@
 // module: the reason line a run's card shows, and the question it keeps one click away (PURE)
 import { pullAnswer, type PullAnswer } from "./pull-answer.ts";
 import { afterPartialMerge, stepQueuedLine, stepRunningLine } from "./plan-steps.ts";
-import { rebaseNote, retargetNote, settledByPulls, verdictNote, workingNote } from "./pull-status-and-notes.ts";
-import { openPulls, type ViewEntry } from "./view-types-and-filters.ts";
+import { rebaseNote, retargetNote, runStatus, settledByPulls, verdictNote, workingNote } from "./pull-status-and-notes.ts";
+import { openPulls, pullsOf, type ViewEntry } from "./view-types-and-filters.ts";
+import { pullLabel } from "./pull-label.ts";
 import { clockOf, shortVersion, versionLine, type UpdateView } from "./update-banner.ts";
 import { ticketChangeLine } from "./ticket-change.ts";
 
@@ -41,8 +42,20 @@ function stepNote(entry: ViewEntry): string | null {
   if (entry.phase !== "finished") return entry.phase === "queued" ? stepQueuedLine(merged) : stepRunningLine(merged);
   const settled = entry.trackerState === "completed" || entry.trackerState === "canceled" || entry.trackerState === "duplicate";
   if (entry.partial === undefined || settled || settledByPulls(entry) !== "completed") return null;
-  const after = afterPartialMerge(entry.partial, merged);
+  const after = afterPartialMerge(entry.partial, merged, entry.planSteps);
   return "stalled" in after ? after.stalled : null;
+}
+
+/**
+ * What completed a Completed run (A11-173), or null: `completed: a11ign/agent-org #1815, a11ign/plugin #9 merged`, with `; 2 after-merge checks listed` once the board listed the
+ * ticket's After-merge lines. A run Completed without a merged pull request of its own (a `done`, or the tracker's word) says nothing here. PURE.
+ */
+export function completedLine(entry: ViewEntry): string | null {
+  if (entry.phase !== "finished" || runStatus(entry) !== "completed") return null;
+  const merged = pullsOf(entry).filter(({ url }) => entry.pullStates?.[url] === "merged");
+  if (merged.length === 0) return null;
+  const listed = entry.afterMerge?.length ?? 0;
+  return `completed: ${merged.map(({ url }) => pullLabel(url)).join(", ")} merged${listed > 0 ? `; ${listed} after-merge check${listed === 1 ? "" : "s"} listed` : ""}`;
 }
 
 /**
@@ -58,6 +71,9 @@ export function reasonOf(entry: ViewEntry): Readonly<{ line: string | null; ques
   if (answer !== null) return { line: ANSWER_LINE[answer], question: asked };
   // A run the board handed back keeps the question it asked one click away: the hand-back is the line, but the worker's question is still to be answered (A11-154).
   const asking = entry.handedBack !== undefined && entry.outcome?.kind === "needs-human" ? once(entry.outcome.reason ?? null) : null;
+  // A Completed run says what completed it; what its worker said of it (a `done`'s reason, posted on the ticket) is kept one click away (A11-173).
+  const completed = completedLine(entry);
+  if (completed !== null) return { line: ticketChangeLine(entry) ?? completed, question: asking ?? asked };
   // That a ticket's text changed under the run comes first: it is what the run is doing about it (A11-167).
   return { line: ticketChangeLine(entry) ?? asked ?? stepNote(entry), question: asking };
 }

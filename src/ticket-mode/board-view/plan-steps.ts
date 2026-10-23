@@ -3,14 +3,18 @@
 //
 // A ticket whose plan has numbered steps ships one pull request for each. A worker that finishes step N of M says so in the `Partial:` line of its body and, in the same
 // words, in the `partial` of its outcome (A11-92). When that pull request merges, the board queues step N + 1 on the same plan. Only a numbered step that moves forward is
-// queued: a declaration that names no step, the last step, or a step that is not past the last one merged goes to a person, with the reason, so a worker that writes `Partial`
-// without moving forward cannot loop the queue. This file is in `board-view/` because the page words the reason from it, and the page runs only what that folder holds.
+// queued: a declaration that names the last step, or a step that is not past the last one merged goes to a person, with the reason, so a worker that writes `Partial`
+// without moving forward cannot loop the queue. A declaration that gives no `of <M>`, or no step at all, is counted by the board (A11-173): the step it finished is the one it names or else
+// the first the plan's record does not show as merged, and the plan's size is the record's or the plan file's (`plan-step-count.ts`). Only a plan with no step left stops. This file is in `board-view/` because the page words the reason from it, and the page runs only what that folder holds.
 
 /** A step of the plan, numbered from 1, out of the plan's `of` steps. */
 export type PlanStep = Readonly<{ step: number; of: number }>;
 
-/** A step whose pull requests merged: the step, and the web address of each pull request that finished it. */
-export type MergedStep = PlanStep & Readonly<{ prs: readonly string[] }>;
+/** A step of the plan's record, and whether the board counted it (A11-173). */
+export type StepRecord = PlanStep & Readonly<{ counted?: true }>;
+
+/** A step whose pull requests merged: the step, the web address of each pull request that finished it, and `counted` when the board counted the step because the declaration did not name it (A11-173). */
+export type MergedStep = StepRecord & Readonly<{ prs: readonly string[] }>;
 
 /** `step <N> of <M>`, as the ticket's plan numbers its steps and the brief tells a worker to word the `Partial:` line. */
 const STEP_WORDS = /\bstep\s+(\d+)\s+of\s+(\d+)\b/i;
@@ -26,30 +30,50 @@ export function stepNamed(partial: string): PlanStep | null {
   return step >= 1 && step <= of ? { step, of } : null;
 }
 
-/** What a merged partial pull request leads to: the next step to queue, or why nothing is queued, worded for the card. */
-export type AfterMerge = Readonly<{ next: PlanStep } | { stalled: string }>;
+/** What a merged partial pull request leads to: the next step to queue, `counted` when the board counted the step the declaration finished, or why nothing is queued, worded for the card. */
+export type AfterMerge = Readonly<{ next: PlanStep & Readonly<{ counted?: true }> } | { stalled: string }>;
+
+/** The first `step <N>` a declaration names, with or without `of <M>`: the same words as {@link STEP_WORDS}, any case. Null when it names none. */
+const stepNumberNamed = (partial: string): number | null => {
+  const found = /\bstep\s+(\d+)\b/i.exec(partial);
+  return found === null ? null : Number(found[1]);
+};
 
 /**
- * What follows a partial pull request that merged, given its `partial` declaration and the steps already merged on this ticket's run. The next step is queued only when the
- * declaration names step N of M with N below M, and N is past every step already recorded. Anything else is `stalled`, with the sentence the card shows. PURE.
+ * What follows a partial pull request that merged, given its `partial` declaration, the steps already merged on this ticket's run and the number of numbered steps the plan file
+ * has (`planSteps`, undefined while it has not been counted). The next step is queued only when the step finished is below the plan's size and past every step already recorded.
+ * A declaration `step N of M` finishes step N of M. Otherwise the board counts (A11-173): the step finished is the first `step <N>` the declaration names, or else the first after the
+ * last recorded; the plan's size is the record's `of`, or else `planSteps`. Anything else is `stalled`, with the sentence the card shows. PURE.
  */
-export function afterPartialMerge(partial: string, merged: readonly PlanStep[]): AfterMerge {
-  const named = stepNamed(partial);
+export function afterPartialMerge(partial: string, merged: readonly PlanStep[], planSteps?: number): AfterMerge {
   const said = `Partial merged: ${partial}.`;
-  if (named === null) return { stalled: `${said} It names no step, so nothing was queued: Dismiss it and queue the ticket` };
-  if (named.step === named.of) return { stalled: `${said} It names step ${named.of} of ${named.of}, the last, with Partial: the last step closes the ticket` };
   const last = Math.max(0, ...merged.map(({ step }) => step));
-  if (named.step <= last) return { stalled: `${said} Step ${named.step} is not after step ${last}: nothing was queued` };
-  return { next: { step: named.step + 1, of: named.of } };
+  const named = stepNamed(partial);
+  const counted = named === null;
+  const size = named?.of ?? (merged.at(-1)?.of ?? planSteps ?? 0);
+  const step = named?.step ?? stepNumberNamed(partial) ?? last + 1;
+  if (counted && size === 0) {
+    const why = planSteps === 0 ? "It names no step, and the plan has no numbered steps" : "It names no step";
+    return { stalled: `${said} ${why}, so nothing was queued: Dismiss it and queue the ticket` };
+  }
+  if (step >= size) {
+    const how = counted ? `The board counted it as step ${size} of ${size}` : `It names step ${size} of ${size}`;
+    return step === size ? { stalled: `${said} ${how}, the last, with Partial: the last step closes the ticket` } : { stalled: `${said} It names step ${step}, past the plan's last step, ${size}: nothing was queued` };
+  }
+  if (step <= last) return { stalled: `${said} Step ${step} is not after step ${last}: nothing was queued` };
+  return { next: { step: step + 1, of: size, ...(counted ? { counted: true as const } : {}) } };
 }
 
 /** The line a run queued for the next step carries, `step 1 of 9 merged; step 2 queued`, or null for a run that is no later step. PURE. */
-export const stepQueuedLine = (merged: readonly PlanStep[]): string | null => stepLine(merged, "queued");
+export const stepQueuedLine = (merged: readonly StepRecord[]): string | null => stepLine(merged, "queued");
 
 /** The same line once the run has started, `step 1 of 9 merged; step 2 running`. PURE. */
-export const stepRunningLine = (merged: readonly PlanStep[]): string | null => stepLine(merged, "running");
+export const stepRunningLine = (merged: readonly StepRecord[]): string | null => stepLine(merged, "running");
 
-function stepLine(merged: readonly PlanStep[], state: "queued" | "running"): string | null {
+/** What a step the board counted says of it: the declaration named no step (A11-173). */
+const COUNTED_WORDS = "counted by the board: the Partial line named no step";
+
+function stepLine(merged: readonly StepRecord[], state: "queued" | "running"): string | null {
   const last = merged.at(-1);
-  return last === undefined ? null : `step ${last.step} of ${last.of} merged; step ${last.step + 1} ${state}`;
+  return last === undefined ? null : `step ${last.step} of ${last.of} merged${last.counted ? ` (${COUNTED_WORDS})` : ""}; step ${last.step + 1} ${state}`;
 }

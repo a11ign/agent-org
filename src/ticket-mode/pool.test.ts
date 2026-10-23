@@ -638,9 +638,11 @@ const OPEN_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/802";
  * A pool over one finished run of NBF-1 that ended with `outcome`, whose pull request is `pull` and whose ticket the tracker reads as `state`. `complete`
  * records each call (and throws when `refuse` says so), and `reads` each state read, so a test sees what the board asked the tracker.
  */
-function completing(outcome: Outcome, { state = "started", pull = "merged", refuse = 0, keywords, note = null, without, pulls }: {
+function completing(outcome: Outcome, { state = "started", pull = "merged", refuse = 0, keywords, note = null, without, pulls, description = "", comments }: {
   state?: string; pull?: PullState; refuse?: number; keywords?: TicketSource["keywords"]; note?: string | null; without?: "complete";
-  pulls?: Record<string, PullState>;
+  pulls?: Record<string, PullState>; description?: string;
+  /** Set to collect each comment the board posts on the ticket (A11-173): the tracker then has `comment`; left out, it has none. */
+  comments?: { key: string; body: string }[];
 } = {}) {
   const root = tmpDir("ticket-pool-complete-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/repos/nbl-ui-netbox" }, stateDir: join(root, "state") });
@@ -660,7 +662,8 @@ function completing(outcome: Outcome, { state = "started", pull = "merged", refu
     },
   };
   if (without === "complete") delete tracker.complete;
-  let queue: Queue = finish(enqueue(emptyQueue(2), [ticket("NBF-1")], { model: "sonnet", effort: "high" }, 0), "NBF-1", outcome, 5);
+  if (comments !== undefined) tracker.comment = async (key, body) => { comments.push({ key, body }); };
+  let queue: Queue = finish(enqueue(emptyQueue(2), [{ ...ticket("NBF-1"), description }], { model: "sonnet", effort: "high" }, 0), "NBF-1", outcome, 5);
   const store = { get: () => queue, set: (next: Queue) => { queue = next; } };
   const pool = createPool(store, { settings, source: tracker, codeHost: createFakeCodeHost(), hook: { node: "/node", bin: "/b" }, herdr: () => "{}", now: () => 9, load: () => ({ load: 0, cores: 1 }), transcriptsRoot: root, wait: async () => {} });
   return { pool, calls, reads, entry: () => queue.entries[0] };
@@ -3152,7 +3155,7 @@ async function finishRunning(made: ReturnType<typeof setup>, outcome: Record<str
   return made;
 }
 
-test("A11-91: a done is refused as needs-human, and the ticket left alone, for a parent with open sub-issues, a planning run, and a review run", async () => {
+test("A11-91: a done is refused as needs-human, and the ticket left alone, for a parent with open sub-issues and a planning run", async () => {
   const parent = doneTracker();
   const made = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: parent.tracker });
   await made.pool.tick();
@@ -3167,15 +3170,6 @@ test("A11-91: a done is refused as needs-human, and the ticket left alone, for a
   await finishRunning(plan, { kind: "done", reason: "verified", evidence: ["e"] });
   assert.deepEqual(planning.calls, [], "a planning run completes no ticket");
   assert.match((plan.entry("NBF-1").outcome as { reason: string }).reason, /planning run, which completes no ticket/);
-
-  const review = doneTracker();
-  const reviewing = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: review.tracker });
-  await reviewing.pool.tick();
-  const queue = reviewing.store.get();
-  reviewing.store.set({ ...queue, entries: queue.entries.map((e) => (e.ticket.key === "NBF-1" ? { ...e, review: [] } : e)) });
-  await finishRunning(reviewing, { kind: "done", reason: "verified", evidence: ["e"] });
-  assert.deepEqual(review.calls, [], "a review run's ticket completes when its pull requests merge");
-  assert.match((reviewing.entry("NBF-1").outcome as { reason: string }).reason, /review run: its ticket completes when its pull requests merge/);
 });
 
 test("A11-91: a done that the tracker cannot complete hands the run to a person with the worker's reason and the tracker's, and the ticket is left where it is", async () => {
@@ -6339,4 +6333,166 @@ test("a folder in the plan folder that is no ticket of the board is not part of 
   await answerNbf3(made, { "NBF-3": { repo: "nbl-ui-netbox", after: ["notes"] }, notes: { repo: null, after: [] } });
   assert.deepEqual([...relations], [["NBF-2", ["NBF-1"]]], "the order named a ticket the board does not have, so none of it was recorded");
   assert.deepEqual([entry("NBF-3").phase, entry("NBF-3").plannedRepo], ["queued", null], "the plan itself still stands");
+});
+
+// ---- A11-173: merged work completes its ticket without a person
+
+const REVIEWED_PR = "https://github.com/a11ign/agent-org/pull/1804";
+
+/**
+ * NBF-1's review round, running over the pull request `states` says (the object is read on every ask, so a test moves a pull request by writing to it), with the first round's `partial`
+ * declaration kept, as a round keeps it. Its worker then writes `outcome`. The tracker holds NBF-1 In Progress and completes it, recording each call.
+ */
+async function reviewRoundDone(states: Record<string, PullState>, outcome: Record<string, unknown>) {
+  const made = doneTracker();
+  const tracker: TicketSource = { ...made.tracker, pullStates: async () => new Map([["NBF-1", states]]),
+    stateTypes: async (keys) => new Map(keys.map((key) => [key, made.current.get(key) === "Done" ? "completed" : "started"])) };
+  const run = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  await run.pool.tick();
+  const queue = run.store.get();
+  run.store.set({ ...queue, entries: queue.entries.map((e) => ({ ...e, review: [{ repo: "agent-org", url: REVIEWED_PR }], partial: "a live check the chairman runs after merge" })) });
+  await finishRunning(run, outcome);
+  return { ...made, run };
+}
+
+const WORKER_DONE = { kind: "done", reason: "PR #1804 is merged", evidence: ["gh pr view 1804: MERGED"] };
+
+test("A11-173: a review round's done on merged pull requests completes the ticket and the run reads Completed", async () => {
+  const { run, calls } = await reviewRoundDone({ [REVIEWED_PR]: "merged" }, WORKER_DONE);
+  const entry = run.entry("NBF-1");
+  assert.deepEqual(calls.map(({ op, args }) => [op, args[0]]), [["complete", "NBF-1"]], "the ticket was completed through the tracker, once");
+  assert.deepEqual([entry.outcome?.kind, entry.partial, runStatus(entry), entry.pullStates], ["done", undefined, "completed", { [REVIEWED_PR]: "merged" }], "an earlier round's partial is cleared, and the run reads Completed (A11-150)");
+  assert.equal(reasonOf(entry).line, "completed: a11ign/agent-org #1804 merged", "and the card says what completed it, with the worker's words one click away");
+  assert.equal(reasonOf(entry).question, WORKER_DONE.reason);
+});
+
+test("A11-173: a review round's done with a pull request still open is recorded as reviewed, and the ticket completes when it merges", async () => {
+  const states: Record<string, PullState> = { [REVIEWED_PR]: "open" };
+  const { run, calls } = await reviewRoundDone(states, WORKER_DONE);
+  const entry = run.entry("NBF-1");
+  assert.deepEqual(calls, [], "nothing is completed while the pull request is open");
+  assert.deepEqual([entry.outcome?.kind, entry.partial, runStatus(entry)], ["reviewed", undefined, "ready-to-merge"], "the round's ordinary result, with the declaration the worker's done took back");
+  states[REVIEWED_PR] = "merged";
+  await run.pool.refreshTracker();
+  assert.deepEqual(calls.map(({ op, args }) => [op, args[0]]), [["complete", "NBF-1"]], "it completes on the merge, through the board's own completion");
+  assert.equal(runStatus(run.entry("NBF-1")), "completed");
+});
+
+test("A11-173: a review round's done whose pull requests were all closed unmerged hands the run to a person and completes nothing", async () => {
+  const { run, calls } = await reviewRoundDone({ [REVIEWED_PR]: "closed" }, WORKER_DONE);
+  assert.deepEqual(calls, []);
+  assert.equal(run.entry("NBF-1").outcome?.kind, "needs-human");
+  assert.match((run.entry("NBF-1").outcome as { reason: string }).reason, /pull requests were closed without merging: PR #1804 is merged/);
+});
+
+test("A11-173: a review round's done from a tracker that cannot read pull request states keeps the ticket open: the round is reviewed", async () => {
+  const made = doneTracker();
+  const { pullStates: _unread, ...tracker } = made.tracker;
+  const run = setup(1, ["NBF-1"], { workingState: "In Progress" }, { source: tracker });
+  await run.pool.tick();
+  const queue = run.store.get();
+  run.store.set({ ...queue, entries: queue.entries.map((e) => ({ ...e, review: [{ repo: "agent-org", url: REVIEWED_PR }] })) });
+  await finishRunning(run, WORKER_DONE);
+  assert.deepEqual([made.calls, run.entry("NBF-1").outcome?.kind], [[], "reviewed"]);
+});
+
+test("A11-173: two pull requests in two repositories that both say Refs, with no partial, complete the ticket once both have merged, not after the first", async () => {
+  const [AGENT_ORG, PLUGIN] = ["https://github.com/a11ign/agent-org/pull/1815", "https://github.com/a11ign/plugin/pull/9"];
+  const pulls: Record<string, PullState> = { [AGENT_ORG]: "merged", [PLUGIN]: "open" };
+  const comments: { key: string; body: string }[] = [];
+  const { pool, calls, entry } = completing({ kind: "ready-pr", prs: [{ repo: "agent-org", url: AGENT_ORG }, { repo: "plugin", url: PLUGIN }] }, { pulls, comments });
+  await pool.refreshTracker();
+  assert.deepEqual([calls.length, runStatus(entry())], [0, "awaiting-review"], "the first has merged and the second has not: the ticket is not completed on the first merge");
+  pulls[PLUGIN] = "merged";
+  await pool.refreshTracker();
+  assert.equal(calls.length, 1, "both merged: completed once");
+  assert.ok(calls[0][1].includes(AGENT_ORG) && calls[0][1].includes(PLUGIN), "naming both pull requests");
+  assert.deepEqual([runStatus(entry()), reasonOf(entry()).line], ["completed", "completed: a11ign/agent-org #1815, a11ign/plugin #9 merged"], "the card says what completed it");
+});
+
+const WITH_CHECKS = "## Done-when\n\n### Before merge\n\n- the test passes\n\n### After merge (who runs it)\n\n- The laptop run shows 3 of 3 captures. The chairman, after merge, with `pnpm run laptop`.\n";
+
+test("A11-173: a merged run whose ticket has After-merge lines completes, posts them once as a comment and records them, on Closes and on Refs", async () => {
+  const lines = [{ line: "The laptop run shows 3 of 3 captures. The chairman, after merge, with `pnpm run laptop`.", owner: "The chairman" }];
+  const body = "After-merge checks for NBF-1, now that netboxlabs/nbl-ui-platform-libs #801 merged:\n- The laptop run shows 3 of 3 captures. The chairman, after merge, with `pnpm run laptop`. (The chairman)";
+  // Refs: the board completes the ticket itself, and then lists the checks.
+  const refs = { comments: [] as { key: string; body: string }[] };
+  const refsRun = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { description: WITH_CHECKS, ...refs });
+  await refsRun.pool.refreshTracker();
+  assert.equal(refsRun.calls.length, 1, "the ticket was completed by the board");
+  assert.deepEqual(refs.comments, [{ key: "NBF-1", body }], "the lines are posted as one comment");
+  assert.deepEqual([refsRun.entry().afterMerge, runStatus(refsRun.entry()), reasonOf(refsRun.entry()).line], [lines, "completed", "completed: netboxlabs/nbl-ui-platform-libs #801 merged; 1 after-merge check listed"], "recorded on the run, which reads Completed and not Needs you");
+  await refsRun.pool.refreshTracker();
+  assert.equal(refs.comments.length, 1, "posted once, not at the next refresh");
+  // Closes: the tracker completed the ticket itself, so the board's `complete` is never called, and the comment is posted all the same.
+  const closes = { comments: [] as { key: string; body: string }[] };
+  const closesRun = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { description: WITH_CHECKS, state: "completed", ...closes });
+  await closesRun.pool.refreshTracker();
+  assert.deepEqual([closesRun.calls.length, closes.comments, closesRun.entry().afterMerge], [0, [{ key: "NBF-1", body }], lines]);
+});
+
+test("A11-173: After-merge lines are left unlisted for a ticket with none, a partial run and an open pull request; a tracker that cannot comment still has them on the board, saying so", async () => {
+  const none = { comments: [] as { key: string; body: string }[] };
+  await completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { description: "## Done-when\n\n### After merge (who runs it)\n\n* None.\n", ...none }).pool.refreshTracker();
+  const partial = { comments: [] as { key: string; body: string }[] };
+  await completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }], partial: "the settings page" }, { description: WITH_CHECKS, ...partial }).pool.refreshTracker();
+  const open = { comments: [] as { key: string; body: string }[] };
+  await completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { description: WITH_CHECKS, pull: "open", ...open }).pool.refreshTracker();
+  assert.deepEqual([none.comments, partial.comments, open.comments], [[], [], []]);
+  const uncommentable = completing({ kind: "ready-pr", prs: [{ repo: "r", url: MERGED_PR }] }, { description: WITH_CHECKS });
+  const logged = await captureStderr(() => uncommentable.pool.refreshTracker());
+  assert.equal(uncommentable.entry().afterMerge?.length, 1, "the board still lists it");
+  assert.ok(logged.some((line) => line.includes("NBF-1: its After-merge checks are on the board; this tracker cannot post them as a comment")), logged.join("\n"));
+});
+
+const NINE_STEPS = ["# Plan", "", "### The steps", "", "| Step | What |", "| --- | --- |", ...Array.from({ length: 9 }, (_, i) => `| ${i + 1}. | step ${i + 1} |`), "", "### Proof", ""].join("\n");
+
+/** NBF-1's step 2 of a nine-step plan ended on a ready pull request whose `Partial:` line is `partial`, over a tracker whose plan file is `plan`: the run before the board kept a record of steps. */
+async function stepTwoMerged(partial: string, plan = NINE_STEPS) {
+  const { tracker, source: tracked } = stepsTracker();
+  const withPlan: TicketSource = { ...tracked, download: async (_ticket, dir) => {
+    const file = join(dir, "NBF-1-plan-x.md");
+    writeFileSync(file, plan);
+    return [file];
+  } };
+  const made = await endedOn({ kind: "ready-pr", prs: [{ repo: "nbl-ui-platform-libs", url: STEP_2_PR }], partial }, 1, ["NBF-1"], { plan: "-plan-[^/]*\\.md$" }, { source: withPlan });
+  tracker.linkPull("NBF-1", STEP_2_PR, "merged");
+  return { ...made, tracker };
+}
+
+test("A11-173: step 2 of a nine-step plan merges as Partial: step 2 of the plan, and step 3 is queued and briefed, saying the board counted it", async () => {
+  const { pool, entry, settings, tracker } = await stepTwoMerged("step 2 of the plan (identity). Steps 3 to 9 remain");
+  const logged = await captureStderr(() => pool.refreshTracker());
+  const queued = entry("NBF-1");
+  assert.deepEqual([queued.phase, queued.planSteps, queued.steps], ["queued", 9, [{ step: 2, of: 9, prs: [STEP_2_PR], counted: true }]], "the plan was read once, and step 2 is recorded as counted by the board");
+  assert.equal(reasonOf(queued).line, "step 2 of 9 merged (counted by the board: the Partial line named no step); step 3 queued");
+  assert.ok(logged.some((line) => line.includes("NBF-1: the Partial line named no step; counted as step 2 of 9; step 3 queued")), logged.join("\n"));
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "the next pass starts it with no person");
+  const brief = readFileSync(join(ticketDir(settings, "NBF-1"), "brief.md"), "utf8");
+  assert.ok(brief.includes("This run does step 3 of 9") && brief.includes(`- step 2 of 9: ${STEP_2_PR} (counted by the board: the Partial line named no step)`), "its brief names the step it does and the one the board counted");
+  assert.match(brief, /named no step, so the board counted it as step 2 of 9\. Check the merged pull requests above against the plan before you start, do the first step none of them did, and name it `step <N> of <M>`/);
+  assert.equal(tracker.ticketOf("NBF-1")?.status, "Backlog", "and no one moved the ticket in the tracker");
+});
+
+test("A11-173: an unnumbered Partial on a plan with no numbered steps, or on its last step, still stops, with its reason", async () => {
+  const none = await stepTwoMerged("the docs", "# Plan\n\nJust do it.\n");
+  await none.pool.refreshTracker();
+  assert.deepEqual([none.entry("NBF-1").phase, none.entry("NBF-1").planSteps, runStatus(none.entry("NBF-1"))], ["finished", 0, "needs-you"], "0 is recorded, so the plan is not read again");
+  assert.equal(reasonOf(none.entry("NBF-1")).line, "Partial merged: the docs. It names no step, and the plan has no numbered steps, so nothing was queued: Dismiss it and queue the ticket");
+  const last = await stepTwoMerged("step 9 of the plan");
+  await last.pool.refreshTracker();
+  assert.deepEqual([last.entry("NBF-1").phase, runStatus(last.entry("NBF-1"))], ["finished", "needs-you"]);
+  assert.equal(reasonOf(last.entry("NBF-1")).line, "Partial merged: step 9 of the plan. The board counted it as step 9 of 9, the last, with Partial: the last step closes the ticket");
+});
+
+test("A11-173: the next step after an unnumbered Partial starts with no dismissal and no state move in the tracker", async () => {
+  const { pool, entry, h, tracker } = await stepTwoMerged("step 2 of the plan");
+  const before = tracker.ticketOf("NBF-1");
+  await pool.refreshTracker();
+  await pool.tick();
+  assert.equal(entry("NBF-1").phase, "running", "queued and started by the board alone");
+  assert.equal(h.calls.some((args) => args.includes("dismiss")), false, "nobody dismissed it");
+  assert.deepEqual(tracker.ticketOf("NBF-1"), before, "and the ticket is where it was in the tracker");
+  assert.deepEqual(tracker.claimed.length, 1, "this instance's claim is the one it already holds");
 });

@@ -39,3 +39,9 @@ test("the shipped text names no organisation, plugin, decision record or account
   assert.ok(WORKER_NOTES.includes("{ \"kind\": \"ready-pr\", \"prs\": [ { \"repo\": \"owner/repo\", \"url\": \"https://github.com/owner/repo/pull/1\" } ]"));
   assert.ok(WORKER_NOTES.includes("## Proof before merge"));
 });
+
+test("A11-173: the opening-a-pull-request line says a partial is a plan step and never an After-merge line, and pull requests that finish a ticket together each say Refs", () => {
+  const line = WORKER_NOTES.split("\n").find((text) => text.startsWith("- **Opening a pull request:**")) ?? "";
+  assert.ok(line.includes("`Refs <ticket key>` with a `Partial: <what remains>` line when it does not (a plan step, `step <N> of <M>`, never an After-merge line of the Done-when: a pull request that leaves only those names the ticket `Closes`;"));
+  assert.ok(line.includes("pull requests that finish the ticket together each say `Refs`, with the others named in their `Partial:` line and no `partial` in the outcome)"));
+});

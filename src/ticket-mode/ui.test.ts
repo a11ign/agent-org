@@ -273,6 +273,21 @@ test("A11-119: the Pull requests section is hidden when every pull request the p
   assert.equal(p.$("pull-requests").hidden, true);
 });
 
+test("A11-173: the After-merge checks section renders one row per line with its ticket and owner, and is hidden when no run has listed any", async () => {
+  const url = "https://github.com/a11ign/agent-org/pull/1802";
+  const merged = { phase: "finished", finishedAt: 7, outcome: { kind: "ready-pr", prs: [{ url, repo: "a11ign/agent-org" }] }, pullStates: { [url]: "merged" } };
+  const listed = await page(new Map(), { entries: [entry("A-145", { ...merged, afterMerge: [{ line: "The laptop run shows 3 of 3.", owner: "The chairman" }, { line: "A second check", owner: null }] }), entry("A-146", merged)] });
+  assert.equal(listed.$("after-merge").hidden, false);
+  const text = listed.$("after-merge").text();
+  assert.ok(text.includes("After-merge checks") && text.includes("A-145") && text.includes("The laptop run shows 3 of 3.") && text.includes("Runs it: The chairman"), "the ticket, the line and who runs it");
+  assert.ok(text.includes("A second check") && text.includes("Runs it: owner not named"), "a line with no owner says so");
+  assert.equal(text.includes("A-146"), false, "a run that listed none adds no row");
+  assert.ok(listed.$("runs").text().includes("completed: a11ign/agent-org #1802 merged; 2 after-merge checks listed"), "and its card says they were listed");
+  const none = await page(new Map(), { entries: [entry("A-146", merged)] });
+  assert.equal(none.$("after-merge").hidden, true);
+  assert.equal((await page(new Map(), { entries: [] })).$("after-merge").hidden, true, "and with no run at all");
+});
+
 /** Which status sections are collapsed, in order. */
 const collapsed = (p: Awaited<ReturnType<typeof page>>) => p.groups().map((g) => g.className.includes("collapsed"));
 
