@@ -2,7 +2,7 @@
 //
 // Moved out of `ticket-port/ci-reads.ts` (`jobOfDetails`, `jobLogOf`; `rerunFailedJobsOf` is copied), asked for by the address a check reports (`FailingCheck.detailsUrl`), so core no longer parses a GitHub
 // Actions address. An address that names no job (a commit status reports none) is one the host cannot read: `readCheckLog` answers null for it, as for a log GitHub refuses, and `rerunFailedChecks`
-// leaves it out. `rerunFailedJobsOf` stays in core's `ticket-port/ci-reads.ts` while wake still calls it; it goes with that caller.
+// leaves it out. `rerunFailedJobsOf` stays in core's `ticket-port/ci-reads.ts` while wake still calls it (a test holds the two spellings to one); it goes with that caller.
 import type { Gh } from "./gh.ts";
 
 /** The Actions job a check's details address names: its repository (`owner/name`), workflow run and job. `null` for any other address, a commit status's included. */

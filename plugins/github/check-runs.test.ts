@@ -1,6 +1,7 @@
 // no-token: none -- `gh` is a recorded `exec`; nothing reaches GitHub
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { rerunFailedJobsOf } from "../../src/ticket-port/ci-reads.ts";
 import { fakePluginDeps } from "../../src/plugins/fakes/deps.ts";
 import { create } from "./index.ts";
 import { jobOfDetails, readCheckLog, rerunFailedChecks } from "./check-runs.ts";
@@ -52,4 +53,13 @@ test("the code host the plugin makes runs both through its one gh, as the proces
   assert.equal(host.readCheckLog(JOB), "log text");
   assert.equal(host.rerunFailedChecks([JOB]), null);
   assert.deepEqual(calls.map(({ file, args }) => [file, ...args]), [["gh", "api", "repos/a11ign/agent-org/actions/jobs/112233/logs", "--allow-escape-sequences"], ["gh", "run", "rerun", "38391781529", "--failed", "-R", "a11ign/agent-org"]]);
+});
+
+test("the plugin's rerun is one spelling with core's `rerunFailedJobsOf`, which wake still calls until step 7 moves it, so the two cannot drift", () => {
+  const core: string[][] = [];
+  rerunFailedJobsOf("a11ign/agent-org", 38391781529, (args) => { core.push(args); return ""; });
+  const plugin: string[][] = [];
+  rerunFailedChecks([JOB], (args) => { plugin.push(args); return ""; });
+  assert.equal(core.length, 1, "POSITIVE CONTROL: core's helper made its call");
+  assert.deepEqual(plugin, core);
 });
