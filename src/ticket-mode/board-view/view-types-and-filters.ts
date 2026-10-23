@@ -58,6 +58,10 @@ export type ViewEntry = Readonly<{
   partial?: string;
   /** The plan steps of this ticket whose pull requests merged, in order, with the pull requests that finished each: the run is the next step (A11-168). */
   steps?: readonly MergedStep[];
+  /** Set when a person moved the ticket to its completed state while the run's work was partial: the person's move wins and the run reads Completed (A11-178). */
+  completedBy?: "person";
+  /** Why the board could not put back a ticket the tracker's integration completed while the run's work was partial: the card flags the run (A11-178). */
+  reopenFailure?: string;
   /** The After-merge lines of the ticket's Done-when, listed once its pull requests merged, each with who runs it (A11-173). Unset until listed; empty is never recorded. */
   afterMerge?: readonly AfterMergeLine[];
   /** How many numbered steps the ticket's plan has, read once from the plan file when a partial pull request merged without saying (A11-173). 0 when the plan has none. */

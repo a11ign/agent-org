@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../../src/lib/tmp-fixture.ts";
 import type { Ticket } from "../../src/plugins/contracts/tracker.ts";
-import { LINEAR_API, downloadName, linearSource, pickQuery, scopedQuery, pullState, uploadLinks } from "./linear.ts";
+import { LINEAR_API, completionOf, downloadName, linearSource, pickQuery, scopedQuery, pullState, uploadLinks } from "./linear.ts";
 
 const node = (identifier: string, extra: Record<string, unknown> = {}) => ({
   identifier, title: `Title ${identifier}`, description: null, url: `https://linear.app/x/issue/${identifier}`, branchName: identifier.toLowerCase(),
@@ -569,7 +569,73 @@ test("A11-91: updateTicketText() is refused when Linear has no ticket by that ke
 });
 
 test("A11-92: Linear's own pull request words are the keywords a source hands the brief and pr:open", () => {
-  assert.deepEqual(linearSource({ key: "k", fetch: linear([]).fetch }).keywords, { closing: "Closes", nonClosing: "Refs" });
+  const { closing, nonClosing } = linearSource({ key: "k", fetch: linear([]).fetch }).keywords!;
+  assert.deepEqual([closing, nonClosing], ["Closes", "Refs"]);
+});
+
+test("A11-178: the closing words are Linear's twenty magic words, close, fix, resolve, complete and implement, each in its -s, -d or -ed, and -ing forms", () => {
+  const words = linearSource({ key: "k", fetch: linear([]).fetch }).keywords?.closingWords;
+  assert.deepEqual([...(words ?? [])].sort(), [
+    "close", "closed", "closes", "closing", "complete", "completed", "completes", "completing", "fix", "fixed", "fixes", "fixing",
+    "implement", "implemented", "implementing", "implements", "resolve", "resolved", "resolves", "resolving",
+  ]);
+});
+
+/** A ticket Linear holds in Done (`s-done`), whose team has In Progress and Todo, with the history `moves` give. */
+const completedWith = (moves: unknown[], state = { id: "s-done", type: "completed", name: "Done" }) => ({ data: { issues: { nodes: [{
+  id: "uuid-1", state, team: { states: { nodes: [{ id: "s-todo", name: "Todo", type: "unstarted" }, { id: "s-progress", name: "In Progress", type: "started" }, { id: "s-done", name: "Done", type: "completed" }] } },
+  history: { nodes: moves },
+}] } } });
+const move = (createdAt: string, over: Record<string, unknown> = {}) => ({ createdAt, toState: { id: "s-done" }, fromState: { id: "s-progress", name: "In Progress" }, actor: null, botActor: null, ...over });
+const GITHUB_BOT = { name: "GitHub", type: "github" };
+
+test("A11-178: undoAutomaticCompletion() moves a ticket the integration completed back to the state it left, then posts the comment, and says what it moved", async () => {
+  const { fetch, requests } = linear([completedWith([move("2026-10-23T17:02:01Z", { botActor: GITHUB_BOT })]), done, { data: { commentCreate: { success: true } } }]);
+  assert.deepEqual(await linearSource({ key: "k", fetch }).undoAutomaticCompletion!("NBF-1", "put back"), { reopened: { from: "In Progress", to: "Done" }, by: "integration", note: null });
+  const sent = requests.map((r) => JSON.parse(String(r.init.body)));
+  assert.deepEqual(sent[1].variables, { id: "uuid-1", stateId: "s-progress" }, "the move back is to the state the history says it left, by id");
+  assert.deepEqual(sent[2].variables, { issueId: "uuid-1", body: "put back" }, "and the comment follows the move");
+  assert.match(sent[0].query, /history\(first: 100\)/, "the history is read with the ticket, in the one request");
+});
+
+test("A11-178: undoAutomaticCompletion() leaves a completion a person made alone: no move, no comment", async () => {
+  const { fetch, requests } = linear([completedWith([move("2026-10-23T17:02:01Z", { actor: { id: "u-1" } })])]);
+  assert.deepEqual(await linearSource({ key: "k", fetch }).undoAutomaticCompletion!("NBF-1", "put back"), { reopened: null, by: "person", note: null });
+  assert.equal(requests.length, 1, "only read");
+});
+
+test("A11-178: undoAutomaticCompletion() answers none for a ticket that is not completed, and changes nothing", async () => {
+  const { fetch, requests } = linear([completedWith([], { id: "s-progress", type: "started", name: "In Progress" })]);
+  assert.deepEqual(await linearSource({ key: "k", fetch }).undoAutomaticCompletion!("NBF-1", "put back"), { reopened: null, by: "none", note: null });
+  assert.equal(requests.length, 1);
+});
+
+test("A11-178: undoAutomaticCompletion() says so and moves nothing when the history names nobody, or not the state the ticket left, or the team no longer has it", async () => {
+  const names = async (moves: unknown[]) => linearSource({ key: "k", fetch: linear([completedWith(moves)]).fetch }).undoAutomaticCompletion!("NBF-1", "put back");
+  assert.deepEqual(await names([]), { reopened: null, by: "unknown", note: "Linear's history does not say who moved NBF-1 to Done" });
+  assert.deepEqual(await names([move("2026-10-23T17:02:01Z")]), { reopened: null, by: "unknown", note: "Linear's history does not say who moved NBF-1 to Done" });
+  assert.deepEqual(await names([move("2026-10-23T17:02:01Z", { botActor: GITHUB_BOT, fromState: null })]),
+    { reopened: null, by: "integration", note: "Linear's history does not say which state NBF-1 was in before Done" });
+  assert.deepEqual(await names([move("2026-10-23T17:02:01Z", { botActor: GITHUB_BOT, fromState: { id: "s-gone", name: "In Review" } })]),
+    { reopened: null, by: "integration", note: "NBF-1's team has no state In Review any more, so it stays in Done" });
+});
+
+test("A11-178: undoAutomaticCompletion() is refused when Linear has no ticket by that key, or answers success false to the move or the comment", async () => {
+  await assert.rejects(linearSource({ key: "k", fetch: linear([{ data: { issues: { nodes: [] } } }]).fetch }).undoAutomaticCompletion!("NBF-404", "c"), /Linear has no ticket NBF-404/);
+  const integration = [move("2026-10-23T17:02:01Z", { botActor: GITHUB_BOT })];
+  await assert.rejects(linearSource({ key: "k", fetch: linear([completedWith(integration), notDone]).fetch }).undoAutomaticCompletion!("NBF-1", "c"), /Linear did not move NBF-1 to In Progress/);
+  await assert.rejects(linearSource({ key: "k", fetch: linear([completedWith(integration), done, { data: { commentCreate: { success: false } } }]).fetch }).undoAutomaticCompletion!("NBF-1", "c"),
+    /Linear did not post a comment on NBF-1/);
+});
+
+test("A11-178: completionOf reads the NEWEST move into the state the ticket is in, whatever order Linear lists them, and a person's move wins over a bot named beside it", () => {
+  const first = move("2026-10-23T10:00:00Z", { botActor: GITHUB_BOT });
+  const later = move("2026-10-23T18:00:00Z", { actor: { id: "u-1" }, fromState: { id: "s-todo", name: "Todo" } });
+  assert.deepEqual(completionOf([later, first], "s-done"), { by: "person", from: { id: "s-todo", name: "Todo" } }, "a person completed it again after the integration did");
+  assert.deepEqual(completionOf([first, later], "s-done"), { by: "person", from: { id: "s-todo", name: "Todo" } });
+  assert.equal(completionOf([move("2026-10-23T18:00:00Z", { actor: { id: "u-1" }, botActor: GITHUB_BOT })], "s-done").by, "person");
+  assert.equal(completionOf([move("2026-10-23T18:00:00Z", { botActor: GITHUB_BOT, toState: { id: "s-other" } })], "s-done").by, "unknown", "a move into another state says nothing of this one");
+  assert.equal(completionOf([{ ...first, toState: null }], "s-done").by, "unknown", "a history entry that moved no state says nothing");
 });
 
 test("scopedQuery: a person's id is a variable and never in the text; Unassigned asks for tickets with no assignee; Anyone asks for every open ticket", () => {

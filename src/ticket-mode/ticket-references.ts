@@ -1,5 +1,5 @@
 // @ts-check
-// module: how a pull request's body names its ticket: the `Closes` and `Refs` lines, the `Partial:` line, and the `closes` report that reads them (A11-74, A11-92, A11-127)
+// module: how a pull request's body names its ticket: the `Closes` and `Refs` lines, the `Partial:` line, the closing words the tracker reads anywhere in a body, and the `closes` report that reads them (A11-74, A11-92, A11-127, A11-178)
 //
 // A LEAF, ON PURPOSE. `pr-open-ticket.ts` imports `CI_BODY_REPORTS` from the acceptance module, and CI's own `closes` report must read a ticket's declaration with the same
 // grammar `pr:open` does. Were the grammar left in `pr-open-ticket.ts`, the acceptance module would import it back and the two would form a cycle. So both import this file,
@@ -18,6 +18,42 @@ const PARTIAL_LINE = /^\s*(?:[-*]\s+)?(?:\*\*|__)?Partial:(?:\*\*|__)?[ \t]*(\S.
 
 /** What the body's `Partial:` line says remains of the ticket, or null when the body declares the pull request complete. PURE. */
 const partialOf = (body: string): string | null => declaredRemains(PARTIAL_LINE.exec(body)?.[1] ?? "");
+
+/** A ticket's key, as the tracker writes it, inside a longer text. */
+const KEY_IN_TEXT = "[A-Za-z][A-Za-z0-9]*-\\d+\\b";
+
+/** Every word `keywords` completes a ticket by anywhere in a body: its `closingWords`, and always its closing keyword, which completes a ticket too (contract 1.5). PURE. */
+export const closingWordsOf = ({ closing, closingWords }: Keywords): readonly string[] => [...new Set([closing, ...(closingWords ?? [])].map((word) => word.toLowerCase()))];
+
+/** A closing word read anywhere in a body, the line it is on, and the ticket keys it names, as written. */
+export type ClosingMention = Readonly<{ line: string; names: readonly string[] }>;
+
+/**
+ * Every closing word of the tracker followed by ticket keys, ANYWHERE in `body` (A11-178): any case, on word boundaries, with an optional colon or markdown between, and a list of keys as the tracker reads it
+ * (`Fixes ENG-123, DES-5 and ENG-256`). It reads a code span, a fence and a quoted example as it reads prose, because the tracker's integration does: a pull request that QUOTED `Closes A11-127` in its tests
+ * completed A11-127 on merge though it declared itself partial. `referencesIn` reads only the lines a worker writes the ticket on; this reads what the tracker acts on. PURE.
+ */
+export function closingMentionsIn(body: string, keywords: Keywords): ClosingMention[] {
+  const words = closingWordsOf(keywords).map(escapeRegExp).join("|");
+  const list = `${KEY_IN_TEXT}(?:[ \\t]*(?:,|&|\\band\\b)[ \\t]*(?:\\band\\b[ \\t]*)?${KEY_IN_TEXT})*`;
+  const mention = new RegExp(`\\b(?:${words})\\b[ \\t:*_\`'"(\\[]*(${list})`, "gi");
+  return [...body.matchAll(mention)].map(({ 0: found, 1: named, index = 0 }) => ({
+    line: lineAt(body, index + found.length - 1).trim(), names: [...named.matchAll(new RegExp(KEY_IN_TEXT, "g"))].map(([name]) => name),
+  }));
+}
+
+/** The line of `text` that holds the character at `at`. PURE. */
+function lineAt(text: string, at: number): string {
+  const start = text.lastIndexOf("\n", at - 1) + 1;
+  const end = text.indexOf("\n", at);
+  return text.slice(start, end === -1 ? undefined : end);
+}
+
+/** Whether two ticket keys are one ticket's, whatever case a body writes them in. PURE. */
+const sameKey = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+
+/** Whether `name` is the key of another ticket of `key`'s team (`A11-31` beside `A11-74`), whatever case a body writes them in. PURE. */
+const isTeammate = (name: string, key: string): boolean => !sameKey(name, key) && name.slice(0, name.lastIndexOf("-")).toLowerCase() === key.slice(0, key.lastIndexOf("-")).toLowerCase();
 
 /** A body's `Closes` and `Refs` lines: each verb, the first word after it, and the ticket keys or pull request numbers its words name. */
 export function referencesIn(body: string, keywords: Keywords): { verb: string; first: string; names: string[]; }[] {
@@ -50,12 +86,26 @@ export function ticketClosesReport(body: string, key: string, keywords: Keywords
     return refuse(`CLOSES: REFUSED -- \`${closing} ${others.join(", ")}\` names a ticket other than ${key}. \`${closing}\` completes the ticket it names when the pull request `
       + `merges, so only ${key} may be closed here (A11-74).`);
   }
+  const mentions = closingMentionsIn(body, keywords);
+  // Another ticket is one of this ticket's team: `fixes UTF-8 handling` and `implements ISO-8601` name no ticket, and the tracker acts on none.
+  const strays = mentions.filter(({ names }) => names.some((name) => isTeammate(name, key)));
+  if (strays.length > 0) {
+    const foreign = strays[0].names.filter((name) => isTeammate(name, key));
+    return refuse(`CLOSES: REFUSED -- line \`${strays[0].line}\` reads as a closing word followed by ${foreign.join(", ")}, which is not ${key}. The tracker completes the ticket a closing word names `
+      + `when the pull request merges, wherever in the body it is, a code span or a quoted example included, so only ${key} may follow one. If it is not a ticket's key, say it in other words (A11-178).`);
+  }
   if (closes.some(({ names }) => names.includes(key))) {
     if (partial !== null) {
       return refuse(`CLOSES: REFUSED -- \`${closing} ${key}\` completes the ticket when the pull request merges, but the body also has a \`Partial:\` line. `
         + `Drop the line if this pull request completes ${key}, or write \`${nonClosing} ${key}\` if it does not (A11-92).`);
     }
     return { ok: true, lines: [`CLOSES: ${key} -- \`${closing}\` completes it when the pull request merges`] };
+  }
+  const quoted = partial === null ? undefined : mentions.find(({ names }) => names.some((name) => sameKey(name, key)));
+  if (quoted !== undefined) {
+    return refuse(`CLOSES: REFUSED -- the body has a \`Partial:\` line, but line \`${quoted.line}\` reads as a closing word followed by ${key}. The tracker completes the ticket when the pull request `
+      + `merges if it finds one anywhere in the body, a code span or a quoted example included, whatever the rest of the body declares. Drop the example, or describe it in words, such as `
+      + `"the closing keyword followed by the key"; spelling the word another way is not the fix (A11-178).`);
   }
   if (references.some(({ names }) => names.includes(key))) {
     if (partial === null) {

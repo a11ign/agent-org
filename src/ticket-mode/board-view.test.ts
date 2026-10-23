@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import * as boardView_0 from "./board-view.ts";
 import * as boardView_1 from "./board-view/pull-status-and-notes.ts";
 import { CONCLUDED, HANDED_BACK, NO_PROJECT, RUN_STATUSES, flatten, groupByStatus, parentKeys, parentTick, ticketCount, projectCounts, chosenProject, inProject, recall, remember, selectable, toggled, PRIORITY_NAMES, hasPlan, missingPlan, planChoiceOf, planCounts, priorityCounts, prioritiesOf, visibleTickets, workItems, childrenNote, isParentTicket, openChildCount, type ViewEntry, type ViewTicket } from "./board-view/view-types-and-filters.ts";
-import { overrideNote, START_ANYWAY_TITLE, rebaseNote, settledByPulls, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
+import { overrideNote, START_ANYWAY_TITLE, rebaseNote, repoLabel, repoOf, hasEdit, isParked, queueLabel, batchChoice, batchNote, batchOverride, isDefaultBatch, workersLabel, runActions, runStatus, runsShown, shownStatus, statusCounts, terminalLink, waitsOn, waitNote, cutListNote, repoOfPull, stackedOn, stackNote, isBeingPublished, isWatched, publishable, publishLabel, publishNote, publishTerminalLink, unplannedCount, workingNote, footprintOf, overlapWait, pathsOverlap, resumesOnConflict, type ViewPublish } from "./board-view/pull-status-and-notes.ts";
+import { settledByPulls } from "./board-view/pull-settled.ts";
 import { sharedRunNote, terminalTab } from "./board-view/run-terminal.ts";
 import { pullAnswer } from "./board-view/pull-answer.ts";
 import { checkNote, reasonOf } from "./board-view/run-reason.ts";
@@ -1317,9 +1318,30 @@ test("A11-168: a merged partial run the board did not queue a step for reads Nee
   assert.equal(reasonOf(stalled).line, "Partial merged: step 9 of 9: the docs. It names step 9 of 9, the last, with Partial: the last step closes the ticket");
   assert.equal(reasonOf(merged({ partial: "the docs" })).line, "Partial merged: the docs. It names no step, so nothing was queued: Dismiss it and queue the ticket");
   assert.equal(reasonOf(merged({ partial: "step 1 of 9", steps: [{ step: 1, of: 9, prs: [] }] })).line, "Partial merged: step 1 of 9. Step 1 is not after step 1: nothing was queued");
-  assert.deepEqual([runStatus(merged({ partial: "the docs", trackerState: "completed" })), reasonOf(merged({ partial: "the docs", trackerState: "completed" })).line], ["completed", "completed: a11ign/agent-org #1811 merged"], "the tracker's word wins, and the card says what completed it");
+  const byPerson = merged({ partial: "the docs", trackerState: "completed", completedBy: "person" });
+  assert.deepEqual([runStatus(byPerson), reasonOf(byPerson).line], ["completed", "completed: a11ign/agent-org #1811 merged"], "a ticket a person completed is completed, and the card says what completed it (A11-178)");
   assert.equal(runStatus(merged({})), "completed", "a pull request with no declaration completes the run as before");
   assert.equal(reasonOf(merged({})).line, "completed: a11ign/agent-org #1811 merged");
+});
+
+test("A11-178: a ticket the tracker completed while the run's work was partial reads Needs you, with the declaration and why the board could not put it back, until a person is found to have completed it", () => {
+  const merged = (fields: Partial<ViewEntry>): ViewEntry => run({ outcome: { kind: "ready-pr", prs: [{ url: STEP_PR }] }, pullStates: { [STEP_PR]: "merged" }, partial: "step 1 of 9: the board", trackerState: "completed", ...fields });
+  const early = merged({});
+  assert.deepEqual([runStatus(early), reasonOf(early).line], ["needs-you", "Done in the tracker, but its last merged pull request declared Partial: step 1 of 9: the board; the board could not put it back (it has not been asked yet)"]);
+  const refused = merged({ reopenFailure: "Linear answered 502: bad gateway" });
+  assert.equal(reasonOf(refused).line, "Done in the tracker, but its last merged pull request declared Partial: step 1 of 9: the board; the board could not put it back (Linear answered 502: bad gateway)");
+  assert.deepEqual([runStatus(merged({ completedBy: "person" })), runStatus(merged({ partial: undefined })), runStatus(merged({ trackerState: undefined }))], ["completed", "completed", "needs-you"],
+    "a person's completion, a pull request with no declaration, and a ticket the tracker has not completed are each as they were");
+  assert.ok(runActions(early).includes("dismiss"), "a person can still dismiss it");
+});
+
+test("A11-178: a later step whose own pull request is still open when the tracker completes the ticket reads Needs you, and a later step that has merged, or has no pull request of its own, reads Completed", () => {
+  const laterStep = (fields: Partial<ViewEntry>): ViewEntry => run({ steps: [{ step: 1, of: 3, prs: [STEP_PR] }], outcome: { kind: "ready-pr", prs: [{ url: PLUGIN_PR }] }, pullStates: { [PLUGIN_PR]: "open" }, trackerState: "completed", ...fields });
+  assert.deepEqual([runStatus(laterStep({})), reasonOf(laterStep({})).line], ["needs-you",
+    "Done in the tracker, but step 2's pull request is not merged (a11ign/plugin #9); the board could not put it back (it has not been asked yet)"]);
+  assert.equal(runStatus(laterStep({ pullStates: { [PLUGIN_PR]: "merged" } })), "completed", "the last step's own merge completing the ticket is the end of the plan");
+  assert.equal(runStatus(laterStep({ completedBy: "person" })), "completed");
+  assert.equal(runStatus(laterStep({ outcome: { kind: "done", reason: "nothing to build" } as never, pullStates: undefined })), "completed", "a step that ended with no pull request of its own has nothing the tracker completed early");
 });
 
 test("A11-168: a merged partial run is dismissed, not retried, and a closed unmerged one is still cancelled", () => {

@@ -1,5 +1,6 @@
 import { CONCLUDED, openPulls, type CheckHead, type StackBaseRecord } from "../board-view/view-types-and-filters.ts";
-import { isParked, isPublishing, isWatched, overlapWait, resumesOnConflict, runActions, runStatus, settledByPulls } from "../board-view/pull-status-and-notes.ts";
+import { isParked, isPublishing, isWatched, overlapWait, resumesOnConflict, runActions, runStatus } from "../board-view/pull-status-and-notes.ts";
+import { settledByPulls } from "../board-view/pull-settled.ts";
 import type { Blocker, PullState } from "../source.ts";
 import { conflictsIn } from "../worker-files.ts";
 import { BACKGROUND_GONE, BACKGROUND_GONE_MS, LIVE, SETTLED, find, isLive, replace, reviewRound, reviewable, type Background, type Entry, type Outcome, type PublishRun, type Queue, type WorkingNote, writerLive } from "./queue-entries-and-outcomes.ts";
@@ -375,10 +376,19 @@ export function unpark(queue: Queue, key: string): Queue {
  * since the pull request was open is seen before a step is queued for it.
  */
 export function unsettledKeys(queue: Queue): string[] {
-  return queue.entries.filter((entry) => entry.phase === "finished" && !SETTLED.has(entry.trackerState ?? "")
-    && (settledByPulls(entry) === null || (entry.partial !== undefined && settledByPulls(entry) === "completed")))
-    .map((entry) => entry.ticket.key);
+  return queue.entries.filter((entry) => entry.phase === "finished" && (isUnsettled(entry) || completedBeforeMerge(entry))).map((entry) => entry.ticket.key);
 }
+
+/** A finished run neither the tracker nor its pull requests have settled, or a partial one whose pull requests merged and whose ticket the tracker has not finished. PURE. */
+const isUnsettled = (entry: Entry): boolean => !SETTLED.has(entry.trackerState ?? "")
+  && (settledByPulls(entry) === null || (entry.partial !== undefined && settledByPulls(entry) === "completed"));
+
+/**
+ * A partial run whose ticket the tracker read Completed before it read its pull requests merged (A11-178): the tracker's integration completes a ticket as the merge lands, and a read between the two sees the
+ * ticket done and the pull request open. The run's pull requests are asked again until they say, so the completion is found to be early and put back. A ticket a person completed is no longer asked about once
+ * the board has found that out. PURE.
+ */
+const completedBeforeMerge = (entry: Entry): boolean => entry.partial !== undefined && entry.trackerState === "completed" && entry.completedBy === undefined && settledByPulls(entry) === null;
 
 /** Record the state of each finished run's pull requests, for each run the tracker named. */
 export function recordPullStates(queue: Queue, pulls: ReadonlyMap<string, Readonly<Record<string, PullState>>>): Queue {

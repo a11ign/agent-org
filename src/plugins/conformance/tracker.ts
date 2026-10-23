@@ -5,6 +5,7 @@
 // offline what it holds, so the caller seeds the state the probe names: a ticket the tracker has (`known`), a key it has none of (`missing`) and, for the checks that
 // write, a second ticket (`other`). The suite writes only to what the probe names, and only through operations the implementation has.
 //
+// CONTRACT 1.5 (A11-178) adds the optional `undoAutomaticCompletion` and the optional `closingWords` of the keywords: the suite checks that `undoAutomaticCompletion` answers who completed the ticket in the shape the board reads, undoes only the integration's completion, and is refused for a ticket the tracker has none of; and that any `closingWords` are words and include the closing keyword.
 // CONTRACT 1.4 (A11-173) adds the optional `comment`: one call posts one comment on a ticket in any state, and the suite checks that it is no error on the known ticket and refused for a ticket the tracker has none of.
 // CONTRACT 1.3 (A11-167) adds the optional `texts` and `detachPlan`, and `updatedAt` of a ticket: `texts` answers the description a `read` gives with a time, and `detachPlan` of a title the ticket has no attachment under is no error.
 // CONTRACT 1.2 (A11-168) adds the optional `claim` and `claims`, checked together: a claim is read back as the latest, and a repeated one changes nothing.
@@ -160,8 +161,26 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
   "keywords name the words a pull request body is read by": {
     applies: ({ source }) => source.keywords !== undefined,
     reason: "the tracker declares no keywords, so it is read by the defaults",
-    run: ({ source }) => expect(isString(source.keywords?.closing) && source.keywords.closing !== "" && isString(source.keywords.nonClosing) && source.keywords.nonClosing !== "", "keywords must be { closing, nonClosing }, each a word"),
+    run: ({ source }) => {
+      expect(isString(source.keywords?.closing) && source.keywords.closing !== "" && isString(source.keywords.nonClosing) && source.keywords.nonClosing !== "", "keywords must be { closing, nonClosing }, each a word");
+      const { closing, closingWords } = source.keywords;
+      expect(closingWords === undefined || (Array.isArray(closingWords) && closingWords.every((word) => isString(word) && word !== "")), "closingWords, when declared, must be a list of words");
+      expect(closingWords === undefined || closingWords.some((word) => word.toLowerCase() === closing.toLowerCase()), "closingWords must include the closing keyword, which completes a ticket too");
+    },
   },
+  "undoAutomaticCompletion answers who completed the ticket, moves back only the integration's completion, and is refused for a key the tracker has none of": optional("undoAutomaticCompletion", async ({ source, probe }) => {
+    const undone = await source.undoAutomaticCompletion!(probe.known, "undone by the conformance suite");
+    expect(isObject(undone) && ["integration", "person", "unknown", "none"].includes(String(undone.by)), "undoAutomaticCompletion() must resolve { reopened, by, note }, by one of integration, person, unknown or none");
+    expect(undone.reopened === null || undone.by === "integration", "only a completion by the integration is moved back: reopened is null for every other");
+    expect(undone.note === null || isString(undone.note), "the note is text or null");
+    let refused = false;
+    try {
+      await source.undoAutomaticCompletion!(probe.missing, "undone by the conformance suite");
+    } catch {
+      refused = true;
+    }
+    expect(refused, `undoAutomaticCompletion() must throw for ${probe.missing}, which the tracker has none of`);
+  }),
   "updateTicketText writes the fields it is given and no others": optional("updateTicketText", async ({ source, probe }) => {
     const before = await source.read(probe.known);
     expectTicket(before, `read(${probe.known})`);

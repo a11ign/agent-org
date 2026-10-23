@@ -5637,8 +5637,8 @@ test("A11-161: a run Ready to merge waits through the publisher being off, and e
 /** The tracker of the A11-168 tests: the contract's fake with every read and write a multi-step ticket's sweep and start use, and none of the optional reads that run on in the background. */
 function stepsTracker() {
   const tracker = createFakeTracker([ticket("NBF-1")]);
-  const { assigned, read, download, keywords, stateTypes, pullStates, claim, claims, complete } = tracker;
-  return { tracker, source: { assigned, read, download, keywords, stateTypes, pullStates, claim, claims, complete } as TicketSource };
+  const { assigned, read, download, keywords, stateTypes, pullStates, claim, claims, complete, undoAutomaticCompletion } = tracker;
+  return { tracker, source: { assigned, read, download, keywords, stateTypes, pullStates, claim, claims, complete, undoAutomaticCompletion } as TicketSource };
 }
 const STEP_1_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/811";
 const STEP_2_PR = "https://github.com/netboxlabs/nbl-ui-platform-libs/pull/812";

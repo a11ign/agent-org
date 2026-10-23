@@ -3,8 +3,12 @@
 //
 // A ticket whose plan has numbered steps ships one pull request for each (`board-view/plan-steps.ts`). When a step's pull request merges, its finished run is replaced by a
 // queued one for the next step on the same plan, which starts like any queued run. The pool's settle sweep (`pool-tracker.ts`) asks {@link nextStepRuns} and applies {@link queueNextStep}.
-import { isParked, settledByPulls } from "../board-view/pull-status-and-notes.ts";
-import { afterPartialMerge, stepNamed, type MergedStep } from "../board-view/plan-steps.ts";
+//
+// A TICKET THE TRACKER'S OWN INTEGRATION COMPLETED ON THAT MERGE (A11-178) is put back first, so the step is queued: {@link earlyCompletions} are the runs to ask the tracker about, and {@link earlyCompletionComment} is what the board posts when it puts one back.
+import { isParked } from "../board-view/pull-status-and-notes.ts";
+import { completedEarly, settledByPulls } from "../board-view/pull-settled.ts";
+import { afterPartialMerge, stepNamed, type MergedStep, type PlanStep } from "../board-view/plan-steps.ts";
+import { pullLabel } from "../board-view/pull-label.ts";
 import { pullsOf } from "../board-view/view-types-and-filters.ts";
 import { replace, SETTLED, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
 
@@ -54,3 +58,55 @@ export function queueNextStep(queue: Queue, key: string, step: MergedStep, now: 
 
 /** Drop the declaration of what remains of `key`'s ticket (A11-173): a worker's `done` says nothing remains to build, and a round that ends as `reviewed` instead keeps it unless this is called. */
 export const clearPartial = (queue: Queue, key: string): Queue => replace(queue, key, ({ partial: _declared, ...entry }) => entry);
+
+/**
+ * The finished runs whose ticket the tracker completed while their work was partial, and which no person is known to have completed (A11-178): the runs the board asks the tracker to put back, on every sweep
+ * until it has, so a refused or unanswered ask is tried again. See {@link completedEarly}. PURE.
+ */
+export const earlyCompletions = (queue: Queue): Entry[] => queue.entries.filter(completedEarly);
+
+/** `steps N to M of M`, `steps N and M of M` or `step N of M`, for the steps from `from` through `of`. PURE. */
+function stepsFrom(from: number, of: number): string {
+  if (from === of) return `step ${of} of ${of}`;
+  return `steps ${from}${of - from === 1 ? " and " : " to "}${of} of ${of}`;
+}
+
+/** The pull requests of `entry` that merged, as the board names them. PURE. */
+const mergedLabels = (entry: Entry): string[] => pullsOf(entry).map(({ url }) => url).filter((url) => entry.pullStates?.[url] === "merged").map(pullLabel);
+
+/**
+ * What the board says of the work that merged before the tracker completed the ticket (A11-178): the pull requests, the plan step they finished when it is known, and what remains. The work is the run's own
+ * partial pull requests when they merged: the step is the one the declaration names, or the board counted (A11-173), and what remains is the steps after it, or the declaration's own words where no step follows.
+ * Otherwise it is the last step already merged on the run (`steps`): a later step the integration completed the ticket under, which is still open or has just been queued. PURE.
+ */
+function mergedWork(entry: Entry): Readonly<{ prs: string[]; step: PlanStep | null; remaining: string }> {
+  const { partial, steps = [] } = entry;
+  const last = steps.at(-1);
+  if (partial !== undefined && settledByPulls(entry) === "completed") {
+    const after = afterPartialMerge(partial, steps, entry.planSteps);
+    const step = "next" in after ? { step: after.next.step - 1, of: after.next.of } : stepNamed(partial);
+    return { prs: mergedLabels(entry), step, remaining: "next" in after ? stepsFrom(after.next.step, after.next.of) : partial };
+  }
+  return { prs: (last?.prs ?? []).map(pullLabel), step: last ?? null, remaining: last === undefined ? "the rest of the plan" : stepsFrom(last.step + 1, last.of) };
+}
+
+/**
+ * The comment the board posts on a ticket it puts back after the tracker's integration completed it (A11-178): the merged pull requests and the step they finished, what the integration did, and what remains of
+ * the ticket. It names no closing word beside a key, since the board's own text is held to the rule it enforces. PURE.
+ */
+export function earlyCompletionComment(entry: Entry): string {
+  const { prs, step, remaining } = mergedWork(entry);
+  const finished = step === null ? "" : ` as step ${step.step} of ${step.of}`;
+  const declared = entry.partial === undefined ? "" : ` (Partial: ${entry.partial})`;
+  const merged = prs.length === 0 ? "A pull request" : prs.join(", ");
+  return `${merged} merged${finished} of ${entry.ticket.key}${declared}. The tracker's integration moved the ticket to its completed state; the ticket board moved it back to the state it was in before. Remaining: ${remaining}.`;
+}
+
+/** The ticket was put back: the run no longer reads the tracker's Completed, so its next step is queued like that of any partial run, and any earlier failure to put it back is forgotten. */
+export const recordReopened = (queue: Queue, key: string): Queue => replace(queue, key, ({ trackerState: _completed, reopenFailure: _failed, ...entry }) => entry);
+
+/** A person completed the ticket: their move wins, the run reads Completed, and the board does not ask the tracker again. */
+export const recordCompletedByPerson = (queue: Queue, key: string): Queue => replace(queue, key, ({ reopenFailure: _failed, ...entry }) => ({ ...entry, completedBy: "person" }));
+
+/** The ticket could not be put back, and why: the card flags the run, and the next sweep tries again. */
+export const recordReopenFailure = (queue: Queue, key: string, reason: string): Queue => replace(queue, key, (entry) => ({ ...entry, reopenFailure: reason }));

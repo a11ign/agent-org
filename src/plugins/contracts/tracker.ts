@@ -1,5 +1,5 @@
 // @ts-check
-// module: the tracker contract, version 1.4 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
+// module: the tracker contract, version 1.5 -- ticket mode's `TicketSource`, and what a new-ticket run needs of the tracker (A11-158, A11-159)
 //
 // A TYPE FILE, WITH TWO CONSTANTS: it imports nothing, so a plugin that implements it reaches no file of core. `TicketSource` is what the Linear plugin's `linearSource`
 // implements (`plugins/linear/linear.ts`), and NOT `TicketPort` of `src/ticket-port/port.ts`, which is the row-mode gate's tracker of GitHub issues.
@@ -8,6 +8,11 @@
 // 1.1 (A11-159) ADDS `TrackerWriting`, which a tracker plugin declares in its manifest (`agentOrg.tooling.writer`): the tools a new-ticket run files with, what the hook refuses of
 // them, how a created ticket's key is read from a tool's answer, the priority numbers and the tools the writer reads duplicates with. It is manifest data and not code, because the
 // PreToolUse hook is a process started for every tool call and must not import a plugin to answer one (the hook reads it from the registry).
+//
+// 1.5 (A11-178) ADDS the optional `undoAutomaticCompletion` and the optional `closingWords` of `Keywords`. A tracker's own integration can complete a ticket the moment a pull request merges, partial or not, because it reads a closing
+// word anywhere in the body: `undoAutomaticCompletion` puts such a ticket back, and leaves a person's completion alone, so the board can queue the next plan step of a partial pull request. `closingWords` is every word the tracker
+// completes a ticket by in a body, so the `closes` report refuses a partial body that carries one next to its ticket's key. Both are optional, so a 1.4 tracker still passes: a source without the first leaves a completed partial run for a
+// person, whom the board flags, and one without the second is read by `[closing]` alone.
 //
 // 1.4 (A11-173) ADDS the optional `comment`: the board posts a comment on a ticket without moving it, for the After-merge checks of a ticket the tracker completed itself, where `complete` leaves the ticket and its comment alone. It is optional, so
 // a 1.3 tracker still passes: a source without it gets the checks recorded on the board, and the board's log says the comment was not posted.
@@ -20,7 +25,7 @@
 // is told apart from "this instance ran it" (ADR A11-168-0001). Both are optional, so a 1.1 tracker still passes: a source without them has no claim to read, and no ticket is taken on its word.
 
 /** The tracker contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const TRACKER_CONTRACT_VERSION = "1.4";
+export const TRACKER_CONTRACT_VERSION = "1.5";
 
 /**
  * A label on a ticket, and the GROUP it belongs to: the label above it, where the tracker nests labels, or `null` for a label that stands alone.
@@ -95,13 +100,21 @@ export type TicketText = Readonly<{ description: string; updatedAt: string }>;
 export type PullState = "open" | "merged" | "closed";
 
 /**
- * The two words a tracker reads in a pull request's body to link it to a ticket: `closing`, which completes the ticket when the pull request merges,
+ * The words a tracker reads in a pull request's body to link it to a ticket: `closing`, which completes the ticket when the pull request merges,
  * and `nonClosing`, which only links it. Linear reads `Closes` as the first and `Refs` as the second.
+ * `closingWords` (contract 1.5, A11-178) is every word the tracker completes a ticket by when it finds one, followed by a key, ANYWHERE in the body: a code span, a fence or a quoted example
+ * included. A tracker that declares keywords without `closingWords` is read as `[closing]`; one that declares no keywords is read by {@link DEFAULT_KEYWORDS}.
  */
-export type Keywords = Readonly<{ closing: string; nonClosing: string }>;
+export type Keywords = Readonly<{ closing: string; nonClosing: string; closingWords?: readonly string[] }>;
 
-/** The words a tracker reads in a pull request's body when it declares none: `Closes` completes the ticket on merge and `Refs` only links it. */
-export const DEFAULT_KEYWORDS: Keywords = Object.freeze({ closing: "Closes", nonClosing: "Refs" });
+/** What the tracker's integration completes a ticket by (A11-178): close, fix, resolve, complete and implement, each with its -s, -d or -ed, and -ing forms. */
+const CLOSING_WORDS: readonly string[] = Object.freeze([
+  "close", "closes", "closed", "closing", "fix", "fixes", "fixed", "fixing", "resolve", "resolves", "resolved", "resolving",
+  "complete", "completes", "completed", "completing", "implement", "implements", "implemented", "implementing",
+]);
+
+/** The words a tracker reads in a pull request's body when it declares none: `Closes` completes the ticket on merge and `Refs` only links it, and the closing words are Linear's documented set. */
+export const DEFAULT_KEYWORDS: Keywords = Object.freeze({ closing: "Closes", nonClosing: "Refs", closingWords: CLOSING_WORDS });
 
 /** The priorities a ticket writer's form may name, most urgent first. */
 export const PRIORITIES = ["urgent", "high", "medium", "low", "none"] as const;
@@ -145,6 +158,13 @@ export type Blocker = Readonly<{ key: string; state: string; status: string; bra
  * The board keeps it on the run, so it can put the ticket back.
  */
 export type StateMove = Readonly<{ from: string; to: string }>;
+
+/**
+ * What {@link TicketSource.undoAutomaticCompletion} found and did (A11-178): `by` is who moved the ticket into its completed state, `"integration"` (the tracker's own automation), `"person"`, `"unknown"`
+ * (the tracker holds no record of who) or `"none"` (the ticket is not in a completed state). `reopened` is the move back, only ever for the integration, and `note` says why a completion by the
+ * integration was not undone, or is null.
+ */
+export type AutomaticCompletionUndo = Readonly<{ reopened: StateMove | null; by: "integration" | "person" | "unknown" | "none"; note: string | null }>;
 
 /** Who holds the open tickets: each person with how many, how many nobody holds, and the total. Read with the assignee alone, so it is small. */
 export type People = Readonly<{ people: readonly Readonly<{ id: string; name: string; count: number }>[]; unassigned: number; total: number }>;
@@ -240,6 +260,14 @@ export interface TicketSource {
    * says so; the note is null otherwise. A source without it cannot undo a move. Throws when the tracker refuses.
    */
   restoreState?(key: string, move: StateMove): Promise<string | null>;
+  /**
+   * Undo a completion the tracker's own integration made, and leave a person's alone (contract 1.5, A11-178). A pull request that merges can complete its ticket although its body declared it
+   * partial, because the integration reads a closing word anywhere in the body. When the ticket is in a completed state, the tracker finds out who moved it there: the integration, a person, or
+   * neither it can tell. For the integration it moves the ticket back to the state it was in before that move and posts `comment`, and answers `reopened` with the move. For a person it changes
+   * nothing and posts nothing. A ticket that is not completed answers `by: "none"`. The move back happens only if the ticket is in the state the integration put it in when the tracker reads it, as
+   * {@link restoreState}'s does. A source without it cannot undo one. Throws when the tracker refuses or cannot be asked.
+   */
+  undoAutomaticCompletion?(key: string, comment: string): Promise<AutomaticCompletionUndo>;
   /**
    * Record in the tracker that each of `blockerKeys` blocks the ticket `key`, as "blocked by" reads it back. A relation the tracker already has
    * is not made again, so an attempt that was cut off can be repeated. A source without it records no order. Throws when the tracker refuses.

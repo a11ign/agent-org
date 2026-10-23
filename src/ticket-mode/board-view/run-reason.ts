@@ -2,7 +2,8 @@
 // module: the reason line a run's card shows, and the question it keeps one click away (PURE)
 import { pullAnswer, type PullAnswer } from "./pull-answer.ts";
 import { afterPartialMerge, stepQueuedLine, stepRunningLine } from "./plan-steps.ts";
-import { rebaseNote, retargetNote, runStatus, settledByPulls, verdictNote, workingNote } from "./pull-status-and-notes.ts";
+import { completedEarly, settledByPulls } from "./pull-settled.ts";
+import { rebaseNote, retargetNote, runStatus, verdictNote, workingNote } from "./pull-status-and-notes.ts";
 import { openPulls, pullsOf, type ViewEntry } from "./view-types-and-filters.ts";
 import { pullLabel } from "./pull-label.ts";
 import { clockOf, shortVersion, versionLine, type UpdateView } from "./update-banner.ts";
@@ -40,12 +41,25 @@ function askedReason(entry: ViewEntry): string | null {
 }
 
 /**
+ * What the card says of a run whose ticket the tracker completed while its work was partial and the board did not put back (A11-178): what the tracker did, what the run still has to do, and why
+ * the board could not undo it. Said of a partial pull request that merged, and of a later step whose own pull requests are still open. PURE.
+ */
+function completedEarlyLine(entry: ViewEntry): string {
+  const open = openPulls(entry).map(({ url }) => pullLabel(url));
+  const last = (entry.steps ?? []).at(-1);
+  const cause = entry.partial !== undefined ? `its last merged pull request declared Partial: ${entry.partial}`
+    : `${last === undefined ? "its" : `step ${last.step + 1}'s`} pull request${open.length === 1 ? " is" : "s are"} not merged (${open.join(", ")})`;
+  return `Done in the tracker, but ${cause}; the board could not put it back (${entry.reopenFailure ?? "it has not been asked yet"})`;
+}
+
+/**
  * What the card says of a plan's steps (A11-168), or null: that a step merged and the next is queued, or running once it started; and, on a finished run whose partial pull
  * requests merged with no next step to queue, why nothing was queued. The tracker's own word on the ticket comes first, as it does for the run's status. PURE.
  */
 function stepNote(entry: ViewEntry): string | null {
   const merged = entry.steps ?? [];
   if (entry.phase !== "finished") return entry.phase === "queued" ? stepQueuedLine(merged) : stepRunningLine(merged);
+  if (completedEarly(entry)) return completedEarlyLine(entry);
   const settled = entry.trackerState === "completed" || entry.trackerState === "canceled" || entry.trackerState === "duplicate";
   if (entry.partial === undefined || settled || settledByPulls(entry) !== "completed") return null;
   const after = afterPartialMerge(entry.partial, merged, entry.planSteps);
