@@ -2,16 +2,10 @@ The board no longer lets the tracker's own integration end a partial plan step (
 
 Acceptance:
 ```bash
-scratch=$(mktemp -d)
-mkdir "$scratch/project"
-cp -r src/packaging/fixtures/project-tree/. "$scratch/project"
-sed -i "s|@@PROJECT@@|$scratch/project|" "$scratch/project/.agent-org/host.json"
-git -C "$scratch/project" init -q
-git -C "$scratch/project" add -A
-git -C "$scratch/project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m fixture
-AGENT_ORG_HOST="$scratch/project/.agent-org/host.json" npx rstest run --config scripts/rstest/rstest.config.ts src/ticket-mode/partial-merge-reopen.test.ts src/ticket-mode/board-view.test.ts src/ticket-mode/pr-open-ticket.test.ts src/ticket-mode/worker-files.test.ts src/packaging/ci-closes-report-reads-a-ticket.test.ts src/plugins plugins/linear
+npx rstest run --config scripts/rstest/rstest.config.ts plugins/linear/linear.test.ts src/plugins/fakes/tracker.test.ts src/ticket-mode/pr-open-ticket.test.ts src/ticket-mode/worker-files.test.ts src/packaging/ci-closes-report-reads-a-ticket.test.ts
 node --input-type=module -e 'import { ticketClosesReport } from "./src/ticket-mode/ticket-references.ts"; import { DEFAULT_KEYWORDS } from "./src/plugins/contracts/tracker.ts"; const incident = "Refs A11-127\n\nPartial: step 1 of 3\n\nThe tests read the grammar, for example `" + "Closes A11-127" + "`.\n"; const refused = ticketClosesReport(incident, "A11-127", DEFAULT_KEYWORDS); if (refused.ok) { console.error("the incident body passed"); process.exit(1); } const described = ticketClosesReport("Refs A11-127\n\nPartial: step 1 of 3\n\nThe closing keyword followed by the key is read.\n", "A11-127", DEFAULT_KEYWORDS); if (!described.ok) { console.error(described.lines.join("\n")); process.exit(1); }'
-rm -rf "${scratch:?}"
 ```
+
+The board's side of it (the put-back, the next step queued, a person's completion left alone, the Needs you card) is proved by `src/ticket-mode/partial-merge-reopen.test.ts` and `src/ticket-mode/board-view.test.ts`, which run the real pool over the in-memory tracker and need the checkout's history, so CI's `suite` job runs them and this block does not.
 
 Consumer-declaration: none -- the tracker contract grows two OPTIONAL members (1.5: `undoAutomaticCompletion`, and `closingWords` of `Keywords`), so a 1.4 tracker plugin still passes and no host file changes meaning. `plugins/linear` declares contract 1.5. No other repository reads these modules as a library.
