@@ -234,6 +234,8 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
   ...nonVocabulary("ticket-port/outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
   // `ticket-mode/board-view.ts` (agent-org#1383): the ticket board's own `RunStatus` member `"blocked"`, which the board's run state names; it is never the `blocked` GitHub label.
   ...nonVocabulary("ticket-mode/board-view/view-types-and-filters.ts", ['"blocked"'], "the ticket board's own RunStatus member, never the `blocked` label"),
+  // A11-174: the pool tells a declined safety prompt's agent once it no longer reads `blocked`, herdr refusing a message to a blocked agent.
+  ...nonVocabulary("ticket-mode/pool-decline.ts", ['"blocked"'], "an agent's `herdr` status, never the `blocked` label"),
 ];
 
 test("the messaging sources' label literals equal the vocabulary's", () => {

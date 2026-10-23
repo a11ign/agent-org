@@ -57,11 +57,14 @@ set -euo pipefail
 # requests in `a11ign/agent-org` as well, and a door that posts to a literal could only ever review the first
 # repository (#2952). REFUSED BEFORE ANY `gh` CALL when it is not `owner/name`: a typo here would post an approval
 # to a repository nobody meant, and a review cannot be taken back. With no `GH_REPO` the repository is read from the
-# project declaration by the tool's own `project-config.ts` (the file beside this directory's parent), not written here.
+# project declaration by the tool's own `project-config.ts`, not written here: the file beside this directory's parent, or, where the door runs from the
+# GitHub plugin's folder in a checkout of the tool (`plugins/github/reviewer/`, A11-160), the tool's `src/project-config.ts`.
 REPO="${GH_REPO:-}"
 if [[ -z "$REPO" ]]; then
   DOOR_DIR="$(cd "$(dirname "$0")" && pwd)"
-  REPO="$(node --no-warnings -e 'import(require("node:url").pathToFileURL(process.argv[1]).href).then((m) => process.stdout.write(m.homeProjectDeclaration().tracker[0].repo))' "$DOOR_DIR/../project-config.ts")" || {
+  DECLARATION="$DOOR_DIR/../project-config.ts"
+  [[ -f "$DECLARATION" ]] || DECLARATION="$DOOR_DIR/../../../src/project-config.ts"
+  REPO="$(node --no-warnings -e 'import(require("node:url").pathToFileURL(process.argv[1]).href).then((m) => process.stdout.write(m.homeProjectDeclaration().tracker[0].repo))' "$DECLARATION")" || {
     echo "pr-review-verdict: GH_REPO is unset and the project declaration cannot be read, so the repository is unknown" >&2; exit 2; }
 fi
 [[ "$REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || {

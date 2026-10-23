@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync, writeFileSync, renameSync, chmodSync, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CodeHostWrapper } from "../plugins/contracts/code-host.ts";
+import { activeCodeHost } from "../plugins/active.ts";
+import type { CodeHostWrapper, VerdictDoor } from "../plugins/contracts/code-host.ts";
 import { wrapperInputsOf } from "../plugins/host-place.ts";
 import { reviewerDoorPath } from "../reviewer-door-path.ts";
 import { agreementReport } from "../lib/tool-version-agreement.ts";
@@ -355,9 +356,8 @@ export function tickAppRoleSilent({ host = homeHostConfig(), now = Date.now(), r
 // one that was reviewed and tested. `install-reviewer-bin.sh` (#2193) existed and nothing called it; #2972's
 // cut-over moved the source out of the repository that carried the install and reopened the drift #2193 closed.
 
-/** The door as the repository ships it, and the installer that puts it where it runs. */
-export const REVIEWER_DOOR_SOURCE = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
-const REVIEWER_DOOR_INSTALLER = fileURLToPath(new URL("../reviewer/install-reviewer-bin.sh", import.meta.url));
+/** The door as the code host ships it, and the installer that puts it where it runs (A11-160: the door posts verdicts through GitHub, so it is the GitHub plugin's), or undefined for a code host that ships none. */
+const verdictDoor = (): VerdictDoor | undefined => activeCodeHost().verdictDoor;
 
 /**
  * Is the installed door the shipped one: `CURRENT`, `DRIFTED` (present and different), `NOT INSTALLED`, or `SOURCE UNREADABLE` --
@@ -366,9 +366,9 @@ const REVIEWER_DOOR_INSTALLER = fileURLToPath(new URL("../reviewer/install-revie
  * @returns {{ state: "CURRENT" | "DRIFTED" | "NOT INSTALLED" | "SOURCE UNREADABLE", target: string, shippedBytes: number, installedBytes: number | null }}
  */
 export function reviewerDoorState(deps: Parameters<typeof reviewerDoorPath>[0] & { read?: typeof readFileSync; source?: string; } = {}): { state: "CURRENT" | "DRIFTED" | "NOT INSTALLED" | "SOURCE UNREADABLE"; target: string; shippedBytes: number; installedBytes: number | null; } {
-  const { read = readFileSync, source = REVIEWER_DOOR_SOURCE } = deps;
+  const { read = readFileSync, source = verdictDoor()?.source } = deps;
   const target = reviewerDoorPath(deps);
-  const shipped = textOf(source, read);
+  const shipped = source === undefined ? null : textOf(source, read);
   const installed = textOf(target, read);
   const bytes = (text: string | null) => (text === null ? null : Buffer.byteLength(text));
   const state = shipped === null ? "SOURCE UNREADABLE" : installed === null ? "NOT INSTALLED" : installed === shipped ? "CURRENT" : "DRIFTED";
@@ -381,6 +381,7 @@ export function reviewerDoorState(deps: Parameters<typeof reviewerDoorPath>[0] &
  * @returns {Finding[]}
  */
 export function reviewerDoorDrift(deps: Parameters<typeof reviewerDoorState>[0] = {}): Finding[] {
+  if (deps.source === undefined && verdictDoor() === undefined) return [];
   const { state, target, shippedBytes, installedBytes } = reviewerDoorState(deps);
   if (state === "CURRENT") return [];
   const detail = {
@@ -396,12 +397,14 @@ export function reviewerDoorDrift(deps: Parameters<typeof reviewerDoorState>[0] 
  * Install the door by running the installer the repository ships, with the destination THIS file decided so the check and the install
  * cannot name two places. The installer reads the copy back and fails unless it is byte-identical, which is why this does not reimplement it.
  * @param {Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string, out?: (line: string) => void }} [deps]
- * @returns {string} the path it installed
+ * @returns {string | null} the path it installed, or null when the code host ships no door
  */
-export function reviewerDoorInstall(deps: Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string; out?: (line: string) => void; } = {}): string {
+export function reviewerDoorInstall(deps: Parameters<typeof reviewerDoorPath>[0] & { run?: (file: string, args: string[]) => string; out?: (line: string) => void; } = {}): string | null {
   const { run = (file, args) => execFileSync("bash", [file, ...args], { encoding: "utf8" }), out = (l) => process.stdout.write(l) } = deps;
+  const door = verdictDoor();
+  if (door === undefined) return null;
   const target = reviewerDoorPath(deps);
-  out(run(REVIEWER_DOOR_INSTALLER, [target]));
+  out(run(door.installer, [target]));
   return target;
 }
 

@@ -1,4 +1,4 @@
-// no-token: gh -- one fake `gh` answers both pools from one table of statuses and one pull request; herdr, the spawn and the checkout are injected, and nothing is spawned
+// no-token: none -- one fake code host answers both pools from one table of statuses and one pull request; herdr, the spawn and the checkout are injected, and nothing is spawned
 //
 // TWO INSTANCES' POOLS OVER THE ATOMIC REVIEWER (A11-149, moved here by A11-161): the claim on a head is what keeps two boards from reviewing the same head, so the test drives each pool's sweep over
 // the plugin's real port, which core's own tests do not build. The pools are core's, the gate is loaded for real, and GitHub, herdr and the spawn are fakes.
@@ -23,9 +23,9 @@ import { reviewingHelpers } from "../../src/plugins/reviewing-helpers.ts";
 import { atomicReviewerPort as portOver, type Seams } from "./port.ts";
 
 /** The port a board makes: over the real helpers of core, with the board's collaborators these options name. */
-function atomicReviewerPort({ session, run, gh, codeHost, clones, instance, seen = new Map<string, number>(), heads = new Map<string, string>(), ...seams }: Seams & Readonly<{ session: string; run: (args: string[]) => string; gh: (args: string[]) => string; codeHost: ReturnType<typeof createFakeCodeHost>;
+function atomicReviewerPort({ session, run, codeHost, clones, instance, seen = new Map<string, number>(), heads = new Map<string, string>(), ...seams }: Seams & Readonly<{ session: string; run: (args: string[]) => string; codeHost: ReturnType<typeof createFakeCodeHost>;
   clones: Record<string, string>; instance: string; seen?: Map<string, number>; heads?: Map<string, string> }>) {
-  return portOver(reviewingHelpers({ session, run, gh, codeHost: () => codeHost, clones, instance, heads, seen }), seams);
+  return portOver(reviewingHelpers({ session, run, codeHost: () => codeHost, clones, instance, heads, seen }), seams);
 }
 
 const PR_URL = `https://github.com/${REPO}/pull/7`;
@@ -40,34 +40,30 @@ const source: TicketSource = createFakeTracker();
 const store = { get: () => emptyQueue(1), set: () => {} };
 
 /**
- * One fake GitHub for every pool: a pull request on `REPO` at `HEAD` with green checks, as the code host holds it (the fake), and the statuses on each head, which are still `gh`'s.
- * A status is written at the clock's time, and read back as one line per status under the claim's context, as `claimEntriesOf` reads them. `refuse` makes the write of a status fail as
+ * One fake GitHub for every pool: a pull request on `REPO` at `HEAD` with green checks, as the code host holds it (the fake), and the statuses on each head, which its claim operations read and write.
+ * A status is written at the clock's time, and read back among the entries under the claim's context. `refuse` makes the write of a status fail as
  * GitHub's 403 does for an App with no "Commit statuses" permission (A11-172); `rival` puts a second pull request first in the sweep, at head `OTHER_HEAD`, with a live claim of `RIVAL`.
  */
 function githubOf(clock: { now: number }, { rival = false }: { rival?: boolean } = {}) {
   const statuses: { id: number; sha: string; context: string; created_at: string; description: string }[] = [];
   const state = { refuse: null as string | null, writes: [] as string[] };
-  const shaOf = (args: string[]) => /\/commits\/([^/]+)\/statuses|\/statuses\/([^/?]+)/.exec(args.find((arg) => arg.includes("/statuses")) ?? "")!.slice(1).find(Boolean)!;
-  const gh = (args: string[]) => {
-    if (args[0] === "api" && args.some((arg) => arg.includes("/statuses"))) {
-      const sha = shaOf(args);
-      if (!args.includes("POST")) return statuses.filter((status) => status.sha === sha && status.context === "agent-org/review").map((status) => `${status.id}\t${status.created_at}\t${status.description}\n`).join("");
-      const field = (name: string) => args.find((arg) => arg.startsWith(`${name}=`))!.slice(name.length + 1);
-      state.writes.push(`${sha}: ${field("description")}`);
-      if (state.refuse !== null) throw Object.assign(new Error(`Command failed: gh ${args.join(" ")}`), { stderr: `gh: ${state.refuse} (HTTP 403)\n{"message":"${state.refuse}"}\n` });
-      statuses.push({ id: statuses.length + 1, sha, context: field("context"), created_at: new Date(clock.now).toISOString(), description: field("description") });
-      return "";
-    }
-    throw new Error(`unexpected gh ${args.join(" ")}`);
-  };
   const host = createFakeCodeHost();
   if (rival) {
     host.seedPull(REPO, 8, { head: OTHER_HEAD, settled: true, trust: "inside" });
     statuses.push({ id: 1, sha: OTHER_HEAD, context: "agent-org/review", created_at: new Date(clock.now).toISOString(), description: claimDescriptionOf({ instance: RIVAL, now: clock.now }) });
   }
   host.seedPull(REPO, 7, { head: HEAD, settled: true, trust: "inside" });
+  host.readReviewClaims = (_repository, head) => ({
+    entries: statuses.filter((status) => status.sha === head && status.context === "agent-org/review").map((status) => ({ id: status.id, description: status.description, created: Date.parse(status.created_at) })),
+  });
+  host.writeReviewClaim = ({ head, description }) => {
+    state.writes.push(`${head}: ${description}`);
+    if (state.refuse !== null) return `gh: ${state.refuse} (HTTP 403)`;
+    statuses.push({ id: statuses.length + 1, sha: head, context: "agent-org/review", created_at: new Date(clock.now).toISOString(), description });
+    return null;
+  };
   for (const other of ["a11ign/control", "a11ign/plugin", "a11ign/nbl-ui-netbox"]) host.seedRepository(other);
-  return { gh, statuses, host, state };
+  return { statuses, host, state };
 }
 
 /** A herdr that lists each label in `status` as a running agent, and answers the workspace calls a close makes. */
@@ -90,7 +86,7 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
   // The instances seen are one record, shared by the port that records them and the pool that writes them, as the server wires them.
   const seen = new Map<string, number>();
   const heads = new Map<string, string>();
-  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, seen, heads, run: herdrOf(status), gh: github.gh, codeHost: github.host, claimGh: () => github.gh, mint: () => null,
+  const reviewerPort = atomicReviewerPort({ session: "tickets", instance, seen, heads, run: herdrOf(status), codeHost: github.host, mint: () => null,
     clones: settings.clones, now: () => clock.now, checkout: () => ({ path: "/work/pr-7", head: HEAD }),
     spawn: (order) => {
       if (refuseSpawn !== undefined) return { refusal: refuseSpawn };
@@ -98,7 +94,7 @@ function poolOf({ instance, github, status, spawns, clock, root, refuseSpawn }: 
       status.set(order.session, "working");
       return { label: order.session, workspace: "w7", profile: { kind: "codex", model: "m", effort: "e" } };
     } });
-  return newPoolContext(store, { settings, source, codeHost: github.host, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), gh: github.gh, now: () => clock.now, reviewer: reviewerOver(reviewerPort), reviewerSeen: seen, reviewerHeads: heads });
+  return newPoolContext(store, { settings, source, codeHost: github.host, hook: { node: "/node", bin: "/tool/src/bin.ts" }, herdr: herdrOf(status), now: () => clock.now, reviewer: reviewerOver(reviewerPort), reviewerSeen: seen, reviewerHeads: heads });
 }
 
 /** Two instances' pools on one GitHub, one herdr, and one clock that starts at a fixed time, with the spawns each pool's reviewer makes. */

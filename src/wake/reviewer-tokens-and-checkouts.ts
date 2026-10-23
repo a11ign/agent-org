@@ -777,7 +777,7 @@ export function withReviewCheckout(order: { prompt: string; session: string; tru
 
 /**
  * The verdict door as an order must spell it. `~/reviewer/bin` is on no PATH, so the bare `pr-review-verdict` the orders used to print
- * was `command not found` for `reviewer-3311` (#3316); this is the path `reviewer/install-reviewer-bin.sh` writes to by default, which
+ * was `command not found` for `reviewer-3311` (#3316); this is the path `plugins/github/reviewer/install-reviewer-bin.sh` writes to by default, which
  * `reviewer-door-install.test.ts` reads out of the script. The shell expands `$HOME`.
  */
 export const REVIEWER_DOOR = "$HOME/reviewer/bin/pr-review-verdict";

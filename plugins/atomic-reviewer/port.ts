@@ -194,8 +194,6 @@ export type Seams = Readonly<{
   /** Runs the verdict door with the reviewer's environment: throws on a non-zero exit, with the door's stderr. */
   door?: DoorRun;
   now?: () => number;
-  /** The `gh` a claim is written with, as the reviewer role: given the reviewer's environment, a `gh` that runs with it. */
-  claimGh?: (env: Record<string, string>) => (args: string[]) => string;
 }>;
 
 const spawnOf = (context: Context) => context.seams.spawn ?? gateOf(context).wake.spawnReviewer;
@@ -207,7 +205,6 @@ const checkoutPathOf = (context: Context, label: string): string => (context.sea
 const mintOf = (context: Context, tree: string): string | null => (context.seams.mint ?? reviewerTokenMintOf(context))(tree);
 const doorOf = (context: Context): DoorRun => context.seams.door ?? gateOf(context).trust.runDoor;
 const nowOf = (context: Context): number => (context.seams.now ?? Date.now)();
-const claimGhOf = (context: Context) => context.seams.claimGh ?? boardOf(context).ghWith;
 
 /**
  * The atomic adapter: the gate's codex reviewer, started in the tickets' herdr session. The gate's functions name the org's session, so the calls they make are retargeted to the board's session
@@ -297,8 +294,11 @@ function liveReviewer(context: Context, { pr, head }: ReviewerRef): boolean {
  * its release (A11-149).
  */
 function claimWriterOf(context: Context, seat: Seat, { repo, sha, tree }: { repo: string; sha: string; tree: string }): (description: string) => void {
-  const gh = claimGhOf(context)(gateOf(context).wake.reviewerEnvironment(seat.label, repositoryEnvOf(context, seat), tree));
-  return (description) => boardOf(context).claims.writeClaimStatus({ repo, sha, description, gh });
+  const environment = gateOf(context).wake.reviewerEnvironment(seat.label, repositoryEnvOf(context, seat), tree);
+  return (description) => {
+    const refusal = codeHostOf(context).writeReviewClaim({ repository: repo, head: sha, description, environment });
+    if (refusal !== null) throw new Error(refusal);
+  };
 }
 
 /** What claiming a head came to: the reviewer may start (`tookOver` names an expired claim it took over, `unclaimed` that it starts WITHOUT a claim and why), or the refusal that starts none (`unclaimed` when the claim is why). */
@@ -315,12 +315,12 @@ function noteOthersSeen(context: Context, entries: readonly Readonly<{ id: numbe
   for (const [other, at] of seen) if (now - at >= claims.REVIEW_LEASE_MS) seen.delete(other);
 }
 
-/** The claim entries of a head, read through the board's own `gh`, with the other instances they show noted. */
+/** The claim entries of a head, read through the code host, with the other instances they show noted. THROWS the code host's reason when they could not be read. */
 function claimEntriesOf(context: Context, { repo, sha }: { repo: string; sha: string }): readonly Readonly<{ id: number; description: string; created: number }>[] {
-  const { claims, gh } = boardOf(context);
-  const entries = claims.claimEntriesOf({ repo, sha, gh });
-  noteOthersSeen(context, entries);
-  return entries;
+  const read = codeHostOf(context).readReviewClaims(repo, sha);
+  if ("unreadable" in read) throw new Error(read.unreadable);
+  noteOthersSeen(context, read.entries);
+  return read.entries;
 }
 
 /** When any other instance was last seen under the claim's context on any head, or null for none (A11-172). */

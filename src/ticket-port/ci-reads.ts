@@ -77,20 +77,6 @@ export function redRunOfHead(repo: string, number: string | number, head8: strin
   return red === undefined || ids === null ? null : { runId: Number(ids[1]), conclusion: red.conclusion ?? null };
 }
 
-/** The Actions job a check's details address names: its repository (`owner/name`), workflow run and job. `null` for any other address, a commit status's included. PURE. */
-export function jobOfDetails(detailsUrl: string): { repo: string; runId: number; jobId: number } | null {
-  const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)\/job\/(\d+)/.exec(detailsUrl);
-  return match === null ? null : { repo: match[1], runId: Number(match[2]), jobId: Number(match[3]) };
-}
-
-/**
- * The log of one Actions job, its colour codes included: `gh api` exits 1 on a terminal escape sequence unless told to allow it (#767), so the caller strips them.
- * Throws when the log could not be read (A11-154).
- */
-export function jobLogOf(repo: string, jobId: string | number, run: Run): string {
-  return run(["api", `repos/${repo}/actions/jobs/${jobId}/logs`, "--allow-escape-sequences"]);
-}
-
 /** THE WRITE (agent-org#1217): rerun the failed jobs of one workflow run. A refused rerun THROWS, so a caller cannot read it as done. */
 export function rerunFailedJobsOf(repo: string, runId: string | number, run: Run): void {
   run(["run", "rerun", String(runId), "--failed", "-R", repo]);

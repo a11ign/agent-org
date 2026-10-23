@@ -1286,6 +1286,24 @@ test("A11-80: a run whose worker wrote working shows In progress with its reason
   assert.equal(flag?.text(), "Stalled: idle with no newer outcome since it said: waiting on the second play");
 });
 
+test("A11-174: a run whose safety prompt was declined shows 'A safety prompt was declined automatically' with its command, and no 'Waiting on a person'", async () => {
+  const p = await page(new Map(), { entries: [
+    entry("S-1", { phase: "running", startedAt: 2, workspace: "w1", pane: "w1:p1", declined: { command: "rm -f $SC/*.done", warning: "Dangerous rm operation on possibly-empty variable path", at: 3, count: 1, told: true } })] });
+  const row = runRows(p)[0];
+  const lines = row.all().filter((n) => n.className === "waiting").map((n) => n.text());
+  assert.deepEqual(lines, ["A safety prompt was declined automatically: rm -f $SC/*.done"]);
+  assert.ok(!row.text().includes("Waiting on a person"));
+});
+
+test("A11-174: a waiting run shows 'Waiting on a person: <first line>', and 'Waiting on a person' alone when no dialog could be read", async () => {
+  const p = await page(new Map(), { entries: [
+    entry("S-1", { phase: "running", startedAt: 2, waiting: true, prompt: "Which database should the migration use?" }),
+    entry("S-2", { phase: "running", startedAt: 3, waiting: true })] });
+  const lineOf = (key: string) => runRows(p).find((r) => r.text().includes(key))!.all().filter((n) => n.className === "waiting").map((n) => n.text());
+  assert.deepEqual(lineOf("S-1"), ["Waiting on a person: Which database should the migration use?"]);
+  assert.deepEqual(lineOf("S-2"), ["Waiting on a person"]);
+});
+
 /*
  * New tickets (A11-94): the form, a run's card, and a draft reviewed in place. The page creates nothing itself: each button posts to its route.
  */

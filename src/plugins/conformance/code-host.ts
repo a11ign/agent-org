@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
+// module: the code host contract's suite (A11-158; A11-167 adds `readMergedFindings`; A11-160 adds the checks, the review claim and the verdict door) -- `runCodeHostConformance(host, probe)` is the only definition of "a code host"
 //
 // EVERY READ ANSWERS `null` FOR "COULD NOT ASK", NEVER FOR "THERE IS NONE": that is the property a caller relies on, so the suite asks about a pull request the host
 // does not have and requires `null`. The caller seeds what the probe names: an open pull request the host holds (`pull`) with the repository it is in
@@ -11,10 +11,16 @@ import { type Conditional, type ConformanceResult, expect, hasFunctions, isObjec
  * What the caller has seeded: an open pull request, its repository, one the host has none of, the account the host acts as, and optionally a change for the port's reads, the inputs a wrapper is asked about
  * (a host that installs no wrapper is not asked) and a merged pull request that has findings (`merged`, A11-167).
  */
-export type CodeHostProbe = Readonly<{ pull: string; repository: string; missing: string; self: string; change?: ChangeRef; wrapper?: WrapperInputs; merged?: string }>;
+export type CodeHostProbe = Readonly<{
+  pull: string; repository: string; missing: string; self: string; change?: ChangeRef; wrapper?: WrapperInputs; merged?: string;
+  /** A failing check's address whose log the host holds (`log`), and the text that log has to contain. */
+  check?: Readonly<{ detailsUrl: string; log: string }>;
+  /** A head a claim may be written on: the repository, the head, and the environment the claim is written with. Writing one is not undone, so a caller seeds a head it can discard. */
+  claim?: Readonly<{ repository: string; head: string; environment: Readonly<Record<string, string>> }>;
+}>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
-const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readChange", "requestReview", "armMerge", "subscribe"] as const;
+const OPERATIONS = ["readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
 
 const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
@@ -63,6 +69,20 @@ const ALWAYS: Readonly<Record<string, (subject: Subject) => unknown>> = {
     const notes = host.sweepRetargets({ urls: [], previous: {}, stacked: new Set(), defaults: new Map(), log: () => undefined });
     expect(isObject(notes) && Object.keys(notes).length === 0, "sweepRetargets of no pull requests must have no notes");
   },
+  "readCheckLog answers null for an address that names no job": ({ host }) => {
+    expect(host.readCheckLog("https://example.invalid/checks/not-a-job") === null, "readCheckLog must answer null for an address that names no job: null is never 'the log is empty'");
+  },
+  "rerunFailedChecks of no checks reruns nothing and says so": ({ host }) => {
+    expect(host.rerunFailedChecks([]) === null, "rerunFailedChecks of no addresses must answer null: there is nothing to refuse");
+    expect(host.rerunFailedChecks(["https://example.invalid/checks/not-a-job"]) === null, "rerunFailedChecks must leave out an address that names no run");
+  },
+  "readReviewClaims answers the entries of a head, or why it could not": ({ host, probe }) => {
+    const read = host.readReviewClaims(probe.repository, "0".repeat(40));
+    const entries = "entries" in read ? read.entries : undefined;
+    expect(isObject(read) && (Array.isArray(entries) !== isString("unreadable" in read ? read.unreadable : undefined)), "readReviewClaims must answer { entries } or { unreadable }, and never both or neither");
+    expect(entries === undefined || entries.every((entry) => Number.isFinite(entry.id) && isString(entry.description) && Number.isFinite(entry.created)), "each claim entry must be { id, description, created }");
+    expect(!("unreadable" in read) || read.unreadable !== "", "the reason a claim could not be read must say something");
+  },
   "subscribe returns the function that cancels it": ({ host }) => {
     let received = 0;
     const cancel = host.subscribe({}, () => { received += 1; });
@@ -80,7 +100,35 @@ const withWrapper = (reason: string, run: (subject: Subject & { inputs: WrapperI
   applies: ({ host, probe }) => host.wrapper !== undefined && probe.wrapper !== undefined, reason: `the code host has no wrapper or the probe names no inputs for one, so ${reason}`, run: (subject) => run({ ...subject, inputs: subject.probe.wrapper! }),
 });
 
+const withCheck = (reason: string, run: (subject: Subject & { check: NonNullable<CodeHostProbe["check"]> }) => unknown): Conditional<Subject> => ({
+  applies: ({ probe }) => probe.check !== undefined, reason: `the probe names no check, so ${reason}`, run: (subject) => run({ ...subject, check: subject.probe.check! }),
+});
+
+const withClaim = (reason: string, run: (subject: Subject & { claim: NonNullable<CodeHostProbe["claim"]> }) => unknown): Conditional<Subject> => ({
+  applies: ({ probe }) => probe.claim !== undefined, reason: `the probe names no head to claim, so ${reason}`, run: (subject) => run({ ...subject, claim: subject.probe.claim! }),
+});
+
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
+  "readCheckLog reads the log behind a failing check": withCheck("no check's log is read", ({ host, check }) => {
+    const log = host.readCheckLog(check.detailsUrl);
+    expect(isString(log) && log.includes(check.log), `readCheckLog(${check.detailsUrl}) must read the log the host holds`);
+  }),
+  "a claim written on a head is read back from it": withClaim("no claim is written", ({ host, claim }) => {
+    const description = `claimed by conformance at ${new Date(0).toISOString()}, lease 60 min`;
+    const before = host.readReviewClaims(claim.repository, claim.head);
+    expect("entries" in before, `readReviewClaims(${claim.repository}, ${claim.head}) must read the head the probe names`);
+    expect(host.writeReviewClaim({ repository: claim.repository, head: claim.head, description, environment: claim.environment }) === null, "writeReviewClaim must answer null once the claim is written");
+    const after = host.readReviewClaims(claim.repository, claim.head);
+    expect("entries" in after && after.entries.length === before.entries.length + 1 && after.entries.some((entry) => entry.description === description), "the claim written must be read back among the head's entries");
+  }),
+  "the verdict door is a file the plugin ships, with the program that installs it": {
+    applies: ({ host }) => host.verdictDoor !== undefined,
+    reason: "the code host ships no verdict door, which is optional (contract 1.5)",
+    run: ({ host }) => {
+      const door = host.verdictDoor!;
+      expect(isString(door.source) && door.source.startsWith("/") && isString(door.installer) && door.installer.startsWith("/"), "verdictDoor must be { source, installer }, each an absolute path");
+    },
+  },
   "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged": {
     applies: ({ host }) => typeof host.readMergedFindings === "function",
     reason: "the code host has no readMergedFindings, which is optional (contract 1.4)",

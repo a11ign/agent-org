@@ -3,18 +3,17 @@
 //
 // A PLUGIN IMPORTS CORE'S TYPES ONLY (ADR 0001), so the gate the reviewer drives reaches it through `deps.reviewing`: THE GATE STAYS CORE'S, shared with the org's own reviewer (`wake/*`, `review-trust.ts`,
 // `work-gate/pr-orders.ts`, `project-config.ts`, the door path and `host-config.ts`), and `reviewing-gate.ts` hands its loader over. A board adds its collaborators and the functions the atomic reviewer called directly
-// before it moved (the seat names, the herdr listing, the claim on a head, the verdict reader), as the modules' own. They are held to `ReviewerBoard`'s signatures where they are assigned below.
+// before it moved (the seat names, the herdr listing, the claim protocol, the verdict reader), as the modules' own. They are held to `ReviewerBoard`'s signatures where they are assigned below.
 import { readAgents, ORG_SESSION, firstLine } from "../herdr-agents.ts";
-import { ghWith } from "../lib/tool-version-agreement.ts";
 import { reviewerInstance, reviewerSeat } from "../review-attribution.ts";
 import { headMatches, reviewVerdict } from "../review-verdict.ts";
-import { REVIEW_LEASE_MS, claimEntriesOf, claimHead, othersSeenIn, releasedDescriptionOf, writeClaimStatus } from "../ticket-port/review-claim.ts";
+import { REVIEW_LEASE_MS, claimHead, othersSeenIn, releasedDescriptionOf } from "../ticket-port/review-claim.ts";
 import type { Active } from "./active.ts";
 import type { ReviewerBoard, ReviewerHelpers } from "./manifest.ts";
 import { gateHelpers } from "./reviewing-gate.ts";
 
 /** What a board names of itself: the rest of a {@link ReviewerBoard} is core's own functions. */
-export type BoardCollaborators = Pick<ReviewerBoard, "session" | "run" | "gh" | "codeHost" | "clones" | "instance" | "heads"> & Partial<Pick<ReviewerBoard, "seen">>;
+export type BoardCollaborators = Pick<ReviewerBoard, "session" | "run" | "codeHost" | "clones" | "instance" | "heads"> & Partial<Pick<ReviewerBoard, "seen">>;
 
 /** The helpers a reviewer plugin is given on a board: the gate's, and the board's collaborators with the functions the reviewer calls. */
 export const reviewingHelpers = (collaborators: BoardCollaborators): ReviewerHelpers => {
@@ -27,9 +26,8 @@ export const reviewingHelpers = (collaborators: BoardCollaborators): ReviewerHel
       seen,
       attribution: { reviewerInstance, reviewerSeat },
       herdr: { ORG_SESSION, firstLine, readAgents },
-      claims: { REVIEW_LEASE_MS, claimEntriesOf, claimHead, othersSeenIn, releasedDescriptionOf, writeClaimStatus },
+      claims: { REVIEW_LEASE_MS, claimHead, othersSeenIn, releasedDescriptionOf },
       verdict: { headMatches, reviewVerdict },
-      ghWith,
     }),
   };
 };

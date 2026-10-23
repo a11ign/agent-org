@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DOOR = fileURLToPath(new URL("../reviewer/pr-review-verdict.sh", import.meta.url));
+const DOOR = fileURLToPath(new URL("../../plugins/github/reviewer/pr-review-verdict.sh", import.meta.url));
 const HEAD = "f3879426aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const REPO = "a11ign/agent-org";
 

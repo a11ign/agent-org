@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract, version 1.4 -- what ticket mode asks of the place pull requests live (A11-158)
+// module: the code host contract, version 1.5 -- what ticket mode asks of the place pull requests live (A11-158)
 //
 // A TYPE FILE: it imports nothing at run time. It is SYNCHRONOUS, because every reader of it is: the ticket port's gate (`ticket-port/port.ts`) and ticket
 // mode's injected `gh: (args) => string` (`pool-context.ts`). It is written from the GitHub operations ticket mode makes today, and carries `CodeHostPort`'s four
@@ -9,6 +9,9 @@
 //
 // ROW MODE'S GITHUB OPERATIONS will join as an optional `rows` group of this contract, not as a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
 //
+// 1.5 (A11-160, step 3): `readCheckLog` and `rerunFailedChecks` (what the board does about a red check), `readReviewClaims` and `writeReviewClaim` (the commit status that says which instance is reviewing a head), and `verdictDoor`,
+// an OPTIONAL group: the program a reviewer posts its verdict with, as an owned file of the host. A plugin of 1.4 is read as one that implements none of the four operations, which a 1.4 plugin
+// would have to be updated for; while plugins are in-repo that is the same pull request (Decision 8 of A11-157).
 // 1.4 (A11-167): `readMergedFindings`, OPTIONAL: what a merged pull request found (its title, its body and the markdown sections its diff added), which the planner of a ticket that waited on it is given. A plugin of 1.3 is read as one
 // that has none, and a dependent is then planned without its blockers' findings.
 // 1.3 (A11-160, step 2): `wrapper`, an OPTIONAL group: the routing wrapper every `gh` process of an org host runs through (which account or App a role acts as), as an owned file of the host. Core asks the plugin
@@ -22,7 +25,7 @@ import type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHost
 export type { ChangeFacts, ChangeRef, CodeHostEvent, CodeHostEventKind, CodeHostPort };
 
 /** The code host contract's version, `<major>.<minor>`: a minor only adds, and a major breaks (`src/plugins/version.ts`). */
-export const CODE_HOST_CONTRACT_VERSION = "1.4";
+export const CODE_HOST_CONTRACT_VERSION = "1.5";
 
 /** A check failing on a pull request's head: its name and the address of the page its run reports (an Actions job's, which names the log to read), or null. */
 export type FailingCheck = Readonly<{ name: string; detailsUrl: string | null }>;
@@ -64,6 +67,21 @@ export type FindingsSection = Readonly<{ file: string; heading: string; text: st
 
 /** What a merged pull request found (A11-167): its title and number, its body, and the markdown sections it added outside `.acceptance/`, `.changeset/` and `CHANGELOG.md`. */
 export type MergedFindings = Readonly<{ title: string; number: number; body: string; sections: readonly FindingsSection[] }>;
+
+/** One status under the review claim's context on a head: its id (the host's order between two of the same second), its description, and when the host wrote it, in epoch milliseconds. */
+export type ReviewClaimEntry = Readonly<{ id: number; description: string; created: number }>;
+
+/** What reading a head's claim entries came to: the entries (none is an empty list), or why they could not be read, in the host's own words (`unreadable`), never an empty list for "could not ask". */
+export type ReviewClaimRead = Readonly<{ entries: readonly ReviewClaimEntry[] }> | Readonly<{ unreadable: string }>;
+
+/**
+ * One claim to write on `head` of `repository`: a status with `description`, written as the reviewer role, whose environment (`reviewerEnvironment`, the account folder and token the reviewer acts
+ * with) is `environment`.
+ */
+export type ReviewClaimWrite = Readonly<{ repository: string; head: string; description: string; environment: Readonly<Record<string, string>> }>;
+
+/** The program a reviewer posts its verdict with, and the program that installs it where it runs: absolute paths of files the plugin ships. */
+export type VerdictDoor = Readonly<{ source: string; installer: string }>;
 
 /** A reply on a pull request: a conversation comment, a review in the commented state, or a comment in a review thread. `at` is epoch milliseconds, and `url` is where it can be read. */
 export type Reply = Readonly<{ author: string; at: number; url: string; text: string }>;
@@ -174,6 +192,22 @@ export interface CodeHost extends CodeHostPort {
    * found nothing". A host without it passes no findings on.
    */
   readMergedFindings?(url: string): MergedFindings | null;
+  /**
+   * The log of the job behind a failing check, given the address its run reports (`FailingCheck.detailsUrl`), as text, or null for "could not ask": an address that names no job (a commit status
+   * reports none) and a log the host would not give are both null. Null is never "the log is empty" (contract 1.5).
+   */
+  readCheckLog(detailsUrl: string): string | null;
+  /**
+   * Reruns the failed jobs of the runs the addresses name (`FailingCheck.detailsUrl`), each run once however many of its jobs are named, and answers why the host refused (its own first line), or null
+   * once they are rerun. An address that names no run is left out (contract 1.5).
+   */
+  rerunFailedChecks(detailsUrls: readonly string[]): string | null;
+  /** The claim entries on `head` of `repository`, read fresh (never from a cache another account's write would not have dropped), or why they could not be read (contract 1.5). */
+  readReviewClaims(repository: string, head: string): ReviewClaimRead;
+  /** Writes a claim as the reviewer role, and answers why the host refused (its own first line), or null once it is written (contract 1.5). */
+  writeReviewClaim(write: ReviewClaimWrite): string | null;
+  /** The verdict door a reviewer posts with (contract 1.5), or absent for a code host that ships none. */
+  readonly verdictDoor?: VerdictDoor;
   /** The routing wrapper of an org host (contract 1.3), or absent for a code host that installs none. */
   readonly wrapper?: CodeHostWrapper;
 }

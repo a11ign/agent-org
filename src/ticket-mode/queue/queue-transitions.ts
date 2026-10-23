@@ -237,13 +237,15 @@ export function markRunning(queue: Queue, key: string, workspace: string, pane: 
   return replace(queue, key, (entry) => ({ ...entry, phase: "running", workspace, pane }));
 }
 
-/** What herdr says the agent is doing: `working` marks it seen, and any status but the four ordinary ones means it is waiting on a person. */
-export function observe(queue: Queue, key: string, status: string): Queue {
-  return replace(queue, key, (entry) => ({
-    ...entry,
-    seenWorking: entry.seenWorking === true || status === "working",
-    waiting: !["working", "idle", "done", "unknown"].includes(status),
-  }));
+/**
+ * What herdr says the agent is doing: `working` marks it seen, and any status but the four ordinary ones means it is waiting on a person. `prompt` is the first line of
+ * the dialog its pane shows, kept while it waits and dropped when it does not (A11-174).
+ */
+export function observe(queue: Queue, key: string, status: string, prompt?: string): Queue {
+  return replace(queue, key, ({ prompt: _earlier, ...entry }) => {
+    const waiting = !["working", "idle", "done", "unknown"].includes(status);
+    return { ...entry, seenWorking: entry.seenWorking === true || status === "working", waiting, ...(waiting && prompt !== undefined ? { prompt } : {}) };
+  });
 }
 
 /**
@@ -305,7 +307,7 @@ function ended(entry: Entry, outcome: Outcome, now: number, { tokens, session }:
   // A working note is a running run's: the outcome it ended on replaces it. A pull request outcome says whether the run is partial, a `done` says nothing
   // remains to build and drops the declaration (A11-173), and any other keeps what the run had: a review round's `reviewed` says nothing of it.
   // The heads of its pull requests belong to the outcome it replaces: the end of this run records its own (A11-153).
-  const { session: _earlier, working: _note, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, pullHeads: _read, sessionNote: _closed, handedBack: _handed, stoppedForUpdate: _stopped, ...kept } = entry;
+  const { session: _earlier, working: _note, declined: _refused, prompt: _asked, partial: _declared, talk: _talking, talkFrom: _replaced, outcomeHeads: _ended, pullHeads: _read, sessionNote: _closed, handedBack: _handed, stoppedForUpdate: _stopped, ...kept } = entry;
   // A talk session that ends on a pull request outcome is that run again, not a review round: the list it borrowed to keep them linked goes.
   const borrowed = entry.talk && entry.talkFrom?.review === undefined && (outcome.kind === "draft-pr" || outcome.kind === "ready-pr");
   const { review: _borrowed, ...unborrowed } = kept;

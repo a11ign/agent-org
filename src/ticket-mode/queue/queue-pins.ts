@@ -66,7 +66,7 @@ export function recordPluginCopy(queue: Queue, keys: readonly string[], copies: 
 }
 
 /** What a stopped run drops when it is queued again for an update: what its live agent held. */
-const runtimeFields = ["workspace", "pane", "startedAt", "finishedAt", "seenWorking", "waiting", "working", "lastTerminal", "sessionWait", "sessionNote", "outcome", "tokens"] as const;
+const runtimeFields = ["workspace", "pane", "startedAt", "finishedAt", "seenWorking", "waiting", "prompt", "declined", "working", "lastTerminal", "sessionWait", "sessionNote", "outcome", "tokens"] as const;
 
 /**
  * A live run is stopped for a breaking update and queued again (A11-169), where it was: the same ticket, plan, review round, branch records and worktrees, with `session` as the Claude session its next

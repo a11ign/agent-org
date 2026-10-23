@@ -10,6 +10,8 @@ import { approve, checkRound, conflictRound, holdForSession, recordCheckHeads, r
 import { clearPartial, nextStepRuns, planStepsUnread, queueNextStep, recordPlanSteps } from "./queue/queue-next-step.ts";
 import { afterMergeDue, afterMergeUnposted, markAfterMergePosted, markAfterMergeUnposted, recordAfterMerge } from "./queue/queue-after-merge.ts";
 import { talk } from "./queue/talk.ts";
+import { requeueForUpdate } from "./queue/queue-pins.ts";
+import { declinedPrompt, toldDeclined } from "./queue/queue-declined.ts";
 import { emptyQueue, loadQueue, nextStarts, saveQueue, dismissWriter, LEGACY_CREATING_FAILURE, LEGACY_REVIEW_FAILURE, markWriterRunning, markWriterStarting, queueWriter, stopWriter, writerEnded, writerFailed, writerOf, writerResumed, writerToStart, writerWaiting } from "./queue.ts";
 import { moveOutcomeHeads, recordOutcomeHeads, recordPullHeads } from "./queue/queue-pull-heads.ts";
 import type { Blocker, Ticket } from "./source.ts";
@@ -1201,4 +1203,22 @@ test("A11-173: a Completed run whose pull requests merged is due its After-merge
   const done = finish(markRunning(markStarting(enqueue(emptyQueue(1), [AFTER_MERGE_TICKET], choice, 0), "A", 1), "A", "w1", "w1:p1"), "A", { kind: "done", reason: "r", evidence: ["e"] }, 9);
   assert.equal(runStatus(done.entries[0]), "completed");
   assert.deepEqual(afterMergeDue(done), [], "a done with no merged pull request verified every Done-when item: nothing is left to list");
+});
+
+test("A11-174: a waiting run keeps the first line of its dialog, a run that stops waiting drops it, and a first line is ignored for a status that is not waiting", () => {
+  const waiting = observe(runningA(), "A", "blocked", "Which database should the migration use?");
+  assert.deepEqual([waiting.entries[0].waiting, waiting.entries[0].prompt], [true, "Which database should the migration use?"]);
+  assert.equal(observe(waiting, "A", "blocked").entries[0].prompt, undefined, "a pane with no readable dialog leaves no stale first line");
+  assert.equal(observe(waiting, "A", "working", "stale").entries[0].prompt, undefined);
+});
+
+test("A11-174: a declined safety prompt is counted, is not waiting, and is told once; the run's end and a requeue for an update drop it", () => {
+  const prompt = { command: "rm -f $SC/*.done", warning: "Dangerous rm operation on possibly-empty variable path" };
+  const waiting = observe(runningA(), "A", "blocked", "Do you want to proceed?");
+  const declined = declinedPrompt(declinedPrompt(waiting, "A", prompt, 10), "A", prompt, 20);
+  assert.deepEqual(declined.entries[0].declined, { ...prompt, at: 20, count: 2, told: false });
+  assert.deepEqual([declined.entries[0].waiting, declined.entries[0].prompt], [false, undefined]);
+  assert.equal(toldDeclined(declined, "A").entries[0].declined?.told, true);
+  assert.equal(finish(toldDeclined(declined, "A"), "A", { kind: "no-outcome" }, 30).entries[0].declined, undefined);
+  assert.equal(requeueForUpdate(declined, "A", "v1", 40).entries[0].declined, undefined);
 });

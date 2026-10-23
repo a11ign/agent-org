@@ -2,7 +2,7 @@
 //
 // A11-172: THE REVIEW CLAIM'S READ-BACK WAS ANSWERED FROM THE WRAPPER'S READ CACHE. The claim is written by the `reviewer` App and read by the `scheduler` App, and the wrapper keeps one read-cache store per account
 // (`$GH_CONFIG_DIR/read-cache`): a write drops only the writing account's store, so the scheduler's read straight after the reviewer's write listed the head as it was before the claim, and the claim was
-// released on every sweep. This runs the REAL wrapper with the cache on, two accounts over one stub GitHub, and reads the claim with `claimEntriesOf` and writes it with `writeClaimStatus`.
+// released on every sweep. This runs the REAL wrapper with the cache on, two accounts over one stub GitHub, and reads the claim with the plugin's `readReviewClaims` and writes it with its `writeReviewClaim`.
 // THE POSITIVE CONTROL is the same sequence with a plain GET of the same path, which does return the list from before the write: that proves the cache is on, and is what the header gets past.
 
 import { test } from "node:test";
@@ -11,8 +11,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
-import { claimDescriptionOf, claimEntriesOf, writeClaimStatus, type Gh } from "../ticket-port/review-claim.ts";
+import { tmpDir, tmpDirForFile } from "../../src/lib/tmp-fixture.ts";
+import { claimDescriptionOf } from "../../src/ticket-port/review-claim.ts";
+import type { Gh } from "./gh.ts";
+import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 
 const NOW = Date.UTC(2026, 9, 22, 12);
 const REPO = "a11ign/agent-org";
@@ -20,7 +22,7 @@ const SHA = "abc123";
 const STATUSES_PATH = `repos/${REPO}/commits/${SHA}/statuses?per_page=100`;
 
 const WRAPPER = (() => {
-  const text = readFileSync(fileURLToPath(new URL("../../plugins/github/wrapper/gh", import.meta.url)), "utf8");
+  const text = readFileSync(fileURLToPath(new URL("./wrapper/gh", import.meta.url)), "utf8");
   const rendered = join(tmpDirForFile("review-claim-read-cache-render-"), "gh");
   writeFileSync(rendered, text.replace(/@@([A-Za-z0-9]+)@@/g, "/nonexistent/$1"), { mode: 0o755 });
   return rendered;
@@ -55,12 +57,17 @@ function github() {
 
 test("A11-172: a claim read straight after a write by another identity sees the write, with the wrapper's read cache on", () => {
   const { scheduler, reviewer, listings } = github();
-  assert.deepEqual(claimEntriesOf({ repo: REPO, sha: SHA, gh: scheduler }), [], "the first read, as the scheduler: the head has no claim");
-  writeClaimStatus({ repo: REPO, sha: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), gh: reviewer });
-  const after = claimEntriesOf({ repo: REPO, sha: SHA, gh: scheduler });
+  const entries = (gh: Gh) => {
+    const read = readReviewClaims(REPO, SHA, gh);
+    assert.ok("entries" in read, `the read was answered: ${JSON.stringify(read)}`);
+    return read.entries;
+  };
+  assert.deepEqual(entries(scheduler), [], "the first read, as the scheduler: the head has no claim");
+  assert.equal(writeReviewClaim({ repository: REPO, head: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), environment: {} }, reviewer), null);
+  const after = entries(scheduler);
   assert.deepEqual(after.map((entry) => entry.description), [claimDescriptionOf({ instance: "work", now: NOW })], "the read-back, as the scheduler, straight after the reviewer's write, lists the claim");
   assert.equal(listings(), 2, "both reads reached GitHub: neither was served from the store");
-  assert.equal(claimEntriesOf({ repo: REPO, sha: SHA, gh: scheduler }).length, 1, "and an identical read inside the cache's seconds is read again too");
+  assert.equal(entries(scheduler).length, 1, "and an identical read inside the cache's seconds is read again too");
   assert.equal(listings(), 3);
 });
 
@@ -68,7 +75,7 @@ test("A11-172: POSITIVE CONTROL: a plain GET of the same path, as the claim used
   const { scheduler, reviewer, listings } = github();
   const plain = () => scheduler(["api", "--paginate", STATUSES_PATH]);
   assert.equal(plain(), "", "the first read: nothing is claimed");
-  writeClaimStatus({ repo: REPO, sha: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), gh: reviewer });
+  writeReviewClaim({ repository: REPO, head: SHA, description: claimDescriptionOf({ instance: "work", now: NOW }), environment: {} }, reviewer);
   assert.equal(plain(), "", "the cache is on: the scheduler's second read is the first one's answer, though the head now holds a claim");
   assert.equal(listings(), 1, "and it never reached GitHub");
 });
