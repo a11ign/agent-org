@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's optional `rows` group, version 1.7 -- row mode's GitHub operations (A11-160, step 4)
+// module: the code host contract's optional `rows` group, version 1.8 -- row mode's GitHub operations (A11-160, steps 4 and 5)
 //
 // A TYPE FILE: it imports nothing at run time. ROW MODE USES GITHUB AS ITS TRACKER (rows are issues, `TicketPort` is implemented over them), its queue (project items and labels) and its code host, and a plugin
 // serves one concern, so row mode's operations are an OPTIONAL member group of the code host contract rather than a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
@@ -9,6 +9,10 @@
 // the policy the gate and wake keep for their reads (a timeout, the tick's memo and metering, a repository aim, the call census). Those callers move into this plugin in later steps of A11-160, and `run` is then
 // dropped from the operations they were its last user of; until then the plugin owns what is asked of GitHub and how its answer is read, and core owns how a command is run. A read that failed THROWS, or answers
 // `null` where its name says so: none returns an empty list for "could not ask".
+//
+// 1.8 (step 5): the callers that arm, guard and queue a merge moved (`arm-pr`, `auto-arm-sweep`, `merge-guard`, `merge-queue`, `pr-armed-state`), and what they asked of GitHub is a named operation now. `run` is OPTIONAL on
+// them and on the arming operations of 1.7 they use: a caller that has not moved hands its own, and one that has hands none, so the code host runs `gh` itself (`ownRun` is the plugin's, for the callers still to move).
+import type { Pool as PoolReading } from "../../api-pool.ts";
 import type { ApiBudget, BlockerWriter, OpenItemsReader, PortEvent, TicketPort } from "../../ticket-port/port.ts";
 
 /** One `gh` command line in, its text out, throwing as the command fails. The caller's: see the head of this file. */
@@ -32,7 +36,7 @@ export type RowsReadHelpers = Readonly<{
   pool: Readonly<{
     /** The GraphQL pool's probe, as arguments. */
     probe: readonly string[];
-    fromResponse(raw: string | null): Readonly<{ remaining: number; limit: number; resource?: string | null }> | null;
+    fromResponse(raw: string | null): PoolReading | null;
     rawResponse(args: readonly string[], run: RowsRun): string | null;
     fromRateLimitField(data: any): ApiBudget | null;
   }>;
@@ -163,6 +167,62 @@ export type SinceRead = {
 
 export type Page = { nodes: any[]; hasNextPage: boolean; endCursor: string | null; };
 
+// --- merging and arming (A11-160, step 5) ----------------------------------------------------------------------------------------------
+
+/** A request about one pull request or row of `repo`. `run` is the caller's own executor while the caller has not moved, or absent: the code host runs `gh` itself. */
+export type At<Request> = Request & { run?: RowsRun };
+
+/** A pull request node as the armed rule reads it: merged, auto-merge requested, or sitting in the merge queue. */
+export type ArmedNode = { merged?: boolean; autoMergeRequest?: unknown; mergeQueueEntry?: unknown } | null;
+
+/** An open pull request as the sweep reads it: what the armed rule decides on, and whether it is a draft. */
+export type OpenPullNode = { number: number | string; isDraft?: boolean } & NonNullable<ArmedNode>;
+
+/** Whether a pull request was ejected from the merge queue for a failed queue run with its head unmoved since, and when. */
+export type QueueEjection = { ejected: boolean; removedAt: string | null };
+
+/** What `arm-pr` reads of a pull request before it arms it. */
+export type ArmingPullRead = { labels: string[]; body: string | null; state: string | null; author: string | null };
+
+/** A pull request's seat in the merge queue. */
+export type QueueSeat = { id: string; headRefOid: string; mergeStateStatus: string; mergeQueueEntry: { position: number; state: string } | null };
+
+/** What the sweep reads of one candidate pull request. */
+export type SweepFacts = { labels: string[]; author: string; prBody: string; head: string; checkRunCount: number };
+
+/** A check run as the merge guard reads it. */
+export type GuardCheckRun = { id: number; name: string; status: string; conclusion: string | null; completedAt: string | null };
+
+/** A row a pull request would close, with its labels. */
+export type ClosingIssue = { number: number; repo?: string; title?: string; labels: string[] };
+
+/** A recent pull request with its body and the rows GitHub resolves it as closing. */
+export type RecentClosesPull = { number: number; body: string; resolved: number[] };
+
+/** A pull request as the merge guard's readiness check reads it. `state` is GitHub's own word for it. */
+export type GuardPullRead = {
+  pr: { number: number; state: string; baseRefName: string; headRefOid: string; headRefName: string };
+  /** `null` when the answer carries no list of labels. */
+  prLabels: string[] | null;
+  body: string;
+  author: string | null;
+};
+
+/** A pull request's state and when it merged and closed. */
+export type OutcomeRead = { state: string; mergedAt: string | null; closedAt: string | null };
+
+/** The open pull request of a branch. `reviewDecision` is `null` when the answer carries no such field. */
+export type BranchPull = { number: number; armed: boolean; headRefOid: string; reviewDecision: string | null };
+
+/** An open pull request as the merge queue's dispatcher reads readiness off it. */
+export type QueuePull = {
+  number: number; title?: string; headRefName: string; mergeable: string; mergeStateStatus: string; isDraft: boolean;
+  statusCheckRollup?: { conclusion?: string; name?: string }[] | null;
+};
+
+/** The seams of the arm: the sleep between reads of a pull request that may have settled, how many reads, how far apart, and where a read that failed is said. */
+export type ArmMergeSeams = { sleep?: (ms: number) => unknown; attempts?: number; intervalMs?: number; error?: (line: string) => void };
+
 // --- the group ----------------------------------------------------------------------------------------------------------------------
 
 /**
@@ -191,7 +251,7 @@ export interface CodeHostRows {
 
   latestApprovals(reviews: ApprovalReview[]): ApprovalReview[];
   /** What `approvalHeadReasons` needs for pull request `number` of `repo`, or `null` for "could not ask": never "covered", never "no approvals". */
-  approvalFactsOf(pull: { repo: string; number: number; head: string }, run: RowsRun): ApprovalFacts | null;
+  approvalFactsOf(pull: { repo: string; number: number; head: string }, run?: RowsRun): ApprovalFacts | null;
 
   /** The comments of row `row` made since `since` whose body starts with `marker`: one paginated REST read. */
   keyedCommentsOf(request: { repo: string; row: number; marker: string; since: string; run: RowsRun }): KeyedComment[];
@@ -205,8 +265,8 @@ export interface CodeHostRows {
   /** The open pull requests of `repo` with the JSON fields `fields` names (`approved-unqueued-reads.ts`'s `openPullsOf`). */
   openPullFieldsOf(request: { repo: string; fields: string; run: RowsRun }): unknown;
 
-  readDisarmSeat(request: { number: string; repo: string; run: RowsRun }): DisarmSeat;
-  disableAutoMergeOf(request: { number: string; repo: string; run: RowsRun }): void;
+  readDisarmSeat(request: At<{ number: string; repo: string }>): DisarmSeat;
+  disableAutoMergeOf(request: At<{ number: string; repo: string }>): void;
 
   /** Boards a filed row: the card (only when the issue is not on the board at all), its Status, then its labels last. */
   boardFiledRow(request: { repo: string; number: number; owner: string; projectNumber: number; status: string; labels: string[]; run: RowsRun }): void;
@@ -249,7 +309,7 @@ export interface CodeHostRows {
   openPullBodiesOf(repo: string, run: RowsRun): OpenPullRead[] | null;
 
   outsideArmListArgs(repo: string, limit: number): string[];
-  readyPullRequest(request: { number: number; repo: string; run: RowsRun; undo?: boolean }): void;
+  readyPullRequest(request: At<{ number: number; repo: string; undo?: boolean }>): void;
 
   ensureTriageLabel(request: { repo: string; label: string; description: string; run: RowsRun }): void;
 
@@ -260,7 +320,7 @@ export interface CodeHostRows {
 
   queueEntriesOf(request: { repo: string; branch: string; run: RowsRun }): QueueEntry[];
   mergeGroupRunCountOf(request: { repo: string; sha: string; run: RowsRun }): number;
-  dequeuePullRequestOf(request: { pullId: string; run: RowsRun }): void;
+  dequeuePullRequestOf(request: At<{ pullId: string }>): void;
 
   jobLogOf(repo: string, jobId: number, run: RowsRun): string;
   closedIncidentsOf(repo: string, run: RowsRun): ClosedIncidentRead[] | null;
@@ -294,5 +354,91 @@ export interface CodeHostRows {
   testsFirstReadsOf(request: {
     repo: string; number: number; head: string; author: string | null; rows: { repo: string; number: number }[];
     pathsOf: (rowBody: string) => string[]; isApproval: (reviewBody: string) => boolean;
-  }, run: RowsRun): TestsFirstFacts | undefined;
+  }, run?: RowsRun): TestsFirstFacts | undefined;
+
+  // --- merging and arming (contract 1.8, A11-160 step 5). The operations of the files that arm a pull request, guard its merge and run the queue. ---
+
+  /**
+   * THE PLUGIN'S OWN `gh`, for the callers of the rows that have not moved yet and hold no `run` of their own (the merge guard's `lookups.gh`, which row claims and sweeps import, and the verdicts the arming
+   * path hands one). TRANSITIONAL: it goes with the last of them, in the last step of A11-160. A fake has no `gh`, and its `ownRun` throws.
+   */
+  readonly ownRun: RowsRun;
+
+  /** The `gh` arguments that ask whether one pull request is armed (`approved-unqueued.ts` runs them through its own `run`). */
+  armedQueryArgs(pr: { number: string | number; repo: string }): string[];
+  /** PURE. Is the pull request armed, given the armed query's node: merged, auto-merging, or sitting in the merge queue? */
+  armedFromApi(node: ArmedNode): boolean;
+  /** PURE. Which of the three armed states it is in, or `null` when nobody has armed it. */
+  armedReason(node: ArmedNode): string | null;
+  /** The armed query's node for one pull request. Throws when the read is refused. */
+  armedNodeOf(request: At<{ number: string | number; repo: string }>): ArmedNode;
+  /** Why the pull request needs no arm, or `null` when nobody has armed it. Throws when the read is refused. */
+  armedReasonOf(request: At<{ number: string; repo: string }>): string | null;
+  /** The `gh` arguments that ask for a pull request's merge-queue history. */
+  ejectionQueryArgs(pr: { number: string | number; repo: string }): string[];
+  /** PURE. Was the pull request ejected from the queue for failed checks with its head unmoved since? `null` is "the answer carried no history", never "not ejected". */
+  queueEjectionOf(pr: { mergeQueueEntry?: unknown; timelineItems?: { nodes?: unknown } } | null): QueueEjection | null;
+  /** The merge queue's history of one pull request: `null` when the answer carries none. Throws when the read is refused. */
+  readQueueEjection(request: At<{ number: string | number; repo: string }>): QueueEjection | null;
+
+  /** PURE. The numbers of a row's open blockers from its blocked-by edges, or `null` for a list that cannot be trusted whole. */
+  openBlockersOf(row: { blockedBy?: { nodes?: unknown; totalCount?: unknown } } | null): number[] | null;
+  /** The open blockers of one row, or `null` for a list that cannot be trusted whole. Throws when the read is refused. */
+  openBlockersOfRow(request: At<{ repo: string; number: number }>): number[] | null;
+  /** The labels of one row. Throws when the read is refused. */
+  labelsOfRow(request: At<{ repo: string; number: number }>): string[];
+  /** The bodies of the comments already on a pull request. Throws when the read is refused or the answer carries no list. */
+  readPullComments(request: At<{ repo: string; number: string | number }>): { body: string }[];
+  commentOnPull(request: At<{ repo: string; number: string | number; body: string }>): void;
+  addLabelsToPull(request: At<{ repo: string; number: string; labels: readonly string[] }>): void;
+  /** The labels, body, state and author `arm-pr` decides on. Throws when the read is refused. */
+  readPullForArming(request: At<{ repo: string; number: string }>): ArmingPullRead;
+  /** The state of a pull request (`OPEN`, `MERGED`, `CLOSED`), or `null` for an answer that carries none. Throws when the read is refused. */
+  pullStateOf(request: At<{ repo: string; number: string }>): string | null;
+  /** The write: requests auto-merge (merge commit). Its success is not the evidence that it took. Throws when refused. */
+  armPullAuto(request: At<{ repo: string; number: string | number }>): void;
+  /** Why a pull request in `state` has nothing left to arm, or `null` when it is open or its state is unknown. */
+  settledReason(state: string | null): string | null;
+  /**
+   * Arms the merge, and when GitHub refuses, asks whether the pull request settled or was armed meanwhile before believing the refusal. `armed: false` carries why nothing was left to arm. Throws a refusal
+   * that nothing explains. This is the procedure `CodeHost.armMerge` is built on.
+   */
+  armMergeOf(request: At<{ number: string; repo: string }>, seams?: ArmMergeSeams): { armed: boolean; reason: string };
+  /** One page of the trunk workflow's runs on `main`, newest first. Throws when the read is refused. */
+  trunkRunsPage(request: At<{ repo: string; workflow: string; page: number; perPage: number }>): any[];
+  readQueueSeat(request: At<{ repo: string; number: string }>): QueueSeat;
+  /** The write: enqueues the pull request with node id `id` at the front of the merge queue, expecting its head to be `headOid`. */
+  jumpToFront(request: At<{ id: string; headOid: string }>): void;
+  /** The command a person runs to take a pull request out of the merge queue by hand. */
+  dequeueByHandCommand(id: string): string;
+  /** The GraphQL pool as the arming credential reads it, or `null` when the answer carries no headers. Never throws. */
+  graphqlPoolOf(run?: RowsRun): PoolReading | null;
+
+  /** The `gh` arguments that list the open pull requests against `main` with the armed rule's fields. */
+  openPullRequestsQueryArgs(repo: string): string[];
+  /** Those pull requests as nodes. Throws when the read is refused. */
+  readOpenPullNodes(request: At<{ repo: string }>): OpenPullNode[];
+  isMergedPull(request: At<{ repo: string; number: string }>): boolean;
+  isArmedPull(request: At<{ repo: string; number: string }>): boolean;
+  readSweepFacts(request: At<{ repo: string; number: string }>): SweepFacts;
+  /** Whether the head is in a fork, or `null` when that could not be read. */
+  isCrossRepositoryPull(request: At<{ repo: string; number: string }>): boolean | null;
+  /** The open pull requests with the fields the outside home of arming decides on. Throws when the read is refused. */
+  readOutsideArmListed(request: At<{ repo: string; limit: number }>): unknown;
+
+  requiredContextsOf(request: At<{ repo: string }>): string[] | null;
+  checkRunsOfCommit(request: At<{ repo: string; sha: string }>): GuardCheckRun[];
+  mainTipDateOf(request: At<{ repo: string }>): string | null;
+  behindByOf(request: At<{ repo: string; head: string }>): number | null;
+  closingIssuesOf(request: At<{ repo: string; number: number }>): ClosingIssue[];
+  recentClosesPrsOf(request: At<{ repo: string }>): RecentClosesPull[];
+  pullForGuard(request: At<{ repo: string; number: number }>): GuardPullRead;
+  pullForCiGate(request: At<{ repo: string; number: number }>): GuardPullRead;
+  pullOutcomeOf(request: At<{ repo: string; number: number }>): OutcomeRead;
+  openPullsOfBranch(request: At<{ repo: string; branch: string }>): BranchPull[];
+
+  openPullsForQueue(request?: { run?: RowsRun }): QueuePull[];
+  mergeQueuedPull(request: At<{ number: number }>): string;
+  compareWithMain(request: At<{ repo: string; branch: string }>): { ahead_by?: number; commits?: { sha: string; commit?: { message?: string } }[] };
+  deleteBranchOf(request: At<{ repo: string; branch: string }>): void;
 }

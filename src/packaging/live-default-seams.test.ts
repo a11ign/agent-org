@@ -382,8 +382,6 @@ test("#1401 POPULATION CONTROL: named seams from the enumeration are classified 
     ["src/stranded-branches.ts", "sweepPullRequests", "a destructured run the function calls with gh"],
     ["src/stranded-branches.ts", "fetchAllPRHeadRefs", "live only through the undefaulted fetchPRHeadRefPage"],
     ["src/row-claim.ts", "fetchLabels", "a destructured run, #1406's seam"],
-    ["src/arm-pr.ts", "gh", "a positional default"],
-    ["src/arm-pr.ts", "armMerge", "a body default handed positionally to gh"],
     ["src/ready-label-audit.ts", "reportReleaseDrift", "a non-injectable alias"],
   ];
   for (const [file, fn, why] of expectedLive) assert.ok(isLive(file, fn), `${file} ${fn} should be live: ${why}`);

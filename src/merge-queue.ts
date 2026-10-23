@@ -42,11 +42,10 @@
  * having examined nothing.
  */
 import { appendFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
-import { sandboxGitEnv } from "./lib/git-env.ts";
 import { gitCommonDir } from "./merge-guard.ts";
+import { delegates } from "./plugins/rows.ts";
 import { REPO } from "./project-identity.ts";
 import { refuseUnknownFlags } from "./lib/cli-flags.ts";
 import { newestPerName } from "./newest-check-run.ts";
@@ -55,14 +54,13 @@ import { newestPerName } from "./newest-check-run.ts";
 export const EXIT = { DONE: 0, NOT_MERGEABLE: 1, CANNOT_TELL: 2, MERGED_THEN_STEP_FAILED: 3 };
 
 /**
- * #1482: what `runMergeQueue` does its I/O through, so a test drives the entry point with every seam injected. The runner is named `gh` so the merge call keeps the call shape merge-method-is-one-fact.test.ts sweeps for, and that sweep still checks its merge method.
+ * #1482: what `runMergeQueue` does its I/O through, so a test drives the entry point with every seam injected. What it asks of the code host (the open pull requests, the merge, the comparison with `main`
+ * and the branch's deletion) is the code host's `rows` (A11-160, step 5), which a test substitutes; the plugin runs those with the git variables a hook sets taken off, so a `gh` started from a
+ * worktree is not aimed at the wrong repository.
  */
-export type QueueIo = { gh: (args: string[]) => string, append: (path: string, data: string) => void, logPath: () => string, out: (text: string) => void, err: (text: string) => void };
+export type QueueIo = { append: (path: string, data: string) => void, logPath: () => string, out: (text: string) => void, err: (text: string) => void };
 
-/** @param {string[]} args */
-function gh(args: string[]) {
-  return execFileSync("gh", args, { encoding: "utf8", env: sandboxGitEnv() });
-}
+const reads = delegates("openPullsForQueue", "mergeQueuedPull", "compareWithMain", "deleteBranchOf");
 
 /**
  * Each lookup returns null on failure rather than an empty answer -- "could not ask" is not "found nothing".
@@ -209,7 +207,7 @@ export function orphanedBranchLogPath() {
  * @returns {number} the exit code
  */
 function mergeAndCheckOrphans(pr: { number: number; headRefName: string; }, io: QueueIo): number {
-  io.out(io.gh(["pr", "merge", String(pr.number), "--merge"]));
+  io.out(reads.mergeQueuedPull({ number: pr.number }));
   try {
     return checkOrphansAfterMerge(pr, io);
   } catch (cause) {
@@ -230,9 +228,8 @@ function mergeAndCheckOrphans(pr: { number: number; headRefName: string; }, io: 
  * @param {QueueIo} io
  * @returns {number}
  */
-function checkOrphansAfterMerge(pr: { number: number; headRefName: string; }, { gh: run, append, logPath, err }: QueueIo): number {
-  const compareResult = lookup(() => JSON.parse(
-    run(["api", `repos/${REPO}/compare/main...${pr.headRefName}`])));
+function checkOrphansAfterMerge(pr: { number: number; headRefName: string; }, { append, logPath, err }: QueueIo): number {
+  const compareResult = lookup(() => reads.compareWithMain({ repo: REPO, branch: pr.headRefName }));
   const orphaned = orphanedCommitsFrom(compareResult);
   appendJsonl(logPath(), {
     prNumber: pr.number, branch: pr.headRefName, at: new Date().toISOString(),
@@ -253,7 +250,7 @@ function checkOrphansAfterMerge(pr: { number: number; headRefName: string; }, { 
   }
 
   try {
-    run(["api", "-X", "DELETE", `repos/${REPO}/git/refs/heads/${pr.headRefName}`]);
+    reads.deleteBranchOf({ repo: REPO, branch: pr.headRefName });
   } catch (error) {
     err(`merged #${pr.number} cleanly, but could not delete \`${pr.headRefName}\`: `
       + `${(error as Error).message}\n`);
@@ -267,20 +264,17 @@ function checkOrphansAfterMerge(pr: { number: number; headRefName: string; }, { 
  * @param {{ argv: string[] } & Partial<QueueIo>} args
  * @returns {number} one of `EXIT`
  */
-export function runMergeQueue({ argv, gh: run = gh, append = appendFileSync, logPath = orphanedBranchLogPath,
+export function runMergeQueue({ argv, append = appendFileSync, logPath = orphanedBranchLogPath,
   out = (text) => { process.stdout.write(text); }, err = (text) => { process.stderr.write(text); } }: { argv: string[]; } & Partial<QueueIo>): number {
   const wanted = wantedPrNumber(argv);
 
-  let raw: string;
+  let prs;
   try {
-    raw = run(["pr", "list", "--state", "open", "--json",
-      "number,title,headRefName,mergeable,mergeStateStatus,isDraft,statusCheckRollup"]);
+    prs = reads.openPullsForQueue();
   } catch (error) {
     err(`could not ask GitHub for the queue: ${(error as Error).message}\n`);
     return EXIT.CANNOT_TELL;
   }
-
-  const prs = JSON.parse(raw);
   if (prs.length === 0) {
     err("INCONCLUSIVE: no open PRs. An empty queue and an unread one are different.\n");
     return EXIT.CANNOT_TELL;
@@ -304,7 +298,7 @@ export function runMergeQueue({ argv, gh: run = gh, append = appendFileSync, log
     err(`REFUSING to merge #${pr.number}: ${why}\n`);
     return EXIT.NOT_MERGEABLE;
   }
-  return mergeAndCheckOrphans(pr, { gh: run, append, logPath, out, err });
+  return mergeAndCheckOrphans(pr, { append, logPath, out, err });
 }
 
 function main() {

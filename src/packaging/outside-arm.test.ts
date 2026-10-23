@@ -1,5 +1,5 @@
 // no-token: GH_TOKEN
-// agent-org#1573: this file reads auto-arm.yml's TEXT and drives the outside pass with an injected `run`; the literal `GH_TOKEN` in an assertion message is what charges it, and it never uses a token.
+// agent-org#1573: this file reads auto-arm.yml's TEXT and drives the outside pass over the fake code host's world (A11-160, step 5); the literal `GH_TOKEN` in an assertion message is what charges it, and it never uses a token.
 /**
  * agent-org#1573: THE OUTSIDE HOME OF ARMING, FLAG `outside.arm`, SHIPPED OFF.
  *
@@ -9,7 +9,7 @@
  *   3. THE SECOND ACTOR FINDS THE WORK DONE: a pull request the project's job armed first, or this pass armed a moment ago, takes no write on the next pass.
  *   4. THE WORKFLOW READS THE FLAG BEFORE IT MINTS, and the schedule reaches no job that already ran on another event.
  */
-import { after, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,8 +18,10 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { OUTSIDE_ARM_FLAG, outsideArmOn } from "../arm-pr.ts";
-import { outsideArmListArgs, outsideArmPass, outsideArmVerdict, openPullRequestsQueryArgs, type OutsideArmPr } from "../auto-arm-sweep.ts";
-import { armedQueryArgs } from "../pr-armed-state.ts";
+import { outsideArmPass, outsideArmVerdict, type OutsideArmPr } from "../auto-arm-sweep.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { FakeRowPull } from "../plugins/fakes/code-host-rows.ts";
 import { settleOutsideArm } from "../work-gate/pr-orders/pr-gate-readings.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
 import { loadLanes, ownsReviewOnlyLane, type Lane } from "../lane-ownership.ts";
@@ -27,6 +29,7 @@ import { loadLanes, ownsReviewOnlyLane, type Lane } from "../lane-ownership.ts";
 const REPO = "a11ign/a11ign";
 const dir = mkdtempSync(join(tmpdir(), "outside-arm-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
+afterEach(() => forgetActivation());
 const declared = (name: string, text: string | null): string => {
   const path = join(dir, name);
   if (text !== null) writeFileSync(path, text);
@@ -79,37 +82,42 @@ test("the verdict leaves alone what the project's jobs refuse, and arms the one 
   assert.equal(outsideArmVerdict({ ...OPEN, isDraft: true, reviewDecision: "APPROVED", labels: ["hold:x"] }, false).act, "leave", "an approved draft that is held is still held");
 });
 
-// --- 3. the pass: a fake GitHub, so the second actor can be watched ---------------------------------------------------------------------
+// --- 3. the pass: the fake code host's world, so the second actor can be watched ------------------------------------------------------------
 
-type World = { prs: OutsideArmPr[]; armed: Set<number>; writes: string[]; reads: number; };
-const world = (prs: OutsideArmPr[], armed: number[] = []): World => ({ prs, armed: new Set(armed), writes: [], reads: 0 });
-
-/** The `gh` the pass talks to: the policy list, the armed query, `pr ready`. Arming itself goes through the injected `arm`, which flips the world's state as GitHub would. */
-function ghOf(w: World) {
-  return (args: string[]): string => {
-    w.reads += 1;
-    if (args.join(" ") === outsideArmListArgs(REPO).join(" ")) return JSON.stringify(w.prs);
-    if (args.join(" ") === openPullRequestsQueryArgs(REPO).join(" ")) return JSON.stringify(w.prs.map((pr) => ({ number: pr.number, isDraft: pr.isDraft, autoMergeRequest: w.armed.has(pr.number) ? { enabledAt: "t" } : null })));
-    const readBack = w.prs.find((pr) => args.join(" ") === armedQueryArgs({ number: pr.number, repo: REPO }).join(" "));
-    if (readBack) return JSON.stringify({ merged: false, autoMergeRequest: w.armed.has(readBack.number) ? { enabledAt: "t" } : null, mergeQueueEntry: null });
-    if (args[0] === "pr" && args[1] === "ready") { w.writes.push(`ready ${args[2]}`); w.prs = w.prs.map((pr) => (String(pr.number) === args[2] ? { ...pr, isDraft: false } : pr)); return ""; }
-    throw new Error(`unexpected gh ${args.join(" ")}`);
-  };
+/**
+ * The fake code host holding `prs` as its open pull requests (`armed` of them already armed). `writes` is what the pass did, in order: the arm the test injects records `arm <n>` and sets the pull
+ * request armed as GitHub would, and the code host's own `readyPullRequest` is in the world's calls.
+ */
+function world(prs: OutsideArmPr[], armed: number[] = []) {
+  const host = createFakeCodeHost();
+  substituteCodeHost(host);
+  const { rowsWorld } = host;
+  const names = (pr: OutsideArmPr) => (pr.labels ?? []).map((label) => (typeof label === "string" ? label : label.name));
+  for (const pr of prs) {
+    const pull: FakeRowPull = { number: pr.number, body: "", headRefName: `agent/${pr.number}`, labels: names(pr), isDraft: pr.isDraft === true, armed: armed.includes(pr.number), merged: false, mergedAt: null,
+      createdAt: "2026-10-23T10:00:00Z", comments: [], baseRefName: pr.baseRefName, isCrossRepository: pr.isCrossRepository, reviewDecision: pr.reviewDecision ?? "" };
+    rowsWorld.pulls.set(pr.number, pull);
+  }
+  const writes = () => rowsWorld.calls.filter((call) => call.startsWith("arm ") || call.startsWith("readyPullRequest"));
+  return { rowsWorld, writes, pull: (number: number) => rowsWorld.pulls.get(number)! };
 }
-const armOf = (w: World, code = 0) => (number: number): number => { w.writes.push(`arm ${number}`); if (code === 0) w.armed.add(number); return code; };
+type World = ReturnType<typeof world>;
+const armOf = (w: World, code = 0) => (number: number): number => { w.rowsWorld.calls.push(`arm ${number}`); if (code === 0) w.pull(number).armed = true; return code; };
 const on = declared("pass-on.json", '{ "outside.arm": true }');
 const off = declared("pass-off.json", '{ "outside.arm": false }');
+const readsRefused = (w: World) => { for (const name of ["readOutsideArmListed", "readOpenPullNodes", "armedNodeOf"]) w.rowsWorld.failures.set(name, new Error(`the code host was asked: ${name}`)); };
 
 test("OFF reads nothing and writes nothing: no list, no query, no arm", () => {
   const w = world([OPEN]);
+  readsRefused(w); // any read of the code host would be COULD NOT ASK, which the result would show
   for (const switchesPath of [off, declared("pass-absent.json", null)]) {
-    const result = outsideArmPass({ repo: REPO, switchesPath, run: ghOf(w), arm: armOf(w), log: () => {} });
+    const result = outsideArmPass({ repo: REPO, switchesPath, arm: armOf(w), log: () => {} });
     assert.deepEqual(result, { armed: [], readied: [], left: [], failed: [], cannotAsk: false });
   }
-  assert.equal(w.reads, 0, "no gh call");
-  assert.deepEqual(w.writes, []);
+  assert.deepEqual(w.writes(), []);
   // CONTROL: the same world, on, does act, so the silence above is the flag and not a pass that never runs.
-  const acted = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm: armOf(w), log: () => {} });
+  w.rowsWorld.failures.clear();
+  const acted = outsideArmPass({ repo: REPO, switchesPath: on, arm: armOf(w), log: () => {} });
   assert.deepEqual(acted.armed, [7]);
 });
 
@@ -122,33 +130,35 @@ test("ON arms what the job would arm, readies an approved draft first, and leave
     { ...OPEN, number: 11, labels: [{ name: "hold:ceo" }] },
     { ...OPEN, number: 12, baseRefName: "release" },
   ]);
-  const result = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm: armOf(w), log: () => {} });
+  const result = outsideArmPass({ repo: REPO, switchesPath: on, arm: armOf(w), log: () => {} });
   assert.deepEqual(result.armed, [7, 8]);
   assert.deepEqual(result.readied, [8]);
-  assert.deepEqual(w.writes, ["arm 7", "ready 8", "arm 8"], "the ready comes before the arm, and nothing else is written");
+  assert.deepEqual(w.writes(), ["arm 7", "readyPullRequest #8", "arm 8"], "the ready comes before the arm, and nothing else is written");
   assert.deepEqual(result.left.map((l) => l.number), [9, 10, 11, 12]);
 });
 
 test("THE SECOND ACTOR DOES NOTHING: a pull request the project's job armed first, and one this pass armed a pass ago, take no write", () => {
   const w = world([OPEN, { ...OPEN, number: 8 }], [8]); // the project's own job armed #8 before this pass looked
-  const first = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm: armOf(w), log: () => {} });
+  const first = outsideArmPass({ repo: REPO, switchesPath: on, arm: armOf(w), log: () => {} });
   assert.deepEqual(first.armed, [7], "only the unarmed one");
   assert.deepEqual(first.left, [{ number: 8, why: "already armed" }]);
-  w.writes.length = 0;
-  const second = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm: armOf(w), log: () => {} });
+  w.rowsWorld.calls.length = 0;
+  const second = outsideArmPass({ repo: REPO, switchesPath: on, arm: armOf(w), log: () => {} });
   assert.deepEqual(second.armed, [], "the work is done");
-  assert.deepEqual(w.writes, [], "and nothing is written");
+  assert.deepEqual(w.writes(), [], "and nothing is written");
   assert.deepEqual(second.left.map((l) => l.why), ["already armed", "already armed"]);
 });
 
 test("a read that fails is COULD NOT ASK and arms nothing; an arm that fails is named, and the pass goes on", () => {
   const lines: string[] = [];
   const w = world([OPEN, { ...OPEN, number: 8 }]);
-  const broken = outsideArmPass({ repo: REPO, switchesPath: on, run: () => { throw new Error("API rate limit exceeded"); }, arm: armOf(w), log: (l) => lines.push(l) });
+  w.rowsWorld.failures.set("readOutsideArmListed", new Error("API rate limit exceeded"));
+  const broken = outsideArmPass({ repo: REPO, switchesPath: on, arm: armOf(w), log: (l) => lines.push(l) });
   assert.equal(broken.cannotAsk, true);
-  assert.deepEqual(w.writes, []);
+  assert.deepEqual(w.writes(), []);
   assert.match(lines.join("\n"), /COULD NOT ASK -- API rate limit exceeded/);
-  const refusing = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm: (n) => (n === 7 ? 1 : armOf(w)(n)), log: (l) => lines.push(l) });
+  w.rowsWorld.failures.clear();
+  const refusing = outsideArmPass({ repo: REPO, switchesPath: on, arm: (n) => (n === 7 ? 1 : armOf(w)(n)), log: (l) => lines.push(l) });
   assert.deepEqual(refusing.failed, [7]);
   assert.deepEqual(refusing.armed, [8]);
   assert.equal(refusing.cannotAsk, false);
@@ -159,8 +169,8 @@ test("agent-org#1626: an `arm-pr` that writes the arm and then exits nonzero is 
   for (const [code, line] of [[1, "arm-pr: retired session label"], [3, "arm-pr: labelling failed AFTER the arm step. #7 IS ARMED"], [4, "arm-pr: the jump is not confirmed"]] as const) {
     const w = world([OPEN]);
     const lines: string[] = [];
-    const arm = (number: number, say: (l: string) => void): number => { w.writes.push(`arm ${number}`); w.armed.add(number); say(`arm-pr: armed #${number} -- open`); say(line); return code; };
-    const result = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm, log: (l) => lines.push(l) });
+    const arm = (number: number, say: (l: string) => void): number => { w.rowsWorld.calls.push(`arm ${number}`); w.pull(number).armed = true; say(`arm-pr: armed #${number} -- open`); say(line); return code; };
+    const result = outsideArmPass({ repo: REPO, switchesPath: on, arm, log: (l) => lines.push(l) });
     assert.deepEqual(result.armed, [7], `exit ${code}: GitHub says armed`);
     assert.deepEqual(result.failed, [], `exit ${code}: not reported as a failure to arm`);
     const out = lines.join("\n");
@@ -170,31 +180,31 @@ test("agent-org#1626: an `arm-pr` that writes the arm and then exits nonzero is 
   // CONTROL, the other direction: the same exit 1 BEFORE any write (the authorship refusal) leaves GitHub unarmed, and the pass says so.
   const w = world([OPEN]);
   const lines: string[] = [];
-  const refused = outsideArmPass({ repo: REPO, switchesPath: on, run: ghOf(w), arm: (n, say) => { say(`arm-pr: NOT arming #${n} -- authored into a review-only lane`); return 1; }, log: (l) => lines.push(l) });
+  const refused = outsideArmPass({ repo: REPO, switchesPath: on, arm: (n, say) => { say(`arm-pr: NOT arming #${n} -- authored into a review-only lane`); return 1; }, log: (l) => lines.push(l) });
   assert.deepEqual(refused.armed, []);
   assert.deepEqual(refused.failed, [7]);
   assert.match(lines.join("\n"), /COULD NOT ARM -- arm-pr exited 1 \(arm-pr: NOT arming #7 .*\); read back: NOT ARMED/);
   // A read-back that throws after a nonzero exit says it could not tell, and names the exit.
   const unread: string[] = [];
-  const readBack = armedQueryArgs({ number: 7, repo: REPO }).join(" ");
-  const blind = outsideArmPass({ repo: REPO, switchesPath: on, run: (args) => { if (args.join(" ") === readBack) throw new Error("boom"); return ghOf(w)(args); }, arm: () => 3, log: (l) => unread.push(l) });
+  w.rowsWorld.failures.set("armedNodeOf", new Error("boom"));
+  const blind = outsideArmPass({ repo: REPO, switchesPath: on, arm: () => 3, log: (l) => unread.push(l) });
   assert.deepEqual(blind.armed, []);
   assert.deepEqual(blind.failed, [7]);
   assert.match(unread.join("\n"), /COULD NOT ARM -- arm-pr exited 3, and the read-back could not say whether it took: boom/);
 });
 
-test("the gate's half takes the tick's list as it is (label objects, no `state`), and off asks GitHub nothing", () => {
-  const w = world([OPEN]);
+test("the gate's half takes the tick's list as it is (label objects, no `state`), and off asks the code host nothing", () => {
+  const w = world([OPEN], [7]);
   const tickList = [{ number: 7, isDraft: false, baseRefName: "main", isCrossRepository: false, reviewDecision: "", labels: [{ name: "agent" }], body: "ignored" }];
   const lines: string[] = [];
-  const offResult = settleOutsideArm(tickList, { scope: REPO, run: ghOf(w), log: (l) => lines.push(l), switchesPath: off });
-  assert.equal(w.reads, 0);
-  assert.deepEqual(offResult.armed, []);
-  // The gate's own list is not read again: only the armed query is made, then `arm-pr`'s command (the real default arm, faked at `gh`) is reached.
-  const seen: string[][] = [];
-  const result = settleOutsideArm(tickList, { scope: REPO, run: (args) => { seen.push(args); if (args[0] === "api") return JSON.stringify([{ number: 7, autoMergeRequest: { enabledAt: "t" } }]); throw new Error("no write expected"); }, log: (l) => lines.push(l), switchesPath: on });
-  assert.deepEqual(seen.map((a) => a[0]), ["api"], "one read, the armed query; the list was the tick's");
+  readsRefused(w);
+  const offResult = settleOutsideArm(tickList, { scope: REPO, run: () => { throw new Error("off asks nothing"); }, log: (l) => lines.push(l), switchesPath: off });
+  assert.deepEqual(offResult, { armed: [], readied: [], left: [], failed: [], cannotAsk: false }, "off reads nothing: a read of the code host would have been COULD NOT ASK");
+  // The gate's own list is not read again: only the armed state is, then `arm-pr`'s command is reached for a pull request that needs it (here none does: it is armed).
+  w.rowsWorld.failures.delete("readOpenPullNodes");
+  const result = settleOutsideArm(tickList, { scope: REPO, run: () => { throw new Error("no gh expected"); }, log: (l) => lines.push(l), switchesPath: on });
   assert.deepEqual(result.left, [{ number: 7, why: "already armed" }]);
+  assert.deepEqual(w.writes(), [], "the tick's list was the list: `readOutsideArmListed` was refused above and not reached, and nothing was written");
 });
 
 // --- 4. the sweep and the stalled report, as commands, and the workflow ---------------------------------------------------------------------
@@ -257,15 +267,14 @@ test("the workflow reads the flag BEFORE it mints, mints only when it is on, sco
 test("agent-org#1627: `arm-pr` under the pass judges authorship from the lanes the caller passed, not from the home checkout's file", () => {
   const LEADS = "a11ign-ai-leads";
   const PIPELINE: Lane = { lane: "the pipeline", owner: "ceo", branchPrefixes: ["ceo/"], paths: [".github/workflows/"], why: "trunk health", reviewOnly: true };
-  // The one read that proves authorship was judged: the changed-file list is read only when the author owns a review-only lane (`authorshipVerdict`).
+  // The one read that proves authorship was judged: the changed-file list is read only when the author owns a review-only lane (`authorshipVerdict`, which has not moved and so is handed a `run`).
   const drive = (lanes?: { lanes: Lane[]; } | null) => {
     const w = world([OPEN]);
-    const gh = ghOf(w);
+    w.pull(7).author = LEADS;
     let filesRead = false;
     const run = (args: string[]): string => {
-      if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ labels: [], body: "", state: "OPEN", author: { login: LEADS } });
       if (args[0] === "api" && args[2]?.endsWith("/files")) { filesRead = true; return ".github/workflows/ci.yml\n"; }
-      return gh(args);
+      throw new Error(`unexpected gh ${args.join(" ")}`);
     };
     const lines: string[] = [];
     const result = outsideArmPass({ repo: REPO, switchesPath: on, run, log: (l) => lines.push(l), ...(lanes === undefined ? {} : { lanes }) });

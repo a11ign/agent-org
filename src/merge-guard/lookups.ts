@@ -18,13 +18,17 @@ import { execFileSync } from "node:child_process";
 import { REPO } from "../project-identity.ts";
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { assertNoLeakInArgv } from "../lib/leak-patterns.ts";
+import { delegates, rows } from "../plugins/rows.ts";
 import { approvalFactsOf, type ApprovalFacts } from "../ticket-port/approval-reads.ts";
+
+const reads = delegates("requiredContextsOf", "checkRunsOfCommit", "closingIssuesOf", "recentClosesPrsOf");
 
 /** @param {string[]} args */
 export const gh = (args: string[]) => {
   // #1053: every importer reaches GitHub through this, so the leak guard sits here rather than at each call site.
   assertNoLeakInArgv("gh", args);
-  return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // A11-160: the code host runs it. This is the code host's TRANSITIONAL `ownRun`, for the importers that have not moved and hold no runner of their own (row claims, the sweeps, the nightly); it goes with the last of them.
+  return rows().ownRun(args);
 };
 
 /**
@@ -52,10 +56,7 @@ export function lookup<T>(fn: () => T): T | null {
  * that shows no such list yields `null` rather than `[]`: "could not read" is not "nothing is required".
  */
 export function lookupRequiredContexts() {
-  return lookup(() => {
-    const contexts = JSON.parse(gh(["api", `repos/${REPO}/branches/main`])).protection?.required_status_checks?.contexts;
-    return Array.isArray(contexts) ? contexts : null;
-  });
+  return lookup(() => reads.requiredContextsOf({ repo: REPO }));
 }
 
 /**
@@ -81,13 +82,9 @@ export function lookupBranchTip(branchName: string): string | null {
  * @returns {{name: string, status: string, conclusion: string | null, completedAt: string | null}[] | null}
  */
 export function lookupCheckRuns(sha: string): { name: string; status: string; conclusion: string | null; completedAt: string | null; }[] | null {
-  return lookup(() => JSON.parse(
-    gh(["api", `repos/${REPO}/commits/${sha}/check-runs`, "--paginate"])).check_runs
-    // #902: `id` IS CARRIED, because `checkReasons` groups by name and takes the newest, and an ordering
-    // key it is never given is a rule it cannot apply. GitHub keeps EVERY check run for a head, so a
-    // superseded or cancelled attempt sits in this list beside the one that actually decided.
-    .map((/** @type {{id: number, name: string, status: string, conclusion: string | null, completed_at: string | null}} */ run: { id: number; name: string; status: string; conclusion: string | null; completed_at: string | null; }) => (
-      { id: run.id, name: run.name, status: run.status, conclusion: run.conclusion, completedAt: run.completed_at })));
+  // #902: `id` IS CARRIED, because `checkReasons` groups by name and takes the newest, and an ordering key it is never given is a rule it cannot apply. GitHub keeps EVERY check run for a head, so a
+  // superseded or cancelled attempt sits in this list beside the one that actually decided.
+  return lookup(() => reads.checkRunsOfCommit({ repo: REPO, sha }));
 }
 
 /**
@@ -95,23 +92,11 @@ export function lookupCheckRuns(sha: string): { name: string; status: string; co
  * the PR body) -- #249. `null` on failure, same as every other lookup here.
  * #2995: `repo` is the PR's own repository, and each issue says which repository IT is in (a PR of another repository closes a row by the full form).
  * agent-org#1501: `run` is the caller's own `gh`, so the host gate asks it through the identity and the census it already has.
- * @param {number} number @param {string} [repo] @param {(args: string[]) => string} [run]
+ * @param {number} number @param {string} [repo] @param {(args: string[]) => string} [run] absent: the code host's own
  * @returns {{number: number, repo?: string, title?: string, labels: string[]}[] | null}
  */
-export function lookupClosingIssues(number: number, repo: string = REPO, run: (args: string[]) => string = gh): { number: number; repo?: string; title?: string; labels: string[]; }[] | null {
-  return lookup(() => {
-    const [owner, name] = repo.split("/");
-    const query = "query($owner:String!,$name:String!,$number:Int!){"
-      + "repository(owner:$owner,name:$name){pullRequest(number:$number){"
-      + "closingIssuesReferences(first:20){nodes{number title repository{nameWithOwner} labels(first:20){nodes{name}}}}}}}";
-    const data = JSON.parse(run(["api", "graphql", "-f", `query=${query}`,
-      "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${number}`]));
-    return data.data.repository.pullRequest.closingIssuesReferences.nodes.map(
-      (/** @type {{number: number, title: string, repository?: {nameWithOwner: string}, labels: {nodes: {name: string}[]}}} */ issue: { number: number; title: string; repository?: { nameWithOwner: string; }; labels: { nodes: { name: string; }[]; }; }) => ({
-        number: issue.number, repo: issue.repository?.nameWithOwner, title: issue.title,
-        labels: issue.labels.nodes.map((/** @type {{name: string}} */ l: { name: string; }) => l.name),
-      }));
-  });
+export function lookupClosingIssues(number: number, repo: string = REPO, run?: (args: string[]) => string): { number: number; repo?: string; title?: string; labels: string[]; }[] | null {
+  return lookup(() => reads.closingIssuesOf({ repo, number, run }));
 }
 
 /**
@@ -119,11 +104,8 @@ export function lookupClosingIssues(number: number, repo: string = REPO, run: (a
  * @param {number} number @param {string} head
  */
 export function lookupApprovalFacts(number: number, head: string): ApprovalFacts | null {
-  return approvalFactsOf({ repo: REPO, number, head }, gh);
+  return approvalFactsOf({ repo: REPO, number, head });
 }
-
-/** How many of the newest open-or-merged PRs `lookupRecentClosesPrs` reads: room for the 3 siblings the repo-wide check wants. */
-const RECENT_CLOSES_PRS = 30;
 
 /**
  * The newest OPEN and MERGED PRs (drafts included), each with its body and the issue numbers GitHub resolved
@@ -133,19 +115,6 @@ const RECENT_CLOSES_PRS = 30;
  * `null` on failure, same as every other lookup here: unread data is never evidence of a repo-wide fault.
  * @returns {{number: number, body: string, resolved: number[]}[] | null}
  */
-export function lookupRecentClosesPrs(run: (args: string[]) => string = gh): { number: number; body: string; resolved: number[]; }[] | null {
-  return lookup(() => {
-    const [owner, name] = REPO.split("/");
-    const query = "query($owner:String!,$name:String!,$count:Int!){"
-      + "repository(owner:$owner,name:$name){pullRequests(states:[OPEN,MERGED],first:$count,"
-      + "orderBy:{field:CREATED_AT,direction:DESC}){nodes{number body "
-      + "closingIssuesReferences(first:20){nodes{number}}}}}}";
-    const data = JSON.parse(run(["api", "graphql", "-f", `query=${query}`,
-      "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `count=${RECENT_CLOSES_PRS}`]));
-    return data.data.repository.pullRequests.nodes.map(
-      (/** @type {{number: number, body: string | null, closingIssuesReferences: {nodes: {number: number}[]}}} */ pr: { number: number; body: string | null; closingIssuesReferences: { nodes: { number: number; }[]; }; }) => ({
-        number: pr.number, body: pr.body ?? "",
-        resolved: pr.closingIssuesReferences.nodes.map((issue) => issue.number),
-      }));
-  });
+export function lookupRecentClosesPrs(run?: (args: string[]) => string): { number: number; body: string; resolved: number[]; }[] | null {
+  return lookup(() => reads.recentClosesPrsOf({ repo: REPO, run }));
 }

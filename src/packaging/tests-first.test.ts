@@ -11,12 +11,15 @@
  * Behind `rows.testsFirst` in `.agent-org/project.json`, absent meaning OFF: every test below that expects a refusal has a twin that
  * proves the same fixture passes with the flag off, so a refusal that fires always cannot pass.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
   testsFirstOf, testsFirstFlagOf, closedRowsOf, testsFirstEditReasons, lookupTestsFirstFacts, mergeReadiness, mergeSafetyVerdict,
 } from "../merge-guard.ts";
 import { claimRow, testsFirstClaimReason } from "../row-claim.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import type { CodeHostRows, TestsFirstFacts } from "../plugins/contracts/code-host-rows.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 const ROW = 5109;
 const TEST_PATH = "src/packaging/tests-first.test.ts";
@@ -139,58 +142,54 @@ test("DONE-WHEN 1c: an explicit reviewer approval lets the edit through, and onl
 });
 
 // --- THE LOOKUP: WHICH ROW, WHICH TESTS, WHICH REVIEWER ---------------------------------------------------------------------
+//
+// A11-160 (step 5): the facts are READ by the code host (`testsFirstReadsOf`; how the GitHub plugin sends its reads and filters the reviews is
+// `plugins/github/rows/tests-first-reads.test.ts`'s). What the guard owns, and what these drive on the fake code host, is WHETHER to ask (the flag, the rows a body
+// closes) and WHAT it hands over: the rows, how a row names its tests, and what an approving review says.
 
 const HEAD = "b".repeat(40);
-const FIRST = "a".repeat(40);
-const REVIEWED = "c".repeat(40);
 
-/** A scripted `gh api` for PR 7 of the repository `a11ign/agent-org`, closing row 5109 whose body is `rowBody`. */
-function scriptedGh(rowBody: string, { reviews = [] as object[], sinceReview = [] as string[], sinceFirst = [TEST_PATH, "src/row-claim.ts"] } = {}) {
-  const calls: string[] = [];
-  const run = (args: string[]): string => {
-    const path = args.find((arg) => arg.startsWith("repos/")) ?? args.join(" ");
-    calls.push(path);
-    if (path.includes("/issues/5109") || (args[0] === "issue" && args[1] === "view")) return JSON.stringify({ body: rowBody, labels: [] });
-    if (path.includes("/pulls/7/commits")) return `${FIRST}\n`;
-    if (path.includes(`/commits/${FIRST}`)) return JSON.stringify([TEST_PATH]);
-    if (path.includes(`/compare/${FIRST}...${HEAD}`)) return JSON.stringify(sinceFirst);
-    if (path.includes(`/compare/${REVIEWED}...${HEAD}`)) return JSON.stringify(sinceReview);
-    if (path.includes("/pulls/7/reviews")) return reviews.map((review) => JSON.stringify(review)).join("\n");
-    throw new Error(`simulated: no answer for ${path}`);
-  };
-  return { run, calls };
+type Request = Parameters<CodeHostRows["testsFirstReadsOf"]>[0];
+
+/** The fake code host whose Tests-first read answers `answer` (or throws it), recording the requests it was handed. */
+function codeHostReading(answer: TestsFirstFacts | undefined | Error) {
+  const host = createFakeCodeHost();
+  const requests: Request[] = [];
+  Object.assign(host.rows!, { testsFirstReadsOf: (request: Request) => { requests.push(request); if (answer instanceof Error) throw answer; return answer; } });
+  substituteCodeHost(host);
+  return requests;
 }
+
+afterEach(() => forgetActivation());
+
 const PR = { number: 7, head: HEAD, author: "worker-5109", body: "Closes a11ign/agent-org#5109\n" };
-const APPROVAL = { reviewer: "reviewer-7", state: "APPROVED", body: "Tests-first: change approved", commitId: REVIEWED };
+const FACTS: TestsFirstFacts = { paths: [TEST_PATH], firstCommitFiles: [TEST_PATH], changedSinceFirst: [TEST_PATH, "src/row-claim.ts"], approvedBy: [] };
 
-test("the lookup reads the closed row's tests, the first commit's files and what changed since, and finds the edit", () => {
-  const { run } = scriptedGh(`Tests-first: ${TEST_PATH}\n`);
-  const got = lookupTestsFirstFacts(PR, { run, enabled: true });
-  assert.deepEqual(got, { paths: [TEST_PATH], firstCommitFiles: [TEST_PATH], changedSinceFirst: [TEST_PATH, "src/row-claim.ts"], approvedBy: [] });
+test("the lookup hands the code host the rows the PR closes, how a row names its tests and what an approving review says, and returns the facts as read", () => {
+  const requests = codeHostReading(FACTS);
+  assert.deepEqual(lookupTestsFirstFacts(PR, { enabled: true, repo: "a11ign/agent-org" }), FACTS);
+  assert.equal(requests.length, 1);
+  const [request] = requests;
+  assert.deepEqual([request.repo, request.number, request.head, request.author, request.rows], ["a11ign/agent-org", 7, HEAD, "worker-5109", [{ repo: "a11ign/agent-org", number: 5109 }]]);
+  assert.deepEqual(request.pathsOf(`Tests-first: ${TEST_PATH}\n`), [TEST_PATH], "a row names its tests as the guard's own parser reads them");
+  assert.deepEqual(request.pathsOf("## Region\nsrc/a.ts\n"), [], "a row that names none is unmarked");
+  assert.equal(request.isApproval("Tests-first: change approved"), true, "the line a reviewer posts to let an edit through");
+  assert.equal(request.isApproval("LGTM"), false);
 });
 
-test("the lookup asks nothing when the flag is off, when the PR closes no row, and when the row is not marked", () => {
-  const off = scriptedGh(`Tests-first: ${TEST_PATH}\n`);
-  assert.equal(lookupTestsFirstFacts(PR, { run: off.run, enabled: false }), undefined);
-  assert.deepEqual(off.calls, [], "flag off spends no call: it is today's guard exactly");
-  assert.equal(lookupTestsFirstFacts({ ...PR, body: "Closes: none -- docs only\n" }, { run: off.run, enabled: true }), undefined);
-  assert.equal(lookupTestsFirstFacts(PR, { run: scriptedGh("## Region\nsrc/a.ts\n").run, enabled: true }), undefined, "an unmarked row is exempt");
-});
-
-test("the lookup counts a reviewer's approval only when it is by someone other than the author, carries the line, and read what will merge", () => {
-  const via = (review: object, sinceReview: string[] = []) =>
-    lookupTestsFirstFacts(PR, { run: scriptedGh(`Tests-first: ${TEST_PATH}\n`, { reviews: [review], sinceReview }).run, enabled: true });
-  assert.deepEqual((via(APPROVAL) as { approvedBy: string[] }).approvedBy, ["reviewer-7"], "POSITIVE CONTROL: the whole shape counts");
-  assert.deepEqual((via({ ...APPROVAL, reviewer: "worker-5109" }) as { approvedBy: string[] }).approvedBy, [], "the author cannot approve their own edit");
-  assert.deepEqual((via({ ...APPROVAL, body: "LGTM" }) as { approvedBy: string[] }).approvedBy, [], "an approval without the line did not read the tests");
-  assert.deepEqual((via({ ...APPROVAL, state: "COMMENTED" }) as { approvedBy: string[] }).approvedBy, [], "the line in a bare comment is not an approval");
-  assert.deepEqual((via(APPROVAL, [TEST_PATH]) as { approvedBy: string[] }).approvedBy, [],
-    "the tests moved again after the review, so the reviewer did not read what will merge");
+test("the lookup asks nothing when the flag is off, when the PR closes no row; a row the code host finds unmarked is exempt (undefined)", () => {
+  const requests = codeHostReading(FACTS);
+  assert.equal(lookupTestsFirstFacts(PR, { enabled: false }), undefined);
+  assert.deepEqual(requests, [], "flag off spends no read: it is today's guard exactly");
+  assert.equal(lookupTestsFirstFacts({ ...PR, body: "Closes: none -- docs only\n" }, { enabled: true }), undefined);
+  assert.deepEqual(requests, [], "a PR that closes no row asks nothing either");
+  codeHostReading(undefined);
+  assert.equal(lookupTestsFirstFacts(PR, { enabled: true, repo: "a11ign/agent-org" }), undefined, "an unmarked row is exempt");
 });
 
 test("a lookup that could not be read is null, never undefined and never an empty approval", () => {
-  const broken = (args: string[]) => { throw new Error(`simulated outage on ${args.join(" ")}`); };
-  assert.equal(lookupTestsFirstFacts(PR, { run: broken, enabled: true }), null);
+  codeHostReading(new Error("simulated outage"));
+  assert.equal(lookupTestsFirstFacts(PR, { enabled: true, repo: "a11ign/agent-org" }), null);
 });
 
 test("the rows a PR closes come from its own `Closes` line, in either repository form", () => {

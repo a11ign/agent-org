@@ -262,6 +262,8 @@ test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-
     "../merge-guard/armed-race-rule.ts",
     "../merge-guard/lookups.ts",
     "../merge-guard/reconciliation.ts",
+    // A11-160 (step 5): the guard's reads moved into the GitHub plugin, so the file that makes them is scanned too.
+    "../../plugins/github/rows/merge-guard-reads.ts",
   ];
   for (const file of files) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -279,21 +281,26 @@ test("no file in the merge-guard tree reads mergeStateStatus, not even to cross-
 
 /**
  * THE ORIENTATION SEAM (#188): every `behindBy` in this file's own fixtures above is INJECTED, so a
- * reversed `compare/<head>...main` in either real fetch would leave every one of them green while
- * production read the wrong number. There are now TWO live call sites -- `merge-guard.ts`'s own
- * `facts()` (the ancestry rule's input) and `armed-race-rule.ts`'s `lookupArmedPrStatus` (#442's
- * behind-by check) -- and #455's split makes it possible for one to be fixed and the other missed, so
- * both are scanned rather than trusting that fixing one fixes both.
+ * reversed `compare/<head>...main` in the real fetch would leave every one of them green while
+ * production read the wrong number. There are TWO callers -- `merge-guard.ts`'s own `facts()` (the
+ * ancestry rule's input) and `armed-race-rule.ts`'s `lookupArmedPrStatus` (#442's behind-by check) --
+ * and since A11-160 (step 5) BOTH ask the code host's ONE `behindByOf`, so the orientation is written
+ * once, in the GitHub plugin. Scanned from both sides: each caller asks for the number of the HEAD it
+ * read (never of `main`), and the one fetch is oriented main...head.
  */
 test("both real behindBy fetches are oriented main...head, never the reverse (#188)", () => {
   for (const file of ["../merge-guard.ts", "../merge-guard/armed-race-rule.ts"]) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
-    assert.match(src, /compare\/main\.\.\.\$\{pr\.headRefOid\}/,
-      `${file}: must ask GitHub how far main is ahead of this head, not the reverse`);
-    assert.doesNotMatch(src, /compare\/\$\{pr\.headRefOid\}\.\.\.main/,
-      `${file}: the reversed orientation returns a different, equally plausible-looking number for the `
-      + "same pair");
+    assert.match(src, /behindByOf\(\{ repo: REPO, head: pr\.headRefOid/,
+      `${file}: must ask the code host how far main is ahead of THIS head, not of anything else`);
+    const code = src.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n");
+    assert.doesNotMatch(code, /compare\//, `${file}: the comparison is the code host's, not written here`);
   }
+  const plugin = readFileSync(new URL("../../plugins/github/rows/merge-guard-reads.ts", import.meta.url), "utf8");
+  assert.match(plugin, /compare\/main\.\.\.\$\{head\}/,
+    "behindByOf must ask GitHub how far main is ahead of this head, not the reverse");
+  assert.doesNotMatch(plugin, /compare\/\$\{head\}\.\.\.main/,
+    "the reversed orientation returns a different, equally plausible-looking number for the same pair");
 });
 
 // #1009: the waiting case AT THE MERGE PATH. `LIVE_SHAPE` is #1008's head at 23:3xZ, imported rather

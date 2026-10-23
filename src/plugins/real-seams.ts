@@ -21,6 +21,7 @@ const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
 export function realExec(file: string, args: readonly string[], options: ExecOptions = {}): ExecResult {
   const timeout = options.timeoutMs ?? DEFAULT_EXEC_MS;
   const env = { ...process.env, ...options.env };
+  for (const name of options.withoutEnv ?? []) delete env[name];
   const result = options.inherit === true
     ? spawnSync(file, [...args], { stdio: "inherit", encoding: "utf8", env })
     : spawnSync(file, [...args], { encoding: "utf8", timeout, env, maxBuffer: EXEC_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });

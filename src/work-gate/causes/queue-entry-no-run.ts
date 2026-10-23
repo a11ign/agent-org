@@ -105,13 +105,12 @@ export function readNoRunMemory(path: string): NoRunMemory {
 /** The arming port the gate re-queues through: the ticket adapter's comment, and `armMerge` READ BACK from the pull request, because an exit code is not "armed" (#1022). */
 export function queueArmingPort(scope: string, run: Run): ArmingPort {
   const tickets = githubTicketAdapter({ run, scope });
-  const ghRun = (_cmd: string, args: string[]) => run(args);
   return {
     postDecision: (ref, decision) => tickets.postDecision(ref, decision),
     armMerge(ref) {
       const [repo, number] = ref.id.split("#");
-      armPullRequest({ number, repo }, { run: ghRun, sleep: () => "ok", error: () => {} });
-      return armedAlready({ number, repo, run: ghRun, error: () => {} }) !== null;
+      armPullRequest({ number, repo }, { run, sleep: () => "ok", error: () => {} });
+      return armedAlready({ number, repo, run, error: () => {} }) !== null;
     },
   };
 }

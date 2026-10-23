@@ -445,11 +445,14 @@ const EXEMPT: Record<string, string> = {
   "work-gate/pr-orders/pr-gate-readings.ts": "the order logic (`redOnlyFromAHold` asks `isHeldRed`, #2993; the rest is who is asked, not how many are red), `HOLD_RED_JOBS` pinned equal to red-pr.ts's in org-retro.test.ts",
   "org-health/board-truth-and-access-readings.ts": "its `CirclePr` type names the rollup field so the circle reader can carry it; it reads no verdict and counts no red PR",
   "org-retro/retro-window-and-journal-patterns.ts": "`checksPendingOf` asks whether a PR's checks are still RUNNING from its newest run per name; it counts no red PR",
+  "plugins/contracts/code-host-rows.ts": "its `QueuePull` type names the rollup field so the merge queue's dispatcher (`merge-queue.ts`, exempt above) can read it off the code host's open pull requests; it reads no verdict and counts no red PR (A11-160)",
+  "plugins/fakes/code-host-rows.ts": "the fake world's pull request carries the rollup a test seeded (`rollup`, typed as `QueuePull[\"statusCheckRollup\"]`) for the merge queue's dispatcher; it reads no verdict and counts no red PR (A11-160)",
+  "plugins/fakes/code-host-merge.ts": "the fake code host hands the dispatcher the rollup a test seeded on a pull request (`QueuePull.statusCheckRollup`); it reads no verdict and counts no red PR (A11-160)",
   "work-gate/tick/tick-decisions-and-flags.ts": "hands the newest run per name to the shadow guards' job selectors (`guardSweepJobOf`, `ownedPathsJobOf`, `acceptanceJobOf`); it decides no red count",
 };
 // 3 before a11ign#5152 split `work-gate.ts`: its readers of the rollup were ONE file, which imported the decider for `redPrFacts`; they are four modules now.
-// Eleven: the readers of the rollup now sit in `work-gate/`, `org-health/` and `org-retro/` files, and four of them read pending or shadow state, not red.
-const EXEMPT_CEILING = 11;
+// Fourteen (A11-160 step 5 adds the contract's `QueuePull` type and the fake that serves it, in two files): the readers of the rollup now sit in `work-gate/`, `org-health/` and `org-retro/` files, and four of them read pending or shadow state, not red.
+const EXEMPT_CEILING = 14;
 
 /** Code with every `//`, `/* *\/` comment removed, so a header that NAMES `statusCheckRollup` does not enlist its file. */
 const codeOf = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/\s.*$/gm, "");

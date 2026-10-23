@@ -112,11 +112,16 @@ test("#484 NEGATIVE CONTROL: the source test reports a port file that spawns `gh
 
 // --- 3. the delegates ----------------------------------------------------------------------------------------------------------------
 
-/** The members of the rows a file of this directory reaches: `delegates("<operation>", ...)` for operations, and `rows().<member>` for a value or a call made by hand. */
+/**
+ * The members of the rows a core file reaches: `delegates("<operation>", ...)` for operations, and `rows().<member>` for a value or a call made by hand. The files are this directory's (the ticket port's
+ * own delegates) and, since step 5 of A11-160 moved the callers that arm, guard and queue a merge, the files of `src/` that ask the code host for what those callers need (`arm-pr.ts`, `merge-guard.ts`, ...):
+ * every non-test file under `src/`, because an operation is as reachable from a caller as from a delegate beside the port.
+ */
 function delegatedOperations(): Set<string> {
   const found = new Set<string>();
-  for (const file of readdirSync(HERE).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))) {
-    const source = readFileSync(join(HERE, file), "utf8");
+  const sourceRoot = join(HERE, "..");
+  for (const file of readdirSync(sourceRoot, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.includes("node_modules") && !f.startsWith("packaging/"))) {
+    const source = readFileSync(join(sourceRoot, file), "utf8");
     for (const match of source.matchAll(/\bdelegates?\(([^)]*)\)|\brows\(\)\.(\w+)/g)) {
       if (match[2] !== undefined) found.add(match[2]);
       else for (const name of match[1]!.matchAll(/"(\w+)"/g)) found.add(name[1]!);
@@ -131,7 +136,7 @@ test("A11-160 the delegates and the code host's `rows` cover each other: an oper
   assert.ok(operations.length > 50, "the real code host's rows are the ones read: a short list would pass for the wrong reason");
   // `tracker` is core's own vocabulary (`TRACKER`) and is checked below, and `acts` is how the code host's operations act, which the contract suite reads; every other member is read through a delegate.
   const undelegated = operations.filter((operation) => operation !== "tracker" && operation !== "acts" && !delegated.has(operation));
-  assert.deepEqual(undelegated, [], "an operation of the rows no file of src/ticket-port reaches");
+  assert.deepEqual(undelegated, [], "an operation of the rows no file of src reaches");
   assert.deepEqual([...delegated].filter((operation) => !operations.includes(operation)), [], "a delegate to an operation the rows do not have");
   assert.equal(rows().tracker, TRACKER, "core's name for the adapter's kind of tracker is the code host's");
 });

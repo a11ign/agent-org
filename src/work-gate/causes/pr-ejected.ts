@@ -317,7 +317,7 @@ function armEjected(number: number, ctx: RequeueContext, { why, flag }: { why: s
   if (blocker.kind !== "clear") return blocker.why;
   try {
     ctx.run(["pr", "merge", String(number), "--repo", ctx.scope, "--auto", "--merge"]);
-    if (armedAlready({ number: String(number), repo: ctx.scope, run: (_cmd, args) => ctx.run(args), error: () => {} }) === null) return "the merge was requested and the pull request does not read as armed";
+    if (armedAlready({ number: String(number), repo: ctx.scope, run: (args) => ctx.run(args), error: () => {} }) === null) return "the merge was requested and the pull request does not read as armed";
   } catch (error) {
     return String((error as Error).message ?? error).split("\n")[0].slice(0, 200);
   }

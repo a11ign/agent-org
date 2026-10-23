@@ -9,17 +9,43 @@
 // THE PORT'S VOCABULARY IS THE ROWS' LABELS: an item's state is the label among `backlog`, `ready`, `in-progress` and `parked` that it carries, and its flags are `priority`, `hold`,
 // `out-of-release`, `answer:<session>` and `lane:<owner>`, as ADR 0046 spells them. A project that spells its labels otherwise is the plugin's to map.
 import type { ApiBudget, Decision, ItemEvent, ItemRef, OpenItemSummary, PortEvent, StateChange, TicketFlag, TicketItem, TicketState } from "../../ticket-port/port.ts";
-import type { ApprovalReview, CodeHostRows, GithubTicketAdapter, QueueEntry } from "../contracts/code-host-rows.ts";
+import type { Pool } from "../../api-pool.ts";
+import type { ApprovalReview, ClosingIssue, CodeHostRows, GithubTicketAdapter, GuardCheckRun, QueueEntry, QueuePull } from "../contracts/code-host-rows.ts";
+import { ciOperations, emptyCi, type FakeCi } from "./code-host-ci.ts";
+import { mergeOperations } from "./code-host-merge.ts";
 
 /** A row (an issue) as the fake holds it. */
 export type FakeRow = {
   number: number; title: string; body: string; state: "OPEN" | "CLOSED"; labels: string[]; createdAt: string; closedAt: string | null;
   comments: { id: number; body: string; createdAt: string }[]; blockedBy: number[]; onBoard: boolean; boardStatus: string | null;
+  /** Set when the blocked-by edges cannot be read whole (a page was cut): the code host answers `null` for the blockers, never an empty list. */
+  blockedByUnread?: boolean;
 };
 
-/** A pull request as row mode reads it: its number, body, branch, labels, draft state, whether auto-merge is requested, and whether it has merged. */
+/**
+ * A pull request as row mode reads it: its number, body, branch, labels, draft state, whether auto-merge is requested, and whether it has merged. The fields after `comments` are what arming and the merge
+ * guard read (A11-160, step 5), and each is optional with the default a plain open pull request against `main` has: no author, an unknown head, nothing running, not in a fork, no decision.
+ */
 export type FakeRowPull = {
   number: number; body: string; headRefName: string; labels: string[]; isDraft: boolean; armed: boolean; merged: boolean; mergedAt: string | null; createdAt: string; comments: string[];
+  title?: string; author?: string | null; baseRefName?: string; headRefOid?: string; mergeStateStatus?: string; mergeable?: string; isCrossRepository?: boolean; reviewDecision?: string | null;
+  /** Set when the pull request was closed without merging. */
+  closedAt?: string | null;
+  /** The check runs of the head commit, as the merge guard reads them; the sweep counts them. */
+  checkRuns?: GuardCheckRun[];
+  /** The checks as the merge queue's dispatcher reads them off the pull request. */
+  rollup?: QueuePull["statusCheckRollup"];
+  /** When the merge queue ejected it for failed checks with its head unmoved since, or null. */
+  ejectedAt?: string | null;
+  /** Set when the queue's history of the pull request cannot be read: the code host answers `null`, which is never 'not ejected'. */
+  ejectionUnread?: boolean;
+  /** The rows GitHub resolves it as closing. */
+  closes?: ClosingIssue[];
+  /** How many commits of `main` its head does not contain. */
+  behindBy?: number | null;
+  /** The reason arming it is refused (the error `gh` prints), and whether an arm that is not refused takes (default: it does). */
+  armRefusal?: string | null;
+  armTakes?: boolean;
 };
 
 /** What a test seeds and reads: the rows and pull requests of the tracker's repository, the merge queue, and what the operations did. */
@@ -38,6 +64,24 @@ export type FakeRowsWorld = {
   calls: string[];
   /** The request budget the tracker tells every read of the open items, or null when it tells none. */
   budget: ApiBudget | null;
+  /** The error an operation throws when it is called, by its name: a test refuses a read or a write by naming it (arming and the merge guard, step 5). */
+  failures: Map<string, Error>;
+  /** Rows of other repositories, by `owner/name#number`: a pull request may close a row where it lives. */
+  foreignRows: Map<string, FakeRow>;
+  /** The trunk workflow's runs on `main`, newest first, as `redStreak` reads them. */
+  trunkRuns: any[];
+  /** The CI facts the cross-repo-red verdict reads: check runs of a head, runs of a workflow, jobs and failed logs of a run, and the state of a row (`code-host-ci.ts`). */
+  ci: FakeCi;
+  /** The contexts branch protection requires of `main`, or null when the answer carries none; and when `main`'s tip was committed. */
+  requiredContexts: string[] | null;
+  mainTip: string | null;
+  /** The GraphQL pool as a refused read names it, or null. */
+  pool: Pool | null;
+  /** What comparing a branch with `main` answers, by branch (or the error), and the branches that were deleted. */
+  compare: Map<string, { ahead_by?: number; commits?: { sha: string; commit?: { message?: string } }[] } | Error>;
+  deletedBranches: string[];
+  /** Why a jump to the front of the merge queue is refused, or null. */
+  jumpRefusal: string | null;
   /** The next number a created row gets, and the next id a comment gets. */
   nextNumber: number;
   nextCommentId: number;
@@ -46,7 +90,7 @@ export type FakeRowsWorld = {
 };
 
 export function emptyRowsWorld(repo: string = "fake/tracker"): FakeRowsWorld {
-  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, nextNumber: 1, nextCommentId: 1, now: Date.now };
+  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, nextNumber: 1, nextCommentId: 1, now: Date.now };
 }
 
 const STATES: readonly TicketState[] = ["backlog", "ready", "in-progress", "parked"];
@@ -277,7 +321,7 @@ function pullOperations(world: FakeRowsWorld): Pick<CodeHostRows, "openPullField
     },
     openPullBodiesOf: () => open().map(({ number, body }) => ({ number, body })),
     outsideArmListArgs: (repo, limit) => ["fake-open-pulls", repo, String(limit)],
-    readyPullRequest: ({ number, undo = false }) => { pullOf(world, number).isDraft = undo; },
+    readyPullRequest: ({ number, undo = false }) => { world.calls.push(`readyPullRequest #${number}${undo ? " undo" : ""}`); pullOf(world, number).isDraft = undo; },
     pullRequestFieldsOf: ({ number, fields }) => (world.pulls.has(number) ? projected(pullOf(world, number), fields) : null),
     queueEntriesOf: () => {
       world.calls.push("queueEntriesOf");
@@ -301,9 +345,18 @@ function pullOperations(world: FakeRowsWorld): Pick<CodeHostRows, "openPullField
   };
 }
 
+/** An operation that throws the error the world names for it, if any, and otherwise does what it does. */
+function refusable<T extends (...args: any[]) => unknown>(world: FakeRowsWorld, name: string, operation: T): T {
+  return ((...args: unknown[]) => {
+    const failure = world.failures.get(name);
+    if (failure !== undefined) throw failure;
+    return operation(...args);
+  }) as T;
+}
+
 /** The fake's `rows`: the tracker and queue operations over `world`, and every operation whose answer is GitHub's own throwing by name. */
 export function createFakeRows(world: FakeRowsWorld = emptyRowsWorld()): CodeHostRows {
-  return {
+  const rows: CodeHostRows = {
     acts: "on-its-own-state",
     tracker: "github",
     sincePageSize: 100,
@@ -313,16 +366,12 @@ export function createFakeRows(world: FakeRowsWorld = emptyRowsWorld()): CodeHos
     ...trackerOperations(world),
     ...listOperations(world),
     ...pullOperations(world),
+    ...mergeOperations(world),
+    ...ciOperations(world),
     latestApprovals,
     approvalFactsOf: unmodeled("approvalFactsOf"),
     reviewsOf: unmodeled("reviewsOf"),
     mergedWindowOf: unmodeled("mergedWindowOf"),
-    headOfChange: unmodeled("headOfChange"),
-    checkRunsOfHead: unmodeled("checkRunsOfHead"),
-    workflowRunsOf: unmodeled("workflowRunsOf"),
-    jobsOfRun: unmodeled("jobsOfRun"),
-    failedLogOfRun: unmodeled("failedLogOfRun"),
-    stateOfRow: unmodeled("stateOfRow"),
     redRunOfHead: unmodeled("redRunOfHead"),
     rerunFailedJobsOf: unmodeled("rerunFailedJobsOf"),
     pullTextOf: unmodeled("pullTextOf"),
@@ -333,4 +382,5 @@ export function createFakeRows(world: FakeRowsWorld = emptyRowsWorld()): CodeHos
     jobLogOf: unmodeled("jobLogOf"),
     testsFirstReadsOf: unmodeled("testsFirstReadsOf"),
   };
+  return Object.fromEntries(Object.entries(rows).map(([name, member]) => [name, typeof member === "function" ? refusable(world, name, member) : member])) as unknown as CodeHostRows;
 }

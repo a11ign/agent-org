@@ -13,6 +13,9 @@ import { fileURLToPath } from "node:url";
 
 import { sandboxGitEnv } from "../lib/git-env.ts";
 import { reasonKind } from "../merge-guard/reason-kind.ts";
+import { lookupCheckRuns } from "../merge-guard/lookups.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 // THE TOOL'S OWN ROOT, not `HOME_CHECKOUT`: that is the PROJECT's checkout (the product's tree), which holds no
 // `src/` of this tool's and, in a worktree with no host declaration, does not resolve at all (#3953). Every
@@ -139,13 +142,23 @@ test("#902: a run carrying NO id keeps the previous behaviour -- last in array o
 });
 
 test("#902 MUTATION TARGET: the fix is in the RULE, and `lookupCheckRuns` must carry the id it needs", () => {
-  // The ordering key has to arrive. `checkReasons` grouping by newest is inert if its caller drops `id`,
-  // which is what this file's own subject did until #902 -- a rule that cannot apply, not a rule that is
-  // wrong. Asserted against the source, because no unit test of `checkReasons` can see its caller.
-  const source = readFileSync(new URL("../merge-guard/lookups.ts", import.meta.url), "utf8");
-  const mapper = /check-runs[\s\S]*?\.map\(([\s\S]*?)\)\);/.exec(source)?.[1] ?? "";
-  assert.match(mapper, /\bid: run\.id\b/,
-    "lookupCheckRuns no longer carries `id`, so newest-per-name has no ordering key and silently reverts");
+  // The ordering key has to arrive. `checkReasons` grouping by newest is inert if its caller drops `id`, which is what this file's own subject did until #902 -- a rule that cannot apply, not a rule
+  // that is wrong. Since A11-160 (step 5) the lookup is the code host's `checkRunsOfCommit`, whose reading of GitHub's answer (`id`, `completed_at` -> `completedAt`) is asserted in
+  // `plugins/github/rows/merge-guard-reads.test.ts`; HERE the lookup runs on the fake code host, and the runs it hands the rule must still SETTLE a head whose first attempt of `gate` failed: the newer attempt is the
+  // verdict only if both arrive with their ids.
+  const host = createFakeCodeHost();
+  host.rowsWorld.pulls.set(1, { number: 1, body: "", headRefName: "b", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-09-07T00:00:00Z", comments: [], headRefOid: pr.headRefOid,
+    checkRuns: [{ id: 11, name: "gate", status: "completed", conclusion: "failure", completedAt: "2026-09-07T00:10:00Z" }, { id: 12, name: "gate", status: "completed", conclusion: "success", completedAt: "2026-09-07T00:20:00Z" }] });
+  substituteCodeHost(host);
+  try {
+    const runs = lookupCheckRuns(pr.headRefOid);
+    assert.deepEqual(runs?.map((run) => (run as { id?: number }).id), [11, 12], "lookupCheckRuns no longer carries `id`, so newest-per-name has no ordering key and silently reverts");
+    assert.deepEqual(checkReasons(pr, ["gate"], runs!), [], "the newer attempt of `gate` is the verdict");
+    host.rowsWorld.failures.set("checkRunsOfCommit", new Error("HTTP 502"));
+    assert.equal(lookupCheckRuns(pr.headRefOid), null, "a refused read is null -- could not ask -- and never an empty list of runs");
+  } finally {
+    forgetActivation();
+  }
 });
 
 /**

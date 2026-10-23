@@ -67,15 +67,59 @@ test("a pull request GitHub does not say is null, never a reading: no head, an a
   assert.deepEqual(answering(JSON.stringify([{ number: 3, body: "Closes #1" }])).openPullUrlsOf("a/b"), ["https://github.com/a/b/pull/3"]);
 });
 
-test("the port's operations that ticket mode does not call are honest: no change is read, no review requested, no merge armed, and a subscription delivers nothing", () => {
+test("the port's operations that ticket mode does not call are honest: no change is read, no review requested, and a subscription delivers nothing", () => {
   const host = createCodeHost(fakePluginDeps());
   const ref = { host: "github", id: URL };
   assert.equal(host.readChange(ref), null, "could not ask: a caller acts on no guess");
   assert.throws(() => host.requestReview(ref, "a-person"), /does not request a review yet/);
-  assert.throws(() => host.armMerge(ref), /does not arm a merge yet/);
   const cancel = host.subscribe({}, () => assert.fail("a subscription is not delivered an event"));
   assert.equal(typeof cancel, "function");
   cancel();
+});
+
+/** A code host over a scripted `gh`: `answer` gets the arguments of each call and answers its stdout, or throws as `gh` fails. */
+function hostAnswering(answer: (args: readonly string[]) => string) {
+  const asked: string[][] = [];
+  const host = createCodeHost(fakePluginDeps({ exec: (_file, args) => {
+    asked.push([...args]);
+    try {
+      return { status: 0, stdout: answer(args), stderr: "" };
+    } catch (cause) {
+      return { status: 1, stdout: "", stderr: (cause as Error).message };
+    }
+  } }), { sleep: () => undefined, error: () => undefined });
+  return { host, asked };
+}
+
+const ARM_REF = { host: "github", id: "a11ign/agent-org#7" };
+const armedNode = (over: object = {}) => JSON.stringify({ merged: false, autoMergeRequest: null, mergeQueueEntry: null, ...over });
+
+test("armMerge arms the merge and reads the pull request back: true once it is armed", () => {
+  const { host, asked } = hostAnswering((args) => (args[0] === "pr" ? "" : armedNode({ autoMergeRequest: { enabledAt: "2026-10-23T10:00:00Z" } })));
+  assert.equal(host.armMerge(ARM_REF), true);
+  assert.deepEqual(asked[0], ["pr", "merge", "--auto", "--merge", "7", "--repo", "a11ign/agent-org"], "the arm is auto-merge with a merge commit, aimed at the repository the change names");
+  assert.deepEqual(asked[1].slice(0, 2), ["api", "graphql"], "and the pull request is read back, because the exit of the arm is not the evidence that it took");
+});
+
+test("armMerge says false for an arm that exited well and did not take, and true for a pull request that merged or queued meanwhile", () => {
+  const exitedWell = hostAnswering((args) => (args[0] === "pr" ? "" : armedNode()));
+  assert.equal(exitedWell.host.armMerge(ARM_REF), false, "an arm that took nothing is not armed (#1022)");
+  const refusedThenMerged = hostAnswering((args) => {
+    if (args[0] === "pr" && args[1] === "merge") throw new Error("GraphQL: Merge already in progress");
+    if (args[0] === "pr" && args[1] === "view") return JSON.stringify({ state: "MERGED" });
+    return armedNode({ merged: true });
+  });
+  assert.equal(refusedThenMerged.host.armMerge(ARM_REF), true, "a refused arm on a pull request that merged meanwhile has nothing left to arm, and reads as armed");
+});
+
+test("armMerge throws a refusal nothing explains, and an address that is no change", () => {
+  const unexplained = hostAnswering((args) => {
+    if (args[0] === "pr" && args[1] === "merge") throw new Error("GraphQL: Pull request is not mergeable");
+    if (args[0] === "pr") return JSON.stringify({ state: "OPEN" });
+    return armedNode();
+  });
+  assert.throws(() => unexplained.host.armMerge(ARM_REF), /not mergeable/, "open, not armed and refused is a refusal to name, not to swallow");
+  assert.throws(() => hostAnswering(() => "").host.armMerge({ host: "github", id: "no-number" }), /owner\/name#number/);
 });
 
 const PR_URL = "https://github.com/a11ign/agent-org/pull/7";

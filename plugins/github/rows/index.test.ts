@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import type { CodeHostRows } from "../../../src/plugins/contracts/code-host-rows.ts";
+import { GhFailure, ghRunner } from "../gh.ts";
 import { createRows } from "./index.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -86,4 +87,44 @@ test("the rows hold the contract's operations and values, and the values are the
   assert.deepEqual(rows.corePoolProbe, ["api", "user", "-i"]);
   assert.match(rows.openItemsQuery, /rateLimit \{ limit remaining resetAt \}/);
   assert.deepEqual(Object.entries(rows).filter(([, value]) => typeof value !== "function").map(([name]) => name).sort(), ["acts", "corePoolProbe", "openItemsQuery", "projectItemsPage", "sincePageSize", "tracker"]);
+});
+
+// --- 4. the runners the plugin gives an operation whose caller hands none (A11-160, step 5) -----------------------------------------------------------
+
+
+test("an operation whose caller hands no `run` runs the plugin's own, and a caller's `run` is used instead when it hands one", () => {
+  const seen: string[] = [];
+  const own = (args: string[]) => { seen.push(`own ${args[0]}`); return JSON.stringify({ merged: true }); };
+  const rows = createRows(() => { throw new Error("not asked"); }, { own, queue: () => { throw new Error("the queue runner is not this operation's"); } });
+  assert.equal(rows.isMergedPull({ repo: "o/r", number: "7" }), true);
+  assert.equal(rows.isMergedPull({ repo: "o/r", number: "7", run: (args) => { seen.push(`caller ${args[0]}`); return JSON.stringify({ merged: false }); } }), false);
+  assert.deepEqual(seen, ["own api", "caller api"]);
+  assert.equal(rows.ownRun(["x"]), JSON.stringify({ merged: true }), "ownRun is the plugin's own runner, for the callers that have not moved");
+  assert.throws(() => createRows(() => { throw new Error("not asked"); }).isMergedPull({ repo: "o/r", number: "7" }), /built with no runner of their own/);
+});
+
+test("the merge queue's operations run the queue runner, which is the one that takes the git variables off", () => {
+  const seen: string[] = [];
+  const rows = createRows(() => { throw new Error("not asked"); }, { own: () => { seen.push("own"); return "[]"; }, queue: () => { seen.push("queue"); return "[]"; } });
+  rows.openPullsForQueue();
+  rows.compareWithMain({ repo: "o/r", branch: "b" });
+  rows.mergeQueuedPull({ number: 1 });
+  rows.deleteBranchOf({ repo: "o/r", branch: "b" });
+  rows.openPullsOfBranch({ repo: "o/r", branch: "b" });
+  assert.deepEqual(seen, ["queue", "queue", "queue", "queue", "own"], "the dispatcher's four are the queue's; a read of a branch's pull request is any other caller's");
+});
+
+test("the pool a refused read names is read off the headers a refused `gh api -i` still prints, through the plugin's own runner when the caller hands none", () => {
+  const headers = "HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: 0\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Reset: 1790000000\n";
+  const exec = () => ({ status: 1, stdout: headers, stderr: "gh: API rate limit exceeded" });
+  const pool = {
+    probe: ["api", "graphql", "-i"],
+    rawResponse: (args: readonly string[], run: (args: string[]) => string) => { try { return run([...args]) || null; } catch (error) { return (error as { stdout?: string }).stdout || null; } },
+    fromResponse: (raw: string | null) => (raw === null ? null : { remaining: Number(/Remaining: (\d+)/.exec(raw)?.[1]), limit: 5000, used: 5000, resetInMinutes: null }),
+    fromRateLimitField: () => null,
+  };
+  const rows = createRows(() => ({ pool }) as never, { own: ghRunner({ exec }), queue: () => "" });
+  assert.deepEqual(rows.graphqlPoolOf(), { remaining: 0, limit: 5000, used: 5000, resetInMinutes: null }, "the headers survive the failure, as they did on execFileSync's error");
+  assert.ok(new GhFailure(["x"], { status: 1, stdout: headers, stderr: "" }).stdout.includes("X-Ratelimit"));
+  assert.equal(rows.graphqlPoolOf(() => ""), null, "a caller's own run that answers nothing reads no pool");
 });

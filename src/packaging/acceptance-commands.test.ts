@@ -2390,8 +2390,9 @@ test("#1116: a closure refusal names `// no-token:` when that declaration would 
     + "fixture has changed and the rest of this test proves nothing");
   const message = closureRequirementMessage(token);
 
-  assert.match(message, /via mergeReadiness → gh →/, "the chain is still named -- the fault half is kept");
-  assert.match(message, /no-token: gh/,
+  // A11-160 (step 5): `mergeReadiness` no longer reaches a `gh` helper of core's (the guard's lookups are the code host's), so the chain now ends where the test still reaches `gh`: the row claim's own read.
+  assert.match(message, /via mergeReadiness → closingClaimReasons → claimStatus → row-claim\.ts:\d+/, "the chain is still named -- the fault half is kept");
+  assert.match(message, /no-token: claimStatus/,
     "and the REMEDY is named, with the function to declare. Without this an author learns the mechanism "
     + "exists only by getting it wrong, which is the one path that reports it");
   assert.match(message, /every input it passes is injected/,

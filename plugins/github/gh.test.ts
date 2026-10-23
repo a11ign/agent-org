@@ -28,9 +28,34 @@ test("a call that exits non-zero throws the command and what gh printed, so a re
     && error.message === "Command failed: gh api repos/a/b/branches/x\ngh: Not Found (HTTP 404)\n" && error.status === 1 && /HTTP 404/.test(error.message));
 });
 
+test("a refused call keeps what gh printed on stdout, because a rate-limit refusal still answers the headers that say when the pool returns", () => {
+  const headers = "HTTP/2.0 403 Forbidden\nX-Ratelimit-Remaining: 0\nX-Ratelimit-Limit: 5000\nX-Ratelimit-Reset: 1790000000\n";
+  const { exec } = recording({ status: 1, stdout: headers, stderr: "gh: API rate limit exceeded\n" });
+  assert.throws(() => ghRunner({ exec })(["api", "graphql", "-i"]), (error: unknown) => error instanceof GhFailure && (error as GhFailure).stdout === headers,
+    "api-pool.ts's rawResponse reads the headers off a thrown error's stdout, as it did off execFileSync's");
+});
+
+test("a runner made with variables to take off hands them to every call, and one made with none hands no such option", () => {
+  const { calls, exec } = recording({ status: 0 });
+  ghRunner({ exec }, {}, { withoutEnv: () => ["GIT_DIR", "GIT_WORK_TREE"] })(["pr", "list"]);
+  ghRunner({ exec })(["pr", "list"]);
+  assert.deepEqual((calls[0].options as { withoutEnv: unknown }).withoutEnv, ["GIT_DIR", "GIT_WORK_TREE"]);
+  assert.equal("withoutEnv" in (calls[1].options as object), false);
+});
+
+test("a runner given an echo tells it what gh printed on stderr, on success and on failure, without the last newline", () => {
+  const said: string[] = [];
+  const ok = recording({ status: 0, stdout: "x", stderr: "! Pull request #7 is already queued to merge\n" });
+  ghRunner(ok, {}, { echo: (text) => said.push(text) })(["pr", "merge"]);
+  const failed = recording({ status: 1, stderr: "HTTP 403\n" });
+  assert.throws(() => ghRunner(failed, {}, { echo: (text) => said.push(text) })(["pr", "view"]), GhFailure);
+  ghRunner(recording({ status: 0 }), {}, { echo: (text) => said.push(text) })(["pr", "list"]);
+  assert.deepEqual(said, ["! Pull request #7 is already queued to merge", "HTTP 403"], "an empty stderr says nothing");
+});
+
 test("a gh that cannot start is a failure with the reason, not a pass with no text", () => {
   const { exec } = recording({ status: null, stderr: "spawn gh ENOENT" });
-  assert.throws(() => ghRunner({ exec })(["pr", "list"]), (error: unknown) => error instanceof GhFailure && error.status === null && /spawn gh ENOENT/.test(error.message));
+  assert.throws(() => ghRunner({ exec })(["pr", "list"]), (error: unknown) => error instanceof GhFailure && error.status === null && error.message === "spawn gh ENOENT", "the message is the spawn error itself, as execFileSync threw it");
 });
 
 test("a runner made with an environment runs every call with it", () => {

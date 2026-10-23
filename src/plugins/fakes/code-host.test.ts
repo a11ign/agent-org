@@ -23,13 +23,15 @@ function seeded() {
 }
 
 /**
- * The checks of the optional `rows` group that need a `run` to refuse: the fake's rows act on its own state and ignore `run`, so they are skipped with their reason and never counted as passed (contract 1.7).
+ * The checks of the optional `rows` group that need a `run` to refuse: the fake's rows act on its own state and ignore `run`, so they are skipped with their reason and never counted as passed (contract 1.8).
  * The other two checks of the group run on the fake's rows and pass.
  */
 const ROWS_CHECKS = [
   "a read the rows could not make answers null or throws, never an empty answer", "a write the rows could not make throws, so no caller reads it as done",
+  "a read the rows could not make for arming, the merge guard and the queue throws, never an empty answer", "a write the rows could not make for arming, the merge and the queue throws, so no caller reads it as done",
 ];
-const ROWS_PASSED = ["the rows are the operations row mode asks of the code host", "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect"];
+const ROWS_PASSED = ["the rows are the operations row mode asks of the code host", "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect",
+  "the rows' rules for arming answer as the callers that arm and guard expect"];
 
 test("the fake code host passes the code host contract suite, and the checks that ran are the ones asserted", async () => {
   const { host, probe } = seeded();
@@ -46,7 +48,7 @@ test("the fake code host passes the code host contract suite, and the checks tha
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",
   ]);
   assert.deepEqual(skipped.map(({ check }) => check), ROWS_CHECKS, "the fake's rows act on its own state, so a refused run is nothing to them");
-  assert.ok(skipped.every(({ reason }) => /the code host has no rows that act through the caller's run \(contract 1\.7\)/.test(reason)));
+  assert.ok(skipped.every(({ reason }) => /the code host has no rows that act through the caller's run \(contract 1\.8\)/.test(reason)));
 });
 
 test("without a change in the probe the port's reads are skipped with the reason, not passed", async () => {

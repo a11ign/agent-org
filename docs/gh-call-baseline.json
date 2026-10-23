@@ -27,14 +27,6 @@
       "spawns": 0,
       "calls": 1
     },
-    "src/arm-pr.ts": {
-      "spawns": 2,
-      "calls": 11
-    },
-    "src/auto-arm-sweep.ts": {
-      "spawns": 1,
-      "calls": 8
-    },
     "src/blast-radius.ts": {
       "spawns": 1,
       "calls": 2
@@ -151,10 +143,6 @@
       "spawns": 1,
       "calls": 1
     },
-    "src/host-units/host-drift-findings-and-notes.ts": {
-      "spawns": 1,
-      "calls": 0
-    },
     "src/lane-ownership.ts": {
       "spawns": 0,
       "calls": 1
@@ -163,21 +151,9 @@
       "spawns": 1,
       "calls": 3
     },
-    "src/merge-guard.ts": {
-      "spawns": 0,
-      "calls": 5
-    },
-    "src/merge-guard/armed-race-rule.ts": {
-      "spawns": 0,
-      "calls": 2
-    },
     "src/merge-guard/lookups.ts": {
-      "spawns": 2,
-      "calls": 4
-    },
-    "src/merge-queue.ts": {
       "spawns": 1,
-      "calls": 4
+      "calls": 0
     },
     "src/messaging/github-writer.ts": {
       "spawns": 1,
@@ -215,10 +191,6 @@
       "spawns": 1,
       "calls": 4
     },
-    "src/pr-armed-state.ts": {
-      "spawns": 0,
-      "calls": 2
-    },
     "src/pr-hold.ts": {
       "spawns": 2,
       "calls": 10
@@ -244,8 +216,8 @@
       "calls": 7
     },
     "src/ready-label-audit.ts": {
-      "spawns": 9,
-      "calls": 15
+      "spawns": 7,
+      "calls": 13
     },
     "src/release-behind-main.ts": {
       "spawns": 0,

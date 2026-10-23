@@ -72,6 +72,7 @@ import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "./project-config.ts";
 import { SESSION_PREFIX } from "./project-vocabulary.ts";
 
 import { reasonKind } from "./merge-guard/reason-kind.ts";
+import { delegates } from "./plugins/rows.ts";
 import { testsFirstReadsOf, type TestsFirstFacts } from "./ticket-port/tests-first-reads.ts";
 import { gh, lookup, lookupRequiredContexts, lookupBranchTip, lookupCheckRuns, lookupClosingIssues,
   lookupApprovalFacts }
@@ -96,6 +97,8 @@ import {
 // RE-EXPORTED so every existing importer keeps working unchanged -- see the header above for who reads
 // which. Each name is now DEFINED in its own rule/shared module; this is the one place all of them are
 // visible together, which is what an entry point is for.
+const reads = delegates("pullForCiGate", "pullForGuard", "mainTipDateOf", "behindByOf", "pullOutcomeOf");
+
 export {
   reasonKind,
   gh, lookup, lookupRequiredContexts, lookupBranchTip, lookupCheckRuns, lookupClosingIssues,
@@ -208,36 +211,15 @@ export function mergeReadiness({ pr, required, runs, mainTipIso, behindBy, branc
  * @param {number} number
  */
 function ciGateFacts(number: number) {
-  const raw = JSON.parse(gh(["api", `repos/${REPO}/pulls/${number}`]));
-  const pr = {
-    number: raw.number,
-    state: raw.state,
-    baseRefName: raw.base?.ref,
-    headRefOid: raw.head?.sha,
-    headRefName: raw.head?.ref,
-  };
-  const names = Array.isArray(raw.labels)
-    ? raw.labels.map((l: { name?: unknown; }) => l?.name)
-    : null;
-  const prLabels = names && names.every((n: unknown) => typeof n === "string")
-    ? (names as string[])
-    : null;
+  const { pr, prLabels, body, author } = reads.pullForCiGate({ repo: REPO, number });
   const branchTip = lookupBranchTip(pr.headRefName);
   const approvals = lookupApprovalFacts(pr.number, pr.headRefOid);
-  // #5109: a CLOSED PR cannot merge, so it asks nothing; the rows come from the PR's own body because this gate is REST-only.
-  const testsFirst = raw.state === "open"
-    ? lookupTestsFirstFacts({ number: pr.number, head: pr.headRefOid, author: raw.user?.login ?? null, body: raw.body ?? "" })
+  const testsFirst = pr.state === "open"
+    ? lookupTestsFirstFacts({ number: pr.number, head: pr.headRefOid, author, body })
     : undefined;
   return { pr, branchTip, prLabels, approvals, testsFirst };
 }
 
-/**
- * `--ci-gate <n>`: the check a required CI job runs FOR ITSELF, mid-workflow -- #298 (unit 1). Checks
- * head-vs-tip (#294) ONLY -- see `mergeSafetyVerdict`'s own comment for why ancestry (#182) and
- * closing-claim (#262) are deliberately not asked here: both refuse the NORMAL case when CI asks them,
- * measured live on this PR's own queue.
- * @param {number} number
- */
 function ciGateCommand(number: number) {
   const verdict = mergeSafetyVerdict(ciGateFacts(number));
   if (verdict.code === EXIT.READY) {
@@ -250,44 +232,21 @@ function ciGateCommand(number: number) {
 
 /** @param {number} number */
 function facts(number: number) {
-  // DELIBERATELY NOT REQUESTING `mergeStateStatus`. Asking for it at all would invite the next reader to
-  // use it, and this tool's entire reason for existing is that its answer cannot be trusted here.
-  const pr = JSON.parse(gh(["pr", "view", String(number), "--repo", REPO,
-    "--json", "number,state,baseRefName,headRefOid,headRefName,labels,body,author"]));
-  // `null` WHEN THE SHAPE IS NOT THE ONE EXPECTED, never `[]` -- an empty array reads as "nobody holds
-  // this PR", which is the safest-LOOKING answer and the wrong one when the truth is "I could not ask".
-  // Same rule as every other lookup here, and the reason this file exists.
-  const prLabels = Array.isArray(pr.labels)
-    ? pr.labels.map((l: { name?: unknown; }) => l?.name).filter(
-      (name: unknown) => typeof name === "string")
-    : null;
+  const { pr, prLabels, body, author } = reads.pullForGuard({ repo: REPO, number });
   const required = lookupRequiredContexts();
   const runs = lookupCheckRuns(pr.headRefOid);
-  const mainTipIso = lookup(() => gh(["api", `repos/${REPO}/commits/main`,
-    "--jq", ".commit.committer.date"]).trim() || null);
-  // `behind_by` is how many commits `main` has that this head does not -- the ancestry fact, not a
-  // mergeability opinion. `lookup` keeps a failed call NULL so it lands as INCONCLUSIVE rather than 0,
-  // which would read as "contains main's tip" and reintroduce the false pass this replaced.
-  const behindBy = lookup(() => {
-    const value = JSON.parse(gh(["api",
-      `repos/${REPO}/compare/main...${pr.headRefOid}`])).behind_by;
-    return typeof value === "number" ? value : null;
-  });
+  const mainTipIso = lookup(() => reads.mainTipDateOf({ repo: REPO }));
+  const behindBy = lookup(() => reads.behindByOf({ repo: REPO, head: pr.headRefOid }));
   const branchTip = lookupBranchTip(pr.headRefName);
   const closes = lookupClosingIssues(number);
   const approvals = lookupApprovalFacts(number, pr.headRefOid);
-  const testsFirst = lookupTestsFirstFacts({ number, head: pr.headRefOid, author: pr.author?.login ?? null, body: pr.body ?? "" });
+  const testsFirst = lookupTestsFirstFacts({ number, head: pr.headRefOid, author, body });
   return { pr, required, runs, mainTipIso, behindBy, branchTip, closes, prLabels, approvals, testsFirst };
 }
 
-/**
- * `--reconcile <n>`: compare the LAST recorded verdict for #n against its real, terminal outcome (#188).
- * @param {number} number
- */
 function reconcileCommand(number: number) {
   const recordedVerdict = latestVerdictFor(verdictLogPath(), number);
-  const pr = JSON.parse(gh(["pr", "view", String(number), "--repo", REPO,
-    "--json", "state,mergedAt,closedAt"]));
+  const pr = reads.pullOutcomeOf({ repo: REPO, number });
   const realOutcome = realOutcomeFor(pr.state);
   const resolvedAt = pr.mergedAt ?? pr.closedAt ?? null;
   const result = reconcile({ prNumber: number, recordedVerdict, realOutcome, resolvedAt });

@@ -99,6 +99,20 @@ test("A11-160: a program runs with the environment it is given laid over this pr
   assert.deepEqual([long.status, long.stdout.length], [0, 5 * 1024 * 1024], "five megabytes is more than the default buffer of one, and a listing that long is an answer");
 });
 
+test("A11-160 (step 5): the variables a program is told to run without are taken off its environment for that run, and only those", () => {
+  const probe = ["-e", "process.stdout.write(`${process.env.AGENT_ORG_EXEC_GONE ?? 'unset'}/${process.env.AGENT_ORG_EXEC_KEPT ?? 'unset'}`)"];
+  process.env.AGENT_ORG_EXEC_GONE = "present";
+  process.env.AGENT_ORG_EXEC_KEPT = "present";
+  try {
+    assert.equal(realExec("node", probe, { withoutEnv: ["AGENT_ORG_EXEC_GONE"] }).stdout, "unset/present", "the merge queue's gh runs without the git variables a hook sets, and with the rest");
+    assert.equal(realExec("node", probe).stdout, "present/present", "and a run that names none keeps them all");
+    assert.equal(process.env.AGENT_ORG_EXEC_GONE, "present", "this process's environment is untouched");
+  } finally {
+    delete process.env.AGENT_ORG_EXEC_GONE;
+    delete process.env.AGENT_ORG_EXEC_KEPT;
+  }
+});
+
 test("A11-160: an activation narrowed to the code host builds it alone: the tracker's create, which reads a key, is never called, and a start that asks for everything is refused by it", async () => {
   const catalog = catalogOf({ "my-tracker": "tracker", "my-host": "codeHost" });
   const providers = resolveProviders(host({ tracker: { provider: "my-tracker" }, codeHost: { provider: "my-host" } }), catalog);

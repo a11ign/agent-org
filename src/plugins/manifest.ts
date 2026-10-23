@@ -60,8 +60,11 @@ export type PluginSettings = Readonly<Record<string, unknown>>;
 /** What running a program answered: its exit status (null when it could not start), and what it printed. */
 export type ExecResult = Readonly<{ status: number | null; stdout: string; stderr: string }>;
 
-/** What running a program may be asked: `inherit` gives it this process's terminal, `timeoutMs` bounds it, and `env` is laid over this process's environment for that one run. */
-export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>> }>;
+/**
+ * What running a program may be asked: `inherit` gives it this process's terminal, `timeoutMs` bounds it, `env` is laid over this process's environment for that one run, and `withoutEnv` names the
+ * variables taken OFF it first (the git variables a hook sets, which would aim a program started from a worktree at the wrong repository).
+ */
+export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>>; withoutEnv?: readonly string[] }>;
 
 /**
  * How a reviewer judges a pull request, as the gate's modules decide it: the `--json` fields it reads by, whether the author is the org's own, and whether the checks settled green.

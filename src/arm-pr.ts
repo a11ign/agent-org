@@ -13,7 +13,6 @@
 // A NODE SCRIPT RATHER THAN BASH, for the reason `auto-arm-sweep.ts`'s own header gives: a predicate
 // written in `run:` can only ever be checked by asserting on the text of a shell script, and a guard
 // whose expectations are scraped out of the source it tests is this repository's own recorded defect.
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
@@ -23,14 +22,12 @@ import { SESSION_PREFIX } from "./project-vocabulary.ts";
 import { roleBriefPath } from "./project-roles.ts";
 import { HOME_CHECKOUT, TICKET_ONLY_CHECKOUT, homeProjectDeclaration } from "./project-config.ts";
 // #2046: THE ARMED PREDICATE, IMPORTED RATHER THAN RE-DECIDED -- the mirror of the `pr-hold-state.ts`
-// line above, and for the reason this file's own header already gives about that one. Leaf-shaped:
-// `pr-armed-state.ts` imports nothing at all, so the `actions/checkout`-only property holds.
-import { armedQueryArgs, armedReason, ejectionVerdict } from "./pr-armed-state.ts";
+// line above, and for the reason this file's own header already gives about that one. It is the code host's rule now (`pr-armed-state.ts` delegates to it), asked in one place.
+import { ejectionVerdict } from "./pr-armed-state.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { extractClosesDeclaration } from "./acceptance-commands/acceptance-report-and-closure.ts";
-// #1969: THE REFUSAL'S SCOPE, and a LEAF import for the reason `api-pool.ts`'s own header gives. The
-// reading is not reimplemented here -- a second copy of "how to read a pool" is the one place two readers
+// #1969: THE REFUSAL'S SCOPE reads the pool through the code host (`graphqlPoolOf`), which reads it with `api-pool.ts`'s own parsing: a second copy of "how to read a pool" is the one place two readers
 // could silently disagree about what exhausted looks like.
-import { GRAPHQL_POOL_PROBE, poolFromHeaders } from "./api-pool.ts";
 // #2391: WHAT "MAIN IS RED" MEANS IS THE GATE'S DEFINITION, IMPORTED. `newestVerdictRun` looks THROUGH a
 // cancelled or in-flight run, so the streak read below agrees with the order `work-gate.ts` wakes a fixer
 // with -- a second reading of red here would let the two disagree about whether the fix is owed.
@@ -41,9 +38,11 @@ import { crossRepoRedMarker, crossRepoRedVerdict } from "./cross-repo-red.ts";
 // agent-org#1501: WHAT a11ign's `deliberateRefusals` JOB REFUSED (a head that is not the recorded tip, a `Closes` GitHub will not honour), asked here for an
 // agent pull request so the job can leave `gate`'s `needs`. Imported, never re-decided: the sweep asks the same function (`refusalBeforeArming`).
 import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
 import { createHash } from "node:crypto";
 import { dequeuePullRequestOf } from "./ticket-port/queue-entry-reads.ts";
 import { disableAutoMergeOf, readDisarmSeat } from "./ticket-port/auto-merge-disarm.ts";
+import { delegates, trimmedRunOrOwn } from "./plugins/rows.ts";
 // agent-org#1573: THE FLAG'S READER IS THE DECISION SWITCHES', the one every `decisions.json` key is read through (absent file = off; a file that cannot be used = off, said once).
 import { readSwitches } from "./decision-provider.ts";
 import { printDiagnostic, processState } from "./triage-provider.ts";
@@ -66,11 +65,14 @@ import { printDiagnostic, processState } from "./triage-provider.ts";
  */
 export const EXIT = { DONE: 0, REFUSED: 1, CANNOT_ASK: 2, ARMED_THEN_LABEL_FAILED: 3, JUMP_UNCONFIRMED: 4 };
 
-/** @param {string} cmd @param {string[]} args */
-const defaultRun = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: "utf8" });
+/**
+ * What this command asks of the code host (A11-160, step 5): the GitHub plugin's `rows`, which run `gh` themselves. `run` is optional everywhere below: a caller that has not moved (the gate's
+ * arming port, the sweep, the outside home) hands its own executor, with its identity and call census, and one that has hands none. It is `(args) => stdout`, throwing as `gh` fails.
+ */
+type Run = (ghArgs: string[]) => string;
 
-/** @param {string[]} args @param {typeof defaultRun} [run] */
-const gh = (args: string[], run: typeof defaultRun = defaultRun) => run("gh", args).trim();
+const reads = delegates("openBlockersOf", "openBlockersOfRow", "labelsOfRow", "readPullComments", "commentOnPull", "addLabelsToPull", "readPullForArming", "pullStateOf", "armedReasonOf", "armMergeOf",
+  "trunkRunsPage", "readQueueSeat", "jumpToFront", "dequeueByHandCommand", "graphqlPoolOf", "settledReason");
 
 /**
  * MAY THIS PR BE ARMED? -- pure, so it can be driven with real shapes rather than asserted against the
@@ -229,17 +231,13 @@ function closedRowReferences(prBody: string | null | undefined, prRepo: string):
  * `nodes` array, or `totalCount` larger than the page of nodes that came back and none of those open, so an open blocker may
  * be on the page that was not read. It is NEVER `[]`: silence about blockers is not "none".
  *
+ *
  * @param {{ blockedBy?: { nodes?: unknown, totalCount?: unknown } } | null} row
  * @returns {number[] | null}
+ *
+ * The code host's (A11-160, step 5): it reads GitHub's blocked-by answer, and this is its delegate.
  */
-export function openBlockersOf(row: { blockedBy?: { nodes?: unknown; totalCount?: unknown; }; } | null): number[] | null {
-  const nodes = row?.blockedBy?.nodes;
-  if (!Array.isArray(nodes)) return null;
-  const open = nodes.filter((node) => String(node?.state ?? "OPEN").toUpperCase() === "OPEN").map((node) => Number(node?.number));
-  const total = row?.blockedBy?.totalCount;
-  if (open.length === 0 && typeof total === "number" && total > nodes.length) return null;
-  return open;
-}
+export const { openBlockersOf } = reads;
 
 /**
  * #3544: THE ONE PLACE THE ARMING PATHS ASK "DOES A ROW THIS PR CLOSES STILL HAVE AN OPEN BLOCKER?" -- `arm-pr` and the
@@ -254,10 +252,10 @@ export function openBlockersOf(row: { blockedBy?: { nodes?: unknown; totalCount?
  * that cannot be read is not a row with no blocker. A definite block outranks an unreadable row, since it is the more useful
  * thing to say and the PR is refused either way.
  *
- * @param {{ repo: string, prBody: string | null | undefined, run: (ghArgs: string[]) => string }} pr `run` is the caller's own `gh`
+ * @param {{ repo: string, prBody: string | null | undefined, run?: (ghArgs: string[]) => string }} pr `run` is the caller's own `gh`, or absent: the code host runs it
  * @returns {{ kind: "clear" } | { kind: "open-blocker", why: string, blockers: number[] } | { kind: "cannot-ask", why: string }}
  */
-export function blockerVerdict({ repo, prBody, run }: { repo: string; prBody: string | null | undefined; run: (ghArgs: string[]) => string; }): { kind: "clear"; } | { kind: "open-blocker"; why: string; blockers: number[]; } | { kind: "cannot-ask"; why: string; } {
+export function blockerVerdict({ repo, prBody, run }: { repo: string; prBody: string | null | undefined; run?: (ghArgs: string[]) => string; }): { kind: "clear"; } | { kind: "open-blocker"; why: string; blockers: number[]; } | { kind: "cannot-ask"; why: string; } {
   if (typeof prBody !== "string") return { kind: "cannot-ask", why: "the PR body was not read, so the rows it closes are unknown" };
   const closing = closedRowReferences(prBody, repo);
   const closedTogether = new Set(closing.map((row) => `${row.repo}#${row.number}`));
@@ -287,9 +285,9 @@ const rowName = (row: { repo: string; number: number; }, prRepo: string) => (row
  * @param {{ row: { repo: string, number: number }, run: (ghArgs: string[]) => string }} ask
  * @returns {{ open: number[] | null, failure: string | null }}
  */
-function readOpenBlockers({ row, run }: { row: { repo: string; number: number; }; run: (ghArgs: string[]) => string; }): { open: number[] | null; failure: string | null; } {
+function readOpenBlockers({ row, run }: { row: { repo: string; number: number; }; run?: (ghArgs: string[]) => string; }): { open: number[] | null; failure: string | null; } {
   try {
-    const open = openBlockersOf(JSON.parse(run(["issue", "view", String(row.number), "--repo", row.repo, "--json", "blockedBy"])));
+    const open = reads.openBlockersOfRow({ repo: row.repo, number: row.number, run });
     return open === null ? { open, failure: "the API returned no complete blocked-by list" } : { open, failure: null };
   } catch (cause) {
     return { open: null, failure: (cause as Error).message };
@@ -317,22 +315,18 @@ export const deliberateMarker = (why: string) => `<!-- arm-refused: deliberate $
  */
 export function announceBlocked({ number, repo, verdict, run, error, lead }: {
         number: string | number; repo: string; verdict: { why: string; blockers: number[]; } | { why: string; files: string[]; } | { why: string; deliberate: true; };
-        run: (ghArgs: string[]) => string; error: (line: string) => void; lead?: string;
+        run?: (ghArgs: string[]) => string; error: (line: string) => void; lead?: string;
     }): { posted: boolean; } {
   const marker = "files" in verdict ? crossRepoRedMarker(verdict.files) : "deliberate" in verdict ? deliberateMarker(verdict.why) : blockedMarker(verdict.blockers);
   const tail = "files" in verdict ? "This comment is posted once for this set of files, and again if the set changes."
     : "deliberate" in verdict ? "This comment is posted once for this reason, and again if the reason changes. Fix what it names (re-push the branch, or correct the `Closes` line) and the gate arms it on a later tick."
     : "This comment is posted once; nothing needs doing here.";
   try {
-    const existing = JSON.parse(run(["pr", "view", String(number), "--repo", repo, "--json", "comments"])).comments;
-    if (!Array.isArray(existing)) throw new Error("the API returned no comment list");
+    const existing = reads.readPullComments({ repo, number, run });
     // agent-org#1278: a marker comment that does not carry this run's lead is a refusal made before the disarm said so, and does not stand for this one.
-    const hasMarkerComment = existing.some((comment) => {
-      const body = String(comment?.body ?? "");
-      return body.includes(marker) && (!lead || body.includes(lead));
-    });
+    const hasMarkerComment = existing.some(({ body }) => body.includes(marker) && (!lead || body.includes(lead)));
     if (hasMarkerComment) return { posted: false };
-    run(["pr", "comment", String(number), "--repo", repo, "--body", `${marker}\n${lead ? `${lead}\n` : ""}**Not armed: ${verdict.why}.** ${tail}`]);
+    reads.commentOnPull({ repo, number, body: `${marker}\n${lead ? `${lead}\n` : ""}**Not armed: ${verdict.why}.** ${tail}`, run });
     return { posted: true };
   } catch (cause) {
     error(`arm-pr: could not tell #${number} why it is not armed: ${(cause as Error).message}`);
@@ -341,18 +335,18 @@ export function announceBlocked({ number, repo, verdict, run, error, lead }: {
 }
 
 /** agent-org#1278: the dequeue, by hand, for the comment: the same mutation `dequeuePullRequestOf` sends, with the pull request's node id. */
-const dequeueByHand = (id: string) => `gh api graphql -f query='mutation($id:ID!){dequeuePullRequest(input:{id:$id}){mergeQueueEntry{state}}}' -f id=${id}`;
+const dequeueByHand = (id: string) => reads.dequeueByHandCommand(id);
 
 /**
  * agent-org#1278: a `cross-repo-red` refusal DISARMS the pull request it refuses. The outcome is read from the PR's state after each
  * write (`readDisarmSeat`), never from the exit code. `stuck` is true when the PR is still armed or queued after the disarm, so the caller exits CANNOT_ASK.
- * @param {{ number: string, repo: string, run: typeof defaultRun }} args
+ * @param {{ number: string, repo: string, run?: Run }} args
  * @returns {{ disarmed: boolean, outcome: string, stuck: boolean }}
  */
-export function disarmRedLeg({ number, repo, run }: { number: string; repo: string; run: typeof defaultRun; }): {
+export function disarmRedLeg({ number, repo, run }: { number: string; repo: string; run?: Run; }): {
     disarmed: boolean; outcome: string; stuck: boolean;
 } {
-  const port = { number, repo, run: (args: string[]) => gh(args, run) };
+  const port = { number, repo, run };
   try {
     const before = readDisarmSeat(port);
     if (before.merged) return { disarmed: false, outcome: "already merged", stuck: false };
@@ -550,12 +544,11 @@ export function sessionLabelsForArm(rowLabelLists: string[][]): string[] {
  * own repo answered "Could not resolve to an issue" and left the PR without the row's session label (found arming agent-org#444).
  * Throws when the read fails; each caller decides what an unreadable row means.
  * @param {{ repo: string, number: number }} row
- * @param {typeof defaultRun} run
+ * @param {Run} [run]
  * @returns {string[]}
  */
-function readRowLabels(row: { repo: string; number: number; }, run: typeof defaultRun): string[] {
-  return JSON.parse(gh(["issue", "view", String(row.number), "--repo", row.repo, "--json", "labels"], run))
-    .labels.map((l: { name: string; }) => l.name);
+function readRowLabels(row: { repo: string; number: number; }, run?: Run): string[] {
+  return reads.labelsOfRow({ repo: row.repo, number: row.number, run });
 }
 
 /**
@@ -568,10 +561,10 @@ function readRowLabels(row: { repo: string; number: number; }, run: typeof defau
  * #725's stated gap, not a bug here: a PR opened without arming, or a row claimed after the PR opens,
  * still carries nothing, because the arm path is the only place the information and the action
  * coincide.
- * @param {{ number: string, repo: string, prBody: string | null | undefined, run?: typeof defaultRun }} args
+ * @param {{ number: string, repo: string, prBody: string | null | undefined, run?: Run }} args
  * @returns {{ refused: boolean }} `refused` when a RETIRED session label stopped the arm (#1000)
  */
-export function labelArmedPr({ number, repo, prBody, run = defaultRun }: { number: string; repo: string; prBody: string | null | undefined; run?: typeof defaultRun; }): { refused: boolean; } {
+export function labelArmedPr({ number, repo, prBody, run }: { number: string; repo: string; prBody: string | null | undefined; run?: Run; }): { refused: boolean; } {
   const rows = closedRowReferences(prBody, repo);
   if (rows.length === 0) return { refused: false };
   const rowLabelLists = rows.map((row) => {
@@ -605,23 +598,10 @@ export function labelArmedPr({ number, repo, prBody, run = defaultRun }: { numbe
     // passed and the FILE failed. `main` owns the exit code; this owns the verdict.
     return { refused: true };
   }
-  gh(["pr", "edit", number, "--repo", repo, ...sessionLabels.flatMap((l) => ["--add-label", l])], run);
+  reads.addLabelsToPull({ repo, number, labels: sessionLabels, run });
   console.log(`arm-pr: labelled #${number} with ${sessionLabels.join(", ")} from row #${rows.map((row) => row.number).join(", #")}`);
   return { refused: false };
 }
-
-/** #1022: the TERMINAL states in which there is nothing left to arm. Neither is a fault.
- *  NOT the whole set of states with nothing left to arm -- #2046: a PR sitting in the merge queue is
- *  `OPEN` and there is nothing left to arm on it either. That one is not a STATE at all, which is why
- *  it is read by `armedAlready` from a different field rather than added to this list. */
-const SETTLED_STATES = ["MERGED", "CLOSED"];
-
-/** How long to keep asking after a refused merge, and how often. Measured on #1020: `gh pr merge` was
- * refused at 01:15:33.05Z and the PR's own `mergedAt` is 01:15:33Z -- the SAME SECOND -- so the window
- * between "already in progress" and a readable `MERGED` is sub-second there. Five reads two seconds apart
- * is ten seconds of budget against a window measured in one, which is slack rather than a guess. */
-const SETTLE_ATTEMPTS = 5;
-const SETTLE_INTERVAL_MS = 2_000;
 
 /** @param {number} ms */
 const defaultSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -639,46 +619,21 @@ const defaultSleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArray
  * @param {string | null} state
  * @returns {string | null} a reason there is nothing to arm, or `null` to go ahead
  */
-export function settledReason(state: string | null): string | null {
-  if (state === null) return null;
-  return SETTLED_STATES.includes(state) ? `it is already ${state.toLowerCase()}` : null;
-}
+/** Is there anything left to arm on a pull request in this state? PURE, and the code host's (#1022): `MERGED` and `CLOSED` are the states with nothing left to arm; `null` is never one. */
+export const { settledReason } = reads;
 
 /**
  * The PR's `state` right now, or `null` if it cannot be read -- never a guess, and never a default.
- * @param {{ number: string, repo: string, run?: typeof defaultRun }} args
+ * @param {{ number: string, repo: string, run?: Run }} args
  * @returns {string | null}
  */
-export function prState({ number, repo, run = defaultRun }: { number: string; repo: string; run?: typeof defaultRun; }): string | null {
+export function prState({ number, repo, run }: { number: string; repo: string; run?: Run; }): string | null {
   try {
-    const state = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "state"], run)).state;
-    return typeof state === "string" ? state : null;
+    return reads.pullStateOf({ repo, number, run });
   } catch (cause) {
     console.error(`arm-pr: could not read #${number}'s state: ${(cause as Error).message}`);
     return null;
   }
-}
-
-/**
- * #1022: keeps asking until the PR reaches a SETTLED state, or the budget runs out.
- *
- * WAITS ON A POSITIVE VERDICT, never on the absence of one. `OPEN` right after a refused merge is also
- * what a genuinely un-armable PR looks like, so a single read cannot tell "merging, half a second from
- * MERGED" from "not merging at all" -- and answering on the first read would trade this row's false RED
- * for a false GREEN, which is the worse direction. The loop ends the moment the answer is positive; the
- * budget only bounds how long a negative one takes to become final.
- * @param {{ number: string, repo: string }} pr
- * @param {{ run?: typeof defaultRun, sleep?: typeof defaultSleep, attempts?: number, intervalMs?: number }} [deps]
- * @returns {string | null} the settled state, or `null` if it never settled
- */
-export function waitForSettled({ number, repo }: { number: string; repo: string; },
-  { run = defaultRun, sleep = defaultSleep, attempts = SETTLE_ATTEMPTS, intervalMs = SETTLE_INTERVAL_MS }: { run?: typeof defaultRun; sleep?: typeof defaultSleep; attempts?: number; intervalMs?: number; } = {}): string | null {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (attempt > 0) sleep(intervalMs);
-    const state = prState({ number, repo, run });
-    if (state !== null && SETTLED_STATES.includes(state)) return state;
-  }
-  return null;
 }
 
 /**
@@ -692,12 +647,12 @@ export function waitForSettled({ number, repo }: { number: string; repo: string;
  * `armDecision`'s "Unreadable is not unheld" pointed at the other predicate. The direction matters: a false
  * `null` costs one red check on a PR that merges anyway, and a false "armed" hides a PR nobody is merging.
  *
- * @param {{ number: string, repo: string, run?: typeof defaultRun, error?: (line: string) => void }} args
+ * @param {{ number: string, repo: string, run?: Run, error?: (line: string) => void }} args
  * @returns {string | null} which armed state it is in, or `null` for neither-armed-nor-readable
  */
-export function armedAlready({ number, repo, run = defaultRun, error = console.error }: { number: string; repo: string; run?: typeof defaultRun; error?: (line: string) => void; }): string | null {
+export function armedAlready({ number, repo, run, error = console.error }: { number: string; repo: string; run?: Run; error?: (line: string) => void; }): string | null {
   try {
-    return armedReason(JSON.parse(gh(armedQueryArgs({ number, repo }), run)));
+    return reads.armedReasonOf({ repo, number, run });
   } catch (cause) {
     error(`arm-pr: could not read whether #${number} is already armed: `
       + `${(cause as Error).message}`);
@@ -729,36 +684,17 @@ export function armedAlready({ number, repo, run = defaultRun, error = console.e
  * A failure on a PR that is demonstrably neither settled NOR armed is re-thrown unchanged: an un-armed PR
  * nobody merged is a real fault, and swallowing it would turn this fix into "ignore the error".
  * @param {{ number: string, repo: string }} pr
- * @param {{ run?: typeof defaultRun, sleep?: typeof defaultSleep, attempts?: number, intervalMs?: number,
+ * @param {{ run?: Run, sleep?: typeof defaultSleep, attempts?: number, intervalMs?: number,
  *   error?: (line: string) => void }} [deps]
  * @returns {{ armed: boolean, reason: string }}
  */
 export function armMerge({ number, repo }: { number: string; repo: string; }, deps: {
-    run?: typeof defaultRun; sleep?: typeof defaultSleep; attempts?: number; intervalMs?: number;
+    run?: Run; sleep?: typeof defaultSleep; attempts?: number; intervalMs?: number;
     error?: (line: string) => void;
 } = {}): { armed: boolean; reason: string; } {
-  const { run = defaultRun, error = console.error } = deps;
-  try {
-    gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo], run);
-    return { armed: true, reason: "auto-merge enabled" };
-  } catch (cause) {
-    const settled = waitForSettled({ number, repo }, deps);
-    if (settled !== null) return nothingLeftToArm(settledReason(settled));
-    const armed = armedAlready({ number, repo, run, error });
-    if (armed !== null) return nothingLeftToArm(armed);
-    throw cause;
-  }
+  const { run, ...seams } = deps;
+  return reads.armMergeOf({ number, repo, run }, seams);
 }
-
-/**
- * The one verdict `armMerge` returns for every state in which this run armed nothing AND that is
- * correct -- #1022's two terminal ones and #2046's three armed ones. One phrase, because the caller
- * (`runArmPr`) prints it verbatim and a reader comparing two green `arm` steps must not have to work
- * out whether two wordings mean the same thing.
- * @param {string | null} reason which state, from `settledReason` or `armedReason`
- * @returns {{ armed: boolean, reason: string }}
- */
-const nothingLeftToArm = (reason: string | null): { armed: boolean; reason: string; } => ({ armed: false, reason: `${reason} -- nothing was left to arm` });
 
 /**
  * #2391: THE FIX FOR A RED `main` JUMPS THE MERGE QUEUE -- the three decisions the row handed to its builder,
@@ -884,15 +820,14 @@ const streakNames = (streak: ReturnType<typeof redStreak>, shas: string[]) => st
  * `null` when the read failed, or when the streak outran `RED_STREAK_MAX_PAGES` without naming the marker's sha --
  * never `[]`, which would say "green" about a trunk nobody looked at, and never a short streak, which would say
  * "the marker names nothing" about a streak nobody finished reading.
- * @param {{ repo: string, shas: string[], run: typeof defaultRun, error: (line: string) => void }} args
+ * @param {{ repo: string, shas: string[], run?: Run, error: (line: string) => void }} args
  * @returns {ReturnType<typeof redStreak> | null}
  */
-function readRedStreak({ repo, shas, run, error }: { repo: string; shas: string[]; run: typeof defaultRun; error: (line: string) => void; }): ReturnType<typeof redStreak> | null {
+function readRedStreak({ repo, shas, run, error }: { repo: string; shas: string[]; run?: Run; error: (line: string) => void; }): ReturnType<typeof redStreak> | null {
   const runs: any[] = [];
   try {
     for (let page = 1; page <= RED_STREAK_MAX_PAGES; page += 1) {
-      const url = `repos/${repo}/actions/workflows/${TRUNK_WORKFLOW}/runs?branch=main&per_page=${RED_STREAK_PAGE_SIZE}&page=${page}`;
-      const answered = JSON.parse(gh(["api", url], run)).workflow_runs ?? [];
+      const answered = reads.trunkRunsPage({ repo, workflow: TRUNK_WORKFLOW, page, perPage: RED_STREAK_PAGE_SIZE, run });
       runs.push(...answered);
       const { streak, ended } = redStreakReading({ workflow_runs: runs });
       if (ended || streakNames(streak, shas) || answered.length < RED_STREAK_PAGE_SIZE) return streak;
@@ -905,31 +840,16 @@ function readRedStreak({ repo, shas, run, error }: { repo: string; shas: string[
   return null;
 }
 
-/** The PR's node id, head, readiness and queue seat in one GraphQL read -- `mergeQueueEntry` exists on no REST shape (#2046). */
-const SEAT_QUERY = "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
-  + "{pullRequest(number:$n){id headRefOid mergeStateStatus mergeQueueEntry{position state jump}}}}";
-
 /**
- * `expectedHeadOid` is the head whose readiness was READ, so a push landing between that read and this write is
- * refused by GitHub rather than jumped unchecked past the whole queue.
- */
-const JUMP_MUTATION = "mutation($id:ID!,$oid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,jump:true,expectedHeadOid:$oid})"
-  + "{mergeQueueEntry{position state jump}}}";
-
-/**
- * @param {{ number: string, repo: string, run: typeof defaultRun }} args
+ * @param {{ number: string, repo: string, run?: Run }} args
  * @returns {{ id: string, headRefOid: string, mergeStateStatus: string,
  *   mergeQueueEntry: { position: number, state: string } | null }}
  */
-function readSeat({ number, repo, run }: { number: string; repo: string; run: typeof defaultRun; }): {
+function readSeat({ number, repo, run }: { number: string; repo: string; run?: Run; }): {
     id: string; headRefOid: string; mergeStateStatus: string;
     mergeQueueEntry: { position: number; state: string; } | null;
 } {
-  const [owner, name] = repo.split("/");
-  const pr = JSON.parse(gh(["api", "graphql", "-f", `query=${SEAT_QUERY}`, "-f", `o=${owner}`, "-f", `r=${name}`,
-    "-F", `n=${number}`, "--jq", ".data.repository.pullRequest"], run));
-  if (!pr || typeof pr.id !== "string") throw new Error("the read answered no pull request");
-  return pr;
+  return reads.readQueueSeat({ number, repo, run });
 }
 
 /**
@@ -963,10 +883,10 @@ export type JumpResult = { kind: "front" | "behind" | "unconfirmed" | "not-jumpe
  * NOT ENQUEUED UNTIL `mergeStateStatus` IS `CLEAN` (every required check green and the approval in place): the
  * row's "once its checks are green". Anything else is `not-jumped`, and the ordinary arm that follows enqueues it
  * at the back the moment it is ready.
- * @param {{ number: string, repo: string, run: typeof defaultRun }} args
+ * @param {{ number: string, repo: string, run?: Run }} args
  * @returns {JumpResult}
  */
-export function enqueueAtFront({ number, repo, run }: { number: string; repo: string; run: typeof defaultRun; }): JumpResult {
+export function enqueueAtFront({ number, repo, run }: { number: string; repo: string; run?: Run; }): JumpResult {
   let seat;
   try {
     seat = readSeat({ number, repo, run });
@@ -979,7 +899,8 @@ export function enqueueAtFront({ number, repo, run }: { number: string; repo: st
   }
   let refusal = null;
   try {
-    gh(["api", "graphql", "-f", `query=${JUMP_MUTATION}`, "-f", `id=${seat.id}`, "-f", `oid=${seat.headRefOid}`], run);
+    // `expectedHeadOid` is the head whose readiness was READ, so a push landing between that read and this write is refused by GitHub rather than jumped unchecked past the whole queue.
+    reads.jumpToFront({ id: seat.id, headOid: seat.headRefOid, run });
   } catch (cause) {
     refusal = (cause as Error).message;
   }
@@ -989,11 +910,11 @@ export function enqueueAtFront({ number, repo, run }: { number: string; repo: st
 /**
  * The seat AFTER the mutation -- the read the verdict is taken from. `refusal` is the mutation's own error, or
  * `null` when it reported success; it changes the SENTENCE only, and the position decides everything else.
- * @param {{ number: string, repo: string, run: typeof defaultRun }} args
+ * @param {{ number: string, repo: string, run?: Run }} args
  * @param {string | null} refusal
  * @returns {JumpResult}
  */
-function readBack({ number, repo, run }: { number: string; repo: string; run: typeof defaultRun; }, refusal: string | null): JumpResult {
+function readBack({ number, repo, run }: { number: string; repo: string; run?: Run; }, refusal: string | null): JumpResult {
   try {
     const { mergeQueueEntry } = readSeat({ number, repo, run });
     if (mergeQueueEntry) return judgeSeat(mergeQueueEntry, refusal === null ? "the jump reported success" : `the jump reported a failure (${refusal}) yet it is queued`);
@@ -1021,10 +942,10 @@ function judgeSeat(entry: { position: number; state?: string; }, how: string): J
  * extra call (an unmarked PR costs a regex). `jumpFailure` is set only when a granted jump is not confirmed at
  * the front, and is what turns the exit code to `JUMP_UNCONFIRMED`.
  * @param {{ number: string, repo: string, prBody: string | null }} pr
- * @param {{ run: typeof defaultRun, sleep: typeof defaultSleep, log: (line: string) => void, error: (line: string) => void }} deps
+ * @param {{ run?: Run, sleep: typeof defaultSleep, log: (line: string) => void, error: (line: string) => void }} deps
  * @returns {{ outcome: { armed: boolean, reason: string }, jumpFailure: string | null }}
  */
-function armOrJump({ number, repo, prBody }: { number: string; repo: string; prBody: string | null; }, { run, sleep, log, error }: { run: typeof defaultRun; sleep: typeof defaultSleep; log: (line: string) => void; error: (line: string) => void; }): { outcome: { armed: boolean; reason: string; }; jumpFailure: string | null; } {
+function armOrJump({ number, repo, prBody }: { number: string; repo: string; prBody: string | null; }, { run, sleep, log, error }: { run?: Run; sleep: typeof defaultSleep; log: (line: string) => void; error: (line: string) => void; }): { outcome: { armed: boolean; reason: string; }; jumpFailure: string | null; } {
   const ordinary = () => armMerge({ number, repo }, { run, sleep, error });
   const declaration = extractTrunkFixDeclaration(prBody);
   const decision = jumpDecision(declaration, declaration.kind === "fixes-trunk" ? readRedStreak({ repo, shas: declaration.shas, run, error }) : null);
@@ -1046,20 +967,19 @@ function armOrJump({ number, repo, prBody }: { number: string; repo: string; prB
  * whether the refusal is about this PR or about the credential, and it cannot ask a `null` that question.
  * `null` when the read succeeded, so the two states stay as distinct here as `labels` keeps them.
  *
- * @param {{ number: string, repo: string, run: typeof defaultRun, error: (line: string) => void }} args
+ * @param {{ number: string, repo: string, run?: Run, error: (line: string) => void }} args
  * @returns {{ labels: string[] | null, prBody: string | null, state: string | null, author?: string | null,
  *             failure: string | null }}
  */
-function readPr({ number, repo, run, error }: { number: string; repo: string; run: typeof defaultRun; error: (line: string) => void; }): {
+function readPr({ number, repo, run, error }: { number: string; repo: string; run?: Run; error: (line: string) => void; }): {
     labels: string[] | null; prBody: string | null; state: string | null; author?: string | null;
     failure: string | null;
 } {
   try {
     // #1022: `state` rides along on the read that was already happening -- no extra `gh` call for the
     // common case, where the PR is plainly OPEN and this costs nothing.
-    const view = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels,body,state,author"], run));
-    return { labels: view.labels.map((l: { name: string; }) => l.name), prBody: view.body,
-      state: typeof view.state === "string" ? view.state : null, author: view.author?.login ?? null, failure: null };
+    const view = reads.readPullForArming({ repo, number, run });
+    return { labels: view.labels, prBody: view.body, state: view.state, author: view.author, failure: null };
   } catch (cause) {
     const failure = (cause as Error).message;
     error(`arm-pr: could not read #${number}'s labels: ${failure}`);
@@ -1080,24 +1000,24 @@ function readPr({ number, repo, run, error }: { number: string; repo: string; ru
  * `api-pool.ts` exists: an instrument that fails precisely when its subject fails reports the alarming
  * state as no state.
  *
- * @param {{ number: string, failure: string | null, run: typeof defaultRun }} refusal
+ * @param {{ number: string, failure: string | null, run?: Run }} refusal
  * @returns {string}
  */
-function refusalScopeFor({ number, failure, run }: { number: string; failure: string | null; run: typeof defaultRun; }): string {
+function refusalScopeFor({ number, failure, run }: { number: string; failure: string | null; run?: Run; }): string {
   const poolRefused = looksPoolRefused(failure);
-  const pool = poolRefused ? poolFromHeaders([...GRAPHQL_POOL_PROBE], (args) => run("gh", args)) : null;
+  const pool = poolRefused ? reads.graphqlPoolOf(run) : null;
   return refusalScope({ number, poolRefused, pool });
 }
 
 /**
  * The step AFTER the arm: label the PR from its rows, and turn the outcome into the exit code.
- * @param {{ number: string, repo: string, prBody: string | null, run: typeof defaultRun,
+ * @param {{ number: string, repo: string, prBody: string | null, run?: Run,
  *   error: (line: string) => void }} args
  * @param {{ armed: boolean, reason: string }} outcome what the arm step did
  * @returns {number}
  */
 function labelAfterArm({ number, repo, prBody, run, error }: {
-        number: string; repo: string; prBody: string | null; run: typeof defaultRun;
+        number: string; repo: string; prBody: string | null; run?: Run;
         error: (line: string) => void;
     }, outcome: { armed: boolean; reason: string; }): number {
   try {
@@ -1126,10 +1046,10 @@ function labelAfterArm({ number, repo, prBody, run, error }: {
 /**
  * #1478: the session labels the failed labelling was trying to apply, for the message only. A second read of the rows,
  * which can itself fail, so it says so rather than guessing a label.
- * @param {{ repo: string, prBody: string | null, run: typeof defaultRun }} args
+ * @param {{ repo: string, prBody: string | null, run?: Run }} args
  * @returns {{ labels: string[], text: string }}
  */
-export function labelsWanted({ repo, prBody, run }: { repo: string; prBody: string | null; run: typeof defaultRun; }): { labels: string[]; text: string; } {
+export function labelsWanted({ repo, prBody, run }: { repo: string; prBody: string | null; run?: Run; }): { labels: string[]; text: string; } {
   try {
     const lists = closedRowReferences(prBody, repo).map((row) => readRowLabels(row, run));
     const labels = sessionLabelsForArm(lists);
@@ -1143,27 +1063,28 @@ export function labelsWanted({ repo, prBody, run }: { repo: string; prBody: stri
  * The refusals after authorship and before any write: a PR that the ejection, blocker, cross-repo-red or deliberate-refusal gate holds is not armed.
  * @returns the exit code the refusal ends the run with, or `null` when every gate is clear and the run goes on to arm.
  */
-function refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error }: {
-  number: string; repo: string; author: string | null | undefined; prBody: string | null; run: typeof defaultRun;
-  log: (line: string) => void; error: (line: string) => void;
+function refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error, deliberate: deliberateVerdict = deliberateRefusalVerdict }: {
+  number: string; repo: string; author: string | null | undefined; prBody: string | null; run?: Run;
+  log: (line: string) => void; error: (line: string) => void; deliberate?: typeof deliberateRefusalVerdict;
 }): number | null {
+  const runner = trimmedRunOrOwn(run);
   // #3487: AFTER the authorship exit and before any write. A refusal is a DONE, as a hold is: the PR is waiting for a push, not failing.
-  const ejection = ejectionVerdict({ number, repo, run: (args) => gh(args, run) });
+  const ejection = ejectionVerdict({ number, repo, run });
   if (ejection.kind !== "clear") {
     const cannotAsk = ejection.kind === "cannot-ask";
     (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${ejection.why}`);
     return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
   }
   // #3544: AFTER the ejection exit and before any write. A block is a DONE, as a hold is: the PR waits on a row, it is not failing.
-  const blocker = blockerVerdict({ repo, prBody, run: (args) => gh(args, run) });
+  const blocker = blockerVerdict({ repo, prBody, run });
   if (blocker.kind !== "clear") {
     const cannotAsk = blocker.kind === "cannot-ask";
     (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${blocker.why}`);
-    if (blocker.kind === "open-blocker") announceBlocked({ number, repo, verdict: blocker, run: (args) => gh(args, run), error });
+    if (blocker.kind === "open-blocker") announceBlocked({ number, repo, verdict: blocker, run, error });
     return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
   }
   // agent-org#992: AFTER the blocker exit and before any write, the same shape. A red leg the declaration has not answered is a DONE, as a block is.
-  const crossRed = crossRepoRedVerdict({ number, repo, prBody, run: (args) => gh(args, run) });
+  const crossRed = crossRepoRedVerdict({ number, repo, prBody, run: runner });
   if (crossRed.kind !== "clear") {
     const cannotAsk = crossRed.kind === "cannot-ask";
     (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${crossRed.why}`);
@@ -1171,7 +1092,7 @@ function refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error }
       // agent-org#1278: THE REFUSAL DISARMS, then says so. The disarm runs BEFORE the comment, because the comment's first line is its outcome.
       const disarm = disarmRedLeg({ number, repo, run });
       (disarm.disarmed ? log : error)(`arm-pr: ${disarm.disarmed ? "disarmed" : "NOT disarmed"} #${number} -- ${disarm.outcome}`);
-      announceBlocked({ number, repo, verdict: crossRed, run: (args) => gh(args, run), error,
+      announceBlocked({ number, repo, verdict: crossRed, run, error,
         lead: `**Disarmed: ${disarm.disarmed ? "yes" : "no"} (${disarm.outcome}).**` });
       if (disarm.stuck) return EXIT.CANNOT_ASK;
     }
@@ -1179,11 +1100,11 @@ function refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error }
   }
   // agent-org#1501: AFTER the red-leg exit and before any write, the same shape. What a11ign's `deliberateRefusals` job refused is a DONE, as a hold is: the PR
   // waits for a push or an edit. `cannot-ask` is a refusal to arm and exits CANNOT_ASK, never "fine".
-  const deliberate = deliberateRefusalVerdict({ number, repo, author, run: (args) => gh(args, run) });
+  const deliberate = deliberateVerdict({ number, repo, author, run: runner });
   if (deliberate.kind !== "clear") {
     const cannotAsk = deliberate.kind === "cannot-ask";
     (cannotAsk ? error : log)(`arm-pr: NOT arming #${number} -- ${deliberate.why}`);
-    if (!cannotAsk) announceBlocked({ number, repo, verdict: { why: deliberate.why, deliberate: true }, run: (args) => gh(args, run), error });
+    if (!cannotAsk) announceBlocked({ number, repo, verdict: { why: deliberate.why, deliberate: true }, run, error });
     return cannotAsk ? EXIT.CANNOT_ASK : EXIT.DONE;
   }
   return null;
@@ -1193,15 +1114,17 @@ function refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error }
  * #1478: THE ENTRY POINT WITH ITS SEAMS INJECTED. `main` is this plus the unknown-flag refusal and `process.exitCode`,
  * so a test drives the path the workflow runs -- the order of the writes and the code the process exits with --
  * rather than the functions it happens to call.
- * @param {{ argv: string[], env: Record<string, string | undefined>, run?: typeof defaultRun,
+ * @param {{ argv: string[], env: Record<string, string | undefined>, run?: Run,
  *   sleep?: typeof defaultSleep, log?: (line: string) => void, error?: (line: string) => void,
  *   lanes?: {lanes: import("./lane-ownership.ts").Lane[]} | null }} io
  * @returns {number} the exit code, one of `EXIT`
  */
-export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, log = console.log, error = console.error, lanes }: {
-        argv: string[]; env: Record<string, string | undefined>; run?: typeof defaultRun;
+export function runArmPr({ argv, env, run, sleep = defaultSleep, log = console.log, error = console.error, lanes, deliberate }: {
+        argv: string[]; env: Record<string, string | undefined>; run?: Run;
         sleep?: typeof defaultSleep; log?: (line: string) => void; error?: (line: string) => void;
         lanes?: { lanes: import("./lane-ownership.ts").Lane[]; } | null;
+        /** The deliberate-refusal verdict, which reads GitHub's own JSON through helpers that have not moved into the code host yet: a test of THIS command's handling of it hands its own. Absent: the real one. */
+        deliberate?: typeof deliberateRefusalVerdict;
     }): number {
   const number = flagValue(argv, "pr");
   const repo = flagValue(argv, "repo") ?? env.GITHUB_REPOSITORY;
@@ -1233,12 +1156,12 @@ export function runArmPr({ argv, env, run = defaultRun, sleep = defaultSleep, lo
     return EXIT.DONE;
   }
   // #3254: AFTER the held and settled exits, so it speaks only when this run is about to arm -- and with no way round it.
-  const authorship = authorshipVerdict({ number, repo, author, run: (args) => gh(args, run), lanes });
+  const authorship = authorshipVerdict({ number, repo, author, run: trimmedRunOrOwn(run), lanes });
   if (authorship.kind !== "clear") {
     error(`arm-pr: NOT arming #${number} -- ${authorship.why}`);
     return authorship.kind === "refused" ? EXIT.REFUSED : EXIT.CANNOT_ASK;
   }
-  const refused = refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error });
+  const refused = refusalGatesBeforeArm({ number, repo, author, prBody, run, log, error, deliberate });
   if (refused !== null) return refused;
   const { outcome, jumpFailure } = armOrJump({ number, repo, prBody }, { run, sleep, log, error });
   // #1478: WHAT LANDED IS SAID BEFORE THE NEXT STEP RUNS, so a failure in labelling cannot hide it.

@@ -6,7 +6,7 @@
 // is refused here, by name: `row mode needs a code host that implements rows: <plugin> does not`.
 import { providersOfText } from "../ticket-mode/providers.ts";
 import { loadedCodeHost, hostFileTextForRows, PluginActivationRefusal, registerRowsReadHelpers } from "./code-host-slot.ts";
-import type { CodeHostRows } from "./contracts/code-host-rows.ts";
+import type { CodeHostRows, RowsRun } from "./contracts/code-host-rows.ts";
 import { defaultCatalog } from "./registry.ts";
 import { rowsReadHelpers } from "./rows-light-helpers.ts";
 
@@ -44,4 +44,18 @@ export function delegate<Name extends RowOperation>(name: Name): CodeHostRows[Na
 /** {@link delegate} for several operations at once: the object a file destructures its exports from. */
 export function delegates<Name extends RowOperation>(...names: readonly Name[]): Pick<CodeHostRows, Name> {
   return Object.fromEntries(names.map((name) => [name, delegate(name)])) as Pick<CodeHostRows, Name>;
+}
+
+/**
+ * `run`, or the code host's own runner when the caller hands none. For a moved caller that passes a runner on to a verdict that has not moved yet and so needs one (`authorshipVerdict`, `crossRepoRedVerdict`,
+ * `deliberateRefusalVerdict`): the code host's `ownRun` is TRANSITIONAL, and goes with the last of them (A11-160). It asks the code host when it is CALLED, not when it is made.
+ */
+export function runOrOwn(run?: RowsRun): RowsRun {
+  return run ?? ((args) => rows().ownRun(args));
+}
+
+/** {@link runOrOwn}, its answers trimmed: what `arm-pr` and the sweep handed the verdicts they call, since their `gh` helpers trimmed every answer before the calls moved. */
+export function trimmedRunOrOwn(run?: RowsRun): RowsRun {
+  const given = runOrOwn(run);
+  return (args) => given(args).trim();
 }
