@@ -86,6 +86,8 @@ test("the GitHub plugin passes the code host contract suite, and the checks that
     "readCheckLog answers null for an address that names no job", "rerunFailedChecks of no checks reruns nothing and says so", "readReviewClaims answers the entries of a head, or why it could not", "subscribe returns the function that cancels it",
     "the rows are the operations row mode asks of the code host", "a read the rows could not make answers null or throws, never an empty answer", "a write the rows could not make throws, so no caller reads it as done",
     "the rows' pure helpers answer as the callers that sweep approvals and fold pages expect",
+    "a read the rows could not make for arming, the merge guard and the queue throws, never an empty answer", "a write the rows could not make for arming, the merge and the queue throws, so no caller reads it as done",
+    "the rows' rules for arming answer as the callers that arm and guard expect",
     "readCheckLog reads the log behind a failing check", "a claim written on a head is read back from it", "the verdict door is a file the plugin ships, with the program that installs it",
     "readMergedFindings reads what a merged pull request found, and answers null for one it cannot read or that has not merged",
     "the wrapper is an owned file its own text agrees with", "the wrapper keeps its own text, and writes it", "the wrapper answers whether each declared role mints",

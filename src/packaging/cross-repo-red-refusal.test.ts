@@ -1,8 +1,8 @@
 // no-token: gh
 //
-// Every `gh` call in this file is a fixture: `crossRepoRedVerdict`, `refusalBeforeArming` and `runArmPr` take an injected `run`, and the
-// sweep is driven as a real process with a fake `gh` first on PATH. True of the IMPORT (`arm-pr.ts` and `auto-arm-sweep.ts` spawn `gh`)
-// and false of every CALL.
+// Every `gh` call in this file is a fixture: `crossRepoRedVerdict` (which has not moved into the code host) takes an injected `run`. The two doors that arm -- `runArmPr` and the sweep's
+// `refusalBeforeArming` -- are driven on the fake code host's world (A11-160, step 5), and the sweep as a real process with a stub `gh` first on PATH is the plugin's end-to-end test
+// (`plugins/github/rows/cross-repo-red-refusal-process.test.ts`).
 /**
  * agent-org#992: A LAB PULL REQUEST WHOSE CROSS-REPO LEG FAILS ON A TEST FILE THE NEWEST TRUNK RUN PASSED IS NOT ARMED unless its body
  * declares `Cross-repo-red: <row>` naming an OPEN row.
@@ -21,57 +21,24 @@
  * Every test changes ONE thing from the case before it, so a refusal cannot pass by never being reached, and a `clear` cannot pass by
  * the verdict never asking. The mutants the row ran are pasted in its `.acceptance` file.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { homeProjectDeclaration } from "../project-config.ts";
 import { readTrunkRed, trunkOfCodeRepository } from "../trunk-red.ts";
 import { runArmPr, EXIT } from "../arm-pr.ts";
 import { refusalBeforeArming } from "../auto-arm-sweep.ts";
 import { CROSS_REPO_LEG, crossRepoRedMarker, crossRepoRedVerdict, declaredRows, failingFilesFromRstestLog } from "../cross-repo-red.ts";
+import { forgetActivation } from "../plugins/active.ts";
+import { BODY, DECLARED_BODY, FILES, LAB, LAB81_LEG_LOG, LAB81_LEG_LOG_LINES, LEG, PRIMARY, PR_HEAD, PR_RUN, STEP, TRUNK_RUN, failLine, labWorld, logOf, type LabOptions } from "./cross-repo-red-world.test.support.ts";
 
-const LAB = "a11ign/lab";
-const PRIMARY = "a11ign/a11ign";
+afterEach(() => forgetActivation());
+
 const DECLARED = [{ key: "", repo: PRIMARY }, { key: "lab", repo: LAB }];
-const LEG = "checks (cross-repo)";
-const STEP = "The tests of this leg";
-const PR_HEAD = "e929f712";
-const PR_RUN = "38150000001";
-const TRUNK_RUN = 38151939490;
-const FILES = ["packages/lab/src/packaging/every-test-file-is-run.test.ts", "packages/lab/src/packaging/layer-edges.test.ts"];
-const BODY = "Closes a11ign/a11ign#5078\n\nADR 0045 cut 1.";
-const DECLARED_BODY = `${BODY}\nCross-repo-red: a11ign/a11ign#5080\n`;
 
-/** Lines 189, 324, 1664-1668, 1697-1702, 1730, 1733 and 1737 of the merge run's failed log for the leg (every line is `job\tstep\ttimestamp text`). */
-const LAB81_LEG_LOG_LINES = [
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:49:32.7573122Z   ^[[33m✓^[[39m A DECLARATION NARROWER THAN THE WALK FAILS THE GUARD'S OWN RUN^[[90m (1.16s)^[[39m",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:49:38.5125205Z ^[[90mlog^[[39m^[[90m^[[2m | packages/lab/src/packaging/arm-pr.test.ts > #2391: a FAILED read-back leaves the position unknown, and unknown is not the front^[[22m^[[39m",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2542004Z ^[[1mSummary of all failing tests:^[[22m",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2542716Z ",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2545830Z ^[[41m^[[37m^[[1m FAIL ^[[22m^[[39m^[[49m ^[[90mpackages/lab/src/packaging/^[[39m^[[36mevery-test-file-is-run.test.ts^[[39m ^[[2m>^[[22m every tracked test file under packages/ is reached by at least one runner glob — the positive control for this emptiness lives in the next test, which asserts the same predicate REPORTS a real file that no glob reaches",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2548985Z ^[[31m^[[1mAssertionError^[[22m^[[39m^[[31m: 1 test file(s) are executed by no runner: packages/lab/scripts/generate-coverage-doc.test.ts",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2550353Z A test outside every runner glob passes by hand and is run by no gate (#1940). Either move it under a path a glob reaches, or grow a glob to include it — the 5 globs in force are:",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2636408Z ^[[90m        at ^[[90mpackages/lab/src/packaging/^[[90m^[[36mevery-test-file-is-run.test.ts^[[90m:127:3^[[39m",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2636829Z ",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2637808Z ^[[41m^[[37m^[[1m FAIL ^[[22m^[[39m^[[49m ^[[90mpackages/lab/src/packaging/^[[39m^[[36mlayer-edges.test.ts^[[39m ^[[2m>^[[22m the lab's edges agree with its own baseline: no new edge, no stale entry, every entry well-formed",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2638899Z ^[[31m^[[1mAssertionError^[[22m^[[39m^[[31m: Expected values to be strictly deep-equal:",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2639328Z + actual - expected",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2639468Z ",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2732140Z ^[[90m Test Files^[[39m ^[[1m^[[31m2 failed^[[39m^[[22m^[[2m | ^[[22m^[[1m^[[32m220 passed^[[39m^[[22m^[[90m (222)^[[39m",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:41.2777459Z ^[[90m      Tests^[[39m ^[[1m^[[31m2 failed^[[39m^[[22m^[[2m | ^[[22m^[[1m^[[32m2939 passed^[[39m^[[22m^[[2m | ^[[22m^[[33m13 skipped^[[39m^[[90m (2954)^[[39m",
-  "checks (cross-repo)\tThe tests of this leg\t2026-10-11T15:52:42.1993362Z ##[error]Process completed with exit code 1.",];
-const LAB81_LEG_LOG = LAB81_LEG_LOG_LINES.join("\n");
 
-/** One `FAIL` line in rstest's form (directory, file name and `>` painted apart), for the leg of a synthetic run. */
-const failLine = (file: string, job = LEG) => {
-  const slash = file.lastIndexOf("/");
-  return `${job}\t${STEP}\t2026-10-11T15:35:54.0000000Z ^[[41m^[[37m^[[1m FAIL ^[[22m^[[39m^[[49m ^[[90m${file.slice(0, slash + 1)}^[[39m^[[36m${file.slice(slash + 1)}^[[39m ^[[2m>^[[22m a test of it`;
-};
-const logOf = (...files: string[]) => files.map((file) => failLine(file)).join("\n");
 
 type World = {
   prLeg?: string | null;             // the PR head's leg conclusion; `null` = the head has no cross-repo check run
@@ -298,19 +265,18 @@ test("#992 the project declares the lab as a code repository with a cross-repo l
   assert.equal(declared.find((code) => code.repo === PRIMARY)?.key, "", "the primary has the empty key, which `legSourceOf` never asks about");
 });
 
-// --- the two doors ---
+// --- the two doors (A11-160, step 5: on the fake code host's world; the sweep as a real process is the plugin's end-to-end test) ---
 
-function driveArm(w: World = {}) {
-  const fake = world({ ...w, body: w.body ?? BODY });
+function driveArm(w: LabOptions = {}) {
+  const seeded = w.comments ?? [];
+  const { pull } = labWorld({ prLog: LAB81_LEG_LOG, ...w, body: w.body ?? BODY });
   const said: string[] = [];
-  const run = (_cmd: string, args: string[]) => fake.run(args);
-  const code = runArmPr({ argv: ["--pr=81", `--repo=${LAB}`], env: {}, run: run as never, sleep: () => "ok" as const,
+  const code = runArmPr({ argv: ["--pr=81", `--repo=${LAB}`], env: {}, sleep: () => "ok" as const,
     log: (line: string) => said.push(line), error: (line: string) => said.push(line), lanes: { lanes: [] } });
-  const commented = fake.calls.filter((args) => args[0] === "pr" && args[1] === "comment");
-  return { code, said: said.join("\n"), merged: fake.calls.some((args) => args[0] === "pr" && args[1] === "merge" && !args.includes("--disable-auto")), commented, calls: fake.calls };
+  return { code, said: said.join("\n"), merged: pull.armed, commented: pull.comments.slice(seeded.length) };
 }
 
-test("#992 (5) arm-pr: lab#81's reading is NOT armed -- no merge call, exit DONE, the line names both files and the declaration to add", () => {
+test("#992 (5) arm-pr: lab#81's reading is NOT armed -- no arm, exit DONE, the line names both files and the declaration to add", () => {
   const out = driveArm();
   assert.equal(out.merged, false, out.said);
   assert.equal(out.code, EXIT.DONE, "waiting on a declaration is not a failure, as a hold is not");
@@ -331,7 +297,7 @@ test("#992 (5) arm-pr CONTROLS: the same PR declaring an OPEN row ARMS, and so d
 });
 
 test("#992 (3) arm-pr: a leg whose log cannot be read arms nothing and exits CANNOT_ASK, the code an unreadable label list gets", () => {
-  const out = driveArm({ throwOn: new RegExp(`run view ${PR_RUN}`) });
+  const out = driveArm({ prLog: new Error("HTTP 502") });
   assert.equal(out.merged, false, out.said);
   assert.equal(out.code, EXIT.CANNOT_ASK);
   assert.match(out.said, /could not read the failed log/);
@@ -341,100 +307,37 @@ test("#992 (3) arm-pr: a leg whose log cannot be read arms nothing and exits CAN
 test("#992 (5) arm-pr: the refusal is COMMENTED once -- its marker holds the files, so a changed set is said afresh", () => {
   const first = driveArm();
   assert.equal(first.commented.length, 1, first.said);
-  const text = first.commented[0].join(" ");
+  const text = first.commented[0];
   assert.ok(text.includes(crossRepoRedMarker(FILES)), "the marker names the files");
   assert.match(text, /arm-refused: cross-repo-red packages\/lab\/src\/packaging\/every-test-file-is-run\.test\.ts,packages\/lab\/src\/packaging\/layer-edges\.test\.ts/);
   assert.match(text, /Not armed: the cross-repo leg of #81 fails on 2 test files/);
   assert.doesNotMatch(text, /nothing needs doing here/, "something DOES need doing: the line to add");
 
-  const marker = first.commented[0][first.commented[0].indexOf("--body") + 1].split("\n")[0];
+  const marker = text.split("\n")[0];
   // The seeded comment is what this code writes on a repeat tick: its marker, its disarm outcome, its refusal.
-  const again = driveArm({ comments: [{ body: "unrelated" }, { body: `${marker}\n**Disarmed: yes (disarmed).**\nNot armed` }] });
+  const again = driveArm({ comments: ["unrelated", `${marker}\n**Disarmed: yes (disarmed).**\nNot armed`] });
   assert.equal(again.commented.length, 0, "ONE comment for one file set");
   assert.equal(again.merged, false);
 
-  const changed = driveArm({ comments: [{ body: crossRepoRedMarker([FILES[0]]) }] });
+  const changed = driveArm({ comments: [crossRepoRedMarker([FILES[0]])] });
   assert.equal(changed.commented.length, 1, "a comment about a different file set does not stand in for this one");
 });
 
 test("#992 (5) the sweep's `refusalBeforeArming` refuses the SAME pull request, and clears it when the row is declared", () => {
-  const ask2 = (w: World) => { const fake = world(w); return refusalBeforeArming({ number: "81", repo: LAB, author: "worker-1", prBody: w.body ?? BODY, run: fake.run }); };
+  const ask2 = (w: LabOptions, refuseChecks = false) => {
+    const { world } = labWorld({ prLog: LAB81_LEG_LOG, ...w });
+    if (refuseChecks) world.ci.checks.set(PR_HEAD, new Error("HTTP 502"));
+    return refusalBeforeArming({ number: "81", repo: LAB, author: "worker-1", prBody: w.body ?? BODY });
+  };
   const refused = ask2({});
   assert.equal(refused.kind, "cross-repo-red");
   assert.deepEqual(filesOf(refused), FILES);
   assert.equal(ask2({ body: DECLARED_BODY }).kind, "clear");
-  assert.equal(ask2({ throwOn: /check-runs/ }).kind, "cannot-ask");
-  const fake = world({});
-  assert.equal(refusalBeforeArming({ number: "81", repo: PRIMARY, author: "worker-1", prBody: BODY, run: fake.run }).kind, "clear");
-  assert.ok(!fake.calls.some((args) => args.join(" ").includes("check-runs")), "a primary PR is not asked about a leg");
-});
-
-// --- door two as the real process ---
-
-const SWEEP = fileURLToPath(new URL("../auto-arm-sweep.ts", import.meta.url));
-
-/** The real sweep over ONE open lab PR (#81), a fake `gh` answering from its arguments. */
-function driveSweep({ body = BODY, existingComment = "" }: { body?: string; existingComment?: string }) {
-  const dir = mkdtempSync(join(tmpdir(), "cross-repo-red-sweep-"));
-  try {
-    mkdirSync(join(dir, "bin"));
-    const put = (name: string, text: string) => writeFileSync(join(dir, name), text);
-    put("body.txt", body);
-    put("comments.json", JSON.stringify({ comments: [{ body: existingComment }] }));
-    put("pr.log", LAB81_LEG_LOG);
-    put("trunk.log", "");
-    put("checks.json", JSON.stringify({ total_count: 2, check_runs: [{ name: "gate", conclusion: "success" },
-      { name: LEG, conclusion: "failure", details_url: `https://github.com/${LAB}/actions/runs/${PR_RUN}/job/114504845032` }] }));
-    put("push.json", JSON.stringify({ workflow_runs: [{ id: TRUNK_RUN, head_sha: "77283f6e", status: "completed", conclusion: "success",
-      html_url: `https://github.com/${LAB}/actions/runs/${TRUNK_RUN}`, created_at: "2026-10-11T15:35:54Z", event: "push" }] }));
-    put("schedule.json", JSON.stringify({ workflow_runs: [] }));
-    put("jobs.json", JSON.stringify({ jobs: [{ name: "gate", conclusion: "success" }, { name: LEG, conclusion: "success" }] }));
-    writeFileSync(join(dir, "bin", "gh"), `#!/bin/bash
-echo "$*" >> "${dir}/calls"
-case "$*" in
-  *"issue view 5078 "*) echo '{"blockedBy":{"nodes":[],"totalCount":0}}' ;;
-  *"issue view 5080 "*) echo '{"state":"OPEN"}' ;;
-  *"issue view"*) echo 'HTTP 404' >&2; exit 1 ;;
-  *timelineItems*) echo '{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}' ;;
-  *"api graphql"*) echo '[{"number":81,"isDraft":false,"merged":false,"autoMergeRequest":null,"mergeQueueEntry":null}]' ;;
-  *"--json comments"*) cat "${dir}/comments.json" ;;
-  *"--json body"*) cat "${dir}/body.txt" ;;
-  *"--json labels"*) echo '[]' ;;
-  *"--json author"*) echo 'worker-1' ;;
-  *"--json headRefOid"*) echo ${PR_HEAD} ;;
-  *"check-runs?per_page=100"*) cat "${dir}/checks.json" ;;
-  *"check-runs"*) echo 2 ;;
-  *"event=push"*) cat "${dir}/push.json" ;;
-  *"event=schedule"*) cat "${dir}/schedule.json" ;;
-  *"actions/runs/${TRUNK_RUN}/jobs"*) cat "${dir}/jobs.json" ;;
-  *"run view ${PR_RUN} "*) cat "${dir}/pr.log" ;;
-  *"run view ${TRUNK_RUN} "*) cat "${dir}/trunk.log" ;;
-esac
-`);
-    chmodSync(join(dir, "bin", "gh"), 0o755);
-    const proc = spawnSync(process.execPath, [SWEEP], { encoding: "utf8", env: { ...process.env,
-      GITHUB_REPOSITORY: LAB, PATH: `${join(dir, "bin")}:${process.env.PATH}` } });
-    const calls = readFileSync(join(dir, "calls"), "utf8").split("\n").filter(Boolean);
-    return { said: proc.stdout + proc.stderr, status: proc.status, merged: calls.some((c) => c.startsWith("pr merge")),
-      commented: calls.filter((c) => c.startsWith("pr comment")) };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-test("#992 (5) sweep, as a process: lab#81's reading is SKIPPED naming the files, nothing is merged, one comment is posted", () => {
-  const out = driveSweep({});
-  assert.equal(out.merged, false, out.said);
-  assert.match(out.said, /SWEEP: #81 SKIPPED -- the cross-repo leg of #81 fails on 2 test files/);
-  assert.equal(out.status, 0, "a PR waiting on a declaration is not an arming failure, as a hold is not");
-  assert.equal(out.commented.length, 1, out.said);
-  assert.match(out.commented[0], /arm-refused: cross-repo-red /);
-});
-
-test("#992 (5) sweep, as a process: a tick that finds the marker already on the PR posts nothing more, and a changed file set is said afresh", () => {
-  const once = driveSweep({ existingComment: `${crossRepoRedMarker(FILES)}\nNot armed` });
-  assert.equal(once.merged, false, once.said);
-  assert.equal(once.commented.length, 0, once.said);
-  const changed = driveSweep({ existingComment: crossRepoRedMarker([FILES[0]]) });
-  assert.equal(changed.commented.length, 1, changed.said);
+  assert.equal(ask2({}, true).kind, "cannot-ask");
+  const { host } = labWorld({ prLog: LAB81_LEG_LOG });
+  const checkRunReads: string[] = [];
+  const checkRuns = host.rows!.checkRunsOfHead;
+  host.rows!.checkRunsOfHead = (repo, head, run) => { checkRunReads.push(head); return checkRuns(repo, head, run); };
+  assert.equal(refusalBeforeArming({ number: "81", repo: PRIMARY, author: "worker-1", prBody: BODY }).kind, "clear");
+  assert.deepEqual(checkRunReads, [], "a primary PR is not asked about a leg");
 });

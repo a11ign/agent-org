@@ -1,5 +1,5 @@
 // no-token: GH_TOKEN
-// #2358: this file reads auto-arm.yml's TEXT and drives `runArmPr` with an injected `run`; the literal `GH_TOKEN` in
+// #2358: this file reads auto-arm.yml's TEXT and drives `runArmPr` on the fake code host; the literal `GH_TOKEN` in
 // an assertion message is what charged it, and it never uses a token. Without this the row's own Acceptance
 // command was REFUSED by the token-less acceptance job and verified nothing.
 /**
@@ -17,7 +17,7 @@
  * and keeps `github.token`. The a11ign side pins the same shape in `packages/guards/src/auto-arm-octo-sts.test.ts`, with the
  * policy half (what the Octo STS identity accepts), which cannot be read from here.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,6 +25,10 @@ import { HOME_CHECKOUT } from "../project-config.ts";
 import { trackedTopLevelDirs } from "../region-paths.ts";
 import { parse as parseYaml } from "yaml";
 import { runArmPr, EXIT, looksPoolRefused, refusalScope } from "../arm-pr.ts";
+import type { Pool } from "../api-pool.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
 import { shouldBeMerging } from "../work-gate/causes/pr-checks.ts";
 import { readUnarmed } from "../work-gate/reads.ts";
 import { greenUnarmedOrders } from "../work-gate/pr-orders/pr-gate-readings.ts";
@@ -213,41 +217,40 @@ test("#2358: trunk.yml no longer reads the arming secret -- the auto-revert path
 // These drive the real entry points rather than asserting on source text -- the rule this file's own
 // `MUTATION TARGET` test states, and `a-hold-means-cannot-merge.test.ts` records being caught by.
 
-/** Drives `runArmPr` for #1958 with every `gh` call failing with `message`, capturing what it said. */
-function driveRefusal(message: string, stdout?: string) {
+/**
+ * Drives `runArmPr` for #1958 with the pull request's read refused with `message`, capturing what it said. The pool a refused read names is the code host's (`graphqlPoolOf`):
+ * `pool` is what it reads, or `null` for a probe that brought no headers back (A11-160, step 5: how the headers are parsed is `plugins/github/rows/pool-reads.test.ts`'s).
+ */
+function driveRefusal(message: string, pool: Pool | null = null) {
   const lines: string[] = [];
-  const calls: string[][] = [];
-  const run = (_cmd: string, args: string[]) => {
-    calls.push(args);
-    if (args[0] === "api" && stdout !== undefined) {
-      throw Object.assign(new Error("gh: the pool refused this too"), { stdout });
-    }
-    throw new Error(message);
-  };
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  world.repo = "a11ign/a11ign";
+  world.pool = pool;
+  const pull = fakePull(world, 1958);
+  world.failures.set("readPullForArming", new Error(message));
+  substituteCodeHost(host);
   const code = runArmPr({
-    argv: ["--pr=1958", "--repo=a11ign/a11ign"], env: {}, run: run as never,
+    argv: ["--pr=1958", "--repo=a11ign/a11ign"], env: {},
     sleep: () => "ok" as const, log: (l: string) => lines.push(l), error: (l: string) => lines.push(l),
   });
-  return { code, said: lines.join("\n"), calls };
+  return { code, said: lines.join("\n"), calls: world.calls, armed: pull.armed };
 }
+
+afterEach(() => forgetActivation());
 
 const POOL_REFUSAL = "GraphQL: API rate limit already exceeded for user ID 46429371.";
 const ONE_PR_REFUSAL = "GraphQL: Could not resolve to a PullRequest with the number 1958.";
 
 /**
- * The real 403's own shape. Confirmed 2026-09-23 against a REAL refusal, which is what `ceo`'s ruling
- * required before anything relied on it: the unauthenticated core pool was driven to `403` and the
- * refusing response carried `x-ratelimit-remaining: 0` and `x-ratelimit-reset: 1790156710`. The same day,
- * `gh api ... -i` was confirmed to put the whole response on the thrown error's `stdout`. The reset below
- * is the real outage's own end -- 19:13:44Z, the minute #1958 and #1949 became armable again.
+ * The real 403's own pool, as its headers read (confirmed 2026-09-23 against a REAL refusal: the unauthenticated core pool was driven to `403` and the refusing response carried
+ * `x-ratelimit-remaining: 0` and `x-ratelimit-reset: 1790156710`). The reset below is the real outage's own end -- 19:13:44Z, the minute #1958 and #1949 became armable again.
  */
-const REFUSED_403 = "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 0\r\n"
-  + "X-Ratelimit-Reset: 1758568424\r\nX-Ratelimit-Resource: graphql\r\n\r\n"
-  + '{"message":"API rate limit exceeded for user ID 46429371."}';
+const REFUSED_403_POOL: Pool = { remaining: 0, limit: 5000, used: 5000, resource: "graphql", resetAt: "2025-09-22T19:13:44.000Z", resetInMinutes: 0 };
 
 test("#1969 ACCEPTANCE: a token that is SET but REFUSED says the outage is REPOSITORY-WIDE and names "
   + "the minute it returns -- read from X-Ratelimit-Reset on the 403, never inferred", () => {
-  const { said } = driveRefusal(POOL_REFUSAL, REFUSED_403);
+  const { said } = driveRefusal(POOL_REFUSAL, REFUSED_403_POOL);
   assert.match(said, /REPOSITORY-WIDE/,
     "the refusal must say the outage is not about this pull request -- that is the whole defect");
   assert.match(said, /until 19:13Z/,
@@ -264,22 +267,22 @@ test("#1969 CONTROL: an ordinary unreadable pull request claims NOTHING reposito
   assert.doesNotMatch(said, /until \d{2}:\d{2}/);
   assert.match(said, /SCOPE -- this is about #1958 alone/,
     "it says the opposite explicitly rather than going quiet: silence is what #1969 is about");
-  assert.equal(calls.filter((c) => c[0] === "api").length, 0,
+  assert.equal(calls.filter((c) => c === "graphqlPoolOf").length, 0,
     "no pool probe is bought for a refusal that does not implicate the credential -- one point per 502 "
     + "would be a standing cost for an answer nobody needs");
 });
 
 test("#1969 MUTATION TARGET: the BEHAVIOUR is byte-identical across the two messages -- ceo's "
   + "constraint that no arming behaviour may branch on matched text", () => {
-  const pool = driveRefusal(POOL_REFUSAL, REFUSED_403);
+  const pool = driveRefusal(POOL_REFUSAL, REFUSED_403_POOL);
   const onePr = driveRefusal(ONE_PR_REFUSAL);
   assert.equal(pool.code, EXIT.CANNOT_ASK);
   assert.equal(onePr.code, EXIT.CANNOT_ASK,
     "`labels === null` refuses and exits 2 EITHER WAY -- the match may only choose the sentence");
-  for (const { calls } of [pool, onePr]) {
-    assert.equal(calls.filter((c) => c[0] === "pr" && c[1] === "merge").length, 0,
-      "nothing was armed on either path: `Unreadable is not unheld` (#645) is untouched by this row");
-    assert.equal(calls.filter((c) => c[0] === "pr" && c[1] === "edit").length, 0, "and nothing labelled");
+  for (const { calls, armed } of [pool, onePr]) {
+    assert.equal(armed, false, "nothing was armed on either path: `Unreadable is not unheld` (#645) is untouched by this row");
+    assert.equal(calls.filter((c) => c.startsWith("armPullAuto ")).length, 0, "no arm was attempted");
+    assert.equal(calls.filter((c) => c.startsWith("addLabelsToPull ")).length, 0, "and nothing labelled");
   }
 });
 

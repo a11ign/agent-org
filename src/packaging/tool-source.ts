@@ -41,6 +41,22 @@ export function toolSources(): ToolFile[] {
     .filter((path) => !relative(TOOL_SRC, path).startsWith("packaging/")).map(read);
 }
 
+/** The tool's root, absolute and with a trailing slash: `src/`'s parent, in both layouts. */
+const TOOL_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+
+/**
+ * The bundled plugins' own non-test source, with paths from the tool's root (`plugins/github/rows/arming.ts`). The census guards that sweep `src/` for a call sweep this too, since A11-160 moves the
+ * calls into `plugins/github`. Empty where the tool has no `plugins/` folder.
+ */
+export function pluginSources(): ToolFile[] {
+  const plugins = join(TOOL_ROOT, "plugins");
+  try {
+    return filesUnder(plugins).filter((path) => !TEST.test(path)).map((absolute) => ({ path: `plugins/${relative(plugins, absolute).split("\\").join("/")}`, text: readFileSync(absolute, "utf8") }));
+  } catch {
+    return [];
+  }
+}
+
 /** The tool's own test files. */
 export function toolTests(): ToolFile[] {
   return filesUnder(TOOL_SRC).filter((path) => TEST.test(path)).map(read);

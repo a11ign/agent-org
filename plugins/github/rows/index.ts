@@ -4,13 +4,16 @@
 // takes the `run` its caller hands it (the contract's head says why), reads GitHub's answer as it always did, and throws or answers `null` as it always did. What core owns that they read (the project's
 // labels and board, how a row's waits and GitHub's rate-limit answers are read, the error a window throws) is `helpers`, asked when an operation needs it: a host with no project declaration builds a
 // code host that has never been asked for a row.
-import type { CodeHostRows, RowsHelpers } from "../../../src/plugins/contracts/code-host-rows.ts";
+import type { CodeHostRows, RowsHelpers, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
 import { githubTicketAdapter, OPEN_ITEMS_QUERY, TRACKER } from "./adapter.ts";
 import { approvalFactsOf, latestApprovals } from "./approval-reads.ts";
+import { armedFromApi, armedNodeOf, armedQueryArgs, armedReason, ejectionQueryArgs, queueEjectionOf, readQueueEjection } from "./armed-state.ts";
+import { addLabelsToPull, armedReasonOf, armMergeOf, armPullAuto, commentOnPull, dequeueByHandCommand, jumpToFront, labelsOfRow, openBlockersOf, openBlockersOfRow, pullStateOf, readPullComments, readPullForArming, readQueueSeat, settledReason, trunkRunsPage } from "./arming.ts";
 import { createRow, editComment, keyedCommentsOf, mergedWindowOf, openPullsOf as openPullFieldsOf, postRowComment, reviewsOf } from "./approved-unqueued-reads.ts";
 import { disableAutoMergeOf, readDisarmSeat } from "./auto-merge-disarm.ts";
 import { boardFiledRow } from "./board-filed-row.ts";
 import { briefChairmanOnPull } from "./chairman-brief.ts";
+import { behindByOf, checkRunsOfCommit, closingIssuesOf, compareWithMain, deleteBranchOf, mainTipDateOf, mergeQueuedPull, openPullsForQueue, openPullsOfBranch, pullForCiGate, pullForGuard, pullOutcomeOf, recentClosesPrsOf, requiredContextsOf } from "./merge-guard-reads.ts";
 import { checkRunsOfHead, failedLogOfRun, headOfChange, jobsOfRun, redRunOfHead, rerunFailedJobsOf, stateOfRow, workflowRunsOf } from "./ci-reads.ts";
 import { closeRowWithComment } from "./close-row.ts";
 import { commentsSince } from "./comments-since.ts";
@@ -29,6 +32,7 @@ import { dequeuePullRequestOf, mergeGroupRunCountOf, queueEntriesOf } from "./qu
 import { closeIncident, closedIncidentsOf, createIncident, jobLogOf } from "./release-incidents.ts";
 import { forgetRefusedReads, isRowsByLabelRead, readClaimedRows, readRowsByLabel, readUnlessRefused } from "./rows-by-label.ts";
 import { asListJson, foldPage, isSinceRead, parsePage, readMergedPullRequests, readRowsSince, SINCE_PAGE_SIZE, sincePageArgs } from "./rows-since.ts";
+import { isArmedPull, isCrossRepositoryPull, isMergedPull, openPullRequestsQueryArgs, readOpenPullNodes, readOutsideArmListed, readSweepFacts } from "./sweep-reads.ts";
 import { testsFirstReadsOf } from "./tests-first-reads.ts";
 
 /** The values of the rows, and the operations that read the project's declaration: what core hands over as `helpers`, asked when an operation needs it. */
@@ -49,11 +53,11 @@ function projectRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "acts" | "t
 
 /** The reads and writes of pull requests, checks, comments, incidents and the merge queue, which read nothing of core's. */
 const pullRequestRows = {
-  latestApprovals, approvalFactsOf, keyedCommentsOf, postRowComment, createRow, editComment, reviewsOf, mergedWindowOf, openPullFieldsOf, readDisarmSeat, disableAutoMergeOf, briefChairmanOnPull,
+  latestApprovals, keyedCommentsOf, postRowComment, createRow, editComment, reviewsOf, mergedWindowOf, openPullFieldsOf, briefChairmanOnPull,
   headOfChange, checkRunsOfHead, workflowRunsOf, jobsOfRun, failedLogOfRun, stateOfRow, redRunOfHead, rerunFailedJobsOf, closeRowWithComment, commentsSince, conditionalGetArgs, pullViewArgs,
-  pullTextOf, branchRefTextOf, addedFilesTextOf, fileAtTextOf, defaultBranchFileTextOf, commentOnIssue, openIncidentsOf, readOpenPullHeads, openPullBodiesOf, outsideArmListArgs, readyPullRequest,
-  ensureTriageLabel, pullRequestFieldsOf, queueEntriesOf, mergeGroupRunCountOf, dequeuePullRequestOf, jobLogOf, closedIncidentsOf, createIncident, closeIncident,
-  testsFirstReadsOf, isRowsByLabelRead, forgetRefusedReads, isSinceRead, parsePage, sincePageArgs, asListJson,
+  pullTextOf, branchRefTextOf, addedFilesTextOf, fileAtTextOf, defaultBranchFileTextOf, commentOnIssue, openIncidentsOf, readOpenPullHeads, openPullBodiesOf, outsideArmListArgs,
+  ensureTriageLabel, pullRequestFieldsOf, queueEntriesOf, mergeGroupRunCountOf, jobLogOf, closedIncidentsOf, createIncident, closeIncident,
+  isRowsByLabelRead, forgetRefusedReads, isSinceRead, parsePage, sincePageArgs, asListJson,
 };
 
 /** The reads of rows by label and of windows of rows, which read GitHub's rate-limit answers and the claim label, and throw core's error for a window too long. */
@@ -69,7 +73,43 @@ function listRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "readUnlessRef
   };
 }
 
-/** The GitHub code host's `rows`. `helpers` is what core owns of row mode, asked when an operation needs it. */
-export function createRows(helpers: () => RowsHelpers): CodeHostRows {
-  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers) };
+/**
+ * The runners the plugin gives an operation whose caller hands none: `own` runs `gh` as the process's account, and `queue` runs it with the git environment variables a hook sets taken off (the merge queue's
+ * dispatcher is started from a worktree, where they would aim `gh` at the wrong repository).
+ */
+export type RowsRunners = Readonly<{ own: RowsRun; queue: RowsRun }>;
+
+const NO_RUNNER: RowsRun = () => {
+  throw new Error("this code host's rows were built with no runner of their own, so an operation whose caller hands none cannot run");
+};
+
+/** An operation with a `run` in its request, made to use `own` when the caller hands none. */
+const withOwnRun = <Request extends { run: RowsRun }, Result>(operation: (request: Request) => Result, own: RowsRun) =>
+  (request: Omit<Request, "run"> & { run?: RowsRun }): Result => operation({ ...request, run: request.run ?? own } as Request);
+
+/** The operations a moved caller reaches without a `run` of its own, and the 1.7 ones among them that took one. */
+function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows>> {
+  return {
+    ownRun: own,
+    armedQueryArgs, armedFromApi, armedReason, ejectionQueryArgs, queueEjectionOf, openBlockersOf, settledReason, dequeueByHandCommand, openPullRequestsQueryArgs,
+    armedNodeOf: withOwnRun(armedNodeOf, own), armedReasonOf: withOwnRun(armedReasonOf, own), readQueueEjection: withOwnRun(readQueueEjection, own),
+    openBlockersOfRow: withOwnRun(openBlockersOfRow, own), labelsOfRow: withOwnRun(labelsOfRow, own), readPullComments: withOwnRun(readPullComments, own), commentOnPull: withOwnRun(commentOnPull, own),
+    addLabelsToPull: withOwnRun(addLabelsToPull, own), readPullForArming: withOwnRun(readPullForArming, own), pullStateOf: withOwnRun(pullStateOf, own), armPullAuto: withOwnRun(armPullAuto, own),
+    armMergeOf: (request, seams) => armMergeOf({ ...request, run: request.run ?? own }, seams), trunkRunsPage: withOwnRun(trunkRunsPage, own),
+    readQueueSeat: withOwnRun(readQueueSeat, own), jumpToFront: withOwnRun(jumpToFront, own),
+    graphqlPoolOf: (run = own) => helpers().pool.fromResponse(helpers().pool.rawResponse(helpers().pool.probe, run)),
+    readOpenPullNodes: withOwnRun(readOpenPullNodes, own), isMergedPull: withOwnRun(isMergedPull, own), isArmedPull: withOwnRun(isArmedPull, own), readSweepFacts: withOwnRun(readSweepFacts, own),
+    isCrossRepositoryPull: withOwnRun(isCrossRepositoryPull, own), readOutsideArmListed: withOwnRun(readOutsideArmListed, own),
+    requiredContextsOf: withOwnRun(requiredContextsOf, own), checkRunsOfCommit: withOwnRun(checkRunsOfCommit, own), mainTipDateOf: withOwnRun(mainTipDateOf, own), behindByOf: withOwnRun(behindByOf, own),
+    closingIssuesOf: withOwnRun(closingIssuesOf, own), recentClosesPrsOf: withOwnRun(recentClosesPrsOf, own), pullForGuard: withOwnRun(pullForGuard, own), pullForCiGate: withOwnRun(pullForCiGate, own),
+    pullOutcomeOf: withOwnRun(pullOutcomeOf, own), openPullsOfBranch: withOwnRun(openPullsOfBranch, own),
+    openPullsForQueue: (request = {}) => openPullsForQueue({ run: request.run ?? queue }), mergeQueuedPull: withOwnRun(mergeQueuedPull, queue), compareWithMain: withOwnRun(compareWithMain, queue), deleteBranchOf: withOwnRun(deleteBranchOf, queue),
+    approvalFactsOf: (pull, run = own) => approvalFactsOf(pull, run), readDisarmSeat: withOwnRun(readDisarmSeat, own), disableAutoMergeOf: withOwnRun(disableAutoMergeOf, own), readyPullRequest: withOwnRun(readyPullRequest, own),
+    dequeuePullRequestOf: withOwnRun(dequeuePullRequestOf, own), testsFirstReadsOf: (request, run = own) => testsFirstReadsOf(request, run),
+  };
+}
+
+/** The GitHub code host's `rows`. `helpers` is what core owns of row mode, asked when an operation needs it; `runners` are the plugin's own, for the operations whose caller hands none. */
+export function createRows(helpers: () => RowsHelpers, runners: RowsRunners = { own: NO_RUNNER, queue: NO_RUNNER }): CodeHostRows {
+  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners) };
 }

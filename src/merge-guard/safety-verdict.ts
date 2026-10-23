@@ -7,7 +7,7 @@ import { REPO } from "../project-identity.ts";
 import { HOME_CHECKOUT, PROJECT_DECLARATION_PATH } from "../project-config.ts";
 import { SESSION_PREFIX } from "../project-vocabulary.ts";
 import { testsFirstReadsOf, type TestsFirstFacts } from "../ticket-port/tests-first-reads.ts";
-import { gh, lookup } from "./lookups.ts";
+import { lookup } from "./lookups.ts";
 import { headTipMismatchReason } from "./head-tip-rule.ts";
 import { approvalHeadReasons, type ApprovalFacts } from "./approval-head-rule.ts";
 import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
@@ -127,7 +127,7 @@ export function testsFirstEditReasons(number: number | string, facts: TestsFirst
  */
 export function lookupTestsFirstFacts(
   pr: { number: number; head: string; author: string | null; body: string | null; },
-  { run = gh, enabled = readTestsFirstFlag(), repo = REPO }: { run?: (args: string[]) => string; enabled?: boolean; repo?: string; } = {},
+  { run, enabled = readTestsFirstFlag(), repo = REPO }: { run?: (args: string[]) => string; enabled?: boolean; repo?: string; } = {},
 ): TestsFirstFacts | null | undefined {
   if (!enabled) return undefined;
   const rows = closedRowsOf(pr.body ?? "", repo);

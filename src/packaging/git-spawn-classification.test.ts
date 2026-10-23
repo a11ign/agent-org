@@ -191,7 +191,6 @@ const GIT_IS_INJECTED_SEAM: Record<string, string> = {
  */
 const COMMAND_IS_NOT_GIT: Record<string, string> = {
   "src/agent-tool-update.ts": "`run(program)` is called only with \"codex\", a file under the home's .local/bin, \"claude\", \"curl\" or \"herdr\" (hostSeams, and the tests that inject runProgram); none is git",
-  "src/arm-pr.ts": "`defaultRun`'s command is always \"gh\": `gh()` is its only caller and hard-codes run(\"gh\", args), and the injected run callers ignore the command",
   "src/board-snapshot.ts": "`defaultRun`'s command is always \"gh\": every seam call is run(\"gh\", args), and no production caller injects run",
   "src/host-kernel.ts": "the privileged command is REBOOT_ARGV (sudo systemctl reboot), compared by value before the spawn; the other argv literals are systemctl",
   "src/host-pnpm.ts": "the command is a PATH entry joined with \"pnpm\", so its basename is always pnpm",

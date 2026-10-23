@@ -21,13 +21,17 @@ export type CodeHostProbe = Readonly<{
 }>;
 type Subject = Readonly<{ host: CodeHost; probe: CodeHostProbe }>;
 
-/** The operations of the optional `rows` group (contract 1.7), as a function each; the other members are values. */
+/** The operations of the optional `rows` group (contract 1.8), as a function each; the other members are values. */
 const ROWS_OPERATIONS = ["ticketAdapter", "latestApprovals", "approvalFactsOf", "keyedCommentsOf", "postRowComment", "createRow", "editComment", "reviewsOf", "mergedWindowOf", "openPullFieldsOf", "readDisarmSeat", "disableAutoMergeOf",
   "boardFiledRow", "briefChairmanOnPull", "headOfChange", "checkRunsOfHead", "workflowRunsOf", "jobsOfRun", "failedLogOfRun", "stateOfRow", "redRunOfHead", "rerunFailedJobsOf", "closeRowWithComment", "commentsSince", "conditionalGetArgs",
   "pullViewArgs", "pullTextOf", "branchRefTextOf", "addedFilesTextOf", "fileAtTextOf", "defaultBranchFileTextOf", "commentOnIssue", "openIncidentsOf", "readOpenPullHeads", "openPullBodiesOf", "outsideArmListArgs", "readyPullRequest",
   "ensureTriageLabel", "isIssueOnBoard", "boardItemOf", "pullRequestFieldsOf", "queueEntriesOf", "mergeGroupRunCountOf", "dequeuePullRequestOf", "jobLogOf", "closedIncidentsOf", "createIncident", "closeIncident",
   "forgetRefusedReads", "isRowsByLabelRead", "readUnlessRefused", "readRowsByLabel", "readClaimedRows", "sincePageArgs", "isSinceRead", "parsePage", "foldPage", "readRowsSince", "asListJson", "readMergedPullRequests",
-  "testsFirstReadsOf"] as const satisfies readonly (keyof CodeHostRows)[];
+  "testsFirstReadsOf", "ownRun", "armedQueryArgs", "armedFromApi", "armedReason", "armedNodeOf", "armedReasonOf", "ejectionQueryArgs", "queueEjectionOf", "readQueueEjection", "openBlockersOf", "openBlockersOfRow",
+  "labelsOfRow", "readPullComments", "commentOnPull", "addLabelsToPull", "readPullForArming", "pullStateOf", "armPullAuto", "settledReason", "armMergeOf", "trunkRunsPage", "readQueueSeat", "jumpToFront",
+  "dequeueByHandCommand", "graphqlPoolOf", "openPullRequestsQueryArgs", "readOpenPullNodes", "isMergedPull", "isArmedPull", "readSweepFacts", "isCrossRepositoryPull", "readOutsideArmListed", "requiredContextsOf",
+  "checkRunsOfCommit", "mainTipDateOf", "behindByOf", "closingIssuesOf", "recentClosesPrsOf", "pullForGuard", "pullForCiGate", "pullOutcomeOf", "openPullsOfBranch", "openPullsForQueue", "mergeQueuedPull",
+  "compareWithMain", "deleteBranchOf"] as const satisfies readonly (keyof CodeHostRows)[];
 
 const OPERATIONS = ["repoViewArgs", "repoCloneArgs", "readOwnLogin", "readPullFeedback", "readReplies", "readReviewState", "readPullState", "openPullUrlsOf", "sweepRetargets", "readCheckLog", "rerunFailedChecks", "readReviewClaims", "writeReviewClaim", "readChange", "requestReview", "armMerge", "subscribe"] as const;
 const PULL_STATES = ["OPEN", "MERGED", "CLOSED"];
@@ -141,11 +145,11 @@ function throws(call: () => unknown): boolean {
 
 /** Rows whose operations act on the `run` their caller hands them (`acts: "through-run"`): only those have a refused `run` to answer. */
 const withRunRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
-  applies: ({ host }) => host.rows?.acts === "through-run", reason: `the code host has no rows that act through the caller's run (contract 1.7), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
+  applies: ({ host }) => host.rows?.acts === "through-run", reason: `the code host has no rows that act through the caller's run (contract 1.8), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
 });
 
 const withRows = (reason: string, run: (subject: Subject & { rows: CodeHostRows }) => unknown): Conditional<Subject> => ({
-  applies: ({ host }) => host.rows !== undefined, reason: `the code host has no rows, which are optional (contract 1.7), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
+  applies: ({ host }) => host.rows !== undefined, reason: `the code host has no rows, which are optional (contract 1.8), so ${reason}`, run: (subject) => run({ ...subject, rows: subject.host.rows! }),
 });
 
 const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
@@ -187,6 +191,45 @@ const CONDITIONAL: Readonly<Record<string, Conditional<Subject>>> = {
     const listed = rows.asListJson({ labels: { nodes: [{ name: "x" }] }, number: 1 });
     expect(Array.isArray(listed.labels) && listed.number === 1, "asListJson must turn a connection into its list and leave a scalar alone");
     expect(throws(() => rows.parsePage("{}", ask)), "a page that is not a connection must throw: 'could not read' is never an empty page");
+  }),
+  "a read the rows could not make for arming, the merge guard and the queue throws, never an empty answer": withRunRows("no refused read is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const reads: Record<string, () => unknown> = {
+      armedNodeOf: () => rows.armedNodeOf({ number: 1, repo, run: refused }), armedReasonOf: () => rows.armedReasonOf({ repo, number: "1", run: refused }), readQueueEjection: () => rows.readQueueEjection({ number: 1, repo, run: refused }),
+      openBlockersOfRow: () => rows.openBlockersOfRow({ repo, number: 1, run: refused }), labelsOfRow: () => rows.labelsOfRow({ repo, number: 1, run: refused }), readPullComments: () => rows.readPullComments({ repo, number: 1, run: refused }),
+      readPullForArming: () => rows.readPullForArming({ repo, number: "1", run: refused }), pullStateOf: () => rows.pullStateOf({ repo, number: "1", run: refused }), trunkRunsPage: () => rows.trunkRunsPage({ repo, workflow: "ci.yml", page: 1, perPage: 10, run: refused }),
+      readQueueSeat: () => rows.readQueueSeat({ repo, number: "1", run: refused }), readOpenPullNodes: () => rows.readOpenPullNodes({ repo, run: refused }), isMergedPull: () => rows.isMergedPull({ repo, number: "1", run: refused }),
+      isArmedPull: () => rows.isArmedPull({ repo, number: "1", run: refused }), readSweepFacts: () => rows.readSweepFacts({ repo, number: "1", run: refused }), readOutsideArmListed: () => rows.readOutsideArmListed({ repo, limit: 10, run: refused }),
+      requiredContextsOf: () => rows.requiredContextsOf({ repo, run: refused }), checkRunsOfCommit: () => rows.checkRunsOfCommit({ repo, sha: "a".repeat(40), run: refused }), mainTipDateOf: () => rows.mainTipDateOf({ repo, run: refused }),
+      behindByOf: () => rows.behindByOf({ repo, head: "a".repeat(40), run: refused }), closingIssuesOf: () => rows.closingIssuesOf({ repo, number: 1, run: refused }), recentClosesPrsOf: () => rows.recentClosesPrsOf({ repo, run: refused }),
+      pullForGuard: () => rows.pullForGuard({ repo, number: 1, run: refused }), pullForCiGate: () => rows.pullForCiGate({ repo, number: 1, run: refused }), pullOutcomeOf: () => rows.pullOutcomeOf({ repo, number: 1, run: refused }),
+      openPullsOfBranch: () => rows.openPullsOfBranch({ repo, branch: "b", run: refused }), openPullsForQueue: () => rows.openPullsForQueue({ run: refused }), compareWithMain: () => rows.compareWithMain({ repo, branch: "b", run: refused }),
+    };
+    for (const [name, read] of Object.entries(reads)) expect(throws(read), `${name} must throw when the read is refused: a read that could not be made is never an empty answer`);
+  }),
+  "a write the rows could not make for arming, the merge and the queue throws, so no caller reads it as done": withRunRows("no refused write is asked", ({ rows, probe }) => {
+    const { repository: repo } = probe;
+    const writes: Record<string, () => unknown> = {
+      commentOnPull: () => rows.commentOnPull({ repo, number: 1, body: "b", run: refused }), addLabelsToPull: () => rows.addLabelsToPull({ repo, number: "1", labels: ["x"], run: refused }),
+      armPullAuto: () => rows.armPullAuto({ repo, number: 1, run: refused }), jumpToFront: () => rows.jumpToFront({ id: "x", headOid: "a".repeat(40), run: refused }), mergeQueuedPull: () => rows.mergeQueuedPull({ number: 1, run: refused }),
+      deleteBranchOf: () => rows.deleteBranchOf({ repo, branch: "b", run: refused }), armMergeOf: () => rows.armMergeOf({ repo, number: "1", run: refused }, { sleep: () => undefined, attempts: 1, error: () => undefined }),
+    };
+    for (const [name, write] of Object.entries(writes)) expect(throws(write), `${name} must throw when the write is refused${name === "armMergeOf" ? " and nothing explains the refusal (not settled, not armed meanwhile)" : ""}`);
+  }),
+  "the rows' rules for arming answer as the callers that arm and guard expect": withRows("no rule is asked", ({ rows }) => {
+    expect(!rows.armedFromApi(null) && !rows.armedFromApi({}) && rows.armedFromApi({ merged: true }) && rows.armedFromApi({ autoMergeRequest: { enabledAt: "t" } }) && rows.armedFromApi({ mergeQueueEntry: { state: "QUEUED" } }),
+      "a pull request is armed when it merged, auto-merges or sits in the merge queue, and nobody has armed one that is none of those");
+    expect(rows.armedReason({ merged: true, mergeQueueEntry: {} }) === "it is already merged" && rows.armedReason({ mergeQueueEntry: {} }) === "it is already queued to merge"
+      && rows.armedReason({ autoMergeRequest: {} }) === "auto-merge is already enabled on it" && rows.armedReason({}) === null, "the most advanced armed state is named, and an unarmed one has no reason");
+    expect(rows.settledReason("MERGED") === "it is already merged" && rows.settledReason("CLOSED") === "it is already closed" && rows.settledReason("OPEN") === null && rows.settledReason(null) === null,
+      "only merged and closed leave nothing to arm; an unread state is not one");
+    const node = (state: string) => ({ number: 4, state });
+    expect(JSON.stringify(rows.openBlockersOf({ blockedBy: { nodes: [node("OPEN"), { number: 5, state: "CLOSED" }, { number: 6 }] } })) === "[4,6]", "a blocker is open unless it is known closed");
+    expect(rows.openBlockersOf({}) === null && rows.openBlockersOf({ blockedBy: { nodes: [{ number: 5, state: "CLOSED" }], totalCount: 3 } }) === null, "a list that cannot be trusted whole is null, never 'no blockers'");
+    const queued = (reason: string) => ({ timelineItems: { nodes: [{ __typename: "AddedToMergeQueueEvent", createdAt: "t1" }, { __typename: "RemovedFromMergeQueueEvent", createdAt: "t2", reason }] } });
+    expect(rows.queueEjectionOf(queued("failed_checks"))?.ejected === true && rows.queueEjectionOf(queued("manual"))?.ejected === false, "only a removal for failed checks is an ejection");
+    expect(rows.queueEjectionOf({ ...queued("failed_checks"), mergeQueueEntry: { state: "QUEUED" } })?.ejected === false, "a pull request in the queue now is not ejected, whatever the history says");
+    expect(rows.queueEjectionOf({}) === null && rows.queueEjectionOf(null) === null, "an answer with no history is null, never 'not ejected'");
   }),
   "readCheckLog reads the log behind a failing check": withCheck("no check's log is read", ({ host, check }) => {
     const log = host.readCheckLog(check.detailsUrl);

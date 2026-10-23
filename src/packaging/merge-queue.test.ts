@@ -1,4 +1,4 @@
-// no-token: gh -- this file drives merge-queue.ts only through its pure exports and an injected runner; its own code never calls or spawns gh (#1482, route (a))
+// no-token: gh -- this file drives merge-queue.ts only through its pure exports and the fake code host; its own code never calls or spawns gh (#1482, route (a))
 /**
  * THE MERGE ROUTINE MUST BE ABLE TO EXPRESS THE RULE IT ENFORCES.
  *
@@ -11,11 +11,13 @@
  * `refusalFor` is the whole of the judgement, kept pure so it can be driven here. Every case below is a
  * state that has actually occurred in this repository tonight.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { readFileSync } from "node:fs";
 import { refusalFor, wantedPrNumber, orphanedCommitsFrom, runMergeQueue, EXIT } from "../merge-queue.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 
 /** @param {object} over */
 const pr = (over: object) => ({
@@ -135,57 +137,56 @@ test("a missing commits array on a clean compare does not crash — ahead_by 0 n
   assert.deepEqual(result.commits, []);
 });
 
-// --- #1482: the ENTRY POINT, driven with an injected runner ----------------------------------------------------------
+// --- #1482: the ENTRY POINT, driven on the fake code host ------------------------------------------------------------
 //
 // worker-judge's #1399 sweep: the merge lands, then the local orphaned-branch log write throws, and Node exited 1 -- this
-// script's "NOT mergeable" -- for a PR that merged. These drive `runMergeQueue`, the path `--merge` runs. Every seam is
-// injected, and this file's own code never calls or spawns the real command, which is what its first-line
-// declaration says.
+// script's "NOT mergeable" -- for a PR that merged. These drive `runMergeQueue`, the path `--merge` runs. What the dispatcher asks of
+// the code host (the open pull requests, the merge, the comparison with `main`, the branch's deletion) is the code host's `rows`
+// (A11-160, step 5), so the world is the fake's: no GitHub answer is stubbed here. How the GitHub plugin sends those four and reads
+// their answers is `plugins/github/rows/merge-guard-reads.test.ts`'s. Nothing here calls or spawns the real command.
+
+type Seed = { prs?: object[]; compare?: { ahead_by?: number; commits?: { sha: string; commit?: { message?: string } }[] } | Error };
+
+/** The fake code host with the open pull requests seeded, the way GitHub would list them for the queue. */
+function queueWorld({ prs = [PR77], compare }: Seed = {}) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  for (const given of prs as Array<ReturnType<typeof pr> & { title?: string; headRefName: string }>) {
+    world.pulls.set(given.number, { number: given.number, body: "", headRefName: given.headRefName, labels: [], isDraft: given.isDraft, armed: false, merged: false, mergedAt: null,
+      createdAt: "2026-09-07T00:00:00Z", comments: [], title: given.title, mergeable: given.mergeable, mergeStateStatus: given.mergeStateStatus, rollup: given.statusCheckRollup });
+  }
+  if (compare !== undefined) world.compare.set("agent/x-77", compare);
+  substituteCodeHost(host);
+  return world;
+}
 
 const PR77 = { ...pr({ number: 77 }), title: "a row", headRefName: "agent/x-77" };
 
-/** The command runner for the whole entry point, recording every call. */
-function queueRun({ listFails = false, prs = [PR77] as object[], mergeFails = false,
-  compare = { ahead_by: 0, commits: [] } as object } = {}) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (args[0] === "pr" && args[1] === "list") {
-      if (listFails) throw new Error("HTTP 502 on pr list");
-      return JSON.stringify(prs);
-    }
-    if (args[0] === "pr" && args[1] === "merge") {
-      if (mergeFails) throw new Error("GraphQL: Pull request is not mergeable");
-      return "merged #77\n";
-    }
-    if (args[0] === "api" && args.includes("DELETE")) return "";
-    if (args[0] === "api") return JSON.stringify(compare);
-    return "";
-  };
-  return { run, calls };
-}
+afterEach(() => forgetActivation());
 
 /** Runs `--merge 77` through the entry point, capturing its output, errors and log appends. */
-function queue(stub: ReturnType<typeof queueRun>, { appendFails = false } = {}) {
+function queue({ appendFails = false } = {}) {
   const out: string[] = [];
   const err: string[] = [];
   const appended: string[] = [];
-  const code = runMergeQueue({ argv: ["node", "merge-queue.ts", "--merge", "77"], gh: stub.run,
+  const code = runMergeQueue({ argv: ["node", "merge-queue.ts", "--merge", "77"],
     logPath: () => "/tmp/orphaned-branch-log.jsonl",
     append: (_path: string, data: string) => { if (appendFails) throw new Error("EROFS: read-only file system"); appended.push(data); },
     out: (text: string) => { out.push(text); }, err: (text: string) => { err.push(text); } });
   return { code, out: out.join(""), err: err.join(""), appended };
 }
 
-const mergeCall = (calls: string[][]) => calls.findIndex((c) => c[0] === "pr" && c[1] === "merge");
-const deleteCall = (calls: string[][]) => calls.findIndex((c) => c[0] === "api" && c.includes("DELETE"));
+const mergeCall = (calls: string[]) => calls.findIndex((c) => c.startsWith("mergeQueuedPull"));
+const deleteCall = (calls: string[]) => calls.findIndex((c) => c.startsWith("deleteBranchOf"));
 
 test("#1482 ACCEPTANCE: the log write fails AFTER the merge landed -- exit 3, naming the merged PR and what was not done", () => {
-  const stub = queueRun();
-  const { code, out, err } = queue(stub, { appendFails: true });
+  const world = queueWorld();
+  const { code, out, err } = queue({ appendFails: true });
   assert.equal(code, EXIT.MERGED_THEN_STEP_FAILED, "not 1: that is NOT mergeable, and this PR merged");
-  assert.ok(mergeCall(stub.calls) >= 0, "the merge was made");
-  assert.equal(deleteCall(stub.calls), -1, "and the branch was not deleted on an unrecorded check");
+  assert.ok(mergeCall(world.calls) >= 0, "the merge was made");
+  assert.equal(world.pulls.get(77)!.merged, true, "and the pull request is merged");
+  assert.equal(deleteCall(world.calls), -1, "and the branch was not deleted on an unrecorded check");
+  assert.deepEqual(world.deletedBranches, []);
   assert.match(out, /merged #77/, "the merge's own output is still printed");
   assert.match(err, /#77 MERGED/);
   assert.match(err, /EROFS: read-only file system/, "the underlying error is quoted");
@@ -194,34 +195,106 @@ test("#1482 ACCEPTANCE: the log write fails AFTER the merge landed -- exit 3, na
 });
 
 test("#1482 CONTROL: a PR refused BEFORE the merge exits NOT_MERGEABLE, and nothing is merged", () => {
-  const stub = queueRun({ prs: [{ ...PR77, isDraft: true }] });
-  const { code, err } = queue(stub);
+  const world = queueWorld({ prs: [{ ...PR77, isDraft: true }] });
+  const { code, err } = queue();
   assert.equal(code, EXIT.NOT_MERGEABLE);
   assert.match(err, /REFUSING to merge #77: draft/);
-  assert.equal(mergeCall(stub.calls), -1);
+  assert.equal(mergeCall(world.calls), -1);
+  assert.equal(world.pulls.get(77)!.merged, false);
 });
 
-test("#1482 CONTROL: a queue that cannot be read exits CANNOT_TELL, and nothing is merged", () => {
-  const stub = queueRun({ listFails: true });
-  assert.equal(queue(stub).code, EXIT.CANNOT_TELL);
-  assert.equal(mergeCall(stub.calls), -1);
+/** The queue run with `operation` refused by the code host with `failure`. */
+function queueRefusing(operation: string, failure: Error, seed: Seed = {}) {
+  const world = queueWorld(seed);
+  world.failures.set(operation, failure);
+  return { world, ...queue() };
+}
+
+test("#1482 CONTROL: a queue that cannot be read exits CANNOT_TELL, and nothing is merged -- whether gh refused or its answer could not be parsed at all (A11-160: never an uncaught throw that exits as NOT_MERGEABLE)", () => {
+  for (const failure of [new Error("HTTP 502 on pr list"), new SyntaxError("Unexpected token '<', \"<html>\" is not valid JSON")]) {
+    const { world, code, err } = queueRefusing("openPullsForQueue", failure);
+    assert.equal(code, EXIT.CANNOT_TELL, failure.message);
+    assert.match(err, new RegExp(`could not ask GitHub for the queue: ${failure.message.slice(0, 16).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.equal(mergeCall(world.calls), -1);
+  }
 });
 
 test("#1482 CONTROL: every call succeeds -- exit 0, the record written, the absorbed branch deleted", () => {
-  const stub = queueRun();
-  const { code, appended } = queue(stub);
+  const world = queueWorld();
+  const { code, appended } = queue();
   assert.equal(code, EXIT.DONE);
   assert.equal(appended.length, 1);
   assert.equal(JSON.parse(appended[0]).prNumber, 77);
   assert.equal(JSON.parse(appended[0]).orphanedCommitCount, 0);
-  assert.ok(deleteCall(stub.calls) > mergeCall(stub.calls), "deleted after the merge");
+  assert.ok(deleteCall(world.calls) > mergeCall(world.calls), "deleted after the merge");
+  assert.deepEqual(world.deletedBranches, ["agent/x-77"]);
+});
+
+test("#152: a branch with commits the merge never absorbed is KEPT, the record counts them, and nothing is deleted", () => {
+  const world = queueWorld({ compare: { ahead_by: 1, commits: [{ sha: "23a2a3e2abcdef", commit: { message: "late work\n\nbody" } }] } });
+  const { code, err, appended } = queue();
+  assert.equal(code, EXIT.DONE);
+  assert.equal(JSON.parse(appended[0]).orphanedCommitCount, 1);
+  assert.match(err, /WARNING: `agent\/x-77` has 1 commit\(s\) beyond what #77 just merged\. NOT deleting it/);
+  assert.match(err, /23a2a3e2ab late work/);
+  assert.deepEqual(world.deletedBranches, []);
+});
+
+test("#152: a comparison that cannot be read is recorded as unknown (null), the branch is left undeleted, and the exit is still DONE", () => {
+  const world = queueWorld({ compare: new Error("HTTP 502 on compare") });
+  const { code, err, appended } = queue();
+  assert.equal(code, EXIT.DONE);
+  assert.equal(JSON.parse(appended[0]).orphanedCommitCount, null, "a lookup failure is never a clean answer");
+  assert.match(err, /could not verify `agent\/x-77` was fully absorbed by #77/);
+  assert.deepEqual(world.deletedBranches, []);
+});
+
+test("#1482: a branch that cannot be deleted after a clean merge is SAID, and the merge still stands (exit DONE)", () => {
+  const { world, code, err } = queueRefusing("deleteBranchOf", new Error("HTTP 422: Reference does not exist"));
+  assert.equal(code, EXIT.DONE);
+  assert.match(err, /merged #77 cleanly, but could not delete `agent\/x-77`: HTTP 422/);
+  assert.equal(world.pulls.get(77)!.merged, true);
 });
 
 test("#1482 CONTROL: a merge that itself fails still throws -- nothing landed, and nothing is recorded", () => {
-  const stub = queueRun({ mergeFails: true });
+  const world = queueWorld();
+  world.failures.set("mergeQueuedPull", new Error("GraphQL: Pull request is not mergeable"));
   let appended: string[] = [];
-  assert.throws(() => { appended = queue(stub).appended; }, /not mergeable/);
+  assert.throws(() => { appended = queue().appended; }, /not mergeable/);
   assert.deepEqual(appended, []);
+  assert.equal(world.pulls.get(77)!.merged, false);
+});
+
+/** Runs the entry point with `argv` and the default seams, capturing what it said. */
+function runWith(argv: string[]) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = runMergeQueue({ argv: ["node", "merge-queue.ts", ...argv], logPath: () => "/tmp/x", append: () => undefined, out: (text) => { out.push(text); }, err: (text) => { err.push(text); } });
+  return { code, out: out.join(""), err: err.join("") };
+}
+
+test("the list mode names every open PR as READY or HELD with the reason, and merges nothing", () => {
+  const world = queueWorld({ prs: [PR77, { ...pr({ number: 78 }), title: "b", headRefName: "agent/y-78", isDraft: true }] });
+  const { code, out } = runWith([]);
+  assert.equal(code, EXIT.DONE);
+  assert.match(out, /READY {2}#77 {2}agent\/x-77/);
+  assert.match(out, /HELD {3}#78 {2}agent\/y-78\n\s+draft/);
+  assert.equal(mergeCall(world.calls), -1);
+});
+
+test("a repository with no open pull requests is CANNOT_TELL, not an empty queue that read clean", () => {
+  queueWorld({ prs: [] });
+  const { code, err } = runWith([]);
+  assert.equal(code, EXIT.CANNOT_TELL);
+  assert.match(err, /INCONCLUSIVE: no open PRs/);
+});
+
+test("--merge <n> names a pull request that is not open: NOT_MERGEABLE, and nothing is merged", () => {
+  const world = queueWorld({ prs: [{ ...PR77, number: 5, headRefName: "agent/z-5" }] });
+  const { code, err } = runWith(["--merge", "77"]);
+  assert.equal(code, EXIT.NOT_MERGEABLE);
+  assert.match(err, /#77 is not an open PR/);
+  assert.equal(mergeCall(world.calls), -1);
 });
 
 test("#1482: the header documents every exit code, the merged-then-failed code included", () => {

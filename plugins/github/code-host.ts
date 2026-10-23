@@ -3,9 +3,9 @@
 // ONE `gh` RUNNER (`gh.ts`) serves every operation, so this file is the one place a call to GitHub is made on ticket mode's behalf. The reads answer `null` for "could not ask", never
 // for "there is none", as the contract says.
 //
-// THE CODE HOST PORT'S OPERATIONS ARE NOT MADE YET, and say so rather than guess: nothing in ticket mode calls them. `readChange` answers `null` ("could not ask": a caller that
-// acts on it acts on a guess, so none does), `requestReview` and `armMerge` throw, which the port defines as "the request could not be made", and `subscribe` hands back its
-// canceller and delivers nothing: a subscriber is told to read again, and every reader here polls (a later step of A11-160 gives `armMerge` its real implementation, with the merge's calls).
+// THE CODE HOST PORT'S OPERATIONS ARE NOT ALL MADE YET, and say so rather than guess: nothing in ticket mode calls them. `readChange` answers `null` ("could not ask": a caller that
+// acts on it acts on a guess, so none does), `requestReview` throws, which the port defines as "the request could not be made", and `subscribe` hands back its canceller and delivers
+// nothing: a subscriber is told to read again, and every reader here polls. `armMerge` is real since step 5: it arms the merge and reads the pull request back.
 import { fileURLToPath } from "node:url";
 import type { ChangeRef, CodeHost, VerdictDoor } from "../../src/plugins/contracts/code-host.ts";
 import type { PluginDeps } from "../../src/plugins/manifest.ts";
@@ -19,7 +19,8 @@ import { readReplies } from "./replies.ts";
 import { readReviewClaims, writeReviewClaim } from "./review-claims.ts";
 import { readPullState, readReviewState } from "./reviews.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
-import { createRows } from "./rows/index.ts";
+import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
+import { createRows, type RowsRunners } from "./rows/index.ts";
 import { createWrapper } from "./wrapper.ts";
 
 /** The verdict door and the program that installs it, shipped beside this file. */
@@ -32,8 +33,24 @@ const notYet = (operation: string, ref: ChangeRef): never => {
   throw new Error(`the GitHub plugin does not ${operation} yet (${ref.id})`);
 };
 
-/** The GitHub code host, reading and moving pull requests through the plugin's `gh`. */
-export function createCodeHost(deps: PluginDeps): CodeHost {
+/** A change's address as the port spells it, `owner/name#number`. */
+function pullOf(ref: ChangeRef): { repo: string; number: string } {
+  const at = ref.id.lastIndexOf("#");
+  if (at <= 0 || at === ref.id.length - 1) throw new Error(`a change of the GitHub plugin is addressed owner/name#number, not ${ref.id}`);
+  return { repo: ref.id.slice(0, at), number: ref.id.slice(at + 1) };
+}
+
+/**
+ * The runners row mode's operations use when their caller hands none. Both let `gh`'s stderr through to this process's own, as `execFileSync` did for the callers that moved; the queue's takes the git
+ * variables a hook sets off the environment of each call (the dispatcher is started from a worktree), the ones that are set when the call is made.
+ */
+function rowsRunners(deps: PluginDeps): RowsRunners {
+  const echo = deps.log;
+  return { own: ghRunner(deps, {}, { echo }), queue: ghRunner(deps, {}, { echo, withoutEnv: () => Object.keys(deps.env).filter((name) => name.startsWith("GIT_")) }) };
+}
+
+/** The GitHub code host, reading and moving pull requests through the plugin's `gh`. `settle` is how `armMerge` waits for a pull request that may have settled (a test gives none to wait for). */
+export function createCodeHost(deps: PluginDeps, settle: ArmMergeSeams = {}): CodeHost {
   const gh = ghRunner(deps);
   return {
     repoViewArgs,
@@ -54,9 +71,14 @@ export function createCodeHost(deps: PluginDeps): CodeHost {
     verdictDoor: VERDICT_DOOR,
     readChange: () => null,
     requestReview: (ref) => notYet("request a review", ref),
-    armMerge: (ref) => notYet("arm a merge", ref),
+    // The arm, then the pull request read back: an arm that exited well is not "armed" (#1022), and a pull request that merged or was queued meanwhile has nothing left to arm and reads as armed.
+    armMerge: (ref) => {
+      const { repo, number } = pullOf(ref);
+      armMergeOf({ repo, number, run: gh }, settle);
+      return armedReasonOf({ repo, number, run: gh }) !== null;
+    },
     subscribe: () => () => undefined,
     wrapper: createWrapper(deps),
-    rows: createRows(deps.rows),
+    rows: createRows(deps.rows, rowsRunners(deps)),
   };
 }

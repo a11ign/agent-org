@@ -14,9 +14,8 @@
  * `racesAnArmedMerge` is the pure predicate, driven here against every state the acceptance section
  * names: no PR, an unarmed PR, an armed-but-not-green PR, armed + green + up-to-date (must still refuse,
  * #386's real case), armed + green + BEHIND (must now allow, #442), and armed + green + behindBy
- * unknowable (must allow, the fail-open direction one level in). `lookupArmedPrStatus` (the `gh`-calling
- * half) is exercised only for its FAIL-OPEN contract, never against the network -- see its own comment
- * for why `null` must always mean allow.
+ * unknowable (must allow, the fail-open direction one level in). `lookupArmedPrStatus` (the half that asks the code host)
+ * is exercised over the fake code host's world, and for its FAIL-OPEN contract -- see its own comment for why `null` must always mean allow.
  *
  * The hook's own bash side (the `A11Y_ALLOW_ARMED_PUSH` override, the refusal message, the exit code), which
  * used to be driven here by extracting the #386 block from the project's `scripts/git-hooks/pre-push`, is the
@@ -24,13 +23,17 @@
  */
 // no-token: gh
 //
-// #1408. `lookupArmedPrStatus` is called here only with an injected `run`, `requiredContexts` and `checkRuns`, and
-// `racesAnArmedMerge` is pure, so nothing in this file calls `gh`. The closure walk reaches it through `merge-guard.ts`'s
-// module graph (`lookups.ts`) rather than through anything this file runs -- #1275's census shim shows that: 0 `gh`
-// calls from this file, against 1 before.
-import { test } from "node:test";
+// #1408, A11-160 step 5. `lookupArmedPrStatus` is driven over the fake code host's world (a pull request with its check runs, its head and its review decision), and `racesAnArmedMerge` is pure, so nothing in
+// this file calls `gh`. The closure walk reaches it through `merge-guard.ts`'s module graph (`lookups.ts`) rather than through anything this file runs. What the code host SENDS for the branch's pull request and
+// how it reads the answer (`--head`, the `reviewDecision` field, a missing key) is the plugin's, in `plugins/github/rows/merge-guard-reads.test.ts`.
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { racesAnArmedMerge, lookupArmedPrStatus } from "../merge-guard.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { FakeRowPull } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 test("no PR yet is ALLOWED -- the first push is how a PR gets opened", () => {
   assert.equal(racesAnArmedMerge({ armed: false, green: false }), false);
@@ -94,65 +97,64 @@ test("`null` (could not ask) is ALLOWED -- a convenience guard against a race mu
   assert.equal(racesAnArmedMerge(null), false);
 });
 
-test("lookupArmedPrStatus returns null rather than throwing when `gh` cannot answer -- through an injected run, never the live gh -- #1408", () => {
-  // #1408: this asked the LIVE `gh` for a head that cannot exist, on every local run -- one GraphQL-backed
-  // `gh pr list`, counted by #1275's census. The contract is unchanged: ANY failure inside the lookup is `null`,
-  // "could not ask", which `racesAnArmedMerge` allows. What reaches gh is now the injected `run`.
-  const asked: string[][] = [];
-  const status = lookupArmedPrStatus("agent/some-branch", {
-    run: (args: string[]) => { asked.push(args); throw new Error("gh: could not answer"); },
-  });
-  assert.equal(status, null, "a failed lookup is null, never an answer");
-  assert.equal(asked.length, 1, "the injected run is what was asked, once -- nothing went to the real gh");
-  assert.deepEqual(asked[0].slice(0, 2), ["pr", "list"]);
-  assert.equal(asked[0][asked[0].indexOf("--head") + 1], "agent/some-branch", "for the branch being pushed");
+const HEAD = "abc1234def";
+const GREEN_RUN = { id: 1, name: "gate", status: "completed", conclusion: "success", completedAt: "2026-09-13T20:00:30Z" };
+
+/** The fake code host holding one open pull request on `agent/armed`, armed and green unless `over` says otherwise; the branch protection requires `gate`. */
+function world(over: Partial<FakeRowPull> | null = {}) {
+  const host = createFakeCodeHost();
+  const { rowsWorld } = host;
+  rowsWorld.requiredContexts = ["gate"];
+  if (over !== null) {
+    rowsWorld.pulls.set(7, { number: 7, body: "", headRefName: "agent/armed", labels: [], isDraft: false, armed: true, merged: false, mergedAt: null, createdAt: "2026-09-13T19:00:00Z", comments: [],
+      headRefOid: HEAD, reviewDecision: "APPROVED", checkRuns: [GREEN_RUN], behindBy: 3, ...over });
+  }
+  substituteCodeHost(host);
+  return rowsWorld;
+}
+
+test("lookupArmedPrStatus returns null rather than throwing when the code host cannot answer -- never the live gh -- #1408", () => {
+  // #1408: this asked the LIVE `gh` for a head that cannot exist, on every local run. The contract is unchanged: ANY failure inside the lookup is `null`, "could not ask", which `racesAnArmedMerge` allows.
+  const w = world();
+  w.failures.set("openPullsOfBranch", new Error("gh: could not answer"));
+  assert.equal(lookupArmedPrStatus("agent/armed"), null, "a failed lookup is null, never an answer");
+  assert.equal(racesAnArmedMerge(lookupArmedPrStatus("agent/armed")), false, "and so the push is allowed");
 });
 
-test("#1408: no open PR for the branch is the unarmed shape, read through the injected run", () => {
-  const status = lookupArmedPrStatus("agent/no-pr-yet", { run: () => "[]" });
-  assert.deepEqual(status, { number: null, armed: false, green: false, behindBy: null });
+test("#1408: no open PR for the branch is the unarmed shape", () => {
+  world(null);
+  assert.deepEqual(lookupArmedPrStatus("agent/no-pr-yet"), { number: null, armed: false, green: false, behindBy: null });
 });
 
-test("#5526: the pr list ASKS for reviewDecision, and a pr list that omits it reads as unknown, so the armed push ALLOWS", () => {
-  const asked: string[][] = [];
-  const run = (args: string[]) => {
-    asked.push(args);
-    if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 8, autoMergeRequest: { enabledAt: "2026-10-15T12:00:00Z" }, headRefOid: "def5678abc" }]);
-    }
-    if (args[0] === "api") return JSON.stringify({ behind_by: 0 });
-    throw new Error(`an unexpected call reached run: ${args.join(" ")}`);
-  };
-  const status = lookupArmedPrStatus("agent/no-decision", {
-    run,
-    requiredContexts: () => ["gate"],
-    checkRuns: () => [{ name: "gate", status: "completed", conclusion: "success", completedAt: "2026-10-15T12:00:30Z" }],
-  });
-  assert.ok(asked[0][asked[0].indexOf("--json") + 1].split(",").includes("reviewDecision"), "the pr list names reviewDecision in its --json fields");
-  assert.equal(status?.reviewDecision, null, "an absent key is no answer");
+test("#5526: a pull request whose review decision the code host does not give reads as unknown, so the armed push ALLOWS", () => {
+  world({ reviewDecision: undefined, behindBy: 0 });
+  const status = lookupArmedPrStatus("agent/armed");
+  assert.equal(status?.reviewDecision, null, "an absent decision is no answer");
   assert.equal(racesAnArmedMerge(status), false, "and so the push is allowed, as every unknown is");
 });
 
-test("#1408: an ARMED PR whose required checks are green reads its behind-by through the injected run -- the compare call is driven, not assumed", () => {
-  const asked: string[][] = [];
-  const run = (args: string[]) => {
-    asked.push(args);
-    if (args[0] === "pr" && args[1] === "list") {
-      return JSON.stringify([{ number: 7, autoMergeRequest: { enabledAt: "2026-09-13T20:00:00Z" }, headRefOid: "abc1234def", reviewDecision: "APPROVED" }]);
-    }
-    if (args[0] === "api" && String(args[1]).endsWith("/compare/main...abc1234def")) return JSON.stringify({ behind_by: 3 });
-    throw new Error(`an unexpected call reached run: ${args.join(" ")}`);
-  };
-  const status = lookupArmedPrStatus("agent/armed", {
-    run,
-    requiredContexts: () => ["gate"],
-    checkRuns: (sha: string) => {
-      assert.equal(sha, "abc1234def", "the check runs are read for the PR's own head");
-      return [{ name: "gate", status: "completed", conclusion: "success", completedAt: "2026-09-13T20:00:30Z" }];
-    },
-  });
+test("#1408: an ARMED PR whose required checks are green reads its behind-by from the code host -- the comparison is driven, not assumed", () => {
+  world();
+  const status = lookupArmedPrStatus("agent/armed");
   assert.deepEqual(status, { number: 7, armed: true, green: true, behindBy: 3, reviewDecision: "APPROVED" },
-    "armed, green by the real checkReasons, behind by what the injected compare said, and the review decision read off the pr list");
-  assert.deepEqual(asked.map((args) => args[0] === "api" ? [args[0], args[1].replace(/^repos\/[^/]+\/[^/]+\//, "")] : args.slice(0, 2)),
-    [["pr", "list"], ["api", "compare/main...abc1234def"]], "the pr list, then the compare -- both through run");
+    "armed, green by the real checkReasons over the head's own check runs, behind by what the code host said, and the review decision read off the pull request");
+});
+
+test("#1408: an armed PR whose gate has not concluded is armed and not green, so it is not asked how far behind it is", () => {
+  const w = world({ checkRuns: [{ ...GREEN_RUN, status: "in_progress", conclusion: null, completedAt: null }] });
+  w.failures.set("behindByOf", new Error("behind-by must not be asked of a PR that is not green"));
+  assert.deepEqual(lookupArmedPrStatus("agent/armed"), { number: 7, armed: true, green: false, behindBy: null, reviewDecision: "APPROVED" });
+});
+
+test("#442: armed, green and up to date is the race the push guard refuses, read end to end from the code host", () => {
+  world({ behindBy: 0 });
+  assert.equal(racesAnArmedMerge(lookupArmedPrStatus("agent/armed")), true);
+});
+
+test("an open PR that is NOT armed is the unarmed shape, whatever its checks say, and is not asked for its checks or its distance from main", () => {
+  const w = world({ armed: false });
+  w.failures.set("behindByOf", new Error("an unarmed PR is not asked how far behind it is"));
+  w.failures.set("checkRunsOfCommit", new Error("an unarmed PR's checks are not read"));
+  assert.deepEqual(lookupArmedPrStatus("agent/armed"), { number: 7, armed: false, green: false, behindBy: null });
+  assert.equal(racesAnArmedMerge(lookupArmedPrStatus("agent/armed")), false);
 });

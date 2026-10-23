@@ -40,7 +40,10 @@
 // into "does not race".
 import { REPO } from "../project-identity.ts";
 import { checkReasons } from "./checks-rule.ts";
-import { gh, lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.ts";
+import { delegates } from "../plugins/rows.ts";
+import { lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.ts";
+
+const reads = delegates("openPullsOfBranch", "behindByOf");
 
 /**
  * #1408: `run`, `requiredContexts` and `checkRuns` are the real lookups unless a caller injects them -- the test does, so
@@ -48,18 +51,16 @@ import { gh, lookup, lookupRequiredContexts, lookupCheckRuns } from "./lookups.t
  * by `merge-guard.ts`'s own call, through the real pre-push hook; if that wiring broke, the hook's armed-PR refusal
  * (or its absence) is where it would show.
  * @param {string} branchName
- * @param {{ run?: typeof gh, requiredContexts?: typeof lookupRequiredContexts, checkRuns?: typeof lookupCheckRuns }} [deps]
+ * @param {{ run?: (args: string[]) => string, requiredContexts?: typeof lookupRequiredContexts, checkRuns?: typeof lookupCheckRuns }} [deps]
  * @returns {{ number: number | null, armed: boolean, green: boolean | null, behindBy: number | null, reviewDecision?: string | null } | null}
  */
 export function lookupArmedPrStatus(branchName: string,
-  { run = gh, requiredContexts = lookupRequiredContexts, checkRuns = lookupCheckRuns }: { run?: typeof gh; requiredContexts?: typeof lookupRequiredContexts; checkRuns?: typeof lookupCheckRuns; } = {}): { number: number | null; armed: boolean; green: boolean | null; behindBy: number | null; reviewDecision?: string | null; } | null {
+  { run, requiredContexts = lookupRequiredContexts, checkRuns = lookupCheckRuns }: { run?: (args: string[]) => string; requiredContexts?: typeof lookupRequiredContexts; checkRuns?: typeof lookupCheckRuns; } = {}): { number: number | null; armed: boolean; green: boolean | null; behindBy: number | null; reviewDecision?: string | null; } | null {
   return lookup(() => {
-    const prs = JSON.parse(run(["pr", "list", "--repo", REPO, "--head", branchName, "--state", "open",
-      "--json", "number,autoMergeRequest,headRefOid,reviewDecision"]));
+    const prs = reads.openPullsOfBranch({ repo: REPO, branch: branchName, run });
     if (prs.length === 0) return { number: null, armed: false, green: false, behindBy: null };
     const pr = prs[0];
-    const armed = pr.autoMergeRequest != null;
-    if (!armed) return { number: pr.number, armed: false, green: false, behindBy: null };
+    if (!pr.armed) return { number: pr.number, armed: false, green: false, behindBy: null };
     const required = requiredContexts();
     const runs = checkRuns(pr.headRefOid);
     if (required === null || runs === null) {
@@ -67,14 +68,8 @@ export function lookupArmedPrStatus(branchName: string,
     }
     const reasons = checkReasons({ headRefOid: pr.headRefOid }, required, runs);
     const green = reasons.length === 0;
-    const behindBy = green ? lookup(() => {
-      const value = JSON.parse(run(["api", `repos/${REPO}/compare/main...${pr.headRefOid}`])).behind_by;
-      return typeof value === "number" ? value : null;
-    }) : null;
-    // gh answers "no review requirement" as null or "" -- both are read as "", which is not APPROVED and so does not
-    // refuse (see racesAnArmedMerge). A key that is absent is no answer at all, and fails open like every other unknown here.
-    const reviewDecision = "reviewDecision" in pr ? (pr.reviewDecision ?? "") : null;
-    return { number: pr.number, armed: true, green, behindBy, reviewDecision };
+    const behindBy = green ? lookup(() => reads.behindByOf({ repo: REPO, head: pr.headRefOid, run })) : null;
+    return { number: pr.number, armed: true, green, behindBy, reviewDecision: pr.reviewDecision };
   });
 }
 

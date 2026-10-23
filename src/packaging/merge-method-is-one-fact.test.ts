@@ -32,10 +32,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolSources, type ToolFile } from "./tool-source.ts";
+import { pluginSources, toolSources, type ToolFile } from "./tool-source.ts";
 
-/** `gh(["pr", "merge", ...])` invocations, with the argument list as written. */
-const GH_PR_MERGE = /gh\(\s*\[\s*"pr"\s*,\s*"merge"\s*,([^\]]*)\]/g;
+/** `gh(["pr", "merge", ...])` invocations, with the argument list as written: through the runner `gh`, or the `run` a plugin's operation is handed. */
+const GH_PR_MERGE = /(?:gh|run)\(\s*\[\s*"pr"\s*,\s*"merge"\s*,([^\]]*)\]/g;
 
 type Site = { file: string; args: string };
 
@@ -53,17 +53,18 @@ const forbiddenMethod = (sites: Site[]) => sites.filter((s) => /"--squash"|"--re
 /** The sites that arm or merge without stating `--merge`, a disarm being exempt. */
 const methodUnnamed = (sites: Site[]) => sites.filter((s) => !isDisarm(s) && !/"--merge"/.test(s.args)).map(describe);
 
-const realSites = () => mergeCallSitesIn(toolSources());
+/** THE CALLS MOVED INTO THE GITHUB PLUGIN (A11-160), so the population is the tool's source and the plugins'. */
+const realSites = () => mergeCallSitesIn([...toolSources(), ...pluginSources()]);
 
 test("the sweep FINDS the call sites -- a floor, because an empty population passes every assertion below", () => {
   const sites = realSites();
   assert.ok(sites.length >= 5,
     `expected at least the five known gh pr merge call sites, found ${sites.length}. If the call shape `
     + "changed, this regex now sweeps an empty population and every assertion below passes vacuously.");
-  // Five sites in four files: `pr-hold.ts` holds the arm AND the disarm.
+  // Five sites in four files: `pr-hold.ts` holds the arm AND the disarm. The arm of `arm-pr` and of the sweep is ONE operation of the code host (`armPullAuto`), the merge queue's merge another, and the disarm of a red leg a third.
   const files = sites.map((s) => s.file);
-  for (const expected of ["arm-pr.ts", "auto-arm-sweep.ts", "merge-queue.ts", "pr-hold.ts"]) {
-    assert.ok(files.includes(`src/${expected}`), `src/${expected} carries a gh pr merge call and the sweep must reach it`);
+  for (const expected of ["plugins/github/rows/arming.ts", "plugins/github/rows/merge-guard-reads.ts", "plugins/github/rows/auto-merge-disarm.ts", "src/pr-hold.ts"]) {
+    assert.ok(files.includes(expected), `${expected} carries a gh pr merge call and the sweep must reach it`);
   }
 });
 
@@ -82,7 +83,7 @@ test("every call site that ARMS or MERGES names --merge explicitly, rather than 
 
 test("--disable-auto is exempt, and deliberately so -- it names no method because it removes one", () => {
   const disarms = realSites().filter(isDisarm);
-  assert.deepEqual(disarms.map((d) => d.file), ["src/pr-hold.ts"], "pr-hold.ts holds the only disarm");
+  assert.deepEqual(disarms.map((d) => d.file).sort(), ["plugins/github/rows/auto-merge-disarm.ts", "src/pr-hold.ts"], "pr-hold.ts and the code host's disarm of a red leg hold the only disarms");
   assert.ok(!/"--merge"|"--squash"/.test(disarms[0].args),
     "a disarm takes no merge method; requiring one here would be the guard firing on the honest use");
 });
@@ -91,6 +92,8 @@ test("--disable-auto is exempt, and deliberately so -- it names no method becaus
 
 const PLANTED = [
   { path: "src/arm-pr.ts", text: 'gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo], run);' },
+  { path: "plugins/github/rows/arming.ts", text: 'run(["pr", "merge", "--auto", "--merge", String(number), "--repo", repo]);' },
+  { path: "plugins/github/rows/squashes.ts", text: 'run(["pr", "merge", "--auto", "--squash", String(number)]);' },
   // The exact shape of the command that left #706 unarmed.
   { path: "src/squashes.mjs", text: 'gh(["pr", "merge", "--auto", "--squash", String(number)]);' },
   { path: "src/rebases.mjs", text: 'io.gh(["pr", "merge", String(pr.number), "--rebase"]);' },
@@ -101,7 +104,7 @@ const PLANTED = [
 test("POSITIVE CONTROL: a planted --squash, --rebase and method-less call are each CAUGHT and named, an honest arm and a disarm are not", () => {
   const sites = mergeCallSitesIn(PLANTED);
   assert.equal(sites.length, PLANTED.length, "the sweep must find every planted call, including the `io.gh` spelling");
-  assert.deepEqual(forbiddenMethod(sites).map((d) => d.split(":")[0]), ["src/squashes.mjs", "src/rebases.mjs"]);
-  assert.deepEqual(methodUnnamed(sites).map((d) => d.split(":")[0]), ["src/squashes.mjs", "src/rebases.mjs", "src/silent.mjs"],
+  assert.deepEqual(forbiddenMethod(sites).map((d) => d.split(":")[0]), ["plugins/github/rows/squashes.ts", "src/squashes.mjs", "src/rebases.mjs"], "a `run(...)` spelling in a plugin is caught like a `gh(...)` in core");
+  assert.deepEqual(methodUnnamed(sites).map((d) => d.split(":")[0]), ["plugins/github/rows/squashes.ts", "src/squashes.mjs", "src/rebases.mjs", "src/silent.mjs"],
     "a method other than --merge is not NAMING --merge, and the disarm is exempt");
 });

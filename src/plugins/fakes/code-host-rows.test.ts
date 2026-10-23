@@ -143,7 +143,30 @@ test("pull requests: the fields asked, the open heads, arming, readiness, the ch
 
 test("an operation whose answer is GitHub's own throws, naming itself, and is never an empty answer", () => {
   const { rows } = seeded();
-  for (const operation of ["checkRunsOfHead", "failedLogOfRun", "approvalFactsOf", "testsFirstReadsOf", "pullTextOf"] as const) {
+  for (const operation of ["approvalFactsOf", "testsFirstReadsOf", "pullTextOf"] as const) {
     assert.throws(() => (rows[operation] as (...args: unknown[]) => unknown)("o/r", 1, refused), new RegExp(`do not model ${operation}`));
   }
+});
+
+test("the CI reads the cross-repo-red verdict makes (A11-160, step 5) answer from the world: a head's check runs, a workflow's runs, a run's jobs and failed log, and a row's state; an entry that is an Error throws it", () => {
+  const { world, rows } = seeded();
+  world.pulls.set(9, { number: 9, body: "", headRefName: "b", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "t", comments: [], headRefOid: "abc" });
+  world.ci.checks.set("abc", { checks: [{ name: "gate", conclusion: "success" }], total: 3 });
+  world.ci.runs.set("ci.yml|event=push", [{ id: 5 }]);
+  world.ci.jobs.set("5", [{ name: "gate", conclusion: "failure" }]);
+  world.ci.logs.set("5", "the log");
+  world.ci.rowStates.set("o/r#7", "open");
+  assert.equal(rows.headOfChange("o/r", 9, refused), "abc");
+  assert.deepEqual(rows.checkRunsOfHead("o/r", "abc", refused), { checks: [{ name: "gate", conclusion: "success" }], total: 3 });
+  assert.deepEqual(rows.checkRunsOfHead("o/r", "nope", refused), { checks: [], total: 0 }, "a head nothing ran on has no checks, and says so");
+  assert.deepEqual(rows.workflowRunsOf("o/r", "ci.yml", "event=push", refused), [{ id: 5 }]);
+  assert.deepEqual(rows.workflowRunsOf("o/r", "ci.yml", "event=schedule", refused), []);
+  assert.deepEqual(rows.jobsOfRun("o/r", 5, refused), [{ name: "gate", conclusion: "failure" }]);
+  assert.throws(() => rows.jobsOfRun("o/r", 6, refused), /no job list for run 6/, "a run with no jobs seeded is a job list the API did not return");
+  assert.equal(rows.failedLogOfRun("o/r", 5, refused), "the log");
+  assert.equal(rows.failedLogOfRun("o/r", 6, refused), "", "a run with no log seeded has an empty one");
+  assert.equal(rows.stateOfRow("o/r", 7, refused), "OPEN");
+  assert.throws(() => rows.stateOfRow("o/r", 8, refused), /Could not resolve to an issue/);
+  world.ci.logs.set("5", new Error("HTTP 502"));
+  assert.throws(() => rows.failedLogOfRun("o/r", 5, refused), /HTTP 502/);
 });

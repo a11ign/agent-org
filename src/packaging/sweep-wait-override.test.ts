@@ -105,9 +105,10 @@ test("CONTROL: the scan notices the variable in a unit, and in a source, when on
   }
 });
 
-test("the owner, this file and the three spawning tests are the only files that name it: the discovery is real, not vacuous", () => {
+test("the owner and this file name it, and every other file that does is a test: the discovery is real, not vacuous", () => {
+  // A11-160 (step 5): a test that spawns the whole sweep against a stub `gh` is an end-to-end test of the GitHub plugin serving a core program, and moves to `plugins/github/rows/`, which this walk of `src/` does
+  // not reach; so the set of spawning tests left in `src/` shrinks as callers move, and is not listed. The invariant above (no unit, workflow or non-test source names the variable) walks every unit.
   const named = namingTheVariable(filesUnder(SRC)).map((file) => file.slice(SRC.length)).sort();
-  assert.deepEqual(named, ["auto-arm-sweep.ts", "packaging/arm-refuses-an-ejected-pr.test.ts",
-    "packaging/arm-refuses-open-blocker.test.ts", "packaging/pipeline-lane-authorship.test.ts",
-    "packaging/sweep-wait-override.test.ts"]);
+  assert.ok(named.includes("auto-arm-sweep.ts") && named.includes("packaging/sweep-wait-override.test.ts"), "the owner and this file are found, so the walk reaches what it should");
+  assert.deepEqual(named.filter((file) => file !== "auto-arm-sweep.ts" && !isTest(file)), [], "nothing else but a test names it");
 });

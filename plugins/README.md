@@ -9,7 +9,7 @@ the only place the repository runs `tailscale`), and `telegram` (messaging: the 
 | Plugin | Concern | What it is |
 | --- | --- | --- |
 | `linear` | tracker | Linear: where tickets are kept and read |
-| `github` | code host | GitHub: pull requests, reviews and checks (their logs and reruns), the review claim, the verdict door the reviewers post with (`reviewer/pr-review-verdict.sh` and its installer), and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up), and, for row mode, the optional `rows` group (`rows/`: the GitHub adapter of the ticket port and the reads and writes of rows, pull requests, checks, the merge queue and the board; contract 1.7) |
+| `github` | code host | GitHub: pull requests, reviews and checks (their logs and reruns), the review claim, the verdict door the reviewers post with (`reviewer/pr-review-verdict.sh` and its installer), and the routing `gh` wrapper of an org host (`wrapper/gh`, its renderer, the App-token minter and the rows and onboard step that check and set them up), and, for row mode, the optional `rows` group (`rows/`: the GitHub adapter of the ticket port and the reads and writes of rows, pull requests, checks, the merge queue and the board, and what arming a pull request, guarding its merge and running the merge queue ask of GitHub; contract 1.8) |
 | `local` | exposure | serves nothing: the board listens on `127.0.0.1`; refuses `serve` by name |
 | `tailscale` | exposure | `tailscale serve` for the page and the terminal, never Funnel; a path open to the internet for the event receiver (contract 1.1) |
 | `telegram` | messaging | Telegram: asks and announcements for the chairman, configured in `project.json`'s `messaging` key |
@@ -85,9 +85,9 @@ identities (`file`), why a write of it must be refused (`refusal`: the A11-84 ru
 role's App can mint (`mintFailure`); core's `host:install`, `host:check`, the tick and the instance's start-up ask it, and write the file themselves. The plugin's doctor rows and onboard steps do the rest (`gh wrapper`, `wrapper roles`, `app token <role>`, the App's key). The programs the wrapper runs (`app-token.ts`, `author-flag.ts`)
 are run by their paths under the installed tool, never imported.
 
-**A code host's `rows`** (code host contract 1.7, optional) are row mode's GitHub operations, which `src/ticket-port/` held until A11-160 moved them (`docs/adr/0007-row-modes-github-operations-are-core-delegates-over-the-code-hosts-rows.md`). Each takes the `run` its caller hands it, so the caller's timeout, memo and call census still apply, and
+**A code host's `rows`** (code host contract 1.8, optional) are row mode's GitHub operations, which `src/ticket-port/` held until A11-160 moved them (`docs/adr/0007-row-modes-github-operations-are-core-delegates-over-the-code-hosts-rows.md`). Each takes the `run` its caller hands it while that caller has not moved, so the caller's timeout, memo and call census still apply (a caller that has moved hands none, and the code host runs `gh` itself, with the git variables of a hook taken off for the merge queue's dispatcher), and
 reads the project's vocabulary and board through `deps.rows`, which core hands over when an operation asks. A code host with none serves ticket mode only; `rows.acts` says whether the operations act on the caller's `run` (GitHub's, for now) or on the host's own state (the fake's, which models a tracker and a queue in memory). Core loads the code host for them by `require`, which Node 24 allows on a module graph with no top-level `await`:
-a plugin of this kind keeps its graph free of one.
+a plugin of this kind keeps its graph free of one. `ownRun`, the plugin's own `gh`, is the one member that is not a question core asks: it is for the callers that have not moved and hold no runner of their own, and it goes with the last of them (`docs/adr/0008-arming-the-merge-guard-and-the-merge-queue-are-the-code-hosts-rows.md`).
 
 A plugin may also bring a command: `src/commands.ts` can name its program by a path inside the plugin (`../plugins/github/stack-live-check-command.ts`).
 

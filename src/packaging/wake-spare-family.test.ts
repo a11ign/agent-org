@@ -30,6 +30,11 @@ import { isLiveSession, familyNumber, unknownSessionLabels, labelArmedPr, LIVE_S
 import { laneReason, runnerReason } from "../row-claim/runner-rule.ts";
 import { labelAfterCreate } from "../pr-open.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+// eslint-disable-next-line clean-code/no-duplication -- import list: the rule matches statement shape, and imports are not duplicated logic
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+import { fakePull } from "../plugins/fakes/code-host-pulls.ts";
 import { claimRow, CLAIM_LABEL, STARTED_LABEL } from "../row-claim.ts";
 import { startedPanes } from "./started-pane.ts";
 import { moduleSource } from "../lib/source-text-reads.ts";
@@ -176,19 +181,22 @@ test("#2403 ACCEPTANCE (2): the family predicate accepts every number from 4 and
 
 test("#2403 ACCEPTANCE (2), reader 1 -- arm-pr's live check: `session:worker-<n>` arms the PR, `session:worker-3` does not", () => {
   const armed = (label: string) => {
-    const calls: string[][] = [];
-    const run = (_cmd: string, args: string[]) => {
-      calls.push(args);
-      return args.includes("view") ? JSON.stringify({ labels: [{ name: label }] }) : "";
-    };
+    // A11-160 (step 5): arm-pr's reads and writes are the code host's, so the row and the pull request are the fake's world and "edited" is what the world's pull request carries.
+    const host = createFakeCodeHost();
+    const { rowsWorld: world } = host;
+    world.repo = "org/repo";
+    world.rows.set(2403, fakeRow(world, 2403, { labels: [label] }));
+    const pull = fakePull(world, 9001);
+    substituteCodeHost(host);
     const errors: string[] = [];
     const original = console.error;
     console.error = (line: string) => { errors.push(String(line)); };
     try {
-      const { refused } = labelArmedPr({ number: "9001", repo: "org/repo", prBody: "Closes #2403\n", run });
-      return { refused, edited: calls.some((c) => c.includes("edit") && c.includes(label)), errors };
+      const { refused } = labelArmedPr({ number: "9001", repo: "org/repo", prBody: "Closes #2403\n" });
+      return { refused, edited: pull.labels.includes(label), errors };
     } finally {
       console.error = original;
+      forgetActivation();
     }
   };
   for (const name of ["worker-4", "worker-9", "worker-11"]) {

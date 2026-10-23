@@ -919,15 +919,14 @@ function armOne(number: number, scope: string, portFor: (scope: string) => Armin
  */
 const armingPortOf = (scope: string): ArmingPort => {
   const tickets = githubTicketAdapter({ run: defaultRun, scope });
-  const ghRun = (_cmd: string, args: string[]) => defaultRun(args);
   return {
     postDecision: (ref, decision) => tickets.postDecision(ref, decision),
     armMerge(ref: ChangeRef) {
       const [repo, number] = ref.id.split("#");
       const said: string[] = [];
-      const code = runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run: ghRun, sleep: () => "ok", log: (line) => said.push(line), error: (line) => said.push(line) });
+      const code = runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run: defaultRun, sleep: () => "ok", log: (line) => said.push(line), error: (line) => said.push(line) });
       if (code !== ARM_EXIT.DONE) throw new Error(`arm-pr exited ${code}: ${said.filter((line) => line.trim() !== "").at(-1) ?? "it said nothing"}`);
-      return armedAlready({ number, repo, run: ghRun, error: () => {} }) !== null;
+      return armedAlready({ number, repo, run: defaultRun, error: () => {} }) !== null;
     },
   };
 };

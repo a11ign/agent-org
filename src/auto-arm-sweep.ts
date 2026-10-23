@@ -74,7 +74,6 @@
 //   0  the queue is drained -- everything armable was armed, and every skip was reported with its reason
 //   1  at least one PR could not be armed. NAMED, never counted.
 //   2  a lookup failed. INCONCLUSIVE, never "fine".
-import { execFileSync } from "node:child_process";
 import { refuseUnknownFlags, flagValue } from "./lib/cli-flags.ts";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -90,14 +89,17 @@ import { SESSION_PREFIX, BLOCKED_LABEL } from "./project-vocabulary.ts";
 import { armedFromApi, armedQueryArgs, armedReason, ejectionVerdict } from "./pr-armed-state.ts";
 // #3544: THE BLOCKER DECIDER IS `arm-pr`'s, IMPORTED -- a second copy is the one place the two doors could disagree about order.
 import { announceBlocked, armDecision, blockerVerdict, outsideArmOn, runArmPr, EXIT as ARM_EXIT } from "./arm-pr.ts";
-import { outsideArmListArgs as portListArgs, readyPullRequest } from "./ticket-port/outside-arm-calls.ts";
-import { pullRequestFieldsOf } from "./ticket-port/pull-request-fields.ts";
+import { delegates, runOrOwn, trimmedRunOrOwn } from "./plugins/rows.ts";
+import { readyPullRequest } from "./ticket-port/outside-arm-calls.ts";
 import { crossRepoRedVerdict } from "./cross-repo-red.ts";
 // agent-org#1501: `arm-pr`'s deliberate refusal, asked again here for the reason the authorship one is (#3254).
 import { deliberateRefusalVerdict } from "./deliberate-refusal.ts";
 
+// What the sweep asks of the code host (A11-160, step 5): the GitHub plugin's `rows`.
+const reads = delegates("openPullRequestsQueryArgs", "readOpenPullNodes", "isMergedPull", "isArmedPull", "readSweepFacts", "isCrossRepositoryPull", "readOutsideArmListed", "armedNodeOf", "armPullAuto");
+
 // RE-EXPORTED, NOT REDEFINED. `work-gate.ts` imports `armedFromApi` from this file and its own header
-// reasons about the shape of that import graph -- `pr-armed-state.ts` is leaf-shaped, so the property
+// reasons about the shape of that import graph -- `pr-armed-state.ts` is core's delegate to the code host now, so the property
 // the gate states about itself still holds through this line.
 export { armedFromApi };
 
@@ -190,18 +192,19 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null, parity
  * @returns {{ kind: "clear" } | { kind: "refused" | "ejected" | "cannot-ask", why: string } | { kind: "open-blocker", why: string, blockers: number[] }
  *   | { kind: "cross-repo-red", why: string, files: string[] }}
  */
-export function refusalBeforeArming({ number, repo, author, prBody, run }: { number: string; repo: string; author: string; prBody: string | null; run: (ghArgs: string[]) => string; }): { kind: "clear"; } | { kind: "refused" | "ejected" | "cannot-ask"; why: string; } | { kind: "open-blocker"; why: string; blockers: number[]; } | { kind: "cross-repo-red"; why: string; files: string[]; } | { kind: "deliberate"; why: string; } {
-  const authorship = authorshipVerdict({ number, repo, author, run });
+export function refusalBeforeArming({ number, repo, author, prBody, run }: { number: string; repo: string; author: string; prBody: string | null; run?: (ghArgs: string[]) => string; }): { kind: "clear"; } | { kind: "refused" | "ejected" | "cannot-ask"; why: string; } | { kind: "open-blocker"; why: string; blockers: number[]; } | { kind: "cross-repo-red"; why: string; files: string[]; } | { kind: "deliberate"; why: string; } {
+  const runner = runOrOwn(run);
+  const authorship = authorshipVerdict({ number, repo, author, run: runner });
   if (authorship.kind !== "clear") return authorship;
   const ejection = ejectionVerdict({ number, repo, run });
   if (ejection.kind !== "clear") return ejection;
   const blocker = blockerVerdict({ repo, prBody, run });
   if (blocker.kind !== "clear") return blocker;
-  const crossRed = crossRepoRedVerdict({ number, repo, prBody, run });
+  const crossRed = crossRepoRedVerdict({ number, repo, prBody, run: runner });
   if (crossRed.kind !== "clear") return crossRed;
   // agent-org#1501: LAST, because it is the dearest ask (the branch's tip, the approvals, the closing references). A refusal is announced on the pull request
   // as the blockers are; `cannot-ask` is a refusal to arm.
-  const deliberate = deliberateRefusalVerdict({ number, repo, author, run });
+  const deliberate = deliberateRefusalVerdict({ number, repo, author, run: runner });
   return deliberate.kind === "clear" ? deliberate : deliberate.kind === "refused" ? { kind: "deliberate", why: deliberate.why } : deliberate;
 }
 
@@ -302,8 +305,7 @@ export const MERGED_MEANWHILE_WAIT_MS = 2_000;
 
 /** One read of whether the PR merged, from the API. @param {string} number @param {string} repo */
 function readMerged(number: string, repo: string) {
-  const pr = JSON.parse(gh(["api", `repos/${repo}/pulls/${number}`, "--jq", "{merged: .merged}"]));
-  return pr?.merged === true;
+  return reads.isMergedPull({ repo, number });
 }
 
 /**
@@ -335,36 +337,16 @@ export const CONFIRM_ARMED_WAIT_MS = 2_000;
 
 /** One read of whether the arm took, from the API. @param {string} number @param {string} repo */
 function readArmed(number: string, repo: string) {
-  return armedFromApi(JSON.parse(gh(armedQueryArgs({ number, repo }))));
+  return reads.isArmedPull({ repo, number });
 }
 
 /**
- * THE CANDIDATE READ ASKS THE SAME QUESTION `armedFromApi` ANSWERS (#2004), and until this it did not.
+ * THE CANDIDATE READ ASKS THE SAME QUESTION `armedFromApi` ANSWERS (#2004): open pull requests against `main`, with every field the armed rule decides on, in one GraphQL read (the code host's
+ * `openPullRequestsQueryArgs` and `readOpenPullNodes`). The query moved into the GitHub plugin with the rule; the field list is not decoration: drop `mergeQueueEntry` from a copy and `armedFromApi`
+ * silently answers `false` for every pull request sitting in the merge queue, which is the defect #2004 measured against #1999.
  *
- * `armedFromApi` above knows three armed states and its own comment says why the third needs GraphQL --
- * and the candidate list was a `gh pr list ... --json number,isDraft,autoMergeRequest` with a second
- * `--jq` predicate inside a shell argument, which is exactly the REST read that comment says structurally
- * cannot see the merge queue. So a pull request SITTING IN THE QUEUE was swept as unarmed on every run:
- * the arm was refused, and `sweep` exited 1 with FAILED TO ARM on a correctly armed PR. Measured
- * 2026-09-22 against #1999, both reads in the same minute -- GraphQL said
- * `mergeQueueEntry: {position: 1, state: "AWAITING_CHECKS"}`, the candidate read said `1999`. Deterministic,
- * not a race: it repeated on every sweep for as long as the PR sat in the queue, and run 35781830875
- * reddened #1999's own head for it.
- *
- * #1729's fix went into `confirmArmed` and `mergedMeanwhile` and never into the path that decides WHO IS
- * SWEPT AT ALL -- the second-copy-of-a-predicate shape, where the right rule exists, is exported, is
- * tested, and the deciding read does not call it.
- *
- * `merged` is queried although `states: OPEN` makes it always false here: the field is part of
- * `armedFromApi`'s contract, and a candidate read that dropped it would be a third place deciding which
- * states count.
+ * The population this sweep has always had is the first 100 open ones, and the outside home reads the same 100 (`CANDIDATE_LIMIT`).
  */
-const CANDIDATES_QUERY = "query($o:String!,$r:String!,$b:String!,$limit:Int!){repository(owner:$o,name:$r)"
-  + "{pullRequests(states:OPEN,baseRefName:$b,first:$limit)"
-  + "{nodes{number isDraft merged autoMergeRequest{enabledAt} mergeQueueEntry{state}}}}}";
-
-/** The population this sweep has always had: open, against `main`, and the same 100 the old `--limit` read. */
-const CANDIDATE_BASE = "main";
 const CANDIDATE_LIMIT = 100;
 
 /**
@@ -385,31 +367,14 @@ export function unarmedCandidates(nodes: Array<{ number: number | string; isDraf
 }
 
 /**
- * The `gh` ARGUMENTS for one read of the open pull requests against main, with every field
- * `armedFromApi` decides on.
- *
- * SPLIT FROM THE CALL FOR #1969, so a second reader can make this exact read with its own `run` without
- * a second copy of the QUERY. The field list is not decoration: drop `mergeQueueEntry` from a copy and
- * `armedFromApi` silently answers `false` for every pull request sitting in the merge queue, which is
- * precisely the defect #2004 measured against #1999. `armedFromApi`'s own comment says a fourth armed
- * state must be added in ONE place; this keeps the read that feeds it in one place too.
- *
- * `work-gate.ts` is that second reader. It cannot import the CALL -- it injects its own `run` and must
- * keep working before any `pnpm install` -- but it must not ask a different question either.
- *
- * @param {string} repo `owner/name`
- * @returns {string[]}
+ * The `gh` ARGUMENTS for one read of the open pull requests against main, with every field `armedFromApi` decides on, SPLIT FROM THE CALL for #1969 so a second reader (`work-gate.ts`, which injects its own
+ * `run`) makes this exact read without a second copy of the QUERY. They are the code host's now, and this is the delegate.
  */
-export function openPullRequestsQueryArgs(repo: string): string[] {
-  const [owner, name] = String(repo).split("/");
-  return ["api", "graphql", "-f", `query=${CANDIDATES_QUERY}`,
-    "-f", `o=${owner}`, "-f", `r=${name}`, "-f", `b=${CANDIDATE_BASE}`, "-F", `limit=${CANDIDATE_LIMIT}`,
-    "--jq", ".data.repository.pullRequests.nodes"];
-}
+export const { openPullRequestsQueryArgs } = reads;
 
 /** One read of the open pull requests against main, with every field `armedFromApi` decides on. @param {string} repo */
 function readOpenPullRequests(repo: string) {
-  return JSON.parse(gh(openPullRequestsQueryArgs(repo)));
+  return reads.readOpenPullNodes({ repo });
 }
 
 /**
@@ -478,9 +443,6 @@ export function outsideArmVerdict(pr: OutsideArmPr, armed: boolean | null): Outs
     : { act: "leave", why: `a draft that is not approved (reviewDecision ${pr.reviewDecision || "empty"})` };
 }
 
-/** The `gh` arguments of the policy read: every field {@link outsideArmVerdict} decides on except the armed state, which is {@link openPullRequestsQueryArgs}'s. */
-export const outsideArmListArgs = (repo: string): string[] => portListArgs(repo, CANDIDATE_LIMIT);
-
 /** What one pass did, by pull request number. `failed` is a pull request the home tried to arm and could not: it is named, never counted. `cannotAsk` is a list that could not be read, which is INCONCLUSIVE and never "nothing to do". */
 export type OutsideArmResult = { armed: number[]; readied: number[]; left: Array<{ number: number; why: string; }>; failed: number[]; cannotAsk: boolean; };
 
@@ -488,10 +450,10 @@ export type OutsideArmResult = { armed: number[]; readied: number[]; left: Array
  * The two reads a pass decides on: the policy fields of each open pull request (`prs`, when the caller holds them) and the armed state of each.
  * @returns both, or `null` when either read failed, which is logged: nothing is armed by a pass that cannot ask.
  */
-function readOutsideArmLists({ repo, prs, run, log }: { repo: string; prs: OutsideArmPr[] | undefined; run: (ghArgs: string[]) => string; log: (line: string) => void; }): { listed: OutsideArmPr[]; armedBy: Map<number, boolean>; } | null {
+function readOutsideArmLists({ repo, prs, run, log }: { repo: string; prs: OutsideArmPr[] | undefined; run?: (ghArgs: string[]) => string; log: (line: string) => void; }): { listed: OutsideArmPr[]; armedBy: Map<number, boolean>; } | null {
   try {
-    const listed: OutsideArmPr[] = prs ?? JSON.parse(run(outsideArmListArgs(repo)));
-    const nodes = JSON.parse(run(openPullRequestsQueryArgs(repo)));
+    const listed = (prs ?? reads.readOutsideArmListed({ repo, limit: CANDIDATE_LIMIT, run })) as OutsideArmPr[];
+    const nodes = reads.readOpenPullNodes({ repo, run });
     if (!Array.isArray(listed) || !Array.isArray(nodes)) throw new Error("a read did not return a list");
     const armedBy = new Map(nodes.map((node: { number: number | string; }) => [Number(node?.number), armedFromApi(node as Parameters<typeof armedFromApi>[0])]));
     return { listed, armedBy };
@@ -507,7 +469,7 @@ function readOutsideArmLists({ repo, prs, run, log }: { repo: string; prs: Outsi
  * return is `null`, which {@link outsideArmVerdict} refuses. Each pull request is armed through `arm-pr`'s own command (`runArmPr`: the hold, authorship, ejection, blocker and
  * red-leg checks and the session label are all its), and `armed` is read back by the next pass, not trusted from an exit code (#1022).
  */
-export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesPath), prs, run = gh, log = console.log, lanes, arm = (number, say) => runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run: (_cmd, args) => run(args), sleep: () => "ok", log: say, error: say, lanes }) }: {
+export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesPath), prs, run, log = console.log, lanes, arm = (number, say) => runArmPr({ argv: [`--pr=${number}`, `--repo=${repo}`], env: {}, run, sleep: () => "ok", log: say, error: say, lanes }) }: {
   repo: string; switchesPath: string; on?: boolean; prs?: OutsideArmPr[]; run?: (ghArgs: string[]) => string; log?: (line: string) => void;
   /** The project's lanes, handed to `arm-pr` as it is handed to it in a job. Omitted, `arm-pr` reads the home checkout's own file. */
   lanes?: { lanes: import("./lane-ownership.ts").Lane[]; } | null;
@@ -557,7 +519,7 @@ export function outsideArmPass({ repo, switchesPath, on = outsideArmOn(switchesP
     const exited = code === ARM_EXIT.DONE ? "" : `arm-pr exited ${code}${said.length > 0 ? ` (${said[said.length - 1]})` : ""}`;
     let node: Parameters<typeof armedFromApi>[0];
     try {
-      node = JSON.parse(run(armedQueryArgs({ number: pr.number, repo })));
+      node = reads.armedNodeOf({ number: pr.number, repo, run });
     } catch (cause) {
       failed(`${exited || `arm-pr exited ${ARM_EXIT.DONE}`}, and the read-back could not say whether it took: ${cause instanceof Error ? cause.message : cause}`);
       continue;
@@ -589,21 +551,15 @@ function sleepSync(ms: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)), 0, 0, ms);
 }
 
-/** @param {string[]} args */
-const gh = (args: string[]) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
 /**
  * One candidate of the sweep: ask about it, skip it when a refusal or the outside switch holds it, and arm it, reading the arm back.
  * A pull request the sweep could not ask about or could not arm is pushed into `failed`, which is named, never counted as a skip.
  */
 function sweepCandidate(number: string, { repo, outside, failed }: { repo: string; outside: boolean; failed: string[]; }): void {
-  let labels, head, checkRunCount, author, prBody;
+  let labels, checkRunCount, author, prBody;
   try {
-    labels = JSON.parse(gh(["pr", "view", number, "--repo", repo, "--json", "labels", "-q", "[.labels[].name]"]));
-    author = gh(["pr", "view", number, "--repo", repo, "--json", "author", "-q", ".author.login"]);
-    prBody = gh(["pr", "view", number, "--repo", repo, "--json", "body", "-q", ".body"]);
-    head = gh(["pr", "view", number, "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]);
-    checkRunCount = Number(gh(["api", `repos/${repo}/commits/${head}/check-runs`, "--jq", ".total_count"]));
+    ({ labels, author, prBody, checkRunCount } = reads.readSweepFacts({ repo, number }));
   } catch (cause) {
     // A PR we could not ASK about is not a PR we may arm, and it is not a clean skip either.
     console.log(`SWEEP: #${number} COULD NOT ASK -- ${cause instanceof Error ? cause.message : cause}`);
@@ -611,17 +567,17 @@ function sweepCandidate(number: string, { repo, outside, failed }: { repo: strin
     return;
   }
 
-  if (outside && pullRequestFieldsOf({ repo, number: Number(number), fields: "isCrossRepository", run: gh })?.isCrossRepository !== false) {
+  if (outside && reads.isCrossRepositoryPull({ repo, number }) !== false) {
     console.log(`SWEEP: #${number} SKIPPED -- its head is in a fork, or whether it is was not read`);
     return;
   }
   const { arm, reason } = decideAndWarn({ number, labels, checkRunCount });
   // #3254: `arm-pr`'s refusal, asked again here, or this sweep would arm on the same event what `arm-pr` just refused.
-  const refusal = arm ? refusalBeforeArming({ number, repo, author, prBody, run: gh }) : ({ kind: "clear" } as { kind: "clear" });
+  const refusal = arm ? refusalBeforeArming({ number, repo, author, prBody, run: trimmedRunOrOwn() }) : ({ kind: "clear" } as { kind: "clear" });
   if (refusal.kind !== "clear") {
     console.log(`SWEEP: #${number} SKIPPED -- ${refusal.why}`);
-    if (refusal.kind === "open-blocker" || refusal.kind === "cross-repo-red") announceBlocked({ number, repo, verdict: refusal, run: gh, error: console.error });
-    else if (refusal.kind === "deliberate") announceBlocked({ number, repo, verdict: { why: refusal.why, deliberate: true }, run: gh, error: console.error });
+    if (refusal.kind === "open-blocker" || refusal.kind === "cross-repo-red") announceBlocked({ number, repo, verdict: refusal, error: console.error });
+    else if (refusal.kind === "deliberate") announceBlocked({ number, repo, verdict: { why: refusal.why, deliberate: true }, error: console.error });
     if (refusal.kind === "cannot-ask") failed.push(number);
     return;
   }
@@ -631,7 +587,7 @@ function sweepCandidate(number: string, { repo, outside, failed }: { repo: strin
   }
 
   try {
-    gh(["pr", "merge", "--auto", "--merge", number, "--repo", repo]);
+    reads.armPullAuto({ repo, number });
     // NOT THROWING IS NOT ARMED (#1729). `gh` can print "already queued to merge" to stderr and still
     // exit 0 without the mutation landing -- read `autoMergeRequest` back before believing it.
     if (confirmArmed(number, repo)) {

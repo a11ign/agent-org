@@ -13,21 +13,35 @@ export type Gh = (args: string[]) => string;
 /** How long one `gh` call may run before it is cut: the same cut the instance has always given one. */
 export const GH_TIMEOUT_MS = 30_000;
 
-/** A `gh` call that did not succeed: its arguments, the status it exited with (null when it could not start) and what it printed on stderr. */
+/**
+ * A `gh` call that did not succeed: its arguments, the status it exited with (null when it could not start) and what it printed on stderr and on stdout. `stdout` is kept because a refused call can still
+ * answer: `gh api graphql -i` exits non-zero on a rate-limit refusal and prints the headers that say when the pool returns, which `rawResponse` (api-pool.ts) reads off a thrown error's `stdout`, as it did off `execFileSync`'s.
+ */
 export class GhFailure extends Error {
   readonly status: number | null;
   readonly stderr: string;
+  readonly stdout: string;
   constructor(args: readonly string[], result: ExecResult) {
-    super(`Command failed: gh ${args.join(" ")}\n${result.stderr}`);
+    // A `gh` that could not start has no command to have failed: `execFileSync` threw the spawn error itself (`spawnSync gh ENOENT`), and so does this.
+    super(result.status === null ? result.stderr : `Command failed: gh ${args.join(" ")}\n${result.stderr}`);
     this.status = result.status;
     this.stderr = result.stderr;
+    this.stdout = result.stdout;
   }
 }
 
-/** Runs `gh` with `args` as the process's own account, or as the one `env` names, and answers its text. THROWS a {@link GhFailure} when it exits non-zero or cannot start. */
-export function ghRunner(deps: Pick<PluginDeps, "exec">, env: Readonly<Record<string, string>> = {}): Gh {
+/**
+ * What a runner may be made with besides the account: `withoutEnv` names, when a call is made, the variables taken off its environment, and `echo` is told what `gh` printed on stderr, on success and on
+ * failure alike, as `execFileSync` let it through to this process's own stderr (a row mode program's log says `! Pull request is already queued to merge` from it).
+ */
+export type RunnerOptions = Readonly<{ withoutEnv?: () => readonly string[]; echo?: (text: string) => void }>;
+
+/** Runs `gh` with `args` as the process's own account, or as the one `env` names (with the variables `withoutEnv` names taken off), and answers its text. THROWS a {@link GhFailure} when it exits non-zero or cannot start. */
+export function ghRunner(deps: Pick<PluginDeps, "exec">, env: Readonly<Record<string, string>> = {}, options: RunnerOptions = {}): Gh {
   return (args) => {
-    const result = deps.exec("gh", args, { timeoutMs: GH_TIMEOUT_MS, env });
+    const withoutEnv = options.withoutEnv?.() ?? [];
+    const result = deps.exec("gh", args, { timeoutMs: GH_TIMEOUT_MS, env, ...(withoutEnv.length === 0 ? {} : { withoutEnv }) });
+    if (options.echo !== undefined && result.stderr !== "") options.echo(result.stderr.replace(/\n$/, ""));
     if (result.status !== 0) throw new GhFailure(args, result);
     return result.stdout;
   };
