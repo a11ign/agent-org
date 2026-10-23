@@ -60,7 +60,11 @@ export function parsePage(raw: string, ask: SinceRead): Page {
   if (!Array.isArray(connection?.nodes)) {
     throw new Error(`the ${ask.kind} of ${ask.repo} did not come back as a connection: ${String(parsed?.errors?.[0]?.message ?? "no `data`")}`);
   }
-  return { nodes: connection.nodes, hasNextPage: connection.pageInfo?.hasNextPage === true, endCursor: typeof connection.pageInfo?.endCursor === "string" ? connection.pageInfo.endCursor : null };
+  const hasNextPage = connection.pageInfo?.hasNextPage === true;
+  const endCursor = typeof connection.pageInfo?.endCursor === "string" && connection.pageInfo.endCursor !== "" ? connection.pageInfo.endCursor : null;
+  // A page that says another follows and names no cursor to ask it with is not a page: `foldPage` reads a null cursor as "the read is whole", which would end the read short and call it complete.
+  if (hasNextPage && endCursor === null) throw new Error(`the ${ask.kind} of ${ask.repo} came back with pageInfo.hasNextPage and no endCursor: another page follows that cannot be asked for`);
+  return { nodes: connection.nodes, hasNextPage, endCursor };
 }
 
 /**
