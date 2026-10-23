@@ -33,22 +33,32 @@ export function stepNamed(partial: string): PlanStep | null {
 /** What a merged partial pull request leads to: the next step to queue, `counted` when the board counted the step the declaration finished, or why nothing is queued, worded for the card. */
 export type AfterMerge = Readonly<{ next: PlanStep & Readonly<{ counted?: true }> } | { stalled: string }>;
 
-/** The first `step <N>` a declaration names, with or without `of <M>`: the same words as {@link STEP_WORDS}, any case. Null when it names none. */
+/**
+ * The first `step <N> of` a declaration names without a total, such as `step 2 of the plan`: the words the brief tells a worker to write, cut short. A bare `step 2` is not read, since
+ * `step 2 remains` and `step 2 done` say opposite things. Null when it names none. */
 const stepNumberNamed = (partial: string): number | null => {
-  const found = /\bstep\s+(\d+)\b/i.exec(partial);
+  const found = /\bstep\s+(\d+)\s+of\b/i.exec(partial);
   return found === null ? null : Number(found[1]);
 };
+
+/** Why a step at or past the plan's last queues nothing, worded for the card: it is the last step, which closes the ticket, or it is past the plan's end. PURE. */
+function beyondPlan({ step, size, counted }: Readonly<{ step: number; size: number; counted: boolean }>): string {
+  if (step > size) return `It names step ${step}, past the plan's last step, ${size}: nothing was queued`;
+  return `${counted ? `The board counted it as step ${size} of ${size}` : `It names step ${size} of ${size}`}, the last, with Partial: the last step closes the ticket`;
+}
 
 /**
  * What follows a partial pull request that merged, given its `partial` declaration, the steps already merged on this ticket's run and the number of numbered steps the plan file
  * has (`planSteps`, undefined while it has not been counted). The next step is queued only when the step finished is below the plan's size and past every step already recorded.
- * A declaration `step N of M` finishes step N of M. Otherwise the board counts (A11-173): the step finished is the first `step <N>` the declaration names, or else the first after the
+ * A declaration `step N of M` finishes step N of M. Otherwise the board counts (A11-173): the step finished is the first `step <N> of` the declaration names, or else the first after the
  * last recorded; the plan's size is the record's `of`, or else `planSteps`. Anything else is `stalled`, with the sentence the card shows. PURE.
  */
 export function afterPartialMerge(partial: string, merged: readonly PlanStep[], planSteps?: number): AfterMerge {
   const said = `Partial merged: ${partial}.`;
   const last = Math.max(0, ...merged.map(({ step }) => step));
   const named = stepNamed(partial);
+  // `step 3 of 2` names a step that is not in its own plan: that is a mistake for a person, not a step to count past.
+  if (named === null && STEP_WORDS.test(partial)) return { stalled: `${said} It names no step, so nothing was queued: Dismiss it and queue the ticket` };
   const counted = named === null;
   const size = named?.of ?? (merged.at(-1)?.of ?? planSteps ?? 0);
   const step = named?.step ?? stepNumberNamed(partial) ?? last + 1;
@@ -56,10 +66,7 @@ export function afterPartialMerge(partial: string, merged: readonly PlanStep[], 
     const why = planSteps === 0 ? "It names no step, and the plan has no numbered steps" : "It names no step";
     return { stalled: `${said} ${why}, so nothing was queued: Dismiss it and queue the ticket` };
   }
-  if (step >= size) {
-    const how = counted ? `The board counted it as step ${size} of ${size}` : `It names step ${size} of ${size}`;
-    return step === size ? { stalled: `${said} ${how}, the last, with Partial: the last step closes the ticket` } : { stalled: `${said} It names step ${step}, past the plan's last step, ${size}: nothing was queued` };
-  }
+  if (step >= size) return { stalled: `${said} ${beyondPlan({ step, size, counted })}` };
   if (step <= last) return { stalled: `${said} Step ${step} is not after step ${last}: nothing was queued` };
   return { next: { step: step + 1, of: size, ...(counted ? { counted: true as const } : {}) } };
 }

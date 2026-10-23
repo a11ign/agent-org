@@ -19,3 +19,12 @@ export function afterMergeDue(queue: Queue): { entry: Entry; lines: AfterMergeLi
 
 /** Record the After-merge lines the board listed for `key`'s run (A11-173): once recorded they are not posted again, and the board's list shows them until the run leaves. */
 export const recordAfterMerge = (queue: Queue, key: string, afterMerge: readonly AfterMergeLine[]): Queue => replace(queue, key, (entry) => ({ ...entry, afterMerge }));
+
+/** The runs whose listed After-merge lines are not posted as a comment on their ticket yet (A11-173). PURE. */
+export const afterMergeUnposted = (queue: Queue): Entry[] => queue.entries.filter((entry) => entry.phase === "finished" && entry.afterMerge !== undefined && entry.afterMergePosted !== true);
+
+/** Mark `key`'s After-merge comment posted, or about to be: a sweep that finds it marked leaves it, so it is never posted twice at once. */
+export const markAfterMergePosted = (queue: Queue, key: string): Queue => replace(queue, key, (entry) => ({ ...entry, afterMergePosted: true }));
+
+/** Mark `key`'s After-merge comment not posted, once the post failed, so the next sweep tries it again. */
+export const markAfterMergeUnposted = (queue: Queue, key: string): Queue => replace(queue, key, ({ afterMergePosted: _failed, ...entry }) => entry);

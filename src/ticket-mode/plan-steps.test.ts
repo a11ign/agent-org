@@ -44,6 +44,8 @@ test("A11-173: a declaration naming step N without of M, or no step at all, take
   assert.deepEqual(afterPartialMerge("the docs", [{ step: 8, of: 9 }], 9), { stalled: "Partial merged: the docs. The board counted it as step 9 of 9, the last, with Partial: the last step closes the ticket" }, "the step counted is the plan's last");
   assert.deepEqual(afterPartialMerge("step 9 of the plan", [], 9), { stalled: "Partial merged: step 9 of the plan. The board counted it as step 9 of 9, the last, with Partial: the last step closes the ticket" });
   assert.deepEqual(afterPartialMerge("step 12 of the plan", [], 9), { stalled: "Partial merged: step 12 of the plan. It names step 12, past the plan's last step, 9: nothing was queued" });
+  assert.deepEqual(afterPartialMerge("step 2 and the docs remain", [], 9), { next: { step: 2, of: 9, counted: true } }, "a bare `step 2` is not read as the step finished: it may as well be the step that remains");
+  assert.deepEqual(afterPartialMerge("step 3 of 2: a typo", [], 5), { stalled: "Partial merged: step 3 of 2: a typo. It names no step, so nothing was queued: Dismiss it and queue the ticket" }, "an impossible step goes to a person, however large the plan is");
   assert.deepEqual(afterPartialMerge("step 2 of the plan", [{ step: 4, of: 9 }]), { stalled: "Partial merged: step 2 of the plan. Step 2 is not after step 4: nothing was queued" }, "a step not past the last recorded one never goes backwards");
 });
 

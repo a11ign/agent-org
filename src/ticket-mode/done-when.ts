@@ -25,7 +25,7 @@ export function doneWhenOf(description: string | null | undefined): string | nul
 const AFTER_MERGE_HEADING = /^###(?!#)\s+after[\s-]*merge\b/i;
 const ANY_HEADING = /^#{1,6}\s/;
 const BULLET = /^\s*[-*]\s+(.*)$/;
-const NONE = /^none\.?$/i;
+const NONE = /^none\b/i;
 
 /** Whether the character at `at` is a full stop that ends a sentence: the last character, or followed by a space. PURE. */
 const endsSentence = (text: string, at: number): boolean => text[at] === "." && (at === text.length - 1 || text[at + 1] === " ");

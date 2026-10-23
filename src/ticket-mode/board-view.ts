@@ -114,8 +114,6 @@ export type WriterRunView = Readonly<{
   workspace?: string; pane?: string; failure?: string; tickets: readonly WriterTicketView[];
 }>;
 
-export { pullLabel };
-
 /**
  * The review line of each open pull request of a run that the pool has read (A11-119): `owner/repo #n: <its review state>`. A pull request the pool has not
  * read shows none. `reviews` is the queue's `pulls`, a url to the words its review state reads as (`pullReviewText`).

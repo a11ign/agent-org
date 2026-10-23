@@ -35,6 +35,7 @@ test("A11-173: afterMergeLines reads each After-merge line and who runs it; None
   assert.deepEqual(afterMergeLines(ticket(["- run `a.b. c` by hand. The chairman."])), [{ line: "run `a.b. c` by hand. The chairman.", owner: "The chairman" }], "a full stop inside backticks does not end the sentence");
   assert.deepEqual(afterMergeLines(ticket(["- A line that goes on", "  over two lines. Someone, later."])), [{ line: "A line that goes on over two lines. Someone, later.", owner: "Someone" }]);
   assert.deepEqual(afterMergeLines(ticket(["* None."])), [], "None. gives none");
+  assert.deepEqual(afterMergeLines(ticket(["- None required, the tests cover it."])), [], "None, with more after it, gives none");
   assert.deepEqual(afterMergeLines(ticket([])), [], "an empty section gives none");
   assert.deepEqual(afterMergeLines("## Done-when\n\n### Before merge\n\n- a test\n"), [], "a missing After-merge section gives none");
   assert.deepEqual(afterMergeLines("## Acceptance\n\n- x"), []);
