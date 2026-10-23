@@ -1,5 +1,5 @@
-// no-token: GH_READS -- #3045. Importing anything from `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it
-// run: every read is handed the injected `fakeGh`. Measured 2026-10-02 with `gh` off `PATH` and `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset.
+// no-token: GH_READS -- #3045. Importing anything from `work-gate.ts` reaches `defaultRun`, and this file never lets it run: every read is answered by the fake
+// code host's rows (A11-160, step 6), which `install` seeds. Measured 2026-10-02 with `gh` off `PATH` and `GH_TOKEN`/`GITHUB_TOKEN`/`GH_CONFIG_DIR` unset.
 /**
  * #3045: A VERDICT STAYS VALID WHILE THE PULL REQUEST'S OWN PATCH IS UNCHANGED.
  *
@@ -9,10 +9,10 @@
  * proves the assertion could have failed: an emptiness check passes for a function that returns nothing, so every "no order" has its
  * "order" twin in the same test.
  *
- * The gate is driven end to end -- `withPatchIds` over a fake `gh`, then `decide` -- and the sequence in done-when 2 goes through the
+ * The gate is driven end to end -- `withPatchIds` over the fake code host, then `decide` -- and the sequence in done-when 2 goes through the
  * wake ledger's own `readLedger`, `undelivered` and `endedRuns`, so "delivered" and "RESET" are what the ledger would have written.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, appendFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +24,10 @@ import { GH_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { patchIdOfDiff } from "../review-verdict.ts";
 import { readLedger, endedRuns, ledgerLine, WAKE_TTL_MS } from "../wake/session-endings.ts";
 import { undelivered, RESET } from "../wake/seat-reset.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const GREEN = [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }];
 const PENDING = [{ name: "ci", status: "IN_PROGRESS", conclusion: null }];
@@ -38,31 +42,55 @@ const diffOf = (added: string, hunk = "-3,3 +3,3", context = "unchanged line") =
 const PATCH_A = (hunk?: string, context?: string) => diffOf("the PR's own line", hunk, context);
 const PATCH_B = diffOf("the PR's own line, edited while resolving a conflict");
 
-/** A fake `gh`: the compare diff by head (abbreviations resolve, as GitHub's do) and the commit list. Anything else throws, like a refusal. */
-function fakeGh(diffs: Record<string, string>, commits: string[] = []) {
-  return (args: string[]): string => {
-    const target = args[args.length - 1];
-    if (args.includes("Accept: application/vnd.github.diff")) {
-      const wanted = target.split("...")[1];
-      const found = Object.keys(diffs).find((h) => h.startsWith(wanted) || wanted.startsWith(h));
-      if (found === undefined) throw new Error(`HTTP 404: no ${wanted}`);
-      return diffs[found];
-    }
-    if (args.some((a) => a.endsWith("/commits"))) return commits.join("\n");
-    throw new Error(`unexpected gh call: ${args.join(" ")}`);
-  };
+/** What the fake code host is seeded with: the compare diff by head, the pull request's commits, and the failing check names by commit. `refuseAll` refuses every one of those reads, as a 403 does. */
+type Seed = { diffs: Record<string, string>; commits: string[]; failing: Record<string, string[]>; calls: string[]; unreadable: boolean; refuseAll: boolean };
+
+/** The compares the fake holds: abbreviations resolve, as GitHub's do, and a head it holds none of is refused like a 404. */
+class ResolvingDiffs extends Map<string, string | Error> {
+  constructor(private readonly diffs: Record<string, string>) {
+    super();
+  }
+  override get(key: string) {
+    const wanted = key.split("...")[1];
+    const found = Object.keys(this.diffs).find((h) => h.startsWith(wanted) || wanted.startsWith(h));
+    return found === undefined ? new Error(`HTTP 404: no ${wanted}`) : this.diffs[found];
+  }
 }
-const refusingGh = () => { throw new Error("HTTP 403"); };
+
+const seedOf = (diffs: Record<string, string>, commits: string[] = [], over: Partial<Seed> = {}): Seed => ({ diffs, commits, failing: {}, calls: [], unreadable: false, refuseAll: false, ...over });
+
+/** Puts the fake code host in place of GitHub with `seed` in its world, for pull request `number`. */
+function install(seed: Seed, number: number) {
+  const host = createFakeCodeHost();
+  const { gate, pulls, failures } = host.rowsWorld;
+  gate.diffs = new ResolvingDiffs(seed.diffs);
+  // an unreadable check-runs read is refused for each commit it can be asked for, so the read IS attempted (and logged by the code host) and then fails
+  for (const commit of [AUTHORED, ...MERGES, REBASED]) gate.failingChecks.set(commit, seed.unreadable ? new Error("HTTP 403") : (seed.failing[commit] ?? []));
+  pulls.set(number, { number, body: "", headRefName: "b", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "t", comments: [], commits: seed.commits });
+  if (seed.refuseAll) for (const operation of ["compareDiffOf", "commitShasOf", "failingCheckNamesAt"]) failures.set(operation, new Error("HTTP 403"));
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+const fakeGh = seedOf;
+const refusingGh = seedOf({}, [], { refuseAll: true });
+
+// The identities are the test's own, not the host's (#1311): every pull request here is written by `worker-1` or Dependabot, which the fixture host does not declare.
+const TEST_IDENTITIES = { exact: ["a11ign-ai-workers", "worker-1", "dependabot[bot]"], pattern: [] };
 
 type Pr = Record<string, unknown>;
 const pr = (n: number, head: string, extra: Pr = {}): Pr => ({ number: n, isDraft: false, headRefOid: head, statusCheckRollup: GREEN,
-  author: { login: "worker-1" }, comments: [], labels: [{ name: "session:worker-1" }], ...extra });
+  author: { login: "worker-1" }, isCrossRepository: false, comments: [], labels: [{ name: "session:worker-1" }], ...extra });
 const verdictAt = (n: number, head: string, word: string) =>
   ({ body: `**Review of #${n} at \`${head.slice(0, 8)}\`, by reviewer-${n}: ${word}.**`, createdAt: "2026-10-02T17:50:00Z" });
 
 type Order = { cause: string, session: string, causeKey: string, prompt: string };
-const ordersOf = (p: Pr, run: (args: string[]) => string, extra: Record<string, unknown> = {}) =>
-  decide({ prs: withPatchIds([p], run), readyRows: [], ...extra }) as Order[];
+const ordersOf = (p: Pr, seed: Seed, extra: Record<string, unknown> = {}) => {
+  const world = install(seed, Number(p.number));
+  const orders = decide({ prs: withPatchIds([p]), readyRows: [], identities: TEST_IDENTITIES, ...extra }) as Order[];
+  // the check-runs reads the code host was asked for, as the paths they were (`seed.calls`, for the cost test)
+  seed.calls.push(...world.calls.filter((call) => call.startsWith("failingCheckNamesAt ")).map((call) => `/commits/${call.slice("failingCheckNamesAt ".length)}/check-runs`));
+  return orders;
+};
 const awaiting = (orders: Order[]) => orders.filter((o) => o.cause === "draft-awaiting-verdict");
 
 test("#3045 the patch read is declared in GH_READS, which is also what the `no-token` header above names", () => {
@@ -109,15 +137,15 @@ test("#3045 (1) `MERGE_FROM_MAIN` and `isMergeFromMain` are DELETED, not kept as
 type Delivery = { delivered: number, resets: number, keys: string[] };
 
 /** Run a PR through ticks two minutes apart, through the wake ledger's own functions, and report what it would have written. */
-function runTicks(steps: { pr: Pr, run: (args: string[]) => string }[]): Delivery {
+function runTicks(steps: { pr: Pr, seed: Seed }[]): Delivery {
   const dir = mkdtempSync(join(tmpdir(), "patch-ledger-"));
   try {
     const ledger = join(dir, "ledger");
     const emitted = join(dir, "emitted");
     const start = Date.parse("2026-10-02T17:46:00Z");
-    steps.forEach(({ pr: p, run }, i) => {
+    steps.forEach(({ pr: p, seed }, i) => {
       const at = start + i * 2 * 60 * 1000;
-      const orders = awaiting(ordersOf(p, run));
+      const orders = awaiting(ordersOf(p, seed));
       const todo = undelivered(orders, readLedger(ledger, readFileSync, at));
       for (const key of endedRuns(orders.map((o) => o.causeKey), emitted)) appendFileSync(ledger, `${at}\t${RESET}\t${key}\n`);
       for (const o of todo) appendFileSync(ledger, ledgerLine(at, o.causeKey, o.session));
@@ -131,12 +159,12 @@ function runTicks(steps: { pr: Pr, run: (args: string[]) => string }[]): Deliver
 }
 
 /** #3033's shape: ONE authored commit, then four merges from main, each pushed (checks pending) and then settled. Nine ticks, 16 minutes. */
-function sequenceOf(gh: (commits: string[]) => (args: string[]) => string) {
-  const steps = [{ pr: pr(3033, AUTHORED, { isDraft: true }), run: gh([AUTHORED]) }];
+function sequenceOf(gh: (commits: string[]) => Seed) {
+  const steps = [{ pr: pr(3033, AUTHORED, { isDraft: true }), seed: gh([AUTHORED]) }];
   MERGES.forEach((head, i) => {
     const chain = [AUTHORED, ...MERGES.slice(0, i + 1)];
-    steps.push({ pr: pr(3033, head, { isDraft: true, statusCheckRollup: PENDING }), run: gh(chain) });
-    steps.push({ pr: pr(3033, head, { isDraft: true }), run: gh(chain) });
+    steps.push({ pr: pr(3033, head, { isDraft: true, statusCheckRollup: PENDING }), seed: gh(chain) });
+    steps.push({ pr: pr(3033, head, { isDraft: true }), seed: gh(chain) });
   });
   return steps;
 }
@@ -160,9 +188,9 @@ test("#3045 (2) CONTROL: with the patch UNREAD the same sequence re-arms, so the
 test("#3045 (2) CONTROL: a merge whose resolution CHANGED the patch is new work and keys a new order", () => {
   const diffs: Record<string, string> = { [AUTHORED]: PATCH_A(), [MERGES[0]]: PATCH_B };
   const result = runTicks([
-    { pr: pr(3033, AUTHORED, { isDraft: true }), run: fakeGh(diffs, [AUTHORED]) },
-    { pr: pr(3033, MERGES[0], { isDraft: true, statusCheckRollup: PENDING }), run: fakeGh(diffs, [AUTHORED, MERGES[0]]) },
-    { pr: pr(3033, MERGES[0], { isDraft: true }), run: fakeGh(diffs, [AUTHORED, MERGES[0]]) },
+    { pr: pr(3033, AUTHORED, { isDraft: true }), seed: fakeGh(diffs, [AUTHORED]) },
+    { pr: pr(3033, MERGES[0], { isDraft: true, statusCheckRollup: PENDING }), seed: fakeGh(diffs, [AUTHORED, MERGES[0]]) },
+    { pr: pr(3033, MERGES[0], { isDraft: true }), seed: fakeGh(diffs, [AUTHORED, MERGES[0]]) },
   ]);
   assert.equal(result.keys.length, 2, "two patches, two keys");
 });
@@ -217,8 +245,8 @@ const refused = (head: string) => ({ ...pr(2049, head), reviewDecision: "CHANGES
   statusCheckRollup: [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }],
   labels: [{ name: "session:worker-4" }], comments: [verdictAt(2049, AUTHORED, "not convinced")],
   reviews: [{ state: "CHANGES_REQUESTED", commit: { oid: AUTHORED } }] });
-const blockedPrompt = (p: Pr, run: (args: string[]) => string) => {
-  const [order] = ordersOf(p, run, { required: ["gate"] }).filter((o) => o.cause === "pr-review-blocked");
+const blockedPrompt = (p: Pr, seed: Seed) => {
+  const [order] = ordersOf(p, seed, { required: ["gate"] }).filter((o) => o.cause === "pr-review-blocked");
   assert.ok(order, "the refusal reaches its author");
   assert.equal(order.session, "worker-4");
   return order.prompt;
@@ -245,17 +273,9 @@ test("#3045 (4) CONTROL: a refusal at an older head with a CHANGED patch still c
 // patch. The gate read "the PATCH is unchanged ... the rework is yours" and asked nobody to look again; the door refused the follow-up. Both now ask
 // `refusalLifted`, which reads check-run CONCLUSIONS at the two commits. Each negative differs from the positive by exactly one fact.
 
-/** `fakeGh` that also answers the check-runs read: the failing names by commit, one per line as `gh --jq` prints them. `calls` logs every read. */
-function fakeGhWithChecks(failing: Record<string, string[]>, calls: string[] = [], unreadable = false) {
-  const patches = fakeGh({ [AUTHORED]: PATCH_A(), [MERGES[0]]: PATCH_A("-40,3 +41,3", "main moved") });
-  return (args: string[]): string => {
-    const path = args.find((a) => a.includes("/check-runs"));
-    if (path === undefined) return patches(args);
-    calls.push(path);
-    if (unreadable) throw new Error("HTTP 403");
-    const sha = path.split("/commits/")[1].split("/")[0];
-    return (failing[sha] ?? []).join("\n");
-  };
+/** `fakeGh` that also answers the check-runs read: the failing names by commit. `calls` logs every read. */
+function fakeGhWithChecks(failing: Record<string, string[]>, calls: string[] = [], unreadable = false): Seed {
+  return seedOf({ [AUTHORED]: PATCH_A(), [MERGES[0]]: PATCH_A("-40,3 +41,3", "main moved") }, [], { failing, calls, unreadable });
 }
 const RED_AT_AUTHORED = { [AUTHORED]: ["ts / run", "gate"] };
 
@@ -321,9 +341,9 @@ test("#3199 (4) cost: only an equal-patch refusal reads check runs, one per comm
   };
   assert.deepEqual(read(pr(3033, MERGES[0], { comments: [verdictAt(3033, AUTHORED, "convinced")] }), RED_AT_AUTHORED), [], "a verdict that is not a refusal");
   assert.deepEqual(read(pr(3033, MERGES[0]), RED_AT_AUTHORED), [], "no verdict at all: the common path adds no call");
-  const refusedPatchChanged = dependabot(MERGES[0]);
-  const changed = (args: string[]) => (args.some((a) => a.includes("/check-runs")) ? assert.fail("a CHANGED patch reads no check run") : fakeGh({ [AUTHORED]: PATCH_A(), [MERGES[0]]: PATCH_B })(args));
-  ordersOf(refusedPatchChanged, changed);
+  const changedReads: string[] = [];
+  ordersOf(dependabot(MERGES[0]), seedOf({ [AUTHORED]: PATCH_A(), [MERGES[0]]: PATCH_B }, [], { calls: changedReads }));
+  assert.deepEqual(changedReads, [], "a CHANGED patch reads no check run");
   const lifted = read(dependabot(MERGES[0]), RED_AT_AUTHORED);
   assert.equal(lifted.length, 2, "the refused commit and the head, though the commit is named twice (its full oid and the opener's abbreviation)");
   assert.ok(lifted[0].includes(AUTHORED) && lifted[1].includes(MERGES[0]));

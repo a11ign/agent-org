@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh` is run: the tracker's history is a stub in place of `gh api .../events`, the rows are fixtures and the only files written are in a temporary directory
+// no-token: gh -- no `gh` is run: the tracker's history is the fake code host's world (A11-160, step 6) in place of `gh api .../events`, the rows are fixtures and the only files written are in a temporary directory
 // #730 (a11ign#4885, #4879, epic #4437): A `priority:chairman` LABEL THE CHAIRMAN DID NOT ADD RECORDS ITS OWN LEDGER INCIDENT, ONCE PER ROW AND ACTOR.
 //
 // The gate already ignored the label and woke `ceo` with "record it as one"; nothing recorded it, so the incident existed only as a line `ceo` typed by hand and
@@ -9,12 +9,15 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { offerHierarchyNow } from "./work-gate/tick.ts";
 import { CHAIRMAN_PRIORITY_LABEL as LABEL } from "./work-gate/vocabulary.ts";
 import { CHAIRMAN_LABEL_NOT_CHAIRMAN_KIND, FAILURE_LEDGER_FILE, parseFailureLedger, repeatsIn } from "./failure-ledger.ts";
 import { REPO } from "./project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 const CHAIRMAN = "DanBeckDev";
 const T0 = Date.parse("2026-10-10T19:00:00Z");
@@ -25,8 +28,28 @@ type Row = { number: number; title: string; labels: { name: string }[]; body: st
 const ready = (number: number): Row => ({ number, title: `row ${number}`, labels: [{ name: "ready" }, { name: LABEL }],
   body: `## Region\n\n\`\`\`\nsrc/row-${number}.ts\n\`\`\`\n\n## Acceptance\n\nA command.\n\n## Open-check\n\nA check.\n` });
 
-/** The tracker's history: `who(n)` is what `gh api .../issues/<n>/events` prints for row n (a login per line, oldest first) or throws. */
-const history = (who: (n: number) => string) => (args: string[]) => who(Number(/issues\/(\d+)\//.exec(args[1])?.[1]));
+/** The tracker's history: `who(n)` is who labelled row n, a login per line, oldest first (the order GitHub lists the events in), or throws. */
+const history = (who: (n: number) => string) => who;
+const noGh = (): string => {
+  throw new Error("the fake code host acts on its own state: no gh is run");
+};
+afterEach(() => forgetActivation());
+
+/** The fake code host whose world holds each row's label history as `who` gives it; a `who` that throws is a history the code host cannot read. */
+function holdHistory(rows: Row[], who: (n: number) => string): void {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  for (const row of rows) {
+    world.rows.set(row.number, fakeRow(world, row.number, { labels: row.labels.map(({ name }) => name) }));
+    try {
+      const actors = who(row.number).split("\n").filter((line) => line !== "");
+      world.gate.events.set(row.number, actors.map((actor, at) => ({ event: "labeled", label: LABEL, actor: actor === "null" ? null : actor, at: new Date(T0 - (actors.length - at) * MIN).toISOString() })));
+    } catch (error) {
+      world.gate.events.set(row.number, error as Error);
+    }
+  }
+  substituteCodeHost(host);
+}
 
 function withDir<T>(body: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "work-gate-chairman-label-ledger-"));
@@ -36,8 +59,9 @@ function withDir<T>(body: (dir: string) => T): T {
 }
 
 /** One tick through the real path: the hierarchy read and recorded, then the orders `decide` makes of it. */
-function tick(rows: Row[], { dir, run, minutes }: { dir: string; run: (args: string[]) => string; minutes: number }) {
-  const hierarchy = offerHierarchyNow(rows, rows, { run, stateDir: dir, now: T0 + minutes * MIN });
+function tick(rows: Row[], { dir, run, minutes }: { dir: string; run: (n: number) => string; minutes: number }) {
+  holdHistory(rows, run);
+  const hierarchy = offerHierarchyNow(rows, rows, { run: noGh, stateDir: dir, now: T0 + minutes * MIN });
   const orders = decide({ prs: [], readyRows: rows, engineerStarts: [], projectDeclaration: DECLARATION, shareLog: () => {}, offerHierarchy: hierarchy } as Parameters<typeof decide>[0]);
   return { hierarchy, ignoredOrders: orders.filter((order) => order.causeKey.startsWith("ceo/chairman-label-ignored/")) };
 }

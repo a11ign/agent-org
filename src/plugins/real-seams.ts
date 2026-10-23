@@ -24,9 +24,9 @@ export function realExec(file: string, args: readonly string[], options: ExecOpt
   for (const name of options.withoutEnv ?? []) delete env[name];
   const result = options.inherit === true
     ? spawnSync(file, [...args], { stdio: "inherit", encoding: "utf8", env })
-    : spawnSync(file, [...args], { encoding: "utf8", timeout, env, maxBuffer: EXEC_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"] });
-  if (result.error !== undefined) return { status: null, stdout: "", stderr: result.error.message };
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+    : spawnSync(file, [...args], { encoding: "utf8", timeout, env, maxBuffer: options.maxBuffer ?? EXEC_MAX_BUFFER, stdio: ["ignore", "pipe", "pipe"], ...(options.killSignal === undefined ? {} : { killSignal: options.killSignal }) });
+  if (result.error !== undefined) return { status: null, stdout: "", stderr: result.error.message, spawnError: result.error.message, signal: result.signal };
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", signal: result.signal };
 }
 
 /** A file's permission bits, or null when it cannot be read. */

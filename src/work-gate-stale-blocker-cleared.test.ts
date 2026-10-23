@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh`, `git`, clock, closing time and pull request list here is injected; nothing imported reaches the real one
+// no-token: none -- the code host's rows are the fake's (a world held in memory), and every `git`, clock, closing time and pull request list here is injected; nothing imported reaches `gh`
 /**
  * #3451: A `blocker-cleared` ORDER IS DROPPED, WITH ITS REASON, WHEN ITS HOLDER ALREADY ACTED ON THE NEWS.
  *
@@ -11,14 +11,17 @@
  * `claimStallTick`, so `ownsPr`, `commentMove` and the claim record's parser are exercised and not restated.
  */
 import { rs } from "@rstest/core";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { blockerClearedOrders } from "./work-gate.ts";
 import { blockerClearedReading, decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { claimStallTick } from "./work-gate/claim-stall-tick.ts";
 import { readRecentlyClosed, BLOCKER_CLEARED_DROP_REASONS } from "./work-gate/causes/rows-blocker-cleared.ts";
 import { claimRecordComment } from "./row-claim.ts";
-import { readsRecentlyClosed, recentlyClosedConnection } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const T = (hms: string, day = "2026-10-04") => Date.parse(`${day}T${hms}Z`);
 const CLEARED = T("10:35:57");
@@ -195,10 +198,20 @@ const listing = [
   { number: 3538, closedAt: "2026-10-04T20:31:42Z", updatedAt: "2026-10-05T03:00:00Z" },
   { number: 3532, closedAt: "2026-10-05T00:38:59Z", updatedAt: "2026-10-05T02:02:42Z" },
 ];
-const closingsOf = (rows: object[] = listing) => readRecentlyClosed((args) => {
-  if (!readsRecentlyClosed(args)) throw new Error(`unexpected call: ${args.join(" ")}`);
-  return recentlyClosedConnection(rows);
-});
+/**
+ * The recently-closed read over the fake code host (A11-160, step 6), answering `rows` as the connection's nodes (or `null`, an answer that carries none, or an `Error`, a refused read). `reads` counts
+ * the reads made of it. What the read SENDS (one connection, newest update first, no search) is the plugin's: `plugins/github/rows/gate-reads.test.ts` and `gate-stale-blocker.test.ts`.
+ */
+function recentlyClosedOver(rows: readonly object[] | null | Error) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.gate.recentlyClosed = rows;
+  let reads = 0;
+  const read = host.rows!.recentlyClosedRowsOf;
+  host.rows!.recentlyClosedRowsOf = (request) => { reads += 1; return read(request); };
+  substituteCodeHost(host);
+  return { closings: readRecentlyClosed(), reads: () => reads };
+}
+const closingsOf = (rows: object[] = listing) => recentlyClosedOver(rows).closings;
 
 const rowOf = (blockers: number[]) => ({ number: NUMBER, title: "a row", body: "", labels: [{ name: "in-progress" }, { name: `session:${HOLDER}` }],
   blockedBy: { nodes: blockers.map((number) => ({ number, state: "CLOSED" })) } });
@@ -215,16 +228,9 @@ function readBounded({ blockers, claimed, closings, now }: { blockers: number[];
 
 const T3534 = { blockers: [3509, 3532, 3667], now: D("18:38:49") };
 
-test("#3706 (a) the reader asks ONE call, sorted by updatedAt, and bounds an absent row by the OLDEST LISTED updatedAt (not the oldest closing)", () => {
-  const calls: string[][] = [];
-  const closings = readRecentlyClosed((args) => { calls.push(args); return recentlyClosedConnection(listing); });
-  assert.equal(calls.length, 1);
-  // #5050: the premise was "`--search sort:updated-desc`"; the same ordering is the connection's `orderBy`, and the call is NOT a search.
-  assert.equal(readsRecentlyClosed(calls[0]), true);
-  assert.deepEqual(calls[0].slice(0, 2), ["api", "graphql"]);
-  assert.equal(calls[0].some((a) => a === "--search" || a.includes("sort:updated")), false, "a connection read, never a search");
-  const query = String(calls[0].find((a) => a.startsWith("query=")));
-  assert.match(query, /issues\(states:CLOSED,first:\$first,orderBy:\{field:UPDATED_AT,direction:DESC\}\)\{nodes\{number closedAt updatedAt\}\}/, "newest UPDATE first, closedAt and updatedAt");
+test("#3706 (a) the reader asks ONE read, and bounds an absent row by the OLDEST LISTED updatedAt (not the oldest closing)", () => {
+  const { closings, reads } = recentlyClosedOver(listing);
+  assert.equal(reads(), 1);
   assert.equal(closings?.closedNoLaterThan, BOUND);
   assert.ok(Math.min(...(closings as Map<number, number>).values()) < BOUND, "CONTROL: the oldest listed closing is NOT the bound, so the two sorts are told apart");
   assert.equal(closings?.get(3667), D("12:11:59"), "the map is still a Map of closings");
@@ -238,9 +244,8 @@ test("#3706 (b) THE BOUND IS CHECKED, NOT TRUSTED: a listing not sorted by updat
     assert.equal(closingsOf([...rows])?.closedNoLaterThan, undefined, name);
   }
   assert.equal(closingsOf()?.closedNoLaterThan, BOUND, "CONTROL: the sorted listing does carry one");
-  assert.equal(readRecentlyClosed(() => { throw new Error("gh refused"); }), null);
-  assert.equal(readRecentlyClosed(() => JSON.stringify({ data: { repository: { issues: null } }, errors: [{ message: "x" }] })), null, "#5050: an answer that is no connection is a refusal, never an empty list");
-  assert.equal(readRecentlyClosed(() => JSON.stringify(listing)), null, "and the old `issue list` array is no answer to the connection read");
+  assert.equal(recentlyClosedOver(new Error("gh refused")).closings, null);
+  assert.equal(recentlyClosedOver(null).closings, null, "#5050: an answer that is no connection is a refusal, never an empty list");
 });
 
 test("#3706 (1) the #3534 timeline: #3509 absent, claim 2026-10-05T18:37:10Z -- no order, one drop, `claimed-after-clearing` (and it was KEPT before)", () => {

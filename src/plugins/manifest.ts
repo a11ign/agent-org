@@ -57,14 +57,18 @@ export type Catalog = Readonly<{ plugins: readonly CatalogPlugin[]; refusals: re
 /** The value of a setting as the plugin is given it. A setting the host file does not hold is absent, and the plugin applies its default. */
 export type PluginSettings = Readonly<Record<string, unknown>>;
 
-/** What running a program answered: its exit status (null when it could not start), and what it printed. */
-export type ExecResult = Readonly<{ status: number | null; stdout: string; stderr: string }>;
+/**
+ * What running a program answered: its exit status (null when it could not start or was stopped), and what it printed. `spawnError` is the reason it could not start or was cut (`spawnSync gh ETIMEDOUT`), which is also in
+ * `stderr` where nothing else was printed; `signal` is the signal that stopped it. Both are absent from a result that exited.
+ */
+export type ExecResult = Readonly<{ status: number | null; stdout: string; stderr: string; signal?: string | null; spawnError?: string }>;
 
 /**
  * What running a program may be asked: `inherit` gives it this process's terminal, `timeoutMs` bounds it, `env` is laid over this process's environment for that one run, and `withoutEnv` names the
  * variables taken OFF it first (the git variables a hook sets, which would aim a program started from a worktree at the wrong repository).
+ * `killSignal` is what a program that runs past `timeoutMs` is stopped with (SIGTERM unless a plugin asks for SIGKILL, for a program that has hung), and `maxBuffer` the most it may print.
  */
-export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>>; withoutEnv?: readonly string[] }>;
+export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?: Readonly<Record<string, string>>; withoutEnv?: readonly string[]; killSignal?: "SIGKILL"; maxBuffer?: number }>;
 
 /**
  * How a reviewer judges a pull request, as the gate's modules decide it: the `--json` fields it reads by, whether the author is the org's own, and whether the checks settled green.

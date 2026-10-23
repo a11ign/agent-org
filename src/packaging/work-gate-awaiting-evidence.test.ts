@@ -1,16 +1,16 @@
-// no-token: gh -- every `gh` read here is an injected `run` seam (precedent: wake-drain.test.ts); nothing imported reaches the real one
+// no-token: gh -- every read here is the fake code host's rows (A11-160, step 6), seeded by the test; nothing imported reaches the real `gh`
 /**
  * #2416: THE `awaiting-evidence` PR LABEL -- no verdict order, no author prompt and a stale-wait order.
  *
  * ITS OWN FILE, and not a block in `work-gate.test.ts`, for #2324's reason: that file reaches `gh`, so the
- * token-less acceptance job refuses it and would verify nothing. Every read here is handed a seam.
+ * token-less acceptance job refuses it and would verify nothing. Every read here is answered by the fake code host's rows.
  *
  * BOTH DIRECTIONS ARE PINNED. A `decide` that returned `[]` for a labelled draft satisfies every "no order"
  * assertion below, so each is beside its positive control: the SAME draft without the label still wakes its
  * reviewer, a red labelled one still wakes its author, a labelled one with a hand-posted verdict still has
  * that verdict read, and a labelled one quiet for 48h still reaches `product-manager`.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +21,10 @@ import { withPatchIds, reviewBlocked, readEvidenceLabelledAt, withEvidenceLabelA
 import { awaitingEvidenceStaleOrders } from "../work-gate/pr-orders.ts";
 import { PROFILES } from "../worker-profile.ts";
 import { HOME_CHECKOUT } from "../project-config.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const RULES = join(HOME_CHECKOUT, ".claude/rules/org-routing-and-timers.md");
 
@@ -89,13 +93,14 @@ test("#2416: the label removes the MACHINERY's order and nothing else -- red, an
 });
 
 test("#2416: a labelled pull request costs no patch read; an unlabelled one still does", () => {
-  const seen: string[][] = [];
-  const run = (args: string[]) => { seen.push(args); return ""; };
-  withPatchIds([draft(1, GREEN, { labelled: true })], run);
-  assert.equal(seen.length, 0, "the patch is read to key a verdict order that will never be made");
-  withPatchIds([draft(2, GREEN)], run);
-  assert.equal(seen.length, 1, "the control: the same draft unlabelled pays its one call");
-  assert.match(seen[0].join(" "), /compare\/main\.\.\./);
+  const host = createFakeCodeHost();
+  host.rowsWorld.gate.diffs.set(`main...${HEAD}`, "");
+  substituteCodeHost(host);
+  const compares = () => host.rowsWorld.calls.filter((call) => call.startsWith("compareDiffOf "));
+  withPatchIds([draft(1, GREEN, { labelled: true })]);
+  assert.equal(compares().length, 0, "the patch is read to key a verdict order that will never be made");
+  withPatchIds([draft(2, GREEN)]);
+  assert.deepEqual(compares(), [`compareDiffOf main...${HEAD}`], "the control: the same draft unlabelled pays its one call, the compare of the head against main");
 });
 
 /** A green, unheld, ready pull request GitHub's review requirement is holding. */
@@ -162,31 +167,36 @@ test("#2416: the cause is classified FINISH and JUDGMENT, and has a worker profi
 });
 
 test("#2416: the label's age is read from the LAST `labeled` event, and only when some open PR carries the label", () => {
-  const calls: string[][] = [];
-  const events = [ago(200), ago(50)].join("\n");
-  const run = (args: string[]) => { calls.push(args); return events; };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  for (const number of [55, 3]) world.gate.events.set(number, [ago(200), ago(50)].map((at) => ({ event: "labeled" as const, label: AWAITING_EVIDENCE_LABEL, actor: "someone", at })));
+  world.gate.events.set(56, [{ event: "labeled", label: "another-label", actor: "someone", at: ago(10) }]);
+  substituteCodeHost(host);
+  const asked = () => world.calls.filter((call) => call.startsWith("labeledEventTimesOf "));
 
-  assert.equal(readEvidenceLabelledAt(55, run), ago(50), "a label removed and re-applied is a new wait");
-  assert.match(calls[0].join(" "), /issues\/55\/events/);
-  assert.match(calls[0].join(" "), /labeled/, "the read is narrowed to the label's own events");
+  assert.equal(readEvidenceLabelledAt(55), ago(50), "a label removed and re-applied is a new wait");
+  assert.deepEqual(asked(), ["labeledEventTimesOf #55"], "the read is of that pull request's own events");
+  assert.equal(readEvidenceLabelledAt(56), null, "and narrowed to the label's own events: another label's is not a wait");
 
-  calls.length = 0;
+  world.calls.length = 0;
   const unlabelled = [draft(1, GREEN), draft(2, GREEN)];
-  assert.deepEqual(withEvidenceLabelAges(unlabelled, run), unlabelled);
-  assert.equal(calls.length, 0, "a queue where nothing carries the label pays NO call");
+  assert.deepEqual(withEvidenceLabelAges(unlabelled), unlabelled);
+  assert.equal(asked().length, 0, "a queue where nothing carries the label pays NO call");
 
-  const withOne = withEvidenceLabelAges([...unlabelled, draft(3, GREEN, { labelled: true })], run);
-  assert.equal(calls.length, 1, "the control: one labelled pull request pays exactly one call");
+  const withOne = withEvidenceLabelAges([...unlabelled, draft(3, GREEN, { labelled: true })]);
+  assert.equal(asked().length, 1, "the control: one labelled pull request pays exactly one call");
   assert.equal((withOne[2] as { awaitingSince?: string }).awaitingSince, ago(50));
   assert.equal((withOne[0] as { awaitingSince?: string }).awaitingSince, undefined);
   assert.ok(GH_READS.conditionalOnAwaitingEvidenceLabel, "the conditional read is counted in GH_READS");
 });
 
 test("#2416: a REFUSED or empty events read is never an order", () => {
-  const refuse = () => { throw new Error("HTTP 403"); };
-  assert.equal(readEvidenceLabelledAt(1, refuse), null);
-  assert.equal(readEvidenceLabelledAt(1, () => ""), null, "never applied is not a measured age");
-  const read = withEvidenceLabelAges([draft(1, GREEN, { labelled: true })], refuse);
+  const host = createFakeCodeHost();
+  host.rowsWorld.gate.events.set(1, new Error("HTTP 403"));
+  substituteCodeHost(host);
+  assert.equal(readEvidenceLabelledAt(1), null);
+  assert.equal(readEvidenceLabelledAt(2), null, "never applied is not a measured age");
+  const read = withEvidenceLabelAges([draft(1, GREEN, { labelled: true })]);
   assert.deepEqual(awaitingEvidenceStaleOrders(read, NOW), [], "an unread age must not become 'stale'");
 });
 

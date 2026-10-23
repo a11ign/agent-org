@@ -5,6 +5,7 @@ import { blockingImpactTick, resolverOf } from "../../blocking-impact.ts";
 import { resolverDefectKey, resolverDefectText, RESOLVER_DEFECT_LABEL } from "../pr-owners.ts";
 import type { ResolverDefect } from "../pr-owners.ts";
 import { defaultRun } from "../reads/read-memo-and-exit.ts";
+import { rows } from "../../plugins/rows.ts";
 import { comparablePrFiles, labelledRows, sessionOf } from "../vocabulary.ts";
 
 /** Where the pull requests already reported as resolver defects are remembered between ticks: each tick is a fresh process. */
@@ -63,7 +64,7 @@ function writeFiledDefects(path: string, filed: Record<string, string>, log: (li
  */
 export function blockingImpactOrders({ shelved, openRows, trackers, prs, stateDir }: { shelved: { number: number; reason: string; repo?: string; }[]; openRows: any[]; trackers: Record<string, any[]>; prs: any[]; stateDir: string; }) {
   const resolve = resolverOf({ rows: openRows, prs, trackers, sessionOf, closesOf: (pr) => comparablePrFiles([pr])[0]?.closes ?? [] });
-  return blockingImpactTick({ blocked: shelved, resolve, stateDir, now: Date.now(), comment: (row, body, repo) => { defaultRun(["issue", "comment", String(row), "--body", body], repo); } });
+  return blockingImpactTick({ blocked: shelved, resolve, stateDir, now: Date.now(), comment: (row, body, repo) => { rows().commentOnRow({ number: row, body, aim: repo, run: defaultRun }); } });
 }
 
 /** One defect onto the class row: a comment on the open one, or a new row when there is none. `false` when `gh` refused, and says so. */
@@ -72,10 +73,10 @@ function writeResolverDefect(defect: ResolverDefect, { run, log }: { run: (args:
   try {
     const open = labelledRows({ label: RESOLVER_DEFECT_LABEL, state: "OPEN", select: "number", newest: 1, run });
     if (open.length > 0) {
-      run(["issue", "comment", String(open[0].number), "--body", comment]);
+      rows().commentOnRow({ number: open[0].number, body: comment, run });
     } else {
-      run(["label", "create", RESOLVER_DEFECT_LABEL, "--force", "--description", "A pull request the gate could not own although it names a live claimant"]);
-      run(["issue", "create", "--title", title, "--label", RESOLVER_DEFECT_LABEL, "--body", comment]);
+      rows().ensureLabel({ name: RESOLVER_DEFECT_LABEL, description: "A pull request the gate could not own although it names a live claimant", run });
+      rows().fileLabelledRow({ title, label: RESOLVER_DEFECT_LABEL, body: comment, run });
     }
     return true;
   } catch (error) {

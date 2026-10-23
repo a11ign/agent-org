@@ -8,6 +8,7 @@ import { summarizeTestLog, testIdentity } from "../../parent-recheck-summary.ts"
 import { TRACKER } from "../../ticket-port/github-adapter.ts";
 import { armedAlready, blockerVerdict } from "../../arm-pr.ts";
 import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
+import { rows } from "../../plugins/rows.ts";
 import { type ArmingPort, MS_PER_MINUTE, REVIEWER_STATE_DIR } from "../vocabulary.ts";
 
 /** What the gate knows of one ejection: when, which run, which subtests. */
@@ -64,7 +65,7 @@ function readEjectionRun(number: number, removedAt: string | null, run: (args: s
   // `runs` and `log` are a11ign#5125's evidence (the queue's newest runs, and the failed run's own log): the same two reads, kept for the re-queue instead of read again.
   const found = { removedAt, runId: (null as number | null), failingTests: (null as string[] | null), runs: (null as MergeGroupRun[] | null), log: (null as string | null) };
   try {
-    const runs: (MergeGroupRun & { id: number; })[] = JSON.parse(run(["api", `repos/${repoNow()}/actions/runs?event=merge_group&per_page=50`, "--jq", "[.workflow_runs[] | {id, head_branch, conclusion, created_at}]"]));
+    const runs = rows().mergeGroupRunsOf({ repo: repoNow(), withConclusion: true, run }) as (MergeGroupRun & { id: number; })[];
     found.runs = runs;
     const failed = runs
       .filter((r) => String(r.head_branch).includes(`/pr-${number}-`) && r.conclusion === "failure"
@@ -72,7 +73,7 @@ function readEjectionRun(number: number, removedAt: string | null, run: (args: s
       .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
     if (!failed) return found;
     found.runId = Number(failed.id);
-    found.log = run(["run", "view", String(failed.id), "--repo", repoNow(), "--log-failed"]);
+    found.log = rows().failedLogOfRun(repoNow(), failed.id, run);
     found.failingTests = failingSubtestsOf(found.log);
   } catch {
     /* the facts read so far stand; the order says the rest could not be read */
@@ -316,7 +317,7 @@ function armEjected(number: number, ctx: RequeueContext, { why, flag }: { why: s
   const blocker = blockerVerdict({ repo: ctx.scope, prBody: pr?.body ?? null, run: (args) => ctx.run(args) });
   if (blocker.kind !== "clear") return blocker.why;
   try {
-    ctx.run(["pr", "merge", String(number), "--repo", ctx.scope, "--auto", "--merge"]);
+    rows().armPullAuto({ repo: ctx.scope, number, run: ctx.run });
     if (armedAlready({ number: String(number), repo: ctx.scope, run: (args) => ctx.run(args), error: () => {} }) === null) return "the merge was requested and the pull request does not read as armed";
   } catch (error) {
     return String((error as Error).message ?? error).split("\n")[0].slice(0, 200);

@@ -11,6 +11,7 @@
 import { labelsOf, PARKED_LABEL } from "./vocabulary.ts";
 import { holderWaitingOn } from "./causes/rows-blocker-cleared.ts";
 import { defaultRun, repoNow } from "./reads/read-memo-and-exit.ts";
+import { rows } from "../plugins/rows.ts";
 import { claimRecordOf } from "../claim-record.ts";
 import { holdersOf, HOLD_PREFIX } from "../pr-hold-state.ts";
 import { notBeforeDate, notBeforeIso, fleetHoldUntil, todayIso, ANSWER_PREFIX } from "../waiting-condition.ts";
@@ -109,9 +110,7 @@ function isWaitLabel(name: string): boolean {
  */
 export function readWaitClearedAt(row: any, run: (args: string[]) => string = defaultRun): number | null {
   try {
-    const out = run(["api", `repos/${repoNow()}/issues/${Number(row.number)}/events`, "--paginate", "--jq",
-      '.[] | select(.event == "unlabeled") | {name: .label.name, at: .created_at}']);
-    const lifted = out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l))
+    const lifted = rows().unlabeledEventsOf({ repo: repoNow(), number: Number(row.number), run })
       .filter((e) => isWaitLabel(String(e.name))).map((e) => Date.parse(e.at));
     const declared = notBeforeDate(row?.body);
     const held = fleetHoldUntil(row?.body);

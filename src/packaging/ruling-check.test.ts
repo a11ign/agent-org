@@ -1,4 +1,4 @@
-// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `rulingOrdersNow` is handed a fake `run`.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `rulingOrdersNow` reads the items a ruling names and posts through the fake code host's rows (A11-160, step 6), and is handed a `run` that refuses.
 /**
  * `src/ruling-check.ts`, `src/ruling-record.ts` and their wiring in `work-gate.ts`, #2997: A RULING CARRIES ITS OWN CHECK THAT IT TOOK EFFECT, AND THE TICK
  * RE-READS IT UNTIL IT DOES.
@@ -9,7 +9,7 @@
  *
  * MUTATION, run by hand and recorded on the row: `evaluateCheck` returning `pass` for a non-empty population turns the 06:50Z test red.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
@@ -20,6 +20,24 @@ import { waitItemOf } from "../wait-condition.ts";
 import { parseCheck, evaluateCheck, evaluateChecks, settleRulings, DEFAULT_GRACE_MINUTES } from "../ruling-check.ts";
 import { recordRuling, readRulings, rulingTick, main as recordMain, RULINGS_FILE } from "../ruling-record.ts";
 import { rulingOrdersNow } from "../work-gate/org-health.ts";
+import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
+
+/** The fake code host for the tick of the gate: its world is the project's own repository, with the ruled-on row 2988 and the open item 2867 the ruling's check names. */
+function codeHost() {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.repo = REPO;
+  world.rows.set(2988, fakeRow(world, 2988));
+  world.rows.set(2867, fakeRow(world, 2867));
+  substituteCodeHost(host);
+  const run = (args: string[]): never => { throw new Error(`the code host's rows are the fake's: no gh is run (${args.join(" ")})`); };
+  return { world, run };
+}
 
 const RECORD_CLI = fileURLToPath(new URL("../ruling-record.ts", import.meta.url));
 const ROW_CHECK = 'no-open-row-body-matches "Not-before: 2026-10-03T18:2"';
@@ -179,28 +197,25 @@ test("#2997: recording is idempotent, and a record that cannot be read is said s
 }));
 
 test("#2997 THE GATE: no unresolved ruling is NO read; a pending one reads its references and posts through `gh issue comment`", () => scratch((dir) => {
-  const calls: string[][] = [];
-  const run = (args: string[]) => { calls.push(args); return args[0] === "api" ? JSON.stringify({ state: "open", closed_at: null, updated_at: null, merged_at: null, labels: [] }) : ""; };
+  const { world, run } = codeHost();
   assert.deepEqual(rulingOrdersNow({ prsRead: [], openRowsRead: [], now: at("2026-10-02T12:00:00Z") }, { stateDir: dir, run }), []);
-  assert.deepEqual<string[][]>(calls, [], "an empty record costs the tick nothing"); // typed, or the assertion narrows `calls` to `never[]` for the pushes that follow
+  assert.deepEqual(world.calls, [], "an empty record costs the tick nothing");
   recordRuling({ stateDir: dir, by: "ceo", on: 2988, checks: ["closed #2867"], at: RULED_AT });
   const orders = rulingOrdersNow({ prsRead: [], openRowsRead: [], now: at("2026-10-02T12:00:00Z") }, { stateDir: dir, run });
   assert.equal(orders.length, 1);
-  assert.equal(calls[0][0], "api");
-  assert.match(calls[0][1], /^repos\/.+\/issues\/2867$/);
-  assert.deepEqual(calls[1].slice(0, 2), ["issue", "comment"]);
-  assert.equal(calls[1][2], "2988");
+  assert.deepEqual(world.calls, [`waitRefOf ${REPO}#2867`], "the reference the check names is read, once");
+  assert.equal(world.rows.get(2988)!.comments.length, 1, "and the ruling's offer is posted on the row it was ruled on");
 }));
 
 test("#2997 THE GATE: a rulings.jsonl it cannot read is SAID (through `rulingOrdersNow`), reads no reference and posts nothing -- never 'no rulings'", () => scratch((dir) => {
   recordRuling({ stateDir: dir, by: "ceo", on: 2988, checks: ["closed #2867"], at: RULED_AT });
   appendFileSync(join(dir, RULINGS_FILE), "{not json\n");
-  const calls: string[][] = [];
+  const { world, run } = codeHost();
   const lines: string[] = [];
-  const run = (args: string[]) => { calls.push(args); return ""; };
   assert.deepEqual(rulingOrdersNow({ prsRead: [], openRowsRead: [], now: at("2026-10-02T12:00:00Z") }, { stateDir: dir, run, log: (l) => lines.push(l) }), []);
   assert.match(lines.join("\n"), /could not be read, so no ruling was checked/);
-  assert.deepEqual(calls, []);
+  assert.deepEqual(world.calls, []);
+  assert.deepEqual(world.rows.get(2988)!.comments, [], "and nothing is posted");
 }));
 
 test("#2997 THE CLI: `--on 2988 --check ...` records; no check is refused with exit 1 and nothing written", () => scratch((home) => {

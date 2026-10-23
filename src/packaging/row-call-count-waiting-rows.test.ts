@@ -1,5 +1,5 @@
-// no-token: GH_READS -- #3384. Importing anything from `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it
-// run: `rowCallCountSignals` is handed an injected `waitClearedAt` and `readWaitClearedAt` an injected `run`.
+// no-token: GH_READS -- #3384. Importing anything from `work-gate.ts` reaches `defaultRun`, and this file never lets it run: `rowCallCountSignals` is handed an injected `waitClearedAt`
+// and `readWaitClearedAt` reads a row's history from the fake code host's rows (A11-160, step 6).
 /**
  * #3384: THE CALL-COUNT SIGNAL AUDITS A ROW THAT IS ONLY WAITING. #2905's one open item was a word from the chairman, and a standing seat
  * holding it kept working on other things, so the row's count climbed through the whole wait and cost `product-manager` three audits.
@@ -7,8 +7,11 @@
  * A row that declares a wait is left out; a row whose wait has been lifted is counted from the lifting. Every case runs a row WITH the
  * wait and the same row WITHOUT it, so a predicate that excludes nothing (or everything) cannot pass.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import type { FakeRowEvent } from "../plugins/fakes/code-host-gate.ts";
 import { rowCallCountSignals, ROW_CALL_COUNT_SPLIT_THRESHOLD } from "../work-gate/row-call-count-orders.ts";
 import { readWaitClearedAt, rowDeclaresWait } from "../work-gate/row-call-count-orders.ts";
 import { CLAIM_RECORD_MARKER } from "../claim-labels.ts";
@@ -33,6 +36,16 @@ const claimedRow = (number: number, extra: { labels?: string[], body?: string, b
 });
 
 const neverCleared = () => 0;
+
+afterEach(() => forgetActivation());
+
+/** The fake code host in place, holding row `number`'s history: the labels taken off it, as `{ name, at }`. The command the GitHub plugin sends for it is held beside the operation (`plugins/github/rows/gate-reads.test.ts`). */
+function historyOf(number: number, ...lifted: { name: string, at: string }[]) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.gate.events.set(number, lifted.map(({ name, at }): FakeRowEvent => ({ event: "unlabeled", label: name, actor: "ceo", at })));
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
 
 /** The row with `wait` is silent at 300 calls; the same row without it signals, at the same count. */
 function assertWaitSilences(wait: Parameters<typeof claimedRow>[1]) {
@@ -81,8 +94,8 @@ test("a clearing that cannot be read keeps today's whole window, and says so on 
   const original = console.error;
   console.error = (m: string) => { lines.push(String(m)); };
   try {
-    const refusing = () => { throw new Error("HTTP 403"); };
-    assert.equal(readWaitClearedAt(claimedRow(7), refusing), null);
+    historyOf(7).gate.events.set(7, new Error("HTTP 403"));
+    assert.equal(readWaitClearedAt(claimedRow(7)), null);
   } finally { console.error = original; }
   assert.match(lines.join("\n"), /#7.*HTTP 403.*counting from the claim/);
 });
@@ -108,22 +121,21 @@ test("a waiting row still ends the window of the same session's EARLIER row when
 });
 
 test("readWaitClearedAt: the latest lifting of a WAIT label, a passed Not-before, and nothing for other labels", () => {
-  const events = (...e: { name: string, at: string }[]) => () => e.map((x) => JSON.stringify(x)).join("\n");
-  const lifted = events({ name: "needs:chairman", at: "2026-10-03T12:00:00Z" }, { name: "parked", at: "2026-10-03T13:00:00Z" },
-    { name: "epic", at: "2026-10-03T23:00:00Z" });
-  assert.equal(readWaitClearedAt(claimedRow(1), lifted), Date.parse("2026-10-03T13:00:00Z"),
+  historyOf(1, { name: "needs:chairman", at: "2026-10-03T12:00:00Z" }, { name: "parked", at: "2026-10-03T13:00:00Z" }, { name: "epic", at: "2026-10-03T23:00:00Z" });
+  assert.equal(readWaitClearedAt(claimedRow(1)), Date.parse("2026-10-03T13:00:00Z"),
     "the later wait label wins and the unlabeled `epic` is not a wait");
-  assert.equal(readWaitClearedAt(claimedRow(1), events({ name: "epic", at: "2026-10-03T23:00:00Z" })), 0, "no wait ever lifted: 0, not null");
-  assert.equal(readWaitClearedAt(claimedRow(1, { body: "Not-before: 2026-10-03T14:00:00Z" }), lifted), Date.parse("2026-10-03T14:00:00Z"),
+  assert.equal(readWaitClearedAt(claimedRow(1, { body: "Not-before: 2026-10-03T14:00:00Z" })), Date.parse("2026-10-03T14:00:00Z"),
     "a Not-before that has passed is the clearing when it is the latest");
+  historyOf(1, { name: "epic", at: "2026-10-03T23:00:00Z" });
+  assert.equal(readWaitClearedAt(claimedRow(1)), 0, "no wait ever lifted: 0, not null");
 });
 
 test("an EXPIRED Fleet-hold-until is a clearing too: calls made during the hold are not charged to the row (reviewer, #133)", () => {
   const holdEnds = Date.parse("2026-10-03T12:00:00Z");
   const body = "Fleet-hold-until: 2026-10-03T12:00:00Z";
   const now = Date.parse("2026-10-04T00:00:00Z");
-  const noEvents = () => "";
-  const read = (row: any) => readWaitClearedAt(row, noEvents);
+  historyOf(1);
+  const read = (row: any) => readWaitClearedAt(row);
   assert.equal(read(claimedRow(1, { body })), holdEnds, "a hold that has passed is dated by its own instant");
   assert.equal(read(claimedRow(1)), 0, "no hold, no clearing");
   const during = turnsFrom(CLAIMED_AT + 1, OVER);

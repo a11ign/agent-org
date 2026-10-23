@@ -1,4 +1,4 @@
-// no-token: gh -- no `gh` is run: the tracker's history, the incident items and the label writes are a stub (`world`), the rows are fixtures and the only files written are in a temporary directory
+// no-token: gh -- no `gh` is run: the tracker's history, the incident items and the label writes are the fake code host's world (A11-160, step 6), the rows are fixtures and the only files written are in a temporary directory
 /**
  * #5032 (chairman, 2026-10-11): ONLY THE CHAIRMAN SETS PRIORITY, EXCEPT IN AN EMERGENCY WHERE THE ORG IS BLOCKED -- `priority:emergency`, honoured while an org-blocking incident is open.
  *
@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { offerHierarchyNow } from "../work-gate/tick.ts";
 import { parseEmergencyPriorityOption, readEmergencyPriorityOption, EMERGENCY_PRIORITY_LABEL as EMERGENCY_LABEL, EMERGENCY_PRIORITY_OFF, type EmergencyPriorityOption } from "../work-gate/causes/rows-offer.ts";
@@ -20,6 +20,9 @@ import {
 } from "../failure-recorders.ts";
 import { CHAIRMAN_LABEL_NOT_CHAIRMAN_KIND, FAILURE_LEDGER_FILE, parseFailureLedger } from "../failure-ledger.ts";
 import { REPO } from "../project-identity.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
 
 const CHAIRMAN = "DanBeckDev";
 const CEO = "a11ign-managers[bot]";
@@ -33,36 +36,57 @@ const BODY = (n: number) => `## Region\n\n\`\`\`\nsrc/row-${n}.ts\n\`\`\`\n\n## 
 const row = (number: number, labels: string[], extra = ""): Row => ({ number, title: `row ${number}`, labels: ["ready", ...labels].map((name) => ({ name })), body: BODY(number) + extra });
 const LINK = (ref: string, reason = "every claim is refused") => `\nIncident: ${ref}\nEmergency-reason: ${reason}\n`;
 
-/** The tracker as the gate asks it: who added each label of each row, each incident item, and what was written. `unreadable` makes every read throw. */
+/**
+ * The tracker as the gate asks it: who added each label of each row, each incident item, and what was written. `unreadable` makes every read throw. `reads` and `writes` are the code host's operations the gate called
+ * (A11-160, step 6: the gate asks the code host by name, and the fake code host answers from this world); what the plugin sends to GitHub for them is asserted in `plugins/github/rows/gate-reads.test.ts`.
+ */
 type World = {
   actors: Record<string, Record<number, string>>; // label -> row -> the `labeled` actors, oldest first, one per line
   items: Record<string, { state: "open" | "closed"; labels: string[]; body: string }>; // `#889` or `owner/repo#889`
   unreadable?: boolean;
-  reads: string[][];
-  writes: string[][];
+  reads: unknown[][];
+  writes: unknown[][];
 };
 const world = (actors: World["actors"], items: World["items"] = {}): World => ({ actors, items, reads: [], writes: [] });
 const OPEN_BLOCKING = { state: "open" as const, labels: ["incident"], body: "Incident: incident:claim-refusal-storm\n" };
 
-function stubbedGh(w: World) {
-  return (args: string[]): string => {
-    if (args[0] === "issue") { w.writes.push(args); return ""; }
-    w.reads.push(args);
-    if (w.unreadable) throw new Error("rate limited");
-    const events = /issues\/(\d+)\/events$/.exec(args[1]);
-    if (events) {
-      const label = /label\.name == "([^"]+)"/.exec(args.join(" "))?.[1] ?? "";
-      return w.actors[label]?.[Number(events[1])] ?? "";
+const noGh = (): string => {
+  throw new Error("the fake code host acts on its own state: no gh is run");
+};
+
+/** The fake code host that holds `w` as it stands now, substituted for the tick: the label history, the incident items, and a record of the reads and writes the gate makes of it. */
+function holdWorld(w: World): void {
+  const host = createFakeCodeHost();
+  const fake = host.rowsWorld;
+  let minute = 0;
+  for (const [label, byRow] of Object.entries(w.actors)) {
+    for (const [row, lines] of Object.entries(byRow)) {
+      const events = fake.gate.events.get(Number(row));
+      const kept = events instanceof Error || events === undefined ? [] : events;
+      for (const actor of lines.split("\n").filter((line) => line !== "")) {
+        minute += 1;
+        kept.push({ event: "labeled", label, actor: actor === "null" ? null : actor, at: new Date(T0 - 60 * 60_000 + minute * 60_000).toISOString() });
+      }
+      fake.gate.events.set(Number(row), kept);
     }
-    const item = /^repos\/(.+)\/issues\/(\d+)$/.exec(args[1]);
-    if (item) {
-      const found = w.items[`${item[1] === "{owner}/{repo}" ? "" : item[1]}#${item[2]}`];
-      if (found === undefined) throw new Error(`no item ${args[1]}`);
-      return JSON.stringify(found);
-    }
-    throw new Error(`unexpected call ${args.join(" ")}`);
-  };
+  }
+  for (const [ref, item] of Object.entries(w.items)) {
+    const [repo, number] = ref.split("#");
+    const incident = fakeRow(fake, Number(number), { state: item.state === "open" ? "OPEN" : "CLOSED", labels: item.labels, body: item.body });
+    if (repo === "") fake.rows.set(Number(number), incident);
+    else fake.foreignRows.set(`${repo}#${number}`, incident);
+  }
+  const rows = host.rows!;
+  for (const name of ["newestLabellerOf", "incidentItemOf", "rowBodyOf"] as const) {
+    const read = rows[name] as (request: never) => unknown;
+    rows[name] = ((request: never) => { w.reads.push([name, request]); if (w.unreadable) throw new Error("rate limited"); return read(request); }) as never;
+  }
+  const remove = rows.removeLabelFromRow;
+  rows.removeLabelFromRow = (request) => { w.writes.push(["removeLabelFromRow", request.number, request.label]); remove(request); };
+  substituteCodeHost(host);
 }
+
+afterEach(() => forgetActivation());
 
 function withDir<T>(body: (dir: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "work-gate-emergency-priority-"));
@@ -72,7 +96,8 @@ function withDir<T>(body: (dir: string) => T): T {
 }
 
 function tick(rows: Row[], { dir, w, emergency = ON, minutes = 0 }: { dir: string; w: World; emergency?: EmergencyPriorityOption; minutes?: number }) {
-  const hierarchy = offerHierarchyNow(rows, rows, { run: stubbedGh(w), stateDir: dir, now: T0 + minutes * 60_000, emergency });
+  holdWorld(w);
+  const hierarchy = offerHierarchyNow(rows, rows, { run: noGh, stateDir: dir, now: T0 + minutes * 60_000, emergency });
   const orders = decide({ prs: [], readyRows: rows, engineerStarts: [], projectDeclaration: DECLARATION, shareLog: () => {}, offerHierarchy: hierarchy } as Parameters<typeof decide>[0]);
   return {
     hierarchy,
@@ -141,7 +166,7 @@ test("a label put on by anybody but the managers App or the leads login is ignor
   assert.deepEqual(numbersOf(offered), ["row-100", "row-300"]);
   assert.deepEqual(entriesIn(dir).map((entry) => entry.ref), [`${REPO}#300:${AGENT}:actor`]);
   assert.match(told[0].prompt, new RegExp(`${AGENT.replace(/[[\]]/g, "\\$&")} added it`));
-  assert.equal(w.reads.some((args) => /issues\/889$/.test(args[1])), false, "the actor is refused BEFORE the incident is read: a forger learns nothing and costs nothing");
+  assert.equal(w.reads.some(([name]) => name === "incidentItemOf"), false, "the actor is refused BEFORE the incident is read: a forger learns nothing and costs nothing");
 }));
 
 test("a label whose history names no actor is ignored under `unknown`", () => withDir((dir) => {
@@ -159,7 +184,7 @@ test("THE EXPIRY: the incident closing takes the label off the row, once the ite
   assert.deepEqual([...open.hierarchy.emergencyRows ?? []], [300]);
   w.items["#889"] = { ...OPEN_BLOCKING, state: "closed" };
   const closed = tick(rows, { dir, w, minutes: 10 });
-  assert.deepEqual(w.writes, [["issue", "edit", "300", "--remove-label", EMERGENCY_LABEL]], "the gate itself removes the label");
+  assert.deepEqual(w.writes, [["removeLabelFromRow", 300, EMERGENCY_LABEL]], "the gate itself removes the label");
   assert.deepEqual([...closed.hierarchy.emergencyRows ?? []], [], "and the row is not honoured on the tick the incident closed");
   assert.deepEqual(closed.told, [], "an expiry is not misuse: ceo is not told, and no misuse line is written");
   assert.deepEqual(entriesIn(dir).map((entry) => entry.classKey), [EMERGENCY_PRIORITY_USED_KIND]);

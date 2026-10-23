@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts`, whose default readers spawn `gh`; the lanes are handed in, the per-tick reads are stubs and `gh` is an injected recorder, so nothing is spawned (#4386)
+// no-token: gh -- imports `work-gate.ts`, whose default readers spawn `gh`; the lanes are handed in, the per-tick reads are stubs and the code host is the fake (A11-160, step 6) with a recorder over what it is asked, so nothing is spawned (#4386)
 /**
  * #4386: AN AGENT-ORG PULL REQUEST IS OWNED BY THE WORKER ITS ROW NAMES, and a fallback that still fires files its own defect.
  *
@@ -7,7 +7,7 @@
  * held the rows; `scopeTick` never ran the owner ladder at all. EVERY "falls back to ceo" assertion below is read against the
  * same fixture with ONE thing changed (the positive control for it): the first test of each group.
  */
-import { test, after } from "node:test";
+import { test, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +17,9 @@ import { scopeTick } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { withScopedPrOwners, resolverDefectOf } from "./work-gate/pr-owners.ts";
 import { fileResolverDefects } from "./work-gate/causes/org-health-resolver-defects.ts";
 import { sendToGitHub, unstampableRefusal, main as prOpen, EXIT_NOTHING_SENT } from "./pr-open.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 // agent-org#519: the body is no longer an acceptance source, so the diff ADDS this file and `readFile` returns the text the body meant to carry.
 const withAcceptanceFile = (body: string) => ({
@@ -143,18 +145,32 @@ test("(8) resolverDefectOf: a PR that reached ceo while naming a live claimant I
   assert.equal(resolverDefectOf(pr436({ labels: [{ name: "session:worker-77" }] }), LIVE_4371, HOME), null, "its own label answers it");
 });
 
-/** A recorder standing in for `gh`; `open` is what the by-label read of the OPEN `resolver-defect` rows answers (#5050: a GraphQL connection, no longer `issue list --label`). */
+/** A `run` for a reader that takes one: the fake code host acts on its own state, so a call to it means a reader reached for GitHub. */
+const noGh = (): string => {
+  throw new Error("the fake code host acts on its own state: no gh is run");
+};
+afterEach(() => forgetActivation());
+
+/**
+ * The fake code host standing in for GitHub, and a recorder over what the gate asks of it; `open` is the OPEN `resolver-defect` rows its world holds (A11-160, step 6: the filing is the code host's `ensureLabel`,
+ * `fileLabelledRow` and `commentOnRow`, and what the plugin sends for them is asserted in `plugins/github/rows/gate-reads.test.ts`). `refuse` makes the first read throw, as a refused `gh` did.
+ */
 function recorder(open: number[], { refuse = false }: { refuse?: boolean } = {}) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    if (refuse) throw new Error("HTTP 502");
-    return readsRowsByLabel(args) !== null ? connectionOf(open.map((number) => ({ number }))) : "";
-  };
-  return { calls, run };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  for (const number of open) world.rows.set(number, fakeRow(world, number, { labels: ["resolver-defect"] }));
+  if (refuse) world.failures.set("readRowsByLabel", new Error("HTTP 502"));
+  const calls: { kind: string; request: any }[] = [];
+  const rows = host.rows as unknown as Record<string, (request: unknown) => unknown>;
+  for (const [name, kind] of [["readRowsByLabel", "by-label read"], ["ensureLabel", "label create"], ["fileLabelledRow", "issue create"], ["commentOnRow", "issue comment"]] as const) {
+    const operation = rows[name];
+    rows[name] = (request) => { calls.push({ kind, request }); return operation(request); };
+  }
+  substituteCodeHost(host);
+  return { calls, run: noGh, world };
 }
-/** What each recorded call was, the by-label read named as such: it travels as `api graphql`, which says nothing of what it asked. */
-const kindsOf = (calls: string[][]) => calls.map((call) => (readsRowsByLabel(call) !== null ? "by-label read" : call.slice(0, 2).join(" ")));
+/** What each recorded call was. */
+const kindsOf = (calls: { kind: string }[]) => calls.map((call) => call.kind);
 const defectOf = (number: number) => resolverDefectOf(pr436({ number }), LIVE_4371, HOME)!;
 
 test("(9) fileResolverDefects: the first defect files ONE row, later ones comment on it, and a PR is written once", () => {
@@ -165,13 +181,13 @@ test("(9) fileResolverDefects: the first defect files ONE row, later ones commen
   const first = recorder([]);
   assert.equal(fileResolverDefects([defectOf(436)], { run: first.run, statePath, log }), 1);
   assert.deepEqual(kindsOf(first.calls), ["by-label read", "label create", "issue create"]);
-  assert.deepEqual(readsRowsByLabel(first.calls[0]), { label: "resolver-defect", state: "OPEN" }, "the open class row is asked for by its label, as a connection and not a search");
-  assert.ok(first.calls[2].includes("resolver-defect"), "the row carries the label");
-  assert.match(first.calls[2].join(" "), /a11ign\/agent-org#436/, "and names its fixture");
+  assert.deepEqual([first.calls[0].request.label, first.calls[0].request.state], ["resolver-defect", "OPEN"], "the open class row is asked for by its label, as a connection and not a search");
+  assert.equal(first.calls[2].request.label, "resolver-defect", "the row carries the label");
+  assert.match(first.calls[2].request.body, /a11ign\/agent-org#436/, "and names its fixture");
   const second = recorder([4400]);
   assert.equal(fileResolverDefects([defectOf(436), defectOf(437)], { run: second.run, statePath, log }), 1, "436 is remembered; 437 is new");
   assert.deepEqual(kindsOf(second.calls), ["by-label read", "issue comment"]);
-  assert.equal(second.calls[1][2], "4400", "a later PR comments on the open class row");
+  assert.equal(String(second.calls[1].request.number), "4400", "a later PR comments on the open class row");
   const third = recorder([4400]);
   assert.equal(fileResolverDefects([defectOf(436), defectOf(437)], { run: third.run, statePath, log }), 0);
   assert.deepEqual(third.calls, [], "once per pull request: nothing is asked for a PR already written");

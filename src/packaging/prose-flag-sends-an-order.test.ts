@@ -1,15 +1,20 @@
-// no-token: gh -- boardTruthNow reaches `gh` only through the `run` injected here; every read in this file is a fixture
+// no-token: gh -- boardTruthNow reaches `gh` only through the `run` injected here (the day's comments, the table, the label events) and the fake code host's rows (the row's state and newest comment, the label); every read in this file is a fixture
 // a11ign/a11ign#4250 (follow-up of #4232): THE FLAG IN THE DAY'S TABLE MOVES THE AUTHOR NO BETTER THAN THE SENTENCE DID. The chairman's rule was that a handoff written as prose is flagged "to the
 // author's own session as an `answer:` order and in the audit's daily list"; #4232 delivered the list. The tick now also puts `answer:<route>` on the row each `handoff-in-prose` and
 // `reading-without-defect-row` finding names.
 //
 // POSITIVE AND NEGATIVE CONTROL: #4090's real comment is the flagged case (the label is added, once); its twins differ by ONE fact each (the day's table already posted, the author's own label
 // already there, a row that no finding names). The flagged case is the control for every "nothing" below: the same tick, the same comment, a label when the fact is absent.
-// a11ign/a11ign#4679: EVERY LABEL ASKS `answerLabelRefusal` FIRST, so each flagged comment below ENDS IN A QUESTION naming its route and the fake `gh` answers the row's state and newest comment.
+// a11ign/a11ign#4679: EVERY LABEL ASKS `answerLabelRefusal` FIRST, so each flagged comment below ENDS IN A QUESTION naming its route and the fake code host's rows (A11-160, step 6) answer the row's state and newest comment and take the label.
 // The 2026-10-09T23:00Z replay labelled closed rows and rows nobody had asked anything: `closed` and `report` below are those two, and `org-health.test.ts` pins the rest.
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { boardTruthNow } from "../work-gate/org-health.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const AT = Date.parse("2026-10-08T10:22:00Z");
 const NOW = Date.parse("2026-10-08T12:00:00Z");
@@ -28,32 +33,30 @@ const READING_4100 = "**ceo, reading 1 of 3 on #4100.** The run finished. Does `
 const posted = (number: number, body: string, login = AUTHOR) => ({ number, author: { login }, body, createdAt: new Date(AT).toISOString(), url: `https://github.com/a11ign/a11ign/issues/${number}#issuecomment-1` });
 const ndjson = (items: any[]) => items.map((i) => JSON.stringify(i)).join("\n");
 
-/** One tick of the real `boardTruthNow` over a fake `gh`: `table` is the day's table already on #928 (or not), `events` the labels the author already added, `closed` the rows GitHub reports closed. The newest comment of a row is the last one given for it. */
+/** One tick of the real `boardTruthNow` over a fake `gh` (the org's comments, the table) and the fake code host's rows (each row's state and newest comment, the label): `table` is the day's table already on #928 (or not), `events` the labels the author already added, `closed` the rows GitHub reports closed. The newest comment of a row is the last one given for it. */
 function tick({ comments, table = "", events = [], refuse = [], closed = [] }: { comments: any[]; table?: string; events?: any[]; refuse?: string[]; closed?: number[] }) {
-  const labels: string[] = [];
   const tables: string[] = [];
   const logged: string[] = [];
+  const host = createFakeCodeHost();
+  const code = host.rowsWorld;
+  for (const number of new Set<number>(comments.map((c) => c.number))) {
+    code.rows.set(number, fakeRow(code, number, { state: closed.includes(number) ? "CLOSED" : "OPEN", comments: comments.filter((c) => c.number === number).map((c, id) => ({ id, body: c.body, createdAt: c.createdAt })) }));
+  }
+  if (refuse.length > 0) code.failures.set("addLabelToRowByApi", new Error("HTTP 403\nforbidden"));
+  substituteCodeHost(host);
   const run = (args: string[]) => {
     const path = args[0] === "api" ? (args.find((a) => a.startsWith("repos/")) ?? "") : "";
     if (args[0] === "issue" && args[1] === "comment") { tables.push(args[args.indexOf("--body") + 1]); return ""; }
-    if (args[0] === "api" && args.includes("-f")) {
-      const label = args[args.indexOf("-f") + 1].replace("labels[]=", "");
-      if (refuse.includes(label)) throw new Error("HTTP 403\nforbidden");
-      labels.push(`${path.match(/issues\/(\d+)\/labels/)![1]} ${label}`);
-      return "";
-    }
     if (path.includes("/issues/928/comments")) return table;
     if (path.includes("/issues/comments?")) return ndjson(comments);
     if (path.includes("/events?")) return ndjson(events);
     if (path.includes("/issues?state=all")) return "";
-    const issue = path.match(/issues\/(\d+)$/);
-    if (issue) return JSON.stringify({ state: closed.includes(Number(issue[1])) ? "closed" : "open", comments: comments.filter((c) => c.number === Number(issue[1])).length });
-    const newest = path.match(/issues\/(\d+)\/comments\?per_page=1&page=(\d+)/);
-    if (newest) return JSON.stringify(comments.filter((c) => c.number === Number(newest[1]))[Number(newest[2]) - 1]);
+    if (/issues\/\d+(\/labels|\/comments\?per_page=1)?/.test(path)) throw new Error(`the row's state, its newest comment and the label are the code host's rows, not a gh: ${args.join(" ")}`);
     return "[]";
   };
   const agents = () => [{ label: "ceo", status: "idle" }, { label: "orchestrator", status: "idle" }];
   boardTruthNow({ openRowsRead: [], claimedComments: [], waitFacts: { items: {} }, now: NOW }, { repo: "a11ign/a11ign", run, agents, log: (line: string) => logged.push(line) } as any);
+  const labels = [...code.rows.values()].flatMap((row) => row.labels.filter((l) => l.startsWith("answer:")).map((l) => `${row.number} ${l}`));
   return { labels, tables, logged };
 }
 

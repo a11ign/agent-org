@@ -4,6 +4,7 @@ import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../../project-vocabulary
 import { readWaitFacts } from "../org-health.ts";
 import { chairmanAskOrders } from "../chairman-ask-orders.ts";
 import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
+import { rows } from "../../plugins/rows.ts";
 import { CHAIRMAN_LOGINS, MAX_ROW_ORDERS_PER_TICK, labelledRows } from "../vocabulary.ts";
 
 /**
@@ -43,19 +44,12 @@ function newestTime(times: string[]): string | null {
   return dated.length === 0 ? null : dated.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
 }
 
-/** @param out `gh api --jq` output, one JSON object per line */
-function jsonLines(out: string): any[] {
-  return out.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line));
-}
-
 /**
  * When `needs:chairman` was LAST applied to the row, or `null` when no `labeled` event could be read for it. The last one, because a
  * label taken off and applied again is a new ask -- that is how a row is re-asked, as data rather than prose.
  */
 function readChairmanLabelledAt(number: number, run: (args: string[]) => string) {
-  const out = run(["api", `repos/{owner}/{repo}/issues/${number}/events`, "--paginate", "--jq",
-    `.[] | select(.event == "labeled" and .label.name == "${CHAIRMAN_LABEL}") | .created_at`]);
-  return newestTime(out.split("\n").map((line) => line.trim()));
+  return newestTime(rows().labeledEventTimesOf({ number, label: CHAIRMAN_LABEL, run }));
 }
 
 /**
@@ -64,9 +58,7 @@ function readChairmanLabelledAt(number: number, run: (args: string[]) => string)
  * `null` when there is none. The body is cut in the projection: the provenance line is the first line and nothing else is read.
  */
 function readChairmanEventAt(number: number, run: (args: string[]) => string) {
-  const out = run(["api", `repos/{owner}/{repo}/issues/${number}/comments`, "--paginate", "--jq",
-    ".[] | {author: (.user.login // \"\"), at: .created_at, body: ((.body // \"\") | .[0:200])}"]);
-  const events = jsonLines(out).filter((c) => CHAIRMAN_LOGINS.includes(c.author) || String(c.body).startsWith(CHAIRMAN_ANSWER_PROVENANCE));
+  const events = rows().commentActivityOf({ number, run }).filter((c) => CHAIRMAN_LOGINS.includes(c.author) || String(c.body).startsWith(CHAIRMAN_ANSWER_PROVENANCE));
   return newestTime(events.map((c) => String(c.at)));
 }
 

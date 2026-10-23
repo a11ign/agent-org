@@ -1,4 +1,4 @@
-// no-token: gh -- every read is handed a fake `run`, and the three that reach the real `defaultRun` run in a child with a stub `gh` first on PATH (#3724)
+// no-token: gh -- the reads run on the fake code host's rows (A11-160, step 6), and the one that reaches the real `defaultRun` runs in a child with a stub `gh` first on PATH (#3724)
 /**
  * #3724: A REFUSED READ OF ONE SHA IS NAMED, AND A STALE EVIDENCE HEAD SAYS NOTHING.
  *
@@ -11,7 +11,7 @@
  *     is silent, any other refusal is ONE line per tick that names the repository, the path and the status. (4) pins that a 404 of a read
  *     that is not of a sha still reaches stderr, so the capture is not a way of silencing every `gh`.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -20,6 +20,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inRepo } from "./work-gate/reads/read-memo-and-exit.ts";
 import { readCommitShas, readFailingChecks, withPatchIds } from "./work-gate/causes/pr-reviews.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import type { FakeRowsWorld } from "./plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const PR_REVIEWS = fileURLToPath(new URL("./work-gate/causes/pr-reviews.ts", import.meta.url));
 const READS = fileURLToPath(new URL("./work-gate/reads/read-memo-and-exit.ts", import.meta.url));
@@ -36,15 +41,13 @@ const reviewedAtStaleHeads = () => ({ number: 4, headRefOid: HEAD, baseRefName: 
 /** The error `execFileSync` throws for a `gh` that printed `message` on stderr and exited 1. */
 const ghRefusal = (message: string) => Object.assign(new Error(`Command failed: gh api\n${message}`), { status: 1, stderr: message });
 
-/** A `gh` that answers the head's compare with a diff and every other compare with `refusal`, and records each call. */
-function ghWhere(refusal: Error) {
-  const calls: string[] = [];
-  const run = (args: string[]) => {
-    calls.push(args[args.length - 1]);
-    if (args[args.length - 1].endsWith(`...${HEAD}`)) return DIFF;
-    throw refusal;
-  };
-  return { run, calls };
+/** The fake code host with the head's compare answering a diff and each stale head's compare refused with `refusal`; `asked()` lists the compares read. */
+function hostWhere(refusal: Error) {
+  const host = createFakeCodeHost();
+  const world: FakeRowsWorld = host.rowsWorld;
+  for (const [key, answer] of [[`main...${HEAD}`, DIFF], [`main...${STALE}`, refusal], [`main...${ALSO_STALE}`, refusal]] as const) world.gate.diffs.set(key, answer);
+  substituteCodeHost(host);
+  return { world, asked: () => world.calls.filter((call) => call.startsWith("compareDiffOf ")) };
 }
 
 /** What `read` wrote to this process's stderr, line by line. */
@@ -94,15 +97,16 @@ import { defaultRun, inRepo } from ${JSON.stringify(READS)};
 
 test("(2) a stale evidence head (404 or 422 on a compare or a commit path) says nothing and the pull request keeps the head's own reading", () => {
   for (const status of ["Not Found (HTTP 404)", "Unprocessable Entity (HTTP 422)"]) {
-    const { run, calls } = ghWhere(ghRefusal(`gh: ${status}`));
+    const { asked } = hostWhere(ghRefusal(`gh: ${status}`));
     let result: object[] = [];
-    const told = toldDuring(() => { result = withPatchIds([reviewedAtStaleHeads()], run, null); });
+    const told = toldDuring(() => { result = withPatchIds([reviewedAtStaleHeads()], undefined, null); });
     assert.deepEqual(told, [], `${status}: nothing is written`);
     assert.deepEqual(Object.keys(enriched(result[0]) ?? {}), [HEAD], `${status}: unenriched by the stale heads, enriched by the head`);
-    assert.equal(calls.length, 3, "the control: both stale heads WERE read, so the silence is not an unread population");
+    assert.equal(asked().length, 3, "the control: both stale heads WERE read, so the silence is not an unread population");
   }
-  const refusedCheckRuns = () => { throw ghRefusal("gh: Not Found (HTTP 404)"); };
-  assert.deepEqual(toldDuring(() => assert.equal(readFailingChecks(STALE, refusedCheckRuns), null)), [], "a commit's check-runs: the same");
+  const { world } = hostWhere(ghRefusal("gh: Not Found (HTTP 404)"));
+  world.gate.failingChecks.set(STALE, ghRefusal("gh: Not Found (HTTP 404)"));
+  assert.deepEqual(toldDuring(() => assert.equal(readFailingChecks(STALE), null)), [], "a commit's check-runs: the same");
 });
 
 test("(3) a refusal that is not a stale sha (403, 502, a timeout) is ONE line naming the repository, the path and the status, per tick and not per head", () => {
@@ -112,22 +116,23 @@ test("(3) a refusal that is not a stale sha (403, 502, a timeout) is ONE line na
     { refusal: Object.assign(new Error("spawnSync gh ETIMEDOUT"), { code: "ETIMEDOUT" }), says: "ETIMEDOUT" },
   ];
   for (const { refusal, says } of cases) {
-    const { run, calls } = ghWhere(refusal);
+    const { asked } = hostWhere(refusal);
     let result: object[] = [];
-    const told = toldDuring(() => { result = inRepo("a11ign/lab", () => withPatchIds([reviewedAtStaleHeads()], run, null)); });
+    const told = toldDuring(() => { result = inRepo("a11ign/lab", () => withPatchIds([reviewedAtStaleHeads()], undefined, null)); });
     assert.equal(told.length, 1, `${says}: two heads were refused and ONE line was told: ${told.join("|")}`);
     assert.match(told[0], /^REFUSED READ in a11ign\/lab: `gh api repos\/a11ign\/lab\/compare\/main\.\.\.<sha>` answered /);
     assert.ok(told[0].includes(says), told[0]);
     assert.deepEqual(Object.keys(enriched(result[0]) ?? {}), [HEAD], `${says}: still read at the head`);
-    assert.equal(calls.length, 3);
-    assert.deepEqual(toldDuring(() => inRepo("a11ign/lab", () => withPatchIds([reviewedAtStaleHeads()], run, null))), [],
+    assert.equal(asked().length, 3);
+    assert.deepEqual(toldDuring(() => inRepo("a11ign/lab", () => withPatchIds([reviewedAtStaleHeads()], undefined, null))), [],
       `${says}: told once, so the same fault in the same tick is not told again`);
   }
 });
 
 test("(4) a 404 of a read that is not of a sha is a fault: told, and the answer is `null` rather than empty", () => {
-  const notFound = () => { throw ghRefusal("gh: Not Found (HTTP 404)"); };
-  const told = toldDuring(() => assert.equal(inRepo("o/gone", () => readCommitShas(9, notFound)), null));
+  const { world } = hostWhere(ghRefusal("gh: Not Found (HTTP 404)"));
+  world.failures.set("commitShasOf", ghRefusal("gh: Not Found (HTTP 404)"));
+  const told = toldDuring(() => assert.equal(inRepo("o/gone", () => readCommitShas(9)), null));
   assert.equal(told.length, 1);
   assert.match(told[0], /^REFUSED READ in o\/gone: `gh api repos\/o\/gone\/pulls\/9\/commits` answered HTTP 404/);
 });

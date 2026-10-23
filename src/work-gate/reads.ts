@@ -7,6 +7,7 @@ import { readTickScopes } from "../tick-scopes.ts";
 import type { Scope as TickScope } from "../event-queue.ts";
 import { type Pacing, GRAPHQL_SWEEP_MINUTES, OTHER_SCOPES_MEMORY, readOtherScopesMemory, rememberOtherScopes, scopesToRead } from "./pacing.ts";
 import { armedFromApi, openPullRequestsQueryArgs } from "../auto-arm-sweep.ts";
+import { rows } from "../plugins/rows.ts";
 import { herdrRun as herdrProbe } from "../herdr-agents.ts";
 import { HOME_CHECKOUT, homeProjectDeclaration } from "../project-config.ts";
 import { BACKLOG_LABEL, NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../project-vocabulary.ts";
@@ -83,9 +84,9 @@ export function readBranchPrs(branches: readonly { branch: string; }[], run: (ar
   const found = [];
   for (const { branch } of branches) {
     try {
-      const parsed = JSON.parse(run(["pr", "list", "--head", branch, "--state", "all", "--limit", String(BRANCH_PRS_LIMIT), "--json", "number,state"]));
-      if (!Array.isArray(parsed) || parsed.length >= BRANCH_PRS_LIMIT) return null;
-      found.push(...parsed.map((pr: { number: number; state: string; }) => ({ branch, number: pr.number, state: String(pr.state) })));
+      const parsed = rows().pullsOfBranch({ branch, limit: BRANCH_PRS_LIMIT, run });
+      if (parsed === null || parsed.length >= BRANCH_PRS_LIMIT) return null;
+      found.push(...parsed.map((pr) => ({ branch, number: pr.number, state: pr.state })));
     } catch {
       return null;
     }
@@ -401,15 +402,8 @@ function withNewestCommentsOfCappedRows(rows: any[], run: (args: string[]) => st
  * answer does not carry is left out of the map, never filled with `[]`.
  */
 function readNewestComments(numbers: number[], run: (args: string[]) => string, repo: string): Map<number, any[]> | null {
-  const [owner, name] = repo.split("/");
-  const fields = numbers.map((n) => `r${n}: issue(number: ${Number(n)}) { number comments(last: ${ISSUE_LIST_COMMENT_CAP}) { nodes { id body createdAt author { login } } } }`);
   try {
-    const parsed = JSON.parse(run(["api", "graphql", "-f", `query=query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields.join(" ")} } }`,
-      "-F", `owner=${owner}`, "-F", `name=${name}`]));
-    const repository = parsed?.errors ? null : parsed?.data?.repository;
-    if (repository === null || typeof repository !== "object") return null;
-    const read = Object.values(repository).filter((issue) => Array.isArray((issue as any)?.comments?.nodes));
-    return new Map(read.map((issue: any) => [Number(issue.number), issue.comments.nodes]));
+    return rows().newestCommentsOf({ repo, numbers, last: ISSUE_LIST_COMMENT_CAP, run });
   } catch {
     return null;
   }
@@ -424,9 +418,7 @@ function readNewestComments(numbers: number[], run: (args: string[]) => string, 
  */
 export function readMergedPrs(run: (args: string[]) => string = defaultRun): { number: number; headRefName: string; mergedAt: string; title: string; labels: { name: string; }[]; }[] | null {
   try {
-    const parsed = JSON.parse(run(["pr", "list", "--state", "merged", "--limit", "100", "--json",
-      "number,headRefName,mergedAt,title,labels"]));
-    return Array.isArray(parsed) ? parsed : null;
+    return rows().newestMergedPulls({ run });
   } catch {
     return null;
   }

@@ -1,4 +1,4 @@
-// no-token: gh -- `main` is handed `run`, `git`, `runAcceptance`, `prHead` and `verifyStamp` as seams, the gate is handed `run`, and the project is a throwaway git repository
+// no-token: gh -- `main` is handed `run`, `git`, `runAcceptance`, `prHead` and `verifyStamp` as seams, the gate marks pull requests ready through the fake code host's rows (A11-160, step 6), and the project is a throwaway git repository
 /**
  * a11ign/a11ign#3215: A PULL REQUEST IS MARKED READY ONLY ON A GREEN VERIFY STAMP FOR ITS HEAD.
  *
@@ -10,7 +10,7 @@
  * project's reasons, which the project's own tests pin. The stamp lives where git puts a per-worktree file, and the author's tree is a LINKED
  * worktree, so "the gate reads a stamp it did not write, in a tree it is not in" is the case the gate meets.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,7 +21,11 @@ import { tmpDir } from "../lib/tmp-fixture.ts";
 import { EXIT_NOTHING_SENT, main } from "../pr-open.ts";
 import { decide } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { performActions } from "../work-gate/orders.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
 import { VERIFY_STATE, readVerifyStamp, verifyDeclaration, withVerifyStamps, worktreeAtHead } from "../verify-stamp.ts";
+
+afterEach(() => forgetActivation());
 
 const STEPS = ["changed", "ts", "agentOrg"];
 const ACCEPTANCE = 'Acceptance: node -e "process.exit(0)"';
@@ -186,16 +190,25 @@ function openAfterStamp(project: ReturnType<typeof fixture>, head: string, over?
 const convincedDraft = (head: string, body = BODY) => ({
   number: 7, isDraft: true, headRefOid: head, body, headRefName: "agent/x",
   statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
-  author: { login: "a11ign-ai-workers" }, labels: [{ name: "session:worker-3215" }],
+  author: { login: "a11ign-ai-workers" }, isCrossRepository: false, labels: [{ name: "session:worker-3215" }],
   comments: [{ body: `Review of #7 at \`${head.slice(0, 8)}\`, by \`reviewer\`: convinced.` }],
 });
 type Order = { session: string, cause: string, causeKey: string, prompt: string, action?: { kind: string, pr: number, repo?: string } };
 const ordersFrom = (project: ReturnType<typeof fixture>, pr: unknown) =>
   decide({ prs: withVerifyStamps([pr as never], { checkout: project.checkout }), readyRows: [] }) as Order[];
+/** The fake code host holding draft #7, with `refusal` (if any) as what marking a pull request ready answers. */
+function hostWithDraft(refusal?: Error) {
+  const host = createFakeCodeHost();
+  host.rowsWorld.pulls.set(7, { number: 7, body: "", headRefName: "agent/x", labels: [], isDraft: true, armed: false, merged: false, mergedAt: null, createdAt: "t", comments: [] });
+  if (refusal !== undefined) host.rowsWorld.failures.set("markPullReady", refusal);
+  substituteCodeHost(host);
+  return host.rowsWorld;
+}
+/** What the gate asked the code host to mark ready, as the fake records it (`<repo>#<number>`, the repository empty for the primary's own). */
 const readyCalls = (orders: Order[]) => {
-  const calls: string[][] = [];
-  performActions(orders, (args: string[]) => { calls.push(args); return ""; }, () => {});
-  return calls;
+  const world = hostWithDraft();
+  performActions(orders, undefined, () => {});
+  return world.calls.filter((call) => call.startsWith("markPullReady ")).map((call) => call.slice("markPullReady ".length));
 };
 
 test("#3215 (5): the gate's `gh pr ready` is NOT run for a head with no green stamp or a stale one, and IS run for a stamped head", () => {
@@ -214,9 +227,9 @@ test("#3215 (5): the gate's `gh pr ready` is NOT run for a head with no green st
 
   project.stamp(second);
   const stamped = ordersFrom(project, convincedDraft(second));
-  assert.deepEqual(readyCalls(stamped), [["pr", "ready", "7"]], "POSITIVE CONTROL: the stamped head is marked ready, in the existing call shape");
-  assert.deepEqual(readyCalls(ordersFrom(project, { ...convincedDraft(second), repo: "a11ign/agent-org" })), [["pr", "ready", "7", "--repo", "a11ign/agent-org"]],
-    "and the `--repo` form for another repository is unchanged");
+  assert.deepEqual(readyCalls(stamped), ["#7"], "POSITIVE CONTROL: the stamped head is marked ready, in the primary's own repository");
+  assert.deepEqual(readyCalls(ordersFrom(project, { ...convincedDraft(second), repo: "a11ign/agent-org" })), ["a11ign/agent-org#7"],
+    "and a pull request of another repository is marked ready THERE");
 });
 
 test("#3215 (5): when `gh pr ready` FAILS on a stamped head, product-manager is woken exactly as before", () => {
@@ -224,7 +237,8 @@ test("#3215 (5): when `gh pr ready` FAILS on a stamped head, product-manager is 
   const head = project.commit("one");
   project.stamp(head);
   const [order] = ordersFrom(project, convincedDraft(head));
-  const { delivered, performed } = performActions([order], () => { throw new Error("gh: not authorised"); }, () => {});
+  hostWithDraft(new Error("gh: not authorised"));
+  const { delivered, performed } = performActions([order], undefined, () => {});
   assert.equal(performed, 0);
   assert.equal(delivered.length, 1);
   assert.equal(delivered[0].session, "product-manager");

@@ -1,16 +1,20 @@
-// no-token: gh -- importing `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the exact-start read, the fleet reading, the lab-job read, the waits and the log, and `readMilestoneMoves` is handed a `run` of its own.
+// no-token: gh -- importing `work-gate.ts` reaches `defaultRun` (`execFileSync("gh", ...)`), and this file never lets it run: `orgHealthNow` is handed the clock, the last merge, the exact-start read, the fleet reading, the lab-job read, the waits and the log, and `readMilestoneMoves` reads the events and the closed pull requests from the fake code host's rows (A11-160, step 6).
 /**
  * THE PRIMARY MILESTONE'S CLOCK STARTS AT THE REAL LAST MOVE (#4295, part of #4231). #4231 started it at the last merge the tick already holds, a proxy that is later than the
  * milestone's own last move whenever anything else merged (silent) and EARLIER than it when a claim was released or a pull request closed with no merge (a false alarm to `ceo`).
  * The row: when the proxy has ALREADY tripped, ONE conditional read takes the latest of the milestone's claim endings, row closings and pull-request closings, and the reading is made again.
  *
- * `moves` below is the seam for that read (`readMilestoneMoves`): `orgHealthNow` is the function the tick calls, so these run it, and the second half runs the read itself over a fake `gh`.
+ * `moves` below is the seam for that read (`readMilestoneMoves`): `orgHealthNow` is the function the tick calls, so these run it, and the second half runs the read itself over the fake code host's rows.
  * THE POSITIVE CONTROL is the first test, which TRIPS at 121 minutes with nothing newer than the merge; every "clear" differs from it by one thing: the move, 30 minutes ago.
  * The 120 is written out as `120`, never as `MILESTONE_CLOCK_MINUTES`, so moving the constant turns a test red.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { orgHealthNow, readMilestoneMoves } from "../work-gate/org-health.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+
+afterEach(() => forgetActivation());
 
 const MINUTE_MS = 60_000;
 const NOW = Date.parse("2026-10-08T22:00:00Z");
@@ -124,18 +128,18 @@ const SINCE = ago(120);
 const event = (minutes: number, over: Partial<Event> = {}): Event => ({ at: iso(ago(minutes)), event: "unlabeled", label: "session:worker-101", milestone: 10, pr: false, ...over });
 const pull = (minutes: number, body = "Closes a11ign/a11ign#102"): Pull => ({ at: iso(ago(minutes)), closedAt: iso(ago(minutes)), body });
 
-/** A fake `gh api` answering the events list and each repository's closed pull requests, a page at a time. */
+/** The fake code host's tracker events and each repository's closed pull requests, a page at a time; `refuse` names the read (`events` or `pulls`) that fails. */
 function fakeGh({ events = [] as Event[], pulls = {} as Record<string, Pull[]>, refuse = "" }) {
-  const calls: string[] = [];
-  const run = (args: string[]) => {
-    const path = args[1];
-    calls.push(path);
-    if (refuse !== "" && path.includes(refuse)) throw new Error("HTTP 403");
-    const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? 1);
-    const list = path.includes("/issues/events") ? events : (pulls[/repos\/([^/]+\/[^/?]+)\/pulls/.exec(path)?.[1] ?? ""] ?? []);
-    return JSON.stringify(list.slice((page - 1) * 100, page * 100));
-  };
-  return { run, calls };
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  world.gate.issueEvents = events;
+  world.gate.closedPulls = [];
+  world.gate.closedPullsByRepo = new Map(Object.entries(pulls));
+  if (refuse === "events") world.failures.set("issueEventsPage", new Error("HTTP 403"));
+  if (refuse === "pulls") world.failures.set("closedPullsPage", new Error("HTTP 403"));
+  substituteCodeHost(host);
+  const refused = (): never => { throw new Error("the fake code host acts on its own state: no gh is run"); };
+  return { run: refused, calls: world.calls };
 }
 const read = (gh: ReturnType<typeof fakeGh>, repos = ["a11ign/agent-org"]) =>
   readMilestoneMoves({ primary: 10, openRows: OPEN_ROWS, since: SINCE }, { run: gh.run, tracker: "a11ign/a11ign", repos });
@@ -160,13 +164,13 @@ test("the read: a pull request closed UNMERGED that declares it closes an open r
 test("the read: each declared repository is asked, and a bare `Closes #102` on another repository closes ITS row 102, not the tracker's", () => {
   const gh = fakeGh({ pulls: { "a11ign/agent-org": [pull(10, "Closes #102"), pull(50)], "a11ign/layer": [pull(15), pull(12, "Closes a11ign/other#102")] } });
   assert.deepEqual(read(gh, ["a11ign/agent-org", "a11ign/layer"]), { at: ago(15) });
-  assert.equal(gh.calls.filter((path) => path.includes("/pulls")).length, 2, "one list per repository");
+  assert.deepEqual(gh.calls.filter((call) => call.startsWith("closedPullsPage")), ["closedPullsPage a11ign/agent-org", "closedPullsPage a11ign/layer"], "one list per repository");
 });
 
 test("the read: a refused call is UNKNOWN (null), and so is a list that does not reach back to the window's start", () => {
   const moves = [event(30)];
-  assert.equal(read(fakeGh({ events: moves, refuse: "/issues/events" })), null, "events refused");
-  assert.equal(read(fakeGh({ events: moves, refuse: "/pulls" })), null, "pull requests refused");
+  assert.equal(read(fakeGh({ events: moves, refuse: "events" })), null, "events refused");
+  assert.equal(read(fakeGh({ events: moves, refuse: "pulls" })), null, "pull requests refused");
   const crowded = Array.from({ length: 300 }, (_, i) => event(1 + (i % 100) * 0.1, { label: "ready" }));
   assert.equal(read(fakeGh({ events: crowded })), null, "300 events all newer than the window: a move beyond them cannot be ruled out");
   const reaches = [...Array.from({ length: 150 }, (_, i) => event(1 + i * 0.1, { label: "ready" })), event(500, { label: "ready" })];

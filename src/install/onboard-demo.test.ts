@@ -95,13 +95,13 @@ test("A11-163 done-when: a fresh machine's onboard enables the Linear and GitHub
   assert.match(onboard.stdout, /^installed linear as the tracker$/m);
   assert.match(onboard.stdout, /^installed github as the code host$/m);
   assert.match(onboard.stdout, /^tracker: linear \(enabled, contract 1\.4, plugins\/linear\)$/m, "and it ends with the doctor's report, a section per plugin");
-  assert.match(onboard.stdout, /^code host: github \(enabled, contract 1\.8, plugins\/github\)$/m);
+  assert.match(onboard.stdout, /^code host: github \(enabled, contract 1\.9, plugins\/github\)$/m);
   assert.doesNotMatch(onboard.stdout + onboard.stderr, new RegExp(KEY), "the key is never printed");
 
   const list = machine.run("plugin", "list");
   assert.equal(list.status, 0, list.stderr);
   assert.match(list.stdout, /^tracker: linear \(from tickets\.providers\.tracker\)\n {2}linear +enabled +contract 1\.4 +plugins\/linear$/m, "both are read from their blocks, as installed and enabled");
-  assert.match(list.stdout, /^code host: github \(from tickets\.providers\.codeHost\)\n {2}github +enabled +contract 1\.8 +plugins\/github$/m);
+  assert.match(list.stdout, /^code host: github \(from tickets\.providers\.codeHost\)\n {2}github +enabled +contract 1\.9 +plugins\/github$/m);
 
   const answer = await askPlugins(machine);
   const entry = (concern: string, name: string) => answer.concerns.find((candidate) => candidate.concern === concern)?.plugins.find((plugin) => plugin.name === name);

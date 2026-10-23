@@ -1,11 +1,11 @@
-// no-token: gh -- `decide` is pure, and the one reader of the tracker's history (`readChairmanPriority`) is handed a stub in place of `gh`
+// no-token: gh -- `decide` is pure, and the one reader of the tracker's history (`readChairmanPriority`) reads the fake code host's world (A11-160, step 6) in place of `gh`
 /**
  * #4524: ONE OFFER HIERARCHY FOR THE GATE -- `priority:chairman`, then `priority`, then the milestone ranking, then age; the product-share floor binds only plain rows.
  *
  * EVERY "NOT OFFERED" ASSERTION HAS A SIBLING FIXTURE THAT DIFFERS IN THE ONE THING THAT OFFERS IT (the control), so a gate that offered everything, or nothing,
  * satisfies half of them and fails the other half. The declaration is the project's, trimmed to what the share reads (`product-share.test.ts`'s).
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { hierarchyOrders, milestoneRank, readChairmanPriority } from "./work-gate/causes/rows-offer.ts";
@@ -18,6 +18,9 @@ import { chairmanRowAnsweredByCeo } from "./work-gate/causes/rows-offer.ts";
 import { stuckSubjectOf } from "./wake/merge-queue-wait.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { seedLabelHistory } from "./plugins/fakes/code-host-gate.ts";
 
 const DECLARATION = {
   code: [{ key: "", repo: "a11ign/a11ign" }, { key: "agent-org", repo: "a11ign/agent-org" }],
@@ -27,6 +30,23 @@ const CHAIRMAN = "DanBeckDev";
 const LABEL = CHAIRMAN_PRIORITY_LABEL;
 
 type Row = { number: number; title: string; labels: { name: string }[]; body: string; milestone?: { number: number; title: string } };
+
+const noGh = (): string => {
+  throw new Error("the fake code host acts on its own state: no gh is run");
+};
+afterEach(() => forgetActivation());
+/** The fake code host whose world holds who labelled each row, as `who(n)` prints it (a login per line, oldest first); a `who` that throws is a history the code host cannot read. */
+function holdHistory(rows: { number: number }[], who: (n: number) => string): void {
+  const host = createFakeCodeHost();
+  for (const { number } of rows) {
+    try {
+      seedLabelHistory(host.rowsWorld, { number, label: LABEL, actors: who(number) });
+    } catch (error) {
+      seedLabelHistory(host.rowsWorld, { number, label: LABEL, actors: error as Error });
+    }
+  }
+  substituteCodeHost(host);
+}
 
 /** A Ready row that carries the sections the claim demands (or `partitionUnclaimed` shelves it as a template defect). */
 function ready(number: number, { region = [`packages/guards/src/row-${number}.ts`], labels = [], milestone }: { region?: string[]; labels?: string[]; milestone?: Row["milestone"] } = {}): Row {
@@ -66,12 +86,13 @@ test("with no idle engineer, a fresh one is asked for -- the order says so for t
 
 test("the label from a non-chairman actor is ignored, logged, and reported to ceo; the chairman's own is honoured", () => {
   const rows = [ready(20, { labels: [LABEL] }), ready(21, { labels: [LABEL] })];
-  const history = (login: string) => (args: string[]) => (args[1].includes("/21/") ? `${CHAIRMAN}\n` : `${login}\n`);
+  const history = (login: string) => (n: number) => (n === 21 ? `${CHAIRMAN}\n` : `${login}\n`);
   const lines: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
   let read: ReturnType<typeof readChairmanPriority>;
-  try { read = readChairmanPriority(rows, history("a11ign-bot")); } finally { process.stderr.write = write; }
+  holdHistory(rows, history("a11ign-bot"));
+  try { read = readChairmanPriority(rows, noGh); } finally { process.stderr.write = write; }
   assert.deepEqual([...read.chairmanRows], [21], "the chairman's label counts; the bot's does not");
   assert.deepEqual(read.ignored, [{ number: 20, actor: "a11ign-bot" }]);
   assert.match(lines.join(""), /IGNORED the `priority:chairman` on #20: a11ign-bot added it/);
@@ -83,10 +104,11 @@ test("the label from a non-chairman actor is ignored, logged, and reported to ce
 test("a label whose history cannot be read, or shows no labeller, is not the chairman's (it fails closed)", () => {
   const rows = [ready(20, { labels: [LABEL] })];
   const quiet = (fn: () => ReturnType<typeof readChairmanPriority>) => { const w = process.stderr.write; process.stderr.write = (() => true) as typeof w; try { return fn(); } finally { process.stderr.write = w; } };
-  assert.deepEqual(quiet(() => readChairmanPriority(rows, () => { throw new Error("rate limited"); })).unread, [20]);
-  assert.equal(quiet(() => readChairmanPriority(rows, () => "")).chairmanRows.size, 0, "no labeled event: not the chairman's");
-  assert.equal(quiet(() => readChairmanPriority(rows, () => `${CHAIRMAN}\n`)).chairmanRows.size, 1, "control: the same call with the chairman's login");
-  assert.equal(quiet(() => readChairmanPriority(rows, () => `${CHAIRMAN}\nsomebody-else\n`)).chairmanRows.size, 0, "the NEWEST labeller decides");
+  const reading = (who: (n: number) => string) => { holdHistory(rows, who); return quiet(() => readChairmanPriority(rows, noGh)); };
+  assert.deepEqual(reading(() => { throw new Error("rate limited"); }).unread, [20]);
+  assert.equal(reading(() => "").chairmanRows.size, 0, "no labeled event: not the chairman's");
+  assert.equal(reading(() => `${CHAIRMAN}\n`).chairmanRows.size, 1, "control: the same call with the chairman's login");
+  assert.equal(reading(() => `${CHAIRMAN}\nsomebody-else\n`).chairmanRows.size, 0, "the NEWEST labeller decides");
 });
 
 test("a B4-shelved chairman row is reported to ceo, not offered; against a plain holder it is offered and the holder is told to rebase", () => {

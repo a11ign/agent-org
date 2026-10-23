@@ -1,13 +1,20 @@
-// no-token: gh -- every `gh api` read and write of `readProseAndOrder` goes through the `run` fake below; nothing here reaches GitHub
+// no-token: gh -- the day's comments and label events of `readProseFacts` go through the `run` fake below; the row's state, its newest comment and the label POST of `readProseAndOrder` are the fake code host's rows (A11-160, step 6); nothing here reaches GitHub
 /**
  * a11ign/a11ign#4679: THE WRITER OF `answer:<session>` ASKS THE GUARD. `boardTruthNow` posts the day's table and, through `readProseAndOrder`, labels the row of every prose finding. On
- * 2026-10-09T23:00Z that labelled closed rows and rows nobody had asked anything, 56 times. Each test below runs the real writer with a fake `run` that records the label POSTs,
- * so "labelled" and "not labelled" are read off the calls made.
+ * 2026-10-09T23:00Z that labelled closed rows and rows nobody had asked anything, 56 times. Each test below runs the real writer over the fake code host's rows, which hold each row's state
+ * and comments and take the label, so "labelled" and "not labelled" are read off the labels the rows carry. The org's comments of the day and the label events (`readProseFacts`, not a moved
+ * caller) still come from a fake `run`, which refuses the reads that are the code host's now.
  * POSITIVE CONTROL: the open row whose newest comment asks the session is labelled in `LABELLED`, so a writer that labels nothing, or a fixture that no finding reaches, is red there.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { afterEach } from "node:test";
 import { boardTruthNow } from "./org-health.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const NOW = Date.parse("2026-10-09T23:00:00Z");
 const AT = (minutesAgo: number) => new Date(NOW - minutesAgo * 60_000).toISOString();
@@ -15,10 +22,17 @@ const HANDOFF_AGE = 120;
 
 type Fixture = { state?: string; comments: { body: string; createdAt: string; login?: string }[]; labelEvents?: { label: string; createdAt: string; actor: string }[] };
 
-/** The `gh api` surface `readProseFacts`, `readLabelFacts` and the label POST use, answered from `rows`; every call is recorded. */
+/** The code host's rows hold each fixture row (its state and comments); `refuse` names the rows whose newest comment cannot be read, which the fake answers as it answers a row it holds none of. A `run` answers the org's comments of the day and the label events. */
 function world(rows: Record<number, Fixture>, { refuse = [] as number[] } = {}) {
-  const posts: string[] = [];
   const log: string[] = [];
+  const host = createFakeCodeHost();
+  const code = host.rowsWorld;
+  for (const [n, r] of Object.entries(rows)) {
+    if (refuse.includes(Number(n))) continue;
+    code.rows.set(Number(n), fakeRow(code, Number(n), { state: r.state === "closed" ? "CLOSED" : "OPEN", comments: r.comments.map((c, id) => ({ id, body: c.body, createdAt: c.createdAt })) }));
+  }
+  substituteCodeHost(host);
+  const posts = (): string[] => [...code.rows.values()].flatMap((row) => row.labels.filter((l) => l.startsWith("answer:")).map((l) => `${row.number} labels[]=${l}`));
   const run = (args: string[]): string => {
     const path = args[0] === "api" ? args.find((a) => a.startsWith("repos/")) ?? "" : "";
     if (args[0] !== "api") return "[]";
@@ -26,13 +40,7 @@ function world(rows: Record<number, Fixture>, { refuse = [] as number[] } = {}) 
     if (path.includes("/issues?state=all")) return "";
     const events = path.match(/issues\/(\d+)\/events/);
     if (events) return (rows[Number(events[1])]?.labelEvents ?? []).map((e) => JSON.stringify({ number: Number(events[1]), ...e })).join("\n");
-    const label = path.match(/issues\/(\d+)\/labels$/);
-    if (label) { posts.push(`${label[1]} ${args[args.length - 1]}`); return "[]"; }
-    const page = path.match(/issues\/(\d+)\/comments\?per_page=1&page=(\d+)/);
-    if (page) { const r = rows[Number(page[1])]; return JSON.stringify(refuse.includes(Number(page[1])) ? {} : r.comments[Number(page[2]) - 1]); }
-    const issue = path.match(/issues\/(\d+)$/);
-    if (issue) { const r = rows[Number(issue[1])]; return JSON.stringify({ state: r.state ?? "open", comments: r.comments.length }); }
-    return "[]";
+    throw new Error(`the row's state, its newest comment and the label are the code host's rows, not a gh: ${args.join(" ")}`);
   };
   const post = ({ readProse, repo, run: r, now }: any) => { readProse({ repo, run: r, now }); return "posted"; };
   const agents = () => [{ label: "orchestrator", status: "idle" }];
@@ -61,7 +69,7 @@ test("an open row whose newest comment asks the session is labelled; the closed 
     [UNREAD]: { comments: [handoff(true)] },
   }, { refuse: [UNREAD] });
   w.read();
-  assert.deepEqual(w.posts, [`${LABELLED} labels[]=answer:product-manager`]);
+  assert.deepEqual(w.posts(), [`${LABELLED} labels[]=answer:product-manager`]);
   for (const n of [CLOSED, REPORT, REPLAYED, UNREAD]) assert.ok(w.log.some((line) => line.includes(`#${n}:`)), `#${n} is refused ON THE LOG, so a skipped label is a reading`);
   assert.match(w.log.find((l) => l.includes(`#${CLOSED}:`)) ?? "", /closed row/);
   assert.match(w.log.find((l) => l.includes(`#${REPORT}:`)) ?? "", /asks nothing/);
@@ -72,13 +80,13 @@ test("an open row whose newest comment asks the session is labelled; the closed 
 test("a closed row is not labelled even when the guard would otherwise allow it: the state, not the comment, decides", () => {
   const w = world({ [CLOSED]: { state: "closed", comments: [handoff(true)] } });
   w.read();
-  assert.deepEqual(w.posts, []);
+  assert.deepEqual(w.posts(), []);
 });
 
 test("the newest comment is read from the row, not from the day's org comments: a later answer by anyone withdraws the question", () => {
   const answered = { body: "orchestrator: yes, protocol 21 is in the corpus.", createdAt: AT(10), login: "someone" };
   const w = world({ [LABELLED]: { comments: [handoff(true), answered] } });
   w.read();
-  assert.deepEqual(w.posts, []);
+  assert.deepEqual(w.posts(), []);
   assert.match(w.log.join("\n"), /asks nothing/);
 });

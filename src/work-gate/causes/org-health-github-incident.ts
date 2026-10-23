@@ -12,6 +12,7 @@ import type { ReleaseRuns } from "../../org-health/sweep-readings.ts";
 import { type UnarmedFacts, hungCheckOf } from "../pr-orders/pr-gate-readings.ts";
 import { blockingChecks, checksSettledGreen } from "../pr-state.ts";
 import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
+import { rows } from "../../plugins/rows.ts";
 import { REVIEWER_STATE_DIR } from "../vocabulary.ts";
 import { accountAuthoringTimes, type AuthorLedger } from "../../gh-author-fallback.ts";
 import { GITHUB_ROLES, type GithubRole, homeHostConfig, roleIdentity, type HostConfig } from "../../host-config.ts";
@@ -136,10 +137,10 @@ function readJsonOrNull(path: string): any {
   }
 }
 
-/** @returns the answer, or `null` when `gh` refused or said something that is not JSON: UNCLASSIFIED, which is never held */
-function readGhJson(args: string[], run: (args: string[]) => string): any {
+/** @returns what `read` answered, or `null` when GitHub refused or said something that is not JSON: UNCLASSIFIED, which is never held */
+function orNull<T>(read: () => T): T | null {
   try {
-    return JSON.parse(run(args));
+    return read();
   } catch {
     return null;
   }
@@ -149,8 +150,6 @@ const ACTIONS_JOB_URL = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/
 
 /** A job that NEVER GOT A RUNNER: no steps and no runner, whatever its conclusion. Measured on the 2026-10-05 jobs: `cancelled`, `runner_name: ""`, zero steps. A cancelled job that had steps ran. */
 const neverStarted = (job: any) => job !== null && typeof job === "object" && job.steps === 0 && !job.runner_name;
-
-const JOB_FIELDS = "{conclusion, runner_name, steps: (.steps // [] | length)}";
 
 const NOT_FAILING_JOB_CONCLUSIONS = Object.freeze(["success", "skipped", "neutral"]);
 
@@ -162,8 +161,8 @@ const NOT_FAILING_JOB_CONCLUSIONS = Object.freeze(["success", "skipped", "neutra
  *  - ejected:  the `merge_group` run behind the ejection failed ONLY in jobs that never got a runner.
  * Each read that is refused, or a check with no job to read, is `null`: THE ORDER GOES OUT.
  */
-function runnerStartOf(order: any, pr: any, reads: { required: string[] | null; nowMs: number; job: (url: unknown) => any; ghJson: (args: string[]) => any; }): string | null {
-  if (order.discriminator === "ejected") return ejectionNeverStarted(order, pr, reads.ghJson);
+function runnerStartOf(order: any, pr: any, reads: { required: string[] | null; nowMs: number; job: (url: unknown) => any; ejectionRuns: (repo: string) => any[] | null; jobsOfRun: (repo: string, runId: number) => any[] | null; }): string | null {
+  if (order.discriminator === "ejected") return ejectionNeverStarted(order, pr, reads);
   if (order.discriminator === "hung-check") return queuedPastItsBound(pr, reads);
   const red = blockingChecks(newestPerName(pr.statusCheckRollup ?? []), reads.required).filter((c) => checksSettledGreen([c]) === false);
   if (red.length === 0 || !red.every((c) => neverStarted(reads.job(c.detailsUrl)))) return null;
@@ -180,13 +179,13 @@ function queuedPastItsBound(pr: any, { required, nowMs }: { required: string[] |
  * The ejection's `merge_group` run is found by its branch as `readEjectionRun` finds it, but by ANY conclusion and not `failure` only, and its jobs are read for
  * steps and runner. A11ign/toolchain#3's run was `failure` overall with its one job `cancelled`, zero steps, 18 min 53 s queued.
  */
-function ejectionNeverStarted(order: any, pr: any, ghJson: (args: string[]) => any): string | null {
+function ejectionNeverStarted(order: any, pr: any, { ejectionRuns, jobsOfRun }: { ejectionRuns: (repo: string) => any[] | null; jobsOfRun: (repo: string, runId: number) => any[] | null; }): string | null {
   const removedAt = /\/ejected\/(.+)$/.exec(String(order.causeKey))?.[1];
   const repo = pr.repo ?? repoNow();
-  const runs = removedAt === undefined ? null : ghJson(["api", `repos/${repo}/actions/runs?event=merge_group&per_page=50`, "--jq", "[.workflow_runs[] | {id, head_branch, created_at}]"]);
+  const runs = removedAt === undefined ? null : ejectionRuns(repo);
   const ejected = (Array.isArray(runs) ? runs : []).filter((r) => String(r.head_branch).includes(`/pr-${pr.number}-`) && String(r.created_at) <= String(removedAt))
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
-  const jobs = ejected === undefined ? null : ghJson(["api", `repos/${repo}/actions/runs/${ejected.id}/jobs?per_page=100`, "--jq", `[.jobs[] | ${JOB_FIELDS}]`]);
+  const jobs = ejected === undefined ? null : jobsOfRun(repo, ejected.id);
   const failing = (Array.isArray(jobs) ? jobs : []).filter((j) => !NOT_FAILING_JOB_CONCLUSIONS.includes(String(j.conclusion)));
   return failing.length > 0 && failing.every(neverStarted) ? `the queue's run ${ejected.id} failed only in jobs that never got a runner` : null;
 }
@@ -203,17 +202,18 @@ export function holdForGithubIncident(orders: any[], incident: GithubIncident, {
   if (incident?.state !== "incident") return { orders, held: [] };
   const byRef = new Map(prs.map((pr) => [`pr-${subjectRef(pr.repoKey, pr.number)}`, pr]));
   const jobs: Map<string, any> = new Map(); // one read per job per tick, however many orders name it
-  const ghJson = (args: string[]) => readGhJson(args, run);
+  const ejectionRuns = (repo: string) => orNull(() => rows().mergeGroupRunsOf({ repo, withConclusion: false, run }));
+  const jobsOfRun = (repo: string, runId: number) => orNull(() => rows().jobsOfMergeGroupRun({ repo, runId, run }));
   const job = (url: unknown) => {
     const found = ACTIONS_JOB_URL.exec(String(url ?? ""));
     if (found === null) return null; // not an Actions job (a status context, a third party): nothing to read steps from
-    if (!jobs.has(found[0])) jobs.set(found[0], ghJson(["api", `repos/${found[1]}/actions/jobs/${found[2]}`, "--jq", JOB_FIELDS]));
+    if (!jobs.has(found[0])) jobs.set(found[0], orNull(() => rows().actionsJobOf({ repo: found[1], jobId: found[2], run })));
     return jobs.get(found[0]);
   };
   const held: { subject: string; session: string; why: string; }[] = [];
   const kept = orders.filter((order) => {
     const pr = order.cause === "pr-checks-failing" ? byRef.get(order.subject) : undefined;
-    const why = pr === undefined ? null : runnerStartOf(order, pr, { required: pr.repo === undefined ? required : null, nowMs, job, ghJson });
+    const why = pr === undefined ? null : runnerStartOf(order, pr, { required: pr.repo === undefined ? required : null, nowMs, job, ejectionRuns, jobsOfRun });
     if (why !== null) held.push({ subject: order.subject, session: order.session, why });
     return why === null;
   });
@@ -337,7 +337,7 @@ export function machineryCanaryNow({ unread, unarmed, releaseRuns, suppressions,
   if (problem !== null) process.stderr.write(`machinery-canary: ${problem}; the defaults stand.\n`);
   const unarmedNumbers = unarmed === null ? null : Array.isArray(unarmed) ? unarmed : unarmed.numbers; // the gate's bare list or the counted facts: either way, the numbers
   const numbers = unarmedNumbers === null ? null : [...unarmedNumbers, ...stranded]; // a11ign#5125: an ejection that was not the PR's own and left it out of the queue is approved-and-unqueued too
-  const fileIncident = (title: string, body: string) => run(["issue", "create", "--title", title, "--label", "incident", "--body", body]);
+  const fileIncident = (title: string, body: string) => rows().fileLabelledRow({ title, label: "incident", body, run });
   return machineryCanaryTick({ now, dir, options, suppressed: suppressions, io: io ?? realCanaryIo({ fileIncident }),
     facts: { claimRefusals: readClaimRefusals(), unread, deferredWakes: deferredWakeCount(dir), unarmed: numbers, releaseRuns, ownerless: ownerless ?? null, authorFallbacks: authorFallbacks ?? null, ejectedNetwork: ejectedNetwork ?? null, verdictUndelivered, conflictingIdle, sessionPrOutside, boardTruthOffers } }); // agent-org#1648: a red chairman pull request no order reaches; agent-org#1666: the account's authoring calls
 }

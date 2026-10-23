@@ -1,4 +1,4 @@
-// no-token: MAX_ROW_ORDERS_PER_TICK -- #827. Same seams as work-gate.test.ts: every `gh` read is an injected `run`.
+// no-token: MAX_ROW_ORDERS_PER_TICK -- #827. Pure: `decide`, `partitionUnclaimed` and `withPrOwners` over in-memory rows, pull requests and an injected roster; nothing here reads GitHub (A11-160 step 6: the readers' tests run on the fake code host's rows).
 /**
  * #1602: THE WORK-GATE SUBTESTS THAT READ A11IGN'S OWN CHECKOUT, NOT THE FIXTURE PROJECT.
  *
@@ -38,7 +38,6 @@ import { decide as decideOnHost } from "../work-gate/tick/tick-decisions-and-fla
 import { CAUSES, START_CAUSES } from "../cause-declaration.ts";
 import { comparablePrFiles } from "../work-gate/vocabulary.ts";
 import { blockingChecks } from "../work-gate/pr-state.ts";
-import { requiredCheckNames } from "../work-gate/causes/pr-checks.ts";
 import { partitionUnclaimed } from "../work-gate/causes/rows-claims.ts";
 import { unclaimedBlockerClearedOrders } from "../work-gate/causes/rows-blocker-cleared.ts";
 import { answerOrders, withAnswerLabel, withoutEndedAnswerSessions } from "../work-gate/causes/rows-answers.ts";
@@ -355,9 +354,7 @@ test("#2101 the shelving REPORT names the same two, and stops naming the row's o
 // The gate asked 100 of each of six repositories every two minutes: 7 GraphQL points apiece against 1 at 20 (measured by replaying the
 // query with `rateLimit { cost }`), for lists holding 0 or 1 pull request. The narrow page is the whole list unless it came back FULL.
 
-/** `gh`'s answer for an open list of `n` pull requests; only what `readPrs` looks at (`files` and `changedFiles`) is present. */
-const openList = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ number: i + 1, files: [], changedFiles: 0 })));
-const limitOf = (args: string[]) => Number(args[args.indexOf("--limit") + 1]);
+
 
 
 
@@ -803,11 +800,6 @@ test("a PR held by SOMEBODY ELSE at the cap is not stuck and gets no needs:chair
 });
 
 
-/** `branches/main` as GitHub answers it (the part the gate reads); `contexts: null` is protection with no list. */
-const BRANCH_ANSWER = (contexts: string[] | null, isProtected = true) =>
-  JSON.stringify({ name: "main", protected: isProtected,
-    protection: { enabled: isProtected, required_status_checks: contexts === null ? {} : { contexts } } });
-
 /**
  * #2117: THE `pr-checks-failing` PROMPT CARRIES WHEN THE FAILING RUN STARTED AND WHETHER `main` MOVED
  * SINCE -- A FACT, NEVER A PREDICATE. #2087 (2026-09-23): the gate held `startedAt` and threw it away, and two
@@ -844,70 +836,6 @@ const MERGEABLE_KEY = "worker-judge/pr-checks-failing/pr-2087/06a52308";
 
 
 
-
-
-
-
-/**
- * #5020: CLASSIC PROTECTION IS GONE ON EVERY REPO AND THE LIST LIVES IN THE RULESETS. `gh` answers `branches/main`
- * with `protection: {enabled: false, required_status_checks: {contexts: []}}`, which read as "nothing is required"
- * for every tick since the chairman's consolidation and failed the gate open on every red PR.
- *
- * The fake routes by ENDPOINT, as GitHub does, so a reader that asks only one of the two is told the other's
- * answer is absent -- a mock returning one body for every call would pass a reader that never looked at the rules.
- */
-const rulesAnswer = (...checkRulesets: string[][]) => JSON.stringify([
-  { type: "deletion", ruleset_id: 1 },
-  { type: "pull_request", parameters: { required_approving_review_count: 1 }, ruleset_id: 1 },
-  ...checkRulesets.map((contexts, i) => ({ type: "required_status_checks", ruleset_id: 2 + i,
-    parameters: { strict_required_status_checks_policy: false,
-      required_status_checks: contexts.map((context) => ({ context, integration_id: 15368 })) } })),
-  { type: "merge_queue", ruleset_id: 1 },
-]);
-const CLASSIC_GONE = BRANCH_ANSWER([]);
-const routedGh = (answers: { rules?: string | Error; branch?: string | Error }) => (args: string[]) => {
-  const answer = args.some((arg) => arg.endsWith("/rules/branches/main")) ? answers.rules
-    : args.some((arg) => arg.endsWith("/branches/main")) ? answers.branch : undefined;
-  if (answer === undefined || answer instanceof Error) throw answer ?? new Error(`unexpected gh call: ${args.join(" ")}`);
-  return answer;
-};
-
-
-
-
-
-/**
- * FAILING OPEN IN SILENCE IS INDISTINGUISHABLE FROM NEVER HAVING WORKED -- #2106.
- *
- * `requiredCheckNames` returned `null` on EVERY tick from the day #1750 shipped until 2026-09-23, and
- * the only sign was a bare `gh: Not Found (HTTP 404)` on stderr beside an exit 0 -- `defaultRun` inherits
- * stderr, so `gh`'s own message was the whole report. Four days of a dead optimisation. There was never a
- * correctness bug: the fallback counts every check, so no red pull request went unreported. What was lost
- * is the saving, and nothing said so.
- *
- * #2331 REMOVED THE CAUSE, NOT THE REPORT. The gate now reads `branches/main`, which a non-admin
- * credential can read, so the admin-only 404 that produced the four dead days is gone -- and with it the
- * `branches/main.protected` DISCRIMINATOR that existed to explain that 404 (#2022's FORBIDDEN-versus-ABSENT).
- * Nothing reaches a second read any more: the discriminator was the same endpoint as the read it explained.
- * The report itself stays, because `branches/main` can still be refused (network, a renamed trunk) and
- * "fails open" must still announce itself.
- *
- * THE TEST DRIVES THE THROWING CASE AND ASSERTS BOTH HALVES, because `null` alone is what the old code
- * already did. Only the report is new, and a test that checked the `null` would pass against the defect.
- */
-const requiredWithLog = (run: (args: string[]) => string) => {
-  const lines: string[] = [];
-  const calls: string[][] = [];
-  const required = requiredCheckNames((args: string[]) => { calls.push(args); return run(args); },
-    (line) => { lines.push(line); });
-  return { required, lines, calls };
-};
-
-/** The gate's credential, as GitHub answers it: the ADMIN endpoint is a 404, `branches/main` answers. */
-const nonAdminGh = (branchAnswer: string) => (args: string[]) => {
-  if (args.some((arg) => arg.includes("branches/main/protection"))) throw new Error("gh: Not Found (HTTP 404)");
-  return branchAnswer;
-};
 
 
 
@@ -1427,56 +1355,6 @@ const withComments = (n: number, comments: { id: string; body: string }[]) => [{
 
 
 
-/**
- * #2003: A DEAD POOL AND A QUIET QUEUE LOOKED IDENTICAL FROM THE JOURNAL.
- *
- * Measured 2026-09-22. `a11ign-ai-workers` reached `used 5000, remaining 0`, and from 20:28:15Z every tick
- * logged the same four lines and woke nobody. The refusal was correct and loud, and still left the only
- * three facts a reader needs unstated: WHICH account, WHICH pool, and WHEN it comes back. `328832207` is a
- * user ID, not a login, and the answer to "for how long" -- 52 minutes -- was in the headers of the call
- * that had just failed.
- *
- * WHY A FIXTURE AND NOT A LIVE CALL: the probe has to be exercised on a DEAD pool, which is the one state
- * a test cannot create. So the fake `run` reproduces what `execFileSync` does when `gh` exits non-zero --
- * it THROWS with the response on `error.stdout` -- because that is the property the whole reading rests on,
- * and a fake that returned the response normally would pass while the real refusal path returned null.
- */
-const DEAD_GRAPHQL = [
-  "HTTP/2.0 200 OK",
-  "X-Ratelimit-Limit: 5000",
-  "X-Ratelimit-Remaining: 0",
-  "X-Ratelimit-Reset: 1790127611",
-  "X-Ratelimit-Resource: graphql",
-  "X-Ratelimit-Used: 5000",
-  "",
-  '{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 328832207."}]}',
-].join("\r\n");
-
-const LIVE_GRAPHQL = [
-  "HTTP/2.0 200 OK",
-  "X-Ratelimit-Limit: 5000",
-  "X-Ratelimit-Remaining: 3340",
-  "X-Ratelimit-Reset: 1790119231",
-  "X-Ratelimit-Resource: graphql",
-  "X-Ratelimit-Used: 1660",
-  "",
-  '{"data":{"viewer":{"login":"a11ign-ai-workers"}}}',
-].join("\r\n");
-
-/** A `gh` that fails the way `execFileSync` fails: non-zero, with the response still on `stdout`. */
-const refusedWith = (stdout: string) => () => {
-  throw Object.assign(new Error("gh exited 1"), { status: 1, stdout });
-};
-
-/** Records every `gh` invocation, so "how many calls did that cost" is counted rather than reasoned about. */
-function recordingRun(reply: (args: string[]) => string) {
-  const calls: string[][] = [];
-  return {
-    calls,
-    run: (args: string[]) => { calls.push(args); return reply(args); },
-  };
-}
-
 // --- #1984: `identity` IS NOW REQUIRED, AND EVERY EXISTING FIXTURE HERE PICKS ONE ON PURPOSE -------------
 //
 // `cannotAskReport` no longer defaults it (the same reasoning `run` has carried since #1405): a defaulted
@@ -1852,36 +1730,6 @@ const MINUTE_MS = 60_000;
 function boardFacts(number: number, onBoard: boolean | null, ageMs = 60 * MINUTE_MS) {
   return { number, title: `row ${number}`, createdMs: NOW_MS - ageMs, onBoard };
 }
-
-/** One `repository.issues` node as GitHub returns it: the projects an issue is an item of, by number. */
-function issueNode(number: number, projects: number[], { createdAt = "2026-09-26T08:00:00Z", totalCount = projects.length } = {}) {
-  return { number, title: `row ${number}`, createdAt,
-    projectItems: { totalCount, nodes: projects.map((n) => ({ project: { number: n } })) } };
-}
-
-/** A `gh` fake serving `pages` in order, recording every argv it was asked. */
-function graphqlPages(pages: unknown[]) {
-  const calls: string[][] = [];
-  const run = (args: string[]) => {
-    calls.push(args);
-    const page = pages[calls.length - 1];
-    if (page === undefined) throw new Error("asked for a page the fake does not have");
-    return JSON.stringify(page);
-  };
-  return { run, calls };
-}
-
-const page = (nodes: unknown[], next: string | null = null) => ({ data: { repository: { issues: { nodes,
-  pageInfo: { hasNextPage: next !== null, endCursor: next } } } } });
-
-
-
-
-
-
-
-
-
 
 // --- #2791: a Ready row the claim refuses for a template defect is not stock -------------------------------
 

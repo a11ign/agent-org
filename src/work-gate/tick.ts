@@ -15,6 +15,7 @@ import { PROJECT_NUMBER, PROJECT_OWNER } from "../board-snapshot-scope.ts";
 import { withBoardSnapshot } from "../board-snapshot.ts";
 import type { TicketPort, TicketState } from "../ticket-port/port.ts";
 import { githubTicketAdapter, TRACKER } from "../ticket-port/github-adapter.ts";
+import { rows } from "../plugins/rows.ts";
 import { recordIgnoredChairmanLabels } from "../failure-recorders.ts";
 import { readJsonObject } from "../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../claim-stall.ts";
@@ -500,9 +501,9 @@ export function settleOffBoardRows(facts: BoardFacts[] | null, { openRows, portF
 export const boardingPortOf = (scope: string): TicketPort => githubTicketAdapter({ run: defaultRun, scope, moveStatus: (id, statusName) => {
   const url = `https://github.com/${scope}/issues/${id}`;
   withBoardSnapshot(() => {
-    defaultRun(["project", "item-add", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", url]);
+    rows().addRowToProject({ owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, url, run: defaultRun });
     try {
-      defaultRun(["project", "item-edit", String(PROJECT_NUMBER), "--owner", PROJECT_OWNER, "--url", url, "--field", "Status", "--value", statusName]);
+      rows().setProjectStatus({ owner: PROJECT_OWNER, projectNumber: PROJECT_NUMBER, url, status: statusName, run: defaultRun });
     } catch (err) {
       throw new Error(`the row was ADDED to Project ${PROJECT_NUMBER} but its Status could not be set (${String((err as any)?.message ?? err).split("\n")[0].slice(0, 120)}); it is on the board with no Status`, { cause: err });
     }

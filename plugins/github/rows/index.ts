@@ -4,8 +4,12 @@
 // takes the `run` its caller hands it (the contract's head says why), reads GitHub's answer as it always did, and throws or answers `null` as it always did. What core owns that they read (the project's
 // labels and board, how a row's waits and GitHub's rate-limit answers are read, the error a window throws) is `helpers`, asked when an operation needs it: a host with no project declaration builds a
 // code host that has never been asked for a row.
-import type { CodeHostRows, RowsHelpers, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
+import type { BatchAnswer, BatchCall, CodeHostRows, GateRunOptions, AimedRun, RowsHelpers, RowsRun } from "../../../src/plugins/contracts/code-host-rows.ts";
 import { githubTicketAdapter, OPEN_ITEMS_QUERY, TRACKER } from "./adapter.ts";
+import { closedClaimedRowsOf, closedRowsCarryingLabels } from "./gate-closed-reads.ts";
+import { actionsJobOf, checkRunSummariesAt, commitShasOf, compareDiffOf, failingCheckNamesAt, jobsOfMergeGroupRun, labelNamesWithPrefix, mainTipOf, mergeGroupRunsOf, newestMergedPulls, openPullListArgs, openRowsOf, pullFileNamesOf, pullsOfBranch, readRequiredContexts } from "./gate-pull-reads.ts";
+import { closedPullsPage, incidentItemOf, issueEventsPage, labeledEventTimesOf, newestCommentsOf, newestLabellerOf, recentlyClosedRowsOf, commentActivityOf, rowBodyOf, rowForPromotion, rowStateAndNewestComment, rowTimelineOf, tagExistsOn, unlabeledEventsOf, waitRefOf } from "./gate-row-reads.ts";
+import { addLabelToRow, addLabelToRowByApi, addRowToProject, commentBodiesOfRow, commentOnRow, ensureLabel, fileLabelledRow, markPullReady, removeLabelFromRow, setProjectStatus, setRowBody } from "./gate-row-writes.ts";
 import { approvalFactsOf, latestApprovals } from "./approval-reads.ts";
 import { armedFromApi, armedNodeOf, armedQueryArgs, armedReason, ejectionQueryArgs, queueEjectionOf, readQueueEjection } from "./armed-state.ts";
 import { addLabelsToPull, armedReasonOf, armMergeOf, armPullAuto, commentOnPull, dequeueByHandCommand, jumpToFront, labelsOfRow, openBlockersOf, openBlockersOfRow, pullStateOf, readPullComments, readPullForArming, readQueueSeat, settledReason, trunkRunsPage } from "./arming.ts";
@@ -77,10 +81,21 @@ function listRows(helpers: () => RowsHelpers): Pick<CodeHostRows, "readUnlessRef
  * The runners the plugin gives an operation whose caller hands none: `own` runs `gh` as the process's account, and `queue` runs it with the git environment variables a hook sets taken off (the merge queue's
  * dispatcher is started from a worktree, where they would aim `gh` at the wrong repository).
  */
-export type RowsRunners = Readonly<{ own: RowsRun; queue: RowsRun }>;
+export type RowsRunners = Readonly<{
+  own: RowsRun; queue: RowsRun;
+  /** The work gate's executor's process (`gateRun`), and a batch of calls started at once (`runTogether`): absent, an operation that asks for one is refused. */
+  gate?: (options: GateRunOptions) => AimedRun;
+  together?: (request: { calls: BatchCall[]; env: NodeJS.ProcessEnv; callMs: number; graceMs: number; maxBuffer: number }) => BatchAnswer[];
+}>;
 
 const NO_RUNNER: RowsRun = () => {
   throw new Error("this code host's rows were built with no runner of their own, so an operation whose caller hands none cannot run");
+};
+
+const NO_RUNNERS: RowsRunners = { own: NO_RUNNER, queue: NO_RUNNER };
+
+const NO_BATCH = (): never => {
+  throw new Error("this code host's rows were built with no runner of their own, so a batch of calls cannot run");
 };
 
 /** An operation with a `run` in its request, made to use `own` when the caller hands none. */
@@ -88,7 +103,7 @@ const withOwnRun = <Request extends { run: RowsRun }, Result>(operation: (reques
   (request: Omit<Request, "run"> & { run?: RowsRun }): Result => operation({ ...request, run: request.run ?? own } as Request);
 
 /** The operations a moved caller reaches without a `run` of its own, and the 1.7 ones among them that took one. */
-function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows>> {
+function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): Omit<CodeHostRows, keyof ReturnType<typeof projectRows> | keyof typeof pullRequestRows | keyof ReturnType<typeof listRows> | keyof typeof gateRows | "gateRun" | "runTogether" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
   return {
     ownRun: own,
     armedQueryArgs, armedFromApi, armedReason, ejectionQueryArgs, queueEjectionOf, openBlockersOf, settledReason, dequeueByHandCommand, openPullRequestsQueryArgs,
@@ -109,7 +124,24 @@ function movedCallers(helpers: () => RowsHelpers, { own, queue }: RowsRunners): 
   };
 }
 
+/** The reads and writes of the work gate (contract 1.9), which read nothing of core's: each takes the `run` the gate hands it. */
+const gateRows = {
+  unlabeledEventsOf, labeledEventTimesOf, newestLabellerOf, commentActivityOf, rowTimelineOf, waitRefOf, incidentItemOf, rowBodyOf, rowStateAndNewestComment, rowForPromotion, issueEventsPage, closedPullsPage, tagExistsOn, newestCommentsOf,
+  commentOnRow, commentBodiesOfRow, addLabelToRow, removeLabelFromRow, setRowBody, ensureLabel, fileLabelledRow, addLabelToRowByApi, markPullReady, addRowToProject, setProjectStatus,
+  readRequiredContexts, mainTipOf, pullsOfBranch, newestMergedPulls, openPullListArgs, pullFileNamesOf, commitShasOf, compareDiffOf, failingCheckNamesAt, checkRunSummariesAt, mergeGroupRunsOf, jobsOfMergeGroupRun, actionsJobOf, openRowsOf, labelNamesWithPrefix, closedClaimedRowsOf,
+};
+
+/** The gate's operations that read the tick's refusal memory (which reads GitHub's rate-limit answers, core's) and the gate's executor's process. */
+function gateRowsOf(helpers: () => RowsHelpers, { gate, together }: RowsRunners): Pick<CodeHostRows, "gateRun" | "runTogether" | "recentlyClosedRowsOf" | "closedRowsCarryingLabels"> {
+  return {
+    gateRun: gate ?? (() => NO_RUNNER),
+    runTogether: together ?? NO_BATCH,
+    recentlyClosedRowsOf: (request) => recentlyClosedRowsOf(request, helpers().pool),
+    closedRowsCarryingLabels: (request) => closedRowsCarryingLabels(request, helpers().pool),
+  };
+}
+
 /** The GitHub code host's `rows`. `helpers` is what core owns of row mode, asked when an operation needs it; `runners` are the plugin's own, for the operations whose caller hands none. */
-export function createRows(helpers: () => RowsHelpers, runners: RowsRunners = { own: NO_RUNNER, queue: NO_RUNNER }): CodeHostRows {
-  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners) };
+export function createRows(helpers: () => RowsHelpers, runners: RowsRunners = NO_RUNNERS): CodeHostRows {
+  return { ...projectRows(helpers), ...pullRequestRows, ...listRows(helpers), ...movedCallers(helpers, runners), ...gateRows, ...gateRowsOf(helpers, runners) };
 }

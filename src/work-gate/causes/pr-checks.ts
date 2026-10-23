@@ -1,5 +1,6 @@
 import { anyChecksRed, mergeCandidates } from "../pr-state.ts";
 import { defaultRun } from "../reads/read-memo-and-exit.ts";
+import { rows } from "../../plugins/rows.ts";
 
 /**
  * PAID ONLY BY A RED TICK, the condition `requiredWhenNeeded` had before a green draft also asked it (#3448), so a healthy
@@ -10,110 +11,22 @@ export function baseTipWhenRed(prs: any[], run: (args: string[]) => string = def
   return anyChecksRed(prs) ? readBaseTip(run) : null;
 }
 
-/**
- * ONE SPELLING OF THE ENDPOINT, so the report names what the read actually asks for. A report that
- * quotes a path by hand drifts from the call beside it, and a wrong path in a diagnostic sends the next
- * reader to test something the gate never did.
- *
- * `branches/main`, NOT `branches/main/protection` (#2331). The protection endpoints are repository-ADMIN
- * only, and this gate runs as `a11ign-ai-workers` (`permissions.admin: false`), so it 404'd on every tick
- * for four days (#2106). `branches/main` needs only `pull` and carries the same list.
- */
-const BRANCH_ENDPOINT = "branches/main";
-
-/**
- * WHERE THE REQUIRED CHECKS ARE NOW (#5020). On 2026-10-11 classic branch protection was deleted on every repo and
- * each `merge-queue-main` ruleset took over `required_status_checks`, so `BRANCH_ENDPOINT`'s `protection` object
- * answers `{"enabled": false, "contexts": []}` -- a read that "works" and lists nothing. `rules/branches/main`
- * lists every rule that applies to the branch whichever ruleset it comes from, and needs only `pull`.
- * One page is enough: a branch carries a handful of rules, far under the page size.
- */
-const RULES_ENDPOINT = "rules/branches/main";
-
-/**
- * The union of the contexts of every `required_status_checks` rule in a `rules/branches/main` answer, or `null`.
- * Filtered HERE and not by a `--jq`, so the rule shapes a branch really carries (`pull_request`, `deletion`,
- * `merge_queue`, ...) are exercised by tests rather than by a jq string nobody runs.
- */
-function rulesetContexts(rules: unknown): unknown {
-  if (!Array.isArray(rules)) return null;
-  return rules
-    .filter((rule) => rule?.type === "required_status_checks")
-    .flatMap((rule) => rule?.parameters?.required_status_checks ?? [])
-    .map((check: any) => check?.context);
-}
-
-/** One `gh` read: what it answered, or the first line of why it was refused. Never both, never thrown. */
-type Attempt = { answer: string; refusal?: undefined } | { refusal: string; answer?: undefined };
-
-function attempt(run: (args: string[]) => string, args: string[]): Attempt {
-  try {
-    return { answer: run(args) };
-  } catch (error) {
-    // THE REFUSAL AND THE UNUSABLE ANSWER ARE DIFFERENT FACTS, so the call is separated from the parse.
-    // A refusal says nothing about whether `main` is protected, and #2022 forbids reading it as if it did.
-    return { refusal: String((error as any)?.message ?? error).split("\n")[0].trim() };
-  }
-}
-
-/** A non-empty list of names, or `null`: an empty required set is "could not read", never "nothing blocks". */
-function usableNames(value: unknown): string[] | null {
-  const isMalformedList = !Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string" && v);
-  if (isMalformedList) return null;
-  return [...new Set<string>(value)];
-}
-
-/**
- * The two facts of a `branches/main` answer this gate uses: whether `main` is protected at all (`false` is a trunk fact
- * worth escalating) and the classic list. Quoted in the report instead of the whole body, which carries a commit.
- */
-function classicProtection(branch: any): { protected: unknown; contexts: unknown } | null {
-  if (branch === null || typeof branch !== "object") return null;
-  return { protected: branch.protected, contexts: branch.protection?.required_status_checks?.contexts };
-}
-
-/** One source's contribution to the "CANNOT READ" report; `shown` replaces the raw answer where one is smaller. */
-function describeAttempt(endpoint: string, read: Attempt, shown?: unknown): string {
-  if (read.refusal !== undefined) return `\`gh api ${endpoint}\` was REFUSED (${read.refusal})`;
-  const answer = shown === undefined || shown === null ? read.answer : JSON.stringify(shown);
-  return `\`gh api ${endpoint}\` answered, but with no usable list of contexts: ${quoted(answer)}`;
-}
-
-/** A place the required checks may be listed, in the order they are asked. */
-type RequiredSource = { path: string; names: (parsed: any) => unknown; shown?: (parsed: any) => unknown };
-
-const REQUIRED_SOURCES: RequiredSource[] = [
-  { path: RULES_ENDPOINT, names: rulesetContexts },
-  { path: BRANCH_ENDPOINT, names: (branch) => classicProtection(branch)?.contexts, shown: classicProtection },
-];
-
 /** What `readRequiredContexts` found: the contexts, or `null` and the report of why neither source gave any. */
-export type RequiredContexts = { contexts: string[]; diagnosis?: undefined } | { contexts: null; diagnosis: string };
+export type RequiredContexts = import("../../plugins/contracts/code-host-rows.ts").RequiredContexts;
 
 /**
- * THE ONE READER OF "WHICH CHECKS CAN BLOCK A MERGE ON `main`" (#5020), shared by this gate's
- * `requiredCheckNames` and `queue-table.ts`'s `requiredContexts`, which had each carried its own copy of the
- * classic-only read and so went blind together when classic protection was deleted.
+ * THE ONE READER OF "WHICH CHECKS CAN BLOCK A MERGE ON `main`" (#5020), shared by this gate's `requiredCheckNames` and `queue-table.ts`'s `requiredContexts`. It is the code host's: rulesets first, classic branch
+ * protection only when they give nothing (`plugins/github/rows/gate-pull-reads.ts`). Neither -> `null`, which is still UNKNOWN and still fails open at every caller -- never `[]`, which would read as "nothing blocks".
  *
- * RULESETS FIRST, CLASSIC ONLY WHEN THE RULESET SOURCE GIVES NOTHING: a repository the rulesets do not cover
- * (or a refused read of them) still answers from `branches/main`'s classic list. Neither -> `null`, which is
- * still UNKNOWN and still fails open at every caller -- never `[]`, which would read as "nothing blocks".
- *
- * `repo` is `owner/name`, or gh's own `{owner}/{repo}` placeholder (the gate's default) which resolves from the
- * working directory. Never throws: a refusal becomes part of `diagnosis`.
+ * `repo` is `owner/name`, or gh's own `{owner}/{repo}` placeholder (the gate's default). Never throws: a refusal becomes part of `diagnosis`.
  */
 export function readRequiredContexts(run: (args: string[]) => string, repo = "{owner}/{repo}"): RequiredContexts {
-  const reports: string[] = [];
-  for (const source of REQUIRED_SOURCES) {
-    const endpoint = `repos/${repo}/${source.path}`;
-    // ONE CALL SITE for both sources: they differ only in path and parse, and `gh-call-ratchet` counts sites.
-    const read = attempt(run, ["api", endpoint]);
-    const parsed = read.answer === undefined ? null : parsedOrNull(read.answer);
-    const names = usableNames(source.names(parsed));
-    if (names) return { contexts: names };
-    reports.push(describeAttempt(endpoint, read, source.shown?.(parsed)));
+  try {
+    return rows().readRequiredContexts({ run, repo });
+  } catch (error) {
+    // No code host to ask (it cannot be loaded, or serves no row mode) is a read that failed, said as one: the caller fails open and tells why.
+    return { contexts: null, diagnosis: `the code host could not be asked (${String((error as Error)?.message ?? error).split("\n")[0]}).` };
   }
-  return { contexts: null, diagnosis: `${reports.join("; ")}.` };
 }
 
 /**
@@ -157,28 +70,6 @@ export function requiredCheckNames(run: (args: string[]) => string = defaultRun,
   return read.contexts;
 }
 
-/** How much of an unusable answer is worth echoing before it becomes the noise it is reporting. */
-const ECHOED_ANSWER_CHARS = 200;
-
-/**
- * The answer itself, bounded. `defaultRun` allows a 32MB body, and a diagnostic that pastes one into the
- * tick log replaces a silent failure with an unreadable one.
- */
-function quoted(text: string) {
-  const trimmed = text.trim();
-  return trimmed.length > ECHOED_ANSWER_CHARS
-    ? `${trimmed.slice(0, ECHOED_ANSWER_CHARS)}... (${trimmed.length} chars)`
-    : trimmed;
-}
-
-function parsedOrNull(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The one report, whatever went wrong, ending in what the gate does about it.
  *
@@ -192,13 +83,8 @@ function cannotReadRequiredChecks(diagnosis: string) {
     + "but the wasted prompts #1750 was filed to stop are still being sent.\n";
 }
 
-/** Where `main` is now, and the one field of it the prompt needs. */
-const BASE_TIP_ENDPOINT = "repos/{owner}/{repo}/commits/main";
-
 /** A commit id, abbreviated or whole. An empty or non-hex `sha` would render as a blank tip in the prompt. */
 const HEX_SHA = /^[0-9a-f]{7,40}$/i;
-
-const BASE_TIP_JQ = "{sha: .sha, date: .commit.committer.date}";
 
 /**
  * `main`'s tip commit and its committer date, or `null` (#2117).
@@ -212,17 +98,16 @@ const BASE_TIP_JQ = "{sha: .sha, date: .commit.committer.date}";
  * indistinguishable from one that never ran.
  */
 export function readBaseTip(run: (args: string[]) => string = defaultRun, log: (line: string) => void = (line) => process.stderr.write(line)): { sha: string; date: string; } | null {
-  let answer;
+  let tip;
   try {
-    answer = run(["api", BASE_TIP_ENDPOINT, "--jq", BASE_TIP_JQ]);
+    tip = rows().mainTipOf({ run });
   } catch (error) {
     const why = String((error as any)?.message ?? error).split("\n")[0].trim();
-    log(`CANNOT READ main's tip: \`gh api ${BASE_TIP_ENDPOINT}\` was REFUSED (${why}). `
+    log(`CANNOT READ main's tip: the read of the repository's main commit was REFUSED (${why}). `
       + "pr-checks-failing prompts will call `has main moved` UNKNOWN; no order is withheld for it.\n");
     return null;
   }
-  const tip = parsedOrNull(answer);
-  return HEX_SHA.test(String(tip?.sha)) && Number.isFinite(Date.parse(tip?.date)) ? tip : null;
+  return HEX_SHA.test(String(tip?.sha)) && Number.isFinite(Date.parse(String(tip?.date))) ? tip as { sha: string; date: string; } : null;
 }
 
 /**

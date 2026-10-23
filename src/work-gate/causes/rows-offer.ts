@@ -13,6 +13,7 @@ import { recordEmergencyPriority } from "../../failure-recorders.ts";
 import { readJsonObject } from "../../claim-stall/stall-causes-and-claim-readings.ts";
 import { writeJsonObject } from "../../claim-stall.ts";
 import { defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
+import { rows as codeHostRows } from "../../plugins/rows.ts";
 import { commentsSince } from "../../ticket-port/comments-since.ts";
 import { CHAIRMAN_LOGINS, CHAIRMAN_PRIORITY_LABEL, LAUNCH_PLACEHOLDER, MAX_ROW_ORDERS_PER_TICK, PRIORITY_LABEL, REVIEWER_STATE_DIR, type Yielding,
   digestOf, isChairmanRow, labelsOf, laneOwnerOf, sessionOf } from "../vocabulary.ts";
@@ -96,10 +97,7 @@ export function readChairmanPriority(rows: any[], run: (args: string[]) => strin
 
 /** The login that added `label` (`priority:chairman`, or #5032's `priority:emergency`) to the row LAST, or `null` when the history shows no such event. @param {number} number @param {(args: string[]) => string} run */
 function newestLabeller(number: number, run: (args: string[]) => string, label: string = CHAIRMAN_PRIORITY_LABEL): string | null {
-  const out = run(["api", `repos/{owner}/{repo}/issues/${number}/events`, "--paginate", "--jq",
-    `.[] | select(.event == "labeled" and .label.name == "${label}") | .actor.login`]);
-  const newest = out.split("\n").map((line) => line.trim()).filter((line) => line !== "").at(-1) ?? null;
-  return newest === "null" ? null : newest; // jq prints `null` for an event whose actor is gone: the newest labeller is then UNKNOWN, not an older one's
+  return codeHostRows().newestLabellerOf({ number, label, run });
 }
 
 // --- #5032: `priority:emergency`, THE ONE PRIORITY AN AGENT MAY RAISE, AND ONLY WHILE THE ORG IS BLOCKED ----------------------------------------------
@@ -197,10 +195,7 @@ function emergencyReasonOf(body: string): string | null {
 
 /** The item `ref` names, read from the tracker. THROWS when it cannot be read: closed and unreadable are different answers. @param {string} ref @param {(args: string[]) => string} run */
 function readIncidentItem(ref: string, run: (args: string[]) => string): { open: boolean; labels: string[]; body: string; } {
-  const [repo, number] = ref.split("#");
-  const out = run(["api", `repos/${repo === "" ? "{owner}/{repo}" : repo}/issues/${number}`, "--jq", "{state, body, labels: [.labels[].name]}"]);
-  const item = JSON.parse(out);
-  return { open: item?.state === "open", labels: Array.isArray(item?.labels) ? item.labels.map(String) : [], body: String(item?.body ?? "") };
+  return codeHostRows().incidentItemOf({ ref, run });
 }
 
 /** Whether the item is an open `incident` whose `Incident: <key>` line names an org-blocking key. */
@@ -216,7 +211,7 @@ function emergencyVerdict(row: any, option: EmergencyPriorityOption, run: (args:
   if (actor === null || !option.setters.includes(actor)) {
     return { kind: "ignored", number, actor, why: "actor", detail: actor === null ? "no event shows who added it" : `${actor} added it, and only ${option.setters.join(", ")} counts` };
   }
-  const body = typeof row.body === "string" ? row.body : String(JSON.parse(run(["api", `repos/{owner}/{repo}/issues/${number}`, "--jq", "{body}"]))?.body ?? "");
+  const body = typeof row.body === "string" ? row.body : codeHostRows().rowBodyOf({ number, run });
   const link = incidentRefOf(body);
   if (link === null) return { kind: "ignored", number, actor, why: "no-incident-link", detail: "its body has no `Incident: <ref>` line naming the incident it fixes" };
   const incident = link.startsWith("#") ? `${repoNow()}${link}` : link;
@@ -257,7 +252,7 @@ export function readEmergencyPriority(rows: any[], option: EmergencyPriorityOpti
 function removeExpiredEmergencyLabels(expired: EmergencyReading["expired"], run: (args: string[]) => string): void {
   for (const { number, incident } of expired) {
     try {
-      run(["issue", "edit", String(number), "--remove-label", EMERGENCY_PRIORITY_LABEL]);
+      codeHostRows().removeLabelFromRow({ number, label: EMERGENCY_PRIORITY_LABEL, run });
       sayEmergency(`${incident} is closed: removed \`${EMERGENCY_PRIORITY_LABEL}\` from #${number}`);
     } catch (err: any) {
       sayEmergency(`${incident} is closed but the label could not be removed from #${number} (${String(err?.message ?? err).split("\n")[0]}); it is not honoured meanwhile`);

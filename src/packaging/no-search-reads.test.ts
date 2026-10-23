@@ -205,7 +205,9 @@ test("POSITIVE CONTROL (source, #5074): `wake.ts` and `row-file.ts` are walked, 
 
 test("POSITIVE CONTROL (source, #5050): the gate's list reads are SEEN by the walk -- `work-gate.ts` still names `issue list`, so the walk is reading a file that lists", () => {
   const gate = workGateSource();
-  assert.match(gate, /\["issue", "list", "--state", "open", "--limit"/, "the whole open list is still an `issue list` (it is no search), so the guard is looking at real list calls");
+  // A11-160 (step 6): the whole open list's argument list is the code host's now, in the plugin's rows, which the walk above reads.
+  assert.match(readFileSync(join(PLUGIN_ROWS, "gate-pull-reads.ts"), "utf8"), /\["issue", "list", "--state", "open", "--limit"/, "the whole open list is still an `issue list` (it is no search), so the guard is looking at real list calls");
+  assert.match(gate, /rows\(\)\.openRowsOf\(/, "and the gate asks the code host for it by name");
   assert.doesNotMatch(gate, /"--label", (?:CHAIRMAN|BACKLOG|READY|CLAIM)_LABEL/, "and the four label lists it used to build are gone");
 });
 

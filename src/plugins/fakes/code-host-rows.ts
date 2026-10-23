@@ -13,13 +13,16 @@ import type { Pool } from "../../api-pool.ts";
 import type { ApprovalReview, ClosingIssue, CodeHostRows, GithubTicketAdapter, GuardCheckRun, QueueEntry, QueuePull } from "../contracts/code-host-rows.ts";
 import { ciOperations, emptyCi, type FakeCi } from "./code-host-ci.ts";
 import { mergeOperations } from "./code-host-merge.ts";
+import { emptyGate, gateOperations, type FakeGate } from "./code-host-gate.ts";
 
 /** A row (an issue) as the fake holds it. */
 export type FakeRow = {
   number: number; title: string; body: string; state: "OPEN" | "CLOSED"; labels: string[]; createdAt: string; closedAt: string | null;
-  comments: { id: number; body: string; createdAt: string }[]; blockedBy: number[]; onBoard: boolean; boardStatus: string | null;
+  comments: { id: number; body: string; createdAt: string; /** The login that wrote it, where a test needs one (the gate tells the chairman's comment from another's). */ author?: string }[]; blockedBy: number[]; onBoard: boolean; boardStatus: string | null;
   /** Set when the blocked-by edges cannot be read whole (a page was cut): the code host answers `null` for the blockers, never an empty list. */
   blockedByUnread?: boolean;
+  /** When it was last updated; absent is when it was created. */
+  updatedAt?: string;
 };
 
 /**
@@ -46,6 +49,9 @@ export type FakeRowPull = {
   /** The reason arming it is refused (the error `gh` prints), and whether an arm that is not refused takes (default: it does). */
   armRefusal?: string | null;
   armTakes?: boolean;
+  /** The files it changes past the listing's first hundred, and the shas of its commits, oldest first (the gate pages the first and compares the second). */
+  files?: string[];
+  commits?: string[];
 };
 
 /** What a test seeds and reads: the rows and pull requests of the tracker's repository, the merge queue, and what the operations did. */
@@ -82,6 +88,8 @@ export type FakeRowsWorld = {
   deletedBranches: string[];
   /** Why a jump to the front of the merge queue is refused, or null. */
   jumpRefusal: string | null;
+  /** What the work gate reads beyond rows and pull requests: a row's label history, the tracker's events, checks, runs and diffs (`code-host-gate.ts`). */
+  gate: FakeGate;
   /** The next number a created row gets, and the next id a comment gets. */
   nextNumber: number;
   nextCommentId: number;
@@ -90,7 +98,7 @@ export type FakeRowsWorld = {
 };
 
 export function emptyRowsWorld(repo: string = "fake/tracker"): FakeRowsWorld {
-  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, nextNumber: 1, nextCommentId: 1, now: Date.now };
+  return { repo, rows: new Map(), pulls: new Map(), queue: { entries: [], runs: new Map(), dequeueRefusal: null, dequeued: [], onDequeue: null }, labelsCreated: [], calls: [], budget: null, failures: new Map(), foreignRows: new Map(), trunkRuns: [], ci: emptyCi(), requiredContexts: [], mainTip: null, pool: null, compare: new Map(), deletedBranches: [], jumpRefusal: null, gate: emptyGate(), nextNumber: 1, nextCommentId: 1, now: Date.now };
 }
 
 const STATES: readonly TicketState[] = ["backlog", "ready", "in-progress", "parked"];
@@ -192,7 +200,7 @@ const unmodeled = (operation: string) => (): never => {
 };
 
 /** The nodes of a connection read, in the shape a caller reads them (`number`, `body`, `labels.nodes[].name`, `blockedBy.nodes[].number`). */
-const nodeOf = (row: FakeRow): any => ({ number: row.number, title: row.title, body: row.body, state: row.state, createdAt: row.createdAt, closedAt: row.closedAt,
+const nodeOf = (row: FakeRow): any => ({ number: row.number, title: row.title, body: row.body, state: row.state, createdAt: row.createdAt, updatedAt: row.updatedAt ?? row.createdAt, closedAt: row.closedAt,
   labels: { nodes: row.labels.map((name) => ({ name })) }, blockedBy: { nodes: row.blockedBy.map((number) => ({ number })) } });
 
 const pullOf = (world: FakeRowsWorld, number: number): FakeRowPull => {
@@ -368,6 +376,7 @@ export function createFakeRows(world: FakeRowsWorld = emptyRowsWorld()): CodeHos
     ...pullOperations(world),
     ...mergeOperations(world),
     ...ciOperations(world),
+    ...gateOperations(world),
     latestApprovals,
     approvalFactsOf: unmodeled("approvalFactsOf"),
     reviewsOf: unmodeled("reviewsOf"),

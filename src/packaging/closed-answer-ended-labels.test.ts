@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is the injected `run` seam `readClosedAnswerRows` takes; nothing reaches the real one, and herdr and the ledgers are the injected `goneTest`
+// no-token: none -- every read is the fake code host's rows (a world held in memory); the `run` the readers take is one that throws, and herdr and the ledgers are the injected `goneTest`
 /**
  * agent-org#1636: THE CLOSED ANSWER READ DOES NOT ASK FOR AN ENDED SESSION'S LABEL.
  *
@@ -9,29 +9,45 @@
  * Each case below has its control: the same labels with no `goneTest` ask for all of them, and a `goneTest` that cannot say (`null`, herdr or the ledgers unreadable) asks
  * for all of them too, so the cut is the test's and not an empty read's.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readClosedAnswerRows, withoutEndedAnswerSessions } from "../work-gate/causes/rows-answers.ts";
 import { readOpenRowFollowUps } from "../work-gate.ts";
 import { KEPT_ANSWERS_MAX_AGE_MS, type ConditionalReads } from "../work-gate/reads/read-memo-and-exit.ts";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { closedAnswerConnection, readsClosedAnswerRows } from "./rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "../plugins/active.ts";
+import { createFakeCodeHost } from "../plugins/fakes/code-host.ts";
+import { fakeRow } from "../plugins/fakes/code-host-rows.ts";
+
+afterEach(() => forgetActivation());
 
 const LABELS = ["answer:ceo", "answer:worker-8", "answer:worker-9", "answer:engineers", "answer:reviewer-1"];
 const ENDED = new Set(["worker-8", "worker-9"]);
 const ended = () => (session: string) => session !== "engineers" && ENDED.has(session);
 
-/** A `run` answering the label list, then every closed read with `rows`; the graphql reads it was asked are kept. */
-function fakeRun(rows: Parameters<typeof closedAnswerConnection>[0] = []) {
-  const asked: NonNullable<ReturnType<typeof readsClosedAnswerRows>>[] = [];
-  const run = (args: string[]) => {
-    if (args[0] === "label") return JSON.stringify(LABELS.map((name) => ({ name })));
-    const read = readsClosedAnswerRows(args);
-    if (read === null) throw new Error(`unexpected call: ${args.join(" ")}`);
-    asked.push(read);
-    return closedAnswerConnection(read.kind === "issues" ? rows : []);
+/** A closed row as the world holds it: the labels it carries are the `answer:` ones the read finds it by. */
+type ClosedRow = { number: number; title: string; state: string; labels: string[] };
+
+/**
+ * The fake code host (A11-160, step 6; a stub `gh` before) holding the repository's answer labels and `rows` closed carrying them. `asked` is every closed read made of it (its kind and the labels it was asked for),
+ * `all` is every read of the three, in order (`label list`, `issues`, `pullRequests`), and `world.failures` refuses a read by name. The `run` it returns throws: nothing reaches `gh`.
+ */
+function fakeRun(rows: ClosedRow[] = []) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world, rows: ops } = host;
+  world.labelsCreated.push(...LABELS);
+  for (const row of rows) world.rows.set(row.number, fakeRow(world, row.number, { title: row.title, state: "CLOSED", labels: row.labels, closedAt: "2026-10-01T00:00:00.000Z" }));
+  const asked: { kind: "issues" | "pullRequests"; names: string[] }[] = [];
+  const all: string[] = [];
+  const labels = ops!.labelNamesWithPrefix;
+  ops!.labelNamesWithPrefix = (request) => { all.push("label list"); return labels(request); };
+  const carrying = ops!.closedRowsCarryingLabels;
+  ops!.closedRowsCarryingLabels = (request) => { all.push(request.kind); asked.push({ kind: request.kind, names: request.names }); return carrying(request); };
+  substituteCodeHost(host);
+  const run = (): string => {
+    throw new Error("the fake code host acts on its own state: no gh is run");
   };
-  return { run, asked };
+  return { run, asked, all, world };
 }
 
 test("#1636: the issues and the pull requests are asked for the labels of sessions that have not ended, and only those", () => {
@@ -91,23 +107,18 @@ test("#1636: the closed answer read is kept for the same labels, asked again aft
 
 test("#1636: a refused closed answer read is not kept, and no conditional (a test's run, the rehearsal) keeps nothing", () => {
   const dir = tmpDir("kept-answers-");
-  let refuse = true;
-  const asked: string[][] = [];
-  const run = (args: string[]) => {
-    asked.push(args);
-    if (args[0] === "label") return JSON.stringify(LABELS.map((name) => ({ name })));
-    if (refuse) return "not json";
-    return closedAnswerConnection([]);
-  };
+  const { run, all, world } = fakeRun();
+  const garbled = new SyntaxError("Unexpected token 'o', \"not json\" is not valid JSON");
+  world.failures.set("closedRowsCarryingLabels issues", garbled);
   assert.equal(readClosedAnswerRows(run, ended, keptOn(dir, 5)), null);
-  refuse = false;
-  const before = asked.length;
+  world.failures.delete("closedRowsCarryingLabels issues");
+  const before = all.length;
   assert.deepEqual(readClosedAnswerRows(run, ended, keptOn(dir, 6)), []);
-  assert.ok(asked.length > before + 1, "the refusal was not kept: the graphql reads were asked again");
-  const n = asked.length;
+  assert.ok(all.length > before + 1, "the refusal was not kept: the graphql reads were asked again");
+  const n = all.length;
   readClosedAnswerRows(run, ended, null);
   readClosedAnswerRows(run, ended, null);
-  assert.ok(asked.length >= n + 2 * 3, "with no conditional every call asks");
+  assert.ok(all.length >= n + 2 * 3, "with no conditional every call asks");
 });
 
 test("#1636: the follow-ups ask for the closed answers by the herdr listing they already hold, never a second read of herdr", () => {

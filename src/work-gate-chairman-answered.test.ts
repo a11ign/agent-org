@@ -1,4 +1,4 @@
-// no-token: gh -- every `gh` here is the injected `run` seam `readChairmanBlocked` takes, and the clock is a fixture; nothing reaches `gh`, `git` or the network
+// no-token: none -- the fake code host's rows answer every read from a world held in memory, and the clock is a fixture; nothing reaches `gh`, `git` or the network
 /**
  * a11ign/a11ign#3390: A `needs:chairman` ROW THE CHAIRMAN HAS ANSWERED SINCE IT WAS LABELLED ORDERS `ceo` TO TAKE THE LABEL OFF OR RE-ASK.
  *
@@ -6,20 +6,20 @@
  * without taking the label off, and it stood for hours after. `readChairmanBlocked` listed `number,title,updatedAt` and the daily reminder
  * covered the whole set, so an answered row and an unanswered one were indistinguishable.
  *
- * THE FAKE `gh` ANSWERS THE THREE READS THE REAL ONE IS ASKED, in the shape the reader's `--jq` projects them (the label list is a GraphQL connection since
- * #5050, answered in its page shape): the label list, the row's
- * `labeled` events (one ISO time per line) and its comments (one `{author, at, body}` object per line). Every clock is a fixture, so none of
- * this can pass or fail by the hour it runs.
+ * THE FAKE CODE HOST'S ROWS ANSWER THE THREE READS (A11-160, step 6; they were a stub `gh` before): the label list, the row's `labeled` events and its comments with their
+ * authors, from a world the test seeds. Every clock is a fixture, so none of this can pass or fail by the hour it runs.
  *
  * POSITIVE CONTROLS: (1) and (5) are the non-empty cases the emptiness of (2)-(4) is read against, and the property test at the end puts
  * all of them in one fixture so "and no other row" is read against rows that DO fire.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { decide } from "./work-gate/tick/tick-decisions-and-flags.ts";
 import { readChairmanBlocked, chairmanReadsRefused } from "./work-gate/causes/rows-chairman.ts";
 import { CHAIRMAN_LOGINS } from "./work-gate/vocabulary.ts";
-import { connectionOf, readsRowsByLabel } from "./packaging/rows-by-label-fixtures.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
+import { fakeRow } from "./plugins/fakes/code-host-rows.ts";
 
 const T0 = "2026-10-03T14:05:56Z"; // #3228 labelled
 const T1 = "2026-10-04T10:17:05Z"; // the chairman's session commented
@@ -31,26 +31,28 @@ const PROVENANCE_LINE = "Chairman answered via Telegram, verified id, message 44
 type Comment = { author: string, at: string, body: string };
 type Row = { number: number, labelled: string[], comments: Comment[] };
 
-/** A `gh` that knows rows by number: `refuse` lists the numbers whose per-row reads throw, as a refused `gh` does. */
-function fakeGh(rows: Row[], { refuse = [] as number[], listRefused = false } = {}) {
-  return (args: string[]): string => {
-    if (listRefused) throw new Error("gh: HTTP 403");
-    // #5050: the label list is a GraphQL connection read (`readsRowsByLabel`), no longer an `issue list` -- the answer is the connection's page of the same rows.
-    if (readsRowsByLabel(args)?.label === "needs:chairman") {
-      return connectionOf(rows.map((r) => ({ number: r.number, title: `row ${r.number}`, updatedAt: T1 })));
-    }
-    const number = Number(/issues\/(\d+)\//.exec(args[1])?.[1]);
-    if (refuse.includes(number)) throw new Error("gh: HTTP 403");
-    const row = rows.find((r) => r.number === number);
-    if (!row) throw new Error(`the fake knows no row ${number}`);
-    if (args[1].endsWith("/events")) return row.labelled.map((t) => `${t}\n`).join("");
-    if (args[1].endsWith("/comments")) return row.comments.map((c) => `${JSON.stringify(c)}\n`).join("");
-    throw new Error(`the fake answers no ${args.join(" ")}`);
-  };
+afterEach(() => forgetActivation());
+
+/**
+ * The fake code host holding `rows`: each row carries `needs:chairman` and the label events the test names, and its comments carry their authors. `refuse` lists the numbers whose per-row reads (history and
+ * comments) are refused, as GitHub refuses one row; `listRefused` refuses the label list itself.
+ */
+function fakeWorld(rows: Row[], { refuse = [] as number[], listRefused = false } = {}) {
+  const host = createFakeCodeHost();
+  const { rowsWorld: world } = host;
+  for (const r of rows) {
+    world.rows.set(r.number, fakeRow(world, r.number, { title: `row ${r.number}`, labels: ["needs:chairman"], updatedAt: T1,
+      comments: r.comments.map((c, id) => ({ id: id + 1, body: c.body, createdAt: c.at, author: c.author })) }));
+    world.gate.events.set(r.number, refuse.includes(r.number) ? new Error("gh: HTTP 403") : r.labelled.map((at) => ({ event: "labeled" as const, label: "needs:chairman", actor: null, at })));
+    if (refuse.includes(r.number)) world.gate.commentsRefused.add(r.number);
+  }
+  if (listRefused) world.failures.set("readRowsByLabel", new Error("gh: HTTP 403"));
+  substituteCodeHost(host);
 }
 
-const answeredOrders = (rows: Row[], gh = fakeGh(rows)) => {
-  const chairmanBlocked = readChairmanBlocked(gh);
+const answeredOrders = (rows: Row[]) => {
+  fakeWorld(rows);
+  const chairmanBlocked = readChairmanBlocked();
   assert.ok(chairmanBlocked, "the fixture's read must not be refused");
   return decide({ prs: [], readyRows: [], chairmanBlocked, nowMs: 0 })
     .filter((order: { cause: string }) => order.cause === "chairman-answered");
@@ -104,12 +106,15 @@ test("(6) two different chairman events on one row give two different cause keys
 
 test("(7) a refused read yields no orders and is REPORTED as refused, never as an empty set", () => {
   const rows = [{ number: 3228, labelled: [T0], comments: [by(CHAIRMAN, T1)] }];
-  const chairmanBlocked = readChairmanBlocked(fakeGh(rows, { refuse: [3228] }));
+  fakeWorld(rows, { refuse: [3228] });
+  const chairmanBlocked = readChairmanBlocked();
   assert.ok(chairmanBlocked, "the label list itself was read; only the row's timeline was refused");
   assert.deepEqual(chairmanReadsRefused(chairmanBlocked), [3228]);
   assert.deepEqual(decide({ prs: [], readyRows: [], chairmanBlocked, nowMs: 0 }).filter((o: { cause: string }) => o.cause === "chairman-answered"), []);
-  assert.equal(readChairmanBlocked(fakeGh(rows, { listRefused: true })), null, "and a refused LIST stays null, which is not []");
-  assert.deepEqual(chairmanReadsRefused(readChairmanBlocked(fakeGh(rows))!), [], "CONTROL: the same fixture unrefused reports none");
+  fakeWorld(rows, { listRefused: true });
+  assert.equal(readChairmanBlocked(), null, "and a refused LIST stays null, which is not []");
+  fakeWorld(rows);
+  assert.deepEqual(chairmanReadsRefused(readChairmanBlocked()!), [], "CONTROL: the same fixture unrefused reports none");
 });
 
 test("(8) the property: every row whose newest chairman event is newer than its newest label event is named, and no other", () => {
@@ -123,7 +128,8 @@ test("(8) the property: every row whose newest chairman event is newer than its 
   ];
   const named = answeredOrders(rows).map((o: { causeKey: string }) => Number(/row-(\d+)\//.exec(o.causeKey)?.[1]));
   assert.deepEqual(named.sort(), [1, 4], "row 6 has no label time to compare with: it is refused, not guessed");
-  assert.deepEqual(chairmanReadsRefused(readChairmanBlocked(fakeGh(rows))!), [6], "and it is REPORTED, so the silence is not mistaken for 'not answered'");
+  fakeWorld(rows);
+  assert.deepEqual(chairmanReadsRefused(readChairmanBlocked()!), [6], "and it is REPORTED, so the silence is not mistaken for 'not answered'");
 });
 
 test("rows read without a timeline (every older caller of `decide`) yield no chairman-answered order", () => {

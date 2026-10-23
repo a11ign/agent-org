@@ -1,4 +1,4 @@
-// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; every read here is handed an injected `run`, so nothing is spawned (#3365)
+// no-token: gh -- imports `work-gate.ts`, whose default reader spawns `gh`; the list is read through an injected `run` and the pages of files from the fake code host's world (A11-160, step 6), so nothing is spawned (#3365)
 /**
  * #3365: THE GATE PAGES THE FILES OF A PULL REQUEST `gh pr list` TRUNCATED, INSTEAD OF DROPPING IT.
  *
@@ -11,7 +11,7 @@
  * POSITIVE CONTROLS: (1) is the assertion that fails on a `readPrs` that does not page (the row is offered); a truncated PR that does not
  * overlap the row is still offerable after paging, so "blocked" is not what this harness says of every row.
  */
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +19,8 @@ import { join } from "node:path";
 import { readPrs, withPagedFiles } from "./work-gate/reads/read-memo-and-exit.ts";
 import { comparablePrFiles } from "./work-gate/vocabulary.ts";
 import { partitionUnclaimed } from "./work-gate/causes/rows-claims.ts";
+import { forgetActivation, substituteCodeHost } from "./plugins/active.ts";
+import { createFakeCodeHost } from "./plugins/fakes/code-host.ts";
 
 /** Under a top-level directory both this repository and a11ign's track, or `declaredRegionFiles` reads the Region as declaring nothing (#3073). */
 const REGION_FILE = "docs/messaging.md";
@@ -35,17 +37,32 @@ const reportedPr = (head = HEAD) => ({ number: VERSION_PR, headRefOid: head, cha
   files: Array.from({ length: LISTED }, (_, i) => ({ path: `packages/p${i}/CHANGELOG.md` })), body: "", labels: [] });
 const allFiles = (last: string) => [...Array.from({ length: REPORTED - 1 }, (_, i) => `packages/p${i}/CHANGELOG.md`), last];
 
-/** A `gh` that answers `pr list` with `prs` and the files endpoint with `pages` (a string, or an Error to fail with), and counts every call. */
+/**
+ * The list `gh pr list` gave (`run` answers it, and nothing else: the executor's own read), and the pages of files the CODE HOST reads past it, from its world: `pages` is the files one per line, or an Error to refuse the read with.
+ * `paged()` is the pull requests the code host was asked to page (what the plugin sends for a page is asserted in `plugins/github/rows/gate-pull-reads.test.ts`).
+ */
 function fakeGh(prs: unknown[], pages: string | Error) {
+  const host = createFakeCodeHost();
+  const world = host.rowsWorld;
+  for (const pr of prs as { number: number }[]) {
+    world.pulls.set(pr.number, { number: pr.number, body: "", headRefName: "agent/x", labels: [], isDraft: false, armed: false, merged: false, mergedAt: null, createdAt: "2026-10-01T00:00:00Z", comments: [],
+      files: pages instanceof Error ? [] : pages.split("\n").filter((line) => line !== "") });
+  }
+  if (pages instanceof Error) world.failures.set("pullFileNamesOf", pages);
+  const asked: number[] = [];
+  const page = host.rows!.pullFileNamesOf;
+  host.rows!.pullFileNamesOf = (request) => { asked.push(request.number); return page(request); };
+  substituteCodeHost(host);
   const calls: string[][] = [];
   const run = (args: string[]) => {
     calls.push(args);
-    if (args[0] === "pr") return JSON.stringify(prs);
-    if (pages instanceof Error) throw pages;
-    return pages;
+    // The open list is asked with the arguments the code host builds (`openPullListArgs`: the fake's are a stand-in line), and its answer is the executor's own read.
+    if (args[0] === "pr" || args[0] === "fake-open-pull-list") return JSON.stringify(prs);
+    throw new Error(`the fake code host acts on its own state: no gh is run for ${args.join(" ")}`);
   };
-  return { run, calls, paged: () => calls.filter((args) => args[0] === "api") };
+  return { run, calls, paged: () => asked };
 }
+afterEach(() => forgetActivation());
 
 /** The tick's own composition: read the lanes, compare. Cache goes to a directory this test owns, never the host's. */
 function offeredAfterReading(prs: unknown[], pages: string | Error, region: string) {
