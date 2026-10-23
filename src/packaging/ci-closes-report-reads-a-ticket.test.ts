@@ -98,3 +98,22 @@ test("A11-127: the `closes` entry CI's acceptance job runs is this report", () =
   assert.equal(closes.report(input("Refs A11-127")).ok, false);
   assert.equal(closes.report(input("Closes #471")).ok, true);
 });
+
+test("A11-178: CI refuses a partial body that quotes a closing word next to its own ticket's key, as a11ign/agent-org#1827 did, and one that names another ticket after one", () => {
+  const quoting = ciClosesReport("Refs A11-127\n\nPartial: step 1 of 3\n\nThe tests read the grammar: `Closes A11-127` completes the ticket.\n");
+  assert.equal(quoting.ok, false);
+  assert.match(quoting.line, /^CLOSES: REFUSED -- the body has a `Partial:` line, but line `The tests read the grammar: `Closes A11-127` completes the ticket\.` reads as a closing word followed by A11-127/);
+  const other = ciClosesReport("Closes A11-127\n\nIt also resolves A11-9.\n");
+  assert.equal(other.ok, false);
+  assert.match(other.line, /reads as a closing word followed by A11-9, which is not A11-127/);
+  assert.deepEqual(ciClosesReport("Refs A11-127\n\nPartial: step 1 of 3\n\nThe closing keyword followed by the key is read.\n"), ciClosesReport("Refs A11-127\nPartial: step 1 of 3\n"), "described in words, it is as a plain partial body");
+});
+
+test("A11-178: CI and `pr:open` agree on bodies that carry a closing word anywhere", () => {
+  const bodies = ["Refs A11-127\nPartial: x\n`Closes A11-127`", "Closes A11-127\nand fixes A11-9", "Refs A11-127\nPartial: x\nimplements A11-127", "Closes A11-127\nIt fixes the UTF-8 bug."];
+  for (const body of bodies) {
+    const ci = ciClosesReport(body);
+    const ticket = ticketClosesReport(body, "A11-127", DEFAULT_KEYWORDS);
+    assert.deepEqual({ ok: ci.ok, line: ci.line }, { ok: ticket.ok, line: ticket.lines.join(" ") }, JSON.stringify(body));
+  }
+});

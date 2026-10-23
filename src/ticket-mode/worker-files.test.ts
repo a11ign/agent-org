@@ -329,6 +329,15 @@ test("A11-92: a brief asks for the tracker's closing keyword on a completing pul
   assert.ok(brief.includes(`A partial pull request adds \`"partial": "<what remains>"\` to its \`draft-pr\` line`), "a partial pull request declares it in the outcome file");
 });
 
+test("A11-178: a brief tells a worker the tracker reads closing words anywhere in a body, so a partial body never quotes one next to its ticket's key, and names the words", () => {
+  const brief = briefWith();
+  assert.ok(brief.includes("The tracker also completes the ticket on merge when it reads any of `closes`, `close`, `closed`"), "the closing words are named, starting with the closing keyword");
+  assert.ok(brief.includes("followed by a ticket key ANYWHERE in the body, code spans and quoted examples included, whatever else the body says: a partial body never writes one next to the ticket's key, even to quote it, "
+    + "and describes the example in words instead (\"the closing keyword followed by the key\")."));
+  const custom = briefWith({ keywords: { closing: "Resolves", nonClosing: "Relates" } });
+  assert.ok(custom.includes("reads any of `resolves` followed by a ticket key ANYWHERE"), "a tracker that names no other closing word is briefed with its closing keyword alone");
+});
+
 test("A11-92: a source with its own keywords is briefed with them, and not with Closes and Refs", () => {
   const brief = briefWith({ keywords: { closing: "Resolves", nonClosing: "Relates" } });
   assert.ok(brief.includes("names the ticket `Resolves NBF-1270` when this pull request completes it"), "the source's closing word");

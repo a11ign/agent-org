@@ -15,11 +15,21 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { PickScope } from "../../src/ticket-mode/settings.ts";
-import type { Assignee, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText } from "../../src/plugins/contracts/tracker.ts";
+import type { Assignee, AutomaticCompletionUndo, Blocker, People, ScopePage, Keywords, PullState, StateMove, Ticket, TicketLabel, TicketSource, TicketText } from "../../src/plugins/contracts/tracker.ts";
 
 export const LINEAR_API = "https://api.linear.app/graphql";
-/** The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. */
-const KEYWORDS: Keywords = Object.freeze({ closing: "Closes", nonClosing: "Refs" });
+/**
+ * The words Linear's GitHub integration reads in a pull request's body: `Closes` completes its ticket on merge, `Refs` only links it. Linear reads any of `closingWords` followed by a key ANYWHERE in the
+ * body, a code span or a quoted example included, and completes the ticket on merge whatever else the body says (A11-178): its documented magic words are close, fix, resolve, complete and implement,
+ * each with its -s, -d or -ed, and -ing forms.
+ */
+const KEYWORDS: Keywords = Object.freeze({
+  closing: "Closes", nonClosing: "Refs",
+  closingWords: Object.freeze([
+    "close", "closes", "closed", "closing", "fix", "fixes", "fixed", "fixing", "resolve", "resolves", "resolved", "resolving",
+    "complete", "completes", "completed", "completing", "implement", "implements", "implemented", "implementing",
+  ]),
+});
 /** Linear stores uploads here, and only a request carrying the key may read one. */
 const UPLOADS = /https:\/\/uploads\.linear\.app\/[^\s)"'<>]+/g;
 const UPLOAD_ORIGIN = "https://uploads.linear.app/";
@@ -370,6 +380,42 @@ async function restoreStateOf(client: Client, identifier: string, move: StateMov
   return null;
 }
 
+/** A move Linear's history records: when, the states it left and entered, and who made it. A person is its `actor`; an integration is its `botActor`, with no person. */
+export type HistoryMove = {
+  createdAt: string; toState: { id: string } | null; fromState: { id: string; name: string } | null; actor: { id: string } | null; botActor: { name: string | null } | null;
+};
+/** What undoing a completion reads of its ticket: its id, the state it is in, its team's states, and the newest of its history. */
+type Completed = { id: string; state: { id: string; type: string; name: string }; team: { states: { nodes: { id: string; name: string; type: string }[] } }; history: { nodes: HistoryMove[] } };
+const COMPLETED = "id state { id type name } team { states { nodes { id name type } } } history(first: 100) { nodes { createdAt toState { id } fromState { id name } actor { id } botActor { name } } }";
+
+/**
+ * Who moved a ticket into the state `stateId` it is in now, and the state it left (A11-178): the newest history entry that entered `stateId`. A person's move has an `actor`; the integration's has a
+ * `botActor` and no person, which is how Linear records the GitHub integration completing a ticket on merge. A person's move wins even where a bot is named beside it. An entry with neither, or no
+ * entry at all, is `unknown`. PURE.
+ */
+export function completionOf(history: readonly HistoryMove[], stateId: string): Readonly<{ by: "integration" | "person" | "unknown"; from: { id: string; name: string } | null }> {
+  const [newest] = history.filter(({ toState }) => toState?.id === stateId).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  if (newest === undefined) return { by: "unknown", from: null };
+  const by = newest.actor !== null ? "person" : newest.botActor !== null ? "integration" : "unknown";
+  return { by, from: newest.fromState };
+}
+
+async function undoAutomaticCompletionOf(client: Client, identifier: string, comment: string): Promise<AutomaticCompletionUndo> {
+  const found = await issue<Completed>(client, identifier, COMPLETED);
+  if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
+  if (found.state.type !== "completed") return { reopened: null, by: "none", note: null };
+  const { by, from } = completionOf(found.history.nodes, found.state.id);
+  if (by === "person") return { reopened: null, by, note: null };
+  if (by === "unknown") return { reopened: null, by, note: `Linear's history does not say who moved ${identifier} to ${found.state.name}` };
+  if (from === null) return { reopened: null, by, note: `Linear's history does not say which state ${identifier} was in before ${found.state.name}` };
+  const target = found.team.states.nodes.find(({ id }) => id === from.id);
+  if (target === undefined) return { reopened: null, by, note: `${identifier}'s team has no state ${from.name} any more, so it stays in ${found.state.name}` };
+  // The move comes first, as `completeTicket`'s does: a comment that then fails leaves the ticket put back, and the next refresh finds nothing completed to undo.
+  await setState(client, identifier, found.id, target.id, target.name);
+  await postComment(client, identifier, found.id, comment);
+  return { reopened: { from: target.name, to: found.state.name }, by, note: null };
+}
+
 async function updateTicketTextOf(client: Client, identifier: string, text: Readonly<{ title?: string; description?: string }>): Promise<void> {
   const found = await issue<{ id: string }>(client, identifier, "id");
   if (found === null) throw new Error(`Linear has no ticket ${identifier}`);
@@ -535,9 +581,9 @@ export function linearSource({ key, fetch: request = fetch, pick = "assigned" }:
       return moveWorking(client, identifier, state);
     },
 
-    async restoreState(identifier, move) {
-      return restoreStateOf(client, identifier, move);
-    },
+    restoreState: (identifier, move) => restoreStateOf(client, identifier, move),
+
+    undoAutomaticCompletion: (identifier, comment) => undoAutomaticCompletionOf(client, identifier, comment),
 
     async updateTicketText(identifier, text) {
       return updateTicketTextOf(client, identifier, text);
