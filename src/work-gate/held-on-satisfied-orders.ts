@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { READY_LABEL } from "../claim-labels.ts";
 import { subjectMention, subjectRef } from "../review-attribution.ts";
 import { releaseReferencesOf, umbrellaEdge } from "../wait-condition.ts";
+import { rows } from "../plugins/rows.ts";
 
 /** How many distinct release facts one tick reads. A BOUND ON THE SPEND, NOT A TARGET: a few waits cite the same one or two packages and tags. */
 export const MAX_RELEASE_READS = 8;
@@ -48,8 +49,7 @@ export function registryDistTags(pkg: string): Record<string, string> | null {
  */
 export function remoteTagExists(tag: string, { run, repo }: { run: (args: string[]) => string; repo: () => string; }): boolean | null {
   try {
-    const refs = JSON.parse(run(["api", `repos/${repo()}/git/matching-refs/tags/${tag}`]));
-    return Array.isArray(refs) ? refs.some((r) => r?.ref === `refs/tags/${tag}`) : null;
+    return rows().tagExistsOn({ repo: repo(), tag, run });
   } catch {
     return null;
   }

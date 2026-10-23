@@ -26,6 +26,7 @@ import { parseWaits, conditionHolds, isItemWait, waitItemOf } from "../wait-cond
 import { requestEvent, NEEDS_CHAIRMAN } from "../messaging/sources/requests.ts";
 import { readReleaseFacts, registryDistTags, remoteTagExists } from "./held-on-satisfied-orders.ts";
 import { subjectMention } from "../review-attribution.ts";
+import { rows } from "../plugins/rows.ts";
 
 /** Which comment is the gate's own brief: found by this line, so a retried tick never posts a second one. */
 export const MARKER = "<!-- chairman-ask-on-clear -->";
@@ -151,8 +152,7 @@ export type Writer = { run: (args: string[]) => string, log?: (line: string) => 
 /** @returns whether the gate's brief is already on the row; `null` when the comments could not be read */
 function briefAlreadyPosted({ run }: Writer, number: number): boolean | null {
   try {
-    const { comments } = JSON.parse(run(["issue", "view", String(number), "--json", "comments"]));
-    return Array.isArray(comments) && comments.some((c) => String(c?.body ?? "").includes(MARKER));
+    return rows().commentBodiesOfRow({ number, run }).some((body) => body.includes(MARKER));
   } catch {
     return null; // an unread comment list is an unknown, and posting blind could send the chairman a second copy
   }
@@ -168,14 +168,14 @@ export function raiseAsk(ask: Ask, facts: import("../wait-condition.ts").WaitFac
     return false;
   }
   try {
-    if (!posted) run(["issue", "comment", number, "--body", postedBrief(ask, facts, now)]);
-    run(["issue", "edit", number, "--add-label", NEEDS_CHAIRMAN]);
+    if (!posted) rows().commentOnRow({ number, body: postedBrief(ask, facts, now), run });
+    rows().addLabelToRow({ number, label: NEEDS_CHAIRMAN, run });
   } catch (error) {
     log(`chairman-ask: COULD NOT raise #${number} (${String((error as Error).message).split("\n")[0]}); the next tick retries, and a posted brief is not posted twice`);
     return false;
   }
   try {
-    run(["issue", "edit", number, "--body", withoutDeclaration(ask.item.body)]);
+    rows().setRowBody({ number, body: withoutDeclaration(ask.item.body), run });
   } catch (error) {
     log(`chairman-ask: raised #${number} but COULD NOT remove its declaration (${String((error as Error).message).split("\n")[0]}); remove the \`Then-ask-chairman:\` block and its \`Waiting-for:\` lines by hand`);
   }

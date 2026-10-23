@@ -13,6 +13,7 @@ import { cachedReleaseBehind, readReleaseBehind, npmRegistryRead } from "../../r
 import { REPO } from "../../project-identity.ts";
 import { homeProjectDeclaration } from "../../project-config.ts";
 import { conditionalGetArgs, pullViewArgs } from "../../ticket-port/conditional-reads.ts";
+import { rows } from "../../plugins/rows.ts";
 import { isRowsByLabelRead } from "../../ticket-port/rows-by-label.ts";
 import { stillRunning } from "../pr-state.ts";
 import { REVIEWER_STATE_DIR } from "../vocabulary.ts";
@@ -103,15 +104,20 @@ export const ghCallName = (args: string[]) => args.slice(0, 2).join(" ");
  *
  * @param [how] `stdio: "pipe"` captures `gh`'s stderr on the error instead of inheriting it; `log` is where the cut is told
  */
-export const ghWithin = (timeoutMs: number, { stdio, log = (line) => process.stderr.write(line) }: { stdio?: "pipe"; log?: (line: string) => void; } = {}) => (args: string[], repo = activeRepo) => {
-  try {
-    return execFileSync("gh", args, { ...ghOptions(repo), timeout: timeoutMs, killSignal: "SIGKILL", ...(stdio === undefined ? {} : { stdio }) });
-  } catch (error) {
-    if ((error as { code?: string })?.code === "ETIMEDOUT") {
-      log(`GH CUT in ${repoNow()}: \`gh ${ghCallName(args)}\` ran past ${timeoutMs / 1000} s and was killed. That read is refused (null); the other reads go on.\n`);
+export const ghWithin = (timeoutMs: number, { stdio, log = (line) => process.stderr.write(line) }: { stdio?: "pipe"; log?: (line: string) => void; } = {}) => {
+  // The code host is asked when the first call is MADE, not when the runner is: `defaultRun` is built as this file loads, and a program that imports it asks no code host until it reads.
+  let started: ((args: string[], repo?: string) => string) | undefined;
+  const launch = (args: string[], repo: string | undefined) => (started ??= rows().gateRun({ timeoutMs, capture: stdio === "pipe" }))(args, repo);
+  return (args: string[], repo = activeRepo) => {
+    try {
+      return launch(args, repo);
+    } catch (error) {
+      if ((error as { code?: string })?.code === "ETIMEDOUT") {
+        log(`GH CUT in ${repoNow()}: \`gh ${ghCallName(args)}\` ran past ${timeoutMs / 1000} s and was killed. That read is refused (null); the other reads go on.\n`);
+      }
+      throw error;
     }
-    throw error;
-  }
+  };
 };
 
 /**
@@ -275,9 +281,6 @@ export function releaseBehindNow({ stateDir = REVIEWER_STATE_DIR }: { stateDir?:
   }
 }
 
-const ghOptions = (repo: string | undefined): import("node:child_process").ExecFileSyncOptionsWithStringEncoding =>
-  ({ encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...(repo === undefined ? {} : { env: { ...process.env, GH_REPO: repo } }) });
-
 /** `defaultRun` with `gh`'s stderr CAPTURED on the error instead of inherited: for a read whose refusal is an answer the caller handles (#3724). */
 const capturedRun = memoised(metered(ghWithin(GH_READ_TIMEOUT_MS, { stdio: "pipe" })));
 
@@ -293,25 +296,6 @@ const BATCH_MAX_BUFFER = 256 * 1024 * 1024;
 
 /** How long past a call's own bound the batch's outer wait is held, so the worker reports a call it cut before `execFileSync` kills the worker itself. */
 export const BATCH_OUTER_GRACE_MS = 5_000;
-
-/**
- * The `node` one batch runs: each call through ASYNC `execFile` so they wait together, answers printed as one JSON list in the order asked. `GH_REPO`
- * aims a call exactly as `defaultRun` does, so the census (preloaded through `NODE_OPTIONS`) still counts each `gh` by repository.
- *
- * (#4148) THE FIRST LINE NAMES THE SCRIPT. `plugins/github/wrapper/gh` records the calling process's command line cut at 160 characters, and a `node -e <code>` has nothing in it that is
- * a file, so 852 of 7,053 ledger calls (12% of the 14:00Z-15:45Z window, measured 2026-10-08) read `/usr/bin/node` and belonged to no one. The comment is what the ledger's
- * script-name pattern finds.
- */
-const BATCH_WORKER = `/* work-gate.ts runBatch */
-const { execFile } = require("node:child_process");
-const one = ({ args, repo }) => new Promise((done) => execFile("gh", args,
-  { encoding: "utf8", maxBuffer: ${BATCH_MAX_BUFFER}, timeout: Number(process.argv[2]), killSignal: "SIGKILL",
-    env: repo === undefined ? process.env : { ...process.env, GH_REPO: repo } },
-  (error, stdout, stderr) => done(error === null ? { stdout }
-    : { failed: true, stdout, stderr, status: typeof error.code === "number" ? error.code : null,
-        code: error.killed ? "ETIMEDOUT" : typeof error.code === "string" ? error.code : undefined })));
-Promise.all(JSON.parse(process.argv[1]).map(one)).then((answers) => process.stdout.write(JSON.stringify(answers)));
-`;
 
 /**
  * (#3566, slice 2) `gh` CALLS ASKED TOGETHER WAIT TOGETHER. The gate is synchronous, so each of the eight repositories' reads waited for the one before it:
@@ -372,8 +356,7 @@ function runUnmetered(calls: { args: string[]; repo: string | undefined; }[], en
   const answers = [];
   for (let from = 0; from < calls.length; from += BATCH_MAX_CALLS) {
     const chunk = calls.slice(from, from + BATCH_MAX_CALLS);
-    answers.push(...JSON.parse(execFileSync(process.execPath, ["-e", BATCH_WORKER, JSON.stringify(chunk), String(callMs)],
-      { encoding: "utf8", maxBuffer: BATCH_MAX_BUFFER, env, timeout: callMs + BATCH_OUTER_GRACE_MS, killSignal: "SIGKILL" })));
+    answers.push(...rows().runTogether({ calls: chunk, env, callMs, graceMs: BATCH_OUTER_GRACE_MS, maxBuffer: BATCH_MAX_BUFFER }));
   }
   return answers;
 }
@@ -584,7 +567,7 @@ function prFields(): string {
 
 /** @returns `gh`'s arguments for the open list, newest `limit` first */
 function openPrsArgs(limit: number): string[] {
-  return ["pr", "list", "--state", "open", "--limit", String(limit), "--json", prFields()];
+  return rows().openPullListArgs(limit, prFields());
 }
 
 /**
@@ -940,7 +923,7 @@ export function withPagedFiles(prs: any[], { run, cachePath = stateEntryPath(PAG
 /** @returns `null` when the pages could not be read whole */
 function pageFilesOf(pr: any, { run, log }: { run: (args: string[]) => string; log: (line: string) => void; }): string[] | null {
   try {
-    const files = run(["api", "--paginate", `repos/{owner}/{repo}/pulls/${pr.number}/files?per_page=100`, "--jq", ".[].filename"]).split("\n").filter(Boolean);
+    const files = rows().pullFileNamesOf({ number: pr.number, run });
     if (files.length === pr.changedFiles) return files;
     log(`work-gate: #${pr.number} lists ${files.length} files when paged, not the ${pr.changedFiles} it reports -- left out of B4's comparison; the claim still refuses (#3365)\n`);
   } catch (error) {
@@ -1189,12 +1172,8 @@ export function readOpenRowsAsListed(run: (args: string[]) => string): any[] | n
     // `body` and `blockedBy` as well; asking once and filtering twice keeps the unconditional call
     // count where `GH_READS` says it is. #4048: `createdAt` RIDES IT TOO, so `stateLabelFindings` can tell a row being filed from one in no state. #4042: `subIssuesSummary` RIDES THIS READ so the epic causes
     // (`epicRowsOf`) are answered from rows already in hand on every tick, not by a second call.
-    const answer = run(["issue", "list", "--state", "open", "--limit", "500",
-      "--json", "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary,createdAt"]);
-    const parsed = JSON.parse(answer);
-    if (Array.isArray(parsed)) return parsed;
-    // agent-org#1624: an answer that parses but is not a list is a refusal too, and it was the one `null` here that said nothing (three silent ticks, 2026-10-15/16).
-    throw new Error(`the answer was not a list: ${JSON.stringify(String(answer).slice(0, 120))}`);
+    // agent-org#1624: an answer that parses but is not a list is a refusal too (the operation throws it), and it was the one `null` here that said nothing (three silent ticks, 2026-10-15/16).
+    return rows().openRowsOf({ limit: OPEN_ROWS_LIMIT, fields: "number,title,labels,body,blockedBy,milestone,updatedAt,subIssuesSummary,createdAt", run });
   } catch (cause) {
     // agent-org#1401: the refusal is said WITH gh's reason, so the journal names it; a silent `null` left the 19:35:53Z and 19:55:01Z ticks without one.
     process.stderr.write(`NOTE: the open rows could not be read (${said(cause)}); read as refused\n`);

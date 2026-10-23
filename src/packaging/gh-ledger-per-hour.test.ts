@@ -16,7 +16,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callerScript, parseLedger, parseRollup, perHour, renderPerHour, rollupPathOf, settle, spenderPhrase, topSpender } from "../gh-ledger.ts";
 import { tmpDir, tmpDirForFile } from "../lib/tmp-fixture.ts";
-import { workGateSource } from "../lib/work-gate-source.ts";
 
 // THE PROJECT THIS FILE RUNS AGAINST IS A RECORDED ONE (`org-health-auto-off-refusal.test.ts` says why): `org-health.ts` resolves the checkout it serves when it is imported, and with no
 // `$AGENT_ORG_HOST` that is wherever the suite happens to be run from, which refuses. The host file is set FIRST and the tool imported AFTER it, so the acceptance command as written runs.
@@ -210,15 +209,6 @@ test("#4148: topSpender names the script with the most points in the last hour, 
   assert.equal(top?.caller, "work-gate.ts", "a `node -e` batch worker is named for its script, not left as /usr/bin/node");
   assert.deepEqual([top?.points, top?.total], [5, 6]);
   assert.equal(topSpender(entries, { account: WORKERS, now: Date.parse("2026-10-09T15:30:00Z") }), null);
-});
-
-test("#4148: the gate's batch worker NAMES ITSELF to the ledger (the 852 calls that read /usr/bin/node)", () => {
-  const gate = workGateSource();
-  const worker = gate.match(/const BATCH_WORKER = `([\s\S]*?)`;/)?.[1];
-  assert.ok(worker, "POSITIVE CONTROL: the worker text was found");
-  const cmdline = `/usr/bin/node -e ${worker.replace(/\s+/g, " ")}`.slice(0, 160); // the ledger keeps 160 characters of the caller
-  assert.equal(callerScript(cmdline), "work-gate.ts");
-  assert.equal(callerScript("/usr/bin/node -e const { execFile } = require(\"node:child_process\"); const one"), "/usr/bin/node", "the control: without the name it IS the unnamed caller");
 });
 
 test("#4148: api-pool-low names its spender, and says UNREADABLE rather than nothing when the ledger cannot be read", () => {

@@ -59,6 +59,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { rows } from "../plugins/rows.ts";
 
 /** Where the fleet watch writes the capture ledger (#2979), under the project checkout: `packages/control/src/fleet-watch.mjs`'s `DEFAULT_CAPTURES_STATE_PATH`. */
 export const FLEET_CAPTURES_LEDGER = "runs/fleet-captures-state.json";
@@ -307,8 +308,7 @@ export function refFactOf(raw: any): import("../wait-condition.ts").RefFact | nu
 /** ONE REFERENCED ITEM'S STATE, or `null` when it could not be read: NEVER "closed" -- a refused read says nothing about the item. */
 export function readWaitRef(ref: { repo: string | null; number: number; }, run: (args: string[]) => string = defaultRun) {
   try {
-    return refFactOf(JSON.parse(run(["api", `repos/${ref.repo ?? repoNow()}/issues/${ref.number}`, "--jq",
-      "{state, closed_at, updated_at, merged_at: .pull_request.merged_at, labels: [.labels[].name]}"])));
+    return refFactOf(rows().waitRefOf({ repo: ref.repo ?? repoNow(), number: ref.number, run }));
   } catch {
     return null;
   }
@@ -446,7 +446,7 @@ export function rulingOrdersNow({ prsRead, openRowsRead, now }: { prsRead: any[]
     .filter(isItemWait).map((w) => ({ key: w.key, repo: w.repo, number: w.number }));
   const facts = readRefFacts({ refs, open: [...(prsRead ?? []), ...(openRowsRead ?? [])], run });
   const world = { rows: openRowsRead && openRowsRead.map((row) => waitItemOf(row, "row")), prs: prsRead && prsRead.map((pr) => waitItemOf(pr, "pr")), facts };
-  return rulingTick({ stateDir, world, now, log, comment: (issue, line) => { run(["issue", "comment", String(issue), "--body", line]); } });
+  return rulingTick({ stateDir, world, now, log, comment: (issue, line) => { rows().commentOnRow({ number: issue, body: line, run }); } });
 }
 
 /**
@@ -610,19 +610,19 @@ const MOVE_PAGE_SIZE = 100;
  * #4295: THE NEWEST-FIRST LIST OF `path`, PAGE BY PAGE, UNTIL IT REACHES BACK TO `since`. `jq` projects each item to `{ at, ... }` (epoch-able ISO `at`, the field the list is sorted on). Returns the items, or `null`
  * when a page was refused, unparseable, or the pages ran out before the list reached `since`: an item older than the window cannot matter, but one the pages never reached might, so that is UNKNOWN and not "nothing".
  */
-function newestSince(run: (args: string[]) => string, { path, jq, since }: { path: string; jq: string; since: number; }): any[] | null {
+function newestSince(readPage: (page: number) => unknown, { since }: { since: number; }): any[] | null {
   const items = [];
   for (let page = 1; page <= MOVE_PAGES; page++) {
-    let rows;
+    let pageRows;
     try {
-      rows = JSON.parse(run(["api", `${path}${path.includes("?") ? "&" : "?"}per_page=${MOVE_PAGE_SIZE}&page=${page}`, "--jq", jq]));
+      pageRows = readPage(page);
     } catch {
       return null;
     }
-    if (!Array.isArray(rows)) return null;
-    items.push(...rows);
-    const oldest = rows.length === 0 ? NaN : Date.parse(rows[rows.length - 1].at);
-    if (rows.length < MOVE_PAGE_SIZE || oldest <= since) return items;
+    if (!Array.isArray(pageRows)) return null;
+    items.push(...pageRows);
+    const oldest = pageRows.length === 0 ? NaN : Date.parse(pageRows[pageRows.length - 1].at);
+    if (pageRows.length < MOVE_PAGE_SIZE || oldest <= since) return items;
   }
   return null;
 }
@@ -635,15 +635,13 @@ function newestSince(run: (args: string[]) => string, { path, jq, since }: { pat
  * @param input `since` is the earliest instant that could still matter: `now` minus the clock's bound
  */
 export function readMilestoneMoves({ primary, openRows, since }: { primary: number; openRows: number[]; since: number; }, { run = defaultRun, tracker = repoNow(), repos = mergeRepositories() }: { run?: (args: string[]) => string; tracker?: string; repos?: string[]; } = {}): { at: number | null; } | null {
-  const events = newestSince(run, { since, path: `repos/${tracker}/issues/events`,
-    jq: "[.[] | {at: .created_at, event: .event, label: (.label.name // \"\"), milestone: (.issue.milestone.number // 0), pr: (.issue.pull_request != null)}]" });
+  const events = newestSince((page) => rows().issueEventsPage({ repo: tracker, page, pageSize: MOVE_PAGE_SIZE, run }), { since });
   if (events === null) return null;
   const moves = events.filter((e) => !e.pr && e.milestone === primary
     && (e.event === "closed" || (e.event === "unlabeled" && (e.label.startsWith(SESSION_PREFIX) || e.label === CLAIM_LABEL)))).map((e) => Date.parse(e.at));
   const owned = new Set(openRows);
   for (const repo of repos) {
-    const closed = newestSince(run, { since, path: `repos/${repo}/pulls?state=closed&sort=updated&direction=desc`,
-      jq: "[.[] | {at: .updated_at, closedAt: .closed_at, body: (.body // \"\")}]" });
+    const closed = newestSince((page) => rows().closedPullsPage({ repo, page, pageSize: MOVE_PAGE_SIZE, run }), { since });
     if (closed === null) return null;
     for (const c of closed) if (declaredClosedRows(c.body, { prRepo: repo, trackerRepo: tracker }).some((n) => owned.has(n))) moves.push(Date.parse(c.closedAt));
   }
@@ -716,15 +714,7 @@ export function boardRowsOf(openRowsRead: any[], claimedComments: any[] | null |
  * `null` is a row that could not be read, which is unknown and never "open with a question".
  */
 function readLabelFacts({ run, repo, number }: { run: (args: string[]) => string; repo: string; number: number; }): { state: string; lastComment: { body: string; createdAt: string; } | null; } | null {
-  try {
-    const { state, comments } = JSON.parse(run(["api", `repos/${repo}/issues/${number}`, "--jq", "{state: .state, comments: .comments}"]));
-    if (typeof state !== "string" || !Number.isInteger(comments)) return null;
-    if (comments === 0) return { state, lastComment: null };
-    const page = JSON.parse(run(["api", `repos/${repo}/issues/${number}/comments?per_page=1&page=${comments}`, "--jq", ".[0] | {body: .body, createdAt: .created_at}"]));
-    return typeof page?.body === "string" ? { state, lastComment: { body: page.body, createdAt: page.createdAt } } : null;
-  } catch {
-    return null;
-  }
+  return rows().rowStateAndNewestComment({ repo, number, run });
 }
 
 /** The times `answer:<session>` was added to the row, from the `labeled` events `readProseFacts` already read for every row holding a handoff. */
@@ -752,7 +742,7 @@ function readProseAndOrder({ repo, log }: { repo: string; log: (line: string) =>
       const refusal = facts === null ? "the row's state and newest comment could not be read" : answerLabelRefusal({ ...facts, session: route, labelledAt: labelledAtOf(prose, number, route) });
       if (refusal !== null) { log(`board-truth: ${ANSWER_PREFIX}${route} was not added to #${number}: ${refusal}`); continue; }
       try {
-        input.run(["api", `repos/${repo}/issues/${number}/labels`, "-f", `labels[]=${ANSWER_PREFIX}${route}`]);
+        rows().addLabelToRowByApi({ repo, number, label: `${ANSWER_PREFIX}${route}`, run: input.run });
       } catch (error) {
         log(`board-truth: ${ANSWER_PREFIX}${route} was not added to #${number} (${error instanceof Error ? error.message.split("\n")[0] : error})`);
       }

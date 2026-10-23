@@ -4,6 +4,7 @@ import { SESSION_PREFIX } from "../../project-vocabulary.ts";
 import { listingIsComplete, type ListedAgent } from "../../herdr-agents.ts";
 import { familyMember } from "../../arm-pr.ts";
 import { capturingStderr, defaultRun, repoNow } from "../reads/read-memo-and-exit.ts";
+import { rows } from "../../plugins/rows.ts";
 import { ROW_LABELS, aimOf, labelledRows, labelsOf, scopesOf } from "../vocabulary.ts";
 
 /**
@@ -27,65 +28,16 @@ import { ROW_LABELS, aimOf, labelledRows, labelsOf, scopesOf } from "../vocabula
 export function readClosedClaimedRows(numbers: number[], run: (args: string[], repo?: string) => string = defaultRun, tracker?: { key: string; repo: string; },
   log: (line: string) => void = (line) => process.stderr.write(line)): KeyedClosedClaimedRow[] | null {
   const repo = tracker?.repo ?? repoNow();
-  const read = capturingStderr(run);
-  const api = (path: string, flags: string[] = []) => json(read(["api", ...flags, `repos/${repo}/${path}`], tracker?.repo));
   const refused = (why: string): null => {
     log(`closed-claim: the read of ${repo} was refused: ${why}\n`);
     return null;
   };
   try {
-    const rows: KeyedClosedClaimedRow[] = [];
-    for (const number of numbers) {
-      const issue = absentIsNull(() => api(`issues/${number}`));
-      if (issue === null || issue.state !== "closed" || !issue.labels.some((l: { name: string; }) => l.name === CLAIM_LABEL)) continue;
-      rows.push({ number, labels: issue.labels, comments: commentsOf(api, number, issue.comments), closedByPullRequestsReferences: closingPullRequestsOf(api, number),
-        ...(tracker === undefined ? {} : { tracker }) });
-    }
-    return rows;
+    const found = rows().closedClaimedRowsOf({ repo, aim: tracker?.repo, numbers, claimLabel: CLAIM_LABEL, run: capturingStderr(run) });
+    return found.map((row) => (tracker === undefined ? row : { ...row, tracker }));
   } catch (error) {
     return refused(refusalOf(error));
   }
-}
-
-/** A REST answer as JSON. An answer that is not JSON is a refusal, named as one (#948). */
-function json(text: string): any {
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    throw new Error(`its answer was not JSON (${refusalOf(error)})`);
-  }
-}
-
-/** A row `gh` answers HTTP 404 for is an absent row, which is no claim (as GraphQL's `issue: null` was). Any other refusal is the whole read's. */
-function absentIsNull<T>(get: () => T): T | null {
-  try {
-    return get();
-  } catch (error) {
-    if (/HTTP 404/.test(String((error as { stderr?: unknown; } | undefined)?.stderr ?? ""))) return null;
-    throw error;
-  }
-}
-
-/** The last 100 comments, as `comments(last: 100)` gave them. REST pages oldest first, so the last two pages (from the issue's own count) hold them. */
-function commentsOf(api: (path: string, flags?: string[]) => any, number: number, count: number) {
-  const last = Math.max(1, Math.ceil(count / 100));
-  const comments: any[] = [];
-  for (let page = Math.max(1, last - 1); page <= last; page++) comments.push(...api(`issues/${number}/comments?per_page=100&page=${page}`));
-  return comments.slice(-100).map((c) => ({ body: c.body, createdAt: c.created_at, author: { login: c.user?.login } }));
-}
-
-/**
- * The pull requests the row's timeline cross-references, each with the branch its head is (the claim's own check reads `headRefName`), at most five as the GraphQL
- * `closedByPullRequestsReferences(first: 5)` was. A cross-reference names a pull request that mentions the row, which is the population a closing keyword makes too.
- */
-function closingPullRequestsOf(api: (path: string, flags?: string[]) => any, number: number) {
-  // `--paginate` alone prints one JSON array per page back to back, which is not JSON once the timeline has a second page; `--slurp` makes it one array of pages
-  const events: any[] = (api(`issues/${number}/timeline`, ["--paginate", "--slurp"]) as any[][]).flat();
-  const pulls = new Map<number, { number: number; title: string; }>();
-  for (const event of events) {
-    if (event.event === "cross-referenced" && event.source?.issue?.pull_request) pulls.set(event.source.issue.number, { number: event.source.issue.number, title: event.source.issue.title });
-  }
-  return [...pulls.values()].slice(0, 5).map((pr) => ({ number: pr.number, headRefName: api(`pulls/${pr.number}`).head.ref, title: pr.title }));
 }
 
 /** The first line of what refused a read (#948): `gh`'s captured stderr, else its exit status or signal, else the error's own message. */

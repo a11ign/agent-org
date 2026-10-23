@@ -4,6 +4,7 @@ import { START_CAUSES } from "../cause-declaration.ts";
 import { BLOCKED_LABEL, SESSION_PREFIX } from "../project-vocabulary.ts";
 import { DRAIN_MARKER, defaultRun } from "./reads/read-memo-and-exit.ts";
 import { labelsOf } from "./vocabulary.ts";
+import { rows } from "../plugins/rows.ts";
 
 /**
  * How many open rows COULD move, and what is stopping the rest -- derived from the rows THE TICK ALREADY
@@ -291,7 +292,7 @@ export function performActions(orders: any[], run: (args: string[]) => string = 
     if (!action) { delivered.push(order); continue; }
     try {
       // A pull request in another repository is ready-flipped THERE: `repo` rides on the action only when it is not the primary's.
-      run(["pr", "ready", String(action.pr), ...(action.repo === undefined ? [] : ["--repo", action.repo])]);
+      rows().markPullReady({ number: action.pr, repo: action.repo, run });
       performed += 1;
       log(`DID ${action.kind} pr-${action.pr} (${order.cause}) -- no session woken\n`);
     } catch (error: any) {

@@ -17,6 +17,7 @@ import { CLAIM_LABEL, READY_LABEL } from "../claim-labels.ts";
 import { REPO } from "../project-identity.ts";
 import { githubIo, ineligibility, mergedClosersOf, PARKED } from "../unpark-satisfied.ts";
 import { waitingOn } from "../waiting-condition.ts";
+import { rows } from "../plugins/rows.ts";
 
 /** The body line a filer writes. A heading prefix is tolerated, the value is exactly `yes` (any other word is not a declaration). */
 const DECLARATION = /^[ \t]*#{0,6}[ \t]*Ready-when-unblocked:[ \t]*yes[ \t]*$/im;
@@ -95,8 +96,7 @@ export function githubReadyIo(run: (args: string[]) => string): ReadyIo {
   const github = githubIo(run);
   return {
     read: (number) => {
-      const read = JSON.parse(run(["issue", "view", String(number), "--repo", REPO, "--json", "labels,state,body,blockedBy"]));
-      return { labels: (read.labels ?? []).map((l: any) => String(l.name)), state: String(read.state), body: String(read.body ?? ""), blockedBy: read.blockedBy ?? {} };
+      return rows().rowForPromotion({ repo: REPO, number, run });
     },
     mergedClosers: (number) => mergedClosersOf(number, run),
     promote: github.promote,

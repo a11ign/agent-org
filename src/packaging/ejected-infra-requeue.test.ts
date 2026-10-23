@@ -124,7 +124,7 @@ test("an install step that ends `npm error code ECONNRESET` is re-queued once by
   const { arming, gh, port, said } = tick();
   assert.equal(arming.ejections.size, 0, "it left the ejected set: nobody is told to fix what is not theirs");
   assert.deepEqual(arming.networkNotRequeued, [], "and the detector has nothing to say");
-  assert.deepEqual(armCalls(gh), [["pr", "merge", String(NUMBER), "--repo", HOME, "--auto", "--merge"]], "armed once, by the gate, the way the org merges");
+  assert.deepEqual(armCalls(gh), [["pr", "merge", "--auto", "--merge", String(NUMBER), "--repo", HOME]], "armed once, by the gate, the way the org merges");
   assert.deepEqual(port.comments.map((c) => c.kind), ["pr-ejected-requeued"]);
   assert.match(port.comments[0].text, /install step of `typecheck` failed on the network or the registry \(npm error code ECONNRESET\)/);
   assert.match(port.comments[0].text, /flag `queue\.reenqueueInfra`/);

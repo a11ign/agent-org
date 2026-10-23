@@ -245,6 +245,7 @@ const DECLARED_NON_VOCABULARY_HITS: Declaration[] = [
 const DECLARED_PLUGIN_HITS: Declaration[] = [
   ...nonVocabulary("adapter.ts", ['"backlog"', '"ready"', '"in-progress"', '"lane:'], "the port's state and flag names, as the keys of the adapter's mapping table (ADR 0046 decision 5); the labels they map to are read from the vocabulary"),
   ...nonVocabulary("outside-arm-calls.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, not the row `ready` label"),
+  ...nonVocabulary("gate-row-writes.ts", ['"ready"'], "GitHub's own `gh pr ready` CLI verb, which the gate runs to flip a reviewed draft, not the row `ready` label"),
 ];
 
 test("A11-160: the plugin's rows carry no vocabulary literal in code that no declaration covers, and the declared ones are really there", () => {

@@ -147,7 +147,7 @@ test("the #5124 shape: ejected by the pin guard, diff unrelated, is re-queued on
   assert.equal(arming.ejections.size, 0, "it left the ejected set: nobody is told to fix what is not theirs");
   assert.deepEqual(arming.stranded, []);
   assert.deepEqual(orders, [], "no order");
-  assert.deepEqual(armCalls(gh), [["pr", "merge", "5124", "--repo", HOME, "--auto", "--merge"]], "armed once, by the gate, with the merge method the org uses");
+  assert.deepEqual(armCalls(gh), [["pr", "merge", "--auto", "--merge", "5124", "--repo", HOME]], "armed once, by the gate, with the merge method the org uses");
   assert.equal(port.comments.length, 1, "and recorded on the pull request");
   assert.equal(port.comments[0].decision.kind, "pr-ejected-requeued");
   assert.match(port.comments[0].decision.text, /docs-release-pin-currency\.real-tree\.test\.ts, which the pull request does not change/);
@@ -174,7 +174,7 @@ test("the #5115 shape: ejected, its row CLOSED by a sibling pull request in the 
   const body = "Closes #5109\n\nAcceptance: see .acceptance/agent~pm-brief-tests-first-5109.md";
   for (const [what, labels] of [["no label at all", []], ["a `session:` label of a session that no longer exists", ["session:worker-5109"]]] as const) {
     const { arming, gh, port, orders } = tick({ number: 5115, body, labels: [...labels], changed: [".agent-org/roles/product-manager.md", ".acceptance/agent~pm-brief-tests-first-5109.md"] });
-    assert.deepEqual(armCalls(gh), [["pr", "merge", "5115", "--repo", HOME, "--auto", "--merge"]], `${what}: armed once, by the gate`);
+    assert.deepEqual(armCalls(gh), [["pr", "merge", "--auto", "--merge", "5115", "--repo", HOME]], `${what}: armed once, by the gate`);
     assert.equal(arming.ejections.size, 0, `${what}: it left the ejected set`);
     assert.deepEqual(orders, [], `${what}: no manager is woken`);
     assert.deepEqual(port.comments.map((c) => c.decision.kind), ["pr-ejected-requeued"], `${what}: and the record says so`);

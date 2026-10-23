@@ -3,8 +3,8 @@ import { waitingOn, fleetWaitingOn, todayIso, ANSWER_PREFIX } from "../../waitin
 import { subjectMention, subjectRef } from "../../review-attribution.ts";
 import { holdersOf } from "../../pr-hold-state.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL } from "../../project-vocabulary.ts";
-import { readUnlessRefused } from "../../ticket-port/rows-by-label.ts";
 import { defaultRun } from "../reads/read-memo-and-exit.ts";
+import { rows } from "../../plugins/rows.ts";
 import { HOUR_MS, MAX_ROW_ORDERS_PER_TICK, NOT_PICKABLE, PARKED_LABEL, PROMOTION_ASK_WINDOW_MS, declaredBlockers, labelsOf } from "../vocabulary.ts";
 
 /**
@@ -224,14 +224,11 @@ function oldestUpdatedWhenOrdered(listed: any[]): number | undefined {
 export function readRecentlyClosed(run: (args: string[]) => string = defaultRun): Closings | null {
   try {
     // #5050: `--search sort:updated-desc` was a SEARCH. The connection orders by the same field, newest update first, which `oldestUpdatedWhenOrdered` reads.
-    const query = "query($owner:String!,$name:String!,$first:Int!){repository(owner:$owner,name:$name){issues(states:CLOSED,first:$first,"
-      + "orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number closedAt updatedAt}}}}";
-    const args = ["api", "graphql", "-f", `query=${query}`, "-F", "owner={owner}", "-F", "name={repo}", "-F", `first=${RECENTLY_CLOSED_LIMIT}`];
-    const parsed = JSON.parse(readUnlessRefused({ what: `the ${RECENTLY_CLOSED_LIMIT} newest-updated CLOSED rows`, run, read: () => run(args) }))?.data?.repository?.issues?.nodes;
-    if (!Array.isArray(parsed)) return null;
+    const parsed = rows().recentlyClosedRowsOf({ limit: RECENTLY_CLOSED_LIMIT, run });
+    if (parsed === null) return null;
     const closings: Closings = new Map();
     for (const r of parsed) {
-      const at = Date.parse(r?.closedAt);
+      const at = Date.parse(String(r?.closedAt));
       if (Number.isFinite(at)) closings.set(Number(r.number), at);
     }
     const bound = oldestUpdatedWhenOrdered(parsed);

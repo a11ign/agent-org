@@ -11,6 +11,7 @@ import { BLOCKING_REVIEW_STATES, REVIEW_STATE, blockingChecks, checksSettledGree
 import { PROJECT_GIT } from "../reads.ts";
 import { capturingStderr, defaultRun, defaultSpawn, repoNow } from "../reads/read-memo-and-exit.ts";
 import { HOUR_MS, labelsOf, sessionOf } from "../vocabulary.ts";
+import { rows } from "../../plugins/rows.ts";
 
 /**
  * PURE. The commit the newest `CHANGES_REQUESTED` review was posted at, or `null` when the payload names none.
@@ -325,7 +326,7 @@ export function noteRefusedRead(error: any, { path, ofASha }: { path: string; of
  */
 export function readPatchId(head: string, base: string, run: (args: string[]) => string = defaultRun): string | null {
   try {
-    return patchIdOfDiff(capturingStderr(run)(["api", "-H", "Accept: application/vnd.github.diff", `repos/${repoNow()}/compare/${base}...${head}`]));
+    return patchIdOfDiff(rows().compareDiffOf({ repo: repoNow(), base, head, run: capturingStderr(run) }));
   } catch (error) {
     noteRefusedRead(error, { path: `repos/${repoNow()}/compare/${base}...<sha>`, ofASha: true });
     return null;
@@ -339,8 +340,7 @@ export function readPatchId(head: string, base: string, run: (args: string[]) =>
  */
 export function readCommitShas(number: number, run: (args: string[]) => string = defaultRun): string[] | null {
   try {
-    const out = capturingStderr(run)(["api", `repos/${repoNow()}/pulls/${number}/commits`, "--paginate", "--jq", ".[].sha"]);
-    const shas = out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+    const shas = rows().commitShasOf({ repo: repoNow(), number, run: capturingStderr(run) });
     return shas.length > 0 ? shas : null;
   } catch (error) {
     // A REFUSED READ LEAVES THE PULL REQUEST UNENRICHED: the gate then reads the current head alone. Never an empty list, which would claim "no commits".
@@ -393,21 +393,12 @@ export function withPatchIds(prs: any[], run: (args: string[]) => string = defau
 }
 
 /**
- * THE ONE READ OF A COMMIT'S CHECK RUNS, filtered by `jq`: `readFailingChecks` and `readCheckRunSummaries` both go through it, so this file
- * holds one such call (the gh-call ratchet counts call sites and admits no rise).
- */
-function checkRunsAt(commit: string, jq: string, run: (args: string[]) => string): string {
-  return capturingStderr(run)(["api", `repos/${repoNow()}/commits/${commit}/check-runs?per_page=100`, "--paginate", "--jq", jq]);
-}
-
-/**
  * a11ign#5528: the check runs at one commit as the REST API gives them, each with its `output.summary` (where a check says what clears it), or `null`
  * when the read was refused. The list is read per red pull request only (`withCheckMarkers`), so a green one pays nothing.
  */
 function readCheckRunSummaries(commit: string, run: (args: string[]) => string = defaultRun): { id: number; name: string; summary: unknown }[] | null {
   try {
-    const out = checkRunsAt(commit, ".check_runs[] | {id, name, summary: .output.summary}", run);
-    return out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+    return rows().checkRunSummariesAt({ repo: repoNow(), commit, run: capturingStderr(run) });
   } catch (error) {
     noteRefusedRead(error, { path: `repos/${repoNow()}/commits/<sha>/check-runs`, ofASha: true });
     return null;
@@ -437,8 +428,7 @@ export function withCheckMarkers(prs: any[], run: (args: string[]) => string = d
  */
 export function readFailingChecks(commit: string, run: (args: string[]) => string = defaultRun): string[] | null {
   try {
-    const out = checkRunsAt(commit, '.check_runs[] | select(.conclusion == "failure") | .name', run);
-    return [...new Set(out.split("\n").map((l) => l.trim()).filter((l) => l !== ""))];
+    return rows().failingCheckNamesAt({ repo: repoNow(), commit, run: capturingStderr(run) });
   } catch (error) {
     noteRefusedRead(error, { path: `repos/${repoNow()}/commits/<sha>/check-runs`, ofASha: true });
     return null;
@@ -498,9 +488,7 @@ export function awaitingEvidence(pr: any) {
  */
 export function readEvidenceLabelledAt(number: number, run: (args: string[]) => string = defaultRun): string | null {
   try {
-    const out = run(["api", `repos/${repoNow()}/issues/${number}/events`, "--paginate", "--jq",
-      `.[] | select(.event == "labeled" and .label.name == "${AWAITING_EVIDENCE_LABEL}") | .created_at`]);
-    const applied = out.split("\n").map((l) => l.trim()).filter((l) => l !== "");
+    const applied = rows().labeledEventTimesOf({ repo: repoNow(), number, label: AWAITING_EVIDENCE_LABEL, run });
     return applied.length > 0 ? applied[applied.length - 1] : null;
   } catch {
     return null;

@@ -3,7 +3,8 @@ import { waitingOn, todayIso, ANSWER_PREFIX, answersOwedBy, bareAnswerLabel, ans
 import { subjectMention, subjectRef } from "../../review-attribution.ts";
 import { NEEDS_CHAIRMAN_LABEL as CHAIRMAN_LABEL, BLOCKED_LABEL } from "../../project-vocabulary.ts";
 import { readUnlessRefused } from "../../ticket-port/rows-by-label.ts";
-import { type ConditionalReads, conditionalFor, defaultRun, ghCallName, isGhRun, keptClosedAnswers, readWithFirstWaveTogether, repoNow, runBatch } from "../reads/read-memo-and-exit.ts";
+import { rows as codeHostRows } from "../../plugins/rows.ts";
+import { type ConditionalReads, conditionalFor, defaultRun, isGhRun, keptClosedAnswers, readWithFirstWaveTogether, repoNow, runBatch } from "../reads/read-memo-and-exit.ts";
 import { herdrRun } from "../reads.ts";
 import { MAX_ROW_ORDERS_PER_TICK, REFUSAL_REASON_CHARS, REVIEWER_REGISTRY_FILE, REVIEWER_STATE_DIR, labelsOf, sessionOf } from "../vocabulary.ts";
 
@@ -28,16 +29,6 @@ function refusedClosedRows(verb: string, reason: string): null {
 }
 
 /**
- * How many CLOSED rows of one kind each answer label is read for, newest update first. It is the page `--limit 100` was for ALL the labels together, so a label can no longer be
- * crowded out by another's rows; the request's price is this times the labels it names times the labels each row carries (`ANSWER_ROW_LABELS`), and 100 answer labels at
- * 100 rows of 30 labels stay under GitHub's 500,000-node ceiling.
- */
-const CLOSED_ANSWER_ROWS_PER_LABEL = 100;
-
-/** The labels read from each such row: enough to find the answer label among a row's own, and fewer than `ROW_LABELS` so many answer labels fit one request. */
-const ANSWER_ROW_LABELS = "labels(first:30){nodes{name}}";
-
-/**
  * #5050: THE CLOSED ISSUES (or the closed and merged pull requests) CARRYING ANY OF THE ANSWER LABELS, as ONE aliased GraphQL read -- `repository { a0: issues(labels:["answer:x"],
  * states:CLOSED) ... }`, a connection, where `issue list --search 'label:"answer:x","answer:y"'` was a SEARCH. A search's `label:a,b` is OR and a connection's `labels:[a,b]` is AND,
  * hence one alias per label and a row carrying two of them read twice and kept once.
@@ -46,19 +37,7 @@ const ANSWER_ROW_LABELS = "labels(first:30){nodes{name}}";
  * is the caller's `catch`, which names the refused call
  */
 function closedRowsCarrying(names: string[], { kind, run }: { kind: "issues" | "pullRequests"; run: (args: string[]) => string; }): any[] | null {
-  const states = kind === "issues" ? "CLOSED" : "[CLOSED, MERGED]";
-  const extra = kind === "issues" ? "" : " isDraft";
-  const aliased = names.map((name, at) => `a${at}: ${kind}(labels: [${JSON.stringify(name)}], states: ${states}, first: ${CLOSED_ANSWER_ROWS_PER_LABEL}, `
-    + `orderBy: {field: UPDATED_AT, direction: DESC}) { nodes { number title state${extra} ${ANSWER_ROW_LABELS} } }`);
-  const args = ["api", "graphql", "-f", `query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){ ${aliased.join(" ")} }}`, "-F", "owner={owner}", "-F", "name={repo}"];
-  const parsed = JSON.parse(readUnlessRefused({ what: `CLOSED ${kind} labelled ${names.length} answer label(s)`, run, read: () => run(args) }));
-  const repository = parsed?.errors ? null : parsed?.data?.repository;
-  if (repository === null || typeof repository !== "object") return null;
-  const connections: any[] = Object.values(repository);
-  if (!connections.every((connection) => Array.isArray(connection?.nodes))) return null;
-  const seen = new Set<number>();
-  return connections.flatMap((connection) => connection.nodes).filter((row: any) => !seen.has(row.number) && seen.add(row.number))
-    .map((row: any) => ({ ...row, labels: row.labels.nodes }));
+  return codeHostRows().closedRowsCarryingLabels({ names, kind, run });
 }
 
 /**
@@ -98,17 +77,14 @@ export function readClosedAnswerRows(run: (args: string[]) => string = defaultRu
   conditional: ConditionalReads | null = isGhRun(run) ? conditionalFor(undefined) : null): any[] | null {
   closedRowsRefusal = null;
   let asking = "";
-  const ask = (args: string[]) => { asking = ghCallName(args); return run(args); };
   try {
     // `gh label list --json` prints ZERO BYTES, not `[]`, when nothing matches (#472): a repository with no `answer:`
     // label -- agent-org, since it became a declared tracker -- is "nobody owes anything", not a refusal. Only the
     // EMPTY stdout is read so; text that does not parse, a non-array and a thrown `gh` stay `null` below.
     // #5050: under the tick's refusal memory too -- a limit the by-label reads met is not answered by asking the label list.
-    const labelsText = readUnlessRefused({ what: "the answer: label names", run, read: () => ask(["label", "list", "--search", ANSWER_PREFIX, "--limit", "100", "--json", "name"]) });
-    if (labelsText.trim() === "") return [];
-    const labels = JSON.parse(labelsText);
-    if (!Array.isArray(labels)) return refusedClosedRows(asking, "answered something that is not a list");
-    const names = labels.map((l) => l?.name).filter((n) => typeof n === "string" && n.startsWith(ANSWER_PREFIX));
+    asking = "label list";
+    const names = readUnlessRefused({ what: "the answer: label names", run, read: () => codeHostRows().labelNamesWithPrefix({ prefix: ANSWER_PREFIX, run }) });
+    if (names === null) return refusedClosedRows(asking, "answered something that is not a list");
     if (names.length === 0) return [];
     // agent-org#1636: ONE ALIAS PER LABEL IS ONE GRAPHQL POINT PER LABEL PER KIND, and the label list never shrinks (34 in the home repository, 27 of them an ended session's:
     // measured 2026-10-17, 34 points for the issues read and 34 for the pull requests', every tick). An ended session's label is taken off every row it came back on
@@ -488,10 +464,7 @@ export function answerOrders(rows: any[]) {
  */
 export function readRowTimeline(number: number, run: (args: string[]) => string = defaultRun): { event: string; label?: { name: string; }; actor?: string; id?: number; created_at: string; }[] | null {
   try {
-    const out = run(["api", `repos/${repoNow()}/issues/${number}/timeline`, "--paginate", "--jq",
-      '.[] | select(.event == "labeled" or .event == "unlabeled" or .event == "commented") | '
-      + '{event: .event, label: {name: .label.name}, actor: .actor.login, id: .id, created_at: .created_at}']);
-    return out.split("\n").filter((l) => l.trim() !== "").map((l) => JSON.parse(l));
+    return codeHostRows().rowTimelineOf({ repo: repoNow(), number, run });
   } catch {
     return null;
   }

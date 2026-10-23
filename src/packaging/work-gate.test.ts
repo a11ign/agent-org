@@ -38,7 +38,7 @@ import { MAX_ROW_ORDERS_PER_TICK, comparablePrFiles, ownerOf, NOT_PICKABLE, NOT_
 import { readCommitShas, readPatchId, withPatchIds, readWorktreeStamps, reviewBlocked, reviewableHead, pipelineCodeownerReviewMissing } from "../work-gate/causes/pr-reviews.ts";
 import { decide as decideOnHost, anyBlockerClearingCandidate, rowsOffBoardOrSay, refusedReadCount, SHARED_OUTAGE_READS, sharedReadOutage, markOutageReads } from "../work-gate/tick/tick-decisions-and-flags.ts";
 import { checksSettledGreen, blockingChecks, anyChecksRed, conflictedPrs, conflictStateOf, reviewStateOf, REVIEW_STATE } from "../work-gate/pr-state.ts";
-import { readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, EXIT, draining, DRAIN_MARKER, GH_READS, GIT_READS } from "../work-gate/reads/read-memo-and-exit.ts";
+import { readPrs, OPEN_PRS_FIRST_PAGE, OPEN_PRS_LIMIT, OPEN_ROWS_LIMIT, EXIT, draining, DRAIN_MARKER, GH_READS, GIT_READS } from "../work-gate/reads/read-memo-and-exit.ts";
 import { readReadyRows, readPromotableRows, readClaimedRowComments, readOpenRows, readRowBranches } from "../work-gate/reads.ts";
 import { CAUSES, START_CAUSES, JUDGMENT_CAUSES } from "../cause-declaration.ts";
 import { stalledOrder, performActions, openRowState, waitingBreakdown } from "../work-gate/orders.ts";
@@ -1947,8 +1947,10 @@ test("main hands the switch the UN-COALESCED read, not the `?? []` one", () => {
   assert.match(source, /openRowsRead: readOpenRows\(read\),/,
     "the wave hands back readOpenRows' own answer, `null` for a refusal, never coalesced inside it");
   // AND THE READ ITSELF IS NOW ONE CALL, which is the other half of #1938's done-when.
-  assert.equal(source.match(/"issue", "list", "--state", "open", "--limit", "500"/g)?.length, 1,
+  // A11-160 (step 6): the argument list is the code host's (`openRowsOf`), so the one call is the one the gate makes of it, at the limit the fold knows (`OPEN_ROWS_LIMIT`, 500).
+  assert.equal(source.match(/rows\(\)\.openRowsOf\(\{ limit: OPEN_ROWS_LIMIT,/g)?.length, 1,
     "the gate asked for the same 500 open rows twice; the second was a strict subset of the first");
+  assert.equal(OPEN_ROWS_LIMIT, 500, "and the limit it asks at is the 500 the fold and the cost census name");
 });
 
 /**

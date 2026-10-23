@@ -21,6 +21,7 @@ import { readPullState, readReviewState } from "./reviews.ts";
 import { sweepRetargets } from "./stack-retarget.ts";
 import { armedReasonOf, armMergeOf, type ArmMergeSeams } from "./rows/arming.ts";
 import { createRows, type RowsRunners } from "./rows/index.ts";
+import { gateRunner, runGhTogether } from "./rows/gate-runner.ts";
 import { createWrapper } from "./wrapper.ts";
 
 /** The verdict door and the program that installs it, shipped beside this file. */
@@ -41,12 +42,17 @@ function pullOf(ref: ChangeRef): { repo: string; number: string } {
 }
 
 /**
- * The runners row mode's operations use when their caller hands none. Both let `gh`'s stderr through to this process's own, as `execFileSync` did for the callers that moved; the queue's takes the git
+ * The runners row mode's operations use when their caller hands none, and the work gate's executor's process. The first two let `gh`'s stderr through to this process's own, as `execFileSync` did for the callers that moved; the queue's takes the git
  * variables a hook sets off the environment of each call (the dispatcher is started from a worktree), the ones that are set when the call is made.
  */
 function rowsRunners(deps: PluginDeps): RowsRunners {
   const echo = deps.log;
-  return { own: ghRunner(deps, {}, { echo }), queue: ghRunner(deps, {}, { echo, withoutEnv: () => Object.keys(deps.env).filter((name) => name.startsWith("GIT_")) }) };
+  return {
+    own: ghRunner(deps, {}, { echo }),
+    queue: ghRunner(deps, {}, { echo, withoutEnv: () => Object.keys(deps.env).filter((name) => name.startsWith("GIT_")) }),
+    gate: (options) => gateRunner(deps, options),
+    together: (request) => runGhTogether(deps, request),
+  };
 }
 
 /** The GitHub code host, reading and moving pull requests through the plugin's `gh`. `settle` is how `armMerge` waits for a pull request that may have settled (a test gives none to wait for). */

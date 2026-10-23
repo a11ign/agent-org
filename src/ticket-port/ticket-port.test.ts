@@ -122,7 +122,7 @@ function delegatedOperations(): Set<string> {
   const sourceRoot = join(HERE, "..");
   for (const file of readdirSync(sourceRoot, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.includes("node_modules") && !f.startsWith("packaging/"))) {
     const source = readFileSync(join(sourceRoot, file), "utf8");
-    for (const match of source.matchAll(/\bdelegates?\(([^)]*)\)|\brows\(\)\.(\w+)/g)) {
+    for (const match of source.matchAll(/\bdelegates?\(([^)]*)\)|\b(?:rows|codeHostRows)\(\)\.(\w+)/g)) {
       if (match[2] !== undefined) found.add(match[2]);
       else for (const name of match[1]!.matchAll(/"(\w+)"/g)) found.add(name[1]!);
     }

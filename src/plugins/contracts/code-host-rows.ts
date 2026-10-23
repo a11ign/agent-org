@@ -1,5 +1,5 @@
 // @ts-check
-// module: the code host contract's optional `rows` group, version 1.8 -- row mode's GitHub operations (A11-160, steps 4 and 5)
+// module: the code host contract's optional `rows` group, version 1.9 -- row mode's GitHub operations (A11-160, steps 4 to 6)
 //
 // A TYPE FILE: it imports nothing at run time. ROW MODE USES GITHUB AS ITS TRACKER (rows are issues, `TicketPort` is implemented over them), its queue (project items and labels) and its code host, and a plugin
 // serves one concern, so row mode's operations are an OPTIONAL member group of the code host contract rather than a second plugin (`docs/adr/0002-row-mode-github-is-an-optional-part-of-the-code-host-contract.md`).
@@ -12,6 +12,9 @@
 //
 // 1.8 (step 5): the callers that arm, guard and queue a merge moved (`arm-pr`, `auto-arm-sweep`, `merge-guard`, `merge-queue`, `pr-armed-state`), and what they asked of GitHub is a named operation now. `run` is OPTIONAL on
 // them and on the arming operations of 1.7 they use: a caller that has not moved hands its own, and one that has hands none, so the code host runs `gh` itself (`ownRun` is the plugin's, for the callers still to move).
+//
+// 1.9 (step 6): the work gate moved (`src/work-gate/`), and what it asked of GitHub is a named operation now, on the `run` the gate hands each: the gate's EXECUTOR (the tick's memo, its budget, the bound on a call, the
+// repository a call is aimed at) stays core's, and the process it starts is the plugin's (`gateRun`, `runTogether`).
 import type { Pool as PoolReading } from "../../api-pool.ts";
 import type { ApiBudget, BlockerWriter, OpenItemsReader, PortEvent, TicketPort } from "../../ticket-port/port.ts";
 
@@ -222,6 +225,29 @@ export type QueuePull = {
 
 /** The seams of the arm: the sleep between reads of a pull request that may have settled, how many reads, how far apart, and where a read that failed is said. */
 export type ArmMergeSeams = { sleep?: (ms: number) => unknown; attempts?: number; intervalMs?: number; error?: (line: string) => void };
+
+// --- the work gate (A11-160, step 6) ---------------------------------------------------------------------------------------------------
+
+/** The gate's executor: one `gh` command line in, stdout out, throwing as the command fails, and aimed at `repo` (`GH_REPO`) when it names one. */
+export type AimedRun = (args: string[], repo?: string) => string;
+
+/** What the gate's `gh` is made with: the bound on a call, and whether its stderr is CAPTURED on the error (a read whose refusal is an answer the caller handles) and not let through to the process's own. */
+export type GateRunOptions = { timeoutMs: number; capture: boolean };
+
+/** One call of a batch: its arguments and the repository it is aimed at (`undefined` is the executor's own). */
+export type BatchCall = { args: string[]; repo: string | undefined };
+
+/** One call's answer in a batch: its output, or the refusal as `execFileSync` would have thrown it (`code: "ETIMEDOUT"` for a call cut at its bound). */
+export type BatchAnswer = { stdout: string } | { failed: true; stdout: string; stderr: string; status: number | null; code?: string };
+
+/** What the gate reads to know which checks can block a merge on `main`: the contexts, or `null` and the report of why no source gave any. */
+export type RequiredContexts = { contexts: string[]; diagnosis?: undefined } | { contexts: null; diagnosis: string };
+
+/** A closed row that still carries the claim, with the comments the claim record is read from and the pull requests that cross-reference it. */
+export type ClosedClaimedRead = { number: number; labels: { name: string }[]; comments: { body: string; createdAt: string; author: { login: string | undefined } }[]; closedByPullRequestsReferences: { number: number; headRefName: string; title: string }[] };
+
+/** A closed row or pull request that carries an answer label, in the shape `gh` gave (`labels` an array). */
+export type ClosedLabelledRow = { number: number; title: string; state: string; isDraft?: boolean; labels: { name: string }[] };
 
 // --- the group ----------------------------------------------------------------------------------------------------------------------
 
@@ -441,4 +467,86 @@ export interface CodeHostRows {
   mergeQueuedPull(request: At<{ number: number }>): string;
   compareWithMain(request: At<{ repo: string; branch: string }>): { ahead_by?: number; commits?: { sha: string; commit?: { message?: string } }[] };
   deleteBranchOf(request: At<{ repo: string; branch: string }>): void;
+  // --- the work gate (contract 1.9, A11-160 step 6). Every one takes the `run` the gate hands it, builds the argument list the gate built, and THROWS when the read is refused unless it says `null`. ---
+
+  /**
+   * THE GATE'S EXECUTOR'S PROCESS: `gh`, run to completion or cut at the bound (a call that hits it throws with `code: "ETIMEDOUT"`), aimed at the repository the call names. The gate wraps it in its memo and its budget; the
+   * plugin starts the process. A fake has no `gh`, and its `gateRun` throws.
+   */
+  gateRun(options: GateRunOptions): AimedRun;
+  /** Several calls started at once, so they wait together: one answer per call, in order. THROWS when the batch did not finish (the caller then runs its calls one by one). A fake has no `gh`, and its `runTogether` throws. */
+  runTogether(request: { calls: BatchCall[]; env: NodeJS.ProcessEnv; callMs: number; graceMs: number; maxBuffer: number }): BatchAnswer[];
+
+  /** The `unlabeled` events of a row: which label, and when. */
+  unlabeledEventsOf(request: { repo: string; number: number; run: RowsRun }): { name: string; at: string }[];
+  /** When `label` was applied to a row (ISO times, oldest first); `repo` absent is the repository the call is aimed at. */
+  labeledEventTimesOf(request: { repo?: string; number: number; label: string; run: RowsRun }): string[];
+  /** The login that applied `label` LAST, or `null` when no event shows one. */
+  newestLabellerOf(request: { number: number; label: string; run: RowsRun }): string | null;
+  /** A row's comments as the chairman's check reads them: author, time, and the first 200 characters. */
+  commentActivityOf(request: { number: number; run: RowsRun }): { author: string; at: string; body: string }[];
+  /** A row's `labeled`, `unlabeled` and `commented` events, projected to what the answer checks read. */
+  rowTimelineOf(request: { repo: string; number: number; run: RowsRun }): { event: string; label?: { name: string }; actor?: string; id?: number; created_at: string }[];
+  /** An item a wait names, as GitHub states it for the fields a wait reads. */
+  waitRefOf(request: { repo: string; number: number; run: RowsRun }): { state?: string; closed_at?: string | null; updated_at?: string | null; merged_at?: string | null; labels?: string[] };
+  /** The incident item `ref` (`#889` or `owner/repo#889`) names. */
+  incidentItemOf(request: { ref: string; run: RowsRun }): { open: boolean; labels: string[]; body: string };
+  rowBodyOf(request: { number: number; run: RowsRun }): string;
+  /** A row's state and its NEWEST comment, or `null` when the row could not be read whole. Never throws. */
+  rowStateAndNewestComment(request: { repo: string; number: number; run: RowsRun }): { state: string; lastComment: { body: string; createdAt: string } | null } | null;
+  /** The facts a `Ready-when-unblocked` promotion decides on. */
+  rowForPromotion(request: { repo: string; number: number; run: RowsRun }): { labels: string[]; state: string; body: string; blockedBy: { nodes?: { number?: number; state?: string }[] } };
+  /** One page of the tracker's issue events, newest first, as the milestone clock reads them (GitHub's parse: the gate refuses what is not a list). */
+  issueEventsPage(request: { repo: string; page: number; pageSize: number; run: RowsRun }): unknown;
+  /** One page of `repo`'s closed pull requests, most recently updated first, as the milestone clock reads them. */
+  closedPullsPage(request: { repo: string; page: number; pageSize: number; run: RowsRun }): unknown;
+  /** Whether a tag exists on `repo`, or `null` when the read failed. Never throws. */
+  tagExistsOn(request: { repo: string; tag: string; run: RowsRun }): boolean | null;
+  /** The last `last` comments of each named row in ONE call, or `null` when the call was refused or its answer is not whole. Never throws. */
+  newestCommentsOf(request: { repo: string; numbers: number[]; last: number; run: RowsRun }): Map<number, any[]> | null;
+  /** The `limit` most recently updated closed rows, under the tick's refusal memory, or `null` when the answer carries none. */
+  recentlyClosedRowsOf(request: { limit: number; run: AimedRun }): { number: number; closedAt: string | null; updatedAt: string | null }[] | null;
+
+  /** Comments on row `number`. */
+  commentOnRow(request: { number: number | string; body: string; aim?: string; run: AimedRun }): void;
+  /** The bodies of the comments already on row `number`. */
+  commentBodiesOfRow(request: { number: number | string; run: RowsRun }): string[];
+  addLabelToRow(request: { number: number | string; label: string; run: RowsRun }): void;
+  removeLabelFromRow(request: { number: number | string; label: string; run: RowsRun }): void;
+  setRowBody(request: { number: number | string; body: string; run: RowsRun }): void;
+  ensureLabel(request: { name: string; description: string; run: RowsRun }): void;
+  /** Files a row with one label and answers what `gh` printed (the new row's URL). */
+  fileLabelledRow(request: { title: string; label: string; body: string; run: RowsRun }): string;
+  /** Adds a label through the labels endpoint, which creates a label that does not exist yet. */
+  addLabelToRowByApi(request: { repo: string; number: number; label: string; run: RowsRun }): void;
+  markPullReady(request: { number: number | string; repo?: string; run: RowsRun }): void;
+  addRowToProject(request: { owner: string; projectNumber: number; url: string; run: RowsRun }): void;
+  setProjectStatus(request: { owner: string; projectNumber: number; url: string; status: string; run: RowsRun }): void;
+
+  /** Which checks can block a merge on `main`: the rulesets first, branch protection when they give nothing. Never throws. */
+  readRequiredContexts(request: { run: RowsRun; repo?: string }): RequiredContexts;
+  /** `main`'s tip commit and committer date as GitHub states them, or `null` for an answer that is not JSON. */
+  mainTipOf(request: { run: RowsRun }): { sha?: unknown; date?: unknown } | null;
+  /** Every pull request opened from `branch` in any state, or `null` when the answer is not a list. */
+  pullsOfBranch(request: { branch: string; limit: number; run: RowsRun }): { number: number; state: string }[] | null;
+  /** The newest 100 merged pull requests, or `null` when the answer is not a list. */
+  newestMergedPulls(request: { run: RowsRun }): { number: number; headRefName: string; mergedAt: string; title: string; labels: { name: string }[] }[] | null;
+  /** The arguments that list the open pull requests with the JSON fields named: the gate runs them through its own executor. */
+  openPullListArgs(limit: number, fields: string): string[];
+  pullFileNamesOf(request: { number: number; run: RowsRun }): string[];
+  commitShasOf(request: { repo: string; number: number; run: RowsRun }): string[];
+  compareDiffOf(request: { repo: string; base: string; head: string; run: RowsRun }): string;
+  failingCheckNamesAt(request: { repo: string; commit: string; run: RowsRun }): string[];
+  checkRunSummariesAt(request: { repo: string; commit: string; run: RowsRun }): { id: number; name: string; summary: unknown }[];
+  mergeGroupRunsOf(request: { repo: string; withConclusion: boolean; run: RowsRun }): { id: number; head_branch: string; conclusion?: string | null; created_at: string }[];
+  jobsOfMergeGroupRun(request: { repo: string; runId: number; run: RowsRun }): { conclusion: string | null; runner_name: string; steps: number }[];
+  actionsJobOf(request: { repo: string; jobId: string; run: RowsRun }): { conclusion: string | null; runner_name: string; steps: number };
+  /** The open rows, newest `limit`, with the JSON fields named. THROWS when the answer parses but is not a list. */
+  openRowsOf(request: { limit: number; fields: string; run: RowsRun }): any[];
+  /** The repository's labels that start with `prefix`, or `null` when the answer is not a list. */
+  labelNamesWithPrefix(request: { prefix: string; run: RowsRun }): string[] | null;
+  /** The rows among `numbers` that are closed and still carry the claim, with their comments and the pull requests that cross-reference them. */
+  closedClaimedRowsOf(request: { repo: string; aim?: string; numbers: number[]; claimLabel: string; run: AimedRun }): ClosedClaimedRead[];
+  /** The closed rows or pull requests carrying any of the named labels, in ONE aliased read under the tick's refusal memory, or `null` when the answer is not whole. */
+  closedRowsCarryingLabels(request: { names: string[]; kind: "issues" | "pullRequests"; run: RowsRun }): ClosedLabelledRow[] | null;
 }
