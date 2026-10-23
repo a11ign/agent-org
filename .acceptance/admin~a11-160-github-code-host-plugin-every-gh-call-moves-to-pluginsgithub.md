@@ -14,7 +14,13 @@ AGENT_ORG_HOST="$scratch/host.json" node src/bin.ts doctor 2>&1 | grep -qF 'code
 mkdir "$scratch/bin"
 printf '%s\n' '#!/bin/sh' 'echo "stub gh: $*" >&2' 'exit 1' > "$scratch/bin/gh"
 chmod +x "$scratch/bin/gh"
-AGENT_ORG_HOST="$scratch/host.json" PATH="$scratch/bin:$PATH" node src/arm-pr.ts --pr=1 --repo=a11ign/agent-org 2>&1 | grep -q "arm-pr: could not read #1's labels"
+mkdir "$scratch/project"
+cp -r src/packaging/fixtures/project-tree/. "$scratch/project"
+sed -i "s|@@PROJECT@@|$scratch/project|" "$scratch/project/.agent-org/host.json"
+git -C "$scratch/project" init -q
+git -C "$scratch/project" add -A
+git -C "$scratch/project" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m "the fixture project"
+AGENT_ORG_HOST="$scratch/project/.agent-org/host.json" PATH="$scratch/bin:$PATH" node src/arm-pr.ts --pr=1 --repo=a11ign/agent-org 2>&1 | grep -q "arm-pr: could not read #1's labels"
 rm -rf "${scratch:?}"
 ```
 
