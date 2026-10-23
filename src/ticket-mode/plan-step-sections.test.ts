@@ -61,3 +61,9 @@ test("A11-175: step headings win over rows, a heading outside levels 2 to 4 is n
 test("A11-175: a plan the board numbers some other way has no step sections", () => {
   assert.deepEqual(stepSectionsOf("## Plan\n\n1. First\n2. Second\n\n## Paths\n\n- `a:b`\n"), []);
 });
+
+test("A11-175: a table under a heading that only mentions steps is not the plan's steps, as the step count reads them", () => {
+  const next = "## Next steps\n\n| Step | What |\n| - | - |\n| 1. Tell the team | later |\n";
+  assert.deepEqual(stepSectionsOf(next), []);
+  assert.deepEqual(stepSectionsOf(next.replace("## Next steps", "## Steps")).map(({ step }) => step), [1]);
+});

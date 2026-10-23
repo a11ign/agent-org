@@ -70,8 +70,8 @@ export type ExecOptions = Readonly<{ inherit?: boolean; timeoutMs?: number; env?
 export type ReviewJudge = Readonly<{
   fields: string;
   trustOf(pr: Readonly<Record<string, any>>): ReviewTrust;
-  settledOf(pr: Readonly<Record<string, any>>, required: readonly string[] | null): boolean;
-  unrequiredRedOf(pr: Readonly<Record<string, any>>, required: readonly string[] | null): readonly string[];
+  settledOf(pr: Readonly<Record<string, any>>, required?: readonly string[] | null): boolean;
+  unrequiredRedOf(pr: Readonly<Record<string, any>>, required?: readonly string[] | null): readonly string[];
 }>;
 
 /**

@@ -1495,6 +1495,15 @@ test("A11-175: a step with no paths of its own holds only its open pull request'
   assert.equal(overlapWait(mergedWaiting, [merged, mergedWaiting]), null);
 });
 
+test("A11-175: a review round on a step's open pull request holds that pull request's files, queued or running, and not the whole plan: the incident's A11-173 and A11-174 stay free while the round answers the reviewer", () => {
+  const round = stepThree({ phase: "queued", review: [pulled(STEP_PULL)] });
+  const running = stepThree({ phase: "running", review: [pulled(STEP_PULL)] });
+  const files = ["agent-org:plugins/github/reviews.ts", "agent-org:src/ticket-mode/reviewer-port.ts"];
+  assert.deepEqual([footprintOf(round), footprintOf(running)], [files, files]);
+  const waiting = waitingOn(["agent-org:src/ticket-mode/pool-settle.ts"], { ticket: { key: "A11-173" } });
+  assert.equal(overlapWait(waiting, [running, waiting]), null);
+});
+
 test("A11-175: a running step with no paths and no pull request holds the whole plan, and so does a worker that is still going with a pull request open", () => {
   const running = holderOf("A11-160", { phase: "running", paths: PLAN_PATHS, steps: [{ step: 1, of: 9, prs: [] }, { step: 2, of: 9, prs: [] }] });
   assert.deepEqual(footprintOf(running), PLAN_PATHS, "step 3 is running and its files are unknown (A11-125)");

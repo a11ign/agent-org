@@ -6,8 +6,8 @@
 //
 // - A STEP HEADING, `## Step 3`, `### Step 3 of 9: Reviews, checks and the verdict door`, or `#### Step 3`: a heading of level 2 to 4 whose text begins `Step <N>`. The section runs to the next heading of
 //   the same or a higher level, and its paths are the `` - `<repo>:<path>` `` bullets inside it, read as `## Paths` reads them. This is the shape planners are told to write (`worker-files.ts`).
-// - A STEP ROW: in a plan with no step heading, a row of a table under a heading that contains "steps" (`### The steps`) whose first cell begins `<N>.` or `Step <N>`. The row, with the table's header,
-//   is the step's text. A row declares no paths: the plan's own `## Paths` is the only list a plan with rows has.
+// - A STEP ROW: in a plan with no step heading, a row of a table under a heading named `Steps` or `The steps`, as `plan-step-count.ts` reads them,
+//   whose first cell begins `<N>.` or `Step <N>`. The row, with the table's header, is the step's text. A row declares no paths: the plan's own `## Paths` is the only list a plan with rows has.
 //
 // A line inside a code fence is nothing: a fenced `# Step 2` is an example, not a heading.
 import { bulletPaths } from "./overlap.ts";
@@ -17,7 +17,7 @@ export type StepSection = Readonly<{ step: number; text: string; paths: readonly
 
 const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
 const STEP_HEADING = /^step\s+(\d{1,2})\b/i;
-const STEPS_SECTION = /\bsteps\b/i;
+const STEPS_SECTION = /^(?:the\s+)?steps\b/i;
 const FENCE = /^\s*(```|~~~)/;
 const ROW_STEP = /^\**\s*(?:step\s+(\d{1,2})\b|(\d{1,2})\.(?=\s|\*|$))/i;
 const SHALLOWEST_STEP_HEADING = 2;
@@ -80,7 +80,7 @@ function rowStepOf(row: string): number | null {
   return found === null ? null : Number(found[1] ?? found[2]);
 }
 
-/** The step sections written as rows of a table under a heading that contains "steps": the table's header, its rule line and the row make the step's text. */
+/** The step sections written as rows of a table under a heading named `Steps` or `The steps`: the table's header, its rule line and the row make the step's text. */
 function rowSections(markdown: string): StepSection[] {
   const sections = new Map<number, StepSection>();
   let under = false;

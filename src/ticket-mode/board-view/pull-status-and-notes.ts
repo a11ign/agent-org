@@ -168,15 +168,16 @@ export function pathsOverlap(a: string, b: string): boolean {
 }
 
 /**
- * The plan paths a run holds (A11-175). A run on a step of a multi-step plan holds that step's paths when the plan's section for it lists any. When it lists none, a run whose worker has ended and that has
- * a pull request open holds that pull request's files alone (`footprintOf` adds them), since the files it changes are the pull request's; any other run holds the whole plan's, because the files it will
- * change are not known (A11-125). A run that is no step of a plan holds the whole plan's. PURE.
+ * The plan paths a run holds (A11-175). A run on a step of a multi-step plan holds that step's paths when the plan's section for it lists any. When it lists none, a run that has a pull request open holds that
+ * pull request's files alone (`footprintOf` adds them), since the files it changes are the pull request's, when its worker has ended or it is a round on that pull request (`review` is set). Any other run holds
+ * the whole plan's, because the files it will change are not known (A11-125): a first run still working, or one with no pull request open. A run that is no step of a plan holds the whole plan's. PURE.
  */
 function heldPlanPaths(entry: ViewEntry): readonly string[] {
   const ofStep = currentStepPaths(entry);
   if (ofStep !== null) return ofStep;
   const workerEnded = entry.phase !== "starting" && entry.phase !== "running";
-  const onlyPulls = currentStepOf(entry) !== null && workerEnded && openPulls(entry).length > 0;
+  const isRoundOnItsPulls = entry.review !== undefined;
+  const onlyPulls = currentStepOf(entry) !== null && (workerEnded || isRoundOnItsPulls) && openPulls(entry).length > 0;
   return onlyPulls ? [] : (entry.paths ?? []);
 }
 

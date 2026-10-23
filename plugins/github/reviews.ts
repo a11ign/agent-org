@@ -25,7 +25,7 @@ function fieldsOf(repo: string, number: number, fields: string, gh: Gh): Record<
  * stacked pull request is judged by its own base (A11-175). `pull-feedback.ts` reads the same field for the board's failing checks.
  */
 const REQUIRED_QUERY = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) {
-  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes {
     __typename
     ... on CheckRun { name isRequired(pullRequestNumber: $number) }
     ... on StatusContext { context isRequired(pullRequestNumber: $number) }
@@ -34,14 +34,16 @@ const REQUIRED_QUERY = `query($owner: String!, $repo: String!, $number: Int!) { 
 
 /**
  * The names of the checks the pull request's base requires, or null when GitHub did not say: a refused `gh`, or an answer that does not hold the head commit's checks. Null is never "nothing is
- * required", which is an empty list: the caller counts every check for both. Required checks that have not reported are not in the answer, so they are not named.
+ * required", which is an empty list: the caller counts every check for both. Required checks that have not reported are not in the answer, so they are not named. A head with more checks than one page holds
+ * is not read in full, so a required check could be missing from the list and counted as not required: that is null too.
  */
 function readRequiredChecks(pull: { repository: string; number: number }, gh: Gh): string[] | null {
   const [owner, repo] = pull.repository.split("/");
   try {
     const answer = JSON.parse(gh(["api", "graphql", "-f", `query=${REQUIRED_QUERY}`, "-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `number=${pull.number}`]));
-    const contexts = answer?.data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes;
-    if (!Array.isArray(contexts)) return null;
+    const page = answer?.data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts;
+    const contexts = page?.nodes;
+    if (!Array.isArray(contexts) || page.pageInfo?.hasNextPage === true) return null;
     const required = contexts.filter((check: { isRequired?: boolean } | null) => check?.isRequired === true).map((check: { name?: string; context?: string }) => String(check.name ?? check.context ?? ""));
     return [...new Set(required.filter((name) => name !== ""))];
   } catch {
@@ -72,8 +74,8 @@ export function readReviewState(url: string, gh: Gh, policy: CodeHostPolicy): Re
       author: String(r.author?.login ?? ""), state: String(r.state ?? ""), commit: String(r.commit?.oid ?? ""),
       at: Date.parse(String(r.submittedAt ?? "")) || 0,
     }));
-    const allGreen = judge.settledOf(pr, null);
-    const required = allGreen ? null : readRequiredChecks(pull, gh);
+    const allGreen = judge.settledOf(pr);
+    const required = allGreen ? undefined : readRequiredChecks(pull, gh);
     const settled = allGreen || judge.settledOf(pr, required);
     const unrequiredRed = judge.unrequiredRedOf(pr, required);
     return { head: pr.headRefOid, trust: judge.trustOf(pr), reviews, settled, ...(unrequiredRed.length === 0 ? {} : { unrequiredRed }), view: { ...pr, number: pull.number } };

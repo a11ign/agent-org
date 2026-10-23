@@ -60,8 +60,10 @@ test("A11-175: partialStepOf reads the step from the body's Partial: line, in an
   const body = (line: string) => `Refs A11-160\n\n## What changed\n\n- the reviewer's calls move\n\n${line}\n\nOutside-Region: README.md — docs\n`;
   assert.deepEqual(partialStepOf(body("Partial: step 3 of 9: reviews, checks and the verdict door. Steps 4 to 9 remain.")), { step: 3, of: 9 });
   assert.deepEqual(partialStepOf(body("**Partial:** step 3 of 9 - the rest")), { step: 3, of: 9 });
-  assert.deepEqual(partialStepOf(body("- partial: Step 2 Of 5")), { step: 2, of: 5 });
-  assert.deepEqual(partialStepOf(body("> Partial: step 1 of 2")), { step: 1, of: 2 });
+  assert.deepEqual(partialStepOf(body("- Partial: Step 2 Of 5")), { step: 2, of: 5 });
+  assert.deepEqual(partialStepOf(body("__Partial:__ step 1 of 2")), { step: 1, of: 2 });
+  assert.equal(partialStepOf(body("> Partial: step 1 of 2")), null, "the line pr:open reads: a quoted one is a quotation, not a declaration");
+  assert.equal(partialStepOf(body("partial: step 1 of 2")), null, "and it is spelled Partial:");
   assert.deepEqual(partialStepOf("Partial: step 3 of 9\r\nCloses nothing"), { step: 3, of: 9 }, "a line ends at a line break of either kind");
   assert.equal(partialStepOf(body("Partial: the settings page")), null, "a Partial: line that names no step names none");
   assert.equal(partialStepOf(body("Partial: step 12 of 9")), null, "nor an impossible one");

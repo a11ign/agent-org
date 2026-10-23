@@ -30,13 +30,16 @@ export function stepNamed(partial: string): PlanStep | null {
   return step >= 1 && step <= of ? { step, of } : null;
 }
 
+/** A body's `Partial:` line, as `pr:open` reads it (`pr-open-ticket.ts`): optionally a list bullet and bold, and the words after it. */
+const PARTIAL_LINE = /^\s*(?:[-*]\s+)?(?:\*\*|__)?Partial:(?:\*\*|__)?[ \t]*(\S.*)$/m;
+
 /**
  * The step a pull request's body says it finishes: the first `step <N> of <M>` on its `Partial:` line, or null when the body has no such line or the line names no step (A11-175). A body with no
  * `Partial:` line is a pull request that finishes its ticket, and one with a `Partial:` line that names no step is one the reviewer holds to the whole ticket as before. PURE.
  */
 export function partialStepOf(body: string): PlanStep | null {
-  const line = /^[\s>*_-]*Partial:[^\n]*/im.exec(body);
-  return line === null ? null : stepNamed(line[0]);
+  const declared = PARTIAL_LINE.exec(body);
+  return declared === null ? null : stepNamed(declared[1]);
 }
 
 /** The fields of a run that say which step of its plan it is on (A11-175): what it declared, the steps merged before it, and the paths the plan's step sections list. */

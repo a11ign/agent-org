@@ -111,18 +111,18 @@ test("A11-119: a repository's open pull request urls are listed, and an unanswer
 // A11-175: a head is settled when the checks the base REQUIRES have settled green. The plugin reads which are required from GitHub (`isRequired`), only when the rollup is not all green, and core's judge decides.
 const lab = (name: string, conclusion: string) => ({ name, status: "COMPLETED", conclusion, completedAt: at(1) });
 const LAB_ROLLUP = [lab("gate", "SUCCESS"), lab("refusalOwners", "SUCCESS"), lab("checks (own)", "SUCCESS"), lab("checks (cross-repo)", "FAILURE")];
-const requiredAnswer = (required: string[], all: string[]) => JSON.stringify({ data: { repository: { pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes:
+const requiredAnswer = (required: string[], all: string[], hasNextPage = false) => JSON.stringify({ data: { repository: { pullRequest: { commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { pageInfo: { hasNextPage }, nodes:
   all.map((name) => ({ __typename: "CheckRun", name, isRequired: required.includes(name) })) } } } }] } } } } });
 
 /** A code host over a scripted `gh`: `pr view` answers the pull request, `api graphql` answers which of its checks are required (or fails when `required` is null). */
-function hostWithChecks(rollup: unknown[], required: string[] | null) {
+function hostWithChecks(rollup: unknown[], required: string[] | null, hasNextPage = false) {
   const asked: string[][] = [];
   const policy = corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf }));
   const pull = { headRefOid: HEAD, reviews: [], author: { login: "someone" }, statusCheckRollup: rollup };
   const exec = (_file: string, args: readonly string[]) => {
     asked.push([...args]);
     if (args[0] === "pr") return { status: 0, stdout: JSON.stringify(pull), stderr: "" };
-    return required === null ? { status: 1, stdout: "", stderr: "gh: HTTP 502" } : { status: 0, stdout: requiredAnswer(required, rollup.map((check) => (check as { name: string }).name)), stderr: "" };
+    return required === null ? { status: 1, stdout: "", stderr: "gh: HTTP 502" } : { status: 0, stdout: requiredAnswer(required, rollup.map((check) => (check as { name: string }).name), hasNextPage), stderr: "" };
   };
   return { host: createCodeHost(fakePluginDeps({ policy, exec })), asked };
 }
@@ -135,11 +135,6 @@ test("A11-175: readReviewState is settled when the required checks are green and
   assert.ok(asked[1].some((arg) => arg.includes("isRequired(pullRequestNumber: $number)")), "GitHub's own answer for the pull request's base, as the board's failing checks read it");
   assert.ok(asked[1].includes("number=806") && asked[1].includes("repo=nbl-ui-netbox") && asked[1].includes("owner=netboxlabs"));
 
-  const green = hostWithChecks(LAB_ROLLUP.map((check) => ({ ...check, conclusion: "SUCCESS" })), []);
-  const settled = green.host.readReviewState(URL);
-  assert.deepEqual([settled?.settled, settled?.unrequiredRed], [true, undefined], "an all-green rollup is settled and names nothing");
-  assert.equal(green.asked.length, 1, "and asks GitHub only the one question: which checks are required is read when something is not green");
-
   const requiredRed = hostWithChecks(LAB_ROLLUP, ["gate", "checks (cross-repo)"]).host.readReviewState(URL);
   assert.deepEqual([requiredRed?.settled, requiredRed?.unrequiredRed], [false, undefined], "a required check that failed holds the start");
 
@@ -147,11 +142,20 @@ test("A11-175: readReviewState is settled when the required checks are green and
   assert.deepEqual([pending?.settled, pending?.unrequiredRed], [true, undefined], "an unrequired check still running holds nothing either");
 });
 
+test("A11-175: an all-green rollup is settled with the one pull request read, names no unrequired check, and asks GitHub nothing about which checks are required", () => {
+  const { host, asked } = hostWithChecks(LAB_ROLLUP.map((check) => ({ ...check, conclusion: "SUCCESS" })), []);
+  const state = host.readReviewState(URL);
+  assert.deepEqual([state?.settled, state?.unrequiredRed], [true, undefined]);
+  assert.deepEqual(asked.map((args) => args.slice(0, 2)), [["pr", "view"]], "the second call is paid only when something is not green");
+});
+
 test("A11-175: a list of required checks GitHub would not give, or that is empty, counts every check, so the reviewer waits as it did", () => {
   const unreadable = hostWithChecks(LAB_ROLLUP, null).host.readReviewState(URL);
   assert.deepEqual([unreadable?.settled, unreadable?.unrequiredRed], [false, undefined], "an unreadable answer is not 'nothing is required'");
   const none = hostWithChecks(LAB_ROLLUP, []).host.readReviewState(URL);
   assert.deepEqual([none?.settled, none?.unrequiredRed], [false, undefined], "a branch that requires nothing counts every check");
+  const cut = hostWithChecks(LAB_ROLLUP, ["gate", "refusalOwners", "checks (own)"], true).host.readReviewState(URL);
+  assert.deepEqual([cut?.settled, cut?.unrequiredRed], [false, undefined], "a head with more checks than one page holds is not read in full: a required check past the page would be counted as not required");
   const odd = createCodeHost(fakePluginDeps({ policy: corePolicy(() => ({ fields: "headRefOid,reviews,author,statusCheckRollup", trustOf: () => "inside", settledOf: settledGreenOf, unrequiredRedOf })),
     exec: (_file, args) => ({ status: 0, stdout: args[0] === "pr" ? JSON.stringify({ headRefOid: HEAD, reviews: [], statusCheckRollup: LAB_ROLLUP }) : "not json", stderr: "" }) }));
   assert.equal(odd.readReviewState(URL)?.settled, false, "an answer that does not parse counts every check");

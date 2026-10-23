@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { isParked, runActions, runStatus, waitNote } from "./board-view/pull-status-and-notes.ts";
+import { replan } from "./queue/queue-ticket-text.ts";
 import { amend, byIdentifier, childOrder, refuseParents, dismiss, enqueue, isLive, leaveBatch, liveRunCount, BACKGROUND_GONE, BACKGROUND_GONE_MS, clearEdit, clearMove, recordMove, PLAN_BATCH_MAX, remove, retry, talkRound, type Outcome, type Queue, writerStatus } from "./queue/queue-entries-and-outcomes.ts";
 import { approve, checkRound, conflictRound, holdForSession, recordCheckHeads, respond, batchPlanDone, recordPathsFailure, startAnyway, feedbackRound, MAX_FEEDBACK_ROUNDS, markPublishRunning, markPublishStarting, publishDone, publishFailed, publishStarts, queuePublish, finish, markResumed, markRunning, markStarting, observe, park, noteWorking, recordBlockers, recordRepos, planDone, watchWorking, recordPullStates, recordTrackerStates, setMax, pauseQueue, resumeQueue, unpark, unreadBlockerKeys, unsettledKeys, pathsUnread, recordPaths, recordPullFiles, recordRetargets, recordVerdictNotPosted, unreadPaths, completableRuns } from "./queue/queue-transitions.ts";
 import { clearPartial, nextStepRuns, planStepsUnread, queueNextStep, recordPlanSteps } from "./queue/queue-next-step.ts";
@@ -1097,6 +1098,13 @@ test("A11-175: recordPaths records the step sections' paths beside the plan's, r
   assert.deepEqual(recordPaths(queued, new Map([["A", ["agent-org:src/a.ts"]]])).entries[0].stepPaths, undefined, "and callers that read no step sections record none");
   const started = markStarting(read, "A", 5);
   assert.deepEqual(recordPaths(started, new Map([["A", ["agent-org:x/"]]]), new Map([["A", { "1": ["agent-org:x/"] }]])).entries.find((entry) => entry.ticket.key === "A")?.stepPaths, STEP_PATHS, "a run that has started keeps what it started with");
+});
+
+test("A11-175: a queued run whose plan is written again drops the paths of its steps with the plan's paths", () => {
+  const queued = recordPaths(resumeQueue(enqueue(emptyQueue(1), [ticket("A")], choice, 1)), new Map([["A", ["agent-org:src/a.ts"]]]), new Map([["A", STEP_PATHS]]));
+  assert.deepEqual(queued.entries[0].stepPaths, STEP_PATHS);
+  const [again] = replan(queued, "A", { model: "opus", effort: "max" }, [], undefined).entries;
+  assert.deepEqual([again.paths, again.stepPaths], [undefined, undefined]);
 });
 
 test("A11-175: the next step's run carries the step sections' paths with the plan's, and so does a review round, a talk session and a retried review", () => {
