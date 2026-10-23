@@ -6,6 +6,8 @@ import { changedFiles } from "../lib/changed-files.ts";
 import { defectClassReport } from "../defect-class-line.ts";
 import { resolveAcceptanceSource, sectionsTextOf, sourceLine, type AcceptanceSource } from "../acceptance-file.ts";
 import { CLOSES_FIELD } from "../project-vocabulary.ts";
+import { DEFAULT_KEYWORDS } from "../plugins/contracts/tracker.ts";
+import { namedTicketClosesReport } from "../ticket-mode/ticket-references.ts";
 import { CORPUS_PATTERNS, FLEET_LAB_PATTERNS, FULL_CAPABILITIES, MUTATE_PATTERN, SHELL_BLOCK_KEYWORDS, UNVERIFIABLE_BUILTINS, commandExists, deriveClosureRequirements, firstRealToken, handRunDeclaration, handRunEvidence, hasFullHistoryDeclaration, isFile, jobCapabilities, needsToken, stripLeadingCd, testFileRequirements, tokenRefusal, type Classification, type ClosesDeclaration, type ClosesReference, type JobCapabilities, type Section, unmetClosureRequirements } from "./command-classes-and-declarations.ts";
 import { commandTable, extractAcceptanceSection, extractSection, leadingCdTarget, namedTestFiles, operationalScriptEntries, primaryCheckoutCdReason, runAcceptanceCommand, runsTheWholeSuite, stripTrailingCommentary, testFilesRunBy, tsxAcceptanceReason, tsxTestFileArgs, type CommandTable, unmetCommandRequirements } from "./suite-and-checkout-commands.ts";
 
@@ -641,6 +643,21 @@ export function closesDeclarationReport(body: string | null | undefined): { ok: 
 }
 
 /**
+ * THE `closes` REPORT CI RUNS (A11-127): a row's declaration, as `closesDeclarationReport` reads it, or a ticket's. A ticket-mode pull request has no GitHub row
+ * to close, and names its ticket as the tracker's words do: `Closes A11-127` when it completes the ticket, `Refs A11-127` and a `Partial:` line when it does not.
+ * That is the grammar `pr:open` already holds a ticket's body to (`ticketClosesReport`), read with the tracker's default words, since CI holds no tracker and so
+ * accepts any ticket-shaped name. A body whose row declaration reads ok is reported exactly as before; a body that names a ticket is judged as a ticket's. A body
+ * that names neither keeps `closesDeclarationReport`'s MISSING or MALFORMED. `extractClosesDeclaration` is not changed: the readers that close or compare GitHub
+ * rows still see a ticket's name as no row.
+ */
+export function ciClosesReport(body: string | null | undefined): { ok: boolean; line: string; } {
+  const row = closesDeclarationReport(body);
+  if (row.ok) return row;
+  const ticket = namedTicketClosesReport(body ?? "", DEFAULT_KEYWORDS);
+  return ticket === null ? row : { ok: ticket.ok, line: ticket.lines.join(" ") };
+}
+
+/**
  * #2617: every row a `closes` declaration names, WITH the repository each lives in -- `repo` null for a bare `#N`, which is the pull
  * request's OWN repository's. A declaration that never named a repository has no `references`, so they are built from `numbers`.
  */
@@ -906,7 +923,7 @@ export const CI_BODY_REPORTS: BodyReport[] = [
     const notes = declared.kind === "commands" ? wholeSuiteNote(declared.commands) : [];
     return { ok: report.ok, lines: [named, ...report.lines, ...notes] };
   } },
-  { name: "closes", report: ({ body }) => oneLine(closesDeclarationReport(body)) },
+  { name: "closes", report: ({ body }) => oneLine(ciClosesReport(body)) },
   { name: "class", report: ({ body, rowLabels }) => oneLine(defectClassReport({ body, rows: closedRowsOf(body), rowLabels })) },
   { name: "mutation", report: (input) => oneLine(mutationRecordReport({ body: sectionsTextOf(acceptanceSourceOf(input)) ?? input.body, diff: input.diff })) },
   { name: "measured", report: ({ body }) => oneLine(measuredSectionReport(body)) },

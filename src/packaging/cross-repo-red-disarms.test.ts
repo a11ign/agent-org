@@ -28,7 +28,7 @@ const PR_NODE = "PR_kwDOlab81";
 const TRUNK_RUN = 38151939490;
 const FILES = ["packages/lab/src/packaging/every-test-file-is-run.test.ts", "packages/lab/src/packaging/layer-edges.test.ts"];
 const BODY = "Closes a11ign/a11ign#5078\n\nADR 0045 cut 1.";
-const DECLARED_BODY = `${BODY}\nCross-repo-red: a11ign/a11ign#5080\n`;
+const DECLARED_BODY = `${BODY}\nCross-repo-red: A11-123\n`;
 
 /** One `FAIL` line in rstest's form, for the leg of the PR's own run (the same shape `cross-repo-red-refusal.test.ts` reads). */
 const failLine = (file: string) => {

@@ -185,7 +185,7 @@ export function sweepDecision({ labels, checkRunCount, holdReason = null, parity
  * `main` takes. Authorship first (#3254), then the queue history: an ejected PR with an unmoved head is not armed,
  * because `arm-pr` refuses it and the sweep would arm on the same event what `arm-pr` just refused. Then #3544: a row the PR
  * closes with an open `blocked-by` edge. Last, agent-org#992: a lab PR whose cross-repo leg fails on a file the newest trunk run passed,
- * with no `Cross-repo-red: <row>` line. `prBody` is the PR's body as read; a body that was not read is `cannot-ask`.
+ * with no `Cross-repo-red: <ticket>` line. `prBody` is the PR's body as read; a body that was not read is `cannot-ask`.
  * @param {{ number: string, repo: string, author: string, prBody: string | null, run: (ghArgs: string[]) => string }} pr
  * @returns {{ kind: "clear" } | { kind: "refused" | "ejected" | "cannot-ask", why: string } | { kind: "open-blocker", why: string, blockers: number[] }
  *   | { kind: "cross-repo-red", why: string, files: string[] }}

@@ -47,11 +47,6 @@ export function failedLogOfRun(repo: string, runId: string | number, run: Run): 
   return run(["run", "view", String(runId), "--repo", repo, "--log-failed"]);
 }
 
-/** `OPEN` or `CLOSED` (upper-cased), or `""` for an answer that carries no state. Throws when the row could not be read, naming why in the runner's own message. */
-export function stateOfRow(repo: string, number: string | number, run: Run): string {
-  return String(parse(run(["issue", "view", String(number), "--repo", repo, "--json", "state"]), "row")?.state ?? "").toUpperCase();
-}
-
 /** The workflow run behind a red check of a change's head, and that check's own conclusion. */
 export type RedRun = { runId: number; conclusion: string | null };
 
