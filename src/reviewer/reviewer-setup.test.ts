@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 // ---- The verdict door's repository (#2952) ----------------------------------------------------------------
 
-const DOOR = fileURLToPath(new URL("./pr-review-verdict.sh", import.meta.url));
+const DOOR = fileURLToPath(new URL("../../plugins/github/reviewer/pr-review-verdict.sh", import.meta.url));
 const DEFAULT_REPO = "a11ign/a11ign";
 const OTHER_REPO = "a11ign/agent-org";
 /** Pull request read, reviews read, the review, the read-back, the attribution status. */

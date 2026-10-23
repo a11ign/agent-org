@@ -5145,6 +5145,14 @@ test("A11-154: a head with a check the code failed and a check the infrastructur
   assert.deepEqual(ci.reruns, [], "the push that fixes the first runs the second again");
 });
 
+test("A11-154: a code host whose read of a log throws leaves the check unread, named as such, and the round still starts", async () => {
+  const { ci, ctx } = await redRun([redCheck("test", 11)], { 11: TEST_FAILED });
+  ci.codeHost.readCheckLog = () => { throw new Error("the code host fell over\nat somewhere"); };
+  const logged = await captureStderr(async () => { await watchRound(ctx.pool); });
+  assert.equal(ctx.entry("NBF-1").feedback, `test failed on the head commit of ${approvedPr.url}; its log could not be read.`);
+  assert.ok(logged.some((line) => line.includes(`the log of test on ${jobPage(11)} could not be read: the code host fell over`)), logged.join("\n"));
+});
+
 test("A11-154: a rerun GitHub refuses names the check for a person and is not asked again, and a parked run's workspace is not touched by a rerun", async () => {
   const pulls: Record<number, unknown> = { 1: feedbackPull({ head: HEAD_1, checks: [redCheck("test", 11)] }) };
   const ci = withCi(ghFor(pulls), { 11: RUNNER_LOST }, "gh: Resource not accessible by integration (HTTP 403)");

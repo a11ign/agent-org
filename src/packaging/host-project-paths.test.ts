@@ -55,6 +55,10 @@ const { SHIPPED_DIR, TOOL_ENTRIES, HOST_DATA_ENTRIES, leadsListText, shippedUnit
 const { hostUnitDrift, unclassifiedEntries } = await import("../host-units.ts");
 const { identityDrift, ownedIdentityFiles } = await import("../host-units/host-drift-findings-and-notes.ts");
 const { wrapperInputsOf } = await import("../plugins/host-place.ts");
+// A11-160: the door `host:check` compares is the code host's (`reviewerDoorDrift`), so the process has a code host: the fake's, which ships a door that posts nothing.
+const { substituteCodeHost } = await import("../plugins/active.ts");
+const { createFakeCodeHost } = await import("../plugins/fakes/code-host.ts");
+substituteCodeHost(createFakeCodeHost());
 const { createWrapper } = await import("../../plugins/github/wrapper.ts");
 /** The GitHub plugin's wrapper, reading its template from disk (A11-160: the renderer is the plugin's). */
 const githubWrapper = () => createWrapper({ exec: () => ({ status: null, stdout: "", stderr: "no program" }), readFile: (path) => readFileSync(path, "utf8"), env: {} });

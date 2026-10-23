@@ -29,7 +29,7 @@ test("an address that names no job is not read at all, and a log GitHub refuses 
   assert.deepEqual([calls, logged], [[], []], "a commit status's address makes no call and says nothing");
   assert.equal(readCheckLog(JOB, (args) => { throw failure(args); }, (line) => logged.push(line)), null);
   assert.equal(logged.length, 1);
-  assert.match(logged[0], new RegExp(`${JOB.replace(/[/.]/g, "\\$&")} could not be read: Command failed: gh api repos/a11ign/agent-org/actions/jobs/112233/logs`));
+  assert.match(logged[0], new RegExp(`${JOB.replace(/[/.]/g, "\\$&")} could not be read: Command failed: gh api repos/a11ign/agent-org/actions/jobs/112233/logs --allow-escape-sequences gh: HTTP 403$`), "the command and GitHub's reason, as the pool logged them");
 });
 
 test("the failed jobs of each run are rerun once however many of its jobs are named, and an address that names no run is left out", () => {

@@ -7,7 +7,7 @@ import { isRollUpCheck } from "../ticket-port/ci-reads.ts";
 import type { FailingCheck, PullFeedback } from "../plugins/contracts/code-host.ts";
 import { type Entry } from "./queue/queue-entries-and-outcomes.ts";
 import { type CheckHead } from "./board-view/view-types-and-filters.ts";
-import { log } from "./pool-state.ts";
+import { log, messageOf } from "./pool-state.ts";
 import { type PoolContext } from "./pool-context.ts";
 
 /** The most error lines a round's brief quotes from the logs of all the checks that failed at a head, and the most characters of each: a brief names the failure, it is not the log. */
@@ -60,9 +60,15 @@ function checksToAnswer(read: PullFeedback): readonly FailingCheck[] {
 /** One failing check, with its job's log read. A check with no Actions job, or whose log cannot be read, is `readable: false` and is the code's to answer. */
 function readCheck(ctx: PoolContext, check: FailingCheck): ReadCheck {
   const unread = { name: check.name, lines: [], infrastructure: null, readable: false, detailsUrl: check.detailsUrl } as const;
-  const text = check.detailsUrl === null ? null : ctx.codeHost.readCheckLog(check.detailsUrl);
-  if (text === null) return unread;
-  return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), infrastructure: infrastructureCause(text), readable: true };
+  if (check.detailsUrl === null) return unread;
+  try {
+    const text = ctx.codeHost.readCheckLog(check.detailsUrl);
+    if (text === null) return unread;
+    return { ...unread, lines: errorLinesOfLog(text).slice(-QUOTED_LINES).map((line) => line.slice(0, LINE_CHARS)), infrastructure: infrastructureCause(text), readable: true };
+  } catch (err) {
+    log(`the log of ${check.name} on ${check.detailsUrl} could not be read: ${messageOf(err)}`);
+    return unread;
+  }
 }
 
 /** The lines of the feedback that name one check the code failed, with the error lines of its log: at most {@link QUOTED_LINES} for all of them. PURE. */

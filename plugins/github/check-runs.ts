@@ -1,8 +1,8 @@
 // module: what the board does about a red check -- the log of the job behind it, and the rerun of the jobs that failed (A11-160)
 //
-// Moved out of `ticket-port/ci-reads.ts` (`jobOfDetails`, `jobLogOf`, `rerunFailedJobsOf`), asked for by the address a check reports (`FailingCheck.detailsUrl`), so core no longer parses a GitHub
+// Moved out of `ticket-port/ci-reads.ts` (`jobOfDetails`, `jobLogOf`; `rerunFailedJobsOf` is copied), asked for by the address a check reports (`FailingCheck.detailsUrl`), so core no longer parses a GitHub
 // Actions address. An address that names no job (a commit status reports none) is one the host cannot read: `readCheckLog` answers null for it, as for a log GitHub refuses, and `rerunFailedChecks`
-// leaves it out. The core copies of these functions stay while wake and the cross-repo reader still call them; they go with those callers (steps 6 and 7).
+// leaves it out. `rerunFailedJobsOf` stays in core's `ticket-port/ci-reads.ts` while wake still calls it; it goes with that caller.
 import type { Gh } from "./gh.ts";
 
 /** The Actions job a check's details address names: its repository (`owner/name`), workflow run and job. `null` for any other address, a commit status's included. */
@@ -21,7 +21,8 @@ export function readCheckLog(detailsUrl: string, gh: Gh, log: (line: string) => 
   try {
     return gh(["api", `repos/${job.repo}/actions/jobs/${job.jobId}/logs`, "--allow-escape-sequences"]);
   } catch (err) {
-    log(`the log of the job at ${detailsUrl} could not be read: ${String((err as Error)?.message ?? err).split("\n")[0]}`);
+    // The whole message: the command on its first line and GitHub's reason after it.
+    log(`the log of the job at ${detailsUrl} could not be read: ${String((err as Error)?.message ?? err).split("\n").map((line) => line.trim()).filter((line) => line !== "").join(" ")}`);
     return null;
   }
 }

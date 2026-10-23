@@ -1,7 +1,7 @@
 // no-token: none -- the installer is run into a temporary directory, and the door is read, never run
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,4 +42,13 @@ test("the plugin's installer leaves a byte-identical, executable door at the pat
 test("the installer's default destination is the spelling every order prints: $HOME/reviewer/bin/pr-review-verdict", () => {
   const line = readFileSync(door().installer, "utf8").split("\n").find((l) => l.startsWith("dest="));
   assert.match(line ?? "", /\$\{A11Y_REVIEWER_BIN:-\$HOME\/reviewer\/bin\}\/pr-review-verdict\}?"?$/);
+});
+
+test("with GH_REPO unset the door run from the plugin's folder in a checkout reads the repository from the tool's project declaration, and refuses without one", () => {
+  const run = (env: Record<string, string>) => spawnSync("bash", [door().source, "not-a-number", "convinced", "/nonexistent"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env } });
+  const declared = run({ AGENT_ORG_HOST: process.env.AGENT_ORG_HOST ?? "" });
+  assert.match(declared.stderr, /PR number must be digits, got 'not-a-number'/, "it got past naming the repository, to the next check");
+  const none = run({ AGENT_ORG_HOST: join(tmpDir("github-verdict-door-none-"), "host.json") });
+  assert.equal(none.status, 2);
+  assert.match(none.stderr, /GH_REPO is unset and the project declaration cannot be read/, "POSITIVE CONTROL: a declaration that cannot be read is told");
 });
