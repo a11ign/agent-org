@@ -14,6 +14,14 @@
   width: var(--skeleton-label-width-short);
   height: var(--skeleton-heading-height);
 }
+.sk-key {
+  width: var(--skeleton-key-width);
+  height: var(--skeleton-text-height);
+}
+.sk-section-label {
+  width: var(--skeleton-section-label-width);
+  height: var(--icon-14);
+}
 .sk-line {
   height: var(--skeleton-line-height);
 }

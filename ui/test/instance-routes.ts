@@ -6,7 +6,7 @@
 import { join } from "node:path";
 import type { BrowserContext, Route } from "playwright-core";
 import { locate } from "../../src/ticket-mode/ui-build.ts";
-import { answerFor, type Stand } from "./fixtures.ts";
+import { answerFor, type Request, type Stand } from "./fixtures.ts";
 import { UI_ROOT } from "./site.ts";
 
 const DIST = join(UI_ROOT, "dist");
@@ -29,16 +29,22 @@ async function sendPage(route: Route, pathname: string): Promise<void> {
   return route.fulfill({ response, headers: { ...response.headers(), "content-security-policy": PAGE_CSP } });
 }
 
+/** The paths of the calls a stand-in was asked, in order, and each with its method and body in `requests`. */
+export type Asked = string[] & { requests: Request[] };
+
 /** Answers the instance calls of every page of `context`, and the client-side routes of the built site. Returns the paths of the calls it was asked, in order. */
-export async function serveInstance(context: BrowserContext, { stand = {}, hold = false }: Serving = {}): Promise<string[]> {
-  const asked: string[] = [];
+export async function serveInstance(context: BrowserContext, { stand = {}, hold = false }: Serving = {}): Promise<Asked> {
+  const requests: Request[] = [];
+  const asked = Object.assign([] as string[], { requests });
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     const path = `${url.pathname}${url.search}`;
     if (isInstanceCall(url.pathname)) {
       asked.push(path);
-      if (hold) return;
-      const answer = answerFor(stand, path);
+      const request = { method: route.request().method(), body: route.request().postData() === null ? undefined : route.request().postDataJSON() };
+      requests.push({ ...request, path });
+      if (hold || (stand.holdInstance === true && url.pathname !== "/api/connections")) return;
+      const answer = answerFor(stand, path, request);
       return route.fulfill({ status: answer?.status ?? 404, contentType: "application/json", body: answer?.body ?? JSON.stringify({ error: `no route ${path}` }) });
     }
     if (route.request().resourceType() === "document") return sendPage(route, url.pathname);

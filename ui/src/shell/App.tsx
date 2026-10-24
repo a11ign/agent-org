@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import { TicketsPage } from "../tickets/TicketsPage.tsx";
 import { Placeholder } from "./Placeholder.tsx";
 import { pageOf, runKeyOf, TITLES, type Page } from "./routes.ts";
 import { ShellFrame } from "./ShellFrame.tsx";
@@ -24,7 +25,7 @@ export function App({ section }: Readonly<{ section: Page }>) {
   return (
     <ShellProvider>
       <ShellFrame page={page}>
-        <Placeholder page={page} runKey={runKeyOf(pathname)} />
+        {page === "tickets" ? <TicketsPage /> : <Placeholder page={page} runKey={runKeyOf(pathname)} />}
       </ShellFrame>
     </ShellProvider>
   );

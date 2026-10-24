@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 
 /** The sizes a skeleton block comes in; each is a token in `styles/tokens.css`, so a layout is drawn from the boards' values and no other. */
-export type SkeletonShape = "heading" | "heading-short" | "line" | "text" | "title" | "crumb" | "subtitle" | "count" | "pill" | "box" | "dot" | "avatar" | "banner" | "block" | "panel" | "side";
+export type SkeletonShape = "heading" | "heading-short" | "key" | "section-label" | "line" | "text" | "title" | "crumb" | "subtitle" | "count" | "pill" | "box" | "dot" | "avatar" | "banner" | "block" | "panel" | "side";
 
 /** One shimmering block. `width` is a share of its row (`"80%"`), as the boards size their lines; without it the shape's own width applies. */
 export function SkeletonBlock({ shape = "line", width }: Readonly<{ shape?: SkeletonShape; width?: CSSProperties["width"] }>) {
