@@ -20,6 +20,7 @@ import { type PoolContext } from "./pool-context.ts";
 import { AWAITING_PERSON_LINE, claimWarning, type PullRead, pullReviewText, REVIEWER_OFF_LINE } from "./board-view/pull-review-state.ts";
 import { openPulls, pullsOf } from "./board-view/view-types-and-filters.ts";
 import { doneWhenOf } from "./done-when.ts";
+import { decisionsOf } from "./ticket-decisions.ts";
 import { partialStepOf } from "./board-view/plan-steps.ts";
 import { planStepSection } from "./pool-ticket-text.ts";
 import type { Reply } from "../plugins/contracts/code-host.ts";
@@ -98,15 +99,17 @@ const rereviewKey = (key: string): string => `${key}#rereview`;
 type StartAnswer = Readonly<{ refusal: string | null; tookOver: string | null; unclaimed?: string }>;
 
 /**
- * What the pool tells a reviewer of the ticket behind `url` (A11-156): the Done-when of the run that holds the pull request, since the reviewer cannot read the tracker. Null when no run holds
+ * What the pool tells a reviewer of the ticket behind `url` (A11-156): the Done-when of the run that holds the pull request, since the reviewer cannot read the tracker, and the ticket's explicit decisions (A11-213), which bind the reviewer ahead of its general rules. Null when no run holds
  * it (one a person opened, or a run since removed) or its ticket has no such section: the reviewer is then told the pull request is the only copy of the contract it has.
  * A pull request whose body says `Partial: step N of M` also carries the step (A11-175), with the plan's section for it when the run that holds the pull request has a plan file with one, else null.
  */
-function briefOf(ctx: PoolContext, url: string, state: ReviewState): ReviewBrief {
+export function briefOf(ctx: PoolContext, url: string, state: ReviewState): ReviewBrief {
   const held = ctx.store.get().entries.find((entry) => pullsOf(entry).some((pull) => pull.url === url));
   const step = partialStepOf(String(state.view.body ?? ""));
+  const decisions = decisionsOf(held?.ticket.description);
   return {
     doneWhen: doneWhenOf(held?.ticket.description),
+    ...(decisions === null ? {} : { decisions }),
     ...(step === null ? {} : { step: { ...step, section: held === undefined ? null : planStepSection(ctx, held.ticket.key, step.step) } }),
   };
 }
