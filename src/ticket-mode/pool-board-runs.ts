@@ -47,7 +47,7 @@ export async function finishWriter(ctx: PoolContext, run: WriterRun, place: RunP
 
 /**
  * The tickets a new-ticket run made, as the board shows them (A11-135). The run's record names each ticket the hook saw it create, and each is read back
- * from the tracker for its address. When `tickets.plan` is set, each must have a plan attached. A key the outcome names that the record does not hold is
+ * from the tracker for its address, title, priority and project. When `tickets.plan` is set, each must have a plan attached. A key the outcome names that the record does not hold is
  * a problem, and is not shown: the run named a ticket it did not create. A record that cannot be read shows nothing and is the problem.
  */
 async function ticketsMade(ctx: PoolContext, place: RunPlace, named: readonly string[]): Promise<Readonly<{ tickets: WriterTicket[]; problems: string[] }>> {
@@ -68,7 +68,7 @@ async function madeTicket({ settings, source }: PoolContext, key: string): Promi
     return { ticket: unread, problem: `${key} could not be read from the tracker: ${messageOf(err).split("\n")[0]}` };
   }
   if (found === null) return { ticket: unread, problem: `${key} is not in the tracker` };
-  const ticket: WriterTicket = { key, url: found.url, inPick: inPickScope(settings.pick, found) };
+  const ticket: WriterTicket = { key, url: found.url, inPick: inPickScope(settings.pick, found), title: found.title, priority: found.priority, project: found.project };
   if (settings.plan !== null && !hasPlan(found, new RegExp(settings.plan))) return { ticket, problem: `${key} has no plan attached` };
   return { ticket, problem: null };
 }

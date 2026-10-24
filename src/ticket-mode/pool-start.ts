@@ -624,7 +624,7 @@ async function startWriter(ctx: PoolContext): Promise<void> {
     // A Grill run's ticket is read as it is now: its brief is the grill of that text, and the run may file nothing (A11-134).
     const grilled = queued.ticket === undefined ? undefined : await readGrilled(source, queued.ticket);
     clearRunDir(ctx, place.folder, place.dir);
-    writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, form: queued.form, clones: settings.clones,
+    writeFileSync(join(place.dir, BRIEF_FILE), writerBriefText({ run: writer.run, request: queued.request, mode: queued.mode, placement: queued.placement, form: queued.form, clones: settings.clones,
       dir: place.dir, pickTeam: pickTeamOf(settings.pick), writing, ...(grilled === undefined ? {} : { ticket: grilled }) }));
     writeFileSync(join(place.dir, WRITER_FILE), `${JSON.stringify({ mode: queued.mode, tools: grilled === undefined ? writerTools(writing) : [] })}\n`);
     writeBoardRunFiles(ctx, place, { deny: [...settings.deny, ...PLANNING_DENY], readDirs: Object.values(settings.clones), model, writer: writing });

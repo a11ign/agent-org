@@ -15,8 +15,7 @@ export { PRIORITIES, type Priority } from "../plugins/contracts/tracker.ts";
 export const CREATED_FILE = "created-issues.jsonl";
 /** The file a Grill run writes its answers to, beside its outcome: the sections the board writes into the ticket (A11-134). */
 export const DECISIONS_FILE = "decisions.md";
-/** The most tickets one writer run may create: the hook refuses an eleventh creation. */
-export const MAX_CREATED = 10;
+export { MAX_CREATED } from "./writer-limits.ts";
 
 /** A ticket's key, such as `A11-12`. */
 const TICKET_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;

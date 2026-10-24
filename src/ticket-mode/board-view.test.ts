@@ -1133,6 +1133,15 @@ test("a new-ticket request needs its text, and grill needs a terminal; the body 
     { request: "Show requests", mode: "quick", repo: "nbl-ui-netbox", goal: "Keep honest", priority: "high" });
 });
 
+test("A11-199: the body names the placement when the form does: auto sends no choices, manual sends the ones made, and a form with none sends the choices alone", () => {
+  const choices = { request: " Show requests ", mode: "quick", project: "Board", repo: "nbl-ui-netbox", goal: "", priority: "low", parent: " A11-12 " };
+  assert.deepEqual(boardView_0.writerBody({ ...choices, placement: "auto" }), { request: "Show requests", mode: "quick", placement: "auto" }, "auto: the writer chooses, so no choice is sent");
+  assert.deepEqual(boardView_0.writerBody({ ...choices, placement: "manual" }),
+    { request: "Show requests", mode: "quick", placement: "manual", project: "Board", repo: "nbl-ui-netbox", priority: "low", parent: "A11-12" }, "manual: the choices made, as given");
+  assert.deepEqual(boardView_0.writerBody({ request: "x", mode: "grill", placement: "manual" }), { request: "x", mode: "grill", placement: "manual" }, "manual with every choice left unset sends none");
+  assert.equal("placement" in boardView_0.writerBody(choices), false, "a form that names no placement sends none, as before");
+});
+
 test("the goals and projects the form offers are those the listed tickets carry, once each and sorted", () => {
   const tickets = [
     { ...ticketOf("A-1"), project: "Visual", labels: [{ name: "Keep honest", group: "Goal" }, { name: "Bucket: Board", group: "Bucket" }] },

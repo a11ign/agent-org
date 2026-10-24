@@ -377,7 +377,10 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   posted then shows Published, with a link to the first message, stays watched, and still turns Completed when its pull requests merge. A
   publish run that fails, or takes over 30 minutes, leaves its runs Ready to merge, and the Board says why.
 - **New ticket, written from a request.** On a machine that sets `tickets.writer`, the Pick view has a New ticket button. You say what the
-  ticket is for, in plain words, and optionally choose its project, repository, goal, priority or parent. Quick (the default) runs unattended:
+  ticket is for, in plain words, and choose its placement. Auto (the default) leaves the project, repository, goal, priority and parent to the
+  writer, which picks each from your request. Manual lets you set any of the five, and the writer uses what you set as given and picks the rest;
+  a choice left "Not set" is the writer's, and "No priority" is a choice. `POST /api/writer` takes `placement` (`"auto"` or `"manual"`); a body
+  that names none is Manual when it names any of the five and Auto when it names none, and an Auto body that names one is refused. Quick (the default) runs unattended:
   the writer runs the `a11ign:create-ticket` skill in full, which grills itself, writes the plan with a "Decisions made without a person"
   section, and files the ticket with its plan attached. Grill runs the same skill with you, in a terminal the board opens, asking its questions
   there, one at a time; it needs `tickets.terminal`. When a Grill run asks a question, its card shows "Waiting for you" with the question, keeps
@@ -389,8 +392,8 @@ takes them one each. Ticket mode is two services, both on `127.0.0.1`:
   A build worker is refused every filing tool by name, and the refusal says to use New ticket. The writer's model and effort are set in
   Settings, apart from the run's and the planner's, and `tickets.writer.model` and `.effort` stay the defaults until one is chosen there. It
   works on a ticket-only host, and through a remote connection or the tailnet-served board as the rest of the board does. A request is refused
-  by name when it is empty or too long, names a repository the machine does not have, or a parent that does
-  not exist. At most three new-ticket requests are unfinished at once.
+  by name when it is empty or too long, names a placement other than Auto or Manual, names a choice under Auto, names a repository the machine
+  does not have, or a parent that does not exist. At most three new-ticket requests are unfinished at once.
 - **Blocked until what blocks it is done.** A queued run whose ticket the tracker marks "blocked by" another waits, as Blocked, naming what
   it waits on, and holds no slot, while a run queued after it with nothing blocking it starts first. A blocker lets go once the tracker
   completes it, once its run on the queue is Completed, or once its pull requests have merged, whatever state its ticket is in (a pull request that says `Refs` leaves the ticket In

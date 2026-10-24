@@ -13,10 +13,11 @@ import type { StackBase } from "./board-view/pull-status-and-notes.ts";
 import type { MergedStep } from "./board-view/plan-steps.ts";
 import type { DenyRule } from "./settings.ts";
 import type { PullRequest, WriterForm, WriterMode } from "./queue/queue-entries-and-outcomes.ts";
+import type { Placement } from "./writer-placement.ts";
 import { DEFAULT_KEYWORDS, type Blocker, type Keywords, type Ticket } from "./source.ts";
 import { PUBLISHED_FILE } from "../plugins/contracts/publisher.ts";
 import type { TrackerWriting } from "../plugins/contracts/tracker.ts";
-import { DECISIONS_FILE, MAX_CREATED, type Priority } from "./writer.ts";
+import { DECISIONS_FILE, MAX_CREATED, PRIORITIES, type Priority } from "./writer.ts";
 import { repoOfProject } from "./project-repo.ts";
 import { outcomeExamples } from "./outcome.ts";
 import { closingWordsOf } from "./ticket-references.ts";
@@ -963,8 +964,18 @@ const CHOICE_LANDS: Readonly<Record<keyof WriterForm, string>> = {
   parent: "the ticket's `parentId`: the ticket is filed as a child of it",
 };
 
-/** The form's choices as the brief's requirements: each one the person made, or none. PURE. */
-const formText = (form: WriterForm, priorities: TrackerWriting["priorities"]): string => {
+/** How many choices the form offers: project, repository, goal, priority and parent. */
+const CHOICES_OFFERED = Object.keys(CHOICE_LANDS).length;
+
+/** What the brief says of an `auto` request: the writer makes each of the five choices (A11-199). */
+const AUTO_TEXT = "Auto placement: choose the project, repository, goal, priority and parent from the request, as the skill's Steps 7 and 8 say.";
+
+/**
+ * The form's choices as the brief's requirements (A11-199). An `auto` request names none, and the writer makes all five. A `manual` request lists each
+ * choice the person made, as a requirement, and leaves the rest to the writer. PURE.
+ */
+const formText = (placement: Placement, form: WriterForm, priorities: TrackerWriting["priorities"]): string => {
+  if (placement === "auto") return AUTO_TEXT;
   const lines = [
     form.project === undefined ? undefined : `- Project: ${form.project} (${CHOICE_LANDS.project})`,
     form.repo === undefined ? undefined : `- Repository: \`${form.repo}\` (${CHOICE_LANDS.repo})`,
@@ -972,8 +983,13 @@ const formText = (form: WriterForm, priorities: TrackerWriting["priorities"]): s
     form.priority === undefined ? undefined : `- Priority: ${form.priority}, number ${priorities[form.priority as Priority]} (${CHOICE_LANDS.priority})`,
     form.parent === undefined ? undefined : `- Parent: ${form.parent} (${CHOICE_LANDS.parent})`,
   ].filter((line): line is string => line !== undefined);
-  return lines.length === 0 ? "None. The request decides each of these." : `${lines.join("\n")}\n\nThese are requirements. Use them as given: you set each one on the ticket you file.`;
+  const rest = lines.length === CHOICES_OFFERED ? "" : " Each of the five not listed here is yours to choose from the request.";
+  if (lines.length === 0) return `Manual placement, and the person set none of the five.${rest}`;
+  return `Manual placement:\n${lines.join("\n")}\n\nThese are requirements. Use them as given: you set each one on the ticket you file.${rest}`;
 };
+
+/** The priorities as the brief lists them for the writer to choose from: each name with the tracker's number, most urgent first. PURE. */
+const priorityChoices = (priorities: TrackerWriting["priorities"]): string => PRIORITIES.map((name) => `${name} ${priorities[name]}`).join(", ");
 
 /**
  * A Grill run's brief (A11-134): the grill of one existing ticket, which the board holds back until its open decisions are settled. The run asks the person,
@@ -1037,8 +1053,8 @@ Write \`decided\` once \`${DECISIONS_FILE}\` holds each section listed under "Wh
  * create-ticket skill in full, in the mode the board chose, and files its own ticket and plan through the tracker's tools (`writerTools`).
  * Its one prohibition is an update to a ticket it did not create. PURE.
  */
-export function writerBriefText({ run, request, mode, form, clones, dir, pickTeam, ticket, writing }: {
-  run: string; request: string; mode: WriterMode; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
+export function writerBriefText({ run, request, mode, placement, form, clones, dir, pickTeam, ticket, writing }: {
+  run: string; request: string; mode: WriterMode; placement: Placement; form: WriterForm; clones: Readonly<Record<string, string>>; dir: string;
   /** What the tracker plugin files a ticket with: its tools, its priority numbers and what to call it. */
   writing: TrackerWriting;
   /** The team `tickets.pick` lists, or null: the team a new ticket goes in when its form names no parent. */
@@ -1060,7 +1076,7 @@ ${requestQuoted(request)}
 
 ## The person's choices
 
-${formText(form, writing.priorities)}
+${formText(placement, form, writing.priorities)}
 
 ## The mode
 
@@ -1087,8 +1103,8 @@ ${STALLING_COMMANDS}
 ## The ticket
 
 - **Team:** the team of the parent ticket the form names, else ${pickTeam === null ? "none: when the form names no parent and no team is set here, end needs-human, since no team is known" : `\`${pickTeam}\`, the team the Pick view lists`}. The skill's Step 6 takes the team from this brief, and asks nobody.
-- **Title, description, labels, project and goal:** the skill's Steps 5, 7 and 8, as written. The description ends with \`**Repository:** <repo>\` when the form names a repository.
-- **Priority:** the number of the form's priority, and 0 when the form names none.
+- **Title, description, labels, project and goal:** the skill's Steps 5, 7 and 8, as written. The description ends with \`**Repository:** <repo>\`: the form's repository or, when it names none, the one of the repositories below that holds the work, if one clearly does.
+- **Priority:** the number of the form's priority when it names one, else the priority the request warrants, as one of these numbers: ${priorityChoices(writing.priorities)}.
 - **Relations:** \`parentId\`, \`blockedBy\` and \`relatedTo\` are set on the ticket you create. Never set \`blocks\`: it writes a relation on another ticket.
 - **Status:** make no status move. The skill's Planned move does not happen in this run: the ticket stays in the state it lands in, since a ticket is never updated after it is created here.
 - **Plan:** write the plan and its ADRs as the skill's unattended create form says, with "Decisions made without a person", and attach them to the ticket you created, as its Step 10 and \`plan-attachment.md\` say.

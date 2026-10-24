@@ -4,6 +4,7 @@ import type { MergedStep } from "../board-view/plan-steps.ts";
 import type { BlockerPullDeclared, PartialOverruled, PullDeclared } from "../board-view/pull-declared.ts";
 import type { Blocker, PullState, StateMove, Ticket } from "../source.ts";
 import type { Priority } from "../writer.ts";
+import type { Placement } from "../writer-placement.ts";
 import { needsDecision } from "../open-decisions.ts";
 import type { PluginCopy, StoppedForUpdate } from "./queue-pins.ts";
 import type { TicketRead } from "../ticket-read.ts";
@@ -369,7 +370,9 @@ export type Queue = Readonly<{ entries: readonly Entry[]; max: number; paused: b
  * A ticket a new-ticket run created, as the board shows it (A11-135): its key, its address when the tracker has the ticket, and whether Pick's list
  * shows it. The run filed it itself; the board reads it back from the tracker to show it.
  */
-export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: boolean | null }>;
+export type WriterTicket = Readonly<{ key: string; url: string | null; inPick: boolean | null;
+  /** What the tracker held for the ticket when the board read it back, shown on the request's Done row (A11-199). None for a ticket that could not be read. */
+  title?: string; priority?: number; project?: string | null }>;
 
 /** The ticket-writing run's mode: `quick` runs unattended, `grill` asks the person in its terminal first. */
 export type WriterMode = "quick" | "grill";
@@ -385,6 +388,8 @@ export type WriterRun = Readonly<{
   id: string;
   request: string;
   mode: WriterMode;
+  /** Who places the ticket. A run queued before placement existed has the placement its form implies (`placementOf`). */
+  placement: Placement;
   form: WriterForm;
   /** The model and effort the run is stamped with when it is queued (the Settings choice, else the host file's). Absent on a run queued before that. */
   model?: string;

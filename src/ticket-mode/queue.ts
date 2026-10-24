@@ -12,6 +12,7 @@ import { dirname } from "node:path";
 import { overlapWait } from "./board-view/overlap-hold.ts";
 import { waitsOn } from "./board-view/pull-status-and-notes.ts";
 import { MAX_WRITER_RUNS, replace, type Entry, type Queue, type WriterPhase, type WriterRun, type WriterTicket } from "./queue/queue-entries-and-outcomes.ts";
+import { placementOf } from "./writer-placement.ts";
 import { runOf, slotsHeld } from "./queue/queue-transitions.ts";
 import type { ToolPin } from "./queue/queue-pins.ts";
 
@@ -91,7 +92,7 @@ type LegacyDraft = Readonly<{ file: string; status: "creating" | "created" | "fa
   created?: Readonly<{ key: string; url: string; inPick?: boolean }> }>;
 
 /** A writer run as an older board wrote it: a grill run may be `waiting` on its question, and its drafts may be for review or being made. */
-type LegacyRun = Omit<WriterRun, "tickets" | "phase"> & Readonly<{ phase: WriterPhase | "waiting" | "creating"; tickets?: readonly WriterTicket[];
+type LegacyRun = Omit<WriterRun, "tickets" | "phase" | "placement"> & Readonly<{ phase: WriterPhase | "waiting" | "creating"; tickets?: readonly WriterTicket[]; placement?: WriterRun["placement"];
   drafts?: readonly LegacyDraft[]; rejected?: readonly unknown[] }>;
 
 /**
@@ -101,7 +102,8 @@ type LegacyRun = Omit<WriterRun, "tickets" | "phase"> & Readonly<{ phase: Writer
  * resume. PURE.
  */
 export function writerAsRead(run: LegacyRun): WriterRun {
-  const { drafts = [], tickets: filed = [], rejected: _rejected, ...rest } = run;
+  const { drafts = [], tickets: filed = [], rejected: _rejected, ...read } = run;
+  const rest = { ...read, placement: run.placement ?? placementOf(run.form) };
   const tickets: WriterTicket[] = [...filed, ...drafts.flatMap(({ status, created }) => (status === "created" && created !== undefined
     ? [{ key: created.key, url: created.url, inPick: created.inPick !== false }] : []))];
   if (drafts.some(({ status }) => status === "pending" || status === "discarded")) {
@@ -119,7 +121,7 @@ export function writerAsRead(run: LegacyRun): WriterRun {
  * Add a new-ticket request, queued, with the model and effort it runs on. At most {@link MAX_WRITER_RUNS} are unfinished at once: a fourth is refused,
  * naming why, so a person clears one first. PURE.
  */
-export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom">>, now: number): Queue {
+export function queueWriter(queue: Queue, request: Pick<WriterRun, "id" | "request" | "mode" | "placement" | "form" | "model" | "effort"> & Partial<Pick<WriterRun, "ticket" | "startedFrom">>, now: number): Queue {
   const open = (queue.writers ?? []).filter((run) => run.phase !== "finished").length;
   if (open >= MAX_WRITER_RUNS) throw new Error(`${MAX_WRITER_RUNS} new-ticket requests are unfinished already: finish or stop one before you add another`);
   const run: WriterRun = { ...request, phase: "queued", queuedAt: now, tickets: [] };

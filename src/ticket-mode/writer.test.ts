@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpDir } from "../lib/tmp-fixture.ts";
-import { CREATED_FILE, createdKeyOf, createdKeysOf, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import { CREATED_FILE, MAX_CREATED, createdKeyOf, createdKeysOf, parseWriterOutcome, readCreatedKeys } from "./writer.ts";
+import * as limits from "./writer-limits.ts";
 import { inPickScope } from "./pick-scope.ts";
 
 /** How a tracker's creation names the ticket it made: under `issue` when it wraps it, as `identifier` or else `id` (the shape a tracker plugin declares in its manifest). */
@@ -76,4 +77,9 @@ test("A11-135: Pick lists a created ticket when it is assigned, in the team or p
 test("A11-134: a decided outcome names the ticket it answered, and one that names no ticket key is refused", () => {
   assert.deepEqual(parseWriterOutcome('{ "kind": "decided", "ticket": "NBF-7" }'), { kind: "decided", ticket: "NBF-7", created: [] });
   assert.match(parseWriterOutcome('{ "kind": "decided", "ticket": "seven" }') as string, /names no ticket key, such as A11-12/);
+});
+
+test("A11-199: the limits are defined once, in a module free of Node, and the writer re-exports the run's", () => {
+  assert.deepEqual([limits.WRITER_REQUEST_CHARS, limits.MAX_CREATED], [8000, 10]);
+  assert.equal(MAX_CREATED, limits.MAX_CREATED);
 });

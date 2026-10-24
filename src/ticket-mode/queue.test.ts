@@ -835,7 +835,7 @@ test("A11-106: what a finished run's stacked pull requests need said of their ba
  * Writer runs (A11-94): a new-ticket request is its own record, holds a worker slot only while it runs, and keeps its drafts until each is settled.
  */
 
-const request = { id: "w1", request: "Show the requests a person made", mode: "quick" as const, form: {} };
+const request = { id: "w1", request: "Show the requests a person made", mode: "quick" as const, placement: "auto" as const, form: {} };
 /** A ticket the run filed, as the board holds it once the tracker has read it back (A11-135). */
 const filed = (key: string) => ({ key, url: `https://linear.app/x/${key}`, inPick: true });
 
@@ -851,6 +851,11 @@ test("a writer run is queued, starts on a free slot, and holds one while it runs
   assert.equal(liveRunCount(queue), 0, "a run that has ended holds no slot");
   assert.equal(writerStatus(writerOf(queue, "w1")!), "done");
   assert.deepEqual(writerOf(queue, "w1")?.tickets, [filed("NBF-1")]);
+});
+
+test("A11-199: a writer run records the placement it is queued with", () => {
+  const manual = queueWriter(emptyQueue(1), { ...request, placement: "manual", form: { priority: "low" } }, 1);
+  assert.deepEqual([writerOf(manual, "w1")?.placement, writerOf(manual, "w1")?.form], ["manual", { priority: "low" }]);
 });
 
 test("a writer run records the model and effort it is queued with, and a run queued without them records none", () => {
@@ -965,6 +970,16 @@ test("a run an older board left for review is failed, and an older grill run wai
   assert.equal(writerOf(loaded, "w2")?.startedAt, undefined, "and its clock starts again: a grill limit counts from the resume, not from an hours-old start");
   assert.equal(writerOf(loaded, "w3")?.failure, LEGACY_CREATING_FAILURE);
   assert.deepEqual(writerOf(loaded, "w3")?.tickets, [{ key: "NBF-7", url: "u", inPick: true }], "a ticket an older board made is kept, as made, and an absent flag meant in Pick");
+});
+
+test("A11-199: a writer run stored before placement existed is read with the placement its form implies, and one that names its placement keeps it", () => {
+  const path = join(tmpDir("ticket-queue-placement-"), "queue.json");
+  const { placement: _placed, ...bare } = request;
+  const stored = (id: string, form: object, placement?: string) => ({ ...bare, id, phase: "queued", queuedAt: 1, form, tickets: [], ...(placement === undefined ? {} : { placement }) });
+  writeFileSync(path, JSON.stringify({ entries: [], max: 1, paused: true, writers: [stored("w1", {}), stored("w2", { priority: "high" }), stored("w3", { repo: "a" }, "auto"), stored("w4", {}, "manual")] }));
+  const loaded = loadQueue(path, 1);
+  assert.deepEqual(["w1", "w2", "w3", "w4"].map((id) => writerOf(loaded, id)?.placement), ["auto", "manual", "auto", "manual"],
+    "a run with no placement is auto without choices and manual with them; a stored placement is kept");
 });
 
 test("a legacy run that was creating its tickets, with every draft made, ends done: no ticket is left to make (A11-135)", () => {

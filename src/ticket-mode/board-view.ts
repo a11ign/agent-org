@@ -63,7 +63,7 @@ export const GRILL_TITLE = "Grill this ticket in a terminal: the open decisions 
 
 
 /** The request form's values, as the page holds them: text, the chosen mode, and the optional choices, empty when none. */
-export type WriterFormValues = Readonly<{ request: string; mode: string; project?: string; repo?: string; goal?: string; priority?: string; parent?: string }>;
+export type WriterFormValues = Readonly<{ request: string; mode: string; placement?: string; project?: string; repo?: string; goal?: string; priority?: string; parent?: string }>;
 
 /**
  * Whether the form can be sent, and what it says when it cannot: a request is needed, and grill needs a terminal the machine names. PURE.
@@ -74,9 +74,15 @@ export function writerStart(form: Pick<WriterFormValues, "request" | "mode">, { 
   return { enabled: true, reason: null };
 }
 
-/** The request body the form sends: its text trimmed, and each choice the person made, with the empty ones left out. PURE. */
+/**
+ * The request body the form sends: its text trimmed, and each choice the person made, with the empty ones left out. A form that names its placement (A11-199)
+ * sends it: `auto` sends no choices, since the writer makes them, and `manual` sends the ones made. A form that names none sends the choices alone, as it
+ * did before placement, and the server reads the placement from them. PURE.
+ */
 export function writerBody(form: WriterFormValues): Record<string, string> {
   const body: Record<string, string> = { request: form.request.trim(), mode: form.mode };
+  if (form.placement !== undefined) body.placement = form.placement;
+  if (form.placement === "auto") return body;
   for (const name of ["project", "repo", "goal", "priority", "parent"] as const) {
     const value = (form[name] ?? "").trim();
     if (value !== "") body[name] = value;
@@ -106,11 +112,11 @@ export function writerChoiceLabel(run: Pick<WriterRunView, "model" | "effort">):
 }
 
 /** A ticket a new-ticket run made, as the board shows it: its key, its address when the tracker has it, and whether Pick lists it. */
-export type WriterTicketView = Readonly<{ key: string; url: string | null; inPick: boolean | null }>;
+export type WriterTicketView = Readonly<{ key: string; url: string | null; inPick: boolean | null; title?: string; priority?: number; project?: string | null }>;
 
 /** A new-ticket run's view on the board: its request, its phase, and the tickets it made. */
 export type WriterRunView = Readonly<{
-  id: string; request: string; mode: "quick" | "grill"; phase: string; status: string; form: Readonly<Record<string, string>>; model?: string; effort?: string;
+  id: string; request: string; mode: "quick" | "grill"; placement: "auto" | "manual"; phase: string; status: string; form: Readonly<Record<string, string>>; model?: string; effort?: string;
   workspace?: string; pane?: string; failure?: string; tickets: readonly WriterTicketView[];
 }>;
 
