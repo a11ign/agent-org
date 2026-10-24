@@ -118,7 +118,7 @@ export type OnboardDeps = Readonly<{
   /** Removes a file an interim guard leaves behind, once its replacement is proven. */
   removeFile: (path: string) => void;
   isDirectory: (path: string) => boolean;
-  /** The names in a directory, or [] when it cannot be read: the checkouts onboard finds in the folder it runs in (A11-186). */
+  /** The names in a directory; THROWS when it cannot be read, which the picker says: the checkouts onboard finds in the folder it runs in (A11-186). */
   listDir: (path: string) => string[];
   /** The folder onboard runs in (A11-186): where it looks for checkouts first, and where it clones to by default. */
   cwd: string;
@@ -194,13 +194,8 @@ function readHostText(path: string, deps: OnboardDeps): string | null {
   }
 }
 
-/**
- * The host file as an object, moved to the one shape first: an old key is moved into its provider block with a backup beside the file, exactly as
- * `doctor --fix` moves it. A file that would read differently after the move is refused, and nothing is written.
- */
-async function currentHost(path: string, deps: OnboardDeps): Promise<Record<string, unknown>> {
-  const text = readHostText(path, deps);
-  if (text === null) return {};
+/** The host file's text as an object. REFUSES text that is not JSON or not an object, by name, so onboard never writes over it. */
+function parseHostText(path: string, text: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -208,6 +203,17 @@ async function currentHost(path: string, deps: OnboardDeps): Promise<Record<stri
     throw new OnboardRefusal(`${path} is not valid JSON, so onboard will not write over it. Fix or move it, then run onboard again.`);
   }
   if (!isObject(parsed)) throw new OnboardRefusal(`${path} does not hold a JSON object`);
+  return parsed;
+}
+
+/**
+ * The host file as an object, moved to the one shape first: an old key is moved into its provider block with a backup beside the file, exactly as
+ * `doctor --fix` moves it. A file that would read differently after the move is refused, and nothing is written.
+ */
+async function currentHost(path: string, deps: OnboardDeps): Promise<Record<string, unknown>> {
+  const text = readHostText(path, deps);
+  if (text === null) return {};
+  const parsed = parseHostText(path, text);
   const fix = await planHostFix(text, deps.catalog());
   if (fix.kind === "refused") throw new OnboardRefusal(`${path}: ${fix.reason}`);
   if (fix.kind === "nothing") return parsed;
@@ -277,18 +283,20 @@ async function pickedRepositories(held: Readonly<Record<string, string>>, deps: 
   }
 }
 
-/** The host file's clones, read leniently: a file that is absent, not JSON or holds no clones holds none (the host file itself is read, and refused, later). */
+/**
+ * The host file's clones, for the picker to pre-tick and keep. A host file that is absent holds none; one that exists and cannot be read, is not JSON or is not an object is REFUSED by name, as `currentHost`
+ * refuses it, before the person is asked anything: an unreadable file is not an empty one.
+ */
 function heldClones(hostFile: string, deps: OnboardDeps): Record<string, string> {
-  const text = readHostText(hostFile, deps);
-  if (text === null) return {};
+  if (!deps.exists(hostFile)) return {};
+  let text: string;
   try {
-    const parsed: unknown = JSON.parse(text);
-    const clones = isObject(parsed) && isObject(parsed.clones) ? parsed.clones : {};
-    return Object.fromEntries(Object.entries(clones).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+    text = deps.readFile(hostFile);
   } catch (error) {
-    void error; // `currentHost` refuses a host file that is not JSON, by name
-    return {};
+    throw new OnboardRefusal(`${hostFile} cannot be read (${(error as Error).message}), so onboard will not write over it. Fix its permissions, then run onboard again.`);
   }
+  const clones = parseHostText(hostFile, text).clones;
+  return Object.fromEntries(Object.entries(isObject(clones) ? clones : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
 /** The repositories a person names at a terminal, one per line, until an empty line. */
@@ -652,7 +660,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ? realpathSync(process.arg
       readFile: (path) => readFileSync(path, "utf8"), writeFile: (path, text) => writeAtomic(path, text, 0o600),
       exists: (path) => existsSync(path), removeFile: (path) => rmSync(path, { force: true }),
       isDirectory: (path) => existsSync(path) && statSync(path).isDirectory(),
-      listDir: (path) => { try { return readdirSync(path); } catch { return []; } },
+      listDir: (path) => readdirSync(path),
       cwd: process.cwd(), codeHost: () => loadedCodeHost(process.env), prompts: clackPrompts(), now: () => new Date(),
       ensureBun: () => ensureBun({
         home, env: process.env, platform: process.platform, arch: process.arch, exists: existsSync,

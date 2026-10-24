@@ -139,7 +139,7 @@ function deps(over: Partial<OnboardDeps> = {}, answers: string[] = [], runOver: 
     removeFile: (path) => rmSync(path, { force: true }),
     now: () => new Date("2026-10-20T10:00:00.000Z"),
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
-    listDir: (path) => { try { return readdirSync(path); } catch { return []; } },
+    listDir: (path) => { try { return readdirSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; } },
     // The folder onboard runs in holds nothing, and the code host lists nothing: at a terminal the picker finds nothing to offer and onboard asks for paths, as it always did (A11-186).
     cwd: join(home, "repos"),
     codeHost: () => { const host = createFakeCodeHost(); host.seedOwners(null); return host; },
@@ -995,4 +995,22 @@ test("A11-186: with --repo at a terminal the picker is not used", async () => {
   const { deps: d, home, repo } = laptop({ prompts: NO_PROMPTS });
   await onboard(options({ repos: [repo], start: false }), d);
   assert.deepEqual(hostOf(home).clones, { "nbl-ui-netbox": repo });
+});
+
+test("A11-186: a host file that is not JSON, or cannot be read, refuses an absent profile before anything is asked or written", async () => {
+  for (const [text, said] of [["{ not json", /is not valid JSON, so onboard will not write over it/], ["[1]", /does not hold a JSON object/]] as const) {
+    const answers = ["ZZ", "none", "none", "none", "local"];
+    const { deps: d, home, asked, written } = laptop({}, answers);
+    mkdirSync(join(home, ".agent-org"), { recursive: true });
+    writeFileSync(join(home, ".agent-org", "host.json"), text);
+    await assert.rejects(onboard(options({ profile: "new-laptop", start: false }), d), (error: unknown) => error instanceof OnboardRefusal && said.test(error.message));
+    assert.deepEqual(asked, [], "no profile question was asked");
+    assert.deepEqual(written, []);
+    assert.ok(!existsSync(join(home, ".agent-org", "profiles", "new-laptop.json")));
+  }
+  const { deps: d, home, written } = laptop({ readFile: (path) => { if (path.endsWith("host.json")) throw new Error("EACCES: permission denied"); return readFileSync(path, "utf8"); } });
+  mkdirSync(join(home, ".agent-org"), { recursive: true });
+  writeFileSync(join(home, ".agent-org", "host.json"), "{}");
+  await assert.rejects(onboard(options({ profile: "new-laptop", start: false }), d), (error: unknown) => error instanceof OnboardRefusal && /cannot be read \(EACCES: permission denied\), so onboard will not write over it/.test(error.message));
+  assert.deepEqual(written, []);
 });

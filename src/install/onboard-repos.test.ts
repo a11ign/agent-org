@@ -69,6 +69,16 @@ function folderOf(remotes: Record<string, string>): { cwd: string; home: string 
   return { cwd, home: tmpDir("onboard-repos-home-") };
 }
 
+/** `readdirSync`, with a folder that is not there holding nothing; any other failure throws, as the production seam does. */
+function listDirectory(path: string): string[] {
+  try {
+    return readdirSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 function pickerOver(cwd: string, home: string, answers: Answer[]) {
   const host = createFakeCodeHost("octo");
   const { prompts, asked } = scripted(answers);
@@ -77,7 +87,7 @@ function pickerOver(cwd: string, home: string, answers: Answer[]) {
     cwd, home, repositories: host.repositories!, prompts, out: { log: (text: string) => printed.push(text) },
     isDirectory: (path) => { try { return statSync(path).isDirectory(); } catch { return false; } },
     exists: (path) => existsSync(path), readFile: (path) => readFileSync(path, "utf8"),
-    listDir: (path) => { try { return readdirSync(path); } catch { return []; } },
+    listDir: (path) => listDirectory(path),
   };
   return { host, deps, asked, printed };
 }
@@ -356,6 +366,39 @@ test("when every owner's repositories cannot be listed it is the same as when th
   assert.equal(await pickRepositories({}, deps), null);
   assert.ok(printed.includes("could not list octo's repositories"));
   assert.ok(printed.at(-1)!.endsWith(", so name them by path"));
+});
+
+test("a folder that cannot be read is said, and is not taken for one with no checkouts", async () => {
+  const { cwd, home } = repos();
+  const { host, deps, asked, printed } = pickerOver(cwd, home, [pick("octo"), pick()]);
+  host.seedRepositories("octo", ["octo/dotfiles"]);
+  const refusing: PickerDeps = { ...deps, listDir: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); } };
+  await pickRepositories({}, refusing);
+  assert.ok(printed.includes(`could not read ${cwd} (EACCES: permission denied), so the checkouts in it were not looked for`), printed.join("\n"));
+  assert.ok(!printed.some((text) => text.startsWith("No repositories from GitHub")), "an unreadable folder is not called empty");
+  assert.equal(asked[0].message, "Organisations to add repositories from");
+});
+
+test("a checkout whose config cannot be read is said and left out, and the others are still listed", async () => {
+  const { cwd, home } = repos();
+  const { deps, asked, printed } = pickerOver(cwd, home, [accept, no]);
+  const failing: PickerDeps = { ...deps, readFile: (path) => { if (path === join(cwd, "lab", ".git", "config")) throw new Error("EACCES: permission denied"); return readFileSync(path, "utf8"); } };
+  await pickRepositories({}, failing);
+  assert.ok(printed.includes(`could not read ${cwd}/lab/.git/config (EACCES: permission denied), so ${cwd}/lab is left out`), printed.join("\n"));
+  assert.deepEqual(labels(asked[0]), ["agent-org", "documents"]);
+});
+
+test("a destination directory that cannot be read is not called empty and is not cloned into", async () => {
+  const cwd = tmpDir("onboard-repos-unreadable-");
+  const home = tmpDir("onboard-repos-home-");
+  mkdirSync(join(cwd, "dotfiles"));
+  const { host, deps, printed } = pickerOver(cwd, home, [pick("octo"), pick("octo/dotfiles"), keep]);
+  host.seedRepositories("octo", ["octo/dotfiles"]);
+  const refusing: PickerDeps = { ...deps, listDir: (path) => { if (path === join(cwd, "dotfiles")) throw new Error("EACCES: permission denied"); return listDirectory(path); } };
+  const picked = await pickRepositories({}, refusing);
+  assert.deepEqual(host.repositoriesWorld.cloned, []);
+  assert.match(printed.at(-1)!, /✗ dotfiles .*not cloned: .* exists and is not a checkout of octo\/dotfiles/);
+  assert.deepEqual(picked, []);
 });
 
 test("a prompt that is cancelled stops the picker", async () => {

@@ -26,7 +26,7 @@ export type PickerDeps = Readonly<{
   isDirectory: (path: string) => boolean;
   exists: (path: string) => boolean;
   readFile: (path: string) => string;
-  /** The names in a directory, or [] when it cannot be read. */
+  /** The names in a directory. THROWS when it cannot be read: the picker says so and does not call the folder empty. */
   listDir: (path: string) => string[];
 }>;
 
@@ -74,8 +74,8 @@ type Surroundings = Readonly<{
   expanded(path: string): string;
   /** The repository the main checkout at `path` is of, or null when it is not one, or its remotes name none on this host. */
   repositoryOf(path: string): HostRepository | null;
-  /** The main checkouts in the folder and one level below it. */
-  checkouts(): Checkout[];
+  /** The main checkouts in the folder and one level below it, and whether the folder could be read (when it could not, that is said and only the folder itself was looked at). */
+  checkouts(): Readonly<{ found: Checkout[]; folderRead: boolean }>;
 }>;
 
 function surroundingsOf(deps: PickerDeps): Surroundings {
@@ -87,7 +87,7 @@ function surroundingsOf(deps: PickerDeps): Surroundings {
     try {
       config = deps.readFile(join(path, ".git", "config"));
     } catch (error) {
-      void error; // a checkout whose config cannot be read names no repository
+      deps.out.log(`could not read ${join(path, ".git", "config")} (${(error as Error).message}), so ${path} is left out`);
       return null;
     }
     return remoteUrls(config).map((url) => deps.repositories.repositoryOfRemote(url)).find((repository) => repository !== null) ?? null;
@@ -96,16 +96,26 @@ function surroundingsOf(deps: PickerDeps): Surroundings {
     if (!repositoryAt.has(path)) repositoryAt.set(path, read(path));
     return repositoryAt.get(path) ?? null;
   };
+  /** The folders one level below the working folder worth looking in, or null when it cannot be read (said once, so an unreadable folder is not taken for an empty one). */
+  const foldersBelow = (): string[] | null => {
+    try {
+      return deps.listDir(cwd).filter((name) => !name.startsWith(".") && !SKIPPED_FOLDERS.has(name)).sort().map((name) => join(cwd, name));
+    } catch (error) {
+      deps.out.log(`could not read ${cwd} (${(error as Error).message}), so the checkouts in it were not looked for`);
+      return null;
+    }
+  };
   return {
     shown: (path) => (path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path),
     expanded: (path) => (path === "~" || path.startsWith("~/") ? join(home, path.slice(1)) : path),
     repositoryOf,
     checkouts() {
-      const below = deps.listDir(cwd).filter((name) => !name.startsWith(".") && !SKIPPED_FOLDERS.has(name)).sort().map((name) => join(cwd, name));
-      return [cwd, ...below].flatMap((path) => {
+      const below = foldersBelow();
+      const found = [cwd, ...(below ?? [])].flatMap((path) => {
         const repository = repositoryOf(path);
         return repository === null ? [] : [{ repository, path }];
       });
+      return { found, folderRead: below !== null };
     },
   };
 }
@@ -257,12 +267,22 @@ async function askCloneFolder(context: Readonly<{ deps: PickerDeps; surroundings
   }
 }
 
+/** Whether `path` is a directory with nothing in it. A directory that cannot be read is not called empty. */
+function isEmptyDirectory(path: string, deps: PickerDeps): boolean {
+  try {
+    return deps.isDirectory(path) && deps.listDir(path).length === 0;
+  } catch (error) {
+    void error; // not known to be empty, so it is not cloned into
+    return false;
+  }
+}
+
 /** Where to clone `repository`, and what is already there: a checkout of it is used as it is, anything else is not cloned over. */
 function placeFor(repository: HostRepository, folder: string, context: Readonly<{ surroundings: Surroundings; deps: PickerDeps }>): { path: string; existing: Row | null } {
   const { surroundings, deps } = context;
   const path = join(folder, repository.name);
   // `git clone` takes a destination that is an empty directory.
-  if (!deps.exists(path) || (deps.isDirectory(path) && deps.listDir(path).length === 0)) return { path, existing: null };
+  if (!deps.exists(path) || isEmptyDirectory(path, deps)) return { path, existing: null };
   const there = surroundings.repositoryOf(path);
   const found: Row | null = there !== null && same(there.fullName, repository.fullName) ? { name: repository.name, path, fullName: repository.fullName, ok: true, how: "found", picked: true } : null;
   return { path, existing: found ?? { name: repository.name, path, fullName: repository.fullName, ok: false, how: `not cloned: ${surroundings.shown(path)} exists and is not a checkout of ${repository.fullName}`, picked: true } };
@@ -334,10 +354,11 @@ const NAME_THEM_BY_PATH = ", so name them by path";
 export async function pickRepositories(clones: Held, deps: PickerDeps): Promise<PickedRepository[] | null> {
   const surroundings = surroundingsOf(deps);
   const held = heldOf(clones, surroundings);
-  const found = onePerRepository(surroundings.checkouts(), held);
+  const scanned = surroundings.checkouts();
+  const found = onePerRepository(scanned.found, held);
   let rows: Row[] = [];
   if (found.length > 0) rows = foundRows(await pickFound(found, held, { deps, surroundings }), held);
-  else deps.out.log(`No repositories from GitHub in ${surroundings.shown(deps.cwd)}`);
+  else if (scanned.folderRead) deps.out.log(`No repositories from GitHub in ${surroundings.shown(deps.cwd)}`);
   if (found.length === 0 || await deps.prompts.confirm({ message: "Add repositories not cloned here?", initial: false })) {
     const added = await addFromHost({ shown: found, picked: rows, held, deps, surroundings });
     if (added === null) return null;
