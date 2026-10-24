@@ -393,8 +393,9 @@ function reviewPull(ctx: PoolContext, reviewer: ReviewerPort, url: string): Read
   const tookOver = tookOverOf(started, pullReads.get(url), head);
   const reviewing = reviewer.live(ref);
   const unclaimed = unclaimedNoteOf(started, reviewing ? ctx.reviewerMemory.unclaimed.get(key) : undefined);
-  // A reviewer started for this head, with no review posted on it yet (or one re-reviewing a head its block stands on), may be stopped on a dialog (A11-221).
-  const dialog = reviewing && (!posted || reviewerRereviewed.has(key)) && reviewerStarted.has(key) ? stoppedDialog(ctx, reviewer, url, ref) : null;
+  // A reviewer started for this head with no review posted on it yet, or one re-reviewing a head its block stands on, may be stopped on a dialog (A11-221).
+  const mayShowDialog = reviewerStarted.has(key) && (!posted || reviewerRereviewed.has(key));
+  const dialog = reviewing && mayShowDialog ? stoppedDialog(ctx, reviewer, url, ref) : null;
   const read: PullRead = {
     head, settled: state.settled, reviewing, verdict: reviewWordAt(state.reviews, head),
     earlier: earlierReviewWord(state.reviews, head), refusal: started?.refusal ?? null, unposted, ...(tookOver === undefined ? {} : { tookOver }), ...(unclaimed === undefined ? {} : { unclaimed }),
