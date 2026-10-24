@@ -7,7 +7,8 @@
  * reading a manifest, so the programs this tool ships are held to it by a walk of their source. This asks whether a spawn should be of npm at
  * all; whether it is safe on Windows is `lib/npm-cli-executable.ts`'s question.
  *
- * NO FILE IS NAMED IN `ALLOWED` NOW. It held one, `src/lib/isolation-gate.ts`, whose CONSUMER half installs the packed tarballs with npm into a
+ * ONE FILE IS NAMED IN `ALLOWED`: `src/install/pnpm.ts` (A11-185), whose last runner for the pinned pnpm is `npm exec`, because a Homebrew Node ships no corepack and
+ * every npm has `exec`. It carries the `STAYS npm` comment. Before that none was named, and the list held one, `src/lib/isolation-gate.ts`, whose CONSUMER half installs the packed tarballs with npm into a
  * directory that is not a workspace, because that is the install a user gets: npm was the point there, and the file carried a one-line
  * `STAYS npm` comment, pinned here. That file is the toolchain's since a11ign/agent-org#522 and no longer in this tree to be scanned; the table
  * and its checks stay, so a future exemption is a decision made here. The primary-update script was carried as named debt until a11ign/a11ign#3108
@@ -24,7 +25,9 @@ import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { toolSources, type ToolFile } from "./tool-source.ts";
 
 /** The named files that keep npm, and why. The reason is for a reader; the test pins the FILE NAMES. */
-const ALLOWED: Record<string, string> = {};
+const ALLOWED: Record<string, string> = {
+  "src/install/pnpm.ts": "the pinned pnpm runs through npm itself when no corepack sits beside node or on PATH (Homebrew Node, Node 25 and later): npm is the point, found through npmCliScriptCandidates",
+};
 
 /** Every comment in an allowlisted file that says why, matched by this exact opening. */
 const STAYS_MARKER = /\/\/ STAYS npm\b/;
@@ -132,8 +135,8 @@ test("positive control: the walk is not empty, and finds the spawn that IS exemp
   }
 });
 
-test("there is NO exempt file, so a new one is a decision made here and not a convenience", () => {
-  assert.deepEqual(Object.keys(ALLOWED), []);
+test("there is ONE exempt file, so a new one is a decision made here and not a convenience", () => {
+  assert.deepEqual(Object.keys(ALLOWED), ["src/install/pnpm.ts"]);
 });
 
 test("the allowlisted file says in a `STAYS npm` comment why it does", () => {

@@ -26,6 +26,9 @@ const INSTALL_FLAGS = "install --prod --no-frozen-lockfile --ignore-scripts --ig
 /** Every program install.sh runs, other than node, npm and corepack, which a case chooses. */
 const TOOLS = ["git", "tar", "grep", "sed", "sort", "tail", "head", "dirname", "mktemp", "mv", "rm", "mkdir", "cat", "chmod", "uname", "readlink"];
 
+/** A CI runner sets NVM_DIR, which would make every Node fix `nvm install`: the fix a case expects is for the Node it builds, so these start empty. */
+const NO_VERSION_MANAGER = { NVM_DIR: "", FNM_DIR: "", FNM_MULTISHELL_PATH: "" };
+
 const programPath = (name: string) => execFileSync("/bin/sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim();
 
 /** A bare repository holding one commit per tag. */
@@ -95,7 +98,7 @@ function oldNodeDir(root: string): string {
 function install(home: string, path: string, repo: string, args: string[] = [], extra: Record<string, string> = {}) {
   return spawnSync(BASH, [INSTALL_SH, ...args], {
     encoding: "utf8",
-    env: { ...GIT_ENV, HOME: home, PATH: path, AGENT_ORG_REPO: repo, AGENT_ORG_HOME: "", AGENT_ORG_HOST: "", ...extra },
+    env: { ...GIT_ENV, ...NO_VERSION_MANAGER, HOME: home, PATH: path, AGENT_ORG_REPO: repo, AGENT_ORG_HOME: "", AGENT_ORG_HOST: "", ...extra },
   });
 }
 
@@ -128,7 +131,7 @@ const SCRIPT_IS_UTIL_LINUX = /util-linux/.test(spawnSync("script", ["--version"]
 function installOnTerminal(home: string, path: string, repo: string, extra: Record<string, string> = {}) {
   return spawnSync(programPath("script"), ["-qec", `${BASH} ${INSTALL_SH}`, "/dev/null"], {
     encoding: "utf8",
-    env: { ...GIT_ENV, HOME: home, PATH: path, AGENT_ORG_REPO: repo, AGENT_ORG_HOME: "", AGENT_ORG_HOST: "", TERM: "xterm", ...extra },
+    env: { ...GIT_ENV, ...NO_VERSION_MANAGER, HOME: home, PATH: path, AGENT_ORG_REPO: repo, AGENT_ORG_HOME: "", AGENT_ORG_HOST: "", TERM: "xterm", ...extra },
   });
 }
 

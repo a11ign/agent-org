@@ -11,6 +11,9 @@
 //   1. the corepack beside node, as every install ran it before: a machine where this works today does not change;
 //   2. a `corepack` on PATH, where `brew install corepack` and `npm install -g corepack` put it;
 //   3. `npm exec --yes pnpm@<pinned> --`, which every npm has, so it is the floor.
+//
+// STAYS npm: the third runner is npm itself, found through `npmCliScriptCandidates`, and a machine with no corepack has nothing else to run pnpm by.
+// `src/packaging/no-npm-spawn.test.ts` names this file as its one exemption, and says why there.
 import { existsSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { npmCliScriptCandidates } from "../lib/npm-cli-executable.ts";
