@@ -175,7 +175,10 @@ test("A11-213: a flag set on a run whose pull request then merges or whose ticke
   }
 });
 
-test("A11-213: a round the same watch starts is not lost to the flag: new feedback on a pull request that goes stale in that watch starts its round, and the round carries no note", () => {
+/** Let the tick that a feedback round wakes, which `watchFeedback` does not wait for, finish before the test's directory is removed. */
+const roundStarted = async () => { for (let i = 0; i < 50; i += 1) await new Promise((resolve) => setImmediate(resolve)); };
+
+test("A11-213: a round the same watch starts is not lost to the flag: new feedback on a pull request that goes stale in that watch starts its round, and the round carries no note", async () => {
   const { clock, host, pool, entry } = blockedPool();
   pool.watchFeedback();
   clock.now = NOW + 31 * MINUTE;
@@ -183,6 +186,7 @@ test("A11-213: a round the same watch starts is not lost to the flag: new feedba
   pool.watchFeedback();
   assert.deepEqual([entry().phase, entry().rounds], ["queued", 1], "the round was queued from the feedback");
   assert.equal(entry().handedBack, undefined);
+  await roundStarted();
 });
 
 test("A11-213: recordPullHeads keeps the stamp it is given", () => {
