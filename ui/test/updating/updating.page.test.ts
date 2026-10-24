@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright-core";
+import type { QueueView } from "../../src/api/types.ts";
 import { ticketsBoardStand, type Stand } from "../fixtures.ts";
 import { serveInstance } from "../instance-routes.ts";
 import { runsStand } from "../runs/runs-stand.ts";
@@ -154,7 +155,7 @@ describe("the drain banner, in Chromium", () => {
     const stand = path === "/next/runs" ? runsStand() : ticketsBoardStand();
     const connection = Object.keys(stand.instances!)[0];
     const answers = stand.instances![connection];
-    const queue = { ...answers.queue, update: BREAKING };
+    const queue = { ...answers.queue, update: BREAKING } as unknown as QueueView;
     const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 } });
     await serveInstance(context, { stand: { ...stand, instances: { [connection]: { ...answers, queue } } } });
     const page = await context.newPage();
