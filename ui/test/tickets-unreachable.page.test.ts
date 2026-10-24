@@ -4,6 +4,7 @@ import type { Browser, BrowserContext, Page } from "playwright-core";
 import { captureName } from "../../src/ticket-mode/capture.ts";
 import { HERE, PERSONAL, ticketsBoardStand, type InstanceAnswers, type Stand } from "./fixtures.ts";
 import { serveInstance } from "./instance-routes.ts";
+import { withWriter } from "./new-ticket/new-ticket-stand.ts";
 import { overflowProblem, SCREENS, SCREENSHOT_DIR } from "./screenshots.ts";
 import { launchBrowser, startSite, type Site } from "./site.ts";
 
@@ -35,7 +36,7 @@ function droppingStand(): { stand: Stand; link: { down: boolean } } {
 async function opened(stand: Stand, width: number): Promise<{ page: Page; context: BrowserContext }> {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
   await context.addInitScript(() => localStorage.setItem("ticket-mode.open", '["Backlog"]'));
-  await serveInstance(context, { stand });
+  await serveInstance(context, withWriter({ stand }));
   const page = await context.newPage();
   await page.goto(`${site.origin}${ROUTE}?connection=personal`);
   await page.locator(".row").first().waitFor();

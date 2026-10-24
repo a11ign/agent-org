@@ -23,7 +23,12 @@ describe("the states", () => {
     expect(screen.getByText("Nothing is assigned to you")).toBeTruthy();
     expect(screen.getByText("Describe what you need and the ticket writer will file it. Or look at tickets assigned to anyone, or to no one.")).toBeTruthy();
     expect(textOf(document.querySelector(".page-count"))).toBe("0 assigned to you");
-    expect((screen.getAllByRole("button", { name: "New ticket" })).every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    const buttons = screen.getAllByRole("button", { name: "New ticket" }) as HTMLButtonElement[];
+    expect(buttons.length).toBe(2);
+    expect(buttons.every((button) => !button.disabled)).toBe(true);
+    fireEvent.click(buttons[1] as HTMLButtonElement);
+    expect(screen.getByRole("dialog", { name: "New ticket" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Show anyone's tickets" }));
     expect(screen.queryByText("Nothing is assigned to you")).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Expand Backlog" }));

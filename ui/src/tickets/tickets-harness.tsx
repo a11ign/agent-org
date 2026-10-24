@@ -17,9 +17,9 @@ export const BACKLOG = [
   ticket({ key: "A11-3", title: "Label the boxes", goals: ["Fleet"] }),
 ];
 
-/** An instance's answers: the config of a machine that queues and plans, the tickets given, and a queue with nothing on it that is not paused. */
+/** An instance's answers: the config of a machine that queues and plans, the tickets given, a queue with nothing on it that is not paused, and no new-ticket request (the page reads them beside the tickets). */
 export const answers = (tickets: readonly TicketView[] = BACKLOG, more: InstanceAnswers = {}): InstanceAnswers => ({
-  config: queueingConfig(), tickets, queue: { ...queueOf(), paused: false } as unknown as QueueView, ...more,
+  config: queueingConfig(), tickets, queue: { ...queueOf(), paused: false } as unknown as QueueView, writer: { runs: [] }, ...more,
 });
 export const standOf = (instance: InstanceAnswers = answers()): Stand => ({ connections: [HERE], instances: { here: instance } });
 

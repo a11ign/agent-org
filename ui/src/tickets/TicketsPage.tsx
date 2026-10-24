@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { NewTicket } from "../new-ticket/NewTicket.tsx";
 import { useShell, type ShellValue } from "../shell/ShellProvider.tsx";
 import { PausedBanner, StatusBanner } from "./Banners.tsx";
 import { EmptyPanelView } from "./EmptyPanelView.tsx";
@@ -60,23 +62,23 @@ function Listing({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
 }
 
 /** The list by the tickets read's state: its skeleton, its empty panel, or its sections. */
-function ListByState({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
+function ListByState({ page, shell, onNewTicket }: Readonly<{ page: Page; shell: ShellValue; onNewTicket?: () => void }>) {
   const { state } = shell.tickets;
   // The queue says which tickets are already on it, so nothing is offered to be picked until it has been read.
   if (state === "loading" || (shell.queue.data === null && shell.queue.state === "loading")) return <TicketsSkeleton />;
-  if (state === "empty") return <EmptyPanelView list={page.list} writer={shell.config?.writer !== false} />;
+  if (state === "empty") return <EmptyPanelView list={page.list} writer={shell.config?.writer !== false} {...(onNewTicket === undefined ? {} : { onNewTicket })} />;
   return shell.tickets.data === null ? null : <Listing page={page} shell={shell} />;
 }
 
 /** The page under its header: the filters, the paused banner, the notice of the last Queue its children, and the list. */
-function Body({ page, shell }: Readonly<{ page: Page; shell: ShellValue }>) {
+function Body({ page, shell, onNewTicket }: Readonly<{ page: Page; shell: ShellValue; onNewTicket?: () => void }>) {
   if (shell.tickets.data === null && shell.tickets.state !== "loading") return null;
   return (
     <>
       <FilterRow filters={page.filters} list={page.list} />
       {shell.queue.data?.paused === true ? <PausedBanner /> : null}
       {page.actions.notice === null ? null : <StatusBanner>{page.actions.notice}</StatusBanner>}
-      <ListByState page={page} shell={shell} />
+      <ListByState page={page} shell={shell} {...(onNewTicket === undefined ? {} : { onNewTicket })} />
     </>
   );
 }
@@ -87,15 +89,30 @@ function TicketsContent() {
   const page = usePage(shell);
   const { tickets, connection, config, unreachable } = shell;
   const loaded = tickets.state !== "loading" && page.list.source !== null;
+  const [newTicketOpen, setNewTicketOpen] = useState(false);
+  // New ticket needs an instance that writes tickets and answers: it opens nothing before the config is read, and nothing while the connection is paused.
+  const writing = config?.writer === true;
+  const openNewTicket = writing && unreachable === null ? () => setNewTicketOpen(true) : undefined;
   const header = (
     <TicketsHeader
       count={loaded && page.list.source !== null ? countText(shell.projectTickets.length, page.list.source) : null}
       allOpen={page.folding.allOpen} foldable={page.list.sections.length > 0} onFold={page.folding.foldAll} writer={config?.writer !== false}
+      {...(openNewTicket === undefined ? {} : { onNewTicket: openNewTicket })}
       pausedFor={unreachable === null ? null : (connection?.name ?? "")} lastKnown={unreachable !== null && tickets.data !== null}
     />
   );
-  const body = <Body page={page} shell={shell} />;
-  return <>{header}<TicketsUnreachable><FailureBanner refusal={page.actions.refusal} clearRefusal={page.actions.clearRefusal} />{body}</TicketsUnreachable></>;
+  const body = <Body page={page} shell={shell} {...(openNewTicket === undefined ? {} : { onNewTicket: openNewTicket })} />;
+  return (
+    <>
+      {header}
+      {/* Outside the unreachable frame, which swaps its element when the connection drops or returns: a request held in what it wraps would be lost with it. */}
+      {writing && config !== null ? <NewTicket config={config} paused={unreachable === null ? null : (connection?.name ?? "")} open={newTicketOpen} onClose={() => setNewTicketOpen(false)} /> : null}
+      <TicketsUnreachable>
+        <FailureBanner refusal={page.actions.refusal} clearRefusal={page.actions.clearRefusal} />
+        {body}
+      </TicketsUnreachable>
+    </>
+  );
 }
 
 /** Until the connections are read the page is its header over the board's skeleton, which needs nothing the browser remembers. */

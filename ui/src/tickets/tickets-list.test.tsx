@@ -82,9 +82,12 @@ describe("filtering and folding the list", () => {
     expect(textOf(document.querySelector(".page-count"))).toBe("3 assigned to you");
   });
 
-  it("has a New ticket button that is present and disabled until the dialog lands, and none where the instance writes no tickets", async () => {
+  it("has a New ticket button that opens the dialog, and none where the instance writes no tickets", async () => {
     const { unmount } = await pageOn(standOf());
-    expect((screen.getByRole("button", { name: "New ticket" }) as HTMLButtonElement).disabled).toBe(true);
+    const button = screen.getByRole("button", { name: "New ticket" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(screen.getByRole("dialog", { name: "New ticket" })).toBeTruthy();
     unmount();
     await pageOn(standOf(answers(BACKLOG, { config: queueingConfig({ writer: false }) })));
     expect(screen.queryByRole("button", { name: "New ticket" })).toBeNull();

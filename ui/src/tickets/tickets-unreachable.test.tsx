@@ -16,7 +16,7 @@ function flaky(tickets: readonly TicketView[] = BACKLOG) {
   const link = { down: false, tickets };
   // Getters, not a spread of them, which would read each once.
   const instance: InstanceAnswers = {
-    config: answers().config, queue: answers().queue, post: () => ({ ok: true }),
+    config: answers().config, queue: answers().queue, writer: answers().writer, post: () => ({ ok: true }),
     get tickets() { return link.tickets; },
     get queueFails() { return link.down ? { status: 502, error: REFUSAL } : undefined; },
   };
@@ -159,7 +159,7 @@ describe("a page opened while the connection is already unreachable", () => {
     const link = { down: true };
     const live = answers([...BACKLOG, ticket({ key: "A11-9", title: "Live" })]);
     const instance: InstanceAnswers = {
-      config: live.config, tickets: live.tickets, queue: live.queue,
+      config: live.config, tickets: live.tickets, queue: live.queue, writer: live.writer,
       get configFail() { return link.down ? gone(answers().config) : undefined; },
       get ticketsFail() { return link.down ? gone(BACKLOG) : undefined; },
       get queueFails() { return link.down ? gone({ entries: [], max: 1, paused: false }) : undefined; },
