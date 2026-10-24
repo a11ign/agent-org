@@ -89,7 +89,10 @@ async function basesOf(options: Readonly<{ hostPath: string; projectPath?: strin
   return bases;
 }
 
-/** What the host file says now of the keys the Claude plugins are checked against; the settings the board started with when the file does not parse (its `note` says so). */
+/**
+ * What the host file says now of the keys the Claude plugins are checked against. A file that does not parse as a whole (for any key, not only the plugins') falls back to the settings the board
+ * started with, so the list shown is then the one the board started with, not the file's.
+ */
 function settingsOfText(text: string | null, started: TicketSettings, catalog: Catalog): TicketSettings {
   try {
     return text === null ? started : parseTicketSettings(JSON.parse(text), undefined, undefined, catalog);

@@ -58,7 +58,7 @@ describe("the Plugins badge in Chromium, over the built site", () => {
   it.each(["/next/settings/models", "/next/settings/workers", "/next/settings/machine"])("%s shows '1 needs attention' on the Plugins link at 1440px and 390px with no horizontal overflow, with one /api/plugins request", async (path) => {
     for (const screen of SCREENS) {
       const seen = await sidebarBadge(path, ONE_FAILING, screen);
-      expect(seen.text).toBe("Plugins1 needs attention");
+      expect(seen.text).toBe("Plugins 1 needs attention");
       expect(seen.asked).toHaveLength(1);
       expect(overflowProblem(seen.fit)).toBeNull();
       expect(seen.color).toBe("rgb(227, 179, 65)");

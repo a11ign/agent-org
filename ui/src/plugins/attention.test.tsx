@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { claudePlugin, failing, answerOf, pluginsFetch, standOf as pluginsOf, type PluginsStand } from "../../test/plugins/plugins-stand.ts";
 import { HERE, PERSONAL, type Stand } from "../../test/fixtures.ts";
+import { MIN_BACKOFF_MS } from "../api/poll-schedule.ts";
 import { ShellFrame } from "../shell/ShellFrame.tsx";
 import { ShellProvider } from "../shell/ShellProvider.tsx";
 import type { Page } from "../shell/routes.ts";
@@ -12,6 +13,8 @@ beforeEach(() => {
   history.replaceState(null, "", "/next/settings/models");
 });
 
+/** Just longer than the first backoff a failing poll waits before it reads again. */
+const POLL_MS_OF_BACKOFF = MIN_BACKOFF_MS + 200;
 const NOTHING_WRONG: Stand = { connections: [HERE] };
 
 /** A Settings page's sub-nav over a stand-in instance, with the Plugins page's shared read around it when `shared`. */
@@ -45,13 +48,13 @@ describe("the Plugins badge on the Settings sub-nav", () => {
 
   it("shows '1 needs attention' for one plugin whose doctor check fails", async () => {
     const { link } = await subNav("models", { plugins: pluginsOf({ answer: () => answerOf({ checks: FAILING }) }) });
-    await waitFor(() => expect(link().textContent).toBe("Plugins1 needs attention"));
+    await waitFor(() => expect(link().textContent).toBe("Plugins 1 needs attention"));
   });
 
   it("counts a Claude plugin that is not installed and one whose health is unknown with the agent-org plugin, and says 'need' for more than one", async () => {
     const claude = { readable: true, plugins: [claudePlugin({ entry: "a@m", name: "a", loads: false, why: "a@m is not installed" }), claudePlugin({ entry: "b@m", name: "b", loads: null })] };
     const { link } = await subNav("workers", { plugins: pluginsOf({ answer: () => answerOf({ checks: FAILING, claude }) }) });
-    await waitFor(() => expect(link().textContent).toBe("Plugins3 need attention"));
+    await waitFor(() => expect(link().textContent).toBe("Plugins 3 need attention"));
   });
 
   it("is on the Plugins link only", async () => {
@@ -61,11 +64,13 @@ describe("the Plugins badge on the Settings sub-nav", () => {
     expect(nav.getAllByText(/attention/)).toHaveLength(1);
   });
 
-  it("is hidden after a failed read", async () => {
+  it("is hidden after a failed read, and the read is not tried again on a backoff: the doctor checks it runs are not repeated by an open page", async () => {
     const { fetchWith, link } = await subNav("models", { plugins: pluginsOf({ fails: { status: 500, error: "the doctor checks fell over" } }) });
     await waitFor(() => expect(asked(fetchWith)).toHaveLength(1));
     await waitFor(() => expect(fetchWith.requests.length).toBeGreaterThan(3));
     expect(link().textContent).toBe("Plugins");
+    await new Promise((later) => setTimeout(later, POLL_MS_OF_BACKOFF));
+    expect(asked(fetchWith)).toHaveLength(1);
   });
 
   it("is hidden while an SSH instance cannot be reached, though the plugins were read and count one", async () => {
@@ -87,7 +92,7 @@ describe("the Plugins badge on the Settings sub-nav", () => {
     const plugins = () => screen.getByRole("link", { name: /^Plugins/ });
     expect(plugins().textContent).toBe("Plugins");
     release();
-    await waitFor(() => expect(plugins().textContent).toBe("Plugins1 needs attention"));
+    await waitFor(() => expect(plugins().textContent).toBe("Plugins 1 needs attention"));
   });
 });
 
@@ -102,7 +107,7 @@ describe("the read behind the badge", () => {
     await screen.findByRole("link", { name: /^Plugins/ });
     expect([root.mock.calls.length, asked(held)]).toEqual([0, []]);
     release();
-    await waitFor(() => expect(screen.getByRole("link", { name: /^Plugins/ }).textContent).toBe("Plugins1 needs attention"));
+    await waitFor(() => expect(screen.getByRole("link", { name: /^Plugins/ }).textContent).toBe("Plugins 1 needs attention"));
     expect([root.mock.calls.length, asked(held)]).toEqual([0, ["/c/here/api/plugins"]]);
     root.mockRestore();
   });

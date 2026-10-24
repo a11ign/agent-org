@@ -26,7 +26,7 @@ function ReadOfInstance({ children }: Readonly<{ children: ReactNode }>) {
 
 /**
  * The page's one read of the plugins, for the page and the badge beside it to share. It starts when the shell knows which instance it is showing: a read made before that would go to this
- * machine's board, whatever instance is chosen.
+ * machine's board, whatever instance is chosen. (The shell's own provider swaps its element type at that moment too, so everything beneath it starts afresh then anyway.)
  */
 export function PluginsRead({ children }: Readonly<{ children: ReactNode }>) {
   const { connectionsReady } = useShell();
