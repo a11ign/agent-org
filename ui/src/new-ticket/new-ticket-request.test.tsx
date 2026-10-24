@@ -47,10 +47,10 @@ function blankTab() {
   return { tab, open: rstest.spyOn(window, "open").mockReturnValue(tab as never) };
 }
 
-type Sending = Readonly<{ text?: string; mode?: "quick" | "grill"; manual?: Readonly<Record<string, string>> }>;
+type SendOptions = Readonly<{ text?: string; mode?: "quick" | "grill"; manual?: Readonly<Record<string, string>> }>;
 
 /** Opens the dialog, writes the request, chooses Grill and Manual placement's fields when asked (by their labels), and presses Write ticket. */
-function sendRequest({ text = REQUEST, mode = "quick", manual }: Sending = {}): void {
+function sendRequest({ text = REQUEST, mode = "quick", manual }: SendOptions = {}): void {
   openDialog();
   typeRequest(text);
   if (mode === "grill") fireEvent.click(inDialog().getByRole("radio", { name: /^Grill/ }));

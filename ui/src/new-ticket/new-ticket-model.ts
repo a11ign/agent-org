@@ -1,6 +1,6 @@
 // module: the New ticket dialog's rules -- the form it holds, the options its Manual fields offer, the writer pill, and the words of a refusal and of a request's rows. PURE.
 import { PRIORITY_NAMES } from "../../../src/ticket-mode/board-view/view-types-and-filters.ts";
-import { goalNames, projectNames, safeHref, WRITER_PRIORITY_LABEL, writerBody, writerChoiceLabel, type WriterFormValues, type WriterRunView, type WriterTicketView } from "../../../src/ticket-mode/board-view.ts";
+import { goalNames, projectNames, safeHref, WRITER_PRIORITY_LABEL, writerBody, writerChoiceLabel, type WriterRunView, type WriterTicketView } from "../../../src/ticket-mode/board-view.ts";
 import type { Placement } from "../../../src/ticket-mode/writer-placement.ts";
 import type { ConfigView, TicketView } from "../api/types.ts";
 
@@ -18,9 +18,6 @@ export type NewTicketForm = Readonly<{
 
 /** A fresh form: no request, Quick, Auto, and every Manual choice not set. */
 export const EMPTY_FORM: NewTicketForm = { request: "", mode: "quick", placement: "auto", project: "", repo: "", goal: "", priority: "", parent: "" };
-
-/** The five choices Manual placement sets. */
-export const PLACEMENT_FIELDS = ["project", "repo", "goal", "priority", "parent"] as const;
 
 export type Option = Readonly<{ value: string; label: string }>;
 
@@ -52,10 +49,7 @@ export function writerPillOf(config: ConfigView): Readonly<{ model: string; effo
 }
 
 /** The body `POST /api/writer` is sent: `writerBody` of the form, which sends no choices under Auto and only the ones made under Manual. */
-export function bodyOf(form: NewTicketForm): Record<string, string> {
-  const values: WriterFormValues = form;
-  return writerBody(values);
-}
+export const bodyOf = (form: NewTicketForm): Record<string, string> => writerBody(form);
 
 /** The server's sentence with a full stop, added only when it lacks one, as the refused board ends its sentence before "Your request is still here.". */
 export function sentenceEnding(sentence: string): string {
