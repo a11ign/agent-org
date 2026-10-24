@@ -256,6 +256,17 @@
   --measure-field: 180px;
   --dot-size-run: 8px;
   --opacity-sending: 0.45;
+
+  /* The update in progress (A11-217): the values the six update boards use that the tokens above do not hold. */
+  --color-warn-slow-text: #e8cf8a;
+  --color-warn-slow-heading: #f1dc9a;
+  --measure-update-card: 520px;
+  --update-top: 72px;
+  --icon-28: 28px;
+  --font-size-update-title: 18px;
+  --line-height-update-title: 26px;
+  --step-ring-width: 1.5px;
+  --spinner-duration-update: 0.9s;
 }
 
 /* Keyframes cannot read a custom property for their length of time, so the two animations are named here and timed by the tokens above where they are used. */

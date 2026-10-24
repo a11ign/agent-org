@@ -1,5 +1,6 @@
 import { isParked, runActions } from "../board-view/pull-status-and-notes.ts";
 import { find, replace, talkRound, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
+import { loggedPersonRound } from "./queue-person-round.ts";
 
 /** Whether a talk session can be opened for `entry`: its run is finished, its terminal is closed, and it ended with something to talk about. PURE. */
 function canTalk(entry: Entry | undefined): entry is Entry {
@@ -16,7 +17,8 @@ export function talk(queue: Queue, key: string, now: number): Queue {
   if (!canTalk(entry)) return queue;
   const together = entry.batch === undefined ? [entry] : queue.entries.filter((other) => other.batch === entry.batch && canTalk(other));
   const keys = new Set(together.map(({ ticket }) => ticket.key));
-  return { ...queue, entries: [...queue.entries.filter(({ ticket }) => !keys.has(ticket.key)), ...together.map((member) => talkRound(member, now))] };
+  const queued = { ...queue, entries: [...queue.entries.filter(({ ticket }) => !keys.has(ticket.key)), ...together.map((member) => talkRound(member, now))] };
+  return together.reduce<Queue>((next, member) => loggedPersonRound(next, member, "talk", now, null), queued);
 }
 
 /** A talk session that could not start: the run it replaced goes back on the board as it was. */

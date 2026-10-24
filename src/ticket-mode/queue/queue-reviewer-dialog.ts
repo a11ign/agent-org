@@ -11,4 +11,4 @@ import { recordHandedBackNote } from "./queue-pull-heads.ts";
  * found no dialog) clears a `handedBack` this wrote, recognised by its sentence form. It never replaces another `handedBack`, and it is written only over a run that waits on a review or a merge: one that reads Needs you for
  * its own reason, one that failed or concluded, and one that is over keep their own words. PURE.
  */
-export const recordReviewerDialog = (queue: Queue, key: string, note: string | null): Queue => recordHandedBackNote(queue, key, note, isReviewerDialogNote);
+export const recordReviewerDialog = (queue: Queue, key: string, note: string | null, now?: number): Queue => recordHandedBackNote(queue, key, note, isReviewerDialogNote, now);

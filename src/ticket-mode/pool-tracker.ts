@@ -44,7 +44,7 @@ export async function refreshTracker(ctx: PoolContext): Promise<void> {
       }
       if (source.pullStates !== undefined) {
         const pulls = await source.pullStates(keys);
-        update(ctx, (queue) => recordPullStates(queue, pulls));
+        update(ctx, (queue) => recordPullStates(queue, pulls, ctx.now()));
       }
     } catch {
       // the tracker could not be asked: the next refresh asks again

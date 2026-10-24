@@ -118,6 +118,34 @@ describe("usePoll cadence", () => {
   });
 });
 
+describe("usePoll's cap on the wait after failures (A11-217)", () => {
+  it("keeps the failures' wait within maxWaitMs when it names less: 2s, 4s, then every 5s (A11-217)", async () => {
+    const start = Date.now();
+    const { read, calls } = scripted<number[]>([fail()]);
+    renderHook(() => usePoll(read, { connection: LOCAL, maxWaitMs: () => 5_000 }));
+    await advance(0);
+    await advance(2_000 + 4_000 + 5_000 * 4);
+    const gaps = seen(calls, start).map((at, index, all) => at - (all[index - 1] ?? 0)).slice(1);
+    expect(gaps).toEqual([2_000, 4_000, 5_000, 5_000, 5_000, 5_000]);
+  });
+
+  it("asks maxWaitMs each time a read is scheduled, so the cap can come and go with the page's state (A11-217)", async () => {
+    const start = Date.now();
+    const { read, calls } = scripted<number[]>([fail()]);
+    const cap = { ms: Infinity };
+    renderHook(() => usePoll(read, { connection: LOCAL, maxWaitMs: () => cap.ms }));
+    await advance(0);
+    await advance(2_000 + 4_000 + 8_000);
+    cap.ms = 5_000;
+    await advance(16_000);
+    await advance(5_000 + 5_000);
+    const gaps = seen(calls, start).map((at, index, all) => at - (all[index - 1] ?? 0)).slice(1);
+    // 2s, 4s and 8s uncapped; the 16s wait was scheduled before the cap came, then the cap holds each wait to 5s.
+    expect(gaps.slice(0, 4)).toEqual([2_000, 4_000, 8_000, 16_000]);
+    expect(gaps.slice(4, 6)).toEqual([5_000, 5_000]);
+  });
+});
+
 describe("usePoll with repeat: false, a read made once", () => {
   it("makes one read after a success and no more, however far the timers advance", async () => {
     const { read, calls } = scripted([ok([1])]);

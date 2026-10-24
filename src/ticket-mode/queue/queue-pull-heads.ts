@@ -5,7 +5,8 @@
 import { runStatus } from "../board-view/pull-status-and-notes.ts";
 import { isStaleBlockNote } from "../board-view/stale-block.ts";
 import type { PullHead } from "../board-view/view-types-and-filters.ts";
-import { replace, type Queue } from "./queue-entries-and-outcomes.ts";
+import { find, replace, type Queue } from "./queue-entries-and-outcomes.ts";
+import { logEvent, logOf, shortReason, type RunEvent } from "./run-log.ts";
 
 /** Record the commit each open pull request of a finished run was at when it ended, by URL (A11-153). Kept on top of what is there, so a URL not read keeps its head. */
 export function recordOutcomeHeads(queue: Queue, key: string, heads: Readonly<Record<string, string>>): Queue {
@@ -24,9 +25,21 @@ export function moveOutcomeHeads(queue: Queue, key: string, from: string, to: st
 }
 
 /** Record each open pull request's head now and whether it is approved there, by URL, as the watch read them (A11-153). */
-export function recordPullHeads(queue: Queue, key: string, heads: Readonly<Record<string, PullHead>>): Queue {
-  return replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, pullHeads: heads } : entry));
+export function recordPullHeads(queue: Queue, key: string, heads: Readonly<Record<string, PullHead>>, now?: number): Queue {
+  const recorded = replace(queue, key, (entry) => (entry.phase === "finished" ? { ...entry, pullHeads: heads } : entry));
+  if (find(queue, key)?.phase !== "finished") return recorded;
+  // A verdict is logged when a pull request's head or its review differs from the last one logged for it (A11-219): the watch reads the same heads on every pass.
+  return Object.entries(heads).reduce<Queue>((next, [url, { head, review }]) => {
+    const verdict = review === "approved" || review === "changes-requested" ? review : null;
+    return verdict === null || sameVerdict(lastVerdict(next, key, url), head, verdict) ? next : logEvent(next, key, now, { kind: "verdict", url, head, review: verdict });
+  }, recorded);
 }
+
+/** The newest verdict logged for pull request `url` of ticket `key`, or undefined when none was. */
+const lastVerdict = (queue: Queue, key: string, url: string): Extract<RunEvent, { kind: "verdict" }> | undefined =>
+  logOf(queue, key).findLast((event): event is Extract<RunEvent, { kind: "verdict" }> => event.kind === "verdict" && event.url === url);
+
+const sameVerdict = (last: Extract<RunEvent, { kind: "verdict" }> | undefined, head: string, review: string): boolean => last?.head === head && last.review === review;
 
 /** The statuses a stale-block note may be written over: a run that waits on a review or a merge. Any other has its own reason, or is over (A11-213). */
 const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merge", "published"]);
@@ -36,13 +49,19 @@ const NOTEABLE: ReadonlySet<string> = new Set(["awaiting-review", "ready-to-merg
  * Respond to review acts on, and a null note (a push, an approval, a round) clears a `handedBack` this wrote, recognised by its sentence form as a conflict's is. It never replaces another `handedBack`, and it
  * is written only over a run that waits on a review or a merge ({@link NOTEABLE}): one that reads Needs you for its own reason (a disputed review the worker handed back), one that failed or concluded, and one that is over keep their own words. PURE.
  */
-export const recordStaleBlock = (queue: Queue, key: string, note: string | null): Queue => recordHandedBackNote(queue, key, note, isStaleBlockNote);
+export const recordStaleBlock = (queue: Queue, key: string, note: string | null, now?: number): Queue => recordHandedBackNote(queue, key, note, isStaleBlockNote, now);
 
 /**
  * A board note written as a finished run's `handedBack` and recognised by its sentence form (`isOwn`): a null note clears a `handedBack` that is this note and no other, and a note is written only over a run that waits on a
- * review or a merge ({@link NOTEABLE}) and has no `handedBack` of another kind. PURE.
+ * review or a merge ({@link NOTEABLE}) and has no `handedBack` of another kind. Needs you is logged once, for the note that is new (A11-219). PURE.
  */
-export function recordHandedBackNote(queue: Queue, key: string, note: string | null, isOwn: (text: string | undefined) => boolean): Queue {
+export function recordHandedBackNote(queue: Queue, key: string, note: string | null, isOwn: (text: string | undefined) => boolean, now?: number): Queue {
+  const noted = withNote(queue, key, note, isOwn);
+  return note !== null && find(noted, key)?.handedBack === note && find(queue, key)?.handedBack !== note ? logEvent(noted, key, now, { kind: "needs-you", reason: shortReason(note) ?? note }) : noted;
+}
+
+/** The queue with the `note` written over the run, or cleared by `null`: see {@link recordHandedBackNote}. PURE. */
+function withNote(queue: Queue, key: string, note: string | null, isOwn: (text: string | undefined) => boolean): Queue {
   return replace(queue, key, (entry) => {
     if (entry.phase !== "finished") return entry;
     if (note === null) {

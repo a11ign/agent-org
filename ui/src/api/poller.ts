@@ -5,7 +5,13 @@ import { nextDelay } from "./poll-schedule.ts";
  * What a poll needs: a read that takes the signal to drop it by, and where each answer goes. `repeat: false` makes it a one-shot read: a success schedules no
  * further read (a failure still backs off and tries again), and only `refresh` reads again.
  */
-export type PollerOptions<T> = Readonly<{ read: (signal: AbortSignal) => Promise<Answer<T>>; onAnswer: (answer: Answer<T>) => void; repeat?: boolean }>;
+export type PollerOptions<T> = Readonly<{
+  read: (signal: AbortSignal) => Promise<Answer<T>>;
+  onAnswer: (answer: Answer<T>) => void;
+  repeat?: boolean;
+  /** The longest wait before a read, asked each time one is scheduled: the backoff after failures never goes beyond it. None by default, so the wait is `nextDelay`'s alone. */
+  maxWaitMs?: () => number;
+}>;
 
 /**
  * A running poll: `refresh` reads now ("Check now", "Retry"), forgets the failures in a row so a failure it meets waits 2s, and resolves to that answer, or to the answer of the read already in flight, or to null when the read is dropped,
@@ -16,13 +22,13 @@ export type Poller<T> = Readonly<{ refresh: () => Promise<Answer<T> | null>; sto
 const hidden = (): boolean => document.visibilityState === "hidden";
 
 /**
- * Read, then wait and read again: after a success the wait is 5s, after the n-th failure in a row it is 2s doubling to 60s, and a success starts over. The next
+ * Read, then wait and read again: after a success the wait is 5s, after the n-th failure in a row it is 2s doubling to 60s (or to `maxWaitMs`, when it names less: the page waiting out an update tries every 5s), and a success starts over. The next
  * read is scheduled when an answer arrives, never on a fixed interval, so a slow answer cannot pile reads up. While the page is hidden nothing is scheduled; when
  * it is shown again, or its window gains focus, the failures in a row are forgotten and the read is made at once. A read still in flight then, or when `refresh` is
  * asked, is left to finish and its answer is the fresh one; a read still in flight when the poll stops is dropped.
  * A one-shot poll (`repeat: false`) that has read successfully waits for `refresh`: neither the clock, nor the page being shown again, nor the window's focus reads it.
  */
-export function startPolling<T>({ read, onAnswer, repeat = true }: PollerOptions<T>): Poller<T> {
+export function startPolling<T>({ read, onAnswer, repeat = true, maxWaitMs }: PollerOptions<T>): Poller<T> {
   let failuresInARow = 0;
   let settled = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -34,7 +40,7 @@ export function startPolling<T>({ read, onAnswer, repeat = true }: PollerOptions
   };
   const scheduleNext = () => {
     cancelTimer();
-    if (!hidden()) timer = setTimeout(readNow, nextDelay(failuresInARow));
+    if (!hidden()) timer = setTimeout(readNow, Math.min(nextDelay(failuresInARow), maxWaitMs?.() ?? Infinity));
   };
   async function settle(controller: AbortController): Promise<Answer<T> | null> {
     const answer = await read(controller.signal).catch(failedToSend);

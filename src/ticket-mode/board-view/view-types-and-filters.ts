@@ -90,8 +90,10 @@ export type ViewEntry = Readonly<{
   pullFiles?: Readonly<Record<string, readonly string[]>>;
   /** The tickets of its batch its planner said it waits on to merge, rather than stacking on: the keys of its blockers that must merge first. */
   waitMerged?: readonly string[];
-  /** Set once a publish run posted its pull requests: the first message's web address, or null when it gave none. */
-  published?: Readonly<{ link: string | null }>;
+  /** Set once a publish run posted its pull requests: when, and the first message's web address, or null when it gave none. */
+  published?: Readonly<{ link: string | null; at?: number }>;
+  /** Where the run ran, recorded when it started (A11-219): see `runTimeline`, which words the run's start from it. */
+  worker?: Readonly<{ instance: string }>;
   /** Set when the board stopped answering new feedback on its own and handed the run to a person: why. */
   handedBack?: string;
   /** Set while a running run's worker last said its own background work is still running: its reason, and whether it has stalled, and why (A11-85). */

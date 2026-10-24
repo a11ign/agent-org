@@ -54,6 +54,19 @@ async function queueFinished(b: ReturnType<typeof board>, outcome: Outcome): Pro
   b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((e) => ({ ...e, phase: "finished" as const, outcome, pullHeads })) });
 }
 
+test("A11-219: /api/queue sends a run's planned steps, current step and worker, and its event log, which the server's own queueing began", async () => {
+  const b = board();
+  await b.api("GET", "/api/tickets", {});
+  await b.api("POST", "/api/queue", { keys: ["NBF-1"], model: "sonnet", effort: "high" });
+  const plannedSteps = [{ n: 1, title: "Read the queue" }, { n: 2, title: "Record it" }];
+  const worker = { instance: "agents", host: "agents-host" };
+  b.store.set({ ...b.store.get(), entries: b.store.get().entries.map((entry) => ({ ...entry, plannedSteps, currentStep: 2, worker })) });
+  const [status, queue] = await b.api("GET", "/api/queue", {}) as [number, any];
+  assert.equal(status, 200);
+  assert.deepEqual([queue.entries[0].plannedSteps, queue.entries[0].currentStep, queue.entries[0].worker], [plannedSteps, 2, worker]);
+  assert.deepEqual(queue.runLog, { "NBF-1": [{ at: 7, kind: "queued", model: "sonnet", effort: "high", planFirst: false }] });
+});
+
 test("/api/parents reads the parents of the person's tickets that are not the person's own, and leaves out one it cannot read", async () => {
   const dir = tmpDir("ticket-server-parents-");
   const settings = parseTicketSettings({ clones: { "nbl-ui-netbox": "/r/netbox" }, stateDir: dir });

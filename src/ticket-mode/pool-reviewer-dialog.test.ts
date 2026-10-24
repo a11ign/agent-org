@@ -11,6 +11,7 @@ import { runStatus } from "./board-view/pull-status-and-notes.ts";
 import { reasonOf } from "./board-view/run-reason.ts";
 import { poolFixture } from "./pool-fixture.ts";
 import type { Outcome } from "./queue/queue-entries-and-outcomes.ts";
+import { logOf } from "./queue/run-log.ts";
 import { loadReviewerGate, REVIEWER_LOGIN } from "./reviewer-port.ts";
 
 const REPO = "a11ign/nbl-ui-netbox";
@@ -63,6 +64,17 @@ test("A11-221: a reviewer stuck on a dialog the port cannot answer makes the run
   pool.reviewNewHeads();
   pool.watchFeedback();
   assert.equal(JSON.stringify(entry()), written, "a later look at the same dialog rewrites nothing");
+});
+
+test("A11-221: the note logs Needs you once on the run, as the stale-block note does (A11-219), and the repeated look logs nothing more", async () => {
+  const made = await reviewedRun();
+  stopAndWatch(made);
+  const needsYou = () => logOf(made.fixture.store.get(), "NBF-1").filter((event) => event.kind === "needs-you");
+  assert.equal(needsYou().length, 1);
+  assert.match(needsYou()[0].kind === "needs-you" ? needsYou()[0].reason : "", /stopped on a dialog it cannot answer/);
+  made.pool.reviewNewHeads();
+  made.pool.watchFeedback();
+  assert.equal(needsYou().length, 1);
 });
 
 test("A11-221: the next look that finds no dialog clears the line and the note, and leaves the reviewer open", async () => {

@@ -2,6 +2,7 @@
 // module: the copy of agent-org a run holds (A11-169) -- what is recorded on an entry when it starts, which version folders the queue keeps, and a run stopped for a breaking update
 
 import { find, isLive, LIVE, writerLive, type Entry, type Queue } from "./queue-entries-and-outcomes.ts";
+import { logEvent } from "./run-log.ts";
 
 /**
  * The copy of agent-org a run was prepared with (A11-169): the version folder its hooks and brief commands name (`toolRoot`, the real `<tool>/versions/<tag>` path) and that folder's
@@ -78,5 +79,5 @@ export function requeueForUpdate(queue: Queue, key: string, target: string, now:
   const kept: Record<string, unknown> = { ...entry };
   for (const field of runtimeFields) delete kept[field];
   const requeued = { ...kept, ...(session !== undefined ? { session } : {}), phase: "queued", queuedAt: now, stoppedForUpdate: { at: now, target } } as Entry;
-  return { ...queue, entries: queue.entries.map((e) => (e.ticket.key === key ? requeued : e)) };
+  return logEvent({ ...queue, entries: queue.entries.map((e) => (e.ticket.key === key ? requeued : e)) }, key, now, { kind: "requeued", why: "update" });
 }
