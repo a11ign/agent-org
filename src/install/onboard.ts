@@ -251,10 +251,11 @@ async function profileFor(options: OnboardOptions, held: Readonly<Record<string,
 
 /** What the profile records of the repositories: `--repo`'s, else those picked from the folder and the code host (each with its repository, so a copy of the profile clones them), else those named by path. */
 async function profileRepos(options: OnboardOptions, held: Readonly<Record<string, string>>, deps: OnboardDeps): Promise<ProfileRepo[]> {
-  const picked = options.repos.length > 0 ? null : await pickedRepositories(held, deps);
+  const byPath = (repos: readonly string[]): ProfileRepo[] => repos.map((text) => parseRepo(text, deps)).map(([name, path]) => ({ name, path }));
+  if (options.repos.length > 0) return byPath(options.repos);
+  const picked = await pickedRepositories(held, deps);
   if (picked !== null) return picked.map(({ name, path, fullName }) => ({ name, remote: fullName, path: pathInHome(path, deps.home) }));
-  const repos = options.repos.length > 0 ? options.repos : await askRepositories(deps);
-  return repos.map((text) => parseRepo(text, deps)).map(([name, path]) => ({ name, path }));
+  return byPath(await askRepositories(deps));
 }
 
 /** `path` as `~/…` when it is under the home folder, so a profile copied to another machine finds it there. */

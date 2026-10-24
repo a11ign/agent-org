@@ -151,24 +151,26 @@ async function pickWithoutClash(question: Parameters<Prompts["pickMany"]>[0], cl
   }
 }
 
+/** Where the host file holds the repository of `checkout` under its name when that is not the checkout's own path, else undefined: the host file's path is kept (onboard's keep rule). */
+const heldElsewhere = ({ repository, path }: Checkout, held: Held): string | undefined => (keyAt(held, path) === undefined ? held[repository.name] : undefined);
+
 /** The checkout rows of step 1: each ticked checkout, under the name the host file holds it by (its path's key, else the code host's name), at the path the host file holds it at. */
 function foundRows(ticked: readonly Checkout[], held: Held): Row[] {
-  return ticked.map(({ repository, path }): Row => {
-    const key = keyAt(held, path);
-    const heldElsewhere = key === undefined ? held[repository.name] : undefined;
-    if (heldElsewhere !== undefined) return { name: repository.name, path: heldElsewhere, fullName: repository.fullName, ok: true, how: KEPT, picked: true };
-    return { name: key ?? repository.name, path, fullName: repository.fullName, ok: true, how: "found", picked: true };
+  return ticked.map((checkout): Row => {
+    const { repository, path } = checkout;
+    const elsewhere = heldElsewhere(checkout, held);
+    if (elsewhere !== undefined) return { name: repository.name, path: elsewhere, fullName: repository.fullName, ok: true, how: KEPT, picked: true };
+    return { name: keyAt(held, path) ?? repository.name, path, fullName: repository.fullName, ok: true, how: "found", picked: true };
   });
 }
 
 /** Step 1: what is checked out in the folder, pre-ticked. */
 async function pickFound(found: readonly Checkout[], held: Held, context: Readonly<{ deps: PickerDeps; surroundings: Surroundings }>): Promise<Checkout[]> {
   const { deps, surroundings } = context;
-  const hintOf = ({ repository, path }: Checkout): string => {
-    const key = keyAt(held, path);
-    const elsewhere = key === undefined ? held[repository.name] : undefined;
-    if (elsewhere !== undefined) return `${repository.fullName}  in the host file at ${surroundings.shown(elsewhere)}: kept there`;
-    return `${repository.fullName}  ${surroundings.shown(path)}`;
+  const hintOf = (checkout: Checkout): string => {
+    const elsewhere = heldElsewhere(checkout, held);
+    const where = elsewhere === undefined ? surroundings.shown(checkout.path) : `in the host file at ${surroundings.shown(elsewhere)}: kept there`;
+    return `${checkout.repository.fullName}  ${where}`;
   };
   const choices: Choice<string>[] = found.map((checkout) => ({ value: checkout.repository.fullName, label: checkout.repository.name, hint: hintOf(checkout) }));
   const clashOf = (picked: readonly string[]) => sharedName(found.filter(({ repository }) => picked.includes(repository.fullName)).map(({ repository }) => repository));
@@ -336,18 +338,24 @@ export async function pickRepositories(clones: Held, deps: PickerDeps): Promise<
   if (found.length > 0) rows = foundRows(await pickFound(found, held, { deps, surroundings }), held);
   else deps.out.log(`No repositories from GitHub in ${surroundings.shown(deps.cwd)}`);
   if (found.length === 0 || await deps.prompts.confirm({ message: "Add repositories not cloned here?", initial: false })) {
-    const listed = await pickListed({ shown: found, picked: rows, held, deps, surroundings });
-    if (listed === null && found.length === 0) {
-      deps.out.log(`${UNREADABLE}${NAME_THEM_BY_PATH}`);
-      return null;
-    }
-    if (listed === null) {
-      deps.out.log(UNREADABLE);
-    } else {
-      rows = [...rows, ...await rowsOfListed(listed, { held, deps, surroundings })];
-    }
+    const added = await addFromHost({ shown: found, picked: rows, held, deps, surroundings });
+    if (added === null) return null;
+    rows = [...rows, ...added];
   }
   // A blank line either side sets the summary apart from the prompts above it and the steps that follow.
   deps.out.log(`\n${summaryOf([...rows, ...keptRows(rows, held, surroundings)], surroundings)}\n`);
   return rows.filter(({ ok, picked, fullName }) => ok && picked && fullName !== null).map(({ name, path, fullName }) => ({ name, path, fullName: fullName! })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Step 2 as a whole: the rows it adds (none when the code host cannot list and step 1 found something to go on with), or null when it cannot list and nothing was found, so the caller asks for paths. */
+async function addFromHost(context: Readonly<{ shown: readonly Checkout[]; picked: readonly Row[]; held: Held; deps: PickerDeps; surroundings: Surroundings }>): Promise<Row[] | null> {
+  const { shown, held, deps, surroundings } = context;
+  const listed = await pickListed(context);
+  if (listed !== null) return rowsOfListed(listed, { held, deps, surroundings });
+  if (shown.length > 0) {
+    deps.out.log(UNREADABLE);
+    return [];
+  }
+  deps.out.log(`${UNREADABLE}${NAME_THEM_BY_PATH}`);
+  return null;
 }
