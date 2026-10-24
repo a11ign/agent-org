@@ -103,7 +103,7 @@ function Content() {
     plugins.refresh();
   };
   const flow = useHostFile({ client, read: readAgain, rows, drafts: state.drafts, discard: state.discard });
-  const changes = useChanges({ client, read: readAgain });
+  const changes = useChanges({ client, read: readAgain, held: { answer: plugins.data, state: plugins.state }, started: flow.clearOutcome });
   const [tab, setTab] = useState<Tab>("integrations");
   const [open, setOpen] = useState<string | null>("tracker");
   const local = isLocal(connection);
@@ -124,7 +124,7 @@ function Content() {
           {(answer) => (
             <Loaded answer={answer} unknown={unknown} view={settings.data} viewWords={viewWords} changes={changes} onRetry={retry} onReadAgain={() => { changes.clear(); readAgain(); }} tab={tab} setTab={setTab} open={open} setOpen={setOpen}
               editing={{ drafts: state.drafts, staged: flow.staging.staged, problems: flow.staging.problems, type: state.type }}
-              flowBanner={<OutcomeBanner outcome={flow.outcome} actions={{ busy: flow.busy, onRestore: () => flow.outcome?.kind === "saved" && flow.restore(flow.outcome.file), onReadAgain: flow.readAgain }} />} />
+              flowBanner={<OutcomeBanner outcome={flow.outcome} actions={{ busy: flow.busy, onRestore: () => { changes.clear(); if (flow.outcome?.kind === "saved") flow.restore(flow.outcome.file); }, onReadAgain: () => { changes.clear(); flow.readAgain(); } }} />} />
           )}
         </Lifecycle>
       </div>

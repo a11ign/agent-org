@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Answer } from "../api/answer.ts";
 import type { Client } from "../api/client.ts";
+import type { PollState } from "../api/use-poll.ts";
 import type { Change, EditFile, PluginActionDone, PluginsAnswer, SettingsPreview } from "../api/types.ts";
 import { dangerousIn, inForceOfSaved, isConflict, nameOf } from "../settings/settings-model.ts";
 import { switchHeading, uninstallHeading, type Concern, type Plugin } from "./plugins-model.ts";
@@ -32,11 +33,12 @@ export type Changes = Readonly<{
   /** The plugin the last switch made active, with the concern it is for: the card says what that switch ran and that it needs a restart. */
   switched: Readonly<{ concern: Concern["concern"]; name: string }> | null;
   pending: Pending | null;
+  /** True while a change is being made, and until the plugins read after it have answered: the page then holds the file as it is, and not as it was. */
   busy: boolean;
   /** Does what the plugin's plan says, asking first where the backend's controls name a sentence to confirm. */
   act: (action: PluginAction, plugin: Plugin, concern: Concern, answer: PluginsAnswer) => void;
-  /** Previews a change to the host file, asks first when it names a dangerous key, and saves it. */
-  change: (changes: readonly Change[], said: string) => void;
+  /** Previews a change to the host file, asks first when it names a dangerous key, and saves it. `base` is the file as the page last read it: a file that has changed since is the conflict. */
+  change: (changes: readonly Change[], said: string, base: string | undefined) => void;
   confirm: () => void;
   cancel: () => void;
   clear: () => void;
@@ -49,30 +51,44 @@ type Confirmation = Readonly<{ confirmed?: true }>;
 const CONFIRMED: Confirmation = { confirmed: true };
 const NOT_CONFIRMED: Confirmation = {};
 
-/** Whether an action makes another plugin of a concern with a choice the active one: an install (which replaces) or an enable. */
-const switchesPlugin = (action: PluginAction, concern: Concern): boolean => (action === "install" || action === "enable") && concern.plugins.length > 1;
+/** Whether an action makes another plugin of a concern with a choice the active one: an install, which replaces the one that was. An enable puts back the plugin the block names, which is no switch. */
+const switchesPlugin = (action: PluginAction, concern: Concern): boolean => action === "install" && concern.plugins.length > 1;
 
-type Inputs = Readonly<{ client: Client; read: () => void }>;
+type Inputs = Readonly<{
+  client: Client;
+  read: () => void;
+  /** The plugins as the page holds them, and the state of their read: a change is over when a read after it has answered. */
+  held: Readonly<{ answer: PluginsAnswer | null; state: PollState }>;
+  /** Called as a change starts, so the banner of the Settings flow's last save is not left beside it. */
+  started: () => void;
+}>;
 
 /**
  * The page's changes, over the backend as it is: an agent-org plugin's action (`POST /api/plugins/action`, the plans of `agent-org plugin`) and a key of the host file (`/api/settings/preview` and
  * `/save`, for the Claude plugins). Both end in the same banner, and both read the plugins again, which also updates the badge. A confirmation is the backend's sentence in a dialog; Cancel sends nothing.
  */
-export function useChanges({ client, read }: Inputs): Changes {
+export function useChanges({ client, read, held, started }: Inputs): Changes {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [switched, setSwitched] = useState<Changes["switched"]>(null);
   const [busy, setBusy] = useState(false);
+  // The answer the page held when the last change ended: until another has come, the page's `base` is the file as it was before the change.
+  const [after, setAfter] = useState<PluginsAnswer | null>(null);
+  const latest = useRef(held.answer);
+  latest.current = held.answer;
 
   /** Does a change, says how it came out, and reads the plugins again. A change that is waiting for a yes has come to nothing yet, so it reads nothing. */
   async function run(go: () => Promise<Notice | null>) {
     setBusy(true);
     setNotice(null);
     setSwitched(null);
+    started();
     const done = await go();
     setBusy(false);
     setNotice(done);
-    if (done !== null) read();
+    if (done === null) return;
+    setAfter(latest.current);
+    read();
   }
 
   const request = (action: PluginAction, plugin: Plugin, concern: Concern, answer: PluginsAnswer, confirmation: Confirmation) => async (): Promise<Notice> => {
@@ -99,11 +115,13 @@ export function useChanges({ client, read }: Inputs): Changes {
     return { kind: "applied", said, inForce: inForceOfSaved(saved.data), backup: nameOf(saved.data.backup), file };
   }
 
-  function change(changes: readonly Change[], said: string) {
+  function change(changes: readonly Change[], said: string, base: string | undefined) {
     const file: EditFile = "host.json";
     void run(async () => {
       const preview = await client.previewSettings(file, changes);
       if (!preview.ok) return failure(preview);
+      // The change is made of the list as the page read it, so a file that has changed since would lose what changed in it.
+      if (base !== undefined && preview.data.base !== base) return { kind: "conflict" } as const;
       const dangerous = preview.data.changes.filter((entry) => entry.dangerous !== null && entry.changed);
       if (dangerous.length === 0) return save(file, changes, said, preview.data);
       const sentence = dangerous.map((entry) => entry.dangerous).join(" ");
@@ -113,7 +131,7 @@ export function useChanges({ client, read }: Inputs): Changes {
   }
 
   return {
-    notice, switched, pending, busy, act, change, clear: () => setNotice(null),
+    notice, switched, pending, busy: busy || (after !== null && after === held.answer && held.state === "ready"), act, change, clear: () => setNotice(null),
     confirm: () => {
       if (pending === null) return;
       setPending(null);

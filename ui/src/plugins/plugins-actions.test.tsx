@@ -179,6 +179,44 @@ describe("a change that does not go through", () => {
   });
 });
 
+describe("a change that follows another", () => {
+  it("waits for the plugins read after the first, so the next action is not sent with the base the first one replaced", async () => {
+    const plugins = standWith(WITH_SLACK);
+    let release: () => void = () => undefined;
+    await pageOn({ plugins });
+    plugins.hold = new Promise<void>((done) => { release = done; });
+    opened("Publisher");
+    fireEvent.click(within(card("Publisher")).getByRole("button", { name: "Disable slack" }));
+    await screen.findByText(/Disabled slack/);
+    const uninstall = within(card("Publisher")).getByRole("button", { name: "Uninstall slack" }) as HTMLButtonElement;
+    expect(uninstall.disabled).toBe(true);
+    release();
+    await waitFor(() => expect(uninstall.disabled).toBe(false));
+  });
+
+  it("is not left beside the banner of an earlier save of a concern's setting", async () => {
+    const plugins = standWith(WITH_SLACK);
+    await pageOn({ plugins });
+    opened("Publisher");
+    fireEvent.change(within(card("Publisher")).getByLabelText("tickets.providers.publish.model"), { target: { value: "sonnet" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "Review changes" })).getByRole("button", { name: "Save to host.json" }));
+    await screen.findByText("Saved to host.json.");
+    fireEvent.click(within(card("Publisher")).getByRole("button", { name: "Disable slack" }));
+    await screen.findByText(/Disabled slack/);
+    expect(screen.queryByText("Saved to host.json.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restore previous" })).toBeNull();
+  });
+
+  it("says no switch for an enable of the plugin the block names", async () => {
+    await pageOn({ plugins: standWith({ tickets: { providers: { ...WITH_SLACK.tickets.providers, exposure: { provider: "tailscale", enabled: false } } } }) });
+    opened("Exposure");
+    fireEvent.click(within(card("Exposure")).getByRole("radio", { name: /^tailscale/ }));
+    await screen.findByText(/Enabled tailscale/);
+    expect(within(card("Exposure")).queryByText(/Switching runs/)).toBeNull();
+  });
+});
+
 describe("the page with a Claude plugin around it", () => {
   it("keeps its own Claude plugin out of the agent-org actions", async () => {
     const { fetchWith } = await pageOn({ plugins: pluginsOf({ answer: () => answerOf({ host: WITH_SLACK, claude: { readable: true, plugins: [a11ign()] } }) }) });

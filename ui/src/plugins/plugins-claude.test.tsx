@@ -57,7 +57,7 @@ describe("the Claude plugins tab", () => {
   });
 });
 
-describe("adding and removing a Claude plugin", () => {
+describe("adding a Claude plugin", () => {
   it("previews the list with the plugin added, asks in the schema's sentence because tickets.plugins is dangerous, and saves it confirmed by name", async () => {
     const { fetchWith } = await claudeTab();
     const input = screen.getByLabelText("Plugin to add, as name@marketplace");
@@ -75,13 +75,36 @@ describe("adding and removing a Claude plugin", () => {
     expect(sent(fetchWith, "/api/settings/save")).toEqual([{ file: "host.json", changes: [{ key: "tickets.plugins", value: ["a11ign@applied-ai", "other@market"] }], base: "base-1", confirmed: ["tickets.plugins"] }]);
   });
 
-  it("Cancel saves nothing", async () => {
+  it("Cancel saves nothing, and what was typed stays to be tried again", async () => {
     const { fetchWith } = await claudeTab();
     fireEvent.change(screen.getByLabelText("Plugin to add, as name@marketplace"), { target: { value: "other@market" } });
     fireEvent.click(screen.getByRole("button", { name: "Add Claude plugin" }));
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(sent(fetchWith, "/api/settings/save")).toEqual([]);
+    expect((screen.getByLabelText("Plugin to add, as name@marketplace") as HTMLInputElement).value).toBe("other@market");
+  });
+
+  it("clears what was typed once the plugin is added", async () => {
+    await claudeTab();
+    fireEvent.change(screen.getByLabelText("Plugin to add, as name@marketplace"), { target: { value: "other@market" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add Claude plugin" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Change" }));
+    await screen.findByText(/Added other@market/);
+    await waitFor(() => expect((screen.getByLabelText("Plugin to add, as name@marketplace") as HTMLInputElement).value).toBe(""));
+  });
+
+  it("is a conflict, and saves nothing, when the host file changed since the page read the list it adds to", async () => {
+    const settings = pluginsSettings();
+    const stand = plugins(a11ign());
+    const { fetchWith } = await tabOver({ plugins: stand, settings });
+    // The file changes after the page read it: the preview is made of the file as it is now.
+    settings.base = "base-2";
+    fireEvent.change(screen.getByLabelText("Plugin to add, as name@marketplace"), { target: { value: "other@market" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add Claude plugin" }));
+    await screen.findByRole("button", { name: "Read the plugins again" });
+    expect(sent(fetchWith, "/api/settings/save")).toEqual([]);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("does not offer to add what is not a name@marketplace, or what is listed already", async () => {
@@ -93,6 +116,9 @@ describe("adding and removing a Claude plugin", () => {
     }
   });
 
+});
+
+describe("removing a Claude plugin, and a change that does not go through", () => {
   it("removes a plugin from workers by saving the list without it, confirmed by name", async () => {
     const { fetchWith } = await claudeTab();
     removeIn("a11ign");

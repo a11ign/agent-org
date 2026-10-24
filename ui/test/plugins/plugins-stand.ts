@@ -72,8 +72,8 @@ export type PluginsStand = {
   /** The answer `GET /api/plugins` gives, read each time so a check can change what the next read says. */
   answer: () => PluginsAnswer;
   fails?: Failure;
-  /** Leaves `GET /api/plugins` unanswered, as a read that is slow to answer does. */
-  hold?: boolean;
+  /** Leaves `GET /api/plugins` unanswered, as a read that is slow to answer does: for ever when true, until the promise settles when it is one. */
+  hold?: boolean | Promise<unknown>;
   /** The hash of the host file the page read: an action that sends any other `base` is the conflict. A check changes it to make the file change under the page. */
   base: string;
   /** Replaces the instance's own answer to an action. */
@@ -138,6 +138,7 @@ export function pluginsFetch(stand: Stand, state: PluginsStand, settings: Settin
     paths.push(path);
     requests.push({ ...request, path });
     if (state.hold === true && request.method === "GET" && /\/api\/plugins$/.test(path)) return new Promise<Response>(() => undefined);
+    if (state.hold instanceof Promise && request.method === "GET" && /\/api\/plugins$/.test(path)) await state.hold;
     const own = answerPlugins(state, path, request);
     if (own !== null) return new Response(own.body, { status: own.status, headers: { "Content-Type": "application/json" } });
     return /\/api\/settings(\/|\?|$)/.test(path) ? settled(input, init) : inner(input, init);
@@ -151,6 +152,7 @@ export async function routePlugins(context: BrowserContext, state: PluginsStand,
     const url = new URL(route.request().url());
     const request = { method: route.request().method(), body: route.request().postData() === null ? undefined : (route.request().postDataJSON() as unknown) };
     if (state.hold === true && request.method === "GET" && url.pathname.endsWith("/api/plugins")) return;
+    if (state.hold instanceof Promise && request.method === "GET" && url.pathname.endsWith("/api/plugins")) await state.hold;
     const own = answerPlugins(state, `${url.pathname}${url.search}`, request);
     if (own === null) return route.fallback();
     asked.push({ ...request, path: `${url.pathname}${url.search}` });

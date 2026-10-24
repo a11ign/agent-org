@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { CommandLine } from "./CopyButton.tsx";
 import { usePage } from "./PageContext.ts";
 import { Dot } from "./StatusDot.tsx";
@@ -28,13 +28,13 @@ function Health({ plugin }: Readonly<{ plugin: ClaudePlugin }>) {
 
 /** The select that names the skill doing a job: its choices are what the contract provides there. A key that names no single skill of this plugin shows its text instead. */
 function SkillSelect({ job, plugin }: Readonly<{ job: SkillJob; plugin: ClaudePlugin }>) {
-  const { view, viewWords, controls, changes } = usePage();
+  const { answer, view, viewWords, controls, changes } = usePage();
   const text = heldText(view, job.key);
   const chosen = chosenSkill(job, text, plugin);
   const id = `skill-${job.point}-${plugin.name}`;
   const provided = skillOptions(job, plugin);
   const options = chosen === null || provided.includes(chosen) ? provided : [chosen, ...provided];
-  const pick = (skill: string) => changes.change([skillChange(job, text, plugin, skill)], claudeSaid.skill(job, skill));
+  const pick = (skill: string) => changes.change([skillChange(job, text, plugin, skill)], claudeSaid.skill(job, skill), answer.bases["host.json"]);
   const control = (): ReactNode => {
     if (view === null) return <span className="plugin-value">{viewWords}</span>;
     if (job.point === "writer" && chosen === null) return <code className="plugin-value">{text ?? "Not set"}</code>;
@@ -97,7 +97,7 @@ function Needs({ plugin }: Readonly<{ plugin: ClaudePlugin }>) {
 function ClaudeCard({ plugin }: Readonly<{ plugin: ClaudePlugin }>) {
   const { answer, instance, controls, changes } = usePage();
   const status = claudeStatusOf(plugin, instance);
-  const remove = () => changes.change([removePluginChange(listedPlugins(answer.claude), plugin.entry)], claudeSaid.removed(plugin.entry));
+  const remove = () => changes.change([removePluginChange(listedPlugins(answer.claude), plugin.entry)], claudeSaid.removed(plugin.entry), answer.bases["host.json"]);
   return (
     <section className="plugin-card" aria-label={plugin.name}>
       <div className="plugin-claude-head">
@@ -130,10 +130,12 @@ function AddForm() {
   const text = entry.trim();
   const ready = isPluginEntry(text) && !listed.includes(text) && !changes.busy;
   const add = () => {
-    if (!ready) return;
-    changes.change([addPluginChange(listed, text)], claudeSaid.added(text));
-    setEntry("");
+    if (ready) changes.change([addPluginChange(listed, text)], claudeSaid.added(text), answer.bases["host.json"]);
   };
+  // What was typed stays until the plugin is added: a cancelled confirmation or a refusal leaves it to be tried again.
+  useEffect(() => {
+    if (changes.notice?.kind === "applied" && changes.notice.said === claudeSaid.added(text)) setEntry("");
+  }, [changes.notice, text]);
   return (
     <form className="plugin-add" onSubmit={(event) => { event.preventDefault(); add(); }}>
       <label className="plugin-add-field">
